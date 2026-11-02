@@ -219,27 +219,13 @@ impl PartitionDb {
     }
 
     pub async fn flush_memtables(&self, wait: bool) -> Result<(), RocksError> {
-        // Flushing can run after the partition is closed, so it counts against the
-        // database, not the partition's session. Keep `physical` until it finishes, so
-        // the column family can't be deleted meanwhile.
-        let physical = self.physical_scope().clone();
         let cf_name = self.partition().cf_name().into();
-        self.rocksdb()
-            .clone()
-            .run_background_read_op(
-                "flush-partition",
-                StorageTaskKind::FlushMemtables,
-                Priority::Low,
-                move |_| {
-                    physical
-                        .payload()
-                        .cfs
-                        .database()
-                        .inner()
-                        .flush_memtables(std::slice::from_ref(&cf_name), wait)
-                },
-            )
-            .await?
+        self.run_background_op(
+            "flush-partition",
+            StorageTaskKind::FlushMemtables,
+            move |db| db.flush_memtables(std::slice::from_ref(&cf_name), wait),
+        )
+        .await?
     }
 
     /// Returns a future that completes once nothing holds this partition's column
@@ -256,31 +242,54 @@ impl PartitionDb {
         &self,
         export_dir: std::path::PathBuf,
     ) -> Result<(SnapshotDir, ExportImportFilesMetaData), RocksError> {
-        // Snapshots can be exported from a closed partition, so this counts against the
-        // database, not the partition's session. `physical` keeps the column family from
-        // being deleted until the export finishes.
-        let physical = self.physical_scope().clone();
         let name = self.partition().cf_name().into();
+        self.run_background_op(
+            "export-column-family",
+            StorageTaskKind::ExportColumnFamily,
+            move |db| {
+                let metadata = db.export_cf(name, export_dir.clone())?;
+                // Take ownership of the files here, on the worker. If the caller went
+                // away while the export was running, nobody claims this result, and
+                // dropping it deletes the files instead of leaving them behind.
+                Ok((SnapshotDir::new(export_dir), metadata))
+            },
+        )
+        .await?
+    }
+
+    /// Runs `op` on the partition's column families on a background thread, at low
+    /// priority. For work that isn't a read, such as flushing or exporting.
+    ///
+    /// The work isn't part of the partition's session. Closing the partition ends
+    /// the session, but this work may keep running afterwards, and it may also
+    /// start after the session has ended, for example to export a snapshot of a
+    /// closed partition. So it counts against the database's gate instead of the
+    /// session's: closing the partition doesn't wait for it, but shutting down the
+    /// database does.
+    ///
+    /// It keeps the partition's column families alive until it is done, so
+    /// deleting them waits for it.
+    async fn run_background_op<R: Send + 'static>(
+        &self,
+        name: &'static str,
+        kind: StorageTaskKind,
+        op: impl FnOnce(&RocksAccess) -> R + Send + 'static,
+    ) -> Result<R, RocksError> {
+        let physical = self.physical_scope().clone();
+        let task = self
+            .rocksdb()
+            .prepare_op(move |db| {
+                let result = op(db.inner());
+                drop(physical);
+                result
+            })
+            .background(name, kind)
+            .with_priority(Priority::Low);
         self.rocksdb()
-            .clone()
-            .run_background_read_op(
-                "export-column-family",
-                StorageTaskKind::ExportColumnFamily,
-                Priority::Low,
-                move |_| {
-                    let metadata = physical
-                        .payload()
-                        .cfs
-                        .database()
-                        .inner()
-                        .export_cf(name, export_dir.clone())?;
-                    // Take ownership of the files here, on the worker. If the caller went
-                    // away while the export was running, nobody claims this result, and
-                    // dropping it deletes the files instead of leaving them behind.
-                    Ok((SnapshotDir::new(export_dir), metadata))
-                },
-            )
-            .await?
+            .executor()
+            .spawn(task)?
+            .await
+            .map_err(|_| ShutdownError.into())
     }
 
     pub(crate) async fn run_background_read_op<OP, R>(
