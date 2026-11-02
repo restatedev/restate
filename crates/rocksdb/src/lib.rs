@@ -49,7 +49,8 @@ use restate_util_lifecycle::Scope;
 
 // re-exports
 pub use self::background::{
-    GlobalExecutor, Priority, SinglePoolExecutor, StorageOp, StorageTaskKind,
+    GlobalExecutor, Guarded, OpContext, OpFn, Priority, SinglePoolExecutor, StorageOp,
+    StorageTaskKind,
 };
 pub use self::cf_handles::CfHandles;
 pub use self::db_env::DbEnv;
@@ -539,15 +540,20 @@ impl RocksDb {
         read_options.set_read_tier(rocksdb::ReadTier::All);
 
         let database = scope.payload().handles().database();
-        let scope = scope.clone();
-        let op = database.prepare_in(gate, StorageTaskKind::BackgroundIterator, move |db| {
+        database.debug_assert_inside(gate);
+        // The scope is the operation's context: it is cloned when the operation is
+        // submitted, and the clone keeps the column family alive until it is done.
+        let iterate = move |scope: &Scope<C>| {
             // note: the perf guard's lifetime encapsulates all operations in the iterator and
             // the total duration includes all the time spent blocking on the tx's capacity.
             let _x = RocksDbReadPerfGuard::new(name);
+            let handles = scope.payload().handles();
             let mut iter = RocksIterator::new(
-                db.db
+                handles
+                    .database()
+                    .inner()
                     .as_raw_db()
-                    .raw_iterator_cf_opt(scope.payload().handles().get(cf), read_options),
+                    .raw_iterator_cf_opt(handles.get(cf), read_options),
                 initial_action,
                 // Borrow `on_item` instead of moving it in, so what it captures is dropped
                 // only after the iterator is gone.
@@ -572,7 +578,8 @@ impl RocksDb {
                     iterator::Disposition::Stop => return,
                 }
             }
-        });
+        };
+        let op = StorageOp::with_context(scope, gate, StorageTaskKind::BackgroundIterator, iterate);
         database.executor.pool(priority).dispatch(op)
     }
 
@@ -594,13 +601,19 @@ impl RocksDb {
     /// `kind` says what the operation does. If it runs in the background, the
     /// kind labels the task's metrics and tracing span.
     ///
-    /// The closure receives an `Arc` of this database and may keep it in its
-    /// result. See [`StorageOp::with_guard`] for examples.
-    pub fn prepare<R: Send + 'static>(
+    /// The operation's context is this database (see [`OpContext`]). The
+    /// closure gets it by reference, and the `Arc` is cloned only if the
+    /// operation moves to a background thread. If the result needs to keep the
+    /// database, the closure clones the `Arc` itself. See [`StorageOp`] for an
+    /// example, and [`StorageOp::with_guard`] for more.
+    pub fn prepare<R, F>(
         self: &Arc<Self>,
         kind: StorageTaskKind,
-        op: impl FnOnce(Arc<Self>) -> R + Send + 'static,
-    ) -> StorageOp<'_, impl FnOnce() -> R + Send + 'static> {
+        op: F,
+    ) -> StorageOp<'_, &Arc<Self>, F>
+    where
+        F: FnOnce(&Arc<Self>) -> R + Send + 'static,
+    {
         self.prepare_in(&self.gate, kind, op)
     }
 
@@ -610,15 +623,17 @@ impl RocksDb {
     ///
     /// # Panics
     /// In debug builds, panics if `gate` is outside this database.
-    pub fn prepare_in<'a, R: Send + 'static>(
-        self: &Arc<Self>,
+    pub fn prepare_in<'a, 'b, R, F>(
+        self: &'b Arc<Self>,
         gate: &'a Arc<Gate>,
         kind: StorageTaskKind,
-        op: impl FnOnce(Arc<Self>) -> R + Send + 'static,
-    ) -> StorageOp<'a, impl FnOnce() -> R + Send + 'static> {
+        op: F,
+    ) -> StorageOp<'a, &'b Arc<Self>, F>
+    where
+        F: FnOnce(&Arc<Self>) -> R + Send + 'static,
+    {
         self.debug_assert_inside(gate);
-        let db = self.clone();
-        StorageOp::new(move || op(db), gate, kind)
+        StorageOp::with_context(self, gate, kind, op)
     }
 
     /// Prepares deleting a column family, to submit to an executor of your choice.
@@ -628,7 +643,7 @@ impl RocksDb {
     pub fn prepare_drop_cf(
         self: Arc<Self>,
         name: CfName,
-    ) -> StorageOp<'static, impl FnOnce() -> Result<(), RocksError> + Send + 'static> {
+    ) -> StorageOp<'static, (), impl FnOnce() -> Result<(), RocksError> + Send + 'static> {
         let lease = self
             .registration
             .as_ref()
