@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::Instant;
 
@@ -18,7 +19,23 @@ use parking_lot::Mutex;
 use restate_core::io::{AdmissionClosed, Gate, IoExecutor, IoOp, IoTask, TrackedTask};
 
 use crate::metric_definitions::{STORAGE_BG_TASK_RUN_DURATION, STORAGE_BG_TASK_WAIT_DURATION};
-use crate::{OP_TYPE, PRIORITY, Priority, STORAGE_BG_TASK_IN_FLIGHT};
+use crate::{OP_TYPE, STORAGE_BG_TASK_IN_FLIGHT};
+
+/// Which of [`GlobalExecutor`]'s pools runs a piece of work. `High` is for
+/// latency-sensitive work.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr)]
+#[strum(serialize_all = "kebab-case")]
+pub enum Priority {
+    High,
+    #[default]
+    Low,
+}
+
+impl Priority {
+    pub fn as_static_str(&self) -> &'static str {
+        self.into()
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr)]
 #[strum(serialize_all = "kebab-case")]
@@ -173,10 +190,9 @@ where
     }
 }
 
-/// A storage operation ready for an executor, with a kind and priority for
-/// metrics and scheduling. If it belongs to a gate, it's admitted only when
-/// it runs (`call`) or is submitted (`into_task`), so building one doesn't delay
-/// draining.
+/// A storage operation ready for an executor, with a kind for metrics. If it
+/// belongs to a gate, it's admitted only when it runs (`call`) or is submitted
+/// (`into_task`), so building one doesn't delay draining.
 #[derive(Builder)]
 #[builder(pattern = "owned")]
 #[builder(name = "StorageTask")]
@@ -185,8 +201,6 @@ pub struct ReadyStorageTask<'a, OP> {
     op: OP,
     #[builder(default, setter(strip_option))]
     gate: Option<&'a Arc<Gate>>,
-    #[builder(default)]
-    pub(crate) priority: Priority,
     /// required
     kind: StorageTaskKind,
     #[builder(setter(skip))]
@@ -202,28 +216,12 @@ impl Drop for InFlight {
     }
 }
 
-impl<OP, R> ReadyStorageTask<'_, OP>
-where
-    OP: FnOnce() -> R + Send + 'static,
-    R: Send + 'static,
-{
-    /// Override the scheduling hint before preparing or dispatching the task.
-    pub fn with_priority(mut self, priority: Priority) -> Self {
-        self.priority = priority;
-        self
-    }
-}
-
 impl<OP, R> IoOp for ReadyStorageTask<'_, OP>
 where
     OP: FnOnce() -> R + Send + 'static,
     R: Send + 'static,
 {
     type Output = R;
-
-    fn priority(&self) -> Priority {
-        self.priority
-    }
 
     fn into_task(self) -> Result<impl IoTask<Self::Output>, AdmissionClosed> {
         let lease = self
@@ -235,7 +233,6 @@ where
             })
             .transpose()?;
         let gauge = gauge!(STORAGE_BG_TASK_IN_FLIGHT,
-         PRIORITY => self.priority.as_static_str(),
          OP_TYPE => self.kind.as_static_str(),
         );
         gauge.increment(1);
@@ -307,14 +304,10 @@ impl SinglePoolExecutor {
 impl IoExecutor for SinglePoolExecutor {
     fn barrier(&self, callback: impl FnOnce() + Send + 'static) {
         let _submission = self.0.barrier_submission.lock();
-        pool_barrier(&[&self.0.pool], callback);
+        pool_barrier(&self.0.pool, callback);
     }
 
-    fn dispatch_fn(
-        &self,
-        _priority: Priority,
-        task: impl IoTask<()>,
-    ) -> Result<(), AdmissionClosed> {
+    fn dispatch_fn(&self, task: impl IoTask<()>) -> Result<(), AdmissionClosed> {
         let span = tracing::Span::current();
         self.0.pool.execute(move || {
             span.in_scope(task);
@@ -323,77 +316,76 @@ impl IoExecutor for SinglePoolExecutor {
     }
 }
 
-/// Two thread pools for regular storage I/O: one for [`Priority::High`] work and
-/// one for [`Priority::Low`] work. [`Self::from_options`] creates the standard
-/// `rs:io-hi` and `rs:io-lo` pools. Clones share the same threads, so several
-/// managers can use one set of pools.
+/// The two pools for regular storage I/O: one for latency-sensitive work
+/// ([`Self::high_pri`]) and one for everything else ([`Self::low_pri`]).
+/// [`Self::from_options`] creates the standard `rs:io-hi` and `rs:io-lo` pools.
+/// Clones share the same threads, so several managers can use one set of pools.
+///
+/// It isn't an executor itself: work goes to one of its pools, which the caller
+/// picks.
 #[derive(Clone)]
-pub struct GlobalExecutor(Arc<GlobalExecutorInner>);
+pub struct GlobalExecutor {
+    high_pri: SinglePoolExecutor,
+    low_pri: SinglePoolExecutor,
+}
 
 impl GlobalExecutor {
-    /// Create the shared priority pools using the configured storage thread counts.
+    /// Creates the two pools with the configured numbers of threads.
     pub fn from_options(opts: &restate_types::config::CommonOptions) -> Self {
         Self::new(
-            threadpool::Builder::new()
-                .thread_name("rs:io-hi".to_owned())
-                .num_threads(opts.storage_high_priority_bg_threads().into())
-                .build(),
-            threadpool::Builder::new()
-                .thread_name("rs:io-lo".to_owned())
-                .num_threads(opts.storage_low_priority_bg_threads().into())
-                .build(),
+            SinglePoolExecutor::new(
+                "rs:io-hi".to_owned(),
+                opts.storage_high_priority_bg_threads().into(),
+            ),
+            SinglePoolExecutor::new(
+                "rs:io-lo".to_owned(),
+                opts.storage_low_priority_bg_threads().into(),
+            ),
         )
     }
 
-    #[cfg(any(test, feature = "test-util"))]
-    pub(crate) fn max_count(&self, priority: Priority) -> usize {
+    pub fn new(high_pri: SinglePoolExecutor, low_pri: SinglePoolExecutor) -> Self {
+        Self { high_pri, low_pri }
+    }
+
+    /// The pool for latency-sensitive work.
+    pub fn high_pri(&self) -> &SinglePoolExecutor {
+        &self.high_pri
+    }
+
+    /// The pool for everything else.
+    pub fn low_pri(&self) -> &SinglePoolExecutor {
+        &self.low_pri
+    }
+
+    /// The pool for work of `priority`.
+    pub fn pool(&self, priority: Priority) -> &SinglePoolExecutor {
         match priority {
-            Priority::High => self.0.high_pri_pool.max_count(),
-            Priority::Low => self.0.low_pri_pool.max_count(),
+            Priority::High => &self.high_pri,
+            Priority::Low => &self.low_pri,
         }
     }
 
-    pub fn new(
-        high_pri_pool: threadpool::ThreadPool,
-        low_pri_pool: threadpool::ThreadPool,
-    ) -> Self {
-        Self(Arc::new(GlobalExecutorInner {
-            barrier_submission: Mutex::new(()),
-            high_pri_pool,
-            low_pri_pool,
-        }))
+    /// Runs `callback` once all work submitted to either pool before this call
+    /// has run or been dropped. See [`IoExecutor::barrier`].
+    pub fn barrier(&self, callback: impl FnOnce() + Send + 'static) {
+        // Each pool gets its own barrier. Whichever passes second runs `callback`.
+        let pending = Arc::new(AtomicUsize::new(2));
+        let callback = Arc::new(Mutex::new(Some(callback)));
+        for pool in [&self.high_pri, &self.low_pri] {
+            let pending = Arc::clone(&pending);
+            let callback = Arc::clone(&callback);
+            pool.barrier(move || {
+                if pending.fetch_sub(1, Ordering::AcqRel) == 1 {
+                    let callback = callback.lock().take().expect("runs once");
+                    callback();
+                }
+            });
+        }
     }
 }
 
-struct GlobalExecutorInner {
-    // Only barriers take this lock; regular dispatch only uses the pool's queue.
-    barrier_submission: Mutex<()>,
-    high_pri_pool: threadpool::ThreadPool,
-    low_pri_pool: threadpool::ThreadPool,
-}
-
-impl IoExecutor for GlobalExecutor {
-    fn barrier(&self, callback: impl FnOnce() + Send + 'static) {
-        let _submission = self.0.barrier_submission.lock();
-        pool_barrier(&[&self.0.high_pri_pool, &self.0.low_pri_pool], callback);
-    }
-
-    fn dispatch_fn(
-        &self,
-        priority: Priority,
-        task: impl IoTask<()>,
-    ) -> Result<(), AdmissionClosed> {
-        let span = tracing::Span::current();
-        let pool = match priority {
-            Priority::High => &self.0.high_pri_pool,
-            Priority::Low => &self.0.low_pri_pool,
-        };
-        pool.execute(move || span.in_scope(task));
-        Ok(())
-    }
-}
-
-fn pool_barrier(pools: &[&threadpool::ThreadPool], callback: impl FnOnce() + Send + 'static) {
+fn pool_barrier(pool: &threadpool::ThreadPool, callback: impl FnOnce() + Send + 'static) {
     struct Canary<F> {
         workers: Barrier,
         callback: Mutex<Option<F>>,
@@ -404,21 +396,19 @@ fn pool_barrier(pools: &[&threadpool::ThreadPool], callback: impl FnOnce() + Sen
     // canaries were interleaved in the queue, every worker could end up blocked in
     // a half-complete barrier while its remaining canaries wait behind them. The
     // caller holds the submission lock while we queue the whole batch.
-    let workers = pools.iter().map(|pool| pool.max_count()).sum();
+    let workers = pool.max_count();
     let canary = Arc::new(Canary {
         workers: Barrier::new(workers),
         callback: Mutex::new(Some(callback)),
     });
-    for pool in pools {
-        for _ in 0..pool.max_count() {
-            let canary = canary.clone();
-            pool.execute(move || {
-                if canary.workers.wait().is_leader() {
-                    let callback = canary.callback.lock().take().expect("one leader");
-                    callback();
-                }
-            });
-        }
+    for _ in 0..workers {
+        let canary = canary.clone();
+        pool.execute(move || {
+            if canary.workers.wait().is_leader() {
+                let callback = canary.callback.lock().take().expect("one leader");
+                callback();
+            }
+        });
     }
 }
 
@@ -435,6 +425,14 @@ mod tests {
     use super::*;
 
     fn observe_barrier(executor: &impl IoExecutor) -> oneshot::Receiver<()> {
+        let (tx, rx) = oneshot::channel();
+        executor.barrier(move || {
+            let _ = tx.send(());
+        });
+        rx
+    }
+
+    fn observe_global_barrier(executor: &GlobalExecutor) -> oneshot::Receiver<()> {
         let (tx, rx) = oneshot::channel();
         executor.barrier(move || {
             let _ = tx.send(());
@@ -480,7 +478,6 @@ mod tests {
         let task = StorageOp::new(|| 43, &gate, StorageTaskKind::MultiGet)
             .with_guard(factory.clone())
             .background();
-        assert_eq!(task.priority(), Priority::Low);
         assert!(gate.is_idle());
         let task = task.into_task().unwrap();
         assert_eq!(drops.load(Ordering::Relaxed), 1);
@@ -518,72 +515,61 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn global_pool_routes_priority_and_outlives_owner_admission() {
+    async fn global_executor_routes_work_to_its_pools_and_outlives_owner_admission() {
         let backend = GlobalExecutor::new(
-            threadpool::Builder::new()
-                .num_threads(1)
-                .thread_name("test-high".to_owned())
-                .build(),
-            threadpool::Builder::new()
-                .num_threads(1)
-                .thread_name("test-low".to_owned())
-                .build(),
+            SinglePoolExecutor::new("test-high".to_owned(), 1),
+            SinglePoolExecutor::new("test-low".to_owned(), 1),
         );
         let gate = Arc::new(Gate::default());
-        let executor = TrackedExecutor::new(&backend, &gate);
-        let high = executor
+        let high_pri = TrackedExecutor::new(backend.high_pri(), &gate);
+        let low_pri = TrackedExecutor::new(backend.pool(Priority::Low), &gate);
+        let high = high_pri
             .spawn(
                 StorageTask::default()
                     .kind(StorageTaskKind::MultiGet)
-                    .priority(Priority::High)
                     .op(|| std::thread::current().name().unwrap().to_owned())
                     .build()
                     .unwrap(),
             )
             .unwrap();
-        let low = executor
-            .spawn_fn(Priority::Low, || {
-                std::thread::current().name().unwrap().to_owned()
-            })
+        let low = low_pri
+            .spawn_fn(|| std::thread::current().name().unwrap().to_owned())
             .unwrap();
         gate.seal();
 
         assert_eq!(high.await.unwrap(), "test-high");
         assert_eq!(low.await.unwrap(), "test-low");
-        for priority in [Priority::High, Priority::Low] {
+        for executor in [&high_pri, &low_pri] {
             assert!(
                 executor
-                    .dispatch_fn(priority, || panic!("rejected task must not run"))
+                    .dispatch_fn(|| panic!("rejected task must not run"))
                     .is_err()
             );
         }
         gate.drain().await;
-        observe_barrier(&backend).await.unwrap();
+        observe_global_barrier(&backend).await.unwrap();
         assert_eq!(
-            backend
-                .spawn_fn(Priority::Low, || 42)
-                .unwrap()
-                .await
-                .unwrap(),
+            backend.low_pri().spawn_fn(|| 42).unwrap().await.unwrap(),
             42
         );
     }
 
     #[tokio::test]
-    async fn global_barrier_covers_both_lanes_and_recovers_from_callback_panic() {
+    async fn global_barrier_covers_both_pools_and_recovers_from_callback_panic() {
         use std::sync::mpsc;
         use std::time::Duration;
 
         let backend = GlobalExecutor::new(
-            threadpool::ThreadPool::new(2),
-            threadpool::ThreadPool::new(2),
+            SinglePoolExecutor::new("test-high".to_owned(), 2),
+            SinglePoolExecutor::new("test-low".to_owned(), 2),
         );
         let mut releases = Vec::new();
         for priority in [Priority::High, Priority::Low] {
             let (release, wait) = mpsc::channel::<()>();
             let (started, reached) = oneshot::channel();
             backend
-                .dispatch_fn(priority, move || {
+                .pool(priority)
+                .dispatch_fn(move || {
                     let _ = started.send(());
                     let _ = wait.recv();
                 })
@@ -591,10 +577,8 @@ mod tests {
             reached.await.unwrap();
             releases.push(release);
         }
-        let gate = Arc::new(Gate::default());
-        gate.seal();
-        let executor = TrackedExecutor::new(&backend, &gate);
-        let mut completed = observe_barrier(&executor);
+        // The barrier passes only once the work in both pools is done.
+        let mut completed = observe_global_barrier(&backend);
         assert!(matches!(
             completed.try_recv(),
             Err(oneshot::error::TryRecvError::Empty)
@@ -611,9 +595,9 @@ mod tests {
             .unwrap();
 
         let (tx, rx) = oneshot::channel::<()>();
-        executor.barrier(move || {
+        backend.barrier(move || {
             let _tx = tx;
-            panic!("callback panic must not strand the pool");
+            panic!("callback panic must not strand the pools");
         });
         assert!(
             tokio::time::timeout(Duration::from_secs(10), rx)
@@ -621,6 +605,15 @@ mod tests {
                 .unwrap()
                 .is_err()
         );
+        tokio::time::timeout(Duration::from_secs(10), observe_global_barrier(&backend))
+            .await
+            .unwrap()
+            .unwrap();
+
+        // A tracked executor forwards barriers to its pool, even once sealed.
+        let gate = Arc::new(Gate::default());
+        gate.seal();
+        let executor = TrackedExecutor::new(backend.low_pri(), &gate);
         tokio::time::timeout(Duration::from_secs(10), observe_barrier(&executor))
             .await
             .unwrap()
@@ -637,7 +630,7 @@ mod tests {
         let (started, reached) = oneshot::channel();
         let (resume, paused) = mpsc::channel::<()>();
         executor
-            .dispatch_fn(Priority::Low, move || {
+            .dispatch_fn(move || {
                 started.send(()).unwrap();
                 let _ = paused.recv();
             })
@@ -678,14 +671,7 @@ mod tests {
             for barrier in barriers {
                 barrier.await.unwrap();
             }
-            assert_eq!(
-                executor
-                    .spawn_fn(Priority::Low, || 42)
-                    .unwrap()
-                    .await
-                    .unwrap(),
-                42
-            );
+            assert_eq!(executor.spawn_fn(|| 42).unwrap().await.unwrap(), 42);
         })
         .await
         .unwrap();

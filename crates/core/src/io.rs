@@ -20,6 +20,6 @@
 mod executor;
 
 pub use executor::{
-    AdmissionClosed, IoExecutor, IoOp, IoTask, IoTaskError, Priority, TrackedExecutor, TrackedTask,
+    AdmissionClosed, IoExecutor, IoOp, IoTask, IoTaskError, TrackedExecutor, TrackedTask,
 };
 pub use restate_util_lifecycle::{Gate, Lease, OwnedLease};
