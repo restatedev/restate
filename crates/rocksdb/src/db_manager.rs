@@ -35,7 +35,7 @@ use self::tracking::TrackedDb;
 use crate::background::{GlobalExecutor, SinglePoolExecutor, StorageTask};
 use crate::db_env::check_memory_limit;
 use crate::{
-    DbCleanup, DbEnv, DbName, DbRegistration, DbSpec, Priority, RocksAccess, RocksDb, RocksError,
+    DbCleanup, DbEnv, DbName, DbRegistration, DbSpec, RocksAccess, RocksDb, RocksError,
     StorageTaskKind, metric_definitions,
 };
 
@@ -464,14 +464,17 @@ impl RocksDbManager {
     /// Occupy every worker in a pool until the returned senders are dropped.
     /// Used to deterministically test queued work and cancelled result waiters.
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn pause_background(&self, priority: Priority) -> Vec<std::sync::mpsc::Sender<()>> {
-        let pool = &self.0.executor;
-        let mut resumes = Vec::with_capacity(pool.max_count(priority));
-        for _ in 0..pool.max_count(priority) {
+    pub async fn pause_background(
+        &self,
+        priority: crate::Priority,
+    ) -> Vec<std::sync::mpsc::Sender<()>> {
+        let pool = self.0.executor.pool(priority);
+        let mut resumes = Vec::with_capacity(pool.max_count());
+        for _ in 0..pool.max_count() {
             let (resume, paused) = std::sync::mpsc::channel();
             let (started, reached) = tokio::sync::oneshot::channel();
             resumes.push(resume);
-            pool.dispatch_fn(priority, move || {
+            pool.dispatch_fn(move || {
                 let _ = started.send(());
                 let _ = paused.recv();
             })
@@ -490,7 +493,7 @@ impl RocksDbManager {
             let (resume, paused) = std::sync::mpsc::channel();
             let (started, reached) = tokio::sync::oneshot::channel();
             resumes.push(resume);
-            pool.dispatch_fn(Priority::Low, move || {
+            pool.dispatch_fn(move || {
                 let _ = started.send(());
                 let _ = paused.recv();
             })
@@ -588,7 +591,7 @@ impl RocksDbManager {
         let cleanup = CloseGuard::new(cleanup, active);
         self.0
             .lifecycle_executor
-            .dispatch_fn(Priority::Low, move || drop(cleanup))
+            .dispatch_fn(move || drop(cleanup))
             .expect("lifecycle executor remains available through native cleanup");
     }
 
@@ -629,7 +632,7 @@ impl RocksDbManager {
         let cleanup = (task, self.track_lifecycle());
         self.0
             .lifecycle_executor
-            .dispatch_fn(Priority::Low, move || {
+            .dispatch_fn(move || {
                 let (task, _active) = cleanup;
                 task();
             })
@@ -704,7 +707,7 @@ impl RocksDbManager {
         for shutdown in pending {
             self.0
                 .lifecycle_executor
-                .dispatch_fn(Priority::Low, move || drop(shutdown))
+                .dispatch_fn(move || drop(shutdown))
                 .expect("lifecycle executor remains available through native cleanup");
         }
         self.wait_for_cleanup().await;
