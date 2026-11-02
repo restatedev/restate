@@ -11,63 +11,273 @@
 use anyhow::{Context, Result, anyhow};
 use cling::prelude::*;
 use indicatif::ProgressBar;
-use restate_cli_util::{CliContext, c_println, c_success, c_tip};
 use serde::Deserialize;
-use toml_edit::{DocumentMut, table, value};
+use toml_edit::{DocumentMut, Item, table, value};
+
+use restate_cli_util::{CliContext, c_println};
 
 use crate::{
     build_info,
     cli_env::CliEnv,
-    clients::cloud::{CloudClient, CloudClientInterface},
+    clients::cloud::CloudClient,
+    error::RestateCliError,
+    ui::fmt::{Field, Formatter, IncludeFormatting, Outcome, OutputFormatter},
 };
+
+use super::profile::{Choice, ChosenEnvironment, CurrentEnvironment, choose_environment};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_login")]
-pub struct Login {}
+#[command(after_help = after_help!(
+    examples: [
+        "restate cloud login",
+        "restate cloud login --no-env    # only log in, pick the environment later with `restate cloud env configure`",
+    ],
+    learn_more: "https://docs.restate.dev/cloud",
+))]
+pub struct Login {
+    /// Only log in: don't select a Cloud environment afterwards
+    #[clap(long)]
+    no_env: bool,
+}
 
-pub async fn run_login(State(env): State<CliEnv>, _opts: &Login) -> Result<()> {
-    let config_data = if env.config_file.is_file() {
-        std::fs::read_to_string(env.config_file.as_path())?
-    } else {
-        "".into()
-    };
+pub async fn run_login(State(env): State<CliEnv>, opts: &Login) -> Result<()> {
+    // The device flow needs someone at a browser, so without a terminal (CI, piped
+    // output, `--yes`) fail before touching the config or the network.
+    if !CliContext::get().can_prompt() {
+        return Err(RestateCliError::bad_input(
+            "cannot log in to Restate Cloud in non-interactive mode: logging in needs a browser",
+        )
+        .with_unformatted_next_step("restate cloud login", "log in from a terminal")
+        .into());
+    }
 
-    let mut doc = config_data
-        .parse::<DocumentMut>()
-        .context("Failed to parse config file as TOML")?;
+    let mut doc = load_config_document(&env)?;
 
     let client_id = env.config.cloud.resolve_workos_client_id().await?;
     let access_token = workos_auth_flow(&client_id).await?;
 
     write_access_token(&mut doc, &access_token)?;
+    env.write_config(&doc.to_string())
+        .context("Failed to write to config file")?;
+
+    let mut f = Formatter::new();
+    f.outcome(
+        "login",
+        Field::with_display(
+            "logged_in",
+            format!(
+                "Updated {} with Restate Cloud credentials",
+                env.config_file.display()
+            ),
+        ),
+        Outcome::Success,
+    );
+
+    if opts.no_env {
+        return f.finish();
+    }
 
     let mut env = env;
     env.config.cloud.credentials = Some(super::Credentials { access_token });
+    // The login succeeded whatever happens next: a failure to select an environment is
+    // reported, not an error.
+    if let Err(err) = select_environment(&env, &mut f).await {
+        f.outcome(
+            "result",
+            Field::with_display(
+                "environment_not_selected",
+                format!("Logged in, but couldn't select an environment: {err:#}"),
+            ),
+            Outcome::Failure,
+        );
+        f.next_step(
+            "restate cloud env configure",
+            "pick the environment to use",
+            IncludeFormatting::No,
+        );
+    }
+    f.finish()
+}
 
-    let client = CloudClient::new(&env)?;
-    let accounts = client.list_accounts().await?.into_body().await;
+/// Select the Cloud environment to use: silently when there is one account with one
+/// environment, else by asking. A Cloud environment the CLI already uses is kept when it's
+/// the only one, and offered as a choice otherwise.
+async fn select_environment(env: &CliEnv, f: &mut Formatter) -> Result<()> {
+    let client = CloudClient::new(env)?;
+    let current = env
+        .config
+        .cloud
+        .environment_info
+        .as_ref()
+        .map(|info| CurrentEnvironment {
+            profile: env.environment.as_str().as_str(),
+            environment_id: &info.environment_id,
+        });
+    let chosen = match choose_environment(&client, current.as_ref()).await? {
+        Choice::Environment(chosen) => chosen,
+        Choice::KeepCurrent => {
+            f.outcome(
+                "result",
+                Field::with_display(
+                    "environment_kept",
+                    format!(
+                        "Kept the current environment \"{}\"",
+                        env.environment.as_str()
+                    ),
+                ),
+                Outcome::Success,
+            );
+            f.next_step(
+                "restate whoami",
+                "see the environment the CLI talks to",
+                IncludeFormatting::Yes,
+            );
+            return Ok(());
+        }
+        Choice::NoAccounts => {
+            f.outcome(
+                "result",
+                Field::with_display(
+                    "no_account",
+                    "It looks like you don't have an account yet: log in to the UI at https://cloud.restate.dev to create one",
+                ),
+                Outcome::NothingToDo,
+            );
+            return Ok(());
+        }
+        Choice::NoEnvironments { account_name } => {
+            f.outcome(
+                "result",
+                Field::with_display(
+                    "no_environment",
+                    format!(
+                        "Account {account_name} has no environment yet: create one in the UI at https://cloud.restate.dev"
+                    ),
+                ),
+                Outcome::NothingToDo,
+            );
+            f.next_step(
+                "restate cloud env configure",
+                "select the environment once created",
+                IncludeFormatting::No,
+            );
+            return Ok(());
+        }
+    };
 
-    // write out config
+    let profile = chosen.environment.name.clone();
+    let mut doc = load_config_document(env)?;
+    // `default` and `global` are the config file's shared sections, not environments.
+    let reserved = ["default", "global"]
+        .iter()
+        .any(|name| profile.eq_ignore_ascii_case(name));
+    let taken = doc.get(&profile).is_some_and(|existing| {
+        !is_cloud_environment(existing, &chosen.environment.environment_id)
+    });
+    if reserved || taken {
+        f.outcome(
+            "result",
+            Field::with_display(
+                "environment_name_taken",
+                format!(
+                    "The CLI config file can't have an environment named \"{profile}\": the name is reserved or already used by another environment"
+                ),
+            ),
+            Outcome::NothingToDo,
+        );
+        f.next_step(
+            "restate cloud env configure",
+            "add it under another name",
+            IncludeFormatting::No,
+        );
+        return Ok(());
+    }
+    write_cloud_profile(&mut doc, &profile, &chosen);
     env.write_config(&doc.to_string())
         .context("Failed to write to config file")?;
-    c_success!(
-        "Updated {} with Restate Cloud credentials",
-        env.config_file.display()
+    select_profile(env, &profile)?;
+    f.detail(
+        "environment",
+        &[
+            ("name", Field::new(&profile)),
+            (
+                "environment_id",
+                Field::new(&chosen.environment.environment_id),
+            ),
+            ("region", Field::new(&chosen.environment.region)),
+            ("account", Field::new(&chosen.account_name)),
+            ("account_id", Field::json_only(&chosen.account_id)),
+        ],
     );
-
-    match accounts {
-        Ok(accounts) if accounts.accounts.is_empty() => {
-            c_tip!(
-                "It looks like you don't have an account yet.\nLog in to the UI at https://cloud.restate.dev to create one."
-            )
-        }
-        // ignore error at this point; login was still a success
-        _ => {}
-    }
-
+    f.outcome(
+        "result",
+        Field::with_display(
+            "environment_selected",
+            format!(
+                "Using environment \"{profile}\" ({}, {}) of account {}",
+                chosen.environment.environment_id, chosen.environment.region, chosen.account_name
+            ),
+        ),
+        Outcome::Success,
+    );
+    f.next_step(
+        "restate whoami",
+        "see the environment the CLI now talks to",
+        IncludeFormatting::Yes,
+    );
     Ok(())
 }
 
+/// The config file as a TOML document, empty when there is none yet.
+fn load_config_document(env: &CliEnv) -> Result<DocumentMut> {
+    let config_data = if env.config_file.is_file() {
+        std::fs::read_to_string(env.config_file.as_path())
+            .with_context(|| format!("Failed to read {}", env.config_file.display()))?
+    } else {
+        String::new()
+    };
+    config_data
+        .parse::<DocumentMut>()
+        .with_context(|| format!("Failed to parse {} as TOML", env.config_file.display()))
+}
+
+/// Whether a section of the config file is the Cloud environment `environment_id`.
+fn is_cloud_environment(section: &Item, environment_id: &str) -> bool {
+    section
+        .get("cloud")
+        .and_then(|cloud| cloud.get("environment_id"))
+        .and_then(Item::as_str)
+        == Some(environment_id)
+}
+
+/// Write the section of environment `name` for `chosen`, replacing an existing one.
+fn write_cloud_profile(doc: &mut DocumentMut, name: &str, chosen: &ChosenEnvironment) {
+    doc[name] = table();
+    let profile = &mut doc[name];
+    profile["environment_type"] = value("cloud");
+    profile["ingress_base_url"] = value(&chosen.environment.ingress_base_url);
+    profile["admin_base_url"] = value(&chosen.environment.admin_base_url);
+
+    let cloud = profile["cloud"].or_insert(table());
+    cloud["account_id"] = value(&chosen.account_id);
+    cloud["environment_id"] = value(&chosen.environment.environment_id);
+}
+
+/// Make `name` the current environment, unless it already is.
+fn select_profile(env: &CliEnv, name: &str) -> Result<()> {
+    let current = if env.environment_file.is_file() {
+        std::fs::read_to_string(&env.environment_file)
+            .with_context(|| format!("Failed to read {}", env.environment_file.display()))?
+    } else {
+        String::new()
+    };
+    if current.trim() == name {
+        return Ok(());
+    }
+    env.write_environment(name)
+        .with_context(|| format!("Failed to write {}", env.environment_file.display()))
+}
 fn write_access_token(doc: &mut DocumentMut, access_token: &str) -> Result<()> {
     let cloud = doc["global"].or_insert(table())["cloud"].or_insert(table());
     cloud["access_token"] = value(access_token);
