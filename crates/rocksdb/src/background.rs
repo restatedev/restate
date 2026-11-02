@@ -63,7 +63,7 @@ impl StorageTaskKind {
 /// What a prepared [`StorageOp`] works on, such as the database or a scope.
 ///
 /// A context stays borrowed for as long as it can: while the operation is
-/// prepared, and while it runs on the calling thread with [`StorageOp::call`].
+/// prepared, and while it runs on the calling thread with [`IoOp::call`].
 /// Nothing is cloned for that. Only when the operation becomes a task for a
 /// background thread does [`Self::into_owned`] turn the context into something
 /// the task can own, because a borrow can't move to another thread.
@@ -155,13 +155,13 @@ where
 /// An operation on the database that has been prepared but hasn't run yet,
 /// for example with [`RocksDb::prepare`](crate::RocksDb::prepare).
 ///
-/// Run it on the current thread with [`Self::call`], or submit it to an
+/// Run it on the current thread with [`IoOp::call`], or submit it to an
 /// executor, which runs it on a background thread:
 ///
 /// ```no_run
 /// use std::sync::Arc;
 ///
-/// use restate_core::io::IoExecutor;
+/// use restate_core::io::{IoExecutor, IoOp};
 /// use restate_rocksdb::{RocksDb, StorageTaskKind};
 ///
 /// # async fn example(db: &Arc<RocksDb>) -> Result<(), Box<dyn std::error::Error>> {
@@ -245,6 +245,7 @@ where
     /// [`ReadIterator::prepare`](crate::reads::ReadIterator::prepare) instead.
     ///
     /// ```no_run
+    /// use restate_core::io::IoOp;
     /// use restate_rocksdb::reads::ColumnFamilies;
     /// use restate_rocksdb::{StorageOp, StorageTaskKind};
     /// use restate_util_lifecycle::Scope;
@@ -301,6 +302,7 @@ impl<'a, C: OpContext, F: OpFn<C>> StorageOp<'a, C, F> {
     /// Use `RocksDbWritePerfGuard` instead for write operations.
     ///
     /// ```no_run
+    /// use restate_core::io::IoOp;
     /// use restate_rocksdb::{RocksDb, RocksDbReadPerfGuard, StorageTaskKind};
     /// use std::sync::Arc;
     ///
@@ -337,6 +339,7 @@ impl<'a, C: OpContext, F: OpFn<C>> StorageOp<'a, C, F> {
     /// it calls) can consult the flag to decide whether to inject a failure.
     ///
     /// ```no_run
+    /// use restate_core::io::IoOp;
     /// use restate_rocksdb::{RocksDb, StorageTaskKind};
     /// use std::{cell::Cell, sync::Arc};
     ///
@@ -434,22 +437,6 @@ impl<'a, C: OpContext, F: OpFn<C>> StorageOp<'a, C, F> {
             kind,
         }
     }
-
-    /// Runs the operation now, on the current thread, with its context still
-    /// borrowed. Fails with [`AdmissionClosed`] if the database (or scope) is
-    /// sealed. Unlike background tasks, it records no task metrics or tracing
-    /// span.
-    pub fn call(self) -> Result<F::Output, AdmissionClosed> {
-        let lease = self
-            .gate
-            .map(|gate| gate.try_acquire().ok_or(AdmissionClosed))
-            .transpose()?;
-        // `run` consumes the operation and its context, so both are dropped
-        // before the lease is released.
-        let output = self.op.run(self.context);
-        drop(lease);
-        Ok(output)
-    }
 }
 
 /// The work of an operation returned by [`StorageOp::map`]: the original work,
@@ -542,8 +529,20 @@ where
         self.kind.as_static_str()
     }
 
+    /// Runs the operation now, on the current thread, with its context still
+    /// borrowed. Fails with [`AdmissionClosed`] if the database (or scope) is
+    /// sealed. Unlike background tasks, it records no task metrics or tracing
+    /// span.
     fn call(self) -> Result<F::Output, AdmissionClosed> {
-        StorageOp::call(self)
+        let lease = self
+            .gate
+            .map(|gate| gate.try_acquire().ok_or(AdmissionClosed))
+            .transpose()?;
+        // `run` consumes the operation and its context, so both are dropped
+        // before the lease is released.
+        let output = self.op.run(self.context);
+        drop(lease);
+        Ok(output)
     }
 
     fn into_task(self) -> Result<impl IoTask<F::Output>, AdmissionClosed> {
