@@ -36,7 +36,7 @@ use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::partitions::{CfName, Partition};
 use restate_util_bytecount::ByteCount;
 use restate_util_lifecycle::{KeepAlive, Scope, ScopePayload};
-use restate_util_string::{ReString, ToReString};
+use restate_util_string::ToReString;
 use restate_util_time::DurationExt;
 
 use crate::durable_lsn_tracking::{
@@ -211,17 +211,22 @@ impl PartitionDb {
     }
 
     pub(crate) fn cf_handle_for_key_kind(&self, key_kind: KeyKind) -> &Arc<BoundColumnFamily<'_>> {
-        self.physical().cfs.get(key_kind)
+        self.cf_handles().get(key_kind)
     }
 
-    pub fn cf_names(&self) -> Vec<ReString> {
-        vec![self.partition().cf_name().into_inner()]
+    /// The partition's column families.
+    pub(crate) fn cf_handles(&self) -> &CfHandles<KeyKind> {
+        &self.physical().cfs
     }
 
     pub async fn flush_memtables(&self, wait: bool) -> Result<(), RocksError> {
-        let cf_name = self.partition().cf_name().into();
-        self.run_background_op(StorageTaskKind::FlushMemtables, move |db| {
-            db.flush_memtables(std::slice::from_ref(&cf_name), wait)
+        debug!(
+            "Flushing. db: {}, memtables: {}",
+            self.rocksdb().name(),
+            self.partition().cf_name()
+        );
+        self.run_background_op(StorageTaskKind::FlushMemtables, move |db, cfs| {
+            db.flush_memtables_by_handle(cfs.all(), wait)
         })
         .await?
     }
@@ -240,9 +245,10 @@ impl PartitionDb {
         &self,
         export_dir: std::path::PathBuf,
     ) -> Result<(SnapshotDir, ExportImportFilesMetaData), RocksError> {
-        let name = self.partition().cf_name().into();
-        self.run_background_op(StorageTaskKind::ExportColumnFamily, move |db| {
-            let metadata = db.export_cf(name, export_dir.clone())?;
+        self.run_background_op(StorageTaskKind::ExportColumnFamily, move |db, cfs| {
+            // Every key kind lives in the same column family for now, so this
+            // exports all of the partition's data.
+            let metadata = db.export_cf_by_handle(cfs.get(KeyKind::Fsm), export_dir.clone())?;
             // Take ownership of the files here, on the worker. If the caller went
             // away while the export was running, nobody claims this result, and
             // dropping it deletes the files instead of leaving them behind.
@@ -251,8 +257,9 @@ impl PartitionDb {
         .await?
     }
 
-    /// Runs `op` on the partition's column families on a background thread, at low
-    /// priority. For work that isn't a read, such as flushing or exporting.
+    /// Runs `op` on a background thread, at low priority. `op` gets the database
+    /// and the partition's column families. For work that isn't a read, such as
+    /// flushing or exporting.
     ///
     /// The work isn't part of the partition's session. Closing the partition ends
     /// the session, but this work may keep running afterwards, and it may also
@@ -266,14 +273,12 @@ impl PartitionDb {
     async fn run_background_op<R: Send + 'static>(
         &self,
         kind: StorageTaskKind,
-        op: impl FnOnce(&RocksAccess) -> R + Send + 'static,
+        op: impl FnOnce(&RocksAccess, &CfHandles<KeyKind>) -> R + Send + 'static,
     ) -> Result<R, RocksError> {
         let physical = self.physical_scope().clone();
-        let task = self.rocksdb().prepare(kind, move |db| {
-            let result = op(db.inner());
-            drop(physical);
-            result
-        });
+        let task = self
+            .rocksdb()
+            .prepare(kind, move |db| op(db.inner(), &physical.payload().cfs));
         self.rocksdb()
             .executor()
             .low_pri()
@@ -342,7 +347,6 @@ impl PartitionDb {
 
     pub(crate) async fn update_memory_budget(&self, memory_budget: usize) {
         // impacts only this partition's column-families
-        let cf_names = self.cf_names();
         let physical = self.physical_scope().clone();
 
         // NOTE: Updating rocksdb's options is a blocking operations and may take a few
@@ -350,29 +354,29 @@ impl PartitionDb {
         // on non-blocking threads to avoid stalling the tokio runtime (starving failure
         // detector, etc.).
         let _ = tokio::task::spawn_blocking(move || {
-            let rocksdb = physical.payload().cfs.database();
+            let partition = physical.payload();
+            let rocksdb = partition.cfs.database();
             let opts = &Configuration::pinned().worker.storage;
             let mem_config = PartitionDbMemoryConfig::calculate(memory_budget, opts);
-            for cf in cf_names {
-                let max_bytes_for_level_base_str =
-                    mem_config.max_bytes_for_level_base().to_restring();
-                let write_buffer_size_str = mem_config.write_buffer_size().to_restring();
-                let max_write_buffer_number_str = mem_config.num_write_buffers().to_restring();
-                let target_file_size_base_str = mem_config.target_file_size_base().to_restring();
-                let max_compaction_bytes = mem_config.max_compaction_bytes().to_restring();
-                let level_zero_file_num_compaction_trigger = mem_config
-                    .level_zero_file_num_compaction_trigger()
-                    .to_restring();
+            let max_bytes_for_level_base_str = mem_config.max_bytes_for_level_base().to_restring();
+            let write_buffer_size_str = mem_config.write_buffer_size().to_restring();
+            let max_write_buffer_number_str = mem_config.num_write_buffers().to_restring();
+            let target_file_size_base_str = mem_config.target_file_size_base().to_restring();
+            let max_compaction_bytes = mem_config.max_compaction_bytes().to_restring();
+            let level_zero_file_num_compaction_trigger = mem_config
+                .level_zero_file_num_compaction_trigger()
+                .to_restring();
 
-                debug!(
-                    "Updating memory budget for {}/{} to {}",
-                    rocksdb.name(),
+            debug!(
+                "Updating memory budget for {}/{} to {}",
+                rocksdb.name(),
+                partition.meta.cf_name(),
+                ByteCount::from(memory_budget)
+            );
+
+            for cf in partition.cfs.all() {
+                if let Err(err) = rocksdb.inner().as_raw_db().set_options_cf(
                     cf,
-                    ByteCount::from(memory_budget)
-                );
-
-                if let Err(err) = rocksdb.inner().set_options_cf(
-                    &cf,
                     &[
                         ("write_buffer_size", &write_buffer_size_str),
                         ("target_file_size_base", &target_file_size_base_str),
@@ -386,8 +390,9 @@ impl PartitionDb {
                     ],
                 ) {
                     warn!(
-                        "Failed to update memory budget for {}/{cf}: {err}",
+                        "Failed to update memory budget for {}/{}: {err}",
                         rocksdb.name(),
+                        partition.meta.cf_name(),
                     );
                 }
             }
