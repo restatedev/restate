@@ -12,10 +12,7 @@ use rocksdb::ReadOptions;
 
 use restate_util_lifecycle::Scope;
 
-use super::{
-    ColumnFamilies, OwnedReadIterator, OwnedReader, ReadIterator, ReadSource, Reader,
-    iterator_options, reader_options,
-};
+use super::{ColumnFamilies, OwnedReadIterator, OwnedReader, ReadIterator, ReadSource, Reader};
 
 /// Reads of a scope's latest data, without a snapshot.
 ///
@@ -36,76 +33,52 @@ pub trait ScopedReads: ReadSource {
     /// [`ColumnFamilies::Cf`].
     type Cf: Copy;
 
-    /// A reader for point lookups on one column family. The reader uses `options`
-    /// for all of its lookups, and each lookup sees the latest data.
-    ///
-    /// Don't set a snapshot in `options`. The reader keeps the options, so a
-    /// snapshot released while the reader still exists would leave them pointing
-    /// to freed memory. Use a [`ReadSnapshot`](super::ReadSnapshot) to read
-    /// through a snapshot.
-    ///
-    /// Asynchronous reads are always requested; multi-gets use them when they can.
-    /// RocksDB turns them off by itself when the build or the filesystem doesn't
-    /// support them, so callers don't need to set this.
-    fn reader(&self, cf: Self::Cf, options: ReadOptions) -> Reader<'_>;
+    /// A reader for point lookups on one column family. Each lookup sees the
+    /// latest data. See [`Reader`] for its settings.
+    fn reader(&self, cf: Self::Cf) -> Reader<'_, Self>;
 
     /// Like [`Self::reader`], but the reader holds its own clone of the scope. A
     /// cursor can keep it across pauses, move it between threads, and look up one
-    /// batch after another with it.
-    fn owned_reader(&self, cf: Self::Cf, options: ReadOptions) -> OwnedReader<Self>;
+    /// batch after another with it. The same as calling [`Reader::into_owned`] on
+    /// a borrowed reader.
+    fn owned_reader(&self, cf: Self::Cf) -> OwnedReader<Self>;
 
     /// An iterator over one column family that borrows the scope. It sees the
     /// database as it was when the iterator was created.
     ///
-    /// Don't set a snapshot in `options`, for the same reason as for
-    /// [`Self::reader`]. Tailing is always turned off, so that the iterator keeps
-    /// seeing the database as it was when it was created.
+    /// Don't set a snapshot in `options`. The iterator keeps the options, so a
+    /// snapshot released while the iterator still exists would leave them
+    /// pointing to freed memory. Use a [`ReadSnapshot`](super::ReadSnapshot) to
+    /// read through a snapshot. Tailing is always turned off, so that the
+    /// iterator keeps seeing the database as it was when it was created.
     ///
     /// Asynchronous prefetching is always requested. RocksDB turns it off by
     /// itself when the build or the filesystem doesn't support it, so callers
     /// don't need to set this.
-    fn iterator(&self, cf: Self::Cf, options: ReadOptions) -> ReadIterator<'_>;
+    fn iterator(&self, cf: Self::Cf, options: ReadOptions) -> ReadIterator<'_, Self>;
 
     /// Like [`Self::iterator`], but the iterator holds its own clone of the scope,
-    /// so it can be kept across pauses and moved between threads.
+    /// so it can be kept across pauses and moved between threads. The same as
+    /// calling [`ReadIterator::into_owned`] on a borrowed iterator.
     fn owned_iterator(&self, cf: Self::Cf, options: ReadOptions) -> OwnedReadIterator<Self>;
 }
 
 impl<C: ColumnFamilies> ScopedReads for Scope<C> {
     type Cf = C::Cf;
 
-    fn reader(&self, cf: C::Cf, mut options: ReadOptions) -> Reader<'_> {
-        // TODO: clear any snapshot set in `options`, here and in `iterator`. That
-        // needs a change to `rocksdb::ReadOptions` itself: it can set a snapshot
-        // but has no way to clear one, and it keeps its native options private, so
-        // this code can't reset the snapshot on its own. Until then, the trait
-        // docs tell callers not to set one.
-        reader_options(&mut options);
-        let handles = self.payload().handles();
-        Reader::new(
-            options,
-            handles.database().inner().as_raw_db(),
-            handles.get(cf),
-        )
+    fn reader(&self, cf: C::Cf) -> Reader<'_, Self> {
+        Reader::new(self, cf)
     }
 
-    fn owned_reader(&self, cf: C::Cf, options: ReadOptions) -> OwnedReader<Self> {
-        OwnedReader::retaining(self.clone(), |scope| scope.reader(cf, options))
+    fn owned_reader(&self, cf: C::Cf) -> OwnedReader<Self> {
+        self.reader(cf).into_owned()
     }
 
-    fn iterator(&self, cf: C::Cf, mut options: ReadOptions) -> ReadIterator<'_> {
-        iterator_options(&mut options);
-        let handles = self.payload().handles();
-        ReadIterator::new(
-            handles
-                .database()
-                .inner()
-                .as_raw_db()
-                .raw_iterator_cf_opt(handles.get(cf), options),
-        )
+    fn iterator(&self, cf: C::Cf, options: ReadOptions) -> ReadIterator<'_, Self> {
+        ReadIterator::new(self, cf, options)
     }
 
     fn owned_iterator(&self, cf: C::Cf, options: ReadOptions) -> OwnedReadIterator<Self> {
-        OwnedReadIterator::retaining(self.clone(), |scope| scope.iterator(cf, options))
+        self.iterator(cf, options).into_owned()
     }
 }

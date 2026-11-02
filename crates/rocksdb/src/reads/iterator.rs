@@ -8,65 +8,82 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use rocksdb::DBRawIteratorWithThreadMode;
+use rocksdb::{DBRawIteratorWithThreadMode, ReadOptions};
 
-use super::ReadSource;
+use super::{ReadSource, Source, TOKEN, iterator_options};
 use crate::{RawRocksDb, RocksError};
 
 /// An iterator over one column family, through a snapshot or of the data as it
 /// was when the iterator was created.
 ///
-/// `R` is what the iterator keeps alive: nothing for an iterator that borrows its
-/// snapshot or scope, or a clone of it for an [`OwnedReadIterator`].
+/// `H` is what the iterator reads through: a [`ReadSnapshot`](super::ReadSnapshot)
+/// or a [`Scope`](restate_util_lifecycle::Scope). The iterator either borrows it,
+/// or holds its own clone as an [`OwnedReadIterator`]. [`Self::into_owned`] turns
+/// a borrowed iterator into an owned one.
 ///
 /// The underlying RocksDB iterator is deliberately not exposed:
 /// - Its `refresh` method would silently switch it to the latest data, away from
 ///   its snapshot or the moment it was created.
 /// - Swapping the underlying iterators of two owned iterators would leave each
 ///   one reading from a database that the other one keeps alive.
-pub struct ReadIterator<'a, R = ()> {
-    // Dropped first, while `retained` still keeps the database alive.
+pub struct ReadIterator<'a, H> {
+    // Dropped first, while `source` still keeps the database alive.
     iterator: DBRawIteratorWithThreadMode<'a, RawRocksDb>,
-    retained: R,
+    source: Source<'a, H>,
 }
 
 /// An iterator that holds its own clone of its snapshot or scope, so it can be
 /// kept across pauses and moved between threads.
 pub type OwnedReadIterator<H> = ReadIterator<'static, H>;
 
-impl<'a> ReadIterator<'a> {
-    pub(super) fn new(iterator: DBRawIteratorWithThreadMode<'a, RawRocksDb>) -> Self {
+impl<'a, H: ReadSource> ReadIterator<'a, H> {
+    // An iterator over `source`'s column family `cf`. The source creates the
+    // native iterator itself, so it borrows only from the source, which
+    // `into_owned` relies on.
+    pub(super) fn new(source: &'a H, cf: H::CfKey, mut options: ReadOptions) -> Self {
+        iterator_options(&mut options);
         Self {
-            iterator,
-            retained: (),
+            iterator: source.raw_iterator(TOKEN, cf, options),
+            source: Source::Borrowed(source),
         }
     }
-}
 
-impl<H: ReadSource> OwnedReadIterator<H> {
-    /// Builds an iterator from `source` with `build`, and stores `source` in it.
-    pub(super) fn retaining(source: H, build: impl FnOnce(&H) -> ReadIterator<'_>) -> Self {
-        let iterator = build(&source);
-        // SAFETY: the iterator borrows only from `source`. Every `ReadSource` is a
-        // shared handle, so what the iterator borrows stays where it is when
-        // `source` moves, and lives as long as `source`, which the owned iterator
-        // stores and drops after the native iterator. The fields are private, and
-        // the iterator only gives out data that borrows the iterator itself.
-        let iterator =
-            unsafe { std::mem::transmute::<ReadIterator<'_>, ReadIterator<'static>>(iterator) };
+    // The snapshot or scope this iterator reads through, for tests. Not public:
+    // through it, a caller could read past whatever its owner allows, such as a
+    // partition's scans.
+    #[cfg(test)]
+    pub(super) fn source(&self) -> &H {
+        self.source.get()
+    }
+
+    /// Turns this into an iterator that holds its own clone of its snapshot or
+    /// scope, so it can be kept across pauses and moved between threads. It keeps
+    /// its position, so reading continues where it left off. An iterator that is
+    /// already owned stays as it is.
+    pub fn into_owned(self) -> OwnedReadIterator<H> {
+        let Self { iterator, source } = self;
+        let source = source.into_owned();
+        // SAFETY: the source created the native iterator (see `new`). It borrows
+        // only from what every clone of the source shares: the database, the
+        // column family, and the snapshot, if any, which its options point to. The
+        // native iterator keeps those options itself, so they move with it. The
+        // clone keeps all of that alive, in the same place, and the owned iterator
+        // drops it after the native iterator. The fields are private, and the
+        // iterator only gives out data that borrows the iterator itself.
+        let iterator = unsafe {
+            std::mem::transmute::<
+                DBRawIteratorWithThreadMode<'a, RawRocksDb>,
+                DBRawIteratorWithThreadMode<'static, RawRocksDb>,
+            >(iterator)
+        };
         ReadIterator {
-            iterator: iterator.iterator,
-            retained: source,
+            iterator,
+            source: Source::Owned(source),
         }
-    }
-
-    /// The snapshot or scope this iterator reads through.
-    pub fn source(&self) -> &H {
-        &self.retained
     }
 }
 
-impl<R> ReadIterator<'_, R> {
+impl<H> ReadIterator<'_, H> {
     /// Whether the iterator is positioned on an entry. A valid iterator has no
     /// error, but an invalid iterator may be exhausted or have failed; use
     /// [`Self::status`] to distinguish those cases. Prefer [`Self::item`] when

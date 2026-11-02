@@ -227,11 +227,11 @@ fn reads_see_the_database_as_it_was_when_the_snapshot_was_taken() -> anyhow::Res
 
     // Reads through a clone don't see the later writes, in either column family.
     // A key with an empty value exists, unlike a key that was never written.
-    let reader = clone.reader(Cf::Data, ReadOptions::default());
+    let reader = clone.reader(Cf::Data);
     assert_eq!(reader.get(b"a")?, some("1"));
     assert_eq!(reader.get_pinned(b"b")?.as_deref(), Some(&b""[..]));
     assert_eq!(reader.get(b"d")?, None);
-    let other_reader = snapshot.reader(Cf::Other, ReadOptions::default());
+    let other_reader = snapshot.reader(Cf::Other);
     assert_eq!(other_reader.get(b"a")?, some("other"));
 
     // Multi-get returns results in the same order as the keys: for unsorted keys
@@ -280,9 +280,17 @@ fn reads_see_the_database_as_it_was_when_the_snapshot_was_taken() -> anyhow::Res
     // Owned values keep the database open by themselves. Drop every other handle,
     // including the test's own database and column family handles, and watch for
     // the database to close without keeping it open.
-    let owned_reader = snapshot.owned_reader(Cf::Data, ReadOptions::default());
-    let first = owned_reader.owned_multi_get_pinned([b"a", b"d"], true)?;
-    let second = owned_reader.owned_multi_get_pinned([b"c"], false)?;
+    let owned_reader = snapshot.owned_reader(Cf::Data);
+    let first = owned_reader
+        .multi_get_pinned([b"a", b"d"], true)?
+        .into_owned();
+    let second = owned_reader.multi_get_pinned([b"c"], false)?.into_owned();
+    // A borrowed iterator and reader become owned with `into_owned`. The iterator
+    // keeps its position.
+    let mut resumed = clone.iterator(Cf::Data, ReadOptions::default());
+    resumed.seek(b"b");
+    let mut resumed = resumed.into_owned();
+    let promoted = clone.reader(Cf::Other).into_owned();
     let mut closed = pin!(db.closed());
     drop(unsorted);
     drop(sorted);
@@ -302,15 +310,25 @@ fn reads_see_the_database_as_it_was_when_the_snapshot_was_taken() -> anyhow::Res
     let read = std::thread::spawn(move || -> Result<_, RocksError> {
         let value = owned_reader.get(b"a")?;
         drop(owned_reader);
+        // Continues from `b`, where it was before it became owned.
+        let mut rest = Vec::new();
+        while let Some((key, value)) = resumed.item()? {
+            rest.push((key.to_vec(), value.to_vec()));
+            resumed.next();
+        }
         Ok((
             value,
             values(&first)?,
             values(&second)?,
             entries(&mut owned)?,
+            rest,
+            promoted.get(b"a")?,
         ))
     });
-    let (value, first, second, owned_entries) = read.join().unwrap()?;
+    let (value, first, second, owned_entries, rest, promoted) = read.join().unwrap()?;
     assert_eq!(value, some("1"));
+    assert_eq!(rest, [kv("b", ""), kv("c", "3")]);
+    assert_eq!(promoted, some("other"));
     assert_eq!(first, [some("1"), None]);
     assert_eq!(second, [some("3")]);
     assert_eq!(owned_entries, captured);
@@ -349,7 +367,7 @@ fn latest_reads_see_new_writes_and_keep_the_database_open_without_a_lease() -> a
     scope.gate().seal();
 
     // Point lookups and multi-gets see the latest data.
-    let reader = scope.reader(Cf::Data, ReadOptions::default());
+    let reader = scope.reader(Cf::Data);
     assert_eq!(reader.get(b"a")?, some("1"));
     raw.put_cf(&data, b"a", b"changed")?;
     assert_eq!(reader.get(b"a")?, some("changed"));
@@ -383,8 +401,8 @@ fn latest_reads_see_new_writes_and_keep_the_database_open_without_a_lease() -> a
 
     // Owned values keep the database open by themselves. Drop every other handle,
     // including the test's own, and use them on another thread.
-    let owned_reader = scope.owned_reader(Cf::Data, ReadOptions::default());
-    let owned_batch = owned_reader.owned_multi_get_pinned([b"b"], false)?;
+    let owned_reader = scope.owned_reader(Cf::Data);
+    let owned_batch = owned_reader.multi_get_pinned([b"b"], false)?.into_owned();
     let mut closed = pin!(db.closed());
     drop(fresh);
     drop(batch);
@@ -442,9 +460,9 @@ fn read_errors_are_reported_per_key_and_by_iterators() -> anyhow::Result<()> {
     // value size limit of 0, RocksDB reads the first key and aborts the rest.
     // Both keys are still in memory (not flushed), so RocksDB reads them in key
     // order and we know which one is aborted.
-    let mut limited = ReadOptions::default();
-    limited.set_value_size_soft_limit(0);
-    let reader = snapshot.reader(Cf::Data, limited);
+    let reader = snapshot
+        .reader(Cf::Data)
+        .with_options(|options| options.set_value_size_soft_limit(0));
     let batch = reader.multi_get_pinned([b"memtable-1", b"memtable-2"], true)?;
     assert_eq!(batch.len(), 2);
     assert_eq!(batch.get(0)?, Some(&b"1"[..]));
@@ -455,10 +473,15 @@ fn read_errors_are_reported_per_key_and_by_iterators() -> anyhow::Result<()> {
     );
     assert!(catch_unwind(AssertUnwindSafe(|| batch.get(2))).is_err());
 
-    // A read restricted to the cache can't find the flushed key, because there
+    // A reader restricted to the cache can't find the flushed key, because there
     // is no block cache.
-    let reader = snapshot.reader(Cf::Data, cache_only());
+    let reader = snapshot
+        .reader(Cf::Data)
+        .with_read_tier(ReadTier::BlockCache);
     let flushed = reader.get(b"flushed");
+    assert!(is_error(&flushed, ErrorKind::Incomplete), "{flushed:?}");
+    // An owned reader keeps its settings.
+    let flushed = reader.into_owned().get(b"flushed");
     assert!(is_error(&flushed, ErrorKind::Incomplete), "{flushed:?}");
 
     // An iterator that hits the same problem returns the error, rather than
