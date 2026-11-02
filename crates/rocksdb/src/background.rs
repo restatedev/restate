@@ -259,7 +259,7 @@ where
             },
             (InFlight(gauge), lease),
         );
-        Ok(move || task.run())
+        Ok(task)
     }
 
     fn call(self) -> Result<Self::Output, AdmissionClosed> {
@@ -310,7 +310,11 @@ impl IoExecutor for SinglePoolExecutor {
     fn dispatch_fn(&self, task: impl IoTask<()>) -> Result<(), AdmissionClosed> {
         let span = tracing::Span::current();
         self.0.pool.execute(move || {
-            span.in_scope(task);
+            span.in_scope(|| {
+                if task.is_wanted() {
+                    task.run();
+                }
+            });
         });
         Ok(())
     }
@@ -481,7 +485,7 @@ mod tests {
         assert!(gate.is_idle());
         let task = task.into_task().unwrap();
         assert_eq!(drops.load(Ordering::Relaxed), 1);
-        assert_eq!(std::thread::spawn(task).join().unwrap(), 43);
+        assert_eq!(std::thread::spawn(move || task.run()).join().unwrap(), 43);
         assert_eq!(drops.load(Ordering::Relaxed), 2);
         assert!(gate.is_idle());
 

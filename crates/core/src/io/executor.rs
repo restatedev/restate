@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::future::Future;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use tokio::sync::oneshot;
@@ -23,12 +24,28 @@ use super::{Gate, OwnedLease};
 #[error("I/O admission is closed")]
 pub struct AdmissionClosed;
 
-/// A blocking closure that can move to an executor thread.
+/// Blocking work that can move to an executor thread.
 ///
-/// Whatever it captures stays alive until the closure has run or been dropped.
-pub trait IoTask<O>: FnOnce() -> O + Send + 'static {}
+/// Whatever it captures stays alive until it has run or been dropped. Any
+/// closure is a task that is always wanted.
+pub trait IoTask<O>: Send + 'static {
+    /// Whether the task should still run. An executor asks right before it
+    /// starts the task, and drops the task without running it if the answer is
+    /// no. For example, the task that [`IoExecutor::spawn_fn`] submits is no
+    /// longer wanted once its caller has dropped the result future.
+    fn is_wanted(&self) -> bool {
+        true
+    }
 
-impl<O, T: FnOnce() -> O + Send + 'static + ?Sized> IoTask<O> for T {}
+    /// Runs the task.
+    fn run(self) -> O;
+}
+
+impl<O, F: FnOnce() -> O + Send + 'static> IoTask<O> for F {
+    fn run(self) -> O {
+        self()
+    }
+}
 
 /// A blocking operation that can either run inline on the current thread, or be
 /// turned into an [`IoTask`] for background execution.
@@ -55,14 +72,13 @@ impl<O, T: FnOnce() -> O + Send + 'static + ?Sized> IoTask<O> for T {}
 ///         let db = Arc::clone(self.db); // borrowed -> owned
 ///         let in_flight = InFlightGauge::increment(); // decrements on drop
 ///         let queued_at = Instant::now();
-///         let task = TrackedTask::new(
+///         Ok(TrackedTask::new(
 ///             move || {
 ///                 record_queue_wait(queued_at.elapsed()); // only if it actually runs
 ///                 db.flush()
 ///             },
 ///             (in_flight, lease),
-///         );
-///         Ok(move || task.run())
+///         ))
 ///     }
 /// }
 /// ```
@@ -167,8 +183,12 @@ pub trait IoExecutor {
     /// Submits a fire-and-forget task.
     ///
     /// `Ok(())` means the task was accepted and will run exactly once, regardless
-    /// of what happens to the caller. On rejection, the task is dropped without
-    /// running.
+    /// of what happens to the caller, unless it is no longer wanted when it's
+    /// about to start. On rejection, the task is dropped without running.
+    ///
+    /// Implementations must ask [`IoTask::is_wanted`] right before starting the
+    /// task, and drop it without running it if the answer is no. That is how
+    /// [`Self::spawn_fn`] skips work whose caller has gone away.
     ///
     /// Implementations with their own admission, like [`TrackedExecutor`], must
     /// synchronize acceptance with sealing and count an accepted task before
@@ -204,13 +224,10 @@ pub trait IoExecutor {
     ) -> Result<impl Future<Output = Result<O, IoTaskError>> + Send + 'static, AdmissionClosed>
     {
         let (tx, rx) = oneshot::channel();
-        self.dispatch_fn(move || {
-            if tx.is_closed() {
-                drop(task);
-                return;
-            }
-            let result = task();
-            let _ = tx.send(result);
+        self.dispatch_fn(SendResult {
+            task,
+            tx,
+            skip_if_abandoned: true,
         })?;
         Ok(async move { rx.await.map_err(|_| IoTaskError) })
     }
@@ -249,11 +266,11 @@ pub trait IoExecutor {
     where
         O: IoOp,
     {
-        let task = op.into_task()?;
         let (tx, rx) = oneshot::channel();
-        self.dispatch_fn(move || {
-            let result = task();
-            let _ = tx.send(result);
+        self.dispatch_fn(SendResult {
+            task: op.into_task()?,
+            tx,
+            skip_if_abandoned: false,
         })?;
         Ok(async move { rx.await.map_err(|_| IoTaskError) })
     }
@@ -267,8 +284,45 @@ pub trait IoExecutor {
     where
         O: IoOp,
     {
-        let task = op.into_task()?;
-        self.dispatch_fn(move || drop(task()))
+        self.dispatch_fn(DiscardResult {
+            task: op.into_task()?,
+            output: PhantomData,
+        })
+    }
+}
+
+// Sends the result of `task` to the future that `spawn_fn` or `spawn_detached`
+// returned.
+struct SendResult<T, O> {
+    task: T,
+    tx: oneshot::Sender<O>,
+    // Whether the task is no longer wanted once the caller drops the future.
+    skip_if_abandoned: bool,
+}
+
+impl<T: IoTask<O>, O: Send + 'static> IoTask<()> for SendResult<T, O> {
+    fn is_wanted(&self) -> bool {
+        !(self.skip_if_abandoned && self.tx.is_closed()) && self.task.is_wanted()
+    }
+
+    fn run(self) {
+        let _ = self.tx.send(self.task.run());
+    }
+}
+
+// Runs `task` for `dispatch`, and drops its result on the executor thread.
+struct DiscardResult<T, O> {
+    task: T,
+    output: PhantomData<fn() -> O>,
+}
+
+impl<T: IoTask<O>, O: 'static> IoTask<()> for DiscardResult<T, O> {
+    fn is_wanted(&self) -> bool {
+        self.task.is_wanted()
+    }
+
+    fn run(self) {
+        drop(self.task.run());
     }
 }
 
@@ -312,8 +366,8 @@ impl<E: IoExecutor> IoExecutor for TrackedExecutor<'_, E> {
 
     fn dispatch_fn(&self, task: impl IoTask<()>) -> Result<(), AdmissionClosed> {
         let submission = self.gate.try_acquire().ok_or(AdmissionClosed)?;
-        let task = TrackedTask::new(task, submission.into_owned());
-        self.executor.dispatch_fn(move || task.run())
+        self.executor
+            .dispatch_fn(TrackedTask::new(task, submission.into_owned()))
     }
 }
 
@@ -327,6 +381,9 @@ impl<E: IoExecutor> IoExecutor for TrackedExecutor<'_, E> {
 /// `L` is usually an [`OwnedLease`], but any guard works, e.g. a tuple like
 /// `(in_flight_gauge, lease)`, or an `Option<OwnedLease>` when accounting is
 /// optional.
+///
+/// With an owned guard, a tracked task is itself an [`IoTask`], and is wanted
+/// as long as the task inside is.
 pub struct TrackedTask<T, L = OwnedLease> {
     // Fields drop in declaration order, so `task` must come first.
     task: T,
@@ -343,12 +400,25 @@ impl<T, L> TrackedTask<T, L> {
 
     /// Runs the task, then releases the lease. The returned value outlives the
     /// lease, so a resource-bearing result needs its own.
+    ///
+    /// Unlike [`IoTask::run`], this also works with a borrowed lease, for work
+    /// that runs on the current thread.
     pub fn run<R>(self) -> R
     where
-        T: FnOnce() -> R,
+        T: IoTask<R>,
     {
         let Self { task, _execution } = self;
-        task()
+        task.run()
+    }
+}
+
+impl<R, T: IoTask<R>, L: Send + 'static> IoTask<R> for TrackedTask<T, L> {
+    fn is_wanted(&self) -> bool {
+        self.task.is_wanted()
+    }
+
+    fn run(self) -> R {
+        TrackedTask::run(self)
     }
 }
 
@@ -371,7 +441,14 @@ mod tests {
         }
 
         fn dispatch_fn(&self, task: impl IoTask<()>) -> Result<(), AdmissionClosed> {
-            self.0.send(Box::new(task)).map_err(|_| AdmissionClosed)
+            // Asks whether the task is wanted when the test runs it, like a worker
+            // about to start it.
+            let run = move || {
+                if task.is_wanted() {
+                    task.run();
+                }
+            };
+            self.0.send(Box::new(run)).map_err(|_| AdmissionClosed)
         }
     }
 
@@ -459,7 +536,9 @@ mod tests {
             fn dispatch_fn(&self, task: impl IoTask<()>) -> Result<(), AdmissionClosed> {
                 self.0.seal();
                 assert!(!self.0.is_idle(), "accepted task is counted before handoff");
-                task();
+                if task.is_wanted() {
+                    task.run();
+                }
                 Ok(())
             }
         }
@@ -488,13 +567,25 @@ mod tests {
         let backend = QueuedExecutor(tx);
         let executor = TrackedExecutor::new(&backend, &gate);
         let resource = CapturedResource(gate.clone());
-        let observer = executor.spawn_fn(move || drop(resource)).unwrap();
+        let ran = Arc::new(AtomicUsize::new(0));
+        let task_ran = ran.clone();
+        let observer = executor
+            .spawn_fn(move || {
+                drop(resource);
+                task_ran.fetch_add(1, Ordering::Relaxed);
+            })
+            .unwrap();
         drop(observer);
         assert!(
             !gate.is_idle(),
             "observer cancellation does not complete work"
         );
         rx.try_recv().unwrap()();
+        assert_eq!(
+            ran.load(Ordering::Relaxed),
+            0,
+            "the lease wrapper keeps the task skippable"
+        );
         gate.wait_idle().await;
         // `wait_idle` doesn't seal: new leases can still be acquired.
         let retained = gate.try_acquire().unwrap().into_owned();
