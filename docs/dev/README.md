@@ -16,4 +16,6 @@ This directory contains documentation relevant for Restate developers.
 
 [release-testing.md](release-testing.md) contains the release testing checklist and process for testing before a major/minor release.
 
+[hotfix.md](hotfix.md) explains how to release a hotfix of a released version.
+
 [bilrost-migration-guidelines](bilrost-migration-guidelines.md) guidelines on how to create bilrost messages and how to migrate current serde messages to bilrost without breaking compatibility
