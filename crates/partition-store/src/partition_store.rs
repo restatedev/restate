@@ -501,18 +501,13 @@ impl PartitionStore {
         priority: Priority,
         mut opts: ReadOptions,
         scan: PhysicalScan<Bytes>,
-        mut on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
+        on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
     ) -> Result<(), AdmissionClosed> {
-        let partition = self.db.clone();
-        let on_iter = move |item: Result<(&[u8], &[u8]), RocksError>| {
-            let _pin = &partition;
-            on_iter(item)
-        };
         scan.configure(&mut opts);
         self.db.rocksdb().clone().run_background_iterator(
+            self.db.physical_scope(),
             self.db.gate(),
-            // todo(asoli): Pass an owned cf handle instead of name
-            self.db.partition().cf_name().into(),
+            scan.key_kind(),
             name,
             priority,
             IterAction::Seek(scan.into_start()),
