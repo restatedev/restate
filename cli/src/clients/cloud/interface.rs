@@ -79,6 +79,7 @@ pub mod types {
     #[serde(rename_all = "camelCase")]
     pub struct DescribeEnvironmentResponse {
         pub environment_id: String,
+        pub region: String,
         pub name: String,
         pub ingress_base_url: String,
         pub admin_base_url: String,

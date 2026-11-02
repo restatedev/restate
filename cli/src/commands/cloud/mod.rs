@@ -11,6 +11,7 @@
 mod config_discovery;
 mod environments;
 mod login;
+mod profile;
 
 use base64::Engine;
 use cling::prelude::*;

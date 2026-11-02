@@ -8,11 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::{future::Future, str::FromStr};
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use cling::prelude::*;
-use indicatif::ProgressBar;
 use itertools::Itertools;
 use toml_edit::{DocumentMut, table, value};
 
@@ -20,15 +19,12 @@ use restate_cli_util::{CliContext, c_error, c_success};
 
 use crate::{
     cli_env::CliEnv,
-    clients::cloud::{
-        CloudClient, CloudClientInterface,
-        types::{
-            DescribeEnvironmentResponse, ListAccountsResponseAccountsItem,
-            ListEnvironmentsResponseEnvironmentsItem,
-        },
-    },
-    console::{choose, confirm_or_exit, input},
+    clients::cloud::{CloudClient, CloudClientInterface, types::DescribeEnvironmentResponse},
+    console::{confirm_or_exit, input},
+    ui::with_progress,
 };
+
+use super::super::profile::{account_picker, environment_picker};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_configure")]
@@ -187,36 +183,6 @@ pub async fn run_configure(State(env): State<CliEnv>, opts: &Configure) -> Resul
     );
 
     Ok(())
-}
-
-async fn with_progress<T>(msg: &'static str, f: impl Future<Output = T>) -> T {
-    let progress = ProgressBar::new_spinner();
-    progress
-        .set_style(indicatif::ProgressStyle::with_template("{spinner} [{elapsed}] {msg}").unwrap());
-    progress.enable_steady_tick(std::time::Duration::from_millis(120));
-
-    progress.set_message(msg);
-    let result = f.await;
-    progress.reset();
-    result
-}
-
-fn account_picker(accounts: &[ListAccountsResponseAccountsItem]) -> Result<usize> {
-    choose(
-        "Select an Account:",
-        accounts.iter().map(|acc| &acc.name).collect_vec().as_ref(),
-    )
-}
-
-fn environment_picker(environments: &[ListEnvironmentsResponseEnvironmentsItem]) -> Result<usize> {
-    choose(
-        "Select an Environment:",
-        environments
-            .iter()
-            .map(|env| &env.name)
-            .collect_vec()
-            .as_ref(),
-    )
 }
 
 fn list_profiles(doc: &DocumentMut) -> Result<Vec<String>> {
