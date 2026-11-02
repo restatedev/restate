@@ -219,16 +219,14 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
 
     let (started, reached) = oneshot::channel();
     let (resume, paused) = mpsc::channel::<()>();
-    let mut read = Box::pin(db.run_background_read_op(
-        "database-drain",
-        StorageTaskKind::MultiGet,
-        Priority::High,
-        move |_| {
-            let _ = started.send(());
-            let _ = paused.recv();
-        },
-    ));
-    assert_pending(read.as_mut());
+    // Submitting is eager: the read starts without polling the result.
+    let read =
+        db.executor()
+            .high_pri()
+            .spawn(db.prepare(StorageTaskKind::MultiGet, move |_| {
+                let _ = started.send(());
+                let _ = paused.recv();
+            }))?;
     timeout(DEADLINE, reached).await??;
     drop(read);
     let mut drained = Box::pin(db.drain());

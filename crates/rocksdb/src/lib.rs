@@ -751,58 +751,6 @@ impl RocksDb {
         )
     }
 
-    /// Runs a blocking read operation on the storage background thread-pool and
-    /// awaits its result.
-    ///
-    /// Unlike [`Self::run_background_iterator`], this is for bounded operations
-    /// that run to completion and produce a single value, rather than streaming
-    /// rows. The op receives the raw RocksDB handle and must not let borrowed
-    /// database values escape its own scope.
-    pub async fn run_background_read_op<OP, R>(
-        self: &Arc<Self>,
-        name: &'static str,
-        kind: StorageTaskKind,
-        priority: Priority,
-        op: OP,
-    ) -> Result<R, RocksError>
-    where
-        OP: FnOnce(&RawRocksDb) -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        self.run_background_read_op_in(&self.gate, name, kind, priority, op)
-            .await
-    }
-
-    /// Like [`Self::run_background_read_op`], but the operation counts in `gate`,
-    /// which must be inside this database (see [`Self::gate`]). Sealing and
-    /// draining that gate then covers the operation.
-    ///
-    /// # Panics
-    /// In debug builds, panics if `gate` is outside this database.
-    #[tracing::instrument(skip_all, fields(db = %self.name()))]
-    pub async fn run_background_read_op_in<OP, R>(
-        self: &Arc<Self>,
-        gate: &Arc<Gate>,
-        name: &'static str,
-        kind: StorageTaskKind,
-        priority: Priority,
-        op: OP,
-    ) -> Result<R, RocksError>
-    where
-        OP: FnOnce(&RawRocksDb) -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        let op = self.prepare_in(gate, kind, move |db| {
-            let _x = RocksDbReadPerfGuard::new(name);
-            op(db.db.as_raw_db())
-        });
-        self.executor
-            .pool(priority)
-            .spawn(op)?
-            .await
-            .map_err(|_| ShutdownError.into())
-    }
-
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
     pub async fn flush_wal(self: &Arc<Self>, sync: bool) -> Result<(), RocksError> {
         let op = self.prepare(StorageTaskKind::FlushWal, move |db| db.db.flush_wal(sync));
