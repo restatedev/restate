@@ -19,7 +19,7 @@ use parking_lot::Mutex;
 use restate_core::io::{AdmissionClosed, Gate, IoExecutor, IoOp, IoTask, TrackedTask};
 
 use crate::metric_definitions::{STORAGE_BG_TASK_RUN_DURATION, STORAGE_BG_TASK_WAIT_DURATION};
-use crate::{OP_TYPE, STORAGE_BG_TASK_IN_FLIGHT};
+use crate::{EXECUTOR, OP_TYPE, STORAGE_BG_TASK_IN_FLIGHT};
 
 /// Which of [`GlobalExecutor`]'s pools runs a piece of work. `High` is for
 /// latency-sensitive work.
@@ -50,6 +50,7 @@ pub enum StorageTaskKind {
     Compaction,
     Shutdown,
     OpenDb,
+    CloseDb,
     BackgroundIterator,
     MultiGet,
 }
@@ -203,17 +204,6 @@ pub struct ReadyStorageTask<'a, OP> {
     gate: Option<&'a Arc<Gate>>,
     /// required
     kind: StorageTaskKind,
-    #[builder(setter(skip))]
-    #[builder(default = "Instant::now()")]
-    created_at: Instant,
-}
-
-struct InFlight(Gauge);
-
-impl Drop for InFlight {
-    fn drop(&mut self) {
-        self.0.decrement(1);
-    }
 }
 
 impl<OP, R> IoOp for ReadyStorageTask<'_, OP>
@@ -222,6 +212,10 @@ where
     R: Send + 'static,
 {
     type Output = R;
+
+    fn operation(&self) -> &'static str {
+        self.kind.as_static_str()
+    }
 
     fn into_task(self) -> Result<impl IoTask<Self::Output>, AdmissionClosed> {
         let lease = self
@@ -232,33 +226,9 @@ where
                     .ok_or(AdmissionClosed)
             })
             .transpose()?;
-        let gauge = gauge!(STORAGE_BG_TASK_IN_FLIGHT,
-         OP_TYPE => self.kind.as_static_str(),
-        );
-        gauge.increment(1);
-        // Bundle the operation with the in-flight gauge and the lease, so what it
-        // captured is dropped before the gauge goes down and the lease is released,
+        // The lease is released after what the operation captured is dropped,
         // even if the task is dropped without running.
-        let Self {
-            op,
-            kind,
-            created_at,
-            ..
-        } = self;
-        let task = TrackedTask::new(
-            move || {
-                // Runs inside the caller's span, which the executor carries over.
-                let _span =
-                    tracing::debug_span!("storage-task", kind = kind.as_static_str()).entered();
-                let start = Instant::now();
-                let labels = [(OP_TYPE, kind.as_static_str())];
-                histogram!(STORAGE_BG_TASK_WAIT_DURATION, &labels).record(created_at.elapsed());
-                let res = op();
-                histogram!(STORAGE_BG_TASK_RUN_DURATION, &labels).record(start.elapsed());
-                res
-            },
-            (InFlight(gauge), lease),
-        );
+        let task = TrackedTask::new(self.op, lease);
         Ok(move || task.run())
     }
 
@@ -271,25 +241,33 @@ where
     }
 }
 
-/// A single thread pool with its own threads, for work that must not wait behind
-/// regular storage I/O. For example, the manager's `rs:io-lifecycle` pool opens
-/// and closes databases. Clones share the same threads.
+/// A thread pool for storage work. For example, the manager's `rs:io-lifecycle`
+/// pool opens and closes databases, and [`GlobalExecutor`] is made of two of
+/// them. Clones share the same threads.
+///
+/// It measures every task it runs: how many are submitted but not finished, how
+/// long each waited from submission until it started, and how long it ran. The
+/// metrics are labeled with the pool's name and the task's operation.
 #[derive(Clone)]
 pub struct SinglePoolExecutor(Arc<SinglePoolExecutorInner>);
 
 struct SinglePoolExecutorInner {
+    name: &'static str,
     pool: threadpool::ThreadPool,
     barrier_submission: Mutex<()>,
 }
 
 impl SinglePoolExecutor {
-    pub fn new(name: String, num_threads: usize) -> Self {
+    /// Starts a pool of `num_threads` threads. `name` names the threads, and
+    /// labels the metrics of the tasks that run on them.
+    pub fn new(name: &'static str, num_threads: usize) -> Self {
         let pool = threadpool::Builder::new()
-            .thread_name(name)
+            .thread_name(name.to_owned())
             .num_threads(num_threads)
             .build();
 
         Self(Arc::new(SinglePoolExecutorInner {
+            name,
             pool,
             barrier_submission: Mutex::new(()),
         }))
@@ -307,12 +285,50 @@ impl IoExecutor for SinglePoolExecutor {
         pool_barrier(&self.0.pool, callback);
     }
 
-    fn dispatch_fn(&self, task: impl IoTask<()>) -> Result<(), AdmissionClosed> {
+    fn dispatch_fn(
+        &self,
+        operation: &'static str,
+        task: impl IoTask<()>,
+    ) -> Result<(), AdmissionClosed> {
+        let labels = [(EXECUTOR, self.0.name), (OP_TYPE, operation)];
+        let in_flight = InFlight::new(gauge!(STORAGE_BG_TASK_IN_FLIGHT, &labels));
+        let submitted_at = Instant::now();
+        // The gauge goes down after what the task captured is dropped, whether the
+        // task runs or is dropped from the queue.
+        let task = TrackedTask::new(
+            move || {
+                histogram!(STORAGE_BG_TASK_WAIT_DURATION, &labels).record(submitted_at.elapsed());
+                let started_at = Instant::now();
+                task();
+                histogram!(STORAGE_BG_TASK_RUN_DURATION, &labels).record(started_at.elapsed());
+            },
+            in_flight,
+        );
+        // Run inside the submitter's span, which tells where the work came from.
         let span = tracing::Span::current();
         self.0.pool.execute(move || {
-            span.in_scope(task);
+            span.in_scope(|| {
+                let _span = tracing::debug_span!("storage-task", operation).entered();
+                task.run();
+            });
         });
         Ok(())
+    }
+}
+
+// Counts a task as in flight from creation until it is dropped.
+struct InFlight(Gauge);
+
+impl InFlight {
+    fn new(gauge: Gauge) -> Self {
+        gauge.increment(1);
+        Self(gauge)
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.decrement(1);
     }
 }
 
@@ -333,14 +349,8 @@ impl GlobalExecutor {
     /// Creates the two pools with the configured numbers of threads.
     pub fn from_options(opts: &restate_types::config::CommonOptions) -> Self {
         Self::new(
-            SinglePoolExecutor::new(
-                "rs:io-hi".to_owned(),
-                opts.storage_high_priority_bg_threads().into(),
-            ),
-            SinglePoolExecutor::new(
-                "rs:io-lo".to_owned(),
-                opts.storage_low_priority_bg_threads().into(),
-            ),
+            SinglePoolExecutor::new("rs:io-hi", opts.storage_high_priority_bg_threads().into()),
+            SinglePoolExecutor::new("rs:io-lo", opts.storage_low_priority_bg_threads().into()),
         )
     }
 
@@ -517,8 +527,8 @@ mod tests {
     #[tokio::test]
     async fn global_executor_routes_work_to_its_pools_and_outlives_owner_admission() {
         let backend = GlobalExecutor::new(
-            SinglePoolExecutor::new("test-high".to_owned(), 1),
-            SinglePoolExecutor::new("test-low".to_owned(), 1),
+            SinglePoolExecutor::new("test-high", 1),
+            SinglePoolExecutor::new("test-low", 1),
         );
         let gate = Arc::new(Gate::default());
         let high_pri = TrackedExecutor::new(backend.high_pri(), &gate);
@@ -533,7 +543,7 @@ mod tests {
             )
             .unwrap();
         let low = low_pri
-            .spawn_fn(|| std::thread::current().name().unwrap().to_owned())
+            .spawn_fn("test", || std::thread::current().name().unwrap().to_owned())
             .unwrap();
         gate.seal();
 
@@ -542,14 +552,19 @@ mod tests {
         for executor in [&high_pri, &low_pri] {
             assert!(
                 executor
-                    .dispatch_fn(|| panic!("rejected task must not run"))
+                    .dispatch_fn("test", || panic!("rejected task must not run"))
                     .is_err()
             );
         }
         gate.drain().await;
         observe_global_barrier(&backend).await.unwrap();
         assert_eq!(
-            backend.low_pri().spawn_fn(|| 42).unwrap().await.unwrap(),
+            backend
+                .low_pri()
+                .spawn_fn("test", || 42)
+                .unwrap()
+                .await
+                .unwrap(),
             42
         );
     }
@@ -560,8 +575,8 @@ mod tests {
         use std::time::Duration;
 
         let backend = GlobalExecutor::new(
-            SinglePoolExecutor::new("test-high".to_owned(), 2),
-            SinglePoolExecutor::new("test-low".to_owned(), 2),
+            SinglePoolExecutor::new("test-high", 2),
+            SinglePoolExecutor::new("test-low", 2),
         );
         let mut releases = Vec::new();
         for priority in [Priority::High, Priority::Low] {
@@ -569,7 +584,7 @@ mod tests {
             let (started, reached) = oneshot::channel();
             backend
                 .pool(priority)
-                .dispatch_fn(move || {
+                .dispatch_fn("test", move || {
                     let _ = started.send(());
                     let _ = wait.recv();
                 })
@@ -626,11 +641,11 @@ mod tests {
         use std::task::{Context, Poll, Waker};
         use std::time::Duration;
 
-        let executor = SinglePoolExecutor::new("barrier-test".to_owned(), 3);
+        let executor = SinglePoolExecutor::new("barrier-test", 3);
         let (started, reached) = oneshot::channel();
         let (resume, paused) = mpsc::channel::<()>();
         executor
-            .dispatch_fn(move || {
+            .dispatch_fn("test", move || {
                 started.send(()).unwrap();
                 let _ = paused.recv();
             })
@@ -671,7 +686,7 @@ mod tests {
             for barrier in barriers {
                 barrier.await.unwrap();
             }
-            assert_eq!(executor.spawn_fn(|| 42).unwrap().await.unwrap(), 42);
+            assert_eq!(executor.spawn_fn("test", || 42).unwrap().await.unwrap(), 42);
         })
         .await
         .unwrap();

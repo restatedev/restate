@@ -143,10 +143,8 @@ impl RocksDbManager {
         // doesn't wait behind regular I/O or block Tokio, and one slow database doesn't
         // hold up the others. The pool is never shut down, so databases dropped after
         // shutdown can still be closed.
-        let lifecycle_executor = SinglePoolExecutor::new(
-            "rs:io-lifecycle".to_owned(),
-            opts.storage_lifecycle_threads().get(),
-        );
+        let lifecycle_executor =
+            SinglePoolExecutor::new("rs:io-lifecycle", opts.storage_lifecycle_threads().get());
 
         let manager = RocksDbManager(Arc::new(ManagerInner {
             db_env,
@@ -474,7 +472,7 @@ impl RocksDbManager {
             let (resume, paused) = std::sync::mpsc::channel();
             let (started, reached) = tokio::sync::oneshot::channel();
             resumes.push(resume);
-            pool.dispatch_fn(move || {
+            pool.dispatch_fn("pause", move || {
                 let _ = started.send(());
                 let _ = paused.recv();
             })
@@ -493,7 +491,7 @@ impl RocksDbManager {
             let (resume, paused) = std::sync::mpsc::channel();
             let (started, reached) = tokio::sync::oneshot::channel();
             resumes.push(resume);
-            pool.dispatch_fn(move || {
+            pool.dispatch_fn("pause", move || {
                 let _ = started.send(());
                 let _ = paused.recv();
             })
@@ -591,7 +589,9 @@ impl RocksDbManager {
         let cleanup = CloseGuard::new(cleanup, active);
         self.0
             .lifecycle_executor
-            .dispatch_fn(move || drop(cleanup))
+            .dispatch_fn(StorageTaskKind::CloseDb.as_static_str(), move || {
+                drop(cleanup)
+            })
             .expect("lifecycle executor remains available through native cleanup");
     }
 
@@ -626,13 +626,17 @@ impl RocksDbManager {
             .into_owned()
     }
 
-    pub(crate) fn dispatch_cleanup(&self, task: impl FnOnce() + Send + 'static) {
+    pub(crate) fn dispatch_cleanup(
+        &self,
+        kind: StorageTaskKind,
+        task: impl FnOnce() + Send + 'static,
+    ) {
         // Tuple fields drop in order, so the task's captures are released before the
         // lease, even if the job is dropped without running.
         let cleanup = (task, self.track_lifecycle());
         self.0
             .lifecycle_executor
-            .dispatch_fn(move || {
+            .dispatch_fn(kind.as_static_str(), move || {
                 let (task, _active) = cleanup;
                 task();
             })
@@ -707,7 +711,9 @@ impl RocksDbManager {
         for shutdown in pending {
             self.0
                 .lifecycle_executor
-                .dispatch_fn(move || drop(shutdown))
+                .dispatch_fn(StorageTaskKind::Shutdown.as_static_str(), move || {
+                    drop(shutdown)
+                })
                 .expect("lifecycle executor remains available through native cleanup");
         }
         self.wait_for_cleanup().await;
