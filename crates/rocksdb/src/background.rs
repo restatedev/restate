@@ -60,34 +60,227 @@ impl StorageTaskKind {
     }
 }
 
-/// An operation prepared with [`RocksDb::prepare`](crate::RocksDb::prepare)
-/// or [`RocksDb::prepare_in`](crate::RocksDb::prepare_in) that hasn't
-/// run yet. Run it on the current thread with [`Self::call`], or submit it to an
-/// executor, which runs it on a background thread. Nothing is admitted until
-/// then: the operation takes its lease from the gate when it runs or is
-/// submitted. The exception is
+/// What a prepared [`StorageOp`] works on, such as the database or a scope.
+///
+/// A context stays borrowed for as long as it can: while the operation is
+/// prepared, and while it runs on the calling thread with [`StorageOp::call`].
+/// Nothing is cloned for that. Only when the operation becomes a task for a
+/// background thread does [`Self::into_owned`] turn the context into something
+/// the task can own, because a borrow can't move to another thread.
+///
+/// | Context | Prepared with | What a background task owns | What the work gets |
+/// |---|---|---|---|
+/// | `&C`, for a shared handle `C` | [`RocksDb::prepare`](crate::RocksDb::prepare) (the database), [`StorageOp::with_context`] | a clone of `C` | `&C` |
+/// | a [`ReadIterator`](crate::reads::ReadIterator) | [`ReadIterator::prepare`](crate::reads::ReadIterator::prepare) | the same iterator, made owned, at the same position | `&mut ReadIterator<'_, _>` |
+/// | `()` | operations that need nothing, such as deleting a column family | nothing | nothing |
+///
+/// A shared handle is a type such as `Arc<RocksDb>`, a `Scope`, or a
+/// `ReadSnapshot`: its clones are cheap and point to the same thing. See
+/// [`StorageOp`] for an example.
+pub trait OpContext {
+    /// What a background task holds instead of the borrowed context.
+    type Owned: Send + 'static;
+
+    /// Turns the context into what a background task holds.
+    fn into_owned(self) -> Self::Owned;
+}
+
+/// The work of a [`StorageOp`].
+///
+/// The work gets the operation's context: borrowed when the operation runs on
+/// the calling thread ([`Self::run`]), or owned when it runs on a background
+/// thread ([`Self::run_owned`]). It sees the same thing either way, so one
+/// closure serves both.
+///
+/// There is no need to implement it: pass a closure. Closures implement it for
+/// every kind of context, and take what the table in [`OpContext`] lists:
+/// `FnOnce(&C)` for a shared handle, `FnOnce(&mut ReadIterator<'_, H>)` for an
+/// iterator, and `FnOnce()` for no context.
+pub trait OpFn<C: OpContext>: Send + 'static {
+    /// What the work returns.
+    type Output;
+
+    /// Runs the work with the borrowed context, on the calling thread.
+    fn run(self, context: C) -> Self::Output;
+
+    /// Runs the work with the owned context, on a background thread.
+    fn run_owned(self, context: C::Owned) -> Self::Output;
+}
+
+impl<C: Clone + Send + Sync + 'static> OpContext for &C {
+    type Owned = C;
+
+    fn into_owned(self) -> C {
+        self.clone()
+    }
+}
+
+impl<'a, C, F, R> OpFn<&'a C> for F
+where
+    C: Clone + Send + Sync + 'static,
+    F: FnOnce(&C) -> R + Send + 'static,
+{
+    type Output = R;
+
+    fn run(self, context: &'a C) -> R {
+        self(context)
+    }
+
+    fn run_owned(self, context: C) -> R {
+        self(&context)
+    }
+}
+
+impl OpContext for () {
+    type Owned = ();
+
+    fn into_owned(self) {}
+}
+
+impl<F, R> OpFn<()> for F
+where
+    F: FnOnce() -> R + Send + 'static,
+{
+    type Output = R;
+
+    fn run(self, (): ()) -> R {
+        self()
+    }
+
+    fn run_owned(self, (): ()) -> R {
+        self()
+    }
+}
+
+/// An operation on the database that has been prepared but hasn't run yet,
+/// for example with [`RocksDb::prepare`](crate::RocksDb::prepare).
+///
+/// Run it on the current thread with [`Self::call`], or submit it to an
+/// executor, which runs it on a background thread:
+///
+/// ```no_run
+/// use std::sync::Arc;
+///
+/// use restate_core::io::IoExecutor;
+/// use restate_rocksdb::{RocksDb, StorageTaskKind};
+///
+/// # async fn example(db: &Arc<RocksDb>) -> Result<(), Box<dyn std::error::Error>> {
+/// // On this thread. The operation borrows `db`, so nothing is cloned.
+/// let value = db
+///     .prepare(StorageTaskKind::MultiGet, |db| db.inner().as_raw_db().get(b"key"))
+///     .call()??;
+///
+/// // On a background thread. Submitting the operation clones the `Arc` once,
+/// // for the task to own.
+/// let lookup = db.prepare(StorageTaskKind::MultiGet, |db| db.inner().as_raw_db().get(b"key"));
+/// let value = db.executor().low_pri().spawn(lookup)?.await??;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// Nothing is admitted until the operation runs or is submitted: that is when
+/// it takes its lease from its gate. So a prepared operation doesn't hold up
+/// draining, and if the gate is sealed first, it fails with
+/// [`AdmissionClosed`]. The exception is
 /// [`RocksDb::prepare_drop_cf`](crate::RocksDb::prepare_drop_cf), which takes no
 /// lease, so that a column family can still be deleted after the database is
 /// sealed.
 ///
+/// `C` is the operation's context, what it works on, such as the database. It
+/// stays borrowed until the operation moves to a background thread (see
+/// [`OpContext`]). `F` is the work itself (see [`OpFn`]).
+///
 /// Its kind says what the operation does. When it runs in the background, the
 /// kind labels the task's metrics and tracing span.
 #[must_use = "execute, schedule, or explicitly drop the operation"]
-pub struct StorageOp<'a, OP> {
-    op: OP,
+pub struct StorageOp<'a, C, F> {
+    // Borrowed until the operation moves to a background thread.
+    context: C,
+    op: F,
     // `None` for the few operations that must be accepted even after the
     // database is sealed, such as deleting a column family.
     gate: Option<&'a Arc<Gate>>,
     kind: StorageTaskKind,
 }
 
-impl<'a, OP, R> StorageOp<'a, OP>
-where
-    OP: FnOnce() -> R + Send + 'static,
-    R: Send + 'static,
-{
-    pub(crate) fn new(op: OP, gate: &'a Arc<Gate>, kind: StorageTaskKind) -> Self {
+impl<'a, F> StorageOp<'a, (), F> {
+    // An operation without a context, counted in `gate`.
+    #[cfg(test)]
+    pub(crate) fn new(op: F, gate: &'a Arc<Gate>, kind: StorageTaskKind) -> Self {
         Self {
+            context: (),
+            op,
+            gate: Some(gate),
+            kind,
+        }
+    }
+}
+
+impl<F> StorageOp<'static, (), F> {
+    /// An operation that takes no lease, so it is accepted even after the
+    /// database is sealed. Only for work that must finish regardless, such as
+    /// deleting a column family or opening a database that was already
+    /// accounted for elsewhere.
+    pub(crate) fn without_admission(op: F, kind: StorageTaskKind) -> Self {
+        Self {
+            context: (),
+            op,
+            gate: None,
+            kind,
+        }
+    }
+}
+
+impl<'a, 'c, C, F> StorageOp<'a, &'c C, F>
+where
+    C: Clone + Send + Sync + 'static,
+{
+    /// Prepares an operation on `context`, a shared handle such as a `Scope` or
+    /// a `ReadSnapshot`, counted in `gate`. Sealing and draining that gate then
+    /// covers the operation.
+    ///
+    /// `op` gets the context by reference. The context is cloned only if the
+    /// operation moves to a background thread (see [`OpContext`]). To keep
+    /// reading with an iterator, use
+    /// [`ReadIterator::prepare`](crate::reads::ReadIterator::prepare) instead.
+    ///
+    /// ```no_run
+    /// use restate_rocksdb::reads::ColumnFamilies;
+    /// use restate_rocksdb::{StorageOp, StorageTaskKind};
+    /// use restate_util_lifecycle::Scope;
+    ///
+    /// # fn example<C: ColumnFamilies>(scope: &Scope<C>) -> Result<(), Box<dyn std::error::Error>> {
+    /// // Runs on this thread, so the scope isn't cloned.
+    /// let name = StorageOp::with_context(scope, scope.gate(), StorageTaskKind::MultiGet, |scope| {
+    ///     scope.name().to_owned()
+    /// })
+    /// .call()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_context<R>(
+        context: &'c C,
+        gate: &'a Arc<Gate>,
+        kind: StorageTaskKind,
+        op: F,
+    ) -> Self
+    where
+        F: FnOnce(&C) -> R + Send + 'static,
+    {
+        Self::from_parts(context, gate, kind, op)
+    }
+}
+
+impl<'a, C: OpContext, F: OpFn<C>> StorageOp<'a, C, F> {
+    // An operation on any kind of context, counted in `gate`.
+    pub(crate) fn from_parts(
+        context: C,
+        gate: &'a Arc<Gate>,
+        kind: StorageTaskKind,
+        op: F,
+    ) -> Self {
+        Self {
+            context,
             op,
             gate: Some(gate),
             kind,
@@ -165,67 +358,88 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn with_guard<G>(
-        self,
-        make_guard: impl FnOnce() -> G + Send + 'static,
-    ) -> StorageOp<'a, impl FnOnce() -> R + Send + 'static> {
-        let Self { op, gate, kind } = self;
+    pub fn with_guard<G, M>(self, make_guard: M) -> StorageOp<'a, C, Guarded<F, M>>
+    where
+        M: FnOnce() -> G + Send + 'static,
+    {
+        let Self {
+            context,
+            op,
+            gate,
+            kind,
+        } = self;
         StorageOp {
-            op: move || {
-                let _guard = make_guard();
-                op()
-            },
+            context,
+            op: Guarded { op, make_guard },
             gate,
             kind,
         }
     }
 
-    /// Runs the operation now, on the current thread. Fails with [`AdmissionClosed`]
-    /// if the database (or scope) is sealed. Unlike background tasks, it records no
-    /// task metrics or tracing span.
-    pub fn call(self) -> Result<R, AdmissionClosed> {
+    /// Runs the operation now, on the current thread, with its context still
+    /// borrowed. Fails with [`AdmissionClosed`] if the database (or scope) is
+    /// sealed. Unlike background tasks, it records no task metrics or tracing
+    /// span.
+    pub fn call(self) -> Result<F::Output, AdmissionClosed> {
         let lease = self
             .gate
             .map(|gate| gate.try_acquire().ok_or(AdmissionClosed))
             .transpose()?;
-        Ok(TrackedTask::new(self.op, lease).run())
+        // `run` consumes the operation and its context, so both are dropped
+        // before the lease is released.
+        let output = self.op.run(self.context);
+        drop(lease);
+        Ok(output)
     }
 }
 
-impl<OP, R> StorageOp<'static, OP>
+/// The work of an operation returned by [`StorageOp::with_guard`]: the
+/// original work, run while the guard exists.
+///
+/// It's a named type, rather than an `impl OpFn`, so that async code holding a
+/// prepared operation stays `Send`. The compiler can't always prove that for
+/// an opaque type that carries the lifetime of a borrowed context.
+pub struct Guarded<F, M> {
+    op: F,
+    make_guard: M,
+}
+
+impl<C, F, G, M> OpFn<C> for Guarded<F, M>
 where
-    OP: FnOnce() -> R + Send + 'static,
-    R: Send + 'static,
+    C: OpContext,
+    F: OpFn<C>,
+    M: FnOnce() -> G + Send + 'static,
 {
-    /// An operation that takes no lease, so it is accepted even after the
-    /// database is sealed. Only for work that must finish regardless, such as
-    /// deleting a column family or opening a database that was already
-    /// accounted for elsewhere.
-    pub(crate) fn without_admission(op: OP, kind: StorageTaskKind) -> Self {
-        Self {
-            op,
-            gate: None,
-            kind,
-        }
+    type Output = F::Output;
+
+    fn run(self, context: C) -> F::Output {
+        let _guard = (self.make_guard)();
+        self.op.run(context)
+    }
+
+    fn run_owned(self, context: C::Owned) -> F::Output {
+        let _guard = (self.make_guard)();
+        self.op.run_owned(context)
     }
 }
 
-impl<OP, R> IoOp for StorageOp<'_, OP>
+impl<C, F> IoOp for StorageOp<'_, C, F>
 where
-    OP: FnOnce() -> R + Send + 'static,
-    R: Send + 'static,
+    C: OpContext,
+    F: OpFn<C>,
+    F::Output: Send + 'static,
 {
-    type Output = R;
+    type Output = F::Output;
 
     fn operation(&self) -> &'static str {
         self.kind.as_static_str()
     }
 
-    fn call(self) -> Result<R, AdmissionClosed> {
+    fn call(self) -> Result<F::Output, AdmissionClosed> {
         StorageOp::call(self)
     }
 
-    fn into_task(self) -> Result<impl IoTask<R>, AdmissionClosed> {
+    fn into_task(self) -> Result<impl IoTask<F::Output>, AdmissionClosed> {
         let lease = self
             .gate
             .map(|gate| {
@@ -234,9 +448,13 @@ where
                     .ok_or(AdmissionClosed)
             })
             .transpose()?;
-        // The lease is released after what the operation captured is dropped,
+        // Only now, and only once admitted, does the context become owned: the
+        // task moves to another thread, where the borrow can't follow it.
+        let context = self.context.into_owned();
+        let op = self.op;
+        // The lease is released after the operation and its context are dropped,
         // even if the task is dropped without running.
-        Ok(TrackedTask::new(self.op, lease))
+        Ok(TrackedTask::new(move || op.run_owned(context), lease))
     }
 }
 

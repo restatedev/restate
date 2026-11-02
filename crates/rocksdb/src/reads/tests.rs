@@ -20,7 +20,7 @@ use rocksdb::{ErrorKind, ReadOptions, ReadTier};
 use tokio::time::timeout;
 
 use restate_core::TaskCenterBuilder;
-use restate_core::io::Gate;
+use restate_core::io::{Gate, IoOp, IoTask};
 use restate_platform::sync::Mutex;
 use restate_types::protobuf::common::DatabaseKind;
 use restate_util_lifecycle::{KeepAlive, Scope, ScopePayload};
@@ -31,7 +31,7 @@ use crate::configuration::{
 };
 use crate::{
     CfHandles, CfName, CfPrefixPattern, DbEnv, DbName, DbSpec, DbSpecBuilder, GlobalExecutor,
-    RocksAccess, RocksDb, RocksDbManager, RocksError,
+    RocksAccess, RocksDb, RocksDbManager, RocksError, StorageTaskKind,
 };
 
 const DEADLINE: Duration = Duration::from_secs(10);
@@ -270,6 +270,31 @@ fn reads_see_the_database_as_it_was_when_the_snapshot_was_taken() -> anyhow::Res
     assert_eq!(entries(&mut borrowed)?, captured);
     assert!(!borrowed.valid());
     borrowed.status()?;
+
+    // A prepared operation can go on reading with an iterator. On this thread it
+    // reads with the borrowed iterator. Moved to another thread, it reads with an
+    // owned one, from the same position.
+    let read_rest = |iterator: &mut ReadIterator<'_, ReadSnapshot<TestCfs>>| {
+        let mut rest = Vec::new();
+        while let Some((key, value)) = iterator.item()? {
+            rest.push((key.to_vec(), value.to_vec()));
+            iterator.next();
+        }
+        Ok::<_, RocksError>(rest)
+    };
+    let mut here = snapshot.iterator(Cf::Data, ReadOptions::default());
+    here.seek(b"b");
+    let rest = here
+        .prepare(&gate, StorageTaskKind::BackgroundIterator, read_rest)
+        .call()??;
+    assert_eq!(rest, [kv("b", ""), kv("c", "3")]);
+    let mut moved = snapshot.iterator(Cf::Data, ReadOptions::default());
+    moved.seek(b"b");
+    let task = moved
+        .prepare(&gate, StorageTaskKind::BackgroundIterator, read_rest)
+        .into_task()?;
+    let rest = std::thread::spawn(move || task.run()).join().unwrap()?;
+    assert_eq!(rest, [kv("b", ""), kv("c", "3")]);
 
     // After sealing the scope, no new snapshot of it can be taken, but reads
     // through the existing one keep working.

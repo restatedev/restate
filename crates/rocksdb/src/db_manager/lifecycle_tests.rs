@@ -19,7 +19,7 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 
 use restate_core::TaskCenterBuilder;
-use restate_core::io::{AdmissionClosed, IoExecutor, IoOp};
+use restate_core::io::{AdmissionClosed, IoExecutor, IoOp, IoTask};
 use restate_platform::sync::Mutex;
 
 use super::{DbRef, ManagerInner, RocksDbManager, WeakRocksDbManager};
@@ -183,6 +183,17 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
         assert_eq!(Arc::strong_count(&db.gate), gate_refs);
     })
     .call()?;
+    assert!(db.gate.is_idle());
+    // The database stays borrowed while an operation runs on this thread, and is
+    // cloned once when the operation becomes a task for a background thread.
+    let db_refs = Arc::strong_count(&db);
+    let count = |db: &Arc<crate::RocksDb>| Arc::strong_count(db);
+    assert_eq!(
+        db.prepare(StorageTaskKind::MultiGet, count).call()?,
+        db_refs
+    );
+    let task = db.prepare(StorageTaskKind::MultiGet, count).into_task()?;
+    assert_eq!(task.run(), db_refs + 1);
     assert!(db.gate.is_idle());
     let discarded = db
         .prepare(StorageTaskKind::MultiGet, |_| {
