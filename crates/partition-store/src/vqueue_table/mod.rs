@@ -29,7 +29,7 @@ use anyhow::Context;
 use bilrost::{BorrowedMessage, Message, OwnedMessage};
 use bytes::BytesMut;
 use futures::FutureExt;
-use rocksdb::{DBRawIteratorWithThreadMode, ReadOptions, WriteBatch, WriteOptions};
+use rocksdb::{ReadOptions, WriteBatch, WriteOptions};
 use strum::EnumCount;
 use tracing::error;
 
@@ -1018,19 +1018,5 @@ impl ScanVQueueEntries for PartitionStore {
             }
             Ok(())
         })
-    }
-}
-
-// ## Safety
-// The iterator is guaranteed to be dropped before the database is dropped, we hold to the
-// PartitionDb in this struct for as long as the iterator is alive.
-unsafe fn ignore_iterator_lifetime<'a>(
-    iter: DBRawIteratorWithThreadMode<'a, rocksdb::DB>,
-) -> DBRawIteratorWithThreadMode<'static, rocksdb::DB> {
-    unsafe {
-        std::mem::transmute::<
-            DBRawIteratorWithThreadMode<'a, rocksdb::DB>,
-            DBRawIteratorWithThreadMode<'static, rocksdb::DB>,
-        >(iter)
     }
 }
