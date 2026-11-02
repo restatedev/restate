@@ -21,7 +21,7 @@ use tracing::{debug, error, info, trace, warn};
 use crate::RawRocksDb;
 use crate::RocksError;
 use crate::configuration::create_default_cf_options;
-use crate::{BottommostLevelCompaction, CfName, ManualCompactionOptions, RocksDbReadPerfGuard};
+use crate::{BottommostLevelCompaction, CfName, ManualCompactionOptions};
 use crate::{DbEnv, DbSpec};
 use crate::{DbName, OpenMode};
 
@@ -216,7 +216,6 @@ impl RocksAccess {
         name: CfName,
         export_dir: PathBuf,
     ) -> Result<ExportImportFilesMetaData, RocksError> {
-        let _perf = RocksDbReadPerfGuard::new("export-column-family");
         let checkpoint = Checkpoint::new(self.as_raw_db())?;
         let cf = self
             .cf_handle(name.as_str())
@@ -241,7 +240,6 @@ impl RocksAccess {
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
     pub(crate) fn shutdown(&self) {
-        let _x = RocksDbReadPerfGuard::new("shutdown");
         if let Err(e) = self.db.flush_wal(true) {
             warn!(
                 db = %self.name(),
@@ -296,7 +294,6 @@ impl RocksAccess {
         name: CfName,
         metadata: ExportImportFilesMetaData,
     ) -> Result<(), RocksError> {
-        let _perf = RocksDbReadPerfGuard::new("import-column-family");
         let options = prepare_cf_options(&name, &self.db_spec, &self.db_env)?;
 
         let mut import_opts = ImportColumnFamilyOptions::default();
