@@ -6,11 +6,12 @@
 
 Restate now opens and closes its RocksDB databases, and creates, imports, and deletes partition
 stores, on a dedicated thread pool, separate from the thread pools used for regular storage reads
-and writes. A new option controls its size:
+and writes. A new option controls its size, next to `storage-high-priority-bg-threads` and
+`storage-low-priority-bg-threads`, which size the pools for reads and writes:
 
-- `storage-lifecycle-threads`: threads for opening databases, flushing them on shutdown, closing
-  them, creating, importing, and deleting partition stores, and flushing and compacting all
-  databases on `SIGHUP`. Default: `8`.
+- `storage-lifecycle-bg-threads`: threads for opening databases, flushing them on shutdown,
+  closing them, creating, importing, and deleting partition stores, and flushing and compacting
+  all databases on `SIGHUP`. Default: `8`.
 
 ### Why This Matters
 
@@ -31,7 +32,7 @@ be busy for a long time.
 No action is needed. To change the pool size:
 
 ```toml
-storage-lifecycle-threads = 8
+storage-lifecycle-bg-threads = 8
 ```
 
 ### Related Issues
