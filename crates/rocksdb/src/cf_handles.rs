@@ -101,6 +101,12 @@ impl<K: Enum> CfHandles<K> {
         &self.cfs[usize::from(self.cf_of[key])]
     }
 
+    /// Every column family once, in the order of the names given to
+    /// [`Self::new`]. For work that covers all of them, such as a flush.
+    pub fn all(&self) -> &[Arc<BoundColumnFamily<'_>>] {
+        &self.cfs
+    }
+
     /// The database that the column families belong to.
     pub fn database(&self) -> &KeepAlive<RocksDb> {
         &self.database

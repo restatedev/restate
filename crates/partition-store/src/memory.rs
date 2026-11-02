@@ -457,7 +457,6 @@ impl MemoryUsage {
         assert!(partition_state.maybe_open());
         let partition_db = partition_state.db().unwrap();
 
-        let cf_names = partition_db.cf_names();
         let partition_db = partition_db.clone();
 
         let mut memory_usage = Self {
@@ -469,24 +468,24 @@ impl MemoryUsage {
         };
 
         tokio::task::spawn_blocking(move || {
-            let raw_rocks_db = partition_db.rocksdb().inner();
+            let raw_rocks_db = partition_db.rocksdb().inner().as_raw_db();
 
-            for cf in cf_names {
+            for cf in partition_db.cf_handles().all() {
                 memory_usage.total_bytes += raw_rocks_db
-                    .get_property_int_cf(&cf, "rocksdb.cur-size-all-mem-tables")?
+                    .property_int_value_cf(cf, "rocksdb.cur-size-all-mem-tables")?
                     .unwrap_or_default() as usize;
 
                 memory_usage.immutable_and_pinned_bytes += raw_rocks_db
-                    .get_property_int_cf(&cf, "rocksdb.size-all-mem-tables")?
+                    .property_int_value_cf(cf, "rocksdb.size-all-mem-tables")?
                     .unwrap_or_default()
                     as usize;
 
                 memory_usage.mutable_bytes += raw_rocks_db
-                    .get_property_int_cf(&cf, "rocksdb.cur-size-active-mem-table")?
+                    .property_int_value_cf(cf, "rocksdb.cur-size-active-mem-table")?
                     .unwrap_or_default() as usize;
 
                 memory_usage.is_flush_pending |= raw_rocks_db
-                    .get_property_int_cf(&cf, "rocksdb.mem-table-flush-pending")?
+                    .property_int_value_cf(cf, "rocksdb.mem-table-flush-pending")?
                     .unwrap_or_default()
                     == 1;
             }
