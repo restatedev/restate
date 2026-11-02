@@ -53,6 +53,24 @@ pub use self::background::{
     StorageOp, StorageTaskKind,
 };
 pub use self::cf_handles::CfHandles;
+
+/// An operation on the database itself, prepared with one of [`RocksDb`]'s
+/// `prepare` methods. Its context is the database (see [`OpContext`]).
+///
+/// ```no_run
+/// use std::sync::Arc;
+///
+/// use restate_core::io::IoExecutor;
+/// use restate_rocksdb::{ManualCompactionOptions, RocksDb, RocksError};
+///
+/// # async fn example(db: &Arc<RocksDb>) -> Result<(), RocksError> {
+/// // Compact on the low-priority pool, and wait until it's done.
+/// let compaction = db.prepare_compact_all(ManualCompactionOptions::default());
+/// db.executor().low_pri().spawn(compaction)?.await?;
+/// # Ok(())
+/// # }
+/// ```
+pub type DatabaseOp<'a, F> = StorageOp<'a, &'a Arc<RocksDb>, F>;
 pub use self::db_env::DbEnv;
 pub use self::db_manager::{DbRef, RocksDbManager, WeakRocksDbManager};
 pub use self::db_spec::*;
@@ -751,14 +769,14 @@ impl RocksDb {
         )
     }
 
-    #[tracing::instrument(skip_all, fields(db = %self.name()))]
-    pub async fn flush_wal(self: &Arc<Self>, sync: bool) -> Result<(), RocksError> {
-        let op = self.prepare(StorageTaskKind::FlushWal, move |db| db.db.flush_wal(sync));
-        self.executor
-            .low_pri()
-            .spawn(op)?
-            .await
-            .map_err(|_| ShutdownError)?
+    /// Prepares flushing the write-ahead log, to submit to a pool of your choice
+    /// (see [`StorageOp`]). With `sync`, the log is also synced to disk.
+    pub fn prepare_flush_wal(
+        self: &Arc<Self>,
+        sync: bool,
+    ) -> DatabaseOp<'_, impl FnOnce(&Arc<Self>) -> Result<(), RocksError> + Send + 'static + use<>>
+    {
+        self.prepare(StorageTaskKind::FlushWal, move |db| db.db.flush_wal(sync))
     }
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
@@ -771,47 +789,25 @@ impl RocksDb {
         self.executor.low_pri().dispatch(op)
     }
 
-    #[tracing::instrument(skip_all, fields(db = %self.name()))]
-    pub async fn flush_memtables(
+    /// Prepares flushing the memtables of all column families, to submit to a
+    /// pool of your choice (see [`StorageOp`]). The operation finishes once the
+    /// flushes have.
+    pub fn prepare_flush_all(
         self: &Arc<Self>,
-        cfs: &[CfName],
-        wait: bool,
-    ) -> Result<(), RocksError> {
-        let owned_cfs = cfs.to_vec();
-        let op = self.prepare(StorageTaskKind::FlushMemtables, move |db| {
-            db.db.flush_memtables(&owned_cfs, wait)
-        });
-        self.executor
-            .low_pri()
-            .spawn(op)?
-            .await
-            .map_err(|_| ShutdownError)?
+    ) -> DatabaseOp<'_, impl FnOnce(&Arc<Self>) -> Result<(), RocksError> + Send + 'static + use<>>
+    {
+        self.prepare(StorageTaskKind::FlushMemtables, |db| db.db.flush_all())
     }
 
-    #[tracing::instrument(skip_all, fields(db = %self.name()))]
-    pub async fn flush_all(self: &Arc<Self>) -> Result<(), RocksError> {
-        let op = self.prepare(StorageTaskKind::FlushMemtables, |db| db.db.flush_all());
-        self.executor
-            .low_pri()
-            .spawn(op)?
-            .await
-            .map_err(|_| ShutdownError)?
-    }
-
-    #[tracing::instrument(skip_all, fields(db = %self.name()))]
-    pub async fn compact_all(
+    /// Prepares compacting all column families, to submit to a pool of your
+    /// choice (see [`StorageOp`]).
+    pub fn prepare_compact_all(
         self: &Arc<Self>,
         options: ManualCompactionOptions,
-    ) -> Result<(), RocksError> {
-        let op = self.prepare(StorageTaskKind::Compaction, move |db| {
+    ) -> DatabaseOp<'_, impl FnOnce(&Arc<Self>) + Send + 'static + use<>> {
+        self.prepare(StorageTaskKind::Compaction, move |db| {
             db.db.compact_all(options)
-        });
-        self.executor
-            .low_pri()
-            .spawn(op)?
-            .await
-            .map_err(|_| ShutdownError)?;
-        Ok(())
+        })
     }
 
     pub fn get_histogram_data(&self, histogram: Histogram) -> HistogramData {
@@ -826,48 +822,30 @@ impl RocksDb {
         self.db.db_options().get_statistics()
     }
 
-    #[tracing::instrument(skip_all, fields(db = %self.name()))]
-    pub async fn open_cf(self: &Arc<Self>, name: CfName) -> Result<(), RocksError> {
-        let op = self.prepare(StorageTaskKind::OpenColumnFamily, move |db| {
+    /// Prepares creating the column family `name`, to submit to a pool of your
+    /// choice (see [`StorageOp`]).
+    pub fn prepare_open_cf(
+        self: &Arc<Self>,
+        name: CfName,
+    ) -> DatabaseOp<'_, impl FnOnce(&Arc<Self>) -> Result<(), RocksError> + Send + 'static + use<>>
+    {
+        self.prepare(StorageTaskKind::OpenColumnFamily, move |db| {
             db.db.open_cf(name)
-        });
-        self.executor
-            .low_pri()
-            .spawn(op)?
-            .await
-            .map_err(|_| ShutdownError)?
+        })
     }
 
-    #[tracing::instrument(skip_all, fields(db = %self.name()))]
-    pub async fn import_cf(
+    /// Prepares creating the column family `name` from the files of an export,
+    /// which `metadata` describes, to submit to a pool of your choice (see
+    /// [`StorageOp`]).
+    pub fn prepare_import_cf(
         self: &Arc<Self>,
         name: CfName,
         metadata: ExportImportFilesMetaData,
-    ) -> Result<(), RocksError> {
-        let op = self.prepare(StorageTaskKind::ImportColumnFamily, move |db| {
+    ) -> DatabaseOp<'_, impl FnOnce(&Arc<Self>) -> Result<(), RocksError> + Send + 'static + use<>>
+    {
+        self.prepare(StorageTaskKind::ImportColumnFamily, move |db| {
             db.db.import_cf(name, metadata)
-        });
-        self.executor
-            .low_pri()
-            .spawn(op)?
-            .await
-            .map_err(|_| ShutdownError)?
-    }
-
-    #[tracing::instrument(skip_all, fields(db = %self.name()))]
-    pub async fn export_cf(
-        self: &Arc<Self>,
-        name: CfName,
-        export_dir: PathBuf,
-    ) -> Result<ExportImportFilesMetaData, RocksError> {
-        let op = self.prepare(StorageTaskKind::ExportColumnFamily, move |db| {
-            db.db.export_cf(name, export_dir)
-        });
-        self.executor
-            .low_pri()
-            .spawn(op)?
-            .await
-            .map_err(|_| ShutdownError)?
+        })
     }
 
     /// Deletes a column family and returns a future that resolves once it's gone.

@@ -12,7 +12,7 @@ use codederror::CodedError;
 use tracing::warn;
 
 use restate_core::ShutdownError;
-use restate_core::io::AdmissionClosed;
+use restate_core::io::{AdmissionClosed, IoTaskError};
 
 use crate::CfName;
 
@@ -54,6 +54,15 @@ pub enum RocksError {
     #[error(transparent)]
     #[code(unknown)]
     Other(#[from] rocksdb::Error),
+}
+
+/// A task that ended without delivering its result: its executor dropped it,
+/// typically while shutting down, or it panicked. Reported as a shutdown, as
+/// callers of background storage work have always done.
+impl From<IoTaskError> for RocksError {
+    fn from(_: IoTaskError) -> Self {
+        RocksError::Shutdown(ShutdownError)
+    }
 }
 
 impl RocksError {

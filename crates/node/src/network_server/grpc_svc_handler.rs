@@ -23,6 +23,7 @@ use restate_metadata_store::protobuf::metadata_proxy_svc::{
 };
 use restate_types::net::connect_opts::GrpcConnectionOptions;
 
+use restate_core::io::IoExecutor;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::{NodeCtlSvc, NodeCtlSvcServer};
 use restate_core::protobuf::node_ctl_svc::{
     DatabaseCompactionResult, GetMetadataRequest, GetMetadataResponse, IdentResponse,
@@ -32,7 +33,7 @@ use restate_core::protobuf::node_ctl_svc::{
 use restate_core::{Identification, MetadataWriter, TaskCenter, TaskKind};
 use restate_core::{Metadata, MetadataKind};
 use restate_metadata_store::{MetadataStoreClient, ReadError, WriteError};
-use restate_rocksdb::RocksDbManager;
+use restate_rocksdb::{RocksDbManager, RocksError};
 use restate_types::config::{Configuration, NetworkingOptions};
 use restate_types::errors::{ConversionError, MaybeRetryableError};
 use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration};
@@ -256,7 +257,10 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
 
                     info!(db = %db_name, "Starting manual RocksDB compaction");
                     let cf_count = db.cfs().len() as u32;
-                    match db.compact_all(options).await {
+                    let compaction = db.prepare_compact_all(options);
+                    let compacted: Result<(), RocksError> =
+                        async { Ok(db.executor().low_pri().spawn(compaction)?.await?) }.await;
+                    match compacted {
                         Ok(()) => {
                             info!(db = %db_name, "Manual RocksDB compaction task completed");
                             results.push(DatabaseCompactionResult {
