@@ -24,6 +24,8 @@ Runtime and SDKs follow independent artifact versioning. Restate server and SDK 
 
 Use `release/X.Y` for release branches across repositories (for example, `release/1.8`). Keep patch and release-candidate versions in tags.
 
+When users need fixes on top of a released version before the next patch release, release a hotfix `X.Y.Z-hotfix.N` from a `hotfix/X.Y.Z-hotfix.N` branch, following the [hotfix process](hotfix.md).
+
 ## Pre-release
 
 Before releasing, make sure all the issues tagged with release-blocker have either been solved, or PRs are ready to solve them:
