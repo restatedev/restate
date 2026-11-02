@@ -601,7 +601,8 @@ impl PartitionCell {
                 let result = injected.and_then(|()| op(rocksdb.inner())).and_then(|()| {
                     let cf_name = meta.cf_name();
                     let database = PartitionStoreDb {
-                        rocksdb,
+                        // The partition keeps the database open, so it needs its own `Arc`.
+                        rocksdb: Arc::clone(rocksdb),
                         notifications,
                     };
                     let db = PartitionDb::new(meta, archived_lsn, database)

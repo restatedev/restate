@@ -8,10 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
+
 use rocksdb::{DBRawIteratorWithThreadMode, ReadOptions};
 
+use restate_core::io::Gate;
+
 use super::{ReadSource, Source, TOKEN, iterator_options};
-use crate::{RawRocksDb, RocksError};
+use crate::{OpContext, OpFn, RawRocksDb, RocksError, StorageOp, StorageTaskKind};
 
 /// An iterator over one column family, through a snapshot or of the data as it
 /// was when the iterator was created.
@@ -80,6 +84,99 @@ impl<'a, H: ReadSource> ReadIterator<'a, H> {
             iterator,
             source: Source::Owned(source),
         }
+    }
+}
+
+impl<'a, H> ReadIterator<'a, H>
+where
+    H: ReadSource + Send + Sync + 'static,
+{
+    /// Prepares an operation that goes on reading with this iterator, counted
+    /// in `gate`, which must be inside the iterator's database.
+    ///
+    /// The operation gets the iterator where it was left, positioned by the
+    /// last seek or move. When the operation runs on the calling thread
+    /// ([`StorageOp::call`]), it reads with this iterator itself, without
+    /// cloning anything. When it moves to a background thread, the iterator
+    /// becomes owned first ([`Self::into_owned`]), which clones its snapshot or
+    /// scope and keeps its position.
+    ///
+    /// ```no_run
+    /// use restate_core::io::IoExecutor;
+    /// use restate_rocksdb::reads::{ColumnFamilies, ReadSnapshot};
+    /// use restate_rocksdb::{RocksError, StorageTaskKind};
+    ///
+    /// # async fn example<C: ColumnFamilies>(
+    /// #     snapshot: &ReadSnapshot<C>,
+    /// #     cf: C::Cf,
+    /// #     executor: &impl IoExecutor,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// // Find where to start, on this thread.
+    /// let mut orders = snapshot.iterator(cf, Default::default());
+    /// orders.seek(b"order-");
+    ///
+    /// // Count the rest on a background thread, starting from the same position.
+    /// let count = orders.prepare(
+    ///     snapshot.scope().gate(),
+    ///     StorageTaskKind::BackgroundIterator,
+    ///     |orders| {
+    ///         let mut count = 0;
+    ///         while orders.item()?.is_some() {
+    ///             count += 1;
+    ///             orders.next();
+    ///         }
+    ///         Ok::<_, RocksError>(count)
+    ///     },
+    /// );
+    /// let count = executor.spawn(count)?.await??;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Panics
+    /// In debug builds, panics if `gate` is outside the iterator's database.
+    pub fn prepare<'g, R, F>(
+        self,
+        gate: &'g Arc<Gate>,
+        kind: StorageTaskKind,
+        op: F,
+    ) -> StorageOp<'g, Self, F>
+    where
+        F: FnOnce(&mut ReadIterator<'_, H>) -> R + Send + 'static,
+    {
+        self.source
+            .get()
+            .handles(TOKEN)
+            .database()
+            .debug_assert_inside(gate);
+        StorageOp::from_parts(self, gate, kind, op)
+    }
+}
+
+impl<H> OpContext for ReadIterator<'_, H>
+where
+    H: ReadSource + Send + Sync + 'static,
+{
+    type Owned = OwnedReadIterator<H>;
+
+    fn into_owned(self) -> OwnedReadIterator<H> {
+        ReadIterator::into_owned(self)
+    }
+}
+
+impl<'a, H, F, R> OpFn<ReadIterator<'a, H>> for F
+where
+    H: ReadSource + Send + Sync + 'static,
+    F: FnOnce(&mut ReadIterator<'_, H>) -> R + Send + 'static,
+{
+    type Output = R;
+
+    fn run(self, mut iterator: ReadIterator<'a, H>) -> R {
+        self(&mut iterator)
+    }
+
+    fn run_owned(self, mut iterator: OwnedReadIterator<H>) -> R {
+        self(&mut iterator)
     }
 }
 
