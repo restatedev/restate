@@ -776,15 +776,16 @@ impl RocksDb {
         sync: bool,
     ) -> DatabaseOp<'_, impl FnOnce(&Arc<Self>) -> Result<(), RocksError> + Send + 'static + use<>>
     {
-        self.prepare(StorageTaskKind::FlushWal, move |db| db.db.flush_wal(sync))
+        self.prepare(StorageTaskKind::FlushWal, move |db| {
+            db.run_in_span(|native| native.flush_wal(sync))
+        })
     }
 
-    #[tracing::instrument(skip_all, fields(db = %self.name()))]
-    pub async fn flush_wal(self: &Arc<Self>, sync: bool) -> Result<(), RocksError> {
-        self.executor
-            .low_pri()
-            .spawn(self.prepare_flush_wal(sync))?
-            .await?
+    // Runs `op` on the native database inside a span that names this database,
+    // so the logs and traces of the operation tell which database it ran on.
+    fn run_in_span<R>(&self, op: impl FnOnce(&RocksAccess) -> R) -> R {
+        let _span = tracing::info_span!("database", db = %self.name()).entered();
+        op(&self.db)
     }
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
@@ -804,15 +805,9 @@ impl RocksDb {
         self: &Arc<Self>,
     ) -> DatabaseOp<'_, impl FnOnce(&Arc<Self>) -> Result<(), RocksError> + Send + 'static + use<>>
     {
-        self.prepare(StorageTaskKind::FlushMemtables, |db| db.db.flush_all())
-    }
-
-    #[tracing::instrument(skip_all, fields(db = %self.name()))]
-    pub async fn flush_all(self: &Arc<Self>) -> Result<(), RocksError> {
-        self.executor
-            .low_pri()
-            .spawn(self.prepare_flush_all())?
-            .await?
+        self.prepare(StorageTaskKind::FlushMemtables, |db| {
+            db.run_in_span(RocksAccess::flush_all)
+        })
     }
 
     /// Prepares compacting all column families, to submit to a pool of your
@@ -822,20 +817,8 @@ impl RocksDb {
         options: ManualCompactionOptions,
     ) -> DatabaseOp<'_, impl FnOnce(&Arc<Self>) + Send + 'static + use<>> {
         self.prepare(StorageTaskKind::Compaction, move |db| {
-            db.db.compact_all(options)
+            db.run_in_span(|native| native.compact_all(options))
         })
-    }
-
-    #[tracing::instrument(skip_all, fields(db = %self.name()))]
-    pub async fn compact_all(
-        self: &Arc<Self>,
-        options: ManualCompactionOptions,
-    ) -> Result<(), RocksError> {
-        Ok(self
-            .executor
-            .low_pri()
-            .spawn(self.prepare_compact_all(options))?
-            .await?)
     }
 
     pub fn get_histogram_data(&self, histogram: Histogram) -> HistogramData {
@@ -858,16 +841,8 @@ impl RocksDb {
     ) -> DatabaseOp<'_, impl FnOnce(&Arc<Self>) -> Result<(), RocksError> + Send + 'static + use<>>
     {
         self.prepare(StorageTaskKind::OpenColumnFamily, move |db| {
-            db.db.open_cf(name)
+            db.run_in_span(|native| native.open_cf(name))
         })
-    }
-
-    #[tracing::instrument(skip_all, fields(db = %self.name()))]
-    pub async fn open_cf(self: &Arc<Self>, name: CfName) -> Result<(), RocksError> {
-        self.executor
-            .low_pri()
-            .spawn(self.prepare_open_cf(name))?
-            .await?
     }
 
     /// Prepares creating the column family `name` from the files of an export,
@@ -880,20 +855,8 @@ impl RocksDb {
     ) -> DatabaseOp<'_, impl FnOnce(&Arc<Self>) -> Result<(), RocksError> + Send + 'static + use<>>
     {
         self.prepare(StorageTaskKind::ImportColumnFamily, move |db| {
-            db.db.import_cf(name, metadata)
+            db.run_in_span(|native| native.import_cf(name, metadata))
         })
-    }
-
-    #[tracing::instrument(skip_all, fields(db = %self.name()))]
-    pub async fn import_cf(
-        self: &Arc<Self>,
-        name: CfName,
-        metadata: ExportImportFilesMetaData,
-    ) -> Result<(), RocksError> {
-        self.executor
-            .low_pri()
-            .spawn(self.prepare_import_cf(name, metadata))?
-            .await?
     }
 
     /// Deletes a column family and returns a future that resolves once it's gone.

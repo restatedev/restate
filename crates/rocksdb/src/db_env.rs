@@ -174,6 +174,7 @@ mod tests {
 
     use parking_lot::Mutex;
 
+    use restate_core::io::IoExecutor;
     use restate_types::protobuf::common::DatabaseKind;
 
     use super::*;
@@ -358,7 +359,8 @@ mod tests {
         let (_, opening) =
             manager.open_db_with_env(spec(&path, &configurator), DbEnv::in_memory()?)?;
         let db = opening.await?;
-        db.open_cf(CfName::new("data-source")).await?;
+        let open = db.prepare_open_cf(CfName::new("data-source"));
+        db.executor().low_pri().spawn(open)?.await??;
         {
             let cf = db.inner().cf_handle("data-source").unwrap();
             db.inner().as_raw_db().put_cf(&cf, b"key", b"value")?;
@@ -366,7 +368,8 @@ mod tests {
         let metadata = db
             .inner()
             .export_cf(CfName::new("data-source"), export.clone())?;
-        db.import_cf(CfName::new("data-imported"), metadata).await?;
+        let import = db.prepare_import_cf(CfName::new("data-imported"), metadata);
+        db.executor().low_pri().spawn(import)?.await??;
         assert_eq!(
             *configurator.seen_cfs.lock(),
             ["data-source", "data-imported"]

@@ -4,7 +4,7 @@
 
 ### What Changed
 - The RocksDB performance metrics (`restate_rocksdb_perf_*`, labeled by `name`) no longer have series named `flush-wal`, `bg-wal-sync`, `manual-flush`, `manual-compaction`, `flush-partition`, `export-column-family`, `import-column-family`, and `shutdown`.
-- The background storage task metrics (`restate_rocksdb_manager_bg_task_in_flight_total`, `restate_rocksdb_manager_bg_task_wait_duration_seconds`, and `restate_rocksdb_manager_bg_task_run_duration_seconds`) are labeled by `executor` and `operation`. `executor` is the thread pool that ran the task: `rs:io-hi` for high-priority work, `rs:io-lo` for low-priority work, and `rs:io-lifecycle` for opening and closing databases. The in-flight gauge no longer has a `priority` label: `executor` tells the two priorities apart.
+- The background storage task metrics (`restate_rocksdb_manager_bg_task_in_flight_total`, `restate_rocksdb_manager_bg_task_wait_duration_seconds`, and `restate_rocksdb_manager_bg_task_run_duration_seconds`) are labeled by `executor` and `operation`. `executor` is the thread pool that ran the task: `rs:io-hi` for high-priority work, `rs:io-lo` for low-priority work, and `rs:io-lifecycle` for opening and closing databases, creating, importing, and deleting partition stores, and the flush and compaction that `SIGHUP` triggers. The in-flight gauge no longer has a `priority` label: `executor` tells the two priorities apart.
 - The wait duration measures how long a task waited from the moment it was submitted to its thread pool until it started.
 - Closing databases, deleting column families, and shutting down storage are now included in the background task metrics, under the operations `close-db`, `drop-column-family`, and `shutdown`.
 

@@ -9,7 +9,8 @@ stores, on a dedicated thread pool, separate from the thread pools used for regu
 and writes. A new option controls its size:
 
 - `storage-lifecycle-threads`: threads for opening databases, flushing them on shutdown, closing
-  them, and creating, importing, and deleting partition stores. Default: `8`.
+  them, creating, importing, and deleting partition stores, and flushing and compacting all
+  databases on `SIGHUP`. Default: `8`.
 
 ### Why This Matters
 
@@ -22,6 +23,8 @@ be busy for a long time.
 - The option defaults to `8` threads. Nothing changes in your configuration unless you set it.
 - The value must be a positive integer. `0` is rejected when the configuration is loaded.
 - Changes take effect only after a restart.
+- A `SIGHUP` compaction holds one of these threads until it finishes. With the option set to `1`,
+  opening databases and partition stores waits for it.
 
 ### Migration Guidance
 

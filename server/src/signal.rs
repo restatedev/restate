@@ -10,10 +10,11 @@
 
 use std::io::Write;
 
-use restate_rocksdb::{ManualCompactionOptions, RocksDbManager};
 use tokio::signal::unix::{SignalKind, signal};
 use tracing::{info, warn};
 
+use restate_core::io::IoExecutor;
+use restate_rocksdb::{ManualCompactionOptions, RocksDbManager, RocksError};
 use restate_types::config::Configuration;
 
 pub(super) async fn shutdown() -> &'static str {
@@ -45,7 +46,8 @@ pub(super) async fn sigusr1_dump_config() {
     }
 }
 
-/// Trigger rocksdb flush+compaction on SIGHUP
+/// Trigger rocksdb flush+compaction on SIGHUP. Runs on the manager's lifecycle
+/// pool, so it doesn't take threads from the databases' regular storage I/O.
 pub(super) async fn sighup_compact() {
     let mut stream = signal(SignalKind::hangup()).expect("failed to register handler for SIGHUP");
 
@@ -53,8 +55,11 @@ pub(super) async fn sighup_compact() {
         stream.recv().await;
         warn!("Received SIGHUP, flushing and compacting all databases");
         let manager = RocksDbManager::get();
+        let pool = manager.lifecycle_executor();
         for db in manager.get_all_dbs() {
-            let _ = match db.flush_all().await {
+            let flushed: Result<(), RocksError> =
+                async { pool.spawn(db.prepare_flush_all())?.await? }.await;
+            let _ = match flushed {
                 Ok(_) => writeln!(std::io::stderr(), "Database '{}' flushed", db.name()),
                 Err(e) => writeln!(
                     std::io::stderr(),
@@ -62,7 +67,10 @@ pub(super) async fn sighup_compact() {
                     db.name()
                 ),
             };
-            match db.compact_all(ManualCompactionOptions::default()).await {
+            let compaction = db.prepare_compact_all(ManualCompactionOptions::default());
+            let compacted: Result<(), RocksError> =
+                async { Ok(pool.spawn(compaction)?.await?) }.await;
+            match compacted {
                 Ok(()) => {
                     let _ = writeln!(
                         std::io::stderr(),
