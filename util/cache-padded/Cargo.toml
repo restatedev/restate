@@ -1,0 +1,14 @@
+[package]
+name = "restate-util-cache-padded"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+restate-workspace-hack = { workspace = true }

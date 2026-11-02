@@ -27,6 +27,7 @@ restate-rocksdb = { workspace = true, optional = true }
 restate-test-util = { workspace = true, optional = true }
 restate-types = { workspace = true }
 restate-util-bytecount = { workspace = true, features = ["serde"] }
+restate-util-cache-padded = { workspace = true }
 restate-util-time = { workspace = true }
 
 ahash = { workspace = true }
@@ -35,7 +36,6 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true }
-crossbeam-utils = { version = "0.8" }
 dashmap = { workspace = true }
 derive_more = { workspace = true, features = ["debug", "display", "is_variant", "try_from"] }
 enum-map = { workspace = true, features = ["serde"] }
