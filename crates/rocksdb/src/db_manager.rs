@@ -144,7 +144,7 @@ impl RocksDbManager {
         // hold up the others. The pool is never shut down, so databases dropped after
         // shutdown can still be closed.
         let lifecycle_executor =
-            SinglePoolExecutor::new("rs:io-lifecycle", opts.storage_lifecycle_threads().get());
+            SinglePoolExecutor::new("rs:io-lifecycle", opts.storage_lifecycle_bg_threads().get());
 
         let manager = RocksDbManager(Arc::new(ManagerInner {
             db_env,

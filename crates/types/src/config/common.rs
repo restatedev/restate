@@ -753,16 +753,13 @@ pub struct CommonOptions {
 
     /// Storage lifecycle thread pool
     ///
-    /// Number of threads used to open RocksDB databases, flush them on shutdown,
-    /// and close them, to create, import, and delete partition stores, and to
-    /// flush and compact all databases on `SIGHUP`. A `SIGHUP` compaction holds
-    /// one thread until it finishes. These threads are separate from the storage
-    /// I/O thread pools (`storage-high-priority-bg-threads` and
-    /// `storage-low-priority-bg-threads`). Defaults to 8. Changes require a restart.
+    /// This configures the restate-managed storage thread pool for performing
+    /// lifecycle and maintenance tasks on storage, separately from the high and
+    /// low priority pools. Defaults to 8. Changes require a restart.
     ///
     /// Since v1.8.2
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub storage_lifecycle_threads: Option<NonZeroUsize>,
+    pub storage_lifecycle_bg_threads: Option<NonZeroUsize>,
 
     /// # Total memory limit for this process
     ///
@@ -1350,8 +1347,8 @@ impl CommonOptions {
             .unwrap_or_else(|| (*CPU_COUNT).try_into().unwrap())
     }
 
-    pub fn storage_lifecycle_threads(&self) -> NonZeroUsize {
-        self.storage_lifecycle_threads
+    pub fn storage_lifecycle_bg_threads(&self) -> NonZeroUsize {
+        self.storage_lifecycle_bg_threads
             .unwrap_or(NonZeroUsize::new(8).unwrap())
     }
 
@@ -1436,7 +1433,7 @@ impl Default for CommonOptions {
             default_thread_stack_size: None,
             storage_high_priority_bg_threads: None,
             storage_low_priority_bg_threads: None,
-            storage_lifecycle_threads: None,
+            storage_lifecycle_bg_threads: None,
             process_total_memory_size: None,
             rocksdb_max_write_rate_per_second: NonZeroByteCount::try_from(7 * 1024 * 1024 * 1024)
                 .unwrap(),
