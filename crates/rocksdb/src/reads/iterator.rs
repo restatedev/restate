@@ -198,6 +198,18 @@ impl<H> ReadIterator<'_, H> {
         Ok(self.iterator.status()?)
     }
 
+    /// Moves to the first key. With a lower bound set in the iterator's options,
+    /// that's the first key at or after the bound.
+    pub fn seek_to_first(&mut self) {
+        self.iterator.seek_to_first();
+    }
+
+    /// Moves to the last key. With an upper bound set in the iterator's options,
+    /// that's the last key before the bound.
+    pub fn seek_to_last(&mut self) {
+        self.iterator.seek_to_last();
+    }
+
     /// Moves to the first key at or after `key`.
     pub fn seek(&mut self, key: &[u8]) {
         self.iterator.seek(key);

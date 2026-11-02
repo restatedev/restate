@@ -9,39 +9,41 @@
 // by the Apache License, Version 2.0.
 
 use bilrost::OwnedMessage;
-use rocksdb::DBRawIteratorWithThreadMode;
 
+use restate_rocksdb::RocksError;
+use restate_rocksdb::reads::{OwnedReadIterator, ScopedReads};
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{
     CursorError, EntryKey, EntryValue, Options, Stage, VQueueCursor,
 };
 use restate_types::vqueues::VQueueId;
+use restate_util_lifecycle::Scope;
 
 use crate::PartitionDb;
-use crate::keys::{EncodeTableKeyPrefix, KeyDecode};
+use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, KeyDecode};
+use crate::partition_db::PhysicalPartition;
+use crate::scan::PhysicalScan;
 use crate::vqueue_table::InboxKey;
 use crate::vqueue_table::inbox::InboxKeyRef;
 
+/// Reads the entries waiting in a vqueue's inbox, in order.
+///
+/// It reads the partition's latest data as it was when the reader was created,
+/// and holds its own clone of the partition's physical scope, so it can be kept
+/// across pauses and moved between threads. It holds no lease: closing the
+/// partition doesn't wait for it, but deleting the partition's column families
+/// does.
 pub struct VQueueWaitingReader {
     qid: VQueueId,
-    it: DBRawIteratorWithThreadMode<'static, rocksdb::DB>,
-    // Safety: This must be dropped last since the iterator references memory allocated by it.
-    _db: PartitionDb,
+    it: OwnedReadIterator<Scope<PhysicalPartition>>,
 }
 
 impl VQueueWaitingReader {
     pub(crate) fn new(db: &PartitionDb, qid: &VQueueId, opts: Options) -> Self {
         let mut readopts = rocksdb::ReadOptions::default();
-        readopts.set_async_io(true);
         // this is not the place to be concerned about corruption, we favor speed
         // over safety for this particular use-case.
         readopts.set_verify_checksums(false);
-        // We re-create this reader on every refill, so a fresh snapshot is what
-        // we want. A tailing iterator would see new writes but is unsafe across
-        // memtable flushes.
-        readopts.set_tailing(false);
-        // use prefix extractors for efficient filtering.
-        readopts.set_prefix_same_as_start(true);
 
         if opts.allow_blocking_io {
             readopts.set_read_tier(rocksdb::ReadTier::All);
@@ -49,31 +51,23 @@ impl VQueueWaitingReader {
             readopts.set_read_tier(rocksdb::ReadTier::BlockCache);
         }
 
-        // we know how big the prefix is
-        let mut key_buf = [0u8; InboxKey::by_qid_prefix_len()];
+        // Every entry of this vqueue's inbox: the scan sets the bounds, and decides
+        // whether seeks can use the prefix extractor.
+        let mut prefix = [0u8; InboxKey::by_qid_prefix_len()];
         InboxKeyRef::builder()
             .qid(qid)
-            .serialize_to(&mut key_buf.as_mut());
+            .serialize_to(&mut prefix.as_mut());
+        let scan = PhysicalScan::Prefix(<InboxKey as EncodeTableKey>::KEY_KIND, prefix);
+        scan.configure(&mut readopts);
 
-        readopts.set_iterate_lower_bound(key_buf);
-        let success = crate::convert_to_upper_bound(&mut key_buf);
-        debug_assert!(success);
-        readopts.set_iterate_upper_bound(key_buf);
-
-        let it = db
-            .rocksdb()
-            .inner()
-            .as_raw_db()
-            .raw_iterator_cf_opt(db.cf_handle(), readopts);
-
+        // The iterator sees the data as it was when it was created. We re-create
+        // this reader on every refill, so that's what we want. It isn't positioned
+        // yet: the caller seeks on a thread that may block.
         Self {
             qid: qid.clone(),
-            // Safety:
-            // `_db` keeps the partition, and so its database and column family, alive
-            // for as long as this reader, and is dropped after the iterator. That holds
-            // even if the reader moves to another thread or outlives the scheduler.
-            it: unsafe { super::ignore_iterator_lifetime(it) },
-            _db: db.clone(),
+            it: db
+                .physical_scope()
+                .owned_iterator(scan.key_kind(), readopts),
         }
     }
 }
@@ -87,7 +81,7 @@ impl VQueueCursor for VQueueWaitingReader {
         let mut key_buf = super::inbox::encode_stage_key(Stage::Inbox, &self.qid, key);
         let success = crate::convert_to_upper_bound(&mut key_buf);
         debug_assert!(success);
-        self.it.seek(key_buf);
+        self.it.seek(&key_buf);
     }
 
     fn advance(&mut self) {
@@ -95,21 +89,23 @@ impl VQueueCursor for VQueueWaitingReader {
     }
 
     fn peek(&mut self) -> Result<Option<(EntryKey, EntryValue)>, CursorError> {
-        if let Some((key, mut value)) = self.it.item() {
-            debug_assert_eq!(key.len(), InboxKey::serialized_length_fixed());
-            let entry_key =
-                <EntryKey as KeyDecode>::decode(&mut &key[InboxKey::offset_of_entry_key()..])?;
+        match self.it.item() {
+            Ok(Some((key, mut value))) => {
+                debug_assert_eq!(key.len(), InboxKey::serialized_length_fixed());
+                let entry_key =
+                    <EntryKey as KeyDecode>::decode(&mut &key[InboxKey::offset_of_entry_key()..])?;
 
-            let value = EntryValue::decode(&mut value).map_err(StorageError::BilrostDecode)?;
+                let value = EntryValue::decode(&mut value).map_err(StorageError::BilrostDecode)?;
 
-            Ok(Some((entry_key, value)))
-        } else {
-            self.it.status().map_err(|err| match err.kind() {
-                rocksdb::ErrorKind::Incomplete => CursorError::WouldBlock,
-                _ => CursorError::Other(StorageError::Generic(err.into())),
-            })?;
+                Ok(Some((entry_key, value)))
+            }
             // iterator is beyond the end, we can't peek
-            Ok(None)
+            Ok(None) => Ok(None),
+            // A read restricted to the block cache needs data that isn't there.
+            Err(RocksError::Other(err)) if err.kind() == rocksdb::ErrorKind::Incomplete => {
+                Err(CursorError::WouldBlock)
+            }
+            Err(err) => Err(CursorError::Other(StorageError::Generic(err.into()))),
         }
     }
 }
