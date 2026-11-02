@@ -17,7 +17,8 @@ use rocksdb::{ReadOptions, WriteBatch, WriteOptions};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use restate_rocksdb::{Priority, StorageTaskKind};
+use restate_core::io::IoExecutor;
+use restate_rocksdb::{RocksDbReadPerfGuard, StorageOp, StorageTaskKind};
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::metadata::VQueueMetaRef;
 use restate_types::config::Configuration;
@@ -91,23 +92,29 @@ async fn purge_obsolete_vqueue_metadata(
     let mut last_reported = Instant::now();
     let mut scanned = 0u64;
     let mut purged = 0u64;
-    let partition_db = storage.partition_db().clone();
+    let partition_db = storage.partition_db();
     let key_range = storage.partition_key_range();
     let rocks = partition_db.rocksdb();
     let mut next_key = None;
 
     loop {
+        // The partition is the purge's context: it's cloned when the purge is
+        // submitted. The purge counts in the database's gate.
+        let purge = StorageOp::with_context(
+            partition_db,
+            rocks.gate(),
+            StorageTaskKind::BackgroundIterator,
+            {
+                let cancel = cancel.clone();
+                move |partition_db| purge_chunk(partition_db, key_range, next_key, &cancel)
+            },
+        )
+        .with_guard(|| RocksDbReadPerfGuard::new("purge-obsolete-vqueue-metadata"));
         let chunk = rocks
-            .run_background_read_op(
-                "purge-obsolete-vqueue-metadata",
-                StorageTaskKind::BackgroundIterator,
-                Priority::Low,
-                {
-                    let partition_db = partition_db.clone();
-                    let cancel = cancel.clone();
-                    move |_| purge_chunk(&partition_db, key_range, next_key, &cancel)
-                },
-            )
+            .executor()
+            .low_pri()
+            .spawn(purge)
+            .map_err(|_| StorageError::OperationalError)?
             .await
             .map_err(|_| StorageError::OperationalError)??;
 
