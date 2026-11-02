@@ -715,10 +715,7 @@ impl RocksDb {
         let gate = self.gate.clone();
         let task = StorageTask::default()
             .kind(StorageTaskKind::FlushWal)
-            .op(move || {
-                let _x = RocksDbReadPerfGuard::new("flush-wal");
-                self.db.flush_wal(sync)
-            })
+            .op(move || self.db.flush_wal(sync))
             .build()
             .unwrap();
 
@@ -735,7 +732,6 @@ impl RocksDb {
         let task = StorageTask::default()
             .kind(StorageTaskKind::FlushWal)
             .op(move || {
-                let _x = RocksDbReadPerfGuard::new("bg-wal-sync");
                 if let Err(e) = self.db.flush_wal(true) {
                     error!("Failed to flush rocksdb WAL: {}", e);
                 }
@@ -772,10 +768,7 @@ impl RocksDb {
         let gate = self.gate.clone();
         let task = StorageTask::default()
             .kind(StorageTaskKind::FlushMemtables)
-            .op(move || {
-                let _x = RocksDbReadPerfGuard::new("manual-flush");
-                self.db.flush_all()
-            })
+            .op(move || self.db.flush_all())
             .build()
             .unwrap();
 
@@ -794,10 +787,7 @@ impl RocksDb {
         let gate = self.gate.clone();
         let task = StorageTask::default()
             .kind(StorageTaskKind::Compaction)
-            .op(move || {
-                let _x = RocksDbReadPerfGuard::new("manual-compaction");
-                self.db.compact_all(options);
-            })
+            .op(move || self.db.compact_all(options))
             .build()
             .unwrap();
 
