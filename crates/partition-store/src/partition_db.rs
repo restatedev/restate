@@ -99,8 +99,8 @@ type Session = Scope<Scope<PhysicalPartition>>;
 /// A partition's column families, and the state that lives as long as they do.
 /// See [`PartitionDb`] for how it relates to the partition's sessions.
 ///
-/// Public only because it appears in the types of a snapshot's owned readers
-/// and scans (see [`crate::PartitionSnapshotReader`]). It can't be named outside
+/// Public only because it appears in the types of a snapshot's readers and
+/// scans (see [`crate::PartitionSnapshotReader`]). It can't be named outside
 /// this crate.
 pub struct PhysicalPartition {
     meta: Arc<Partition>,
