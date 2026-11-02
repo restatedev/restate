@@ -43,8 +43,8 @@ impl StorageTaskKind {
     }
 }
 
-/// An operation prepared with [`RocksDb::prepare_op`](crate::RocksDb::prepare_op)
-/// or [`RocksDb::prepare_op_in`](crate::RocksDb::prepare_op_in) that hasn't
+/// An operation prepared with [`RocksDb::prepare`](crate::RocksDb::prepare)
+/// or [`RocksDb::prepare_in`](crate::RocksDb::prepare_in) that hasn't
 /// run yet. Run it on the current thread with [`Self::call`], or turn it into a
 /// background task with [`Self::background`]. Nothing is admitted until then.
 #[must_use = "execute, schedule, or explicitly drop the operation"]
@@ -81,7 +81,7 @@ where
     ///
     /// # fn example(db: &Arc<RocksDb>) -> Result<(), Box<dyn std::error::Error>> {
     /// let value = db
-    ///     .prepare_op(|db| db.inner().as_raw_db().get(b"key"))
+    ///     .prepare(|db| db.inner().as_raw_db().get(b"key"))
     ///     .with_guard(|| RocksDbReadPerfGuard::new("lookup"))
     ///     .call()??;
     /// # Ok(())
@@ -98,7 +98,7 @@ where
     ///
     /// # fn example(db: &Arc<RocksDb>, executor: &impl IoExecutor) -> Result<(), Box<dyn std::error::Error>> {
     /// let task = db
-    ///     .prepare_op(|db| db.inner().as_raw_db().get(b"key"))
+    ///     .prepare(|db| db.inner().as_raw_db().get(b"key"))
     ///     .with_guard(|| std::thread::sleep(Duration::from_millis(50)))
     ///     .background("delayed-lookup", StorageTaskKind::MultiGet);
     /// let result = executor.spawn(task)?;
@@ -127,7 +127,7 @@ where
     /// }
     ///
     /// # fn example(db: &Arc<RocksDb>) -> Result<(), Box<dyn std::error::Error>> {
-    /// db.prepare_op(|_db| assert!(INJECT_FAILURE.get()))
+    /// db.prepare(|_db| assert!(INJECT_FAILURE.get()))
     ///     .with_guard(|| RestoreFaultFlag(INJECT_FAILURE.replace(true)))
     ///     .call()?;
     /// assert!(!INJECT_FAILURE.get());
