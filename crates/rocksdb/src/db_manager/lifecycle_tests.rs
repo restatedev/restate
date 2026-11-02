@@ -167,7 +167,7 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
     let db = Arc::new(crate::RocksDb::new(native, executor.clone()));
     let constructed_closed = db.closed();
     assert_eq!(db.registration(), None);
-    db.clone().open_cf(crate::CfName::new("retired")).await?;
+    db.open_cf(crate::CfName::new("retired")).await?;
     // The result can arrive before the worker releases its lease, so wait for the
     // gate to go idle.
     timeout(DEADLINE, db.gate.wait_idle()).await?;
@@ -208,7 +208,7 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
 
     let (started, reached) = oneshot::channel();
     let (resume, paused) = mpsc::channel::<()>();
-    let mut read = Box::pin(db.clone().run_background_read_op(
+    let mut read = Box::pin(db.run_background_read_op(
         "database-drain",
         StorageTaskKind::MultiGet,
         Priority::High,
@@ -223,7 +223,7 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
     let mut drained = Box::pin(db.drain());
     assert_pending(drained.as_mut());
     // Draining one database doesn't affect another database on the same pools.
-    neighbor.clone().flush_wal(true).await?;
+    neighbor.flush_wal(true).await?;
     drop(resume);
     assert_pending(drained.as_mut());
     // `prepared` took its lease in into_task() before sealing, so it still runs and
@@ -243,7 +243,7 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
         Err(AdmissionClosed)
     ));
     assert!(matches!(
-        db.clone().flush_wal(true).await,
+        db.flush_wal(true).await,
         Err(RocksError::AdmissionClosed(AdmissionClosed))
     ));
     for mode in [
@@ -265,7 +265,7 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
         );
     }
     // The other database still accepts work.
-    neighbor.clone().flush_wal(true).await?;
+    neighbor.flush_wal(true).await?;
     // The flush's result can arrive before its lease is released. Wait for idle
     // first, so the check below only sees what the rejected work left behind.
     timeout(DEADLINE, neighbor.gate.wait_idle()).await?;
@@ -274,7 +274,7 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
         panic!("a rejected operation must not execute");
     });
     assert_eq!(executor.low_pri().dispatch(rejected), Err(AdmissionClosed));
-    assert!(neighbor.clone().flush_wal(true).await.is_err());
+    assert!(neighbor.flush_wal(true).await.is_err());
     assert!(neighbor.gate.is_idle());
     // Deleting a column family still works after sealing, on any executor.
     external

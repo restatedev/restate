@@ -504,7 +504,7 @@ impl PartitionStore {
         on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
     ) -> Result<(), AdmissionClosed> {
         scan.configure(&mut opts);
-        self.db.rocksdb().clone().run_background_iterator(
+        self.db.rocksdb().run_background_iterator(
             self.db.physical_scope(),
             self.db.gate(),
             scan.key_kind(),
