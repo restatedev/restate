@@ -278,7 +278,7 @@ impl PartitionDb {
         let physical = self.physical_scope().clone();
         let task = self
             .rocksdb()
-            .prepare_op(move |db| {
+            .prepare(move |db| {
                 let result = op(db.inner());
                 drop(physical);
                 result
@@ -607,7 +607,7 @@ impl PartitionCell {
         // Hands the work to the lifecycle pool. `injected` is the outcome of a fault a
         // test armed; if it's an error, the work reports it instead of running.
         let submit = move |injected: Result<(), RocksError>| {
-            let task = rocksdb.prepare_op(move |rocksdb| {
+            let task = rocksdb.prepare(move |rocksdb| {
                 let result = injected.and_then(|()| op(rocksdb.inner())).and_then(|()| {
                     let cf_name = meta.cf_name();
                     let database = PartitionStoreDb {
