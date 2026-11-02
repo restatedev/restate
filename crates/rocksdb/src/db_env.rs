@@ -364,8 +364,8 @@ mod tests {
             db.inner().as_raw_db().put_cf(&cf, b"key", b"value")?;
         }
         let metadata = db
-            .export_cf(CfName::new("data-source"), export.clone())
-            .await?;
+            .inner()
+            .export_cf(CfName::new("data-source"), export.clone())?;
         db.import_cf(CfName::new("data-imported"), metadata).await?;
         assert_eq!(
             *configurator.seen_cfs.lock(),
