@@ -11,7 +11,7 @@
 mod config_discovery;
 mod environments;
 mod login;
-mod profile;
+pub(crate) mod profile;
 
 use base64::Engine;
 use cling::prelude::*;

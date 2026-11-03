@@ -12,7 +12,6 @@ use std::path::Path;
 
 use anyhow::Result;
 use cling::prelude::*;
-use figment::Profile;
 use itertools::Itertools;
 use serde_json::{Value, json};
 use strum::IntoEnumIterator;
@@ -24,7 +23,7 @@ use restate_cli_util::{CliContext, c_eprintln, c_error, c_println, c_success, ex
 use restate_types::art::render_restate_logo;
 
 use crate::build_info;
-use crate::cli_env::{CliEnv, EnvironmentType};
+use crate::cli_env::{CliEnv, EnvironmentSource, EnvironmentType, LOCAL_PROFILE};
 use crate::clients::AdminClientInterface;
 use crate::clients::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
 use crate::ui::fmt::{Field, Formatter, OutputFormatter};
@@ -102,7 +101,9 @@ pub async fn run(State(env): State<CliEnv>) -> Result<()> {
         env.environment.to_string(),
         env.environment_source.to_string(),
     );
-    let display = if env.environment == Profile::Default {
+    let display = if env.environment == LOCAL_PROFILE
+        && matches!(env.environment_source, EnvironmentSource::None)
+    {
         name.clone()
     } else {
         format!("{name} (source: {source})")
@@ -113,7 +114,6 @@ pub async fn run(State(env): State<CliEnv>) -> Result<()> {
         "environment",
         [
             ("config_dir", path_field(&env.config_home)),
-            ("environment_file", path_field(&env.environment_file)),
             ("environment", environment),
             ("config_file", path_field(&env.config_file)),
             (

@@ -8,21 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod configure;
 mod tunnel;
 
 use cling::prelude::*;
 
+/// Work with the current Restate Cloud environment (select one with `restate env add`)
 #[derive(Run, Subcommand, Clone)]
 #[clap(visible_alias = "env", alias = "environment")]
 pub enum Environments {
-    /// Set up the CLI to talk to a Cloud environment, and select it
-    ///
-    /// Writes a section for it in the CLI config file, named after the Cloud environment unless
-    /// you pick another name when asked, and makes it the current environment (see
-    /// `restate config use-environment`). A section with the same name is updated, after
-    /// confirmation (or --yes). Needs `restate cloud login` first.
-    Configure(configure::Configure),
     /// Connect a Cloud environment and this machine through a tunnel
     ///
     /// Uses the current environment (or -e), which must be a Cloud one. Exposes the

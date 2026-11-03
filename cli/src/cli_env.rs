@@ -17,6 +17,7 @@ use anyhow::{Context, Result, anyhow};
 use figment::providers::{Format, Serialized, Toml};
 use figment::{Figment, Profile};
 use serde::{Deserialize, Serialize};
+use toml_edit::{DocumentMut, table, value};
 use url::Url;
 
 use restate_cli_util::OsEnv;
@@ -26,7 +27,11 @@ use crate::app::GlobalOpts;
 
 pub const CONFIG_FILENAME: &str = "config.toml";
 
-pub const ENVIRONMENT_FILENAME: &str = "environment";
+/// Where the current environment was saved before it moved to `[global] environment` of the
+/// config file. Still read when that key is absent, deleted on the next write.
+pub const LEGACY_ENVIRONMENT_FILENAME: &str = "environment";
+/// The key of the config file's `[global]` section naming the current environment.
+pub const ENVIRONMENT_KEY: &str = "environment";
 pub const ENVIRONMENT_ENV: &str = "RESTATE_ENVIRONMENT";
 
 pub const RESTATE_HOST_ENV: &str = "RESTATE_HOST";
@@ -86,7 +91,7 @@ pub enum EnvironmentType {
 pub struct CliEnv {
     pub config_home: PathBuf,
     pub config_file: PathBuf,
-    pub environment_file: PathBuf,
+    legacy_environment_file: PathBuf,
 
     /// Default text editor for state editing
     pub editor: Option<String>,
@@ -111,7 +116,7 @@ impl Display for EnvironmentSource {
         match self {
             Self::Argument => write!(f, "argument"),
             Self::Environment => write!(f, "${ENVIRONMENT_ENV}"),
-            Self::File => write!(f, "file"),
+            Self::File => write!(f, "config file"),
             Self::None => write!(f, "default"),
         }
     }
@@ -137,7 +142,7 @@ impl CliEnv {
             .map(PathBuf::from)
             .unwrap_or_else(|| config_home.join(CONFIG_FILENAME));
 
-        let environment_file = config_home.join(ENVIRONMENT_FILENAME);
+        let legacy_environment_file = config_home.join(LEGACY_ENVIRONMENT_FILENAME);
 
         let (environment, environment_source) = if let Some(environment) = &global_opts.environment
         {
@@ -146,12 +151,10 @@ impl CliEnv {
         } else if let Some(environment) = os_env.get(ENVIRONMENT_ENV) {
             // 2. RESTATE_ENVIRONMENT env
             (Profile::new(&environment), EnvironmentSource::Environment)
-        } else if environment_file.is_file() {
-            // 3. environment file
-            (
-                Profile::new(std::fs::read_to_string(&environment_file)?.trim()),
-                EnvironmentSource::File,
-            )
+        } else if let Some(environment) = saved_environment(&config_file, &legacy_environment_file)?
+        {
+            // 3. the config file (`restate env use`)
+            (Profile::new(&environment), EnvironmentSource::File)
         } else {
             // 4. default to 'local'
             (LOCAL_PROFILE, EnvironmentSource::None)
@@ -178,7 +181,7 @@ impl CliEnv {
         Ok(Self {
             config_home,
             config_file,
-            environment_file,
+            legacy_environment_file,
             editor: default_editor,
             environment,
             environment_source,
@@ -308,22 +311,94 @@ impl CliEnv {
         }
     }
 
-    pub fn write_environment(&self, environment: &str) -> std::io::Result<()> {
-        if let Some(parent) = self.environment_file.parent() {
-            std::fs::create_dir_all(parent)?
-        }
-        std::fs::write(self.environment_file.as_path(), environment)?;
-        Ok(())
+    /// The config file as a TOML document, empty when there is none yet.
+    pub fn load_config_document(&self) -> Result<DocumentMut> {
+        let config_data = if self.config_file.is_file() {
+            std::fs::read_to_string(self.config_file.as_path())
+                .with_context(|| format!("Failed to read {}", self.config_file.display()))?
+        } else {
+            String::new()
+        };
+        config_data
+            .parse::<DocumentMut>()
+            .with_context(|| format!("Failed to parse {} as TOML", self.config_file.display()))
     }
 
-    #[cfg(feature = "cloud")]
-    pub fn write_config(&self, config: &str) -> std::io::Result<()> {
-        if let Some(parent) = self.config_file.parent() {
-            std::fs::create_dir_all(parent)?
-        }
-        std::fs::write(self.config_file.as_path(), config)?;
-        Ok(())
+    /// The environment saved as the current one (`restate env use`), if any.
+    pub fn saved_environment(&self) -> Result<Option<String>> {
+        saved_environment(&self.config_file, &self.legacy_environment_file)
     }
+
+    /// Save `environment` as the current one, in `[global] environment` of the config file.
+    pub fn write_environment(&self, environment: &str) -> Result<()> {
+        let mut doc = self.load_config_document()?;
+        set_saved_environment(&mut doc, Some(environment));
+        self.write_config(&doc.to_string())
+    }
+
+    /// Write the config file, and drop the legacy `environment` file: the config file is the
+    /// only place the current environment is saved from now on.
+    pub fn write_config(&self, config: &str) -> Result<()> {
+        if let Some(parent) = self.config_file.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create {}", parent.display()))?;
+        }
+        std::fs::write(self.config_file.as_path(), config)
+            .with_context(|| format!("Failed to write {}", self.config_file.display()))?;
+        match std::fs::remove_file(&self.legacy_environment_file) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err).with_context(|| {
+                format!(
+                    "Failed to remove {}",
+                    self.legacy_environment_file.display()
+                )
+            }),
+        }
+    }
+}
+
+/// Set (or with `None`, clear) the current environment in a config document.
+pub fn set_saved_environment(doc: &mut DocumentMut, environment: Option<&str>) {
+    match environment {
+        Some(environment) => {
+            doc["global"].or_insert(table())[ENVIRONMENT_KEY] = value(environment);
+        }
+        None => {
+            if let Some(global) = doc.get_mut("global").and_then(|item| item.as_table_mut()) {
+                global.remove(ENVIRONMENT_KEY);
+            }
+        }
+    }
+}
+
+/// `[global] environment` of the config file, else the legacy `environment` file.
+fn saved_environment(config_file: &Path, legacy_file: &Path) -> Result<Option<String>> {
+    if config_file.is_file() {
+        let config: toml::Value = toml::from_str(
+            &std::fs::read_to_string(config_file)
+                .with_context(|| format!("Failed to read {}", config_file.display()))?,
+        )
+        .with_context(|| format!("Failed to parse {} as TOML", config_file.display()))?;
+        let saved = config
+            .get("global")
+            .and_then(|global| global.get(ENVIRONMENT_KEY))
+            .and_then(toml::Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty());
+        if let Some(saved) = saved {
+            return Ok(Some(saved.to_owned()));
+        }
+    }
+    if legacy_file.is_file() {
+        let saved = std::fs::read_to_string(legacy_file)
+            .with_context(|| format!("Failed to read {}", legacy_file.display()))?;
+        let saved = saved.trim();
+        if !saved.is_empty() {
+            return Ok(Some(saved.to_owned()));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(not(windows))]
@@ -457,6 +532,32 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn saved_environment_comes_from_the_config_file_then_the_legacy_file() {
+        let home = tempfile::tempdir().unwrap();
+        let mut os_env = OsEnv::default();
+        os_env.insert(CLI_CONFIG_HOME_ENV, home.path().display().to_string());
+
+        // Nothing saved: `local`.
+        let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default()).unwrap();
+        assert_eq!(cli_env.environment, LOCAL_PROFILE);
+
+        // The legacy file is still honoured.
+        std::fs::write(home.path().join(LEGACY_ENVIRONMENT_FILENAME), "old\n").unwrap();
+        let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default()).unwrap();
+        assert_eq!(cli_env.environment, Profile::new("old"));
+
+        // Writing moves it into the config file and drops the legacy file.
+        cli_env.write_environment("staging").unwrap();
+        assert!(!home.path().join(LEGACY_ENVIRONMENT_FILENAME).exists());
+        let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default()).unwrap();
+        assert_eq!(cli_env.environment, Profile::new("staging"));
+        assert_eq!(
+            cli_env.saved_environment().unwrap().as_deref(),
+            Some("staging")
+        );
     }
 
     #[test]

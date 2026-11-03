@@ -8,21 +8,36 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Choosing a Restate Cloud environment (account and environment), as `restate cloud login`
-//! does.
+//! Choosing a Restate Cloud environment (account and environment), as `restate env add` and
+//! `restate cloud login` do.
+
+use std::str::FromStr;
 
 use anyhow::Result;
 use itertools::Itertools;
 
 use crate::clients::cloud::{
     CloudClient, CloudClientInterface,
-    types::{
-        DescribeEnvironmentResponse, ListAccountsResponseAccountsItem,
-        ListEnvironmentsResponseEnvironmentsItem,
-    },
+    types::{DescribeEnvironmentResponse, ListEnvironmentsResponseEnvironmentsItem},
 };
 use crate::console::choose;
+use crate::error::RestateCliError;
 use crate::ui::with_progress;
+
+/// `[ACCOUNT/]ENVIRONMENT`, each a name or an id.
+#[derive(Clone, Debug)]
+pub(crate) struct EnvironmentSpecifier(pub Option<String>, pub String);
+
+impl FromStr for EnvironmentSpecifier {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.split_once('/') {
+            Some((account, environment)) => Ok(Self(Some(account.into()), environment.into())),
+            None => Ok(Self(None, s.into())),
+        }
+    }
+}
 
 /// A Cloud environment, with its account and the details from `DescribeEnvironment`.
 pub(crate) struct ChosenEnvironment {
@@ -51,12 +66,14 @@ pub(crate) enum Choice {
     },
 }
 
-/// Pick an environment, given the one the CLI currently uses (if any): silently when the
-/// user has one account with one environment, else by asking (which fails when prompting
-/// isn't possible, see [`choose`]). When asking, the current environment can be kept; it's
-/// kept without asking when it's the only one.
+/// Find the environment `specifier` names (no prompt; not found is an error), or pick one
+/// given the environment the CLI currently uses (if any): silently when the user has one
+/// account with one environment, else by asking (which fails when prompting isn't possible,
+/// see [`choose`]). When asking, the current environment can be kept; it's kept without
+/// asking when it's the only one.
 pub(crate) async fn choose_environment(
     client: &CloudClient,
+    specifier: Option<&EnvironmentSpecifier>,
     current: Option<&CurrentEnvironment<'_>>,
 ) -> Result<Choice> {
     let accounts = with_progress("Listing accounts...", async {
@@ -65,17 +82,41 @@ pub(crate) async fn choose_environment(
     .await?
     .accounts;
 
-    let account_i = match accounts.len() {
-        0 => return Ok(Choice::NoAccounts),
-        1 => 0,
-        _ => match pick(
-            "Select an Account:",
-            accounts.iter().map(|acc| acc.name.clone()),
-            current,
-        )? {
-            Some(i) => i,
-            None => return Ok(Choice::KeepCurrent),
-        },
+    let (account, environment) = match specifier {
+        Some(EnvironmentSpecifier(account, environment)) => {
+            (account.as_deref(), Some(environment.as_str()))
+        }
+        None => (None, None),
+    };
+
+    let account_i = if let Some(account) = account {
+        match accounts
+            .iter()
+            .find_position(|acc| acc.account_id == account)
+            .or_else(|| accounts.iter().find_position(|acc| acc.name == account))
+        {
+            Some((i, _)) => i,
+            None => {
+                return Err(RestateCliError::not_found(format!(
+                    "Couldn't find account {account}; the accounts are: [{}]",
+                    accounts.iter().map(|acc| &acc.name).join(", ")
+                ))
+                .into());
+            }
+        }
+    } else {
+        match accounts.len() {
+            0 => return Ok(Choice::NoAccounts),
+            1 => 0,
+            _ => match pick(
+                "Select an Account:",
+                accounts.iter().map(|acc| acc.name.clone()),
+                current,
+            )? {
+                Some(i) => i,
+                None => return Ok(Choice::KeepCurrent),
+            },
+        }
     };
     let account = &accounts[account_i];
 
@@ -92,28 +133,49 @@ pub(crate) async fn choose_environment(
     let is_current = |env: &ListEnvironmentsResponseEnvironmentsItem| {
         current.is_some_and(|current| current.environment_id == env.environment_id)
     };
-    let environment_i = match environments.as_slice() {
-        [] => {
-            return Ok(Choice::NoEnvironments {
-                account_name: account.name.clone(),
-            });
+    let environment_i = if let Some(environment) = environment {
+        match environments
+            .iter()
+            .find_position(|env| env.environment_id == environment)
+            .or_else(|| {
+                environments
+                    .iter()
+                    .find_position(|env| env.name == environment)
+            }) {
+            Some((i, _)) => i,
+            None => {
+                return Err(RestateCliError::not_found(format!(
+                    "Couldn't find environment {environment} in account {}; its environments are: [{}]",
+                    account.name,
+                    environments.iter().map(|env| &env.name).join(", ")
+                ))
+                .into());
+            }
         }
-        [only] if is_current(only) => return Ok(Choice::KeepCurrent),
-        [_] if current.is_none() => 0,
-        _ => match pick(
-            "Select an Environment:",
-            environments.iter().map(|env| {
-                if is_current(env) {
-                    format!("{} (current)", env.name)
-                } else {
-                    env.name.clone()
-                }
-            }),
-            current,
-        )? {
-            Some(i) => i,
-            None => return Ok(Choice::KeepCurrent),
-        },
+    } else {
+        match environments.as_slice() {
+            [] => {
+                return Ok(Choice::NoEnvironments {
+                    account_name: account.name.clone(),
+                });
+            }
+            [only] if is_current(only) => return Ok(Choice::KeepCurrent),
+            [_] if current.is_none() => 0,
+            _ => match pick(
+                "Select an Environment:",
+                environments.iter().map(|env| {
+                    if is_current(env) {
+                        format!("{} (current)", env.name)
+                    } else {
+                        env.name.clone()
+                    }
+                }),
+                current,
+            )? {
+                Some(i) => i,
+                None => return Ok(Choice::KeepCurrent),
+            },
+        }
     };
 
     let environment = with_progress("Describing environment...", async {
@@ -153,22 +215,16 @@ fn pick(
     Ok((i + 1 < items.len()).then_some(i))
 }
 
-pub(super) fn account_picker(accounts: &[ListAccountsResponseAccountsItem]) -> Result<usize> {
-    choose(
-        "Select an Account:",
-        accounts.iter().map(|acc| &acc.name).collect_vec().as_ref(),
-    )
-}
-
-pub(super) fn environment_picker(
-    environments: &[ListEnvironmentsResponseEnvironmentsItem],
-) -> Result<usize> {
-    choose(
-        "Select an Environment:",
-        environments
-            .iter()
-            .map(|env| &env.name)
-            .collect_vec()
-            .as_ref(),
-    )
+/// The error for a Cloud account or environment that doesn't exist yet, with the UI to
+/// create it.
+pub(crate) fn nothing_to_add(choice: &Choice) -> Option<RestateCliError> {
+    match choice {
+        Choice::NoAccounts => Some(RestateCliError::not_found(
+            "It looks like you don't have a Restate Cloud account yet: log in to the UI at https://cloud.restate.dev to create one",
+        )),
+        Choice::NoEnvironments { account_name } => Some(RestateCliError::not_found(format!(
+            "Account {account_name} has no environment yet: create one in the UI at https://cloud.restate.dev"
+        ))),
+        Choice::Environment(_) | Choice::KeepCurrent => None,
+    }
 }

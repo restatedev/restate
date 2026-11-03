@@ -65,8 +65,8 @@ const ROOT_LONG_HELP: &str = concat!(
   By default the CLI talks to a server on this machine (admin API at http://localhost:9070).
   To target another one, set $RESTATE_ADMIN_URL, plus $RESTATE_AUTH_TOKEN for a bearer token:
     RESTATE_ADMIN_URL=https://restate.example.com:9070 RESTATE_AUTH_TOKEN=... restate whoami
-  or add an environment to the CLI config file (see `restate config --help`) and select it
-  with -e/--environment or `restate config use-environment`. The variables take precedence
+  or add an environment to the CLI config file (`restate env add`, see `restate env --help`)
+  and select it with -e/--environment or `restate env use`. The variables take precedence
   over the config file.
 
 ",
@@ -114,8 +114,8 @@ fn trim_global_help(cmd: clap::Command, hidden: &[clap::Arg]) -> clap::Command {
 #[command(next_help_heading = "Global options")]
 pub struct GlobalOpts {
     /// Environment (a section of the CLI config file) to use. When omitted: $RESTATE_ENVIRONMENT,
-    /// else the one selected with `restate config use-environment`, else `local` (a server on
-    /// this machine). List them with `restate config list-environments`.
+    /// else the one selected with `restate env use`, else `local` (a server on this machine).
+    /// List them with `restate env list`.
     #[arg(long, short, global = true, display_order = 0)]
     pub environment: Option<Profile>,
 }
@@ -205,7 +205,14 @@ pub enum Command {
     #[clap(subcommand)]
     Completions(Completions),
 
-    /// Manage the CLI config file and its environments (servers to talk to)
+    /// Manage the environments the CLI talks to: list, select, add, remove, rename
+    #[clap(subcommand)]
+    #[command(after_help = after_help!(
+        learn_more: "https://docs.restate.dev/references/cli-config",
+    ))]
+    Env(env::Env),
+
+    /// View and edit the CLI config file (see also `restate env`)
     #[clap(subcommand, alias = "conf")]
     #[command(verbatim_doc_comment)]
     #[command(after_help = after_help!(
@@ -234,7 +241,7 @@ fn init(common_opts: &CommonOpts, global_opts: &GlobalOpts) -> Result<State<CliE
             info!("Using environment from $RESTATE_ENVIRONMENT")
         }
         EnvironmentSource::File => {
-            info!("Using environment from {}", env.environment_file.display())
+            info!("Using environment from {}", env.config_file.display())
         }
         EnvironmentSource::None => {
             info!("Didn't load an environment")
