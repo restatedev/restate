@@ -1243,19 +1243,22 @@ where
 
                 let snapshot_base_path = config.worker.snapshots.snapshots_dir(partition_id);
                 let snapshot_id = SnapshotId::new();
-                let (node_name, cluster_name, cluster_fingerprint) = Metadata::with_current(|m| {
-                    let nodes_config = m.nodes_config_ref();
-                    let node_name = nodes_config
-                        .find_node_by_id(m.my_node_id())
-                        .expect("my node must be present")
-                        .name
-                        .clone();
-                    (
-                        node_name,
-                        nodes_config.cluster_name().to_owned(),
-                        nodes_config.cluster_fingerprint(),
-                    )
-                });
+                let (node_name, node_id, cluster_name, cluster_fingerprint) =
+                    Metadata::with_current(|m| {
+                        let nodes_config = m.nodes_config_ref();
+                        let node_id = m.my_node_id();
+                        let node_name = nodes_config
+                            .find_node_by_id(node_id)
+                            .expect("my node must be present")
+                            .name
+                            .clone();
+                        (
+                            node_name,
+                            node_id,
+                            nodes_config.cluster_name().to_owned(),
+                            nodes_config.cluster_fingerprint(),
+                        )
+                    });
 
                 let create_snapshot_task = SnapshotPartitionTask {
                     snapshot_id,
@@ -1266,6 +1269,7 @@ where
                     cluster_name,
                     cluster_fingerprint,
                     node_name,
+                    node_id,
                     snapshot_repository,
                 };
 

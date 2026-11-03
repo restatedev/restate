@@ -16,6 +16,7 @@ use tracing::{debug, info, instrument, warn};
 use restate_clock::WallClock;
 use restate_clock::time::MillisSinceEpoch;
 use restate_core::cancellation_token;
+use restate_types::GenerationalNodeId;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::Lsn;
 use restate_types::nodes_config::ClusterFingerprint;
@@ -36,6 +37,7 @@ pub struct SnapshotPartitionTask {
     pub cluster_name: String,
     pub cluster_fingerprint: Option<ClusterFingerprint>,
     pub node_name: String,
+    pub node_id: GenerationalNodeId,
     pub snapshot_repository: SnapshotRepository,
 }
 
@@ -112,6 +114,7 @@ impl SnapshotPartitionTask {
             cluster_name: self.cluster_name.clone(),
             cluster_fingerprint: self.cluster_fingerprint,
             node_name: self.node_name.clone(),
+            node_id: Some(self.node_id),
             partition_id: self.partition_id,
             created_at: created_at.into_timestamp(),
             snapshot_id: self.snapshot_id,
@@ -119,6 +122,7 @@ impl SnapshotPartitionTask {
             log_id: snapshot.log_id,
             min_applied_lsn: snapshot.min_applied_lsn,
             db_comparator_name: snapshot.db_comparator_name.clone(),
+            compatibility: snapshot.compatibility.clone(),
             files: snapshot.files.clone(),
         }
     }
