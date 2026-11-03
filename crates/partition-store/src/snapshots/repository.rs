@@ -26,6 +26,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio_util::io::StreamReader;
+use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, Span, debug, info, instrument, warn};
 use url::Url;
 
@@ -689,6 +690,9 @@ impl SnapshotRepository {
 
     /// Discover and download the latest snapshot available. It is the caller's responsibility
     /// to delete the snapshot directory when it is no longer needed.
+    ///
+    /// If `cancellation` fires mid-download, in-flight downloads are aborted and drained before
+    /// the staging directory is removed, and an error is returned.
     #[instrument(
         name = "get-latest-snapshot",
         level = "error",
@@ -698,13 +702,14 @@ impl SnapshotRepository {
     pub async fn get_latest(
         &self,
         partition_id: PartitionId,
+        cancellation: &CancellationToken,
     ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
         use crate::metric_definitions::{SNAPSHOT_DOWNLOAD_DURATION, SNAPSHOT_DOWNLOAD_FAILED};
 
         let start = tokio::time::Instant::now();
-        let result = self.get_latest_inner(partition_id).await;
+        let result = self.get_latest_inner(partition_id, cancellation).await;
 
-        if result.is_err() {
+        if result.is_err() && !cancellation.is_cancelled() {
             metrics::counter!(SNAPSHOT_DOWNLOAD_FAILED).increment(1);
         }
         metrics::histogram!(SNAPSHOT_DOWNLOAD_DURATION).record(start.elapsed());
@@ -715,6 +720,7 @@ impl SnapshotRepository {
     async fn get_latest_inner(
         &self,
         partition_id: PartitionId,
+        cancellation: &CancellationToken,
     ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
         let latest_path = self.latest_snapshot_pointer_path(partition_id);
 
@@ -852,7 +858,15 @@ impl SnapshotRepository {
         }
 
         loop {
-            match downloads.join_next().await {
+            let next = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => {
+                    abort_tasks(downloads).await;
+                    bail!("Snapshot download cancelled");
+                }
+                next = downloads.join_next() => next,
+            };
+            match next {
                 None => {
                     debug!(snapshot_id = %snapshot_metadata.snapshot_id, "All download tasks completed");
                     break;
@@ -1126,6 +1140,7 @@ mod tests {
     use object_store::{ObjectStoreExt, PutPayload};
     use tempfile::TempDir;
     use tokio::io::AsyncWriteExt;
+    use tokio_util::sync::CancellationToken;
     use tracing::info;
     use url::Url;
 
@@ -1256,7 +1271,8 @@ mod tests {
             ..SnapshotsOptions::default()
         };
 
-        let repository = SnapshotRepository::new_from_config(&opts, TempDir::new().unwrap().keep())
+        let staging_dir = TempDir::new().unwrap().keep();
+        let repository = SnapshotRepository::new_from_config(&opts, staging_dir.clone())
             .await?
             .unwrap();
 
@@ -1317,7 +1333,21 @@ mod tests {
         let (expected_latest2, _) = repository.build_latest_v2(&snapshot2, None)?;
         assert_eq!(expected_latest2, latest);
 
-        let latest = repository.get_latest(PartitionId::MIN).await?.unwrap();
+        // A cancelled download fails and leaves nothing behind in the staging directory.
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert!(
+            repository
+                .get_latest(PartitionId::MIN, &cancelled)
+                .await
+                .is_err()
+        );
+        assert!(std::fs::read_dir(&staging_dir)?.next().is_none());
+
+        let latest = repository
+            .get_latest(PartitionId::MIN, &CancellationToken::new())
+            .await?
+            .unwrap();
         assert_eq!(latest.min_applied_lsn, snapshot2.min_applied_lsn);
         let local_path = latest.base_dir.path().to_string_lossy().to_string();
 

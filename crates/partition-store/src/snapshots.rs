@@ -22,6 +22,7 @@ pub use self::repository::{PartitionSnapshotStatus, SnapshotRepository};
 pub use self::snapshot_task::*;
 
 use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, instrument};
 
 use restate_types::config::Configuration;
@@ -107,13 +108,14 @@ impl Snapshots {
     pub async fn download_latest_snapshot(
         &self,
         partition_id: PartitionId,
+        cancellation: &CancellationToken,
     ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
         // Attempt to get the latest available snapshot from the snapshot repository:
         let snapshot = match &self.repository {
             Some(repository) => {
                 debug!("Looking for partition snapshot from which to bootstrap partition store");
                 // todo(pavel): pass target LSN to repository
-                repository.get_latest(partition_id).await?
+                repository.get_latest(partition_id, cancellation).await?
             }
             None => {
                 debug!("No snapshot repository configured");

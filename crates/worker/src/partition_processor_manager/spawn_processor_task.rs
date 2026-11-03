@@ -117,9 +117,10 @@ where
 
                     // RocksDB operations continue on the storage pool if their awaiting future is
                     // dropped. Once opening starts, drain it before honoring cancellation so a
-                    // replacement processor cannot race the abandoned open.
+                    // replacement processor cannot race the abandoned open. Snapshot downloads
+                    // observe the cancellation token and stop early.
                     let partition_store = partition_store_manager
-                        .open(&partition, fast_forward_lsn)
+                        .open_cancellable(&partition, fast_forward_lsn, &cancellation)
                         .await;
 
                     if cancellation.is_cancelled() {

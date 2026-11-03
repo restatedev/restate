@@ -27,6 +27,8 @@ pub enum OpenError {
     SnapshotUnsuitable,
     #[error("partition store for partition does not exist in local database")]
     NoLocalStore,
+    #[error("open was cancelled")]
+    Cancelled,
     #[error("open failed due to snapshot-related error: {0:#}")]
     Snapshot(#[from] anyhow::Error),
     #[error("open failed due to rocksdb error: {0}")]
