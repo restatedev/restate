@@ -1158,16 +1158,13 @@ experimental! {
     /// Since v1.8.2
     vqueue_orphaned_active_marker_removal,
 
-    /// Since v1.8.0
-    indexes_v1,
-
     /// # Enables service protocol v8
     ///
     /// Set to `true` to enable the experimental service protocol v8,
     /// adding support for reading state without recording it in the journal.
     ///
-    /// Once enabled, you **cannot** roll back to previous versions
-    /// where v8 is not supported (< v1.8), as in-flight invocations might be pinned to v8.
+    /// Only enable once all nodes run v1.8.2 or newer. Once enabled, you **cannot** roll back to a
+    /// Restate-server version older than v1.8.2, as in-flight invocations might be pinned to v8.
     ///
     /// Since v1.8.2
     protocol_v8,
