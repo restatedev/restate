@@ -25,6 +25,7 @@ restate-util-random = { workspace = true }
 restate-util-time = { workspace = true }
 
 anyhow = { workspace = true }
+async-task = { workspace = true }
 bytes = { workspace = true }
 codederror = { workspace = true }
 derive_builder = { workspace = true }
