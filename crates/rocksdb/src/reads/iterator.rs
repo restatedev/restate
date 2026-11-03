@@ -121,6 +121,16 @@ impl<H> ReadIterator<'_, H> {
         self.iterator.prev();
     }
 
+    /// Moves to the first key.
+    pub fn seek_to_first(&mut self) {
+        self.iterator.seek_to_first();
+    }
+
+    /// Moves to the last key.
+    pub fn seek_to_last(&mut self) {
+        self.iterator.seek_to_last();
+    }
+
     /// The key and value at the current position. Returns `None` once the
     /// iterator has moved past the last key, or the error that stopped it.
     #[allow(clippy::type_complexity)]
