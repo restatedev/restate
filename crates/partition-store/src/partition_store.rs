@@ -54,15 +54,15 @@ use crate::fsm_table::put_storage_version;
 use crate::fsm_table::seal_partition;
 use crate::fsm_table::{
     get_locally_durable_lsn, get_min_restate_version_from_partition_db,
-    get_storage_features_from_partition_db, get_storage_version_from_partition_db,
-    is_jc_orphan_cleanup_done, put_jc_orphan_cleanup_done,
+    get_state_machine_features_from_partition_db, get_storage_features_from_partition_db,
+    get_storage_version_from_partition_db, is_jc_orphan_cleanup_done, put_jc_orphan_cleanup_done,
 };
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
 use crate::migrations::MigrationError;
 use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
-use crate::snapshots::{LocalPartitionSnapshot, export_dir};
+use crate::snapshots::{LocalPartitionSnapshot, SnapshotCompatibility, export_dir};
 use crate::{configure_prefix_iterator_opts, configure_range_iterator_opts};
 
 pub type DB = rocksdb::DB;
@@ -601,15 +601,25 @@ impl PartitionStore {
         tokio::fs::create_dir_all(snapshot_base_path)
             .await
             .map_err(|e| StorageError::SnapshotExport(e.into()))?;
+
+        // The partition processor may raise the version barrier or enable partition features
+        // while the export runs. Every part of the compatibility only ever grows, so if it reads
+        // the same before and after the export, the exported data has exactly that. Otherwise
+        // it's unknown. (One exception: enabling vqueues turns off vqueues_skip_completed, which
+        // it supersedes, so an export can miss a brief switch between the two.)
+        let compatibility_before = self.read_snapshot_compatibility();
         let (base_dir, export_files) = self
             .db
             .export_cf(export_dir(snapshot_base_path, snapshot_id))
             .await
             .map_err(|e| StorageError::SnapshotExport(e.into()))?;
+        let compatibility = compatibility_before
+            .filter(|before| self.read_snapshot_compatibility().as_ref() == Some(before));
 
         trace!(
             cf_name = %self.db.partition().cf_name(),
             %applied_lsn,
+            ?compatibility,
             "Exported column family snapshot to {:?}",
             base_dir.path()
         );
@@ -621,7 +631,35 @@ impl PartitionStore {
             log_id: self.db.partition().log_id(),
             min_applied_lsn: applied_lsn,
             key_range: self.db.partition().key_range,
+            compatibility,
         })
+    }
+
+    /// Reads what a server needs in order to use this partition's data from the persisted values
+    /// that [`Self::verify_and_run_migrations`] checks. `None` if they can't be read.
+    fn read_snapshot_compatibility(&self) -> Option<SnapshotCompatibility> {
+        let db = self.partition_db();
+        let read = || -> Result<_> {
+            let features = get_storage_features_from_partition_db(db)?.unwrap_or_default();
+            let barrier = get_min_restate_version_from_partition_db(db)?;
+            let partition_features = get_state_machine_features_from_partition_db(db)?;
+            Ok(SnapshotCompatibility {
+                min_restate_version: match features.get_required_min_version() {
+                    Some(required) => required.max(barrier),
+                    None => barrier,
+                },
+                storage_features: features.names().cloned().collect(),
+                partition_features: partition_features
+                    .enabled_names()
+                    .map(ReString::from_static)
+                    .collect(),
+            })
+        };
+        read()
+            .inspect_err(
+                |err| warn!(%err, "Failed to read the storage compatibility of a snapshot"),
+            )
+            .ok()
     }
 
     pub fn partition(&self) -> &Arc<Partition> {
