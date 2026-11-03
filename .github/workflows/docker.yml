@@ -113,16 +113,20 @@ env:
 
 jobs:
   build-and-push-image:
+    # dispatched directly, so it does not inherit packages: write from ci.yml
+    permissions:
+      contents: read
+      packages: write
     runs-on: ${{ inputs.runnerSize == '32x' && 'warp-ubuntu-latest-x64-32x' || inputs.runnerSize == '16x' && 'warp-ubuntu-latest-x64-16x' || inputs.parca && 'warp-ubuntu-latest-x64-32x' || 'warp-ubuntu-latest-x64-16x' }}
     timeout-minutes: ${{ inputs.parca && 140 || 70 }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.4.0
 
       - name: Install cargo-hakari
         if: ${{ hashFiles('.config/hakari.toml') != '' }}
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.88.0
         with:
           tool: cargo-hakari
 
@@ -132,10 +136,10 @@ jobs:
 
       # this is needed to be able to load and push a multiplatform image in one step
       - name: Set up Docker containerd snapshotter
-        uses: depot/use-containerd-snapshotter-action@v1
+        uses: depot/use-containerd-snapshotter-action@v1.1.1
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v3.12.0
         with:
           # https://docs.warpbuild.com/cache/docker-layer-caching#step-1-set-up-docker-buildx-action
           driver-opts: |
@@ -143,7 +147,7 @@ jobs:
 
       - name: Cache sccache
         id: cache
-        uses: WarpBuilds/cache@v1
+        uses: WarpBuilds/cache@v1.4.13
         with:
           path: sccache-cache
           key: ${{ runner.os }}-sccache-${{ hashFiles('**/Cargo.lock') }}
@@ -158,7 +162,7 @@ jobs:
           skip-extraction: ${{ steps.cache.outputs.cache-hit }}
 
       - name: Log into GitHub container registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v3.7.0
         with:
           registry: ${{ env.GHCR_REGISTRY }}
           username: ${{ env.GHCR_REGISTRY_USERNAME }}
@@ -166,7 +170,7 @@ jobs:
 
       - name: Log into DockerHub
         if: ${{ inputs.pushToDockerHub }}
-        uses: docker/login-action@v3
+        uses: docker/login-action@v3.7.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
@@ -233,7 +237,7 @@ jobs:
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v5.10.0
         with:
           images: |
             ${{ env.GHCR_REGISTRY }}/${{ env.REPOSITORY_OWNER }}/${{ env.IMAGE_NAME }}
@@ -272,7 +276,7 @@ jobs:
 
       - name: Build${{(inputs.uploadImageAsTarball == '' || github.ref == 'refs/heads/main') && ' and push ' || ' '}}Docker image
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v6.19.2
         with:
           context: .
           file: "docker/Dockerfile"
@@ -306,7 +310,7 @@ jobs:
 
       - name: Upload docker image tar as artifact
         if: ${{ inputs.uploadImageAsTarball != '' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: ${{ inputs.uploadImageAsTarball }}
           path: restate.tar
@@ -315,7 +319,7 @@ jobs:
 
       - name: Extract debug symbols
         if: ${{ inputs.parca }}
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v6.19.2
         with:
           context: .
           file: "docker/Dockerfile"
@@ -333,7 +337,7 @@ jobs:
 
       - name: Upload debug symbols
         if: ${{ inputs.parca }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: debug-symbols
           path: ./debug-symbols/**/restate-server.debug
