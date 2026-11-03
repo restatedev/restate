@@ -240,7 +240,7 @@ RocksDB iteration and protobuf deserialization happen on background storage thre
 The mechanism works as follows:
 1. Each table implements the `ScanLocalPartition` trait, defining a `for_each_row` method
 2. These implementations call iterator methods on `PartitionStore` (e.g., `for_each_invocation_status_lazy`)
-3. Under the hood, these use `iterator_for_each` which offloads execution to a background storage task via `run_background_iterator` in the `restate-rocksdb` crate
+3. Under the hood, these use `iterator_for_each`, which runs the iterator in slices on the storage thread pool via `background_iterator` in the `restate-rocksdb` crate
 4. Batches are sent back to tokio-land via channels, with scheduling overhead only at batch boundaries
 
 ## Current Limitations and Future Improvements
