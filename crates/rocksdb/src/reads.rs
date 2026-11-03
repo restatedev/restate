@@ -257,6 +257,7 @@
 //! ```
 
 mod iterator;
+mod iterator_driver;
 mod reader;
 mod scoped;
 mod snapshot;
@@ -271,6 +272,7 @@ use restate_util_lifecycle::{Scope, ScopePayload};
 use crate::{CfHandles, RawRocksDb};
 
 pub use self::iterator::{OwnedReadIterator, ReadIterator};
+pub use self::iterator_driver::{ChannelSink, IteratorDriver, IteratorSink};
 pub use self::reader::{OwnedPinnedBatch, OwnedReader, PinnedBatch, Reader};
 pub use self::scoped::ScopedReads;
 pub use self::snapshot::ReadSnapshot;

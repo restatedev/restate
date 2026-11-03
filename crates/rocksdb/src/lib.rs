@@ -60,7 +60,7 @@ pub use self::error::*;
 pub use self::iterator::IterAction;
 use self::iterator::RocksIterator;
 pub use self::perf::{RocksDbReadPerfGuard, RocksDbWritePerfGuard};
-use self::reads::ColumnFamilies;
+use self::reads::{ColumnFamilies, IteratorDriver, IteratorSink, ScopedReads};
 pub use self::rock_access::RocksAccess;
 pub use restate_util_lifecycle::KeepAlive;
 
@@ -599,6 +599,61 @@ impl RocksDb {
         };
         let op = StorageOp::with_context(scope, gate, StorageTaskKind::BackgroundIterator, iterate);
         database.executor.pool(priority).dispatch(op)
+    }
+
+    /// Starts running an iterator over one of `scope`'s column families on
+    /// `priority`'s pool, a few steps at a time, handing the items to `sink`, and
+    /// returns a driver that resolves once the iteration is over. The iterator
+    /// moves while the sink has room, whether or not the driver is polled, and
+    /// waits without holding a storage thread while it's full. The iterator
+    /// starts with `initial_action`, and dropping the driver cancels it.
+    ///
+    /// Admission is checked in `gate`, which must be inside the scope, right
+    /// away. The iteration then counts in `gate` until the iterator and the sink
+    /// are dropped, so draining the gate also waits for them.
+    ///
+    /// # Panics
+    /// In debug builds, panics if `gate` isn't inside `scope`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn background_iterator<C, S>(
+        scope: &Scope<C>,
+        gate: &Arc<Gate>,
+        cf: C::Cf,
+        name: &'static str,
+        priority: Priority,
+        initial_action: IterAction,
+        mut read_options: rocksdb::ReadOptions,
+        sink: S,
+    ) -> Result<IteratorDriver, AdmissionClosed>
+    where
+        C: ColumnFamilies,
+        S: IteratorSink + Send + 'static,
+    {
+        debug_assert!(
+            gate.is_inside(scope.gate()),
+            "the gate isn't inside the scope"
+        );
+        let lease = gate.try_acquire().ok_or(AdmissionClosed)?.into_owned();
+        // Steps run on the storage pool, where blocking IO is fine.
+        read_options.set_read_tier(rocksdb::ReadTier::All);
+        let iterator = scope.owned_iterator(cf, read_options);
+        let executor = scope
+            .payload()
+            .handles()
+            .database()
+            .executor
+            .pool(priority)
+            .clone();
+        // The lease lives as long as the iterator, so it counts in `gate` until
+        // the iteration is done and the iterator and the sink are dropped.
+        Ok(IteratorDriver::spawn(
+            name,
+            iterator,
+            sink,
+            Some(initial_action),
+            executor,
+            lease,
+        ))
     }
 
     /// The shared I/O pools this database was created with. Handy for submitting
