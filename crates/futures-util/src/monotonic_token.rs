@@ -112,6 +112,8 @@ use std::sync::{Arc, atomic};
 
 use tokio::sync::Notify;
 
+use restate_util_cache_padded::CachePadded;
+
 /// An opaque, ordered token drawn from a [`Tokens`] generator.
 ///
 /// Tokens are [`Copy`], [`Ord`], and [`Eq`]. The phantom type `T` prevents
@@ -174,7 +176,10 @@ const MAX_TOKEN: usize = isize::MAX as usize + 1;
 
 struct Inner {
     /// The most recent token handed out, or 0 before the first.
-    issued: AtomicUsize,
+    ///
+    /// Kept on its own cache line: every [`Tokens::next`] writes it, and sharing a line with
+    /// the fields the owner and listeners touch would slow both sides down.
+    issued: CachePadded<AtomicUsize>,
     retired_through: AtomicUsize,
     notify: Notify,
 }
@@ -199,7 +204,7 @@ impl<T> TokenOwner<T> {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Inner {
-                issued: AtomicUsize::new(0),
+                issued: CachePadded::new(AtomicUsize::new(0)),
                 retired_through: AtomicUsize::new(0),
                 notify: Notify::new(),
             }),
