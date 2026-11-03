@@ -4,10 +4,7 @@
 
 ### What Changed
 `restate cloud login` now also selects the Restate Cloud environment the CLI talks to, right after
-logging in. With one account and one environment it does so silently; with several, it asks you to
-pick one. If the CLI already uses a Cloud environment, logging in again keeps it: silently when it's
-the only environment, otherwise the picker offers to keep it next to the other environments. Pass
-`--no-env` to only log in, as before.
+logging in (see the `restate profile` release note for how environments become profiles).
 
 A service connected to Restate Cloud with the SDK's `connect()` can be registered by its name, with the
 identifier the SDK prints at startup:
@@ -25,10 +22,6 @@ register. You no longer need to configure the environment in between, nor to ass
 by hand.
 
 ### Impact on Users
-- Existing environments in your CLI config file are kept. Login writes a section named after the
-  selected Cloud environment, replacing one that is that same environment; if the name is already
-  used by a different environment, nothing is written and you're pointed to `restate profile rename`.
-- `restate profile add` selects another environment or account.
 - `--tunnel-name <destination URL>` for services behind `restate cloud env tunnel` is unchanged.
 - `restate deployments register` now waits up to 30 seconds for the server to discover the endpoint
   (`--request-timeout` still applies when set higher), so a slow or unreachable endpoint reports the
