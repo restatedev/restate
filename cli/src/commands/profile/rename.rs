@@ -19,8 +19,8 @@ use super::sections::{check_name, is_local};
 
 /// Rename a profile of the CLI config file
 ///
-/// The current profile stays selected under its new name. `local` and the profiles of
-/// Restate Cloud environments (named after them) can't be renamed.
+/// The current profile stays selected under its new name; a renamed Cloud profile keeps
+/// its name across logins. `local` can't be renamed.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_rename")]
 #[command(after_help = after_help!(
@@ -56,18 +56,6 @@ pub async fn run_rename(State(env): State<CliEnv>, opts: &Rename) -> Result<()> 
         .with_next_step("restate profile list", "see the profiles")
         .into());
     };
-    if section
-        .get("environment_type")
-        .and_then(toml_edit::Item::as_str)
-        == Some("cloud")
-    {
-        doc.insert(&opts.name, section);
-        return Err(RestateCliError::bad_input(format!(
-            "\"{}\" is a Restate Cloud environment: Cloud environments keep their environment's name",
-            opts.name
-        ))
-        .into());
-    }
     if doc.get(&opts.new_name).is_some() {
         return Err(RestateCliError::bad_input(format!(
             "A profile named \"{}\" already exists in {}",

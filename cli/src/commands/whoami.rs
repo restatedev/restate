@@ -152,16 +152,33 @@ pub async fn run(State(env): State<CliEnv>) -> Result<()> {
         EnvironmentType::Default => {}
         #[cfg(feature = "cloud")]
         EnvironmentType::Cloud => {
-            let (account_id, environment_id) = match &env.config.cloud.environment_info {
-                Some(environment_info) => (
-                    Some(environment_info.account_id.as_str().to_owned()),
-                    Some(environment_info.environment_id.as_str().to_owned()),
+            // Named things show their name, with the id in JSON; older profiles only have ids.
+            let named = |id: Option<&str>, name: Option<&str>| match (id, name) {
+                (Some(id), name) => Field::with_display(
+                    json!({ "id": id, "name": name }),
+                    name.unwrap_or(id).to_owned(),
                 ),
-                None => (None, None),
+                (None, _) => or_none(None::<String>),
             };
+            let info = env.config.cloud.environment_info.as_ref();
+            let user_id = info.and_then(|info| info.user_id.as_deref());
+            let user = named(
+                user_id,
+                user_id
+                    .and_then(|id| env.config.cloud.users.get(id))
+                    .and_then(|user| user.email.as_deref()),
+            );
+            let account = named(
+                info.map(|info| info.account_id.as_str()),
+                info.and_then(|info| info.account_name.as_deref()),
+            );
+            let environment = named(
+                info.map(|info| info.environment_id.as_str()),
+                info.and_then(|info| info.environment_name.as_deref()),
+            );
 
-            let (logged_in, logged_in_status) = match &env.config.cloud.credentials {
-                Some(credentials) => match credentials.expiry() {
+            let (logged_in, logged_in_status) = match env.cloud_credentials() {
+                Ok((_, credentials)) => match credentials.expiry() {
                     Ok(expiry) => {
                         let delta = expiry.signed_duration_since(chrono::Utc::now());
                         if delta > chrono::TimeDelta::zero() {
@@ -176,14 +193,15 @@ pub async fn run(State(env): State<CliEnv>) -> Result<()> {
                     }
                     Err(_) => (false, "invalid token".to_string()),
                 },
-                None => (false, "no token".to_string()),
+                Err(_) => (false, "no token".to_string()),
             };
             f.title("☁️", "Cloud");
             f.detail(
                 "cloud",
                 [
-                    ("account_id", or_none(account_id)),
-                    ("environment_id", or_none(environment_id)),
+                    ("user", user),
+                    ("account", account),
+                    ("environment", environment),
                     (
                         "logged_in",
                         Field::with_display(

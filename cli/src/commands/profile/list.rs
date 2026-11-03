@@ -10,17 +10,19 @@
 
 use anyhow::Result;
 use cling::prelude::*;
-use figment::{
-    Figment, Profile,
-    providers::{Format, Serialized, Toml},
-};
+use figment::Profile;
 
 use crate::{
-    cli_env::{CliConfig, CliEnv, LOCAL_PROFILE, ProfileSource},
+    cli_env::{CliConfig, CliEnv, EnvironmentType, LOCAL_PROFILE, ProfileSource},
     ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter},
 };
 
+use super::sections::list_profiles;
+
 /// List the profiles of the CLI config file, marking the current one
+///
+/// Cloud profiles show the user (email), account and environment they reach; ids are in
+/// the JSON output.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_list")]
 #[command(after_help = after_help!(
@@ -30,56 +32,47 @@ use crate::{
 pub struct List {}
 
 pub async fn run_list(State(env): State<CliEnv>, _opts: &List) -> Result<()> {
-    let defaults = CliConfig::default();
-    let local = CliConfig::local();
+    let mut names = vec![LOCAL_PROFILE.as_str().to_string()];
+    names.extend(list_profiles(&env.load_config_document()?));
 
-    let mut figment =
-        Figment::from(Serialized::defaults(defaults)).merge(Serialized::from(local, LOCAL_PROFILE));
-
-    // Load configuration file
-    if env.config_file.is_file() {
-        figment = figment.merge(Toml::file_exact(&env.config_file).nested());
+    let mut rows = Vec::with_capacity(names.len());
+    for name in names {
+        let profile = Profile::new(&name);
+        let config = CliEnv::profile_config(&env.config_file, &profile)?;
+        let current =
+            profile == env.profile && !matches!(env.profile_source, ProfileSource::Variables);
+        let admin_base_url = config.admin_base_url.as_ref().map(ToString::to_string);
+        let (user, account, environment) = cloud_columns(&config);
+        rows.push([
+            Field::with_display(current, if current { "*" } else { "" }),
+            Field::new(name),
+            Field::new(match config.environment_type {
+                EnvironmentType::Default => "self_hosted",
+                #[cfg(feature = "cloud")]
+                EnvironmentType::Cloud => "cloud",
+            }),
+            user,
+            account,
+            environment,
+            Field::with_display(
+                &admin_base_url,
+                admin_base_url.as_deref().unwrap_or("(NONE)"),
+            ),
+        ]);
     }
-
-    let profiles: Vec<Profile> = figment
-        .profiles()
-        .filter(|profile| *profile != Profile::Global && *profile != Profile::Default)
-        .cloned()
-        .collect();
-
-    let rows: Vec<[Field; 4]> = profiles
-        .into_iter()
-        .map(|profile| {
-            let selected = figment.clone().select(profile.clone());
-            let admin_base_url = selected
-                .find_value("admin_base_url")
-                .ok()
-                .and_then(|url| url.as_str().map(str::to_owned));
-            let environment_type = selected
-                .find_value("environment_type")
-                .ok()
-                .and_then(|t| t.as_str().map(str::to_owned))
-                .filter(|t| t == "cloud")
-                .unwrap_or_else(|| "self_hosted".to_owned());
-            let current =
-                profile == env.profile && !matches!(env.profile_source, ProfileSource::Variables);
-
-            [
-                Field::with_display(current, if current { "*" } else { "" }),
-                Field::new(profile.as_str().as_str()),
-                Field::new(environment_type),
-                Field::with_display(
-                    &admin_base_url,
-                    admin_base_url.as_deref().unwrap_or("(NONE)"),
-                ),
-            ]
-        })
-        .collect();
 
     let mut f = Formatter::new();
     f.table(
         "profiles",
-        &["current", "name", "type", "admin_base_url"],
+        &[
+            "current",
+            "name",
+            "type",
+            "user",
+            "account",
+            "environment",
+            "admin_base_url",
+        ],
         rows,
         IfEmpty::Nothing,
     );
@@ -89,4 +82,41 @@ pub async fn run_list(State(env): State<CliEnv>, _opts: &List) -> Result<()> {
         IncludeFormatting::No,
     );
     f.finish()
+}
+
+/// The user, account and environment of a Cloud profile: names for humans (ids when a
+/// profile predates them), both in JSON; blank for other profiles.
+#[cfg(feature = "cloud")]
+fn cloud_columns(config: &CliConfig) -> (Field, Field, Field) {
+    let named = |id: Option<&str>, name: Option<&str>| match id {
+        Some(id) => Field::with_display(
+            serde_json::json!({ "id": id, "name": name }),
+            name.unwrap_or(id).to_owned(),
+        ),
+        None => Field::with_display(None::<String>, ""),
+    };
+    let info = config.cloud.environment_info.as_ref();
+    let user_id = info.and_then(|info| info.user_id.as_deref());
+    (
+        named(
+            user_id,
+            user_id
+                .and_then(|id| config.cloud.users.get(id))
+                .and_then(|user| user.email.as_deref()),
+        ),
+        named(
+            info.map(|info| info.account_id.as_str()),
+            info.and_then(|info| info.account_name.as_deref()),
+        ),
+        named(
+            info.map(|info| info.environment_id.as_str()),
+            info.and_then(|info| info.environment_name.as_deref()),
+        ),
+    )
+}
+
+#[cfg(not(feature = "cloud"))]
+fn cloud_columns(_config: &CliConfig) -> (Field, Field, Field) {
+    let blank = || Field::with_display(None::<String>, "");
+    (blank(), blank(), blank())
 }

@@ -14,6 +14,7 @@ use super::CloudClient;
 use types::*;
 
 pub trait CloudClientInterface {
+    async fn get_user_identity(&self) -> reqwest::Result<Envelope<GetUserIdentityResponse>>;
     async fn list_accounts(&self) -> reqwest::Result<Envelope<ListAccountsResponse>>;
     async fn list_environments(
         &self,
@@ -27,6 +28,15 @@ pub trait CloudClientInterface {
 }
 
 impl CloudClientInterface for CloudClient {
+    async fn get_user_identity(&self) -> reqwest::Result<Envelope<GetUserIdentityResponse>> {
+        let url = self
+            .base_url
+            .join("/cloud/GetUserIdentity")
+            .expect("Bad url!");
+
+        self.run(reqwest::Method::POST, url).await
+    }
+
     async fn list_accounts(&self) -> reqwest::Result<Envelope<ListAccountsResponse>> {
         let url = self.base_url.join("/cloud/ListAccounts").expect("Bad url!");
 
@@ -86,6 +96,14 @@ pub mod types {
         pub proxy_base_url: String,
         pub tunnel_srv: String,
         pub signing_public_key: String,
+    }
+
+    /// Who the access token belongs to.
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct GetUserIdentityResponse {
+        pub user_id: String,
+        pub email: Option<String>,
     }
 
     #[derive(Deserialize)]

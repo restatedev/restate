@@ -70,20 +70,15 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
         (EnvironmentType::Cloud, Some(environment_info)) => environment_info,
         _ => {
             return Err(anyhow::anyhow!(
-                "First switch to a Cloud environment with `restate profile use`, or add one with `restate profile add`"
+                "First switch to the profile of a Restate Cloud environment with `restate profile use` (`restate cloud login` adds them)"
             ));
         }
     };
 
-    let bearer_token = if let Some(bearer_token) = &env.config.bearer_token {
+    let bearer_token = match &env.config.bearer_token {
         // the user may have specifically set an api token
-        bearer_token.clone()
-    } else if let Some(cloud_credentials) = &env.config.cloud.credentials {
-        cloud_credentials.access_token()?.to_string()
-    } else {
-        return Err(anyhow::anyhow!(
-            "Restate Cloud credentials have not been provided; first run `restate cloud login`"
-        ));
+        Some(bearer_token) => bearer_token.clone(),
+        None => env.cloud_access_token()?.to_owned(),
     };
 
     let mut opts = opts.clone();
