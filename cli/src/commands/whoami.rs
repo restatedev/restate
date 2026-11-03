@@ -23,7 +23,7 @@ use restate_cli_util::{CliContext, c_eprintln, c_error, c_println, c_success, ex
 use restate_types::art::render_restate_logo;
 
 use crate::build_info;
-use crate::cli_env::{CliEnv, EnvironmentSource, EnvironmentType, LOCAL_PROFILE};
+use crate::cli_env::{CliEnv, EnvironmentType, LOCAL_PROFILE, ProfileSource};
 use crate::clients::AdminClientInterface;
 use crate::clients::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
 use crate::ui::fmt::{Field, Formatter, OutputFormatter};
@@ -31,7 +31,7 @@ use crate::ui::fmt::{Field, Formatter, OutputFormatter};
 /// Show the server the CLI talks to, and check that it's reachable
 ///
 /// Prints the admin and ingress URLs in use, whether a bearer token is set (never the token),
-/// the selected environment and where it comes from, the CLI config paths, and the CLI build.
+/// the selected profile and where it comes from, the CLI config paths, and the CLI build.
 /// Then checks the admin API: exits with code 5 (network error) if it can't be reached, 8
 /// (server error) if it's unhealthy.
 #[derive(Run, Parser, Clone)]
@@ -88,7 +88,7 @@ pub async fn run(State(env): State<CliEnv>) -> Result<()> {
     f.title("🔗", "Connection");
     f.detail("connection", &connection);
 
-    // Local environment. Paths are `{path, exists}` in JSON, annotated for humans.
+    // The profile and the config paths. Paths are `{path, exists}` in JSON, annotated for humans.
     let path_field = |path: &Path| {
         let exists = path.exists();
         let annotation = if exists { "exists" } else { "does not exist" };
@@ -97,24 +97,20 @@ pub async fn run(State(env): State<CliEnv>) -> Result<()> {
             format!("{} ({annotation})", path.display()),
         )
     };
-    let (name, source) = (
-        env.environment.to_string(),
-        env.environment_source.to_string(),
-    );
-    let display = if env.environment == LOCAL_PROFILE
-        && matches!(env.environment_source, EnvironmentSource::None)
-    {
-        name.clone()
-    } else {
-        format!("{name} (source: {source})")
-    };
-    let environment = Field::with_display(json!({ "name": name, "source": source }), display);
-    f.title("🏠", "Local Environment");
+    let (name, source) = (env.profile.to_string(), env.profile_source.to_string());
+    let display =
+        if env.profile == LOCAL_PROFILE && matches!(env.profile_source, ProfileSource::None) {
+            name.clone()
+        } else {
+            format!("{name} (source: {source})")
+        };
+    let profile = Field::with_display(json!({ "name": name, "source": source }), display);
+    f.title("🏠", "Profile");
     f.detail(
-        "environment",
+        "profile",
         [
+            ("profile", profile),
             ("config_dir", path_field(&env.config_home)),
-            ("environment", environment),
             ("config_file", path_field(&env.config_file)),
         ],
     );

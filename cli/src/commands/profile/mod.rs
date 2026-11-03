@@ -10,26 +10,26 @@
 
 pub mod add;
 pub mod list;
-pub mod profile;
 pub mod remove;
 pub mod rename;
-pub mod use_env;
+pub mod sections;
+pub mod use_profile;
 
 use cling::prelude::*;
 
-/// Manage the environments the CLI talks to: list, select, add, remove, rename
+/// Manage the profiles the CLI talks to: list, select, add, remove, rename
 ///
-/// An environment is a section of the CLI config file naming a server: a Restate Cloud
+/// A profile is a section of the CLI config file naming a server: a Restate Cloud
 /// environment, or a self-hosted server (its admin and ingress URLs, and a bearer token if it
-/// needs one). The current one is used by every command, unless -e/--environment or
-/// $RESTATE_ENVIRONMENT says otherwise; `local` (a server on this machine) is built in.
+/// needs one). The current one is used by every command, unless -p/--profile or
+/// $RESTATE_PROFILE says otherwise; `local` (a server on this machine) is built in.
 #[derive(Run, Subcommand, Clone)]
-#[clap(alias = "environment", alias = "environments")]
+#[clap(alias = "profiles")]
 #[allow(clippy::large_enum_variant)]
-pub enum Env {
+pub enum Profile {
     // Commands are documented on their own struct.
     List(list::List),
-    Use(use_env::Use),
+    Use(use_profile::Use),
     Add(add::Add),
     Remove(remove::Remove),
     Rename(rename::Rename),

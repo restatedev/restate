@@ -70,7 +70,7 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
         (EnvironmentType::Cloud, Some(environment_info)) => environment_info,
         _ => {
             return Err(anyhow::anyhow!(
-                "First switch to a Cloud environment with `restate env use`, or add one with `restate env add`"
+                "First switch to a Cloud environment with `restate profile use`, or add one with `restate profile add`"
             ));
         }
     };

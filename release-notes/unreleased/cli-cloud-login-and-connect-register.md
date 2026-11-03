@@ -27,8 +27,8 @@ by hand.
 ### Impact on Users
 - Existing environments in your CLI config file are kept. Login writes a section named after the
   selected Cloud environment, replacing one that is that same environment; if the name is already
-  used by a different environment, nothing is written and you're pointed to `restate env rename`.
-- `restate env add` selects another environment or account.
+  used by a different environment, nothing is written and you're pointed to `restate profile rename`.
+- `restate profile add` selects another environment or account.
 - `--tunnel-name <destination URL>` for services behind `restate cloud env tunnel` is unchanged.
 - `restate deployments register` now waits up to 30 seconds for the server to discover the endpoint
   (`--request-timeout` still applies when set higher), so a slow or unreachable endpoint reports the

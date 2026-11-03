@@ -25,14 +25,14 @@ use crate::{
 };
 
 use super::profile::{Choice, CurrentEnvironment, choose_environment, nothing_to_add};
-use crate::commands::env::profile::{add_cloud_section, select_profile};
+use crate::commands::profile::sections::{add_cloud_section, select_profile};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_login")]
 #[command(after_help = after_help!(
     examples: [
         "restate cloud login",
-        "restate cloud login --no-env    # only log in, pick the environment later with `restate env add`",
+        "restate cloud login --no-env    # only log in, pick the environment later with `restate profile add`",
     ],
     learn_more: "https://docs.restate.dev/cloud",
 ))]
@@ -93,7 +93,7 @@ pub async fn run_login(State(env): State<CliEnv>, opts: &Login) -> Result<()> {
             Outcome::Failure,
         );
         f.next_step(
-            "restate env add",
+            "restate profile add",
             "pick the environment to use",
             IncludeFormatting::No,
         );
@@ -112,7 +112,7 @@ async fn select_environment(env: &CliEnv, f: &mut Formatter) -> Result<()> {
         .environment_info
         .as_ref()
         .map(|info| CurrentEnvironment {
-            profile: env.environment.as_str().as_str(),
+            profile: env.profile.as_str().as_str(),
             environment_id: &info.environment_id,
         });
     let choice = choose_environment(&client, None, current.as_ref()).await?;
@@ -123,7 +123,7 @@ async fn select_environment(env: &CliEnv, f: &mut Formatter) -> Result<()> {
             Outcome::NothingToDo,
         );
         f.next_step(
-            "restate env add",
+            "restate profile add",
             "select the environment once created",
             IncludeFormatting::No,
         );
@@ -136,10 +136,7 @@ async fn select_environment(env: &CliEnv, f: &mut Formatter) -> Result<()> {
                 "result",
                 Field::with_display(
                     "environment_kept",
-                    format!(
-                        "Kept the current environment \"{}\"",
-                        env.environment.as_str()
-                    ),
+                    format!("Kept the current environment \"{}\"", env.profile.as_str()),
                 ),
                 Outcome::Success,
             );

@@ -15,11 +15,11 @@ pub mod config;
 pub mod deployments;
 #[cfg(feature = "dev-cmd")]
 pub mod dev;
-pub mod env;
 pub mod examples;
 pub mod invocations;
 pub mod kafkaclusters;
 pub mod openapi;
+pub mod profile;
 pub mod rules;
 pub mod search;
 pub mod services;

@@ -12,7 +12,7 @@ mod tunnel;
 
 use cling::prelude::*;
 
-/// Work with the current Restate Cloud environment (select one with `restate env add`)
+/// Work with the current Restate Cloud environment (select one with `restate profile add`)
 #[derive(Run, Subcommand, Clone)]
 #[clap(visible_alias = "env", alias = "environment")]
 pub enum Environments {
