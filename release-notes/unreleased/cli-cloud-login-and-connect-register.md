@@ -21,15 +21,14 @@ The CLI resolves the name from the Cloud environment you're logged in to; nothin
 
 ### Why This Matters
 Going from a fresh laptop to a service registered in your Cloud environment is two commands: log in,
-register. You no longer need `restate cloud env configure` in between, nor to assemble the tunnel URL
+register. You no longer need to configure the environment in between, nor to assemble the tunnel URL
 by hand.
 
 ### Impact on Users
 - Existing environments in your CLI config file are kept. Login writes a section named after the
   selected Cloud environment, replacing one that is that same environment; if the name is already
-  used by a different environment, nothing is written and you're pointed to
-  `restate cloud env configure`.
-- `restate cloud env configure` still works to select another environment or account.
+  used by a different environment, nothing is written and you're pointed to `restate env rename`.
+- `restate env add` selects another environment or account.
 - `--tunnel-name <destination URL>` for services behind `restate cloud env tunnel` is unchanged.
 - `restate deployments register` now waits up to 30 seconds for the server to discover the endpoint
   (`--request-timeout` still applies when set higher), so a slow or unreachable endpoint reports the
