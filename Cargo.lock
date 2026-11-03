@@ -6894,9 +6894,9 @@ dependencies = [
 
 [[package]]
 name = "pulldown-cmark"
-version = "0.13.5"
+version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "278e9268c93b9e498a2da46c34d90ba93a3255eb99009646398f34bc73ab36eb"
+checksum = "3db2be46835f013dd3f4fa7f5f7402c537787b54ebb6fe2b94bbdd7e2669bb7b"
 dependencies = [
  "bitflags 2.13.2",
  "memchr",
@@ -7589,7 +7589,6 @@ dependencies = [
  "bytes",
  "bytestring",
  "criterion",
- "crossbeam-utils",
  "dashmap",
  "derive_more",
  "enum-map",
@@ -7614,6 +7613,7 @@ dependencies = [
  "restate-test-util",
  "restate-types",
  "restate-util-bytecount",
+ "restate-util-cache-padded",
  "restate-util-time",
  "restate-wal-protocol",
  "restate-worker-api",
@@ -9072,6 +9072,13 @@ dependencies = [
  "serde_core",
  "serde_json",
  "serde_with",
+]
+
+[[package]]
+name = "restate-util-cache-padded"
+version = "1.8.2-dev"
+dependencies = [
+ "restate-workspace-hack",
 ]
 
 [[package]]
