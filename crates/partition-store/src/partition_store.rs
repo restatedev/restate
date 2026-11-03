@@ -17,6 +17,7 @@ use anyhow::anyhow;
 use bytes::Bytes;
 use bytes::BytesMut;
 use enum_map::Enum;
+use futures::{FutureExt, Stream, StreamExt, future, stream};
 use rocksdb::{
     BoundColumnFamily, DBPinnableSlice, DBRawIteratorWithThreadMode, ReadOptions,
     SnapshotWithThreadMode,
@@ -29,7 +30,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{instrument, trace, warn};
 
-use restate_core::io::{AdmissionClosed, Gate};
+use restate_core::io::{AdmissionClosed, Gate, IoTaskError};
+use restate_rocksdb::reads::{ChannelSink, DEFAULT_STEPS_PER_SLICE, IteratorSink, LeasePolicy};
 use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksError};
 use restate_storage_api::fsm_table::ReadFsmTable;
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
@@ -371,36 +373,18 @@ impl PartitionStore {
 
     #[allow(clippy::type_complexity)]
     fn iterator_step_filter_map<O: Send + 'static>(
-        tx: mpsc::Sender<Result<O>>,
         mut f: impl FnMut((&[u8], &[u8])) -> Result<Option<O>> + Send + 'static,
-    ) -> impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static {
-        move |item| {
-            let res = match item {
-                // apply the caller's function
-                Ok((key, value)) => match f((key, value)) {
-                    Ok(Some(v)) => v,
-                    Ok(None) => {
-                        if tx.is_closed() {
-                            return IterAction::Stop;
-                        } else {
-                            return IterAction::Next;
-                        }
-                    }
-                    Err(e) => {
-                        let _ = tx.blocking_send(Err(e));
-                        return IterAction::Stop;
-                    }
-                },
-                Err(e) => {
-                    let _ = tx.blocking_send(Err(StorageError::Generic(e.into())));
-                    return IterAction::Stop;
-                }
-            };
-            if tx.blocking_send(Ok(res)).is_err() {
-                return IterAction::Stop;
-            }
-            // the channel is not closed yet, keep iterating
-            IterAction::Next
+    ) -> impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> (Option<Result<O>>, IterAction) + Send + 'static
+    {
+        // The sink stops the iterator once the receiver is gone.
+        move |item| match item {
+            // apply the caller's function
+            Ok((key, value)) => match f((key, value)) {
+                Ok(Some(v)) => (Some(Ok(v)), IterAction::Next),
+                Ok(None) => (None, IterAction::Next),
+                Err(e) => (Some(Err(e)), IterAction::Stop),
+            },
+            Err(e) => (Some(Err(StorageError::Generic(e.into()))), IterAction::Stop),
         }
     }
 
@@ -409,40 +393,23 @@ impl PartitionStore {
         tx: oneshot::Sender<StorageError>,
         mut f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
     ) -> impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send {
+        // Reports the error that ends the iteration.
         let mut tx = Some(tx);
-        move |item| {
-            let mut must_send = |v| match tx.take() {
-                Some(tx) => tx.send(v),
-                None => panic!("Iterator continued after IterAction::Stop"),
-            };
-
-            match item {
-                // apply the caller's function
-                Ok((key, value)) => match f((key, value)) {
-                    ControlFlow::Continue(()) => match &mut tx {
-                        Some(tx_inner) if tx_inner.is_closed() => {
-                            tx = None;
-                            IterAction::Stop
-                        }
-                        // the channel is not closed yet, keep iterating
-                        Some(_) => IterAction::Next,
-                        None => panic!("Iterator continued after IterAction::Stop"),
-                    },
-                    ControlFlow::Break(Ok(())) => {
-                        // function doesn't need any more items
-                        tx = None;
-                        IterAction::Stop
-                    }
-                    ControlFlow::Break(Err(e)) => {
-                        let _ = must_send(e);
-                        IterAction::Stop
-                    }
-                },
-                Err(e) => {
-                    let _ = must_send(StorageError::Generic(e.into()));
-                    IterAction::Stop
-                }
+        let mut fail = move |error| {
+            if let Some(tx) = tx.take() {
+                let _ = tx.send(error);
             }
+            IterAction::Stop
+        };
+        move |item| match item {
+            // apply the caller's function
+            Ok((key, value)) => match f((key, value)) {
+                ControlFlow::Continue(()) => IterAction::Next,
+                // function doesn't need any more items
+                ControlFlow::Break(Ok(())) => IterAction::Stop,
+                ControlFlow::Break(Err(e)) => fail(e),
+            },
+            Err(e) => fail(StorageError::Generic(e.into())),
         }
     }
 
@@ -464,13 +431,17 @@ impl PartitionStore {
         priority: Priority,
         scan: TableScan<K>,
         f: impl FnMut((&[u8], &[u8])) -> Result<Option<O>> + Send + 'static,
-    ) -> Result<ReceiverStream<Result<O>>, AdmissionClosed> {
+    ) -> Result<impl Stream<Item = Result<O>> + Send + 'static, AdmissionClosed> {
         let (tx, rx) = mpsc::channel(8);
-        let on_iter = Self::iterator_step_filter_map(tx, f);
+        let sink = ChannelSink::new(tx, Self::iterator_step_filter_map(f));
         let mut opts = ReadOptions::default();
         opts.set_async_io(true);
-        self.run_iterator_internal(name, priority, opts, scan.into(), on_iter)?;
-        Ok(ReceiverStream::new(rx))
+        let driver = self.run_iterator_internal(name, priority, opts, scan.into(), sink)?;
+        let driver = driver.into_stream().filter_map(|res| {
+            future::ready(res.err().map(|e| Err(StorageError::Generic(e.into()))))
+        });
+        // Keep the driver alive as dropping would cancel the iteration.
+        Ok(stream::select(driver, ReceiverStream::new(rx)))
     }
 
     /// Starts an iterator from already-encoded bounds without re-encoding them.
@@ -483,10 +454,11 @@ impl PartitionStore {
         f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
     ) -> Result<impl Future<Output = Result<()>>, AdmissionClosed> {
         let (tx, rx) = oneshot::channel();
-        let on_iter = Self::iterator_step_for_each(tx, f);
-        self.run_iterator_internal(name, priority, opts, scan, on_iter)?;
+        let sink = Self::iterator_step_for_each(tx, f);
+        let driver = self.run_iterator_internal(name, priority, opts, scan, sink)?;
 
         Ok(async {
+            driver.await.map_err(|e| StorageError::Generic(e.into()))?;
             match rx.await {
                 Ok(storage_err) => Err(storage_err),
                 // The iterator completed without reporting a storage error.
@@ -501,20 +473,22 @@ impl PartitionStore {
         priority: Priority,
         mut opts: ReadOptions,
         scan: PhysicalScan<Bytes>,
-        on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
-    ) -> Result<(), AdmissionClosed> {
+        sink: impl IteratorSink + Send + 'static,
+    ) -> Result<impl Future<Output = Result<(), IoTaskError>> + Send + 'static, AdmissionClosed>
+    {
         scan.configure(&mut opts);
-        RocksDb::run_background_iterator(
+        RocksDb::background_iterator(
             self.db.physical_scope(),
             self.db.gate(),
+            LeasePolicy::WholeIteration,
             scan.key_kind(),
             name,
             priority,
             IterAction::Seek(scan.into_start()),
+            DEFAULT_STEPS_PER_SLICE,
             opts,
-            on_iter,
-        )?;
-        Ok(())
+            sink,
+        )
     }
 
     pub fn transaction(&mut self) -> PartitionStoreTransaction<'_> {
