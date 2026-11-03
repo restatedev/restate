@@ -1134,7 +1134,6 @@ experimental! {
 
     /// # Record signals sent to invocations that haven't started yet
     ///
-<<<<<<< HEAD
     /// When enabled, signals (e.g. awakeable completions) sent to scheduled or inboxed
     /// invocations are recorded in their journal and delivered once the invocation starts,
     /// instead of being discarded.
@@ -1170,7 +1169,7 @@ experimental! {
     /// Once enabled, you **cannot** roll back to previous versions
     /// where v8 is not supported (< v1.8), as in-flight invocations might be pinned to v8.
     ///
-    /// Since v1.8.0
+    /// Since v1.8.2
     protocol_v8,
 }
 
