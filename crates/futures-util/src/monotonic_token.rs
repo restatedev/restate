@@ -65,7 +65,9 @@
 //! # Memory ordering
 //!
 //! * [`Tokens::next`] uses `Relaxed` — it is a pure counter with no
-//!   data dependency.
+//!   data dependency. It advances by a checked increment, so the sequence
+//!   never wraps: once every `usize` but zero was issued, `next` panics and
+//!   [`Tokens::try_next`] returns `None`.
 //! * [`TokenOwner::retire_through`] uses `Release` via `fetch_max` — it
 //!   publishes side-effects that happened before retirement and never moves
 //!   the value backward.
@@ -158,7 +160,9 @@ impl<T> PartialEq for Token<T> {
 impl<T> Eq for Token<T> {}
 
 struct Inner {
-    next: AtomicUsize,
+    /// The last token issued; zero before the first. Advanced only by a checked increment, so it
+    /// never wraps and no token is issued twice.
+    issued: AtomicUsize,
     retired_through: AtomicUsize,
     notify: Notify,
 }
@@ -183,12 +187,20 @@ impl<T> TokenOwner<T> {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Inner {
-                next: AtomicUsize::new(1),
+                issued: AtomicUsize::new(0),
                 retired_through: AtomicUsize::new(0),
                 notify: Notify::new(),
             }),
             _phantom: PhantomData,
         }
+    }
+
+    /// A sequence whose last issued token is `issued`: for tests of exhaustion.
+    #[cfg(test)]
+    fn issued_through(issued: usize) -> Self {
+        let owner = Self::new();
+        owner.inner.issued.store(issued, atomic::Ordering::Relaxed);
+        owner
     }
 
     /// Creates a new [`Tokens`] generator that shares this owner's sequence.
@@ -246,17 +258,26 @@ impl<T> Tokens<T> {
     ///
     /// Tokens are guaranteed to be strictly increasing across all clones of
     /// this generator.
+    ///
+    /// # Panics
+    ///
+    /// Once the sequence is used up, every `usize` but zero issued: the sequence never wraps and
+    /// never issues a token twice. [`Self::try_next`] returns `None` instead.
     pub fn next(&self) -> Token<T> {
-        // SAFETY: `next` is initialised to 1 and only incremented, so the
-        // value returned by `fetch_add` is always >= 1 (non-zero).
-        unsafe {
-            Token(
-                NonZeroUsize::new_unchecked(
-                    self.inner.next.fetch_add(1, atomic::Ordering::Relaxed),
-                ),
-                PhantomData,
-            )
-        }
+        self.try_next().expect("the token sequence is used up")
+    }
+
+    /// Produces the next token in the sequence, as [`Self::next`] does, or `None` once the
+    /// sequence is used up, without wrapping or issuing any token twice.
+    pub fn try_next(&self) -> Option<Token<T>> {
+        let issued = self.inner.issued.fetch_update(
+            atomic::Ordering::Relaxed,
+            atomic::Ordering::Relaxed,
+            |issued| issued.checked_add(1),
+        );
+        // The last token issued before this one, below `usize::MAX`: one more is not zero.
+        let token = issued.ok()?.checked_add(1).and_then(NonZeroUsize::new)?;
+        Some(Token(token, PhantomData))
     }
 
     /// Creates a new [`TokenListener`] that observes retirements on this
@@ -338,6 +359,34 @@ mod tests {
 
     /// Marker type for tests.
     struct Test;
+
+    #[test]
+    fn tokens_run_out_without_wrapping_or_repeating() {
+        // Three tokens left: clones racing on several threads take exactly them, each once,
+        // the last being `usize::MAX`; every later attempt is refused, and `next` panics.
+        let owner = TokenOwner::<Test>::issued_through(usize::MAX - 3);
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let tokens = owner.new_tokens();
+                std::thread::spawn(move || {
+                    (0..3)
+                        .filter_map(|_| tokens.try_next())
+                        .map(|token| token.0.get())
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let mut issued: Vec<_> = threads
+            .into_iter()
+            .flat_map(|thread| thread.join().unwrap())
+            .collect();
+        issued.sort_unstable();
+        assert_eq!(issued, [usize::MAX - 2, usize::MAX - 1, usize::MAX]);
+        let tokens = owner.new_tokens();
+        assert!(tokens.try_next().is_none(), "used up, not wrapped");
+        let next = std::panic::catch_unwind(|| tokens.next());
+        assert!(next.is_err(), "next panics once used up");
+    }
 
     /// Polls a future once and returns whether it resolved.
     fn poll_once<F: Future>(fut: Pin<&mut F>) -> Poll<F::Output> {
