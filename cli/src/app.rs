@@ -65,11 +65,13 @@ const ROOT_LONG_HELP: &str = concat!(
     heading!("Connecting to a server:"),
     "
   By default the CLI talks to a server on this machine (admin API at http://localhost:9070).
-  To target another one, set $RESTATE_ADMIN_URL, plus $RESTATE_AUTH_TOKEN for a bearer token:
+  To target another one, add an environment to the CLI config file (`restate env add`, see
+  `restate env --help`) and select it with `restate env use`, -e/--environment or
+  $RESTATE_ENVIRONMENT. Or describe the server with variables, e.g. for CI:
     RESTATE_ADMIN_URL=https://restate.example.com:9070 RESTATE_AUTH_TOKEN=... restate whoami
-  or add an environment to the CLI config file (`restate env add`, see `restate env --help`)
-  and select it with -e/--environment or `restate env use`. The variables take precedence
-  over the config file.
+  When any of $RESTATE_ADMIN_URL, $RESTATE_INGRESS_URL, $RESTATE_AUTH_TOKEN or $RESTATE_HOST
+  is set they describe the whole environment: the config file isn't consulted, and a missing
+  URL defaults to localhost. Only -e beats them.
 
 ",
     after_help!(learn_more: "https://docs.restate.dev/"),
@@ -245,6 +247,9 @@ fn init(common_opts: &CommonOpts, global_opts: &GlobalOpts) -> Result<State<CliE
     match &env.environment_source {
         EnvironmentSource::Argument => {
             info!("Using environment from --environment")
+        }
+        EnvironmentSource::Variables => {
+            info!("Using the environment described by the RESTATE_* variables")
         }
         EnvironmentSource::Environment => {
             info!("Using environment from $RESTATE_ENVIRONMENT")

@@ -16,7 +16,7 @@ use figment::{
 };
 
 use crate::{
-    cli_env::{CliConfig, CliEnv, LOCAL_PROFILE},
+    cli_env::{CliConfig, CliEnv, EnvironmentSource, LOCAL_PROFILE},
     ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter},
 };
 
@@ -61,7 +61,8 @@ pub async fn run_list(State(env): State<CliEnv>, _opts: &List) -> Result<()> {
                 .and_then(|t| t.as_str().map(str::to_owned))
                 .filter(|t| t == "cloud")
                 .unwrap_or_else(|| "self_hosted".to_owned());
-            let current = profile == env.environment;
+            let current = profile == env.environment
+                && !matches!(env.environment_source, EnvironmentSource::Variables);
 
             [
                 Field::with_display(current, if current { "*" } else { "" }),
