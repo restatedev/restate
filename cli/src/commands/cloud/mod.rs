@@ -11,7 +11,8 @@
 mod config_discovery;
 mod environments;
 mod login;
-pub(crate) mod profile;
+
+use std::collections::BTreeMap;
 
 use base64::Engine;
 use cling::prelude::*;
@@ -21,18 +22,36 @@ use url::Url;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct CloudConfig {
+    /// The Cloud environment of the profile, set by `restate cloud login`.
     #[serde(flatten)]
-    pub environment_info: Option<EnvironmentInfo>, // Set on a profile on login
+    pub environment_info: Option<EnvironmentInfo>,
     pub api_base_url: Option<Url>,
     pub client_id: Option<String>,
+    /// The credentials of every user logged in, by user id: `[global.cloud.users.<id>]`.
+    #[serde(default)]
+    pub users: BTreeMap<String, UserCredentials>,
+    /// Where the single login token lived before credentials were kept per user; still used
+    /// by profiles without a `user_id`.
     #[serde(flatten)]
-    pub credentials: Option<Credentials>, // Set globally on login
+    pub credentials: Option<Credentials>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct EnvironmentInfo {
     pub account_id: String,
     pub environment_id: String,
+    /// The user whose credentials reach this environment; absent in profiles written before
+    /// credentials were kept per user.
+    pub user_id: Option<String>,
+    pub account_name: Option<String>,
+    pub environment_name: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct UserCredentials {
+    pub email: Option<String>,
+    #[serde(flatten)]
+    pub credentials: Credentials,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

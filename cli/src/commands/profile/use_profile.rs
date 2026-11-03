@@ -60,14 +60,17 @@ pub async fn run_use(State(env): State<CliEnv>, opts: &Use) -> Result<()> {
             let labels: Vec<String> = names
                 .iter()
                 .map(|name| {
-                    if current.as_deref() == Some(name.as_str()) {
-                        format!("{name} (current)")
-                    } else {
-                        name.clone()
+                    let mut label = name.clone();
+                    if let Some(summary) = cloud_summary(&doc, name) {
+                        label.push_str(&format!("  ({summary})"));
                     }
+                    if current.as_deref() == Some(name.as_str()) {
+                        label.push_str(" (current)");
+                    }
+                    label
                 })
                 .collect();
-            names[choose("Select an environment:", &labels)?].clone()
+            names[choose("Select a profile:", &labels)?].clone()
         }
     };
 
@@ -106,4 +109,24 @@ pub async fn run_use(State(env): State<CliEnv>, opts: &Use) -> Result<()> {
         IncludeFormatting::Yes,
     );
     f.finish()
+}
+
+/// `user · account · environment` of a Cloud profile, by name, for the picker.
+fn cloud_summary(doc: &toml_edit::DocumentMut, name: &str) -> Option<String> {
+    let cloud = doc.get(name)?.get("cloud")?;
+    let field = |key: &str| cloud.get(key).and_then(toml_edit::Item::as_str);
+    let user = field("user_id").and_then(|id| {
+        doc.get("global")?
+            .get("cloud")?
+            .get("users")?
+            .get(id)?
+            .get("email")?
+            .as_str()
+            .or(Some(id))
+    });
+    let (account, environment) = (field("account_name")?, field("environment_name")?);
+    Some(match user {
+        Some(user) => format!("{user} · {account} · {environment}"),
+        None => format!("{account} · {environment}"),
+    })
 }

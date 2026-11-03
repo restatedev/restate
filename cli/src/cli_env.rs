@@ -200,7 +200,7 @@ impl CliEnv {
     }
 
     /// The settings of profile `profile` of the config file (`local` is built in).
-    fn profile_config(config_file: &Path, profile: &Profile) -> Result<CliConfig> {
+    pub fn profile_config(config_file: &Path, profile: &Profile) -> Result<CliConfig> {
         let mut figment = Figment::from(Serialized::defaults(CliConfig::default()))
             .merge(Serialized::from(CliConfig::local(), LOCAL_PROFILE))
             .select(profile.clone());
@@ -278,14 +278,50 @@ impl CliEnv {
                 if let Some(bearer_token) = &self.config.bearer_token {
                     return Ok(Some(bearer_token));
                 }
-                if let Some(cloud_credentials) = &self.config.cloud.credentials {
-                    return Ok(Some(cloud_credentials.access_token()?));
-                }
-                Err(anyhow::anyhow!(
-                    "Restate Cloud credentials have not been provided; first run `restate cloud login`"
-                ))
+                Ok(Some(self.cloud_access_token()?))
             }
         }
+    }
+
+    /// The Restate Cloud credentials of the profile's user, and who that is (email, else
+    /// user id): valid or not. Profiles without a user fall back to the single token of
+    /// older logins.
+    #[cfg(feature = "cloud")]
+    pub fn cloud_credentials(&self) -> Result<(String, &crate::commands::cloud::Credentials)> {
+        let cloud = &self.config.cloud;
+        let user_id = cloud
+            .environment_info
+            .as_ref()
+            .and_then(|info| info.user_id.as_deref());
+        let Some(user_id) = user_id else {
+            return cloud
+                .credentials
+                .as_ref()
+                .map(|credentials| ("you".to_owned(), credentials))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Restate Cloud credentials have not been provided; first run `restate cloud login`"
+                    )
+                });
+        };
+        let Some(user) = cloud.users.get(user_id) else {
+            return Err(anyhow::anyhow!(
+                "No Restate Cloud credentials for user {user_id}; run `restate cloud login` and log in as them"
+            ));
+        };
+        let who = user.email.clone().unwrap_or_else(|| user_id.to_owned());
+        Ok((who, &user.credentials))
+    }
+
+    /// A valid Restate Cloud access token for the profile's user.
+    #[cfg(feature = "cloud")]
+    pub fn cloud_access_token(&self) -> Result<&str> {
+        let (who, credentials) = self.cloud_credentials()?;
+        credentials.access_token().map_err(|_| {
+            anyhow::anyhow!(
+                "The Restate Cloud credentials of {who} have expired or are invalid; run `restate cloud login` and log in as them"
+            )
+        })
     }
 
     /// The config file as a TOML document, empty when there is none yet.
@@ -592,6 +628,63 @@ mod tests {
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default()).unwrap();
         assert_eq!(cli_env.profile, Profile::new("new-var"));
         assert_eq!(cli_env.profile_source.to_string(), "$RESTATE_PROFILE");
+    }
+
+    #[cfg(feature = "cloud")]
+    #[test]
+    fn cloud_credentials_come_from_the_profiles_user_or_the_legacy_token() {
+        use base64::Engine;
+        let token = |exp: i64| {
+            format!(
+                "h.{}.s",
+                base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(format!("{{\"exp\":{exp}}}"))
+            )
+        };
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join(CONFIG_FILENAME),
+            format!(
+                "[global.cloud]\naccess_token = \"{legacy}\"\n\n[global.cloud.users.u1]\nemail = \"alice@acme.dev\"\naccess_token = \"{alice}\"\n\n[global.cloud.users.u2]\naccess_token = \"{expired}\"\n\n[alice]\nenvironment_type = \"cloud\"\ncloud = {{ user_id = \"u1\", account_id = \"a\", environment_id = \"e\" }}\n\n[bob]\nenvironment_type = \"cloud\"\ncloud = {{ user_id = \"u2\", account_id = \"a\", environment_id = \"e\" }}\n\n[nobody]\nenvironment_type = \"cloud\"\ncloud = {{ user_id = \"u3\", account_id = \"a\", environment_id = \"e\" }}\n\n[old]\nenvironment_type = \"cloud\"\ncloud = {{ account_id = \"a\", environment_id = \"e\" }}\n",
+                legacy = token(4_000_000_000),
+                alice = token(4_000_000_001),
+                expired = token(1),
+            ),
+        )
+        .unwrap();
+        let mut os_env = OsEnv::default();
+        os_env.insert(CLI_CONFIG_HOME_ENV, home.path().display().to_string());
+        let load = |profile: &str| {
+            CliEnv::load_from_env(
+                &os_env,
+                &GlobalOpts {
+                    profile: Some(Profile::new(profile)),
+                },
+            )
+            .unwrap()
+        };
+
+        assert_eq!(
+            load("alice").cloud_access_token().unwrap(),
+            token(4_000_000_001)
+        );
+        assert_eq!(
+            load("alice").bearer_token().unwrap(),
+            Some(token(4_000_000_001).as_str())
+        );
+        assert_eq!(
+            load("old").cloud_access_token().unwrap(),
+            token(4_000_000_000)
+        );
+        let expired = load("bob").cloud_access_token().unwrap_err().to_string();
+        assert!(
+            expired.contains("u2") && expired.contains("expired"),
+            "{expired}"
+        );
+        let missing = load("nobody").cloud_access_token().unwrap_err().to_string();
+        assert!(
+            missing.contains("No Restate Cloud credentials for user u3"),
+            "{missing}"
+        );
     }
 
     #[test]

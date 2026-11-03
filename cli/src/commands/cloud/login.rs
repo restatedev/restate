@@ -12,34 +12,44 @@ use anyhow::{Context, Result, anyhow};
 use cling::prelude::*;
 use indicatif::ProgressBar;
 use serde::Deserialize;
+use serde_json::json;
 use toml_edit::{DocumentMut, table, value};
 
 use restate_cli_util::{CliContext, c_println};
 
 use crate::{
     build_info,
-    cli_env::CliEnv,
-    clients::cloud::CloudClient,
+    cli_env::{CliEnv, set_saved_profile},
+    clients::cloud::{CloudClient, CloudClientInterface, types::GetUserIdentityResponse},
+    commands::profile::sections::{CloudEnvironment, SyncReport, sync_cloud_profiles},
+    console::choose,
     error::RestateCliError,
-    ui::fmt::{Field, Formatter, IncludeFormatting, Outcome, OutputFormatter},
+    ui::{
+        fmt::{Field, Formatter, IfEmpty, IncludeFormatting, Outcome, OutputFormatter},
+        with_progress,
+    },
 };
 
-use super::profile::{Choice, CurrentEnvironment, choose_environment, nothing_to_add};
-use crate::commands::profile::sections::{add_cloud_section, select_profile};
-
+/// Log in to Restate Cloud and import its environments as profiles
+///
+/// The browser decides who you log in as. Back here, every account and environment that
+/// user can reach becomes a profile named `<email>-<account>-<environment>` (existing ones
+/// are refreshed under their current name, ones you can no longer reach are removed), and
+/// one is selected: the current profile when it is that user's, the only one, or the one
+/// you pick. Logging in as another user adds their profiles alongside.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_login")]
 #[command(after_help = after_help!(
     examples: [
         "restate cloud login",
-        "restate cloud login --no-env    # only log in, pick the environment later with `restate profile add`",
+        "restate cloud login --no-select    # import the profiles, keep the current selection",
     ],
     learn_more: "https://docs.restate.dev/cloud",
 ))]
 pub struct Login {
-    /// Only log in: don't select a Cloud environment afterwards
-    #[clap(long)]
-    no_env: bool,
+    /// Import the profiles without selecting one
+    #[clap(long, alias = "no-env")]
+    no_select: bool,
 }
 
 pub async fn run_login(State(env): State<CliEnv>, opts: &Login) -> Result<()> {
@@ -53,144 +63,224 @@ pub async fn run_login(State(env): State<CliEnv>, opts: &Login) -> Result<()> {
         .into());
     }
 
-    let mut doc = env.load_config_document()?;
-
     let client_id = env.config.cloud.resolve_workos_client_id().await?;
     let access_token = workos_auth_flow(&client_id).await?;
 
-    write_access_token(&mut doc, &access_token)?;
-    env.write_config(&doc.to_string())
-        .context("Failed to write to config file")?;
+    let client = CloudClient::with_token(&env, access_token.clone())?;
+    let identity = with_progress("Checking who you are...", async {
+        client.get_user_identity().await?.into_body().await
+    })
+    .await
+    .context("Failed to get the user's identity")?;
+    let user_label = identity
+        .email
+        .clone()
+        .unwrap_or_else(|| identity.user_id.clone());
+    let environments = fetch_environments(&client).await?;
+
+    let mut doc = env.load_config_document()?;
+    write_user_credentials(&mut doc, &identity, &access_token);
+    let report = sync_cloud_profiles(&mut doc, &identity.user_id, &user_label, &environments);
 
     let mut f = Formatter::new();
     f.outcome(
         "login",
         Field::with_display(
-            "logged_in",
-            format!(
-                "Updated {} with Restate Cloud credentials",
-                env.config_file.display()
-            ),
+            json!({ "user_id": identity.user_id, "email": identity.email }),
+            format!("Logged in to Restate Cloud as {user_label}"),
         ),
         Outcome::Success,
     );
+    report_profiles(&mut f, &report, &environments);
 
-    if opts.no_env {
-        return f.finish();
-    }
+    let selected = if opts.no_select {
+        None
+    } else {
+        select_profile(&env, &mut doc, &report)?
+    };
+    env.write_config(&doc.to_string())
+        .context("Failed to write the config file")?;
 
-    let mut env = env;
-    env.config.cloud.credentials = Some(super::Credentials { access_token });
-    // The login succeeded whatever happens next: a failure to select an environment is
-    // reported, not an error.
-    if let Err(err) = select_environment(&env, &mut f).await {
-        f.outcome(
+    match selected {
+        Some(Selection { name, kept: true }) => f.outcome(
             "result",
             Field::with_display(
-                "environment_not_selected",
-                format!("Logged in, but couldn't select an environment: {err:#}"),
+                json!({ "selected": name, "changed": false }),
+                format!("Kept \"{name}\" as the current profile"),
             ),
-            Outcome::Failure,
-        );
-        f.next_step(
-            "restate profile add",
-            "pick the environment to use",
-            IncludeFormatting::No,
-        );
-    }
-    f.finish()
-}
-
-/// Select the Cloud environment to use: silently when there is one account with one
-/// environment, else by asking. A Cloud environment the CLI already uses is kept when it's
-/// the only one, and offered as a choice otherwise.
-async fn select_environment(env: &CliEnv, f: &mut Formatter) -> Result<()> {
-    let client = CloudClient::new(env)?;
-    let current = env
-        .config
-        .cloud
-        .environment_info
-        .as_ref()
-        .map(|info| CurrentEnvironment {
-            profile: env.profile.as_str().as_str(),
-            environment_id: &info.environment_id,
-        });
-    let choice = choose_environment(&client, None, current.as_ref()).await?;
-    if let Some(err) = nothing_to_add(&choice) {
-        f.outcome(
+            Outcome::Success,
+        ),
+        Some(Selection { name, kept: false }) => f.outcome(
             "result",
-            Field::with_display("no_environment", err.message()),
-            Outcome::NothingToDo,
-        );
-        f.next_step(
-            "restate profile add",
-            "select the environment once created",
-            IncludeFormatting::No,
-        );
-        return Ok(());
-    }
-    let chosen = match choice {
-        Choice::Environment(chosen) => chosen,
-        Choice::KeepCurrent => {
+            Field::with_display(
+                json!({ "selected": name, "changed": true }),
+                format!("Current profile is now \"{name}\""),
+            ),
+            Outcome::Success,
+        ),
+        None if report.kept().next().is_none() => {
             f.outcome(
                 "result",
                 Field::with_display(
-                    "environment_kept",
-                    format!("Kept the current environment \"{}\"", env.profile.as_str()),
+                    "no_environments",
+                    format!(
+                        "{user_label} can't reach any Restate Cloud environment yet; create one at https://cloud.restate.dev and log in again"
+                    ),
                 ),
-                Outcome::Success,
+                Outcome::NothingToDo,
             );
-            f.next_step(
-                "restate whoami",
-                "see the environment the CLI talks to",
-                IncludeFormatting::Yes,
-            );
-            return Ok(());
         }
-        Choice::NoAccounts | Choice::NoEnvironments { .. } => unreachable!("reported above"),
-    };
-
-    let mut doc = env.load_config_document()?;
-    let profile = add_cloud_section(env, &mut doc, &chosen)?;
-    env.write_config(&doc.to_string())?;
-    select_profile(env, &profile)?;
-    f.detail(
-        "environment",
-        &[
-            ("name", Field::new(&profile)),
-            (
-                "environment_id",
-                Field::new(&chosen.environment.environment_id),
-            ),
-            ("region", Field::new(&chosen.environment.region)),
-            ("account", Field::new(&chosen.account_name)),
-            ("account_id", Field::json_only(&chosen.account_id)),
-        ],
-    );
-    f.outcome(
-        "result",
-        Field::with_display(
-            "environment_selected",
-            format!(
-                "Using environment \"{profile}\" ({}, {}) of account {}",
-                chosen.environment.environment_id, chosen.environment.region, chosen.account_name
-            ),
-        ),
-        Outcome::Success,
-    );
+        None => {}
+    }
     f.next_step(
         "restate whoami",
-        "see the environment the CLI now talks to",
+        "see the server the CLI talks to",
         IncludeFormatting::Yes,
     );
-    Ok(())
+    f.next_step(
+        "restate profile use",
+        "switch to another profile",
+        IncludeFormatting::No,
+    );
+    f.finish()
 }
 
-fn write_access_token(doc: &mut DocumentMut, access_token: &str) -> Result<()> {
-    let cloud = doc["global"].or_insert(table())["cloud"].or_insert(table());
-    cloud["access_token"] = value(access_token);
+/// Every environment of every account the user can reach.
+async fn fetch_environments(client: &CloudClient) -> Result<Vec<CloudEnvironment>> {
+    let accounts = with_progress("Listing accounts...", async {
+        client.list_accounts().await?.into_body().await
+    })
+    .await
+    .context("Failed to list the accounts")?
+    .accounts;
 
-    Ok(())
+    let mut environments = Vec::new();
+    for account in accounts {
+        let listed = with_progress("Listing environments...", async {
+            client
+                .list_environments(&account.account_id)
+                .await?
+                .into_body()
+                .await
+        })
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to list the environments of account {}",
+                account.name
+            )
+        })?
+        .environments;
+        for item in listed {
+            let environment = with_progress("Describing environments...", async {
+                client
+                    .describe_environment(&account.account_id, &item.environment_id)
+                    .await?
+                    .into_body()
+                    .await
+            })
+            .await
+            .with_context(|| format!("Failed to describe environment {}", item.name))?;
+            environments.push(CloudEnvironment {
+                account_id: account.account_id.clone(),
+                account_name: account.name.clone(),
+                environment,
+            });
+        }
+    }
+    Ok(environments)
+}
+
+/// Store the user's token under `[global.cloud.users.<id>]`, dropping the single token of
+/// older logins: profiles still relying on it were adopted by the sync when they were this
+/// user's, and need a login as their user otherwise.
+fn write_user_credentials(
+    doc: &mut DocumentMut,
+    identity: &GetUserIdentityResponse,
+    access_token: &str,
+) {
+    let cloud = doc["global"].or_insert(table())["cloud"].or_insert(table());
+    if let Some(cloud) = cloud.as_table_like_mut() {
+        cloud.remove("access_token");
+    }
+    let user = cloud["users"].or_insert(table())[&identity.user_id].or_insert(table());
+    match &identity.email {
+        Some(email) => user["email"] = value(email),
+        None => {
+            if let Some(user) = user.as_table_like_mut() {
+                user.remove("email");
+            }
+        }
+    }
+    user["access_token"] = value(access_token);
+}
+
+/// The profiles table: what the sync did to each.
+fn report_profiles(f: &mut Formatter, report: &SyncReport, environments: &[CloudEnvironment]) {
+    let describe = |name: &str, change: &str| {
+        // Added and updated profiles map onto `environments` in order.
+        let position = report.kept().position(|kept| kept == name);
+        let (account, environment, region) = match position.and_then(|i| environments.get(i)) {
+            Some(e) => (
+                e.account_name.as_str(),
+                e.environment.name.as_str(),
+                e.environment.region.as_str(),
+            ),
+            None => ("", "", ""),
+        };
+        [
+            Field::new(change),
+            Field::new(name),
+            Field::new(account),
+            Field::new(environment),
+            Field::new(region),
+        ]
+    };
+    let rows: Vec<[Field; 5]> = report
+        .added
+        .iter()
+        .map(|name| describe(name, "added"))
+        .chain(report.updated.iter().map(|name| describe(name, "updated")))
+        .chain(report.removed.iter().map(|name| describe(name, "removed")))
+        .collect();
+    f.table(
+        "profiles",
+        &["change", "profile", "account", "environment", "region"],
+        rows,
+        IfEmpty::Say("No environments to import"),
+    );
+}
+
+struct Selection {
+    name: String,
+    kept: bool,
+}
+
+/// Which of the user's profiles to make current: the one already selected when it is
+/// theirs, else the only one, else the one they pick. `None` when they have none.
+fn select_profile(
+    env: &CliEnv,
+    doc: &mut DocumentMut,
+    report: &SyncReport,
+) -> Result<Option<Selection>> {
+    let names: Vec<&str> = report.kept().collect();
+    let saved = env.saved_profile()?;
+    if let Some(saved) = saved.as_deref().filter(|saved| names.contains(saved)) {
+        return Ok(Some(Selection {
+            name: saved.to_owned(),
+            kept: true,
+        }));
+    }
+    let name = match names.as_slice() {
+        [] => return Ok(None),
+        [only] => *only,
+        _ => names[choose("Select the profile to use:", &names)?],
+    };
+    set_saved_profile(doc, Some(name));
+    Ok(Some(Selection {
+        name: name.to_owned(),
+        kept: false,
+    }))
 }
 
 async fn workos_auth_flow(client_id: &str) -> Result<String> {
