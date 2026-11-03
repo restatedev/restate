@@ -7746,6 +7746,7 @@ dependencies = [
  "rand 0.10.2",
  "restate-clock",
  "restate-platform",
+ "restate-util-cache-padded",
  "restate-workspace-hack",
  "schemars 1.2.2",
  "serde",

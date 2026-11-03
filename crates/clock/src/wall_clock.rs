@@ -12,6 +12,8 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
 
+use restate_util_cache_padded::CachePadded;
+
 use crate::time::MillisSinceEpoch;
 
 use super::Clock;
@@ -26,7 +28,11 @@ use super::Clock;
 ///
 /// The server's `main()` function starts the upkeep thread as early as possible to remove
 /// the possibility where this could occur.
-static RECENT_UNIX_TIMESTAMP_US: AtomicU64 = const { AtomicU64::new(0) };
+///
+/// Kept on its own cache line: hot paths on every core read it, and a frequently written
+/// static placed next to it by the linker would turn those reads into cache misses.
+static RECENT_UNIX_TIMESTAMP_US: CachePadded<AtomicU64> =
+    const { CachePadded::new(AtomicU64::new(0)) };
 
 /// Production implementation of [`Clock`] backed by system time.
 ///
