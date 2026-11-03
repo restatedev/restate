@@ -28,7 +28,6 @@ dirs = { version = "7.0.0" }
 comfy-table = { workspace = true }
 crossterm = { workspace = true }
 dialoguer = { workspace = true }
-dotenvy = { version = "0.15" }
 lambda_runtime = "1.0.2"
 serde = { workspace = true }
 tokio = { workspace = true, features = ["time", "process"] }
