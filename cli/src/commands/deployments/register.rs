@@ -446,7 +446,7 @@ async fn cloud_environment(env: &CliEnv) -> Result<(String, url::Url)> {
     ) else {
         return Err(RestateCliError::bad_input(format!(
             "The current environment \"{}\" is not a Restate Cloud one, which `connect://` and --tunnel-name endpoints need",
-            env.environment
+            env.profile
         ))
         .with_next_step("restate cloud login", "select the Cloud environment")
         .into());

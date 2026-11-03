@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Choosing a Restate Cloud environment (account and environment), as `restate env add` and
+//! Choosing a Restate Cloud environment (account and environment), as `restate profile add` and
 //! `restate cloud login` do.
 
 use std::str::FromStr;

@@ -16,25 +16,25 @@ use crate::console::choose;
 use crate::error::RestateCliError;
 use crate::ui::fmt::{Field, Formatter, IncludeFormatting, Outcome, OutputFormatter};
 
-use super::profile::{is_local, list_profiles};
+use super::sections::{is_local, list_profiles};
 
-/// Select the environment for later commands; overridden by -e and $RESTATE_ENVIRONMENT
+/// Select the profile for later commands; overridden by -p and $RESTATE_PROFILE
 ///
-/// The name is one of the CLI config file's environments (see `restate env list`), or
+/// The name is one of the CLI config file's profiles (see `restate profile list`), or
 /// `local` (a server on this machine). Without a name, asks to pick one. The choice is saved
 /// in the config file.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_use")]
 #[command(after_help = after_help!(
     examples: [
-        "restate env use prod",
-        "restate env use local     # back to the server on this machine",
-        "restate env use           # pick one",
+        "restate profile use prod",
+        "restate profile use local     # back to the server on this machine",
+        "restate profile use           # pick one",
     ],
     learn_more: "https://docs.restate.dev/references/cli-config",
 ))]
 pub struct Use {
-    /// Name of the environment to switch to; asked for when omitted
+    /// Name of the profile to switch to; asked for when omitted
     pub(crate) name: Option<String>,
 }
 
@@ -47,16 +47,16 @@ pub async fn run_use(State(env): State<CliEnv>, opts: &Use) -> Result<()> {
         Some(name) if is_local(name) || names.contains(name) => name.clone(),
         Some(name) => {
             return Err(RestateCliError::not_found(format!(
-                "No environment \"{name}\" in {}; the environments are: [{}]",
+                "No profile \"{name}\" in {}; the profiles are: [{}]",
                 env.config_file.display(),
                 names.join(", ")
             ))
-            .with_next_step("restate env list", "see the environments")
-            .with_next_step("restate env add", "add one")
+            .with_next_step("restate profile list", "see the profiles")
+            .with_next_step("restate profile add", "add one")
             .into());
         }
         None => {
-            let current = env.saved_environment()?;
+            let current = env.saved_profile()?;
             let labels: Vec<String> = names
                 .iter()
                 .map(|name| {
@@ -71,14 +71,14 @@ pub async fn run_use(State(env): State<CliEnv>, opts: &Use) -> Result<()> {
         }
     };
 
-    let changed = env.saved_environment()?.as_deref() != Some(name.as_str());
+    let changed = env.saved_profile()?.as_deref() != Some(name.as_str());
     if changed {
-        env.write_environment(&name)?;
+        env.save_profile(&name)?;
     }
 
     let mut f = Formatter::new();
     f.detail(
-        "environment",
+        "profile",
         [
             ("name", Field::new(name.as_str())),
             (
@@ -93,9 +93,9 @@ pub async fn run_use(State(env): State<CliEnv>, opts: &Use) -> Result<()> {
         Field::with_display(
             "selected",
             if changed {
-                format!("Current environment is now \"{name}\"")
+                format!("Current profile is now \"{name}\"")
             } else {
-                format!("\"{name}\" is already the current environment")
+                format!("\"{name}\" is already the current profile")
             },
         ),
         Outcome::Success,

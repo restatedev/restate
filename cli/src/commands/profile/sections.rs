@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! The sections of the CLI config file (one per environment), as `restate env add`,
-//! `restate env use` and `restate cloud login` write them.
+//! The sections of the CLI config file (one per profile), as `restate profile add`,
+//! `restate profile use` and `restate cloud login` write them.
 
 use anyhow::Result;
 use toml_edit::{DocumentMut, table, value};
@@ -33,7 +33,7 @@ pub(crate) enum ProfileSpec<'a> {
     },
 }
 
-/// The names of the environments the config file defines.
+/// The names of the profiles the config file defines.
 pub(crate) fn list_profiles(doc: &DocumentMut) -> Vec<String> {
     doc.iter()
         .filter(|(k, _)| !is_reserved(k))
@@ -41,7 +41,7 @@ pub(crate) fn list_profiles(doc: &DocumentMut) -> Vec<String> {
         .collect()
 }
 
-/// `default` and `global` are the config file's shared sections, not environments.
+/// `default` and `global` are the config file's shared sections, not profiles.
 pub(crate) fn is_reserved(name: &str) -> bool {
     name.eq_ignore_ascii_case("global") || name.eq_ignore_ascii_case("default")
 }
@@ -50,7 +50,7 @@ pub(crate) fn is_local(name: &str) -> bool {
     name == LOCAL_PROFILE.as_str().as_str()
 }
 
-/// Fails for a name that can't be an environment's: reserved, the built-in `local`, or one
+/// Fails for a name that can't be a profile's: reserved, the built-in `local`, or one
 /// that would read as a Cloud `ACCOUNT/ENVIRONMENT` specifier.
 pub(crate) fn check_name(name: &str) -> Result<()> {
     let reason = if name.trim().is_empty() {
@@ -58,20 +58,17 @@ pub(crate) fn check_name(name: &str) -> Result<()> {
     } else if is_reserved(name) {
         "it is reserved for the config file's shared settings"
     } else if is_local(name) {
-        "it is the built-in environment for a server on this machine"
+        "it is the built-in profile for a server on this machine"
     } else if name.contains('/') {
         "it would read as a Restate Cloud `ACCOUNT/ENVIRONMENT` specifier"
     } else {
         return Ok(());
     };
-    Err(
-        RestateCliError::bad_input(format!("\"{name}\" can't be an environment name: {reason}"))
-            .into(),
-    )
+    Err(RestateCliError::bad_input(format!("\"{name}\" can't be a profile name: {reason}")).into())
 }
 
-/// Write the section of environment `name`, replacing an existing one.
-pub(crate) fn write_profile(doc: &mut DocumentMut, name: &str, spec: &ProfileSpec<'_>) {
+/// Write the section of profile `name`, replacing an existing one.
+pub(crate) fn write_section(doc: &mut DocumentMut, name: &str, spec: &ProfileSpec<'_>) {
     doc[name] = table();
     let profile = &mut doc[name];
     match spec {
@@ -106,10 +103,10 @@ pub(crate) fn write_profile(doc: &mut DocumentMut, name: &str, spec: &ProfileSpe
 
 /// Make `name` the current environment. Returns whether it changed.
 pub(crate) fn select_profile(env: &CliEnv, name: &str) -> Result<bool> {
-    if env.saved_environment()?.as_deref() == Some(name) {
+    if env.saved_profile()?.as_deref() == Some(name) {
         return Ok(false);
     }
-    env.write_environment(name)?;
+    env.save_profile(name)?;
     Ok(true)
 }
 
@@ -124,7 +121,7 @@ pub(crate) fn is_cloud_environment(section: &toml_edit::Item, environment_id: &s
 }
 
 /// Write the section for a chosen Cloud environment and return its name: always the Cloud
-/// environment's. A name already used by a different environment is an error. The config
+/// profile's. A name already used by a different profile is an error. The config
 /// file isn't written.
 #[cfg(feature = "cloud")]
 pub(crate) fn add_cloud_section(
@@ -145,13 +142,13 @@ pub(crate) fn add_cloud_section(
             env.config_file.display()
         ))
         .with_next_step(
-            format!("restate env rename {name} <new-name>"),
+            format!("restate profile rename {name} <new-name>"),
             "free the name",
         )
-        .with_next_step(format!("restate env remove {name}"), "or drop the other one")
+        .with_next_step(format!("restate profile remove {name}"), "or drop the other one")
         .into());
     }
-    write_profile(
+    write_section(
         doc,
         &name,
         &ProfileSpec::Cloud {
@@ -173,7 +170,7 @@ mod tests {
             .unwrap();
         let admin: AdvertisedAddress<AdminPort> =
             "https://restate.example.com:9070".parse().unwrap();
-        write_profile(
+        write_section(
             &mut doc,
             "staging",
             &ProfileSpec::SelfHosted {

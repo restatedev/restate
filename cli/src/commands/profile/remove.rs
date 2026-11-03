@@ -11,15 +11,15 @@
 use anyhow::Result;
 use cling::prelude::*;
 
-use crate::cli_env::{CliEnv, set_saved_environment};
+use crate::cli_env::{CliEnv, set_saved_profile};
 use crate::error::RestateCliError;
 use crate::ui::fmt::{
     DryRun, Field, Formatter, IfEmpty, IncludeFormatting, Outcome, OutputFormatter,
 };
 
-use super::profile::is_local;
+use super::sections::is_local;
 
-/// Remove an environment from the CLI config file
+/// Remove a profile from the CLI config file
 ///
 /// If it is the current environment, later commands use `local` (a server on this machine),
 /// which can't be removed. Nothing is changed on the server.
@@ -27,13 +27,13 @@ use super::profile::is_local;
 #[cling(run = "run_remove")]
 #[command(after_help = after_help!(
     examples: [
-        "restate env remove staging --yes",
+        "restate profile remove staging --yes",
     ],
     learn_more: "https://docs.restate.dev/references/cli-config",
 ))]
 #[clap(visible_alias = "rm")]
 pub struct Remove {
-    /// Name of the environment (a section of the CLI config file) to remove
+    /// Name of the profile (a section of the CLI config file) to remove
     name: String,
 
     #[clap(flatten)]
@@ -42,32 +42,31 @@ pub struct Remove {
 
 pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> {
     if is_local(&opts.name) {
-        return Err(RestateCliError::bad_input(
-            "The built-in `local` environment can't be removed",
-        )
-        .into());
+        return Err(
+            RestateCliError::bad_input("The built-in `local` profile can't be removed").into(),
+        );
     }
 
     let mut doc = env.load_config_document()?;
     let mut f = Formatter::new();
     if doc.get(&opts.name).is_none() {
         f.nothing_to_do(format!(
-            "No environment \"{}\" in {}",
+            "No profile \"{}\" in {}",
             opts.name,
             env.config_file.display()
         ));
         f.next_step(
-            "restate env list",
-            "see the environments",
+            "restate profile list",
+            "see the profiles",
             IncludeFormatting::Yes,
         );
         return f.finish();
     }
 
-    let is_current = env.saved_environment()?.as_deref() == Some(opts.name.as_str());
+    let is_current = env.saved_profile()?.as_deref() == Some(opts.name.as_str());
     f.table(
         "changes",
-        &["environment", "change"],
+        &["profile", "change"],
         [[Field::new(opts.name.as_str()), Field::new("remove")]],
         IfEmpty::Nothing,
     );
@@ -77,14 +76,11 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
             opts.name
         ));
     }
-    f.confirm(
-        &opts.dry_run,
-        &format!("Remove environment \"{}\"?", opts.name),
-    )?;
+    f.confirm(&opts.dry_run, &format!("Remove profile \"{}\"?", opts.name))?;
 
     doc.remove(&opts.name);
     if is_current {
-        set_saved_environment(&mut doc, None);
+        set_saved_profile(&mut doc, None);
     }
     env.write_config(&doc.to_string())?;
 
@@ -93,7 +89,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
         Field::with_display(
             "removed",
             format!(
-                "Removed environment \"{}\" from {}",
+                "Removed profile \"{}\" from {}",
                 opts.name,
                 env.config_file.display()
             ),
@@ -101,8 +97,8 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
         Outcome::Success,
     );
     f.next_step(
-        "restate env list",
-        "see the environments",
+        "restate profile list",
+        "see the profiles",
         IncludeFormatting::Yes,
     );
     f.finish()

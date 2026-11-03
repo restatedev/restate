@@ -16,11 +16,11 @@ use figment::{
 };
 
 use crate::{
-    cli_env::{CliConfig, CliEnv, EnvironmentSource, LOCAL_PROFILE},
+    cli_env::{CliConfig, CliEnv, LOCAL_PROFILE, ProfileSource},
     ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter},
 };
 
-/// List the environments of the CLI config file, marking the current one
+/// List the profiles of the CLI config file, marking the current one
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_list")]
 #[command(after_help = after_help!(
@@ -61,8 +61,8 @@ pub async fn run_list(State(env): State<CliEnv>, _opts: &List) -> Result<()> {
                 .and_then(|t| t.as_str().map(str::to_owned))
                 .filter(|t| t == "cloud")
                 .unwrap_or_else(|| "self_hosted".to_owned());
-            let current = profile == env.environment
-                && !matches!(env.environment_source, EnvironmentSource::Variables);
+            let current =
+                profile == env.profile && !matches!(env.profile_source, ProfileSource::Variables);
 
             [
                 Field::with_display(current, if current { "*" } else { "" }),
@@ -78,14 +78,14 @@ pub async fn run_list(State(env): State<CliEnv>, _opts: &List) -> Result<()> {
 
     let mut f = Formatter::new();
     f.table(
-        "environments",
+        "profiles",
         &["current", "name", "type", "admin_base_url"],
         rows,
         IfEmpty::Nothing,
     );
     f.next_step(
-        "restate env use <name>",
-        "switch to another environment",
+        "restate profile use <name>",
+        "switch to another profile",
         IncludeFormatting::No,
     );
     f.finish()

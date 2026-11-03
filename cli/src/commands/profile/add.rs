@@ -18,29 +18,29 @@ use crate::console::confirm_or_exit;
 use crate::error::RestateCliError;
 use crate::ui::fmt::{Field, Formatter, IncludeFormatting, Outcome, OutputFormatter};
 
-use super::profile::{ProfileSpec, check_name, list_profiles, select_profile, write_profile};
+use super::sections::{ProfileSpec, check_name, list_profiles, select_profile, write_section};
 
-/// Add an environment to the CLI config file, and select it
+/// Add a profile to the CLI config file, and select it
 ///
 /// By default a Restate Cloud environment, picked from your accounts (needs `restate cloud
-/// login`), or named with --cloud-environment. Its section is named after the environment.
+/// login`), or named with --cloud-environment. Its profile is named after the environment.
 ///
 /// With --admin-url, a self-hosted server, under the NAME you give: its admin URL, and its
-/// ingress URL and bearer token when given. Overwriting an existing environment asks for
+/// ingress URL and bearer token when given. Overwriting an existing profile asks for
 /// confirmation, or needs --yes.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_add")]
 #[command(after_help = after_help!(
     examples: [
-        "restate env add                                    # pick a Cloud account and environment",
-        "restate env add --cloud-environment my-acct/prod   # a Cloud environment, by name or id",
-        "restate env add staging --admin-url https://restate.example.com:9070 --token \"$TOKEN\"",
-        "restate env add ci --admin-url http://restate:9070 --ingress-url http://restate:8080 --no-use",
+        "restate profile add                                    # pick a Cloud account and environment",
+        "restate profile add --cloud-environment my-acct/prod   # a Cloud environment, by name or id",
+        "restate profile add staging --admin-url https://restate.example.com:9070 --token \"$TOKEN\"",
+        "restate profile add ci --admin-url http://restate:9070 --ingress-url http://restate:8080 --no-use",
     ],
     learn_more: "https://docs.restate.dev/references/cli-config",
 ))]
 pub struct Add {
-    /// Name of a self-hosted environment (its section in the CLI config file), with
+    /// Name of a self-hosted profile (its section in the CLI config file), with
     /// --admin-url. Cloud environments are named after themselves
     name: Option<String>,
 
@@ -73,7 +73,7 @@ pub struct Add {
     )]
     token: Option<String>,
 
-    /// Add the environment without making it the current one
+    /// Add the profile without making it the current one
     #[clap(long)]
     no_use: bool,
 }
@@ -82,7 +82,7 @@ pub async fn run_add(State(env): State<CliEnv>, opts: &Add) -> Result<()> {
     if let Some(admin_url) = &opts.admin_url {
         let Some(name) = &opts.name else {
             return Err(RestateCliError::bad_input(
-                "Missing the environment name; pass it before --admin-url, e.g. `restate env add staging --admin-url ...`",
+                "Missing the profile name; pass it before --admin-url, e.g. `restate profile add staging --admin-url ...`",
             )
             .into());
         };
@@ -90,7 +90,7 @@ pub async fn run_add(State(env): State<CliEnv>, opts: &Add) -> Result<()> {
     }
     if let Some(name) = &opts.name {
         return Err(RestateCliError::bad_input(format!(
-            "A Cloud environment's section is named after it, so a name (\"{name}\") can't be given; to add a self-hosted server, pass --admin-url"
+            "A Cloud environment's profile is named after it, so a name (\"{name}\") can't be given; to add a self-hosted server, pass --admin-url"
         ))
         .into());
     }
@@ -120,14 +120,14 @@ async fn add_cloud(
     use crate::commands::cloud::profile::{Choice, choose_environment, nothing_to_add};
     use crate::error::ErrorKind;
 
-    use super::profile::add_cloud_section;
+    use super::sections::add_cloud_section;
 
     if env.config.cloud.credentials.is_none() {
         return Err(
             RestateCliError::new(ErrorKind::Auth, "Not logged in to Restate Cloud")
                 .with_next_step("restate cloud login", "log in, then add the environment")
                 .with_next_step(
-                    "restate env add <name> --admin-url <url>",
+                    "restate profile add <name> --admin-url <url>",
                     "add a self-hosted server instead",
                 )
                 .into(),
@@ -135,7 +135,7 @@ async fn add_cloud(
     }
     if specifier.is_none() && !CliContext::get().can_prompt() {
         return Err(RestateCliError::bad_input(
-            "Picking a Cloud environment needs a terminal; in non-interactive mode name it with --cloud-environment [ACCOUNT/]ENVIRONMENT, or add a self-hosted server with `restate env add <name> --admin-url <url>`",
+            "Picking a Cloud environment needs a terminal; in non-interactive mode name it with --cloud-environment [ACCOUNT/]ENVIRONMENT, or add a self-hosted server with `restate profile add <name> --admin-url <url>`",
         )
         .into());
     }
@@ -146,7 +146,7 @@ async fn add_cloud(
         return Err(err.into());
     }
     let Choice::Environment(chosen) = choice else {
-        unreachable!("without a current environment there is nothing to keep");
+        unreachable!("without a current profile there is nothing to keep");
     };
 
     let mut doc = env.load_config_document()?;
@@ -156,7 +156,7 @@ async fn add_cloud(
 
     let mut f = Formatter::new();
     f.detail(
-        "environment",
+        "profile",
         [
             ("name", Field::new(name.as_str())),
             ("type", Field::new("cloud")),
@@ -190,10 +190,10 @@ async fn add_self_hosted(
     let mut doc = env.load_config_document()?;
     let existed = list_profiles(&doc).iter().any(|p| p == name);
     if existed {
-        confirm_or_exit(&format!("Overwrite existing environment \"{name}\"?"))?;
+        confirm_or_exit(&format!("Overwrite existing profile \"{name}\"?"))?;
     }
     let token = opts.token.as_deref().filter(|t| !t.is_empty());
-    write_profile(
+    write_section(
         &mut doc,
         name,
         &ProfileSpec::SelfHosted {
@@ -206,7 +206,7 @@ async fn add_self_hosted(
 
     let mut f = Formatter::new();
     f.detail(
-        "environment",
+        "profile",
         [
             ("name", Field::new(name)),
             ("type", Field::new("self_hosted")),
@@ -249,10 +249,7 @@ fn finish_add(
         "result",
         Field::with_display(
             result,
-            format!(
-                "{verb} environment \"{name}\" in {}",
-                env.config_file.display()
-            ),
+            format!("{verb} profile \"{name}\" in {}", env.config_file.display()),
         ),
         Outcome::Success,
     );
@@ -260,7 +257,7 @@ fn finish_add(
         select_profile(env, name)?;
         f.outcome(
             "current_environment",
-            Field::with_display(name, format!("Current environment is now \"{name}\"")),
+            Field::with_display(name, format!("Current profile is now \"{name}\"")),
             Outcome::Success,
         );
     }
