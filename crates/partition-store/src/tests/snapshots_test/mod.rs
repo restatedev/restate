@@ -10,15 +10,23 @@
 
 use std::sync::Arc;
 
+use tokio_util::sync::CancellationToken;
+
+use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::fsm_table::{ReadFsmTable, WriteFsmTable};
 use restate_test_util::tempdir;
-use restate_types::identifiers::{PartitionKey, SnapshotId};
+use restate_types::config::Configuration;
+use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
 use restate_types::logs::{LogId, Lsn};
 use restate_types::partitions::Partition;
+use restate_types::partitions::features::PersistedFeatures;
 use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
+use restate_types::{GenerationalNodeId, SemanticRestateVersion};
 
+use crate::fsm_table::put_storage_features_json;
+use crate::migrations::MigrationError;
 use crate::snapshots::{
     LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotDir, SnapshotFormatVersion,
 };
@@ -46,14 +54,17 @@ pub(crate) async fn run_tests(
         cluster_fingerprint: None,
         partition_id,
         node_name: "node".to_string(),
+        node_id: Some(GenerationalNodeId::new(1, 1)),
         created_at: MillisSinceEpoch::new(0).into_timestamp(),
         snapshot_id: SnapshotId::from_parts(0, 0),
         key_range,
         log_id: LogId::from(partition_id),
         min_applied_lsn: snapshot.min_applied_lsn,
         db_comparator_name: snapshot.db_comparator_name.clone(),
+        compatibility: snapshot.compatibility.clone(),
         files: snapshot.files.clone(),
     };
+    assert!(snapshot.compatibility.is_some());
     let metadata_json = serde_json::to_string_pretty(&snapshot_meta).unwrap();
 
     drop(partition_store);
@@ -67,6 +78,8 @@ pub(crate) async fn run_tests(
         .unwrap();
 
     let snapshot_meta: PartitionSnapshotMetadata = serde_json::from_str(&metadata_json).unwrap();
+    assert_eq!(snapshot_meta.compatibility, snapshot.compatibility);
+    assert_eq!(snapshot_meta.node_id, Some(GenerationalNodeId::new(1, 1)));
 
     let snapshot = LocalPartitionSnapshot {
         base_dir: SnapshotDir::new(snapshots_dir.path().into()),
@@ -75,6 +88,7 @@ pub(crate) async fn run_tests(
         db_comparator_name: snapshot_meta.db_comparator_name.clone(),
         files: snapshot_meta.files.clone(),
         key_range,
+        compatibility: snapshot_meta.compatibility.clone(),
     };
 
     let mut new_partition_store = manager
@@ -99,4 +113,108 @@ async fn verify_restored_data(partition: &mut PartitionStore) {
         Lsn::new(100),
         partition.get_applied_lsn().await.unwrap().unwrap()
     );
+}
+
+/// A snapshot records the version that the barrier check requires of its data, counting storage
+/// features this server doesn't know, and whichever of those and the version barrier is newer. It
+/// also records the partition's storage and partition features.
+#[restate_core::test]
+async fn snapshot_records_what_the_barrier_check_requires() {
+    RocksDbManager::init();
+    let manager = PartitionStoreManager::create(true).await.unwrap();
+    let mut store = manager
+        .open(
+            &Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1)),
+            None,
+        )
+        .await
+        .unwrap();
+    let config = Configuration::pinned().clone();
+    store
+        .verify_and_run_migrations(CancellationToken::new(), &config)
+        .await
+        .unwrap();
+    insert_test_data(&mut store).await;
+    {
+        let mut txn = store.transaction();
+        txn.put_state_machine_features(&PersistedFeatures {
+            journal_v2: true,
+            vqueues: true,
+            ..PersistedFeatures::default()
+        })
+        .unwrap();
+        txn.commit().await.unwrap();
+    }
+    let partition_id = store.partition_id();
+    put_storage_features_json(
+        &mut store,
+        partition_id,
+        br#"{ "features": { "future-feature": { "min_required_version": "9.0.0" } } }"#,
+    )
+    .await
+    .unwrap();
+
+    let snapshots_dir = tempdir().unwrap();
+    let snapshot = store
+        .create_local_snapshot(snapshots_dir.path(), None, SnapshotId::new())
+        .await
+        .unwrap();
+    let compatibility = snapshot.compatibility.clone().unwrap();
+    assert_eq!(
+        compatibility.min_restate_version,
+        SemanticRestateVersion::new(9, 0, 0)
+    );
+    assert_eq!(compatibility.storage_features, ["future-feature"]);
+    assert_eq!(compatibility.partition_features, ["journal_v2", "vqueues"]);
+    let error = store
+        .verify_and_run_migrations_at_version(
+            &SemanticRestateVersion::new(8, 9, 0),
+            CancellationToken::new(),
+            &config,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        MigrationError::StorageFeatureVersionBarrier { required_min_version, .. }
+            if required_min_version == compatibility.min_restate_version
+    ));
+
+    {
+        let mut txn = store.transaction();
+        txn.put_min_restate_version(&SemanticRestateVersion::new(9, 1, 0))
+            .unwrap();
+        txn.commit().await.unwrap();
+    }
+
+    let snapshot = store
+        .create_local_snapshot(snapshots_dir.path(), None, SnapshotId::new())
+        .await
+        .unwrap();
+    let compatibility = snapshot.compatibility.clone().unwrap();
+    assert_eq!(
+        compatibility.min_restate_version,
+        SemanticRestateVersion::new(9, 1, 0)
+    );
+    let error = store
+        .verify_and_run_migrations_at_version(
+            &SemanticRestateVersion::new(9, 0, 0),
+            CancellationToken::new(),
+            &config,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        MigrationError::VersionBarrier { required_min_version }
+            if required_min_version == compatibility.min_restate_version
+    ));
+    store
+        .verify_and_run_migrations_at_version(
+            &compatibility.min_restate_version,
+            CancellationToken::new(),
+            &config,
+        )
+        .await
+        .unwrap();
 }
