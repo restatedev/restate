@@ -116,14 +116,6 @@ pub async fn run(State(env): State<CliEnv>) -> Result<()> {
             ("config_dir", path_field(&env.config_home)),
             ("environment", environment),
             ("config_file", path_field(&env.config_file)),
-            (
-                "loaded_dotenv",
-                or_none(
-                    CliContext::get()
-                        .loaded_dotenv()
-                        .map(|p| p.display().to_string()),
-                ),
-            ),
         ],
     );
 

@@ -8,13 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::path::{Path, PathBuf};
+
 use anyhow::Result;
 use clap::CommandFactory;
 use cling::prelude::*;
 use figment::Profile;
 use tracing::info;
 
-use restate_cli_util::{CliContext, CommonOpts};
+use restate_cli_util::{CliContext, CommonOpts, c_warn};
 
 use crate::cli_env::{CliEnv, EnvironmentSource};
 use crate::commands::completions::Completions;
@@ -231,6 +233,13 @@ pub enum Command {
 
 fn init(common_opts: &CommonOpts, global_opts: &GlobalOpts) -> Result<State<CliEnv>> {
     CliContext::new(common_opts.clone()).set_as_global();
+    if let Some(path) = dotenv_with_restate_vars(Path::new(".")) {
+        c_warn!(
+            "Found {} but the CLI no longer loads `.env` files; export its variables, or run \
+             `restate env add` to configure the server it names",
+            path.display()
+        );
+    }
     let env = CliEnv::load(global_opts)?;
 
     match &env.environment_source {
@@ -249,4 +258,38 @@ fn init(common_opts: &CommonOpts, global_opts: &GlobalOpts) -> Result<State<CliE
     }
 
     Ok(State(env))
+}
+
+/// `dir/.env`, if it exists and defines a `RESTATE_*` variable: worth a hint, as the CLI
+/// used to load it.
+fn dotenv_with_restate_vars(dir: &Path) -> Option<PathBuf> {
+    let path = dir.join(".env");
+    let content = std::fs::read_to_string(&path).ok()?;
+    content
+        .lines()
+        .map(|line| line.trim_start().trim_start_matches("export "))
+        .any(|line| line.starts_with("RESTATE_"))
+        .then_some(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_a_dotenv_with_restate_variables() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(dotenv_with_restate_vars(dir.path()), None);
+        std::fs::write(dir.path().join(".env"), "# comment\nFOO=bar\n").unwrap();
+        assert_eq!(dotenv_with_restate_vars(dir.path()), None);
+        std::fs::write(
+            dir.path().join(".env"),
+            "FOO=bar\n  export RESTATE_AUTH_TOKEN=key_x\n",
+        )
+        .unwrap();
+        assert_eq!(
+            dotenv_with_restate_vars(dir.path()),
+            Some(dir.path().join(".env"))
+        );
+    }
 }
