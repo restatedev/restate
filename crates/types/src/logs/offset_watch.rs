@@ -12,6 +12,7 @@ use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 
 use super::LogletOffset;
+use super::SequenceNumber as _;
 use super::TailState;
 
 #[derive(Debug, thiserror::Error)]
@@ -127,5 +128,104 @@ impl TailOffsetWatch {
         let mut receiver = self.sender.subscribe();
         receiver.mark_changed();
         WatchStream::new(receiver)
+    }
+}
+
+/// A monotonic watch over a loglet offset.
+#[derive(Clone)]
+pub struct OffsetWatch {
+    sender: watch::Sender<LogletOffset>,
+}
+
+impl Default for OffsetWatch {
+    fn default() -> Self {
+        Self::new(LogletOffset::OLDEST)
+    }
+}
+
+impl std::fmt::Debug for OffsetWatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&*self.sender.borrow(), f)
+    }
+}
+
+impl std::fmt::Display for OffsetWatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&*self.sender.borrow(), f)
+    }
+}
+
+impl OffsetWatch {
+    pub fn new(tail: LogletOffset) -> Self {
+        let sender = watch::Sender::new(tail);
+        Self { sender }
+    }
+
+    /// Advances the offset, returning whether the watch changed.
+    pub fn notify(&self, new_offset: LogletOffset) -> bool {
+        self.sender.send_if_modified(|old_offset| {
+            if new_offset > *old_offset {
+                *old_offset = new_offset;
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn get(&self) -> LogletOffset {
+        *self.sender.borrow()
+    }
+
+    /// Returns true if both watches share the same underlying channel.
+    pub fn same_watch(&self, other: &OffsetWatch) -> bool {
+        self.sender.same_channel(&other.sender)
+    }
+
+    pub async fn wait_for_offset(
+        &self,
+        offset: LogletOffset,
+    ) -> Result<LogletOffset, WatchTerminated> {
+        let mut receiver = self.sender.subscribe();
+        receiver.mark_changed();
+        receiver
+            .wait_for(|current| *current >= offset)
+            .await
+            .map(|m| *m)
+            .map_err(|_| WatchTerminated)
+    }
+
+    pub fn subscribe(&self) -> watch::Receiver<LogletOffset> {
+        let mut receiver = self.sender.subscribe();
+        receiver.mark_changed();
+        receiver
+    }
+
+    /// The first yielded value is the latest offset
+    pub fn to_stream(&self) -> WatchStream<LogletOffset> {
+        let mut receiver = self.sender.subscribe();
+        receiver.mark_changed();
+        WatchStream::new(receiver)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn offset_watch_only_advances() {
+        let watch = OffsetWatch::default();
+        let waiter = tokio::spawn({
+            let watch = watch.clone();
+            async move { watch.wait_for_offset(LogletOffset::new(3)).await }
+        });
+
+        tokio::task::yield_now().await;
+        assert!(!watch.notify(LogletOffset::OLDEST));
+        assert!(watch.notify(LogletOffset::new(3)));
+        assert!(!watch.notify(LogletOffset::new(2)));
+        assert_eq!(LogletOffset::new(3), watch.get());
+        assert_eq!(LogletOffset::new(3), waiter.await.unwrap().unwrap());
     }
 }
