@@ -8466,7 +8466,6 @@ dependencies = [
  "rust-rocksdb",
  "serde",
  "serde_json",
- "tempfile",
  "test-log",
  "thiserror 2.0.20",
  "tikv-jemalloc-ctl",
