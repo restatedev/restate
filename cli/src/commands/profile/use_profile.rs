@@ -61,7 +61,7 @@ pub async fn run_use(State(env): State<CliEnv>, opts: &Use) -> Result<()> {
                 .iter()
                 .map(|name| {
                     let mut label = name.clone();
-                    if let Some(summary) = cloud_summary(&doc, name) {
+                    if let Some(summary) = cloud_summary(&doc, name).filter(|s| s != name) {
                         label.push_str(&format!("  ({summary})"));
                     }
                     if current.as_deref() == Some(name.as_str()) {
@@ -111,7 +111,8 @@ pub async fn run_use(State(env): State<CliEnv>, opts: &Use) -> Result<()> {
     f.finish()
 }
 
-/// `user · account · environment` of a Cloud profile, by name, for the picker.
+/// `user/account/environment` of a Cloud profile, by name, for the picker: what its name
+/// was at import, shown when it was renamed.
 fn cloud_summary(doc: &toml_edit::DocumentMut, name: &str) -> Option<String> {
     let cloud = doc.get(name)?.get("cloud")?;
     let field = |key: &str| cloud.get(key).and_then(toml_edit::Item::as_str);
@@ -126,7 +127,7 @@ fn cloud_summary(doc: &toml_edit::DocumentMut, name: &str) -> Option<String> {
     });
     let (account, environment) = (field("account_name")?, field("environment_name")?);
     Some(match user {
-        Some(user) => format!("{user} · {account} · {environment}"),
-        None => format!("{account} · {environment}"),
+        Some(user) => format!("{user}/{account}/{environment}"),
+        None => format!("{account}/{environment}"),
     })
 }

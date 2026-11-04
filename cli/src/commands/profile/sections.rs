@@ -163,7 +163,7 @@ impl SyncReport {
 /// Make the config document's Cloud profiles of user `user_id` match `environments`, the
 /// ones they can reach: a profile exists per (user, account, environment). Existing ones
 /// are refreshed in place under their current name, new ones are added as
-/// `<user>-<account>-<environment>` (`user_label` is the email, else the user id; the
+/// `<user>/<account>/<environment>` (`user_label` is the email, else the user id; the
 /// environment id is appended when that name is taken), and the user's profiles for
 /// environments they can no longer reach are removed, clearing the saved selection when
 /// it pointed at one. Profiles written before credentials were kept per user, which name
@@ -201,11 +201,11 @@ pub(crate) fn sync_cloud_profiles(
             }
             None => {
                 let mut name = format!(
-                    "{user_label}-{}-{}",
+                    "{user_label}/{}/{}",
                     environment.account_name, environment.environment.name
                 );
-                if is_reserved(&name) || is_local(&name) || doc.contains_key(&name) {
-                    name = format!("{name}-{environment_id}");
+                if doc.contains_key(&name) {
+                    name = format!("{name}/{environment_id}");
                 }
                 write_section(
                     doc,
@@ -336,7 +336,7 @@ cloud = { account_id = "acc_acme", environment_id = "env_2" }
 environment_type = "cloud"
 cloud = { user_id = "u2", account_id = "acc_acme", environment_id = "env_old" }
 
-["alice@acme.dev-acme-new"]
+["alice@acme.dev/acme/new"]
 admin_base_url = "http://self-hosted:9070"
 "#
         .parse::<DocumentMut>()
@@ -355,7 +355,7 @@ admin_base_url = "http://self-hosted:9070"
                 profiles: vec![
                     ("renamed".to_owned(), Change::Updated),
                     ("legacy".to_owned(), Change::Updated),
-                    ("alice@acme.dev-acme-new-env_3".to_owned(), Change::Added),
+                    ("alice@acme.dev/acme/new/env_3".to_owned(), Change::Added),
                 ],
                 removed: vec!["gone".to_owned()],
             }
@@ -372,7 +372,7 @@ admin_base_url = "http://self-hosted:9070"
         assert_eq!(doc["legacy"]["cloud"]["user_id"].as_str(), Some("u1"));
         // Other users' profiles and self-hosted ones are untouched; the selection is cleared.
         assert!(doc.contains_key("other-user"));
-        assert!(doc.contains_key("alice@acme.dev-acme-new"));
+        assert!(doc.contains_key("alice@acme.dev/acme/new"));
         assert!(!doc.contains_key("gone"));
         assert!(doc["global"].get("profile").is_none());
     }

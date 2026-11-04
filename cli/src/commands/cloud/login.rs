@@ -33,7 +33,7 @@ use crate::{
 /// Log in to Restate Cloud and import its environments as profiles
 ///
 /// The browser decides who you log in as. Back here, every account and environment that
-/// user can reach becomes a profile named `<email>-<account>-<environment>` (existing ones
+/// user can reach becomes a profile named `<email>/<account>/<environment>` (existing ones
 /// are refreshed under their current name, ones you can no longer reach are removed), and
 /// one is selected: the current profile when it is that user's, the only one, or the one
 /// you pick. Logging in as another user adds their profiles alongside.
@@ -96,7 +96,7 @@ pub async fn run_login(State(env): State<CliEnv>, opts: &Login) -> Result<()> {
     let selected = if opts.no_select {
         None
     } else {
-        select_profile(&env, &mut doc, &report)?
+        select_profile(&env, &mut doc, &report, &environments)?
     };
     env.write_config(&doc.to_string())
         .context("Failed to write the config file")?;
@@ -261,6 +261,7 @@ fn select_profile(
     env: &CliEnv,
     doc: &mut DocumentMut,
     report: &SyncReport,
+    environments: &[CloudEnvironment],
 ) -> Result<Option<Selection>> {
     let names: Vec<&str> = report.kept().collect();
     let saved = env.saved_profile()?;
@@ -273,7 +274,14 @@ fn select_profile(
     let name = match names.as_slice() {
         [] => return Ok(None),
         [only] => *only,
-        _ => names[choose("Select the profile to use:", &names)?],
+        _ => {
+            // The user is known: `account/environment` identifies each profile.
+            let labels: Vec<String> = environments
+                .iter()
+                .map(|e| format!("{}/{}", e.account_name, e.environment.name))
+                .collect();
+            names[choose("Select the environment to use:", &labels)?]
+        }
     };
     set_saved_profile(doc, Some(name));
     Ok(Some(Selection {
