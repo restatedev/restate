@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use restate_core::TaskHandle;
-use restate_types::logs::LogletOffset;
+use restate_types::logs::{LogletOffset, OffsetWatch};
 
 use crate::LogEntry;
 use crate::loglet::{LogletReadStream, OperationError};
@@ -25,6 +25,7 @@ pub(crate) struct ReplicatedLogletReadStream {
     pub(super) read_pointer: LogletOffset,
     pub(super) rx_stream: ReceiverStream<Result<LogEntry<LogletOffset>, OperationError>>,
     pub(super) reader_task: TaskHandle<Result<(), OperationError>>,
+    readable_tail: OffsetWatch,
     pub(super) terminated: bool,
 }
 
@@ -40,17 +41,23 @@ impl ReplicatedLogletReadStream {
         from_offset: LogletOffset,
         rx_stream: mpsc::Receiver<Result<LogEntry<LogletOffset>, OperationError>>,
         reader_task: TaskHandle<Result<(), OperationError>>,
+        readable_tail: OffsetWatch,
     ) -> Self {
         Self {
             read_pointer: from_offset,
             rx_stream: ReceiverStream::new(rx_stream),
             reader_task,
+            readable_tail,
             terminated: false,
         }
     }
 }
 
 impl LogletReadStream for ReplicatedLogletReadStream {
+    fn notify_readable_tail(&self, tail: LogletOffset) -> bool {
+        self.readable_tail.notify(tail)
+    }
+
     /// Current read pointer. This points to the next offset to be read.
     fn read_pointer(&self) -> LogletOffset {
         self.read_pointer

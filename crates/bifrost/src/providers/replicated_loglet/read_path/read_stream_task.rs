@@ -20,7 +20,8 @@ use restate_core::network::{NetworkSender, Networking, RpcError, Swimlane, Trans
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskHandle, TaskKind, my_node_id};
 use restate_types::config::{Configuration, ReplicatedLogletOptions};
 use restate_types::logs::{
-    KeyFilter, LogletOffset, MatchKeyQuery, RecordCache, SequenceNumber, TailOffsetWatch,
+    KeyFilter, LogletOffset, MatchKeyQuery, OffsetWatch, RecordCache, SequenceNumber,
+    TailOffsetWatch,
 };
 use restate_types::net::log_server::{GetRecords, LogServerRequestHeader, MaybeRecord};
 use restate_types::replicated_loglet::{EffectiveNodeSet, LogNodeSetExt, ReplicatedLogletParams};
@@ -72,6 +73,8 @@ pub struct ReadStreamTask {
     /// *Inclusive*
     /// This must be set if `move_beyond_global_tail` is true.
     read_to: Option<LogletOffset>,
+    readable_tail_watch: OffsetWatch,
+    last_readable_tail: LogletOffset,
     tx: mpsc::Sender<Result<LogEntry<LogletOffset>, OperationError>>,
     record_cache: RecordCache,
     stats: Stats,
@@ -88,6 +91,7 @@ impl ReadStreamTask {
         filter: KeyFilter,
         from_offset: LogletOffset,
         read_to: Option<LogletOffset>,
+        readable_tail: OffsetWatch,
         known_global_tail: TailOffsetWatch,
         record_cache: RecordCache,
         move_beyond_global_tail: bool,
@@ -116,6 +120,8 @@ impl ReadStreamTask {
             filter,
             read_pointer: from_offset,
             read_to,
+            readable_tail_watch: readable_tail,
+            last_readable_tail: LogletOffset::OLDEST,
             global_tail_watch: known_global_tail,
             last_known_tail: LogletOffset::OLDEST,
             tx,
@@ -156,6 +162,13 @@ impl ReadStreamTask {
             1.max(trigger)
         };
         debug_assert!(readahead_trigger >= 1 && readahead_trigger <= self.tx.max_capacity());
+
+        let mut readable_tail_subscriber = self.readable_tail_watch.subscribe();
+        readable_tail_subscriber
+            .changed()
+            .await
+            .map_err(|_| OperationError::Shutdown(ShutdownError))?;
+        self.last_readable_tail = *readable_tail_subscriber.borrow_and_update();
 
         let mut tail_subscriber = self.global_tail_watch.subscribe();
         if self.move_beyond_global_tail {
@@ -253,6 +266,15 @@ impl ReadStreamTask {
                 return Ok(());
             }
 
+            if self.read_pointer >= self.last_readable_tail {
+                readable_tail_subscriber
+                    .changed()
+                    .await
+                    .map_err(|_| OperationError::Shutdown(ShutdownError))?;
+                self.last_readable_tail = *readable_tail_subscriber.borrow_and_update();
+                continue 'main;
+            }
+
             // Are we reading after last_known_tail offset?
             // We are at tail. We need to wait until new records have been released.
             if !self.can_advance() && !self.move_beyond_global_tail {
@@ -268,7 +290,7 @@ impl ReadStreamTask {
                 continue 'main;
             }
             // We are only here because we should attempt to read something
-            debug_assert!(self.last_known_tail > self.read_pointer);
+            debug_assert!(self.effective_tail() > self.read_pointer);
 
             // Do we have capacity for the next read?
             // - capacity is 100, watermark is 50; we reserve 100; but if readahead_max is 80, we
@@ -283,7 +305,7 @@ impl ReadStreamTask {
 
             // check for trim point
             if trim_point.is_some_and(|trim_point| self.read_pointer <= trim_point) {
-                let trim_point = trim_point.unwrap();
+                let trim_point = trim_point.unwrap().min(self.effective_tail().prev());
                 let permit = permits.next().expect("must have at least one permit");
                 trace!(
                     loglet_id = %self.my_params.loglet_id,
@@ -397,7 +419,7 @@ impl ReadStreamTask {
                 // Note that returned records can have gaps
                 for (offset, maybe_record) in records {
                     // if offset is smaller, we just ignore.
-                    if offset >= self.last_known_tail || offset > self.read_pointer {
+                    if offset >= self.effective_tail() || offset > self.read_pointer {
                         // we have reached the tail, we have a record but we shouldn't ship it.
                         // Let's cache it to assist future reads instead.
                         self.add_to_cache(offset, &maybe_record);
@@ -408,16 +430,17 @@ impl ReadStreamTask {
                             }
                             MaybeRecord::TrimGap(gap) => {
                                 let permit = permits.next().expect("must have at least one permit");
+                                let gap_to = gap.to.min(self.effective_tail().prev());
                                 trace!(
                                     loglet_id = %self.my_params.loglet_id,
                                     offset = %self.read_pointer,
                                     "Shipping a trim gap from node {} to offset {}",
                                     server,
-                                    gap.to
+                                    gap_to
                                 );
-                                permit.send(Ok(LogEntry::new_trim_gap(self.read_pointer, gap.to)));
+                                permit.send(Ok(LogEntry::new_trim_gap(self.read_pointer, gap_to)));
                                 // fast-forward
-                                self.read_pointer = gap.to.next();
+                                self.read_pointer = gap_to.next();
                             }
                             MaybeRecord::ArchivalGap(_) => {
                                 todo!("We don't support reading from object-store yet")
@@ -431,7 +454,7 @@ impl ReadStreamTask {
                                 //
                                 // we clamp the end of the gap to the last safe offset we can
                                 // return before the tail.
-                                let gap_to = self.last_known_tail.min(gap.to.next()).prev();
+                                let gap_to = self.effective_tail().min(gap.to.next()).prev();
 
                                 trace!(
                                     loglet_id = %self.my_params.loglet_id,
@@ -493,15 +516,18 @@ impl ReadStreamTask {
         )
         .prev();
 
-        if let Some(read_to) = self.read_to {
-            return to_offset.min(read_to);
-        }
         to_offset
+            .min(self.effective_tail().prev())
+            .min(self.read_to.unwrap_or(LogletOffset::MAX))
     }
 
     fn can_advance(&self) -> bool {
-        self.read_pointer < self.last_known_tail
+        self.read_pointer < self.effective_tail()
             && self.read_pointer <= self.read_to.unwrap_or(LogletOffset::MAX)
+    }
+
+    fn effective_tail(&self) -> LogletOffset {
+        self.last_known_tail.min(self.last_readable_tail)
     }
 
     fn should_terminate(&self) -> bool {
