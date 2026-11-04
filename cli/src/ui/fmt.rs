@@ -644,6 +644,27 @@ pub(crate) fn rerun_command() -> String {
     join_command(command_args(|arg| arg == "--json"))
 }
 
+/// Like [`rerun_command`], also without the given `--flag`s and their values (`--flag
+/// value` or `--flag=value`), to suggest the same command with those passed differently.
+pub(crate) fn rerun_command_without(flags: &[&str]) -> String {
+    let mut skip_value = false;
+    let args = command_args(|arg| arg == "--json")
+        .into_iter()
+        .filter(|arg| {
+            if std::mem::take(&mut skip_value) {
+                return false;
+            }
+            let (name, inline_value) = arg.split_once('=').unwrap_or((arg, ""));
+            if !flags.contains(&name) {
+                return true;
+            }
+            skip_value = inline_value.is_empty();
+            false
+        })
+        .collect();
+    join_command(args)
+}
+
 /// `restate` and the current arguments, without those `drop` matches.
 fn command_args(drop: impl Fn(&str) -> bool) -> Vec<String> {
     std::iter::once("restate".to_owned())

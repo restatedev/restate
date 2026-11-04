@@ -149,7 +149,7 @@ pub struct Register {
     /// and defaults to `http://` without a scheme. The Lambda ARN must include the function
     /// version, e.g. `arn:aws:lambda:eu-central-1:123456789012:function:greeter:3`.
     /// `connect://<name>` is what a service started with the SDK's `connect()` prints: it
-    /// needs the current environment to be the Cloud one the service connected to (see
+    /// needs the current profile to be the Cloud environment the service connected to (see
     /// `restate cloud login`).
     #[clap(value_parser = parse_deployment)]
     deployment: DeploymentEndpoint,
@@ -445,7 +445,7 @@ async fn cloud_environment(env: &CliEnv) -> Result<(String, url::Url)> {
         &env.config.cloud.environment_info,
     ) else {
         return Err(RestateCliError::bad_input(format!(
-            "The current environment \"{}\" is not a Restate Cloud one, which `connect://` and --tunnel-name endpoints need",
+            "The current profile \"{}\" is not a Restate Cloud environment, which `connect://` and --tunnel-name endpoints need",
             env.profile
         ))
         .with_next_step("restate cloud login", "select the Cloud environment")

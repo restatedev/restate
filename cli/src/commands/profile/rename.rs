@@ -15,7 +15,7 @@ use crate::cli_env::{CliEnv, set_saved_profile};
 use crate::error::RestateCliError;
 use crate::ui::fmt::{Field, Formatter, IncludeFormatting, Outcome, OutputFormatter};
 
-use super::sections::{check_name, is_local};
+use super::sections::{check_name, is_local, is_reserved};
 
 /// Rename a profile of the CLI config file
 ///
@@ -43,6 +43,13 @@ pub async fn run_rename(State(env): State<CliEnv>, opts: &Rename) -> Result<()> 
         return Err(
             RestateCliError::bad_input("The built-in `local` profile can't be renamed").into(),
         );
+    }
+    if is_reserved(&opts.name) {
+        return Err(RestateCliError::bad_input(format!(
+            "\"{}\" holds the config file's shared settings, not a profile",
+            opts.name
+        ))
+        .into());
     }
     check_name(&opts.new_name)?;
 

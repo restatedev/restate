@@ -217,10 +217,8 @@ fn write_user_credentials(
 
 /// The profiles table: what the sync did to each.
 fn report_profiles(f: &mut Formatter, report: &SyncReport, environments: &[CloudEnvironment]) {
-    let describe = |name: &str, change: &str| {
-        // Added and updated profiles map onto `environments` in order.
-        let position = report.kept().position(|kept| kept == name);
-        let (account, environment, region) = match position.and_then(|i| environments.get(i)) {
+    let row = |change: &str, name: &str, environment: Option<&CloudEnvironment>| {
+        let (account, environment, region) = match environment {
             Some(e) => (
                 e.account_name.as_str(),
                 e.environment.name.as_str(),
@@ -236,12 +234,13 @@ fn report_profiles(f: &mut Formatter, report: &SyncReport, environments: &[Cloud
             Field::new(region),
         ]
     };
+    // The sync yields one profile per environment, in order.
     let rows: Vec<[Field; 5]> = report
-        .added
+        .profiles
         .iter()
-        .map(|name| describe(name, "added"))
-        .chain(report.updated.iter().map(|name| describe(name, "updated")))
-        .chain(report.removed.iter().map(|name| describe(name, "removed")))
+        .zip(environments)
+        .map(|((name, change), environment)| row(change.as_str(), name, Some(environment)))
+        .chain(report.removed.iter().map(|name| row("removed", name, None)))
         .collect();
     f.table(
         "profiles",

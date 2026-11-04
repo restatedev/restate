@@ -14,7 +14,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use cling::prelude::*;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use restate_cli_util::{c_eprintln, c_println};
 
@@ -126,34 +126,41 @@ pub async fn run_connect_sdk(State(env): State<CliEnv>, opts: &ConnectSdk) -> Re
         minted.push(json!({ "variable": variable, "key_id": key.key_id, "role_id": key.role_id }));
         Ok(())
     };
+    // On a failure after minting started, leave no empty file behind (the command never
+    // overwrites) and name the keys minted so far: they're lost to the caller and worth
+    // revoking.
+    let abandon = |err: anyhow::Error, file: Option<std::fs::File>, minted: &[Value]| {
+        drop(file);
+        if !opts.stdout {
+            let _ = std::fs::remove_file(&opts.output);
+        }
+        let revoke = minted
+            .iter()
+            .filter_map(|key| key["key_id"].as_str())
+            .collect::<Vec<_>>();
+        if revoke.is_empty() {
+            err
+        } else {
+            err.context(format!(
+                "Nothing was written; revoke the key(s) already minted in the Cloud UI: {}",
+                revoke.join(", ")
+            ))
+        }
+    };
     for (variable, role_id) in KEYS {
         if let Err(err) = mint(variable, role_id).await {
-            // Leave no empty file behind (the command never overwrites), and name the keys
-            // minted so far: they're lost to the caller and worth revoking.
-            drop(file.take());
-            if !opts.stdout {
-                let _ = std::fs::remove_file(&opts.output);
-            }
-            let revoke = minted
-                .iter()
-                .filter_map(|key| key["key_id"].as_str())
-                .collect::<Vec<_>>();
-            return Err(if revoke.is_empty() {
-                err
-            } else {
-                err.context(format!(
-                    "Nothing was written; revoke the key(s) already minted in the Cloud UI: {}",
-                    revoke.join(", ")
-                ))
-            });
+            return Err(abandon(err, file.take(), &minted));
         }
     }
     let content = format!("{}\n", lines.join("\n"));
 
-    if let Some(file) = &mut file {
-        file.write_all(content.as_bytes())
+    if let Some(mut file) = file.take()
+        && let Err(err) = file
+            .write_all(content.as_bytes())
             .and_then(|()| file.flush())
-            .with_context(|| format!("Failed to write {}", opts.output.display()))?;
+            .with_context(|| format!("Failed to write {}", opts.output.display()))
+    {
+        return Err(abandon(err, Some(file), &minted));
     }
 
     if opts.stdout {
@@ -235,18 +242,13 @@ fn create_new(path: &Path) -> Result<std::fs::File> {
     match std::fs::File::create_new(path) {
         Ok(file) => Ok(file),
         Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            let rerun = crate::ui::fmt::rerun_command_without(&["--output"]);
             Err(RestateCliError::bad_input(format!(
                 "{} already exists; it is never changed, so no key was minted",
                 path.display()
             ))
-            .with_next_step(
-                format!("{} --output <PATH>", crate::ui::fmt::rerun_command()),
-                "write another file",
-            )
-            .with_next_step(
-                format!("{} --stdout", crate::ui::fmt::rerun_command()),
-                "print the keys to pipe them",
-            )
+            .with_next_step(format!("{rerun} --output <PATH>"), "write another file")
+            .with_next_step(format!("{rerun} --stdout"), "print the keys to pipe them")
             .into())
         }
         Err(err) => Err(err).with_context(|| format!("Failed to create {}", path.display())),
