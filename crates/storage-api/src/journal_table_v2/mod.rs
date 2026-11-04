@@ -21,6 +21,7 @@ use restate_types::sharding::KeyRange;
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 
 use crate::protobuf_types::PartitionStoreProtobufValue;
+use crate::scan_sink::ScanSink;
 use crate::{BudgetedReadError, Result};
 
 pub trait ReadJournalTable {
@@ -95,18 +96,13 @@ pub enum ScanJournalTableRange {
 }
 
 pub trait ScanJournalTable {
-    fn for_each_journal<
-        F: FnMut(
-                (restate_types::identifiers::JournalEntryId, StoredRawEntry),
-            ) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_journal<S>(
         &self,
         range: ScanJournalTableRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
+        sink: S,
+    ) -> Result<impl Future<Output = Result<S>> + Send>
+    where
+        S: ScanSink<(restate_types::identifiers::JournalEntryId, StoredRawEntry)> + Send + 'static;
 }
 
 pub trait WriteJournalTable {

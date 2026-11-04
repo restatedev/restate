@@ -8,16 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-
 use bytes::Bytes;
 use bytestring::ByteString;
+use futures::future::{self, Either};
 
 use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
 use restate_storage_api::promise_table::{
     OwnedPromiseRow, Promise, ReadPromiseTable, ScanPromiseTable, WritePromiseTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
+use restate_storage_api::scan_sink::ScanSink;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::sharding::KeyRange;
@@ -186,30 +186,27 @@ impl ReadPromiseTable for PartitionStore {
 }
 
 impl ScanPromiseTable for PartitionStore {
-    fn for_each_promise<
-        F: FnMut(OwnedPromiseRow) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
-    >(
+    fn for_each_promise<S>(
         &self,
         range: KeyRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
-        // Share callback between two sequential scans via Arc<Mutex<>>
-        // (needed because iterator_for_each requires 'static closures).
-        // No contention: scans are awaited sequentially.
-        let f = Arc::new(parking_lot::Mutex::new(f));
-
+        sink: S,
+    ) -> Result<impl Future<Output = Result<S>> + Send>
+    where
+        S: ScanSink<OwnedPromiseRow> + Send + 'static,
+    {
         // Only scan the legacy unscoped table while we may still hold data there.
         // After migration the range was deleted, so the scoped scan covers everything.
+        // Both scans feed the same sink, one after the other.
         let unscoped = if self.storage_features().is_migrated_to_scoped_promise_table {
-            None
+            Either::Left(future::ready(Ok(sink)))
         } else {
-            let f_unscoped = Arc::clone(&f);
-            Some(
+            Either::Right(
                 self.iterator_for_each(
                     "df-promise",
                     Priority::Low,
                     TableScan::ScanPartitionKeyRange::<PromiseKey>(range),
-                    move |(mut k, mut v)| {
+                    sink,
+                    |sink, (mut k, mut v)| {
                         let key = break_on_err(PromiseKey::deserialize_from(&mut k))?;
                         let metadata = break_on_err(Promise::decode(&mut v))?;
                         let (partition_key, service_name, service_key, promise_key) = key.split();
@@ -222,7 +219,7 @@ impl ScanPromiseTable for PartitionStore {
                                 ))
                             }))?,
                         );
-                        f_unscoped.lock()(OwnedPromiseRow {
+                        sink.on_item(OwnedPromiseRow {
                             service_id,
                             key: promise_key,
                             metadata,
@@ -234,13 +231,14 @@ impl ScanPromiseTable for PartitionStore {
             )
         };
 
-        let f_scoped = f;
-        let scoped = self
-            .iterator_for_each(
+        Ok(async move {
+            let sink = unscoped.await?;
+            self.iterator_for_each(
                 "df-promise-scoped",
                 Priority::Low,
                 TableScan::ScanPartitionKeyRange::<ScopedPromiseKey>(range),
-                move |(mut k, mut v)| {
+                sink,
+                |sink, (mut k, mut v)| {
                     let key = break_on_err(ScopedPromiseKey::deserialize_from(&mut k))?;
                     let metadata = break_on_err(Promise::decode(&mut v))?;
                     let (_partition_key, scope, service_name, service_key, promise_key) =
@@ -250,7 +248,7 @@ impl ScanPromiseTable for PartitionStore {
                         ByteString::from(service_name.as_str()),
                         ByteString::from(service_key.as_str()),
                     );
-                    f_scoped.lock()(OwnedPromiseRow {
+                    sink.on_item(OwnedPromiseRow {
                         service_id,
                         key: ByteString::from(promise_key.as_str()),
                         metadata,
@@ -258,14 +256,8 @@ impl ScanPromiseTable for PartitionStore {
                     .map_break(Ok)
                 },
             )
-            .map_err(|_| StorageError::OperationalError)?;
-
-        Ok(async move {
-            if let Some(unscoped) = unscoped {
-                unscoped.await?;
-            }
-            scoped.await?;
-            Ok(())
+            .map_err(|_| StorageError::OperationalError)?
+            .await
         })
     }
 }

@@ -25,6 +25,7 @@ use crate::journal_events::row::append_journal_event_row;
 use crate::journal_events::schema::{SysJournalEventsBuilder, sys_journal_events_sort_order};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::row_sink::RowSink;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
 const NAME: &str = "sys_journal_events";
@@ -59,20 +60,13 @@ impl ScanLocalPartition for JournalEventsScanner {
     type ConversionError = std::convert::Infallible;
     type Filter = InvocationIdFilter;
 
-    fn for_each_row<
-        F: for<'a> FnMut(
-                Self::Item<'a>,
-            ) -> std::ops::ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_row(
         partition_store: &PartitionStore,
         range: InvocationIdFilter,
-        mut f: F,
-    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        partition_store
-            .for_each_journal_event(range.into(), move |item| f(item).map_break(Result::unwrap))
+        sink: RowSink<Self>,
+    ) -> Result<impl Future<Output = restate_storage_api::Result<RowSink<Self>>> + Send, StorageError>
+    {
+        partition_store.for_each_journal_event(range.into(), sink)
     }
 
     fn append_row<'a>(

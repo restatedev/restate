@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 use std::future::Future;
-use std::ops::{ControlFlow, RangeInclusive};
+use std::ops::RangeInclusive;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -33,6 +33,7 @@ use restate_util_string::ReString;
 use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
+use crate::scan_sink::ScanSink;
 
 /// Holds timestamps of the [`InvocationStatus`].
 #[derive(Debug, Clone, PartialEq)]
@@ -945,19 +946,13 @@ pub enum ScanInvocationStatusTableRange {
 }
 
 pub trait ScanInvocationStatusTable {
-    fn for_each_invocation_status_lazy<
-        E: Into<anyhow::Error> + 'static,
-        F: for<'a> FnMut(
-                (InvocationId, &'a InvocationStatusV2Lazy<'a>),
-            ) -> ControlFlow<std::result::Result<(), E>>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_invocation_status_lazy<S>(
         &self,
         range: ScanInvocationStatusTableRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
+        sink: S,
+    ) -> Result<impl Future<Output = Result<S>> + Send>
+    where
+        S: for<'a> ScanSink<(InvocationId, &'a InvocationStatusV2Lazy<'a>)> + Send + 'static;
 
     fn filter_map_invocation_status_lazy<
         O: Send + 'static,

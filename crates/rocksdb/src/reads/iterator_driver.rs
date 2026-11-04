@@ -57,7 +57,7 @@ pub enum LeasePolicy {
     WholeIteration,
 }
 
-/// Receives the items an [`IteratorDriver`] reads. Both methods are called on
+/// Receives the items an [`IteratorDriver`] reads. All methods are called on
 /// the executor's threads and must not block.
 pub trait IteratorSink {
     /// Room for one item, reserved by [`IteratorSink::poll_ready`].
@@ -187,19 +187,20 @@ where
 /// yields to let other IO work run on the executor. If the sink is not ready
 /// the iterator gets parked until the sink is ready again.
 ///
-/// Resolves to `Ok(())` once the iterator is exhausted, the sink stops taking
-/// items, or the sink returns [`IterAction::Stop`]. It fails with
+/// Resolves to `Ok(sink)` once the iterator is exhausted, the sink stops taking
+/// items, or the sink returns [`IterAction::Stop`]. The iterator and the
+/// iteration's lease, if any, are dropped by then. It fails with
 /// [`IoTaskError`] if a slice panicked, or was dropped without running, e.g.
 /// because the executor rejected it.
 ///
 /// Dropping the driver cancels the iteration: no slice starts after that. The
 /// iterator, the sink, and the iteration's lease, if any, are dropped soon
 /// after, usually on the executor, not by the time the drop returns.
-pub struct IteratorDriver {
-    task: async_task::FallibleTask<()>,
+pub struct IteratorDriver<S> {
+    task: async_task::FallibleTask<S>,
 }
 
-impl IteratorDriver {
+impl<S: IteratorSink + Send + 'static> IteratorDriver<S> {
     /// Starts running `iterator` on `executor`, handing the items to `sink`. The
     /// iterator starts with `initial_action`, and `name` labels the read perf
     /// metrics of each slice. Each slice hands at most `steps_per_slice` items
@@ -213,7 +214,7 @@ impl IteratorDriver {
     /// `gate` is sealed. With [`LeasePolicy::PerSlice`], admission is checked at
     /// each slice instead, so this doesn't fail.
     #[allow(clippy::too_many_arguments)]
-    pub fn spawn<R, S, E>(
+    pub fn spawn<R, E>(
         name: &'static str,
         iterator: OwnedReadIterator<R>,
         sink: S,
@@ -225,7 +226,6 @@ impl IteratorDriver {
     ) -> Result<Self, AdmissionClosed>
     where
         R: Send + Sync + 'static,
-        S: IteratorSink + Send + 'static,
         E: IoExecutor + Send + Sync + 'static,
     {
         // When the lease policy is `WholeIteration` we hold one lease in the beginning
@@ -240,22 +240,27 @@ impl IteratorDriver {
         };
         // Closure captures drop in an unspecified order, but tuple fields drop in
         // order: the lease goes last, after the iterator and the sink.
-        let mut state = (iterator, sink, iteration_lease);
+        let mut state = Some((iterator, sink, iteration_lease));
         let iteration = std::future::poll_fn(move |cx| {
-            let (iterator, sink, _lease) = &mut state;
+            let (iterator, sink, _lease) = state.as_mut().expect("polled after completion");
             let _perf = RocksDbReadPerfGuard::new(name);
             match iterator_run_slice(iterator, sink, cx, initial_action.take(), steps_per_slice) {
-                SliceResult::Stop => Poll::Ready(()),
-                // The sink registered this task's waker, which schedules the next
-                // slice once the sink has room.
-                SliceResult::NotReady => Poll::Pending,
+                SliceResult::Stop => {}
+                // The sink registered this task's waker, which schedules the
+                // next slice once the sink has room.
+                SliceResult::NotReady => return Poll::Pending,
                 // Go to the back of the executor's queue, so other work gets a
                 // turn.
                 SliceResult::Yielded => {
                     cx.waker().wake_by_ref();
-                    Poll::Pending
+                    return Poll::Pending;
                 }
             }
+            // Release the iterator, then the lease, and hand the sink back.
+            let (iterator, sink, lease) = state.take().expect("polled after completion");
+            drop(iterator);
+            drop(lease);
+            Poll::Ready(sink)
         });
 
         // Slices are scheduled from whichever thread wakes the task: the previous
@@ -294,8 +299,8 @@ impl IteratorDriver {
     }
 }
 
-impl Future for IteratorDriver {
-    type Output = Result<(), IoTaskError>;
+impl<S> Future for IteratorDriver<S> {
+    type Output = Result<S, IoTaskError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         Pin::new(&mut self.task)

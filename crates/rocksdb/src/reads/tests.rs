@@ -680,9 +680,10 @@ async fn iterator_driver() -> anyhow::Result<()> {
     }
 
     // Once iterator is exhausted the driver will complete.
-    assert_matches!(timeout(DEADLINE, driver).await?, Ok(()));
+    // It hands the sink back, which drops the sender with it.
+    assert_matches!(timeout(DEADLINE, driver).await?.map(drop), Ok(()));
 
-    // No more items, and the sender is gone with the driver.
+    // No more items, and the sender is gone.
     assert!(matches!(
         rx.try_recv(),
         Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
@@ -747,7 +748,7 @@ async fn iterator_driver_ends_early_on_panic_cancellation_or_rejection() -> anyh
         LeasePolicy::PerSlice,
         executor.clone(),
     )?;
-    assert_matches!(timeout(DEADLINE, driver).await?, Err(IoTaskError));
+    assert_matches!(timeout(DEADLINE, driver).await?.map(drop), Err(IoTaskError));
     timeout(DEADLINE, barrier(&executor)).await?;
 
     // Dropping the driver while the iterator waits for room in the sink cancels
@@ -789,7 +790,7 @@ async fn iterator_driver_ends_early_on_panic_cancellation_or_rejection() -> anyh
     wait_until_full(&executor, &rx).await;
     gate.seal();
     assert_eq!(rx.recv().await, Some(vec![0]));
-    assert_matches!(timeout(DEADLINE, driver).await?, Err(IoTaskError));
+    assert_matches!(timeout(DEADLINE, driver).await?.map(drop), Err(IoTaskError));
 
     // The remaining items are delivered, and the rejected slice left nothing
     // behind in the gate.

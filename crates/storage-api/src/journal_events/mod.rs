@@ -13,6 +13,7 @@ use std::ops::RangeInclusive;
 use futures::Stream;
 
 use crate::Result;
+use crate::scan_sink::ScanSink;
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::journal_events::raw::RawEvent;
 use restate_types::sharding::KeyRange;
@@ -32,13 +33,13 @@ pub enum ScanJournalEventsTableRange {
 }
 
 pub trait ScanJournalEventsTable {
-    fn for_each_journal_event<
-        F: FnMut((InvocationId, EventView)) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
-    >(
+    fn for_each_journal_event<S>(
         &self,
         range: ScanJournalEventsTableRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
+        sink: S,
+    ) -> Result<impl Future<Output = Result<S>> + Send>
+    where
+        S: ScanSink<(InvocationId, EventView)> + Send + 'static;
 }
 
 pub trait WriteJournalEventsTable {

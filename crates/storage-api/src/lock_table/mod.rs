@@ -16,6 +16,7 @@ use restate_types::{LockName, Scope};
 use restate_util_string::ReString;
 
 use crate::Result;
+use crate::scan_sink::ScanSink;
 
 /// Used for introspection purposes
 #[derive(Debug, Clone, bilrost::Message)]
@@ -56,16 +57,13 @@ pub trait LoadLocks {
 
 pub trait ScanLocksTable {
     /// Used for data-fusion queries
-    fn for_each_lock<
-        F: FnMut((PartitionKey, Option<Scope>, LockName, LockState)) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_lock<S>(
         &self,
         range: KeyRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
+        sink: S,
+    ) -> Result<impl Future<Output = Result<S>> + Send>
+    where
+        S: ScanSink<(PartitionKey, Option<Scope>, LockName, LockState)> + Send + 'static;
 }
 
 /// The Lock table will fully replace the ServiceStatus table after a migration process

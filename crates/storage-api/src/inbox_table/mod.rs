@@ -17,6 +17,7 @@ use restate_types::state_mut::ExternalStateMutation;
 
 use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
+use crate::scan_sink::ScanSink;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InboxEntry {
@@ -103,13 +104,13 @@ pub trait ReadInboxTable {
 }
 
 pub trait ScanInboxTable {
-    fn for_each_inbox<
-        F: FnMut(SequenceNumberInboxEntry) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
-    >(
+    fn for_each_inbox<S>(
         &self,
         range: KeyRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
+        sink: S,
+    ) -> Result<impl Future<Output = Result<S>> + Send>
+    where
+        S: ScanSink<SequenceNumberInboxEntry> + Send + 'static;
 }
 
 pub trait WriteInboxTable {

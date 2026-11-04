@@ -18,6 +18,7 @@ use restate_storage_api::journal_events::{
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::protobuf_types::v1::Event as PbEvent;
+use restate_storage_api::scan_sink::ScanSink;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
 use restate_types::journal_events::EventType;
@@ -165,13 +166,14 @@ impl ReadJournalEventsTable for PartitionStore {
 }
 
 impl ScanJournalEventsTable for PartitionStore {
-    fn for_each_journal_event<
-        F: FnMut((InvocationId, EventView)) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
-    >(
+    fn for_each_journal_event<S>(
         &self,
         range: ScanJournalEventsTableRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        sink: S,
+    ) -> Result<impl Future<Output = Result<S>> + Send>
+    where
+        S: ScanSink<(InvocationId, EventView)> + Send + 'static,
+    {
         let scan = match range {
             ScanJournalEventsTableRange::PartitionKey(partition_key) => {
                 TableScan::ScanPartitionKeyRange::<JournalEventKeyBuilder>(partition_key)
@@ -193,12 +195,13 @@ impl ScanJournalEventsTable for PartitionStore {
             "df-journal-events",
             Priority::Low,
             scan,
-            move |(mut key, mut value)| {
+            sink,
+            move |sink, (mut key, mut value)| {
                 let event_key = break_on_err(JournalEventKey::deserialize_from(&mut key))?;
                 let (pk, inv_uuid, event_type, timestamp, _) = event_key.split();
                 let stored_event = break_on_err(EventWrapper::decode(&mut value))?.0;
 
-                f((
+                sink.on_item((
                     InvocationId::from_parts(pk, inv_uuid),
                     EventView {
                         event: RawEvent::new(

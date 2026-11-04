@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::ControlFlow;
-
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
@@ -19,6 +17,7 @@ use restate_storage_api::inbox_table::{
     InboxEntry, ReadInboxTable, ScanInboxTable, SequenceNumberInboxEntry, WriteInboxTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
+use restate_storage_api::scan_sink::ScanSink;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::message::MessageIndex;
@@ -107,22 +106,24 @@ impl ReadInboxTable for PartitionStore {
 }
 
 impl ScanInboxTable for PartitionStore {
-    fn for_each_inbox<
-        F: FnMut(SequenceNumberInboxEntry) -> ControlFlow<()> + Send + Sync + 'static,
-    >(
+    fn for_each_inbox<S>(
         &self,
         range: KeyRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        sink: S,
+    ) -> Result<impl Future<Output = Result<S>> + Send>
+    where
+        S: ScanSink<SequenceNumberInboxEntry> + Send + 'static,
+    {
         self.iterator_for_each(
             "df-inbox",
             Priority::Low,
             TableScan::ScanPartitionKeyRange::<InboxKey>(range),
-            move |(mut key, mut value)| {
+            sink,
+            move |sink, (mut key, mut value)| {
                 let key = break_on_err(InboxKey::deserialize_from(&mut key))?;
                 let inbox_entry = break_on_err(InboxEntry::decode(&mut value))?;
 
-                f(SequenceNumberInboxEntry::new(
+                sink.on_item(SequenceNumberInboxEntry::new(
                     key.sequence_number,
                     inbox_entry,
                 ))
