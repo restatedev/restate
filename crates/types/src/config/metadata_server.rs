@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn metadata_server_precedence() -> googletest::Result<()> {
-        let temp_dir = tempfile::tempdir()?;
+        let temp_dir = restate_test_util::tempdir()?;
         let config_path_address = temp_dir.path().join("config1.toml");
         let config_file_address = r#"
         [metadata-server]
@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn metadata_store_sub_field_does_not_clear_defaults() -> googletest::Result<()> {
-        let temp_dir = tempfile::tempdir()?;
+        let temp_dir = restate_test_util::tempdir()?;
         let config_path_address = temp_dir.path().join("config1.toml");
         let config_file_address = r#"
         [metadata-server]

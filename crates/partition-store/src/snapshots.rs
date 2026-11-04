@@ -237,7 +237,7 @@ mod tests {
         // Symbolic links named like a snapshot and like a partition, both pointing outside
         // at a directory that holds an export-shaped directory. Following either one would
         // delete something there.
-        let outside = tempfile::tempdir()?;
+        let outside = restate_test_util::tempdir()?;
         let outside_export = export_dir(outside.path(), SnapshotId::new());
         std::fs::create_dir_all(&outside_export)?;
         let snapshot_link = partition_dir.join(SnapshotId::new().to_string());

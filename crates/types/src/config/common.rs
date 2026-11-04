@@ -2108,7 +2108,7 @@ mod tests {
 
     #[tokio::test]
     async fn control_advertisement_uses_shared_listener_and_explicit_overrides() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = restate_test_util::tempdir().unwrap();
         let mut config = Configuration::default();
         config.common.roles.clear();
         config.common.fabric_listener_options = ListenerOptions {
@@ -2210,7 +2210,7 @@ mod tests {
 
     #[test]
     fn advertised_hosts_are_validated_at_load() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = restate_test_util::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let load = |toml: &str| {
             std::fs::write(&path, toml).unwrap();
@@ -2395,7 +2395,7 @@ mod tests {
     #[test]
     #[ignore]
     fn metadata_client_compatibility() -> googletest::Result<()> {
-        let temp_dir = tempfile::tempdir()?;
+        let temp_dir = restate_test_util::tempdir()?;
         let config_path_address = temp_dir.path().join("config1.toml");
         let config_file_address = r#"
         [metadata-client]
