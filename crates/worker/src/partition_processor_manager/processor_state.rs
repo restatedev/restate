@@ -10,12 +10,13 @@
 
 use std::time::{Duration, Instant};
 
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use ulid::Ulid;
 
 use restate_core::network::ShardSender;
+use restate_partition_store::snapshots::CommitFenceRequest;
 use restate_types::cluster::cluster_state::{
     BrokenReason, PartitionProcessorStatus, ReplayStatus, RunMode,
 };
@@ -362,6 +363,17 @@ impl ProcessorState {
             _ => false,
         }
     }
+
+    /// Reaches the started processor, which holds back its commits while a snapshot is exported.
+    pub fn commit_fence_sender(&self) -> Option<mpsc::Sender<CommitFenceRequest>> {
+        match self {
+            ProcessorState::Started {
+                processor: Some(started_processor),
+                ..
+            } => Some(started_processor.commit_fence_tx.clone()),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -371,6 +383,7 @@ pub struct StartedProcessor {
     control_tx: watch::Sender<TargetLeaderState>,
     rpc_shard_tx: ShardSender<PartitionLeaderService>,
     watch_rx: watch::Receiver<PartitionProcessorStatus>,
+    commit_fence_tx: mpsc::Sender<CommitFenceRequest>,
 }
 
 impl StartedProcessor {
@@ -380,6 +393,7 @@ impl StartedProcessor {
         control_tx: watch::Sender<TargetLeaderState>,
         rpc_shard_tx: ShardSender<PartitionLeaderService>,
         watch_rx: watch::Receiver<PartitionProcessorStatus>,
+        commit_fence_tx: mpsc::Sender<CommitFenceRequest>,
     ) -> Self {
         Self {
             cancellation_token,
@@ -387,6 +401,7 @@ impl StartedProcessor {
             control_tx,
             rpc_shard_tx,
             watch_rx,
+            commit_fence_tx,
         }
     }
 

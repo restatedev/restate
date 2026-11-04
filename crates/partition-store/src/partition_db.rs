@@ -242,33 +242,45 @@ impl PartitionDb {
         self.physical_scope().released()
     }
 
-    /// Exports the column family into `export_dir`, which RocksDB creates. Returns a
-    /// guard that deletes the directory when dropped, along with the export's metadata.
-    pub(crate) async fn export_cf(
+    /// Prepares an export of the column family into `export_dir`, which RocksDB creates, to
+    /// submit to a pool of your choice. Its result is a guard that deletes the directory when
+    /// dropped, along with the export's metadata.
+    ///
+    /// `make_guard` runs on the worker right before the export, and the export holds the guard
+    /// it returns until it's done, even if nobody waits for its result anymore. If the export
+    /// is discarded before it runs, whatever `make_guard` captured is dropped with it.
+    ///
+    /// Like the work of [`Self::run_background_op`], the export isn't part of the partition's
+    /// session, so it can also export a closed partition. It keeps the column families alive
+    /// until it's done.
+    pub(crate) fn prepare_export_cf<G>(
         &self,
         export_dir: std::path::PathBuf,
-    ) -> Result<(SnapshotDir, ExportImportFilesMetaData), RocksError> {
-        self.run_background_op(move |scope, gate| {
-            // Every key kind lives in the same column family for now, so this
-            // exports all of the partition's data.
-            RocksDb::prepare_export_cf(scope, gate, KeyKind::Fsm, export_dir.clone())
-                // Take ownership of the files here, on the worker. If the caller went
-                // away while the export was running, nobody claims this result, and
-                // dropping it deletes the files instead of leaving them behind.
-                .map_ok(|metadata| (SnapshotDir::new(export_dir), metadata))
-        })
-        .await?
+        make_guard: impl FnOnce() -> G + Send + 'static,
+    ) -> impl IoOp<Output = Result<(SnapshotDir, ExportImportFilesMetaData), RocksError>> {
+        // Every key kind lives in the same column family for now, so this exports all of the
+        // partition's data.
+        RocksDb::prepare_export_cf(
+            self.physical_scope(),
+            self.rocksdb().gate(),
+            KeyKind::Fsm,
+            export_dir.clone(),
+        )
+        .with_guard(make_guard)
+        // Take ownership of the files here, on the worker. If the caller went away while the
+        // export was running, nobody claims this result, and dropping it deletes the files
+        // instead of leaving them behind.
+        .map_ok(|metadata| (SnapshotDir::new(export_dir), metadata))
     }
 
-    /// Runs work that isn't a read, such as flushing or exporting, on a
-    /// background thread, at low priority. `prepare` gets the partition's physical
-    /// scope and the gate the work counts in, and prepares the operation.
+    /// Runs work that isn't a read, such as flushing, on a background thread, at low
+    /// priority. `prepare` gets the partition's physical scope and the gate the work counts
+    /// in, and prepares the operation.
     ///
     /// The work isn't part of the partition's session. Closing the partition ends
     /// the session, but this work may keep running afterwards, and it may also
-    /// start after the session has ended, for example to export a snapshot of a
-    /// closed partition. So it counts against the database's gate instead of the
-    /// session's: closing the partition doesn't wait for it, but shutting down the
+    /// start after the session has ended. So it counts against the database's gate instead
+    /// of the session's: closing the partition doesn't wait for it, but shutting down the
     /// database does.
     ///
     /// The prepared operation keeps the partition's column families alive until
@@ -436,7 +448,8 @@ pub(crate) struct PartitionCell {
     meta: Arc<Partition>,
     executor: SinglePoolExecutor,
     archived_lsn: watch::Sender<Option<Lsn>>,
-    pub(crate) inner: AsyncRwLock<State>,
+    /// Shared so that a snapshot capture can hold the read lock until its export finishes.
+    pub(crate) inner: Arc<AsyncRwLock<State>>,
     pub(crate) faults: Faults,
 }
 
@@ -446,7 +459,7 @@ impl PartitionCell {
             meta: Arc::new(partition),
             executor,
             archived_lsn: Default::default(),
-            inner: AsyncRwLock::new(State::Unknown),
+            inner: Arc::new(AsyncRwLock::new(State::Unknown)),
             faults: Faults::default(),
         }
     }
