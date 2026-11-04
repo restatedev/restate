@@ -292,6 +292,11 @@ impl PersistedEnabledFeatures {
             .max()
             .cloned()
     }
+
+    /// Names of the enabled features, including ones this binary doesn't know.
+    pub(crate) fn names(&self) -> impl Iterator<Item = &ReString> {
+        self.features.keys()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
