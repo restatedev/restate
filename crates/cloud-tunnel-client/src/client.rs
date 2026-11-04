@@ -613,8 +613,7 @@ mod tests {
                 .uri(path)
                 .body(BoxBody::new(Empty::<Bytes>::new()))
                 .unwrap();
-            *request.headers_mut() =
-                TestClaims::new("/invoke/Greeter/greet", Some(("POST", &signed))).headers();
+            *request.headers_mut() = TestClaims::new(("POST", signed.as_str())).headers();
             let response = tunnel.send_request(request).await.unwrap();
             assert_eq!(response.status(), expected, "signed for {signed_tunnel}");
         }
