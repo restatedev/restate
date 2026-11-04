@@ -193,6 +193,10 @@ pub async fn run(State(env): State<CliEnv>) -> Result<()> {
                     }
                     Err(_) => (false, "invalid token".to_string()),
                 },
+                Err(_) if info.is_some_and(|info| info.user_id.is_none()) => (
+                    false,
+                    "written by an older CLI; run `restate cloud login`".to_string(),
+                ),
                 Err(_) => (false, "no token".to_string()),
             };
             f.title("☁️", "Cloud");

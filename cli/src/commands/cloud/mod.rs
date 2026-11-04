@@ -33,10 +33,6 @@ pub struct CloudConfig {
     /// The credentials of every user logged in, by user id: `[global.cloud.users.<id>]`.
     #[serde(default)]
     pub users: BTreeMap<String, UserCredentials>,
-    /// Where the single login token lived before credentials were kept per user; still used
-    /// by profiles without a `user_id`.
-    #[serde(flatten)]
-    pub credentials: Option<Credentials>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
