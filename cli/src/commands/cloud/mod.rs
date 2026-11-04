@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod config_discovery;
+mod connect_sdk;
 mod deployment_name;
 mod environments;
 mod login;
@@ -144,6 +145,7 @@ pub enum Cloud {
     /// Prints a URL and a code to confirm in the browser (opened automatically when possible),
     /// then waits for the login to complete. Needs a person: agents can't complete it.
     Login(login::Login),
+    ConnectSdk(connect_sdk::ConnectSdk),
     Tunnel(tunnel::Tunnel),
     /// Deprecated: use `restate cloud tunnel`
     #[clap(subcommand)]
