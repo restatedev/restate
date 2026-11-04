@@ -182,6 +182,21 @@ impl RegisterTable for NoTables {
     }
 }
 
+/// Registers only the dynamic Protobuf scalar UDFs on a minimal [`QueryContext`]
+/// so remote partition scanners can evaluate pushed-down `proto_get_*` predicates locally.
+pub struct ProtoUdfsOnly<D>(pub Live<D>);
+
+impl<D> RegisterTable for ProtoUdfsOnly<D>
+where
+    D: ServiceMetadataResolver + Send + Sync + Clone + 'static,
+{
+    async fn register(&self, ctx: &QueryContext) -> Result<(), BuildError> {
+        let proto_registry = crate::proto_schema::DynamicProtoSchemaRegistry::new(self.0.clone());
+        crate::proto_schema::udf::register_udfs(ctx, proto_registry);
+        Ok(())
+    }
+}
+
 /// A query context registerer for user tables
 pub struct UserTables<P, S, D> {
     partition_selector: P,
@@ -229,6 +244,10 @@ where
         // ----- non partitioned tables -----
         crate::deployment::register_self(ctx, self.schemas.clone())?;
         crate::service::register_self(ctx, self.schemas.clone())?;
+        let proto_registry =
+            crate::proto_schema::DynamicProtoSchemaRegistry::new(self.schemas.clone());
+        crate::proto_schema::table::register_self(ctx, proto_registry.clone())?;
+        crate::proto_schema::udf::register_udfs(ctx, proto_registry);
         crate::rules::register_self(
             ctx,
             self.metadata_store_client.clone(),

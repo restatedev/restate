@@ -36,7 +36,7 @@ use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_ingestion_client::{IngestionClient, SessionOptions};
 use restate_limiter::rule_book::RuleBookObserver;
 use restate_log_server::LogServerService;
-use restate_storage_query_datafusion::context::{NoTables, QueryContext};
+use restate_storage_query_datafusion::context::{ProtoUdfsOnly, QueryContext};
 use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
 use restate_storage_query_datafusion::remote_query_scanner_manager::{
     RemoteScannerManager, create_partition_locator,
@@ -426,9 +426,12 @@ impl Node {
 
         // Create a minimal QueryContext for the remote scanner server — it only
         // needs task_ctx() for physical expression deserialization.
-        let scanner_query_context = QueryContext::create(&config.admin.query_engine, NoTables)
-            .await
-            .expect("creating minimal QueryContext should not fail");
+        let scanner_query_context = QueryContext::create(
+            &config.admin.query_engine,
+            ProtoUdfsOnly(metadata.updateable_schema()),
+        )
+        .await
+        .expect("creating minimal QueryContext should not fail");
 
         let datafusion_remote_scanner = RemoteQueryScannerServer::new(
             scanner_query_context,

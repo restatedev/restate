@@ -13,8 +13,8 @@ use std::fmt::Write as _;
 
 use crate::{
     deployment, inbox, invocation_state, invocation_status, journal, journal_events, locks,
-    promise, rules, scheduler_status, service, state, user_limits, vqueue_entry_status,
-    vqueue_meta, vqueues,
+    promise, proto_schema, rules, scheduler_status, service, state, user_limits,
+    vqueue_entry_status, vqueue_meta, vqueues,
 };
 
 /// List of available table docs. Whenever you add a new table, add its table docs to
@@ -27,6 +27,7 @@ pub const ALL_TABLE_DOCS: &[StaticTableDocs] = &[
     journal_events::schema::TABLE_DOCS,
     locks::schema::TABLE_DOCS,
     promise::schema::TABLE_DOCS,
+    proto_schema::table::TABLE_DOCS,
     rules::schema::TABLE_DOCS,
     scheduler_status::schema::TABLE_DOCS,
     service::schema::TABLE_DOCS,
