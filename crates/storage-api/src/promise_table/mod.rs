@@ -24,6 +24,7 @@ use restate_types::sharding::KeyRange;
 
 use super::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
+use crate::scan_sink::ScanSink;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromiseResult {
@@ -130,13 +131,13 @@ pub trait ReadPromiseTable {
 }
 
 pub trait ScanPromiseTable {
-    fn for_each_promise<
-        F: FnMut(OwnedPromiseRow) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
-    >(
+    fn for_each_promise<S>(
         &self,
         range: KeyRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
+        sink: S,
+    ) -> Result<impl Future<Output = Result<S>> + Send>
+    where
+        S: ScanSink<OwnedPromiseRow> + Send + 'static;
 }
 
 pub trait WritePromiseTable {

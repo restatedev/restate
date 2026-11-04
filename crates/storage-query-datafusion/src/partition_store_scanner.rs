@@ -8,9 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::fmt::Debug;
 use std::sync::Arc;
-use std::time::Instant;
-use std::{fmt::Debug, ops::ControlFlow};
 
 use anyhow::anyhow;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -25,8 +24,8 @@ use restate_storage_api::StorageError;
 use restate_types::identifiers::PartitionId;
 use restate_types::sharding::KeyRange;
 
+use crate::row_sink::RowSink;
 use crate::table_providers::ScanPartition;
-use crate::table_util::BatchSender;
 
 pub trait ScanLocalPartitionFilter {
     fn new(range: KeyRange, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self;
@@ -38,22 +37,19 @@ impl ScanLocalPartitionFilter for KeyRange {
     }
 }
 
-pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
+pub trait ScanLocalPartition: Send + Sync + Debug + Sized + 'static {
     type Builder: crate::table_util::Builder + Send;
     type Item<'a>: Send;
-    type ConversionError;
+    type ConversionError: std::error::Error + Send + Sync + 'static;
     type Filter: ScanLocalPartitionFilter + Send + Sync + 'static;
 
-    fn for_each_row<
-        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    /// Scans the rows matching `filter` into `sink`, and resolves to the sink
+    /// once the scan is over.
+    fn for_each_row(
         partition_store: &PartitionStore,
         filter: Self::Filter,
-        f: F,
-    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError>;
+        sink: RowSink<Self>,
+    ) -> Result<impl Future<Output = restate_storage_api::Result<RowSink<Self>>> + Send, StorageError>;
 
     fn append_row<'a>(
         row_builder: &mut Self::Builder,
@@ -109,27 +105,21 @@ where
                 DataFusionError::External(err.into())
             })?;
 
-            // timer starts on first row, stops on scanner drop
-            let mut elapsed_compute = ElapsedCompute::new(elapsed_compute);
+            let sink = RowSink::<S>::new(
+                projection,
+                tx,
+                predicate.clone(),
+                batch_size,
+                limit,
+                elapsed_compute,
+            );
 
-            let mut batch_sender =
-                BatchSender::new(projection, tx, predicate.clone(), batch_size, limit);
-
-            S::for_each_row(
-                &partition_store,
-                S::Filter::new(range, predicate),
-                move |row| {
-                    elapsed_compute.start();
-                    match S::append_row(batch_sender.builder_mut(), row) {
-                        Ok(()) => {}
-                        err => return ControlFlow::Break(err),
-                    }
-                    batch_sender.send_if_needed().map_break(Ok)
-                },
-            )
-            .map_err(|err| DataFusionError::External(err.into()))?
-            .await
-            .map_err(|err| DataFusionError::External(err.into()))?;
+            S::for_each_row(&partition_store, S::Filter::new(range, predicate), sink)
+                .map_err(|err| DataFusionError::External(err.into()))?
+                .await
+                .map_err(|err| DataFusionError::External(err.into()))?
+                .close()
+                .await;
 
             Ok(())
         };
@@ -162,28 +152,5 @@ where
             limit,
             elapsed_compute,
         )
-    }
-}
-
-struct ElapsedCompute {
-    time: Time,
-    start: Option<Instant>,
-}
-
-impl ElapsedCompute {
-    fn new(time: Time) -> Self {
-        Self { time, start: None }
-    }
-
-    fn start(&mut self) {
-        self.start.get_or_insert_with(Instant::now);
-    }
-}
-
-impl Drop for ElapsedCompute {
-    fn drop(&mut self) {
-        if let Some(start) = &self.start {
-            self.time.add_elapsed(*start)
-        }
     }
 }

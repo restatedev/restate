@@ -22,6 +22,7 @@ use crate::context::{QueryContext, SelectPartitions};
 use crate::filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::row_sink::RowSink;
 use crate::state::row::append_state_row;
 use crate::state::schema::{StateBuilder, state_sort_order};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
@@ -59,19 +60,13 @@ impl ScanLocalPartition for StateScanner {
     type ConversionError = std::convert::Infallible;
     type Filter = KeyRange;
 
-    fn for_each_row<
-        F: for<'a> FnMut(
-                Self::Item<'a>,
-            ) -> std::ops::ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_row(
         partition_store: &PartitionStore,
         range: KeyRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        partition_store.for_each_user_state(range, move |item| f(item).map_break(Result::unwrap))
+        sink: RowSink<Self>,
+    ) -> Result<impl Future<Output = restate_storage_api::Result<RowSink<Self>>> + Send, StorageError>
+    {
+        partition_store.for_each_user_state(range, sink)
     }
 
     fn append_row<'a>(

@@ -23,6 +23,7 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
+use restate_storage_api::scan_sink::ScanSink;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
 use restate_types::sharding::KeyRange;
@@ -63,19 +64,15 @@ fn create_invocation_status_key(invocation_id: &InvocationId) -> InvocationStatu
     }
 }
 
-fn multi_get_invocation_status_lazy<E, F>(
+/// Looks up `ids` in one read task. It doesn't wait for `sink` to be ready
+/// between rows, so the sink may buffer up to `ids.len()` rows.
+fn multi_get_invocation_status_lazy<S>(
     store: &PartitionStore,
     ids: BTreeSet<InvocationId>,
-    mut f: F,
-) -> impl Future<Output = Result<()>> + Send
+    mut sink: S,
+) -> impl Future<Output = Result<S>> + Send
 where
-    E: Into<anyhow::Error> + 'static,
-    F: for<'a> FnMut(
-            (InvocationId, &'a InvocationStatusV2Lazy<'a>),
-        ) -> ControlFlow<std::result::Result<(), E>>
-        + Send
-        + Sync
-        + 'static,
+    S: for<'a> ScanSink<(InvocationId, &'a InvocationStatusV2Lazy<'a>)> + Send + 'static,
 {
     const KEY_LEN: usize = InvocationStatusKey::serialized_length_fixed();
 
@@ -85,7 +82,7 @@ where
         let read = rocksdb.prepare_read(
             "df-for-each-invocation-status",
             StorageTaskKind::MultiGet,
-            move |raw_db, cfs| -> Result<()> {
+            move |raw_db, cfs| -> Result<S> {
                 let cf = cfs.get(<InvocationStatusKey as EncodeTableKey>::KEY_KIND);
 
                 let batch_capacity = ids.len().min(INVOCATION_STATUS_MULTI_GET_BATCH_SIZE);
@@ -162,12 +159,8 @@ where
                             .merge(value)
                             .map_err(|e| StorageError::Conversion(e.into()))?;
 
-                        match f((*id, &inv_status_v2_lazy)) {
-                            ControlFlow::Continue(()) => {}
-                            ControlFlow::Break(Ok(())) => return Ok(()),
-                            ControlFlow::Break(Err(e)) => {
-                                return Err(StorageError::Conversion(e.into()));
-                            }
+                        if sink.on_item((*id, &inv_status_v2_lazy)).is_break() {
+                            return Ok(sink);
                         }
                     }
 
@@ -176,7 +169,7 @@ where
                     }
                 }
 
-                Ok(())
+                Ok(sink)
             },
         );
         rocksdb
@@ -265,21 +258,16 @@ impl ReadInvocationStatusTable for PartitionStore {
 }
 
 impl ScanInvocationStatusTable for PartitionStore {
-    fn for_each_invocation_status_lazy<
-        E: Into<anyhow::Error> + 'static,
-        F: for<'a> FnMut(
-                (InvocationId, &'a InvocationStatusV2Lazy<'a>),
-            ) -> ControlFlow<std::result::Result<(), E>>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_invocation_status_lazy<S>(
         &self,
         range: ScanInvocationStatusTableRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        sink: S,
+    ) -> Result<impl Future<Output = Result<S>> + Send>
+    where
+        S: for<'a> ScanSink<(InvocationId, &'a InvocationStatusV2Lazy<'a>)> + Send + 'static,
+    {
         if let ScanInvocationStatusTableRange::InvocationIdSet(ids) = range {
-            return Ok(multi_get_invocation_status_lazy(self, ids, f).boxed());
+            return Ok(multi_get_invocation_status_lazy(self, ids, sink).boxed());
         }
 
         let scan = match range {
@@ -305,8 +293,9 @@ impl ScanInvocationStatusTable for PartitionStore {
                 "df-for-each-invocation-status",
                 Priority::Low,
                 scan,
+                sink,
                 {
-                    move |(mut key, mut value)| {
+                    move |sink, (mut key, mut value)| {
                         let status_key =
                             break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
 
@@ -330,14 +319,11 @@ impl ScanInvocationStatusTable for PartitionStore {
 
                         let (partition_key, invocation_uuid) = status_key.split();
 
-                        let result = f((
+                        sink.on_item((
                             InvocationId::from_parts(partition_key, invocation_uuid),
                             &inv_status_v2_lazy,
-                        ));
-
-                        result.map_break(|result| {
-                            result.map_err(|err| StorageError::Conversion(err.into()))
-                        })
+                        ))
+                        .map_break(Ok)
                     }
                 },
             )

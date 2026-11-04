@@ -73,6 +73,7 @@ pub mod lock_table;
 pub mod outbox_table;
 pub mod promise_table;
 pub mod protobuf_types;
+pub mod scan_sink;
 pub mod service_status_table;
 pub mod state_table;
 pub mod timer_table;

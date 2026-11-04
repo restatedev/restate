@@ -9,12 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
 use futures::Stream;
+use futures::future::{self, Either};
 use futures_util::stream;
 use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 
@@ -22,6 +22,7 @@ use restate_memory::{
     AvailabilityNotified, LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream,
 };
 use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
+use restate_storage_api::scan_sink::ScanSink;
 use restate_storage_api::state_table::{ReadStateTable, ScanStateTable, WriteStateTable};
 use restate_storage_api::{BudgetedReadError, Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
@@ -356,48 +357,46 @@ impl ReadStateTable for PartitionStore {
 }
 
 impl ScanStateTable for PartitionStore {
-    fn for_each_user_state<
-        F: FnMut((ServiceId, Bytes, &[u8])) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
-    >(
+    fn for_each_user_state<S>(
         &self,
         range: KeyRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
-        // Share callback between two sequential scans via Arc<Mutex<>>
-        // (needed because iterator_for_each requires 'static closures).
-        // No contention: scans are awaited sequentially.
-        let f = Arc::new(parking_lot::Mutex::new(f));
-
+        sink: S,
+    ) -> Result<impl Future<Output = Result<S>> + Send>
+    where
+        S: for<'a> ScanSink<(ServiceId, Bytes, &'a [u8])> + Send + 'static,
+    {
         // Only scan the legacy unscoped table while we may still hold data there.
         // After migration the range was deleted, so the scoped scan covers everything.
+        // Both scans feed the same sink, one after the other.
         let unscoped = if self.storage_features().is_migrated_to_scoped_state_table {
-            None
+            Either::Left(future::ready(Ok(sink)))
         } else {
-            let f_unscoped = Arc::clone(&f);
-            Some(
+            Either::Right(
                 self.iterator_for_each(
                     "df-user-state",
                     Priority::Low,
                     TableScan::ScanPartitionKeyRange::<StateKey>(range),
-                    move |(mut key, value)| {
+                    sink,
+                    |sink, (mut key, value)| {
                         let row_key = break_on_err(StateKey::deserialize_from(&mut key))?;
                         let (partition_key, service_name, service_key, state_key) = row_key.split();
                         let service_id =
                             ServiceId::from_parts(partition_key, service_name, service_key);
-                        f_unscoped.lock()((service_id, state_key, value)).map_break(Ok)
+                        sink.on_item((service_id, state_key, value)).map_break(Ok)
                     },
                 )
                 .map_err(|_| StorageError::OperationalError)?,
             )
         };
 
-        let f_scoped = f;
-        let scoped = self
-            .iterator_for_each(
+        Ok(async move {
+            let sink = unscoped.await?;
+            self.iterator_for_each(
                 "df-user-state-scoped",
                 Priority::Low,
                 TableScan::ScanPartitionKeyRange::<ScopedStateKey>(range),
-                move |(mut key, value)| {
+                sink,
+                |sink, (mut key, value)| {
                     let row_key = break_on_err(ScopedStateKey::deserialize_from(&mut key))?;
                     let (_partition_key, scope, service_name, service_key, state_key) =
                         row_key.split();
@@ -406,17 +405,11 @@ impl ScanStateTable for PartitionStore {
                         ByteString::from(service_name.as_str()),
                         ByteString::from(service_key.as_str()),
                     );
-                    f_scoped.lock()((service_id, state_key, value)).map_break(Ok)
+                    sink.on_item((service_id, state_key, value)).map_break(Ok)
                 },
             )
-            .map_err(|_| StorageError::OperationalError)?;
-
-        Ok(async move {
-            if let Some(unscoped) = unscoped {
-                unscoped.await?;
-            }
-            scoped.await?;
-            Ok(())
+            .map_err(|_| StorageError::OperationalError)?
+            .await
         })
     }
 }

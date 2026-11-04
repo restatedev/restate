@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
@@ -23,6 +22,7 @@ use crate::context::{QueryContext, SelectPartitions};
 use crate::filter::{FirstMatchingPartitionKeyExtractor, VQueueMetaFilter};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::row_sink::RowSink;
 use crate::statistics::{RowEstimate, TableStatisticsBuilder};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 use crate::vqueue_meta::row::append_vqueues_meta_row;
@@ -72,18 +72,13 @@ impl ScanLocalPartition for VQueuesMetaScanner {
     type ConversionError = std::convert::Infallible;
     type Filter = VQueueMetaFilter;
 
-    fn for_each_row<
-        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_row(
         partition_store: &PartitionStore,
         filter: VQueueMetaFilter,
-        mut f: F,
-    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        partition_store
-            .for_each_vqueue_meta(filter.into(), move |item| f(item).map_break(Result::unwrap))
+        sink: RowSink<Self>,
+    ) -> Result<impl Future<Output = restate_storage_api::Result<RowSink<Self>>> + Send, StorageError>
+    {
+        partition_store.for_each_vqueue_meta(filter.into(), sink)
     }
 
     fn append_row<'a>(

@@ -22,6 +22,7 @@ use restate_storage_api::journal_table_v2::{
     ScanJournalTableRange, StoredEntry, WriteJournalTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
+use restate_storage_api::scan_sink::ScanSink;
 use restate_storage_api::{BudgetedReadError, Result, StorageError};
 use restate_types::identifiers::{
     EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
@@ -607,18 +608,14 @@ impl ReadJournalTable for PartitionStore {
 }
 
 impl ScanJournalTable for PartitionStore {
-    fn for_each_journal<
-        F: FnMut(
-                (restate_types::identifiers::JournalEntryId, StoredRawEntry),
-            ) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_journal<S>(
         &self,
         range: ScanJournalTableRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        sink: S,
+    ) -> Result<impl Future<Output = Result<S>> + Send>
+    where
+        S: ScanSink<(restate_types::identifiers::JournalEntryId, StoredRawEntry)> + Send + 'static,
+    {
         let scan = match range {
             ScanJournalTableRange::PartitionKey(partition_key) => {
                 TableScan::ScanPartitionKeyRange::<JournalKeyBuilder>(partition_key)
@@ -642,7 +639,8 @@ impl ScanJournalTable for PartitionStore {
             "df-v2-journal",
             Priority::Low,
             scan,
-            move |(mut key, mut value)| {
+            sink,
+            move |sink, (mut key, mut value)| {
                 let journal_key = break_on_err(JournalKey::deserialize_from(&mut key))?;
                 let journal_entry = break_on_err(
                     StoredEntry::decode(&mut value)
@@ -656,7 +654,8 @@ impl ScanJournalTable for PartitionStore {
                     entry_index,
                 );
 
-                f((journal_entry_id, journal_entry.0)).map_break(Ok)
+                sink.on_item((journal_entry_id, journal_entry.0))
+                    .map_break(Ok)
             },
         )
         .map_err(|_| StorageError::OperationalError)

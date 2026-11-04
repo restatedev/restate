@@ -22,6 +22,7 @@ use crate::inbox::row::append_inbox_row;
 use crate::inbox::schema::{SysInboxBuilder, sys_inbox_sort_order};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::row_sink::RowSink;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
 const NAME: &str = "sys_inbox";
@@ -58,19 +59,13 @@ impl ScanLocalPartition for InboxScanner {
     type ConversionError = std::convert::Infallible;
     type Filter = KeyRange;
 
-    fn for_each_row<
-        F: for<'a> FnMut(
-                Self::Item<'a>,
-            ) -> std::ops::ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_row(
         partition_store: &PartitionStore,
         range: KeyRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        partition_store.for_each_inbox(range, move |item| f(item).map_break(Result::unwrap))
+        sink: RowSink<Self>,
+    ) -> Result<impl Future<Output = restate_storage_api::Result<RowSink<Self>>> + Send, StorageError>
+    {
+        partition_store.for_each_inbox(range, sink)
     }
 
     fn append_row<'a>(

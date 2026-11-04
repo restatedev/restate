@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
@@ -23,6 +22,7 @@ use crate::context::{QueryContext, SelectPartitions};
 use crate::filter::{FirstMatchingPartitionKeyExtractor, VQueueEntryIdFilter};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::row_sink::RowSink;
 use crate::statistics::{DEPLOYMENT_ROW_ESTIMATE, RowEstimate, TableStatisticsBuilder};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 use crate::vqueue_entry_status::row::append_vqueue_entry_status_row;
@@ -79,19 +79,13 @@ impl ScanLocalPartition for VQueueEntryStatusScanner {
     type ConversionError = std::convert::Infallible;
     type Filter = VQueueEntryIdFilter;
 
-    fn for_each_row<
-        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_row(
         partition_store: &PartitionStore,
         filter: VQueueEntryIdFilter,
-        mut f: F,
-    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        partition_store.for_each_vqueue_entry_status(filter.into(), move |id, header| {
-            f((id, header)).map_break(Result::unwrap)
-        })
+        sink: RowSink<Self>,
+    ) -> Result<impl Future<Output = restate_storage_api::Result<RowSink<Self>>> + Send, StorageError>
+    {
+        partition_store.for_each_vqueue_entry_status(filter.into(), sink)
     }
 
     fn append_row<'a>(

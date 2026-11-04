@@ -301,19 +301,17 @@ mod tests {
     struct MockInvocationStatusReader(Vec<MockCompletedInvocation>);
 
     impl ScanInvocationStatusTable for MockInvocationStatusReader {
-        fn for_each_invocation_status_lazy<
-            E: Into<anyhow::Error> + 'static,
-            F: for<'a> FnMut(
-                    (InvocationId, &'a InvocationStatusV2Lazy<'a>),
-                ) -> std::ops::ControlFlow<std::result::Result<(), E>>
-                + Send
-                + Sync
-                + 'static,
-        >(
+        fn for_each_invocation_status_lazy<S>(
             &self,
             _: ScanInvocationStatusTableRange,
-            _: F,
-        ) -> restate_storage_api::Result<impl Future<Output = restate_storage_api::Result<()>> + Send>
+            _: S,
+        ) -> restate_storage_api::Result<impl Future<Output = restate_storage_api::Result<S>> + Send>
+        where
+            S: for<'a> restate_storage_api::scan_sink::ScanSink<(
+                    InvocationId,
+                    &'a InvocationStatusV2Lazy<'a>,
+                )> + Send
+                + 'static,
         {
             unimplemented!();
 

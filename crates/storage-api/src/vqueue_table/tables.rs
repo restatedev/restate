@@ -17,6 +17,7 @@ use super::filters::{ScanEntryIdFilter, ScanMetaFilter};
 use super::metadata::{VQueueMeta, VQueueMetaRef};
 use super::{EntryContext, EntryId, EntryKey, EntryStateRef, EntryStatusHeader, EntryValue};
 use crate::Result;
+use crate::scan_sink::ScanSink;
 
 /// Stages in the inbox/vqueue
 #[derive(
@@ -268,16 +269,13 @@ pub trait ScanVQueueTable {
 
 pub trait ScanVQueueMetaTable {
     /// Used for data-fusion queries
-    fn for_each_vqueue_meta<
-        F: for<'a> FnMut((&'a VQueueId, &'a VQueueMetaRef<'a>)) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_vqueue_meta<S>(
         &self,
         filter: ScanMetaFilter,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
+        sink: S,
+    ) -> Result<impl Future<Output = Result<S>> + Send>
+    where
+        S: for<'a> ScanSink<(&'a VQueueId, &'a VQueueMetaRef<'a>)> + Send + 'static;
 }
 
 pub trait ScanVQueueEntries {
@@ -288,34 +286,26 @@ pub trait ScanVQueueEntries {
     /// receives the originating stage along with each item.
     ///
     /// Used for data-fusion queries.
-    fn for_each_vqueue_entry<F, S>(
+    fn for_each_vqueue_entry<St, S>(
         &self,
         range: KeyRange,
-        stages: S,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>
+        stages: St,
+        sink: S,
+    ) -> Result<impl Future<Output = Result<S>> + Send>
     where
-        F: for<'a> FnMut(
-                (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue),
-            ) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
-        S: IntoIterator<Item = Stage>;
+        St: IntoIterator<Item = Stage>,
+        S: for<'a> ScanSink<(&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue)> + Send + 'static;
 }
 
 pub trait ScanVQueueEntryStatusTable {
     /// Iterate vqueue entry status headers within a partition-key range.
     ///
     /// Used for data-fusion queries.
-    fn for_each_vqueue_entry_status<F>(
+    fn for_each_vqueue_entry_status<S>(
         &self,
         filter: ScanEntryIdFilter,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>
+        sink: S,
+    ) -> Result<impl Future<Output = Result<S>> + Send>
     where
-        F: for<'a> FnMut(&'a BaseEntryId, &'a RawStatusHeaderRef<'a>) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static;
+        S: for<'a> ScanSink<(&'a BaseEntryId, &'a RawStatusHeaderRef<'a>)> + Send + 'static;
 }

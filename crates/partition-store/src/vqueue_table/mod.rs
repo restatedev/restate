@@ -36,6 +36,7 @@ use tracing::error;
 use restate_core::io::IoExecutor;
 use restate_rocksdb::{CfName, Priority, RocksDbReadPerfGuard, StorageTaskKind};
 use restate_storage_api::StorageError;
+use restate_storage_api::scan_sink::ScanSink;
 use restate_storage_api::vqueue_table::filters::{ScanEntryIdFilter, ScanMetaFilter};
 use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef};
 use restate_storage_api::vqueue_table::{
@@ -561,22 +562,19 @@ impl<'txn> ReadVQueueTable for PartitionStoreTransaction<'txn> {
 }
 
 impl ScanVQueueMetaTable for PartitionStore {
-    fn for_each_vqueue_meta<F>(
+    fn for_each_vqueue_meta<S>(
         &self,
         filter: ScanMetaFilter,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>
+        sink: S,
+    ) -> Result<impl Future<Output = Result<S>> + Send>
     where
-        F: for<'a> FnMut((&'a VQueueId, &'a VQueueMetaRef<'a>)) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
+        S: for<'a> ScanSink<(&'a VQueueId, &'a VQueueMetaRef<'a>)> + Send + 'static,
     {
         // Fast path: each vqueue id maps to exactly one fixed-length key, so an
         // exact set is served via batched multi-get calls instead of scanning
         // every metadata row in the partition-key range.
         if let ScanMetaFilter::MetaIdSet(ids) = filter {
-            return Ok(multi_get_vqueue_meta(self, ids, f).boxed());
+            return Ok(multi_get_vqueue_meta(self, ids, sink).boxed());
         }
 
         let scan = match filter {
@@ -596,14 +594,15 @@ impl ScanVQueueMetaTable for PartitionStore {
                 "df-vqueue-meta",
                 Priority::Low,
                 scan,
-                move |(mut key, value)| {
+                sink,
+                move |sink, (mut key, value)| {
                     let meta_key = break_on_err(MetaKey::deserialize_from(&mut key))?;
                     let meta = break_on_err(
                         VQueueMetaRef::decode_borrowed(value).map_err(StorageError::BilrostDecode),
                     )?;
 
                     let (vqueue_id,) = meta_key.split();
-                    f((&vqueue_id, &meta)).map_break(Ok)
+                    sink.on_item((&vqueue_id, &meta)).map_break(Ok)
                 },
             )
             .map_err(|_| StorageError::OperationalError)?;
@@ -624,16 +623,16 @@ const VQUEUE_META_MULTI_GET_BATCH_SIZE: usize = 500;
 ///
 /// `MetaKey`s are fixed-length, so each batch is packed back-to-back into a
 /// single buffer and handed to the multi-get as `chunks_exact` slices.
-fn multi_get_vqueue_meta<F>(
+///
+/// It doesn't wait for `sink` to be ready between rows, so the sink may buffer
+/// up to `ids.len()` rows.
+fn multi_get_vqueue_meta<S>(
     store: &PartitionStore,
     ids: BTreeSet<VQueueId>,
-    mut f: F,
-) -> impl Future<Output = Result<()>> + Send
+    mut sink: S,
+) -> impl Future<Output = Result<S>> + Send
 where
-    F: for<'a> FnMut((&'a VQueueId, &'a VQueueMetaRef<'a>)) -> std::ops::ControlFlow<()>
-        + Send
-        + Sync
-        + 'static,
+    S: for<'a> ScanSink<(&'a VQueueId, &'a VQueueMetaRef<'a>)> + Send + 'static,
 {
     const KEY_LEN: usize = MetaKey::serialized_length_fixed();
 
@@ -643,7 +642,7 @@ where
         let read = rocksdb.prepare_read(
             "df-vqueue-meta",
             StorageTaskKind::MultiGet,
-            move |raw_db, cfs| -> Result<()> {
+            move |raw_db, cfs| -> Result<S> {
                 let cf = cfs.get(<MetaKey as EncodeTableKey>::KEY_KIND);
 
                 let batch_capacity = ids.len().min(VQUEUE_META_MULTI_GET_BATCH_SIZE);
@@ -688,8 +687,8 @@ where
                         let meta = VQueueMetaRef::decode_borrowed(value.as_ref())
                             .map_err(StorageError::BilrostDecode)?;
 
-                        if f((id, &meta)).is_break() {
-                            return Ok(());
+                        if sink.on_item((id, &meta)).is_break() {
+                            return Ok(sink);
                         }
                     }
 
@@ -698,7 +697,7 @@ where
                     }
                 }
 
-                Ok(())
+                Ok(sink)
             },
         );
         rocksdb
@@ -713,19 +712,16 @@ where
 }
 
 impl ScanVQueueEntryStatusTable for PartitionStore {
-    fn for_each_vqueue_entry_status<F>(
+    fn for_each_vqueue_entry_status<S>(
         &self,
         filter: ScanEntryIdFilter,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>
+        sink: S,
+    ) -> Result<impl Future<Output = Result<S>> + Send>
     where
-        F: for<'a> FnMut(&'a BaseEntryId, &'a RawStatusHeaderRef<'a>) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
+        S: for<'a> ScanSink<(&'a BaseEntryId, &'a RawStatusHeaderRef<'a>)> + Send + 'static,
     {
         if let ScanEntryIdFilter::EntryIdSet(ids) = filter {
-            return Ok(multi_get_vqueue_entry_status(self, ids, f).boxed());
+            return Ok(multi_get_vqueue_entry_status(self, ids, sink).boxed());
         }
 
         let scan = match filter {
@@ -746,7 +742,8 @@ impl ScanVQueueEntryStatusTable for PartitionStore {
                 "df-vqueue-entry-status",
                 Priority::Low,
                 scan,
-                move |(mut key, mut value)| {
+                sink,
+                move |sink, (mut key, mut value)| {
                     let status_key = break_on_err(EntryStatusKey::deserialize_from(&mut key))?;
                     let (id,) = status_key.split();
                     let header = break_on_err(
@@ -754,7 +751,7 @@ impl ScanVQueueEntryStatusTable for PartitionStore {
                             .map_err(StorageError::BilrostDecode),
                     )?;
 
-                    f(&id, &header).map_break(Ok)
+                    sink.on_item((&id, &header)).map_break(Ok)
                 },
             )
             .map_err(|_| StorageError::OperationalError)?;
@@ -766,16 +763,15 @@ impl ScanVQueueEntryStatusTable for PartitionStore {
 /// Maximum number of entry-status keys passed to one RocksDB multi-get call.
 const ENTRY_STATUS_MULTI_GET_BATCH_SIZE: usize = 500;
 
-fn multi_get_vqueue_entry_status<F>(
+/// It doesn't wait for `sink` to be ready between rows, so the sink may buffer
+/// up to `ids.len()` rows.
+fn multi_get_vqueue_entry_status<S>(
     store: &PartitionStore,
     ids: BTreeSet<BaseEntryId>,
-    mut f: F,
-) -> impl Future<Output = Result<()>> + Send
+    mut sink: S,
+) -> impl Future<Output = Result<S>> + Send
 where
-    F: for<'a> FnMut(&'a BaseEntryId, &'a RawStatusHeaderRef<'a>) -> std::ops::ControlFlow<()>
-        + Send
-        + Sync
-        + 'static,
+    S: for<'a> ScanSink<(&'a BaseEntryId, &'a RawStatusHeaderRef<'a>)> + Send + 'static,
 {
     const KEY_LEN: usize = EntryStatusKey::serialized_length_fixed();
 
@@ -785,7 +781,7 @@ where
         let read = rocksdb.prepare_read(
             "df-vqueue-entry-status",
             StorageTaskKind::MultiGet,
-            move |raw_db, cfs| -> Result<()> {
+            move |raw_db, cfs| -> Result<S> {
                 let cf = cfs.get(<EntryStatusKey as EncodeTableKey>::KEY_KIND);
 
                 let batch_capacity = ids.len().min(ENTRY_STATUS_MULTI_GET_BATCH_SIZE);
@@ -832,8 +828,8 @@ where
                             RawStatusHeaderRef::decode_borrowed_length_delimited(&mut value)
                                 .map_err(StorageError::BilrostDecode)?;
 
-                        if f(id, &header).is_break() {
-                            return Ok(());
+                        if sink.on_item((id, &header)).is_break() {
+                            return Ok(sink);
                         }
                     }
 
@@ -842,7 +838,7 @@ where
                     }
                 }
 
-                Ok(())
+                Ok(sink)
             },
         );
         rocksdb
@@ -866,37 +862,23 @@ const ALL_SCANNABLE_STAGES: [Stage; Stage::COUNT - 1] = [
     Stage::Finished,
 ];
 
-fn scan_single_stage<'store, K, F>(
+fn scan_single_stage<'store, K, S>(
     partition_store: &'store PartitionStore,
-    scanner_name: &'static str,
     range: KeyRange,
     stage: Stage,
-    f: std::sync::Arc<tokio::sync::Mutex<F>>,
-) -> Result<Pin<Box<dyn Future<Output = Result<()>> + Send + 'store>>>
+    sink: S,
+) -> Result<Pin<Box<dyn Future<Output = Result<S>> + Send + 'store>>>
 where
     K: EncodeTableKeyPrefix + 'store,
-    F: for<'a> FnMut(
-            (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue),
-        ) -> std::ops::ControlFlow<()>
-        + Send
-        + 'static,
+    S: for<'a> ScanSink<(&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue)> + Send + 'static,
 {
-    // Each stage holds its own Arc clone exclusively inside the iterator
-    // closure. Once iteration acquires the first row, the closure takes the
-    // Arc and converts it to an owned mutex guard that it holds for the rest
-    // of the scan; the guard (and thus the Arc) is dropped on the iterator's
-    // background thread. This keeps the wrapped callback off the tokio
-    // runtime, which is required because data-fusion's `BatchSender` performs
-    // blocking I/O during `Drop`.
-    let mut f_arc = Some(f);
-    let mut f_guard: Option<tokio::sync::OwnedMutexGuard<F>> = None;
-
     let future = partition_store
         .iterator_for_each(
-            scanner_name,
+            "df-vqueues",
             Priority::Low,
             TableScan::ScanPartitionKeyRange::<K>(range),
-            move |(mut key, mut value)| {
+            sink,
+            move |sink, (mut key, mut value)| {
                 // Skip the key-kind byte; the iterator was opened with a stage-specific
                 // prefix so every row belongs to `stage`.
                 break_on_err(KeyKind::deserialize(&mut key))?;
@@ -906,13 +888,8 @@ where
                     EntryValue::decode(&mut value).map_err(StorageError::BilrostDecode),
                 )?;
 
-                let f = f_guard.get_or_insert_with(|| {
-                    f_arc
-                        .take()
-                        .expect("Arc is taken at most once per iterator")
-                        .blocking_lock_owned()
-                });
-                f((&qid, stage, &entry_key, &entry)).map_break(Ok)
+                sink.on_item((&qid, stage, &entry_key, &entry))
+                    .map_break(Ok)
             },
         )
         .map_err(|_| StorageError::OperationalError)?;
@@ -920,110 +897,65 @@ where
     Ok(Box::pin(future))
 }
 
-fn scanner_for_stage<'store, F>(
+fn scanner_for_stage<'store, S>(
     partition_store: &'store PartitionStore,
     range: KeyRange,
     stage: Stage,
-    f: std::sync::Arc<tokio::sync::Mutex<F>>,
-) -> Result<Pin<Box<dyn Future<Output = Result<()>> + Send + 'store>>>
+    sink: S,
+) -> Result<Pin<Box<dyn Future<Output = Result<S>> + Send + 'store>>>
 where
-    F: for<'a> FnMut(
-            (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue),
-        ) -> std::ops::ControlFlow<()>
-        + Send
-        + 'static,
+    S: for<'a> ScanSink<(&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue)> + Send + 'static,
 {
     match stage {
         Stage::Unknown => Err(StorageError::Generic(anyhow::anyhow!(
             "Unknown stage can't be scanned"
         ))),
         Stage::Inbox => {
-            scan_single_stage::<inbox::InboxKey, _>(partition_store, "df-vqueues", range, stage, f)
+            scan_single_stage::<inbox::InboxKey, _>(partition_store, range, stage, sink)
         }
-        Stage::Running => scan_single_stage::<inbox::RunningKey, _>(
-            partition_store,
-            "df-vqueues",
-            range,
-            stage,
-            f,
-        ),
-        Stage::Suspended => scan_single_stage::<inbox::SuspendedKey, _>(
-            partition_store,
-            "df-vqueues",
-            range,
-            stage,
-            f,
-        ),
+        Stage::Running => {
+            scan_single_stage::<inbox::RunningKey, _>(partition_store, range, stage, sink)
+        }
+        Stage::Suspended => {
+            scan_single_stage::<inbox::SuspendedKey, _>(partition_store, range, stage, sink)
+        }
         Stage::Paused => {
-            scan_single_stage::<inbox::PausedKey, _>(partition_store, "df-vqueues", range, stage, f)
+            scan_single_stage::<inbox::PausedKey, _>(partition_store, range, stage, sink)
         }
-        Stage::Finished => scan_single_stage::<inbox::FinishedKey, _>(
-            partition_store,
-            "df-vqueues",
-            range,
-            stage,
-            f,
-        ),
+        Stage::Finished => {
+            scan_single_stage::<inbox::FinishedKey, _>(partition_store, range, stage, sink)
+        }
     }
 }
 
 impl ScanVQueueEntries for PartitionStore {
-    fn for_each_vqueue_entry<F, S>(
+    fn for_each_vqueue_entry<St, S>(
         &self,
         range: KeyRange,
-        stages: S,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>
+        stages: St,
+        sink: S,
+    ) -> Result<impl Future<Output = Result<S>> + Send>
     where
-        F: for<'a> FnMut(
-                (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue),
-            ) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
-        S: IntoIterator<Item = Stage>,
+        St: IntoIterator<Item = Stage>,
+        S: for<'a> ScanSink<(&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue)> + Send + 'static,
     {
-        // The Arc must not outlive the iterator closures: BatchSender's Drop
-        // performs blocking I/O, so its final drop has to happen on a storage
-        // thread, not on a tokio worker. We achieve that by moving the *only*
-        // Arc handle through the loop — every stage but the last gets a clone,
-        // and the last stage consumes the remaining handle. Once this function
-        // returns, no Arc references survive outside the spawned iterator
-        // tasks, so the last task to finish runs the Drop on its storage
-        // thread. See also the comment in `scan_single_stage`.
-        let stages: Vec<Stage> = {
-            let mut iter = stages.into_iter().peekable();
-            if iter.peek().is_some() {
-                iter.collect()
-            } else {
-                ALL_SCANNABLE_STAGES.to_vec()
-            }
-        };
-        debug_assert!(
-            !stages.is_empty(),
-            "stages iterator and fallback are both non-empty"
-        );
-
-        let last_idx = stages.len() - 1;
-        let mut f_opt = Some(std::sync::Arc::new(tokio::sync::Mutex::new(f)));
-        let mut scans = Vec::with_capacity(stages.len());
-        for (i, stage) in stages.into_iter().enumerate() {
-            let f_for_stage = if i < last_idx {
-                f_opt
-                    .as_ref()
-                    .expect("f_opt is taken only on the last stage")
-                    .clone()
-            } else {
-                f_opt.take().expect("f_opt is taken only on the last stage")
-            };
-            scans.push(scanner_for_stage(self, range, stage, f_for_stage)?);
+        let mut stages: Vec<Stage> = stages.into_iter().collect();
+        if stages.is_empty() {
+            stages = ALL_SCANNABLE_STAGES.to_vec();
+        }
+        if stages.contains(&Stage::Unknown) {
+            return Err(StorageError::Generic(anyhow::anyhow!(
+                "Unknown stage can't be scanned"
+            )));
         }
 
+        // The stages feed the same sink, one after the other.
         Ok(async move {
-            for scan in scans {
-                scan.await?;
+            let mut sink = sink;
+            for stage in stages {
+                sink = scanner_for_stage(self, range, stage, sink)?.await?;
             }
-            Ok(())
+            Ok(sink)
         })
     }
 }

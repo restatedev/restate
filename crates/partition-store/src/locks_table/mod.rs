@@ -15,6 +15,7 @@ use bytes::{Buf, BufMut};
 use restate_rocksdb::Priority;
 use restate_storage_api::StorageError;
 use restate_storage_api::lock_table::{LoadLocks, LockState, ScanLocksTable, WriteLockTable};
+use restate_storage_api::scan_sink::ScanSink;
 use restate_types::identifiers::{PartitionKey, WithPartitionKey};
 use restate_types::sharding::KeyRange;
 use restate_types::{CanonicalLockId, LockName, Scope};
@@ -168,21 +169,20 @@ impl WriteLockTable for PartitionStoreTransaction<'_> {
 
 // Data fusion queries
 impl ScanLocksTable for PartitionStore {
-    fn for_each_lock<
-        F: FnMut((PartitionKey, Option<Scope>, LockName, LockState)) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_lock<S>(
         &self,
         range: KeyRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        sink: S,
+    ) -> Result<impl Future<Output = Result<S>> + Send>
+    where
+        S: ScanSink<(PartitionKey, Option<Scope>, LockName, LockState)> + Send + 'static,
+    {
         self.iterator_for_each(
             "df-locks",
             Priority::Low,
             TableScan::ScanPartitionKeyRange::<LockKey>(range),
-            move |(mut key, mut value)| {
+            sink,
+            move |sink, (mut key, mut value)| {
                 let lock_key = break_on_err(LockKey::deserialize_from(&mut key))?;
                 let lock_state = break_on_err(
                     LockState::decode(&mut value).map_err(StorageError::BilrostDecode),
@@ -190,7 +190,8 @@ impl ScanLocksTable for PartitionStore {
 
                 let (partition_key, opt_scope, lock_name) = lock_key.split();
 
-                f((partition_key, opt_scope, lock_name, lock_state)).map_break(Ok)
+                sink.on_item((partition_key, opt_scope, lock_name, lock_state))
+                    .map_break(Ok)
             },
         )
         .map_err(|_| StorageError::OperationalError)

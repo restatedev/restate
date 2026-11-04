@@ -30,6 +30,7 @@ use std::collections::BTreeSet;
 use restate_clock::time::MillisSinceEpoch;
 use restate_limiter::LimitKey;
 use restate_storage_api::Transaction;
+use restate_storage_api::scan_sink::FnSink;
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
 use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
 use restate_storage_api::vqueue_table::{
@@ -38,11 +39,11 @@ use restate_storage_api::vqueue_table::{
     WriteVQueueTable, stats::EntryStatistics,
 };
 use restate_storage_api::vqueue_table::{
-    ScanVQueueEntries, ScanVQueueEntryStatusTable, ScanVQueueTable,
+    RawStatusHeaderRef, ScanVQueueEntries, ScanVQueueEntryStatusTable, ScanVQueueTable,
 };
 use restate_types::clock::UniqueTimestamp;
 use restate_types::config::{Configuration, set_current_config};
-use restate_types::identifiers::PartitionKey;
+use restate_types::identifiers::{BaseEntryId, PartitionKey};
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, VQueueId};
 
@@ -585,13 +586,19 @@ async fn stage_scan_is_filtered_by_stage(rocksdb: &mut PartitionStore) {
         let rows_for_scan = rows.clone();
 
         rocksdb
-            .for_each_vqueue_entry(range, vec![stage], move |(qid, got_stage, key, _)| {
-                rows_for_scan
-                    .lock()
-                    .expect("stage scan lock should not be poisoned")
-                    .push((qid.clone(), got_stage, *key));
-                std::ops::ControlFlow::Continue(())
-            })
+            .for_each_vqueue_entry(
+                range,
+                vec![stage],
+                FnSink(
+                    move |(qid, got_stage, key, _): (&VQueueId, Stage, &EntryKey, &EntryValue)| {
+                        rows_for_scan
+                            .lock()
+                            .expect("stage scan lock should not be poisoned")
+                            .push((qid.clone(), got_stage, *key));
+                        std::ops::ControlFlow::Continue(())
+                    },
+                ),
+            )
             .expect("stage scan setup should succeed")
             .await
             .expect("stage scan should succeed");
@@ -658,18 +665,20 @@ async fn entry_status_scan_batches_large_id_set(rocksdb: &mut PartitionStore) {
     rocksdb
         .for_each_vqueue_entry_status(
             ScanEntryIdFilter::EntryIdSet(requested_ids),
-            move |id, header| {
-                rows_for_scan
-                    .lock()
-                    .expect("entry-status scan lock should not be poisoned")
-                    .push((
-                        id.partition_key(),
-                        id.to_entry_id(),
-                        header.stage,
-                        header.status,
-                    ));
-                std::ops::ControlFlow::Continue(())
-            },
+            FnSink(
+                move |(id, header): (&BaseEntryId, &RawStatusHeaderRef<'_>)| {
+                    rows_for_scan
+                        .lock()
+                        .expect("entry-status scan lock should not be poisoned")
+                        .push((
+                            id.partition_key(),
+                            id.to_entry_id(),
+                            header.stage,
+                            header.status,
+                        ));
+                    std::ops::ControlFlow::Continue(())
+                },
+            ),
         )
         .expect("entry-status scan setup should succeed")
         .await

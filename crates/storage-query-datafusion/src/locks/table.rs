@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
@@ -25,6 +24,7 @@ use crate::locks::row::append_lock_row;
 use crate::locks::schema::{SysLocksBuilder, sys_locks_sort_order};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::row_sink::RowSink;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 const NAME: &str = "sys_locks";
 
@@ -61,17 +61,13 @@ impl ScanLocalPartition for LocksScanner {
     type ConversionError = std::convert::Infallible;
     type Filter = KeyRange;
 
-    fn for_each_row<
-        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_row(
         partition_store: &PartitionStore,
         range: KeyRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        partition_store.for_each_lock(range, move |item| f(item).map_break(Result::unwrap))
+        sink: RowSink<Self>,
+    ) -> Result<impl Future<Output = restate_storage_api::Result<RowSink<Self>>> + Send, StorageError>
+    {
+        partition_store.for_each_lock(range, sink)
     }
 
     fn append_row<'a>(

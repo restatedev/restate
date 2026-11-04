@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
@@ -29,6 +28,7 @@ use crate::invocation_status::schema::{
 };
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::row_sink::RowSink;
 use crate::statistics::{
     DEPLOYMENT_ROW_ESTIMATE, RowEstimate, SERVICE_ROW_ESTIMATE, TableStatisticsBuilder,
 };
@@ -77,17 +77,13 @@ impl ScanLocalPartition for StatusScanner {
     type ConversionError = ConversionError;
     type Filter = InvocationIdFilter;
 
-    fn for_each_row<
-        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_row(
         partition_store: &PartitionStore,
         filter: InvocationIdFilter,
-        f: F,
-    ) -> Result<impl Future<Output = Result<(), StorageError>> + Send, StorageError> {
-        partition_store.for_each_invocation_status_lazy(filter.into(), f)
+        sink: RowSink<Self>,
+    ) -> Result<impl Future<Output = restate_storage_api::Result<RowSink<Self>>> + Send, StorageError>
+    {
+        partition_store.for_each_invocation_status_lazy(filter.into(), sink)
     }
 
     fn append_row<'a>(
