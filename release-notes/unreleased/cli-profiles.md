@@ -9,6 +9,7 @@ self-hosted server. One command group manages them:
 
 ```shell
 restate profile list              # the profiles, with user, account and environment for Cloud ones
+restate profile describe [name]   # a profile's URLs (the current one when no name is given)
 restate profile use [name]        # switch; asks which one when no name is given (local included)
 restate profile add staging --admin-url https://restate.example.com:9070 --token "$TOKEN"   # a self-hosted server
 restate profile remove <name>
@@ -17,7 +18,7 @@ restate profile rename <old> <new>
 
 Cloud profiles come from `restate cloud login` and only from there. The browser decides who you log
 in as; back in the terminal the CLI imports every environment that user can reach, one profile each,
-named `<email>-<account>-<environment>`, and selects one (the current profile when it is that user's,
+named `<email>/<account>/<environment>`, and selects one (the current profile when it is that user's,
 the only one, or the one you pick). Logging in again as the same user refreshes the token and the
 profiles: new environments appear, ones you can no longer reach disappear, renamed profiles keep their
 name. Logging in as another user adds their profiles next to the existing ones, each user with their
