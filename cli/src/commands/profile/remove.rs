@@ -17,11 +17,11 @@ use crate::ui::fmt::{
     DryRun, Field, Formatter, IfEmpty, IncludeFormatting, Outcome, OutputFormatter,
 };
 
-use super::sections::is_local;
+use super::sections::{is_local, is_reserved};
 
 /// Remove a profile from the CLI config file
 ///
-/// If it is the current environment, later commands use `local` (a server on this machine),
+/// If it is the current profile, later commands use `local` (a server on this machine),
 /// which can't be removed. Nothing is changed on the server.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_remove")]
@@ -45,6 +45,13 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
         return Err(
             RestateCliError::bad_input("The built-in `local` profile can't be removed").into(),
         );
+    }
+    if is_reserved(&opts.name) {
+        return Err(RestateCliError::bad_input(format!(
+            "\"{}\" holds the config file's shared settings, not a profile",
+            opts.name
+        ))
+        .into());
     }
 
     let mut doc = env.load_config_document()?;
@@ -72,7 +79,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
     );
     if is_current {
         f.warning(&format!(
-            "\"{}\" is the current environment: later commands will use `local`",
+            "\"{}\" is the current profile: later commands will use `local`",
             opts.name
         ));
     }

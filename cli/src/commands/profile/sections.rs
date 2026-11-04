@@ -126,12 +126,29 @@ fn write_cloud_fields(profile: &mut Item, user_id: &str, environment: &CloudEnvi
     cloud["environment_name"] = value(&environment.environment.name);
 }
 
-/// What [`sync_cloud_profiles`] did, as profile names.
+#[cfg(feature = "cloud")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Change {
+    Added,
+    Updated,
+}
+
+#[cfg(feature = "cloud")]
+impl Change {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Change::Added => "added",
+            Change::Updated => "updated",
+        }
+    }
+}
+
+/// What [`sync_cloud_profiles`] did, as profile names: `profiles` has one entry per
+/// environment given, in the same order.
 #[cfg(feature = "cloud")]
 #[derive(Default, Debug, PartialEq, Eq)]
 pub(crate) struct SyncReport {
-    pub added: Vec<String>,
-    pub updated: Vec<String>,
+    pub profiles: Vec<(String, Change)>,
     pub removed: Vec<String>,
 }
 
@@ -139,7 +156,7 @@ pub(crate) struct SyncReport {
 impl SyncReport {
     /// The profiles of the user after the sync.
     pub fn kept(&self) -> impl Iterator<Item = &str> {
-        self.added.iter().chain(&self.updated).map(String::as_str)
+        self.profiles.iter().map(|(name, _)| name.as_str())
     }
 }
 
@@ -180,7 +197,7 @@ pub(crate) fn sync_cloud_profiles(
             Some(name) => {
                 write_cloud_fields(&mut doc[&name], user_id, environment);
                 stale.retain(|s| *s != name);
-                report.updated.push(name);
+                report.profiles.push((name, Change::Updated));
             }
             None => {
                 let mut name = format!(
@@ -198,7 +215,7 @@ pub(crate) fn sync_cloud_profiles(
                         environment,
                     },
                 );
-                report.added.push(name);
+                report.profiles.push((name, Change::Added));
             }
         }
     }
@@ -335,8 +352,11 @@ admin_base_url = "http://self-hosted:9070"
         assert_eq!(
             report,
             SyncReport {
-                added: vec!["alice@acme.dev-acme-new-env_3".to_owned()],
-                updated: vec!["renamed".to_owned(), "legacy".to_owned()],
+                profiles: vec![
+                    ("renamed".to_owned(), Change::Updated),
+                    ("legacy".to_owned(), Change::Updated),
+                    ("alice@acme.dev-acme-new-env_3".to_owned(), Change::Added),
+                ],
                 removed: vec!["gone".to_owned()],
             }
         );

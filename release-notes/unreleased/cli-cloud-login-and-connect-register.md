@@ -35,9 +35,9 @@ register. You no longer need to configure the environment in between, nor to ass
 by hand.
 
 ### Impact on Users
-- `restate cloud env tunnel` and `--tunnel-name` keep working, hidden, with a deprecation line; use
-  `restate cloud tunnel --name`. `restate deployments register --tunnel-name <destination URL>` is
-  unchanged.
+- `restate cloud env tunnel` keeps working, hidden, with a deprecation line; use `restate cloud
+  tunnel`. Its `--tunnel-name` flag is a silent alias of `--name`. `restate deployments register
+  --tunnel-name <destination URL>` is unchanged.
 - `restate deployments register` now waits up to 30 seconds for the server to discover the endpoint
   (`--request-timeout` still applies when set higher), so a slow or unreachable endpoint reports the
   server's discovery error instead of a CLI timeout.
