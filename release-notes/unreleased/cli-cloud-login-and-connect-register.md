@@ -1,4 +1,4 @@
-# Release Notes: Cloud login selects the environment, register connected services by name, `restate cloud tunnel`
+# Release Notes: Cloud login, `connect://` registration, `restate cloud connect-sdk`, `restate cloud tunnel`
 
 ## New Feature
 
@@ -15,6 +15,15 @@ restate deployments register connect://greeter-v1
 ```
 
 The CLI resolves the name from the Cloud environment you're logged in to; nothing else to configure.
+
+`restate cloud connect-sdk` mints the two keys an SDK needs for the current Cloud environment,
+`RESTATE_CONNECT_KEY` (serving with `connect()`) and `RESTATE_INGRESS_KEY` (invoking from code), and
+writes them to `restate.env` in the current directory, with each key's id in a comment for when you
+want to revoke it. Load the file with your runtime (`node --env-file=restate.env`, `uv run --env-file
+restate.env`, your IDE's env file setting) or export it in the shell with `set -a; source restate.env;
+set +a`. The file is only created, never changed: when it exists, nothing is minted. `--output` picks
+another path; `--stdout` prints the two lines instead of writing a file, to pipe them. The keys never
+appear in the command's normal output.
 
 The port-forwarding tunnel for services that can't connect by themselves is now `restate cloud tunnel`;
 the tunnel's name is `--name`, and defaults to `<directory>-<hostname>` instead of a
