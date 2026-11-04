@@ -16,7 +16,6 @@ use std::time::Duration;
 use enumset::{EnumSet, enum_set};
 use futures_util::StreamExt;
 use googletest::{IntoTestResult, fail};
-use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tonic::transport::Channel;
@@ -59,7 +58,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
 
     let no_snapshot_repository_config = base_config.clone();
 
-    let snapshots_dir = TempDir::new()?;
+    let snapshots_dir = restate_test_util::tempdir()?;
     base_config.worker.snapshots.destination = Some(
         Url::from_file_path(snapshots_dir.path())
             .unwrap()
