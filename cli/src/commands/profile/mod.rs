@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 pub mod add;
+pub mod describe;
 pub mod list;
 pub mod remove;
 pub mod rename;
@@ -17,7 +18,7 @@ pub mod use_profile;
 
 use cling::prelude::*;
 
-/// Manage the profiles the CLI talks to: list, select, add, remove, rename
+/// Manage the profiles the CLI talks to: list, describe, select, add, remove, rename
 ///
 /// A profile is a section of the CLI config file naming a server: a Restate Cloud
 /// environment, or a self-hosted server (its admin and ingress URLs, and a bearer token if it
@@ -29,6 +30,7 @@ use cling::prelude::*;
 pub enum Profile {
     // Commands are documented on their own struct.
     List(list::List),
+    Describe(describe::Describe),
     Use(use_profile::Use),
     Add(add::Add),
     Remove(remove::Remove),
