@@ -154,7 +154,7 @@ pub struct Register {
     #[clap(value_parser = parse_deployment)]
     deployment: DeploymentEndpoint,
 
-    /// Name of the Restate Cloud tunnel (`restate cloud env tunnel --tunnel-name`) to reach
+    /// Name of the Restate Cloud tunnel (`restate cloud tunnel --name`) to reach
     /// the endpoint through
     #[cfg(feature = "cloud")]
     #[clap(long = "tunnel-name", alias = "deployment-name", value_name = "NAME")]
@@ -378,7 +378,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         DeploymentEndpoint::Connect(name) => {
             if discover_opts.tunnel_name.is_some() {
                 return Err(RestateCliError::bad_input(
-                    "--tunnel-name is for an HTTP endpoint behind `restate cloud env tunnel`; `connect://<name>` names a connected service by itself",
+                    "--tunnel-name is for an HTTP endpoint behind `restate cloud tunnel`; `connect://<name>` names a connected service by itself",
                 )
                 .into());
             }
@@ -482,7 +482,7 @@ fn connect_uri(proxy_base_url: &url::Url, environment_id: &str, name: &str) -> R
         .build()?)
 }
 
-/// The URL of `destination` behind the `restate cloud env tunnel` named `tunnel_name`.
+/// The URL of `destination` behind the `restate cloud tunnel` named `tunnel_name`.
 #[cfg(feature = "cloud")]
 fn tunnel_uri(
     proxy_base_url: &url::Url,

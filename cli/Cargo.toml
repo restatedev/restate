@@ -70,7 +70,7 @@ indicatif = "0.18.3"
 indoc = { version = "2.0.7" }
 itertools = { workspace = true }
 json-patch = "4.1.0"
-mnemonic = "1.1.1"
+hostname = { workspace = true }
 octocrab = { workspace = true, features = ["stream"] }
 open = "5.3.3"
 rand = { workspace = true }
