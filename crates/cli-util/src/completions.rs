@@ -279,8 +279,8 @@ fn install_completions_for_shell<T: CompletionProvider>(shell: Shell) -> Result<
 mod tests {
     use super::*;
     use clap::Parser;
+    use restate_test_util::tempdir;
     use std::env;
-    use tempfile::tempdir;
 
     #[derive(Parser)]
     #[command(name = "test-cli")]

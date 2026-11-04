@@ -1029,7 +1029,7 @@ mod tests {
         const DEADLINE: Duration = Duration::from_secs(10);
         let rocksdb = RocksDbManager::init();
         let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
-        let snapshots = tempfile::tempdir()?;
+        let snapshots = restate_test_util::tempdir()?;
         for layout in [false, true] {
             let manager = PartitionStoreManager::create(layout).await?;
             let database = manager.open_rocksdb(&partition).await?;
@@ -1331,7 +1331,7 @@ mod tests {
             assert_eq!(*store.get_durable_lsn().await?.borrow(), Lsn::INVALID);
 
             write_applied_lsn(&mut store, 300).await?;
-            let snapshots = tempfile::tempdir()?;
+            let snapshots = restate_test_util::tempdir()?;
             let snapshot = store
                 .create_local_snapshot(snapshots.path(), None, SnapshotId::new())
                 .await?;
@@ -1511,7 +1511,7 @@ mod tests {
     async fn snapshot_import_failure_invalidates_only_after_validation() -> anyhow::Result<()> {
         RocksDbManager::init();
         let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
-        let snapshots = tempfile::tempdir()?;
+        let snapshots = restate_test_util::tempdir()?;
 
         for use_multi_db_layout in [false, true] {
             let manager = PartitionStoreManager::create(use_multi_db_layout).await?;

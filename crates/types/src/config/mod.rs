@@ -910,7 +910,7 @@ mod tests {
 
     #[test]
     fn read_subdirs_did_not_exist() {
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = restate_test_util::tempdir().unwrap();
         let temp_dir_path = temp_dir.path().to_path_buf();
         assert!(fs::remove_dir(temp_dir).is_ok());
         assert!(read_subdirs(&temp_dir_path).is_empty());
@@ -918,14 +918,14 @@ mod tests {
 
     #[test]
     fn read_subdirs_empty() {
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = restate_test_util::tempdir().unwrap();
         let temp_dir_path = temp_dir.path().to_path_buf();
         assert!(read_subdirs(&temp_dir_path).is_empty());
     }
 
     #[test]
     fn read_subdirs_with_subdirs_and_files() {
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = restate_test_util::tempdir().unwrap();
         let temp_dir_path = temp_dir.path().to_path_buf();
 
         fs::create_dir(temp_dir.path().join("dir1")).unwrap();
@@ -978,7 +978,7 @@ mod tests {
         let mut config = Configuration::default();
         assert!(config.validate().is_ok());
 
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = restate_test_util::tempdir().unwrap();
         let temp_dir_path = temp_dir.path().to_path_buf();
         config.common.base_dir = Some(temp_dir_path);
         assert!(config.validate().is_ok());
@@ -989,7 +989,7 @@ mod tests {
         let mut config = Configuration::default();
         assert!(config.validate().is_ok());
 
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = restate_test_util::tempdir().unwrap();
         let temp_dir_path = temp_dir.path().to_path_buf();
         config.common.base_dir = Some(temp_dir_path);
 
@@ -1007,7 +1007,7 @@ mod tests {
         let mut config = Configuration::default();
         assert!(config.validate().is_ok());
 
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = restate_test_util::tempdir().unwrap();
         let temp_dir_path = temp_dir.path().to_path_buf();
         config.common.base_dir = Some(temp_dir_path);
 
