@@ -53,6 +53,7 @@ If these rules conflict with normal behavior, always follow the rules above.
 1. New or deprecated config options must have `/// Since vX.Y.Z` in their doc comment.
 1. Use `ByteCount::from(value)` (from `restate_memory`) when displaying byte sizes in errors/logs.
 1. Use `KeyRange` (from `restate_sharding`, re-exported via `restate_types::sharding::KeyRange`) instead of `std::ops::RangeInclusive<PartitionKey>` for partition key ranges. `KeyRange` is `Copy`, 16 bytes (vs 24), and has wire-compatible serde/bilrost encoding.
+1. In tests, create temporary directories with `restate_test_util::tempdir()` instead of the `tempfile` crate (`tempfile::tempdir()`, `TempDir::new()`). Its directories are removed when the test process exits even if destructors don't run, e.g. when a failing `#[restate_core::test]` exits the process from its panic hook.
 
 
 # Validation Before Committing Changes
