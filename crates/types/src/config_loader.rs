@@ -294,7 +294,7 @@ mod tests {
 
     #[test_log::test]
     fn reloads_across_symlink_swaps() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = restate_test_util::tempdir().unwrap();
         install(dir.path(), "v1");
         let path = dir.path().join("config.toml");
         std::os::unix::fs::symlink("..data/config.toml", &path).unwrap();
