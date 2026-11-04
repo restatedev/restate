@@ -800,9 +800,11 @@ impl PartitionCell {
         Ok(self.drop_stale_cf(guard, &database.rocksdb).await? || existed)
     }
 
-    /// Clone the underlying [`PartitionDb`], if it is open.
-    pub async fn clone_db(&self) -> Option<PartitionDb> {
-        let guard = self.inner.read().await;
+    /// Clone the underlying [`PartitionDb`], if it is open. Doesn't wait for a partition in
+    /// the middle of a transition, such as opening it from a snapshot download: it reads as
+    /// not open.
+    pub fn clone_db(&self) -> Option<PartitionDb> {
+        let guard = self.try_state()?;
         match &*guard {
             State::Unknown
             | State::CfMissing
@@ -814,9 +816,10 @@ impl PartitionCell {
         }
     }
 
-    /// Returns the underlying Partition information if the database is open.
-    pub async fn get_partition_if_open(&self) -> Option<Arc<Partition>> {
-        let guard = self.inner.read().await;
+    /// Returns the underlying Partition information if the database is open. Like
+    /// [`Self::clone_db`], it doesn't wait for a partition in the middle of a transition.
+    pub fn get_partition_if_open(&self) -> Option<Arc<Partition>> {
+        let guard = self.try_state()?;
         match &*guard {
             State::Unknown
             | State::CfMissing
