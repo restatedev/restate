@@ -91,7 +91,7 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
                 env.profile
             ))
             .with_next_step("restate profile use", "switch to a Cloud profile")
-            .with_next_step("restate cloud login", "import Cloud profiles")
+            .with_unformatted_next_step("restate cloud login", "import Cloud profiles")
             .into());
         }
     };

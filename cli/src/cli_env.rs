@@ -284,30 +284,35 @@ impl CliEnv {
     }
 
     /// The Restate Cloud credentials of the profile's user, and who that is (email, else
-    /// user id): valid or not. Profiles without a user fall back to the single token of
-    /// older logins.
+    /// user id): valid or not. A Cloud profile without a user was written by an older CLI
+    /// and needs a login first.
     #[cfg(feature = "cloud")]
     pub fn cloud_credentials(&self) -> Result<(String, &crate::commands::cloud::Credentials)> {
+        use crate::error::{ErrorKind, RestateCliError};
+
         let cloud = &self.config.cloud;
         let user_id = cloud
             .environment_info
             .as_ref()
             .and_then(|info| info.user_id.as_deref());
         let Some(user_id) = user_id else {
-            return cloud
-                .credentials
-                .as_ref()
-                .map(|credentials| ("you".to_owned(), credentials))
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Restate Cloud credentials have not been provided; first run `restate cloud login`"
-                    )
-                });
+            return Err(RestateCliError::new(
+                ErrorKind::Auth,
+                format!(
+                    "Profile \"{}\" was written by an older CLI; log in again to import your Cloud environments",
+                    self.profile
+                ),
+            )
+            .with_unformatted_next_step("restate cloud login", "log in to Restate Cloud")
+            .into());
         };
         let Some(user) = cloud.users.get(user_id) else {
-            return Err(anyhow::anyhow!(
-                "No Restate Cloud credentials for user {user_id}; run `restate cloud login` and log in as them"
-            ));
+            return Err(RestateCliError::new(
+                ErrorKind::Auth,
+                format!("No Restate Cloud credentials for user {user_id}"),
+            )
+            .with_unformatted_next_step("restate cloud login", "log in as them")
+            .into());
         };
         let who = user.email.clone().unwrap_or_else(|| user_id.to_owned());
         Ok((who, &user.credentials))
@@ -632,7 +637,7 @@ mod tests {
 
     #[cfg(feature = "cloud")]
     #[test]
-    fn cloud_credentials_come_from_the_profiles_user_or_the_legacy_token() {
+    fn cloud_credentials_come_from_the_profiles_user() {
         use base64::Engine;
         let token = |exp: i64| {
             format!(
@@ -644,8 +649,7 @@ mod tests {
         std::fs::write(
             home.path().join(CONFIG_FILENAME),
             format!(
-                "[global.cloud]\naccess_token = \"{legacy}\"\n\n[global.cloud.users.u1]\nemail = \"alice@acme.dev\"\naccess_token = \"{alice}\"\n\n[global.cloud.users.u2]\naccess_token = \"{expired}\"\n\n[alice]\nenvironment_type = \"cloud\"\ncloud = {{ user_id = \"u1\", account_id = \"a\", environment_id = \"e\" }}\n\n[bob]\nenvironment_type = \"cloud\"\ncloud = {{ user_id = \"u2\", account_id = \"a\", environment_id = \"e\" }}\n\n[nobody]\nenvironment_type = \"cloud\"\ncloud = {{ user_id = \"u3\", account_id = \"a\", environment_id = \"e\" }}\n\n[old]\nenvironment_type = \"cloud\"\ncloud = {{ account_id = \"a\", environment_id = \"e\" }}\n",
-                legacy = token(4_000_000_000),
+                "[global.cloud.users.u1]\nemail = \"alice@acme.dev\"\naccess_token = \"{alice}\"\n\n[global.cloud.users.u2]\naccess_token = \"{expired}\"\n\n[alice]\nenvironment_type = \"cloud\"\ncloud = {{ user_id = \"u1\", account_id = \"a\", environment_id = \"e\" }}\n\n[bob]\nenvironment_type = \"cloud\"\ncloud = {{ user_id = \"u2\", account_id = \"a\", environment_id = \"e\" }}\n\n[nobody]\nenvironment_type = \"cloud\"\ncloud = {{ user_id = \"u3\", account_id = \"a\", environment_id = \"e\" }}\n\n[old]\nenvironment_type = \"cloud\"\ncloud = {{ account_id = \"a\", environment_id = \"e\" }}\n",
                 alice = token(4_000_000_001),
                 expired = token(1),
             ),
@@ -671,10 +675,8 @@ mod tests {
             load("alice").bearer_token().unwrap(),
             Some(token(4_000_000_001).as_str())
         );
-        assert_eq!(
-            load("old").cloud_access_token().unwrap(),
-            token(4_000_000_000)
-        );
+        let old = load("old").cloud_access_token().unwrap_err().to_string();
+        assert!(old.contains("older CLI"), "{old}");
         let expired = load("bob").cloud_access_token().unwrap_err().to_string();
         assert!(
             expired.contains("u2") && expired.contains("expired"),

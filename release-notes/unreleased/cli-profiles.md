@@ -47,10 +47,10 @@ nothing in the current directory changes the target.
 - **"Environment" means a Restate Cloud environment; the CLI's entries are profiles.**
   `-e/--environment` and `RESTATE_ENVIRONMENT` keep working as `-p/--profile` and `RESTATE_PROFILE`
   for now, with a deprecation line on stderr.
-- **Run `restate cloud login` once after upgrading.** It stores your token under your user and
-  imports your environments as profiles. Cloud profiles written by older versions keep working with
-  the old token until then, and are adopted (keeping their name) when they belong to the user who
-  logs in.
+- **Run `restate cloud login` once after upgrading.** Cloud profiles written by older versions
+  have no user, so Cloud commands on them fail with "written by an older CLI" until you log in.
+  The login stores your token under your user, imports your environments as profiles, and adopts
+  those older profiles (keeping their name) when they belong to the user who logs in.
 - **`.env` files are no longer loaded.** The CLI used to load a `.env` from the current directory or
   its parents. Export the variables instead, or add the server with `restate profile add`. When a
   `./.env` with `RESTATE_*` variables is found, one line on stderr says it isn't loaded. This also
