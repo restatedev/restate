@@ -11,6 +11,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use tokio::sync::mpsc;
 use tracing::{debug, info, instrument, warn};
 
 use restate_clock::WallClock;
@@ -22,8 +23,8 @@ use restate_types::logs::Lsn;
 use restate_types::nodes_config::ClusterFingerprint;
 
 use super::{
-    LocalPartitionSnapshot, PartitionSnapshotMetadata, PartitionSnapshotStatus, SnapshotError,
-    SnapshotErrorKind, SnapshotFormatVersion, SnapshotRepository,
+    CommitFenceRequest, LocalPartitionSnapshot, PartitionSnapshotMetadata, PartitionSnapshotStatus,
+    SnapshotError, SnapshotErrorKind, SnapshotFormatVersion, SnapshotRepository,
 };
 use crate::PartitionStoreManager;
 
@@ -31,6 +32,9 @@ use crate::PartitionStoreManager;
 pub struct SnapshotPartitionTask {
     pub snapshot_id: SnapshotId,
     pub partition_id: PartitionId,
+    /// Reaches the partition's running processor, which holds back its commits during the
+    /// export. `None` if no processor runs.
+    pub commit_fence_tx: Option<mpsc::Sender<CommitFenceRequest>>,
     pub min_target_lsn: Option<Lsn>,
     pub snapshot_base_path: PathBuf,
     pub partition_store_manager: Arc<PartitionStoreManager>,
@@ -80,6 +84,7 @@ impl SnapshotPartitionTask {
             .partition_store_manager
             .export_partition(
                 self.partition_id,
+                self.commit_fence_tx.as_ref(),
                 self.min_target_lsn,
                 self.snapshot_id,
                 self.snapshot_base_path.as_path(),

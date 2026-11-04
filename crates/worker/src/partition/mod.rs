@@ -42,7 +42,7 @@ use anyhow::Context;
 use bytes::BytesMut;
 use futures::{FutureExt, StreamExt};
 use metrics::histogram;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{debug, error, instrument, trace, warn};
 
@@ -53,6 +53,7 @@ use restate_core::network::{
 };
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind, cancellation_token};
 use restate_ingestion_client::IngestionClient;
+use restate_partition_store::snapshots::CommitFenceRequest;
 use restate_partition_store::{
     PartitionDb, PartitionSeal, PartitionStore, PartitionStoreTransaction,
 };
@@ -179,6 +180,7 @@ pub(super) struct PartitionProcessorBuilder {
     target_leader_state_rx: watch::Receiver<TargetLeaderState>,
     network_svc_rx: ServiceStream<PartitionLeaderService>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
+    commit_fence_rx: mpsc::Receiver<CommitFenceRequest>,
     node_ctx: NodeContext,
 }
 
@@ -187,12 +189,14 @@ impl PartitionProcessorBuilder {
         target_leader_state_rx: watch::Receiver<TargetLeaderState>,
         network_svc_rx: ServiceStream<PartitionLeaderService>,
         status_watch_tx: watch::Sender<PartitionProcessorStatus>,
+        commit_fence_rx: mpsc::Receiver<CommitFenceRequest>,
         node_ctx: NodeContext,
     ) -> Self {
         Self {
             target_leader_state_rx,
             network_svc_rx,
             status_watch_tx,
+            commit_fence_rx,
             node_ctx,
         }
     }
@@ -209,6 +213,7 @@ impl PartitionProcessorBuilder {
             target_leader_state_rx,
             network_svc_rx: rpc_rx,
             status_watch_tx,
+            commit_fence_rx,
             mut node_ctx,
         } = self;
 
@@ -257,6 +262,7 @@ impl PartitionProcessorBuilder {
             network_leader_svc_rx: rpc_rx,
             status_watch_tx,
             leader_query_rx,
+            commit_fence_rx,
             encoding_arena: BytesMut::new(),
         })
     }
@@ -271,6 +277,7 @@ pub struct PartitionProcessor<T> {
     network_leader_svc_rx: ServiceStream<PartitionLeaderService>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     leader_query_rx: LeaderQueryReceiver,
+    commit_fence_rx: mpsc::Receiver<CommitFenceRequest>,
     encoding_arena: BytesMut,
 }
 
@@ -726,6 +733,11 @@ where
                         "leader_query_rx",
                     );
                     self.on_leader_query(leader_query_cmd);
+                }
+                // Everything applied so far is committed, so a snapshot exported until the fence
+                // is dropped holds exactly what it reads from the store.
+                Some(request) = self.commit_fence_rx.recv() => {
+                    let _ = request.send(txn.fence_commits());
                 }
             }
             // Allow other tasks on this thread to run, but only if we have exhausted the coop

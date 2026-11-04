@@ -1233,6 +1233,10 @@ where
                 let create_snapshot_task = SnapshotPartitionTask {
                     snapshot_id,
                     partition_id,
+                    commit_fence_tx: self
+                        .processor_states
+                        .get(&partition_id)
+                        .and_then(ProcessorState::commit_fence_sender),
                     min_target_lsn,
                     snapshot_base_path,
                     partition_store_manager: self.partition_store_manager.clone(),
