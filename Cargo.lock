@@ -5640,12 +5640,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mnemonic"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2b8f3a258db515d5e91a904ce4ae3f73e091149b90cadbdb93d210bee07f63b"
-
-[[package]]
 name = "mock-service-endpoint"
 version = "1.8.2-dev"
 dependencies = [
@@ -7654,6 +7648,7 @@ dependencies = [
  "figment",
  "futures",
  "hickory-resolver",
+ "hostname",
  "http 1.5.0",
  "humantime",
  "hyper",
@@ -7663,7 +7658,6 @@ dependencies = [
  "indoc",
  "itertools 0.15.0",
  "json-patch",
- "mnemonic",
  "mock-service-endpoint",
  "octocrab",
  "open",

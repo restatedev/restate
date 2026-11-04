@@ -15,7 +15,6 @@ use anyhow::Result;
 use cling::prelude::*;
 use futures::{FutureExt, StreamExt};
 use itertools::Itertools;
-use rand::seq::IndexedRandom;
 use remote::RemotePort;
 use tokio_util::sync::CancellationToken;
 
@@ -23,15 +22,33 @@ use restate_cli_util::CliContext;
 
 use crate::cli_env::EnvironmentType;
 use crate::clients::cloud::{CloudClient, CloudClientInterface};
+use crate::error::RestateCliError;
 use crate::{build_info, cli_env::CliEnv};
+
+use super::deployment_name::default_deployment_name;
 
 mod local;
 mod remote;
 mod renderer;
 
+/// Tunnel local ports to and from a Cloud environment (runs until interrupted)
+///
+/// For services that can't connect by themselves, or to expose any local port. Uses the
+/// current profile (or -p), which must be a Cloud one. Exposes the environment's ports
+/// (ingress 8080, admin 9070) on localhost, and lets the environment call services running
+/// on this machine: register them with `restate deployments register --tunnel-name <name>
+/// http://localhost:9080` (your service's URL). By default, all remote ports are exposed and
+/// inbound calls are allowed.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_tunnel")]
-#[clap(visible_alias = "expose", visible_alias = "tun")]
+#[clap(alias = "tun")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate cloud tunnel",
+        "restate cloud tunnel --name greeter-dev --no-remote-ports",
+    ],
+    learn_more: "https://docs.restate.dev/cloud/getting-started",
+))]
 pub struct Tunnel {
     /// Only expose remote ports: block calls from the Cloud environment to this machine
     #[clap(long = "no-local")]
@@ -46,9 +63,9 @@ pub struct Tunnel {
     #[clap(long)]
     no_remote_ports: bool,
 
-    /// Name of the tunnel, to pass to `restate deployments register --tunnel-name`. Random if
-    /// omitted
-    #[clap(long = "tunnel-name")]
+    /// Name of the tunnel, to pass to `restate deployments register --tunnel-name`. Letters,
+    /// digits, `.`, `_` and `-`. Default: `<directory>-<hostname>`, stable across restarts
+    #[clap(long = "name", alias = "tunnel-name", value_name = "NAME")]
     tunnel_name: Option<String>,
 }
 
@@ -69,9 +86,13 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
     ) {
         (EnvironmentType::Cloud, Some(environment_info)) => environment_info,
         _ => {
-            return Err(anyhow::anyhow!(
-                "First switch to the profile of a Restate Cloud environment with `restate profile use` (`restate cloud login` adds them)"
-            ));
+            return Err(RestateCliError::bad_input(format!(
+                "The current profile \"{}\" is not a Restate Cloud environment",
+                env.profile
+            ))
+            .with_next_step("restate profile use", "switch to a Cloud profile")
+            .with_next_step("restate cloud login", "import Cloud profiles")
+            .into());
         }
     };
 
@@ -133,9 +154,10 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
         *crate::EXIT_HANDLER.lock().unwrap() = Some(boxed);
     }
 
-    let tunnel_name = opts.tunnel_name.clone().unwrap_or_else(|| {
-        String::from_utf8_lossy(mnemonic::MN_WORDS.choose(&mut rand::rng()).unwrap()).to_string()
-    });
+    let tunnel_name = opts
+        .tunnel_name
+        .clone()
+        .unwrap_or_else(default_deployment_name);
 
     let tunnel_renderer = Arc::new(
         renderer::TunnelRenderer::new(
@@ -230,7 +252,7 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
             )
         };
         eprintln!(
-            "To retry with the same tunnel name:\nrestate cloud env tunnel --tunnel-name {tunnel_name}{remote_ports}"
+            "To retry with the same tunnel name:\nrestate cloud tunnel --name {tunnel_name}{remote_ports}"
         );
     };
 

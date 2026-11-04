@@ -1,4 +1,4 @@
-# Release Notes: Cloud login selects the environment, register connected services by name
+# Release Notes: Cloud login selects the environment, register connected services by name, `restate cloud tunnel`
 
 ## New Feature
 
@@ -16,13 +16,19 @@ restate deployments register connect://greeter-v1
 
 The CLI resolves the name from the Cloud environment you're logged in to; nothing else to configure.
 
+The port-forwarding tunnel for services that can't connect by themselves is now `restate cloud tunnel`;
+the tunnel's name is `--name`, and defaults to `<directory>-<hostname>` instead of a
+random word, so a restarted tunnel keeps its registered deployment.
+
 ### Why This Matters
 Going from a fresh laptop to a service registered in your Cloud environment is two commands: log in,
 register. You no longer need to configure the environment in between, nor to assemble the tunnel URL
 by hand.
 
 ### Impact on Users
-- `--tunnel-name <destination URL>` for services behind `restate cloud env tunnel` is unchanged.
+- `restate cloud env tunnel` and `--tunnel-name` keep working, hidden, with a deprecation line; use
+  `restate cloud tunnel --name`. `restate deployments register --tunnel-name <destination URL>` is
+  unchanged.
 - `restate deployments register` now waits up to 30 seconds for the server to discover the endpoint
   (`--request-timeout` still applies when set higher), so a slow or unreachable endpoint reports the
   server's discovery error instead of a CLI timeout.
