@@ -95,9 +95,18 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             ss.suspended_waiting_for_signals,
             ss.suspended_waiting_future_json,
 
+            -- TODO: The retry count is misleading in multiple ways:
+            --   - If the invocation was yielded to the vqueue scheduler, the invoker state won't have it
+            --     and will report null.
+            --   - When the scheduler reschedules the invocation, the invoker starts the retry counter from
+            --     one regardless of how many attempts the invocation has already made.
+            -- One way to fix this is to overlay the stats from sys_vqueues here as well, but unfortunately
+            -- it doesn't have retry attempts. So for now, this is a known bug.
+            -- Another way to fix it, is to join against sys_vqueue_entry_status, but that's a much more
+            -- expensive join.
             sis.retry_count,
+            COALESCE(sis.next_retry_at, backing_off.run_at) AS next_retry_at,
             sis.last_start_at,
-            sis.next_retry_at,
             sis.last_attempt_deployment_id,
             sis.last_attempt_server,
             sis.last_failure,
@@ -117,13 +126,21 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
                 WHEN ss.status = 'suspended' THEN 'suspended'
                 WHEN ss.status = 'paused' THEN 'paused'
                 WHEN sis.in_flight THEN 'running'
-                WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
+                WHEN ss.status = 'invoked' AND sis.retry_count > 0 THEN 'backing-off'
+                WHEN ss.status = 'invoked' AND backing_off.entry_id IS NOT NULL THEN 'backing-off'
                 ELSE 'ready'
             END, 'LargeUtf8') AS status,
             ss.completion_result,
             ss.completion_failure
         FROM sys_invocation_state sis
-        RIGHT JOIN sys_invocation_status ss ON ss.id = sis.id";
+        RIGHT JOIN sys_invocation_status ss ON ss.id = sis.id
+        -- The invoker forgets an invocation once it hands a retry over to the scheduler.
+        -- So we join with the scheduler's datasets to find if an invocation is backing-off.
+        LEFT JOIN sys_vqueues backing_off
+            ON backing_off.entry_id = ss.id
+            AND backing_off.entry_kind = 'invocation'
+            AND backing_off.stage = 'inbox'
+            AND backing_off.status = 'backing-off'";
 
 const CLUSTER_LOGS_TAIL_SEGMENTS_VIEW: &str = "CREATE VIEW logs_tail_segments as SELECT
         l.* FROM logs AS l JOIN (
