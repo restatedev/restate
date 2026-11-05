@@ -16,6 +16,7 @@ pub mod deployments;
 #[cfg(feature = "dev-cmd")]
 pub mod dev;
 pub mod examples;
+pub mod http_tools;
 pub mod invocations;
 pub mod kafkaclusters;
 pub mod openapi;
