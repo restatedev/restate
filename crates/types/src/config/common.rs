@@ -625,9 +625,8 @@ pub struct CommonOptions {
     /// have the same.
     cluster_name: String,
 
-    /// Hidden, temporary until the HTTP listeners support TLS: reject requests on the
-    /// ingress and admin listeners that target another cluster with 421 Misdirected
-    /// Request.
+    /// Reject requests on ingress and admin listeners whose target cluster does not match our own name
+    /// with a 421 Misdirected Request.
     ///
     /// Since v1.8.2
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
