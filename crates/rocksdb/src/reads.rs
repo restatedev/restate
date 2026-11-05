@@ -256,6 +256,7 @@
 //! }
 //! ```
 
+mod iteration;
 mod iterator;
 mod reader;
 mod scoped;
@@ -270,6 +271,7 @@ use restate_util_lifecycle::{Scope, ScopePayload};
 
 use crate::{CfHandles, RawRocksDb};
 
+pub use self::iteration::{Iteration, LeasePolicy};
 pub use self::iterator::{OwnedReadIterator, ReadIterator};
 pub use self::reader::{OwnedPinnedBatch, OwnedReader, PinnedBatch, Reader};
 pub use self::scoped::ScopedReads;

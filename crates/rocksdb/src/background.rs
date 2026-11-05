@@ -15,6 +15,7 @@ use std::time::Instant;
 
 use futures::FutureExt;
 use futures::executor::{LocalPool, LocalSpawner};
+use futures::future::{AbortHandle, AbortRegistration, Aborted};
 use futures::task::{LocalFutureObj, LocalSpawn};
 use metrics::{Gauge, gauge, histogram};
 use tracing::Instrument;
@@ -349,17 +350,17 @@ where
 }
 
 impl<'a, C, F> StorageOp<'a, C, F> {
-    // An operation on any kind of context, counted in `gate`.
+    // An operation on any kind of context, counted in `gate`, if any.
     pub(crate) fn from_parts(
         context: C,
-        gate: &'a Arc<Gate>,
+        gate: impl Into<Option<&'a Arc<Gate>>>,
         kind: StorageTaskKind,
         op: F,
     ) -> Self {
         Self {
             context,
             op,
-            gate: Some(gate),
+            gate: gate.into(),
             kind,
         }
     }
@@ -381,6 +382,35 @@ impl<'a, C: OpContext, F: OpFn<C>> StorageOp<'a, C, F> {
             gate,
             kind,
         }
+    }
+}
+
+impl<'a, C: OpContext, F: OpFn<C>> StorageOp<'a, C, F> {
+    /// Makes the operation cancellable while it runs. Dropping the returned
+    /// [`AbortOnDrop`] stops the work at its next `.await`, dropping its context
+    /// on the worker, and the operation resolves to [`Aborted`].
+    ///
+    /// Useful for async work that can wait indefinitely, such as an iteration
+    /// whose callback waits for room in a channel: [`IoExecutor::spawn`] only
+    /// skips work that hasn't started, and lets running work finish.
+    /// Sync work can't be stopped once it runs.
+    ///
+    /// ```ignore
+    /// let (op, _abort) = op.abortable();
+    /// let result = executor.spawn(op)?.await; // dropping this future drops `_abort` too
+    /// ```
+    pub fn abortable(self) -> (StorageOp<'a, C, Abortable<F>>, AbortOnDrop) {
+        let (handle, registration) = AbortHandle::new_pair();
+        let op = StorageOp {
+            context: self.context,
+            op: Abortable {
+                op: self.op,
+                registration,
+            },
+            gate: self.gate,
+            kind: self.kind,
+        };
+        (op, AbortOnDrop(handle))
     }
 }
 
@@ -661,6 +691,34 @@ where
     }
 }
 
+/// The work of an operation returned by [`StorageOp::abortable`]: the
+/// original work, stopped once its [`AbortOnDrop`] is dropped.
+pub struct Abortable<F> {
+    op: F,
+    registration: AbortRegistration,
+}
+
+impl<C: OpContext, F: OpFn<C>> OpFn<C> for Abortable<F> {
+    type Output = Result<F::Output, Aborted>;
+
+    async fn run_async(self, context: C::Owned) -> Self::Output {
+        // On abort, the work and its context are dropped before this returns.
+        futures::future::Abortable::new(self.op.run_async(context), self.registration).await
+    }
+}
+
+/// Stops an operation made with [`StorageOp::abortable`] when dropped. Keep it
+/// for as long as the operation's result is wanted.
+#[must_use = "dropping it aborts the operation right away"]
+pub struct AbortOnDrop(AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        // Wakes the work if it's waiting, so it ends right away.
+        self.0.abort();
+    }
+}
+
 /// The work of an operation returned by [`StorageOp::with_read_perf`]: the
 /// original work, with its RocksDB read perf counters measured.
 pub struct ReadPerf<F> {
@@ -855,7 +913,7 @@ impl Worker {
             // Takes one task at a time, and the next only after this one has
             // finished or is suspended. A worker blocked in a task leaves the
             // queue to the others instead of holding tasks back behind it.
-            Self::yield_now().await;
+            yield_now().await;
         }
     }
 
@@ -864,20 +922,20 @@ impl Worker {
             .spawn_local_obj(task())
             .expect("the pool outlives its worker loop");
     }
+}
 
-    // Lets the pool run its tasks before the worker loop continues.
-    async fn yield_now() {
-        let mut yielded = false;
-        std::future::poll_fn(|cx| {
-            if std::mem::replace(&mut yielded, true) {
-                Poll::Ready(())
-            } else {
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-        })
-        .await
-    }
+// Lets the pool run its tasks before the worker loop continues.
+pub(crate) async fn yield_now() {
+    let mut yielded = false;
+    std::future::poll_fn(|cx| {
+        if std::mem::replace(&mut yielded, true) {
+            Poll::Ready(())
+        } else {
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    })
+    .await
 }
 
 // Counts a task as in flight from creation until it is dropped.

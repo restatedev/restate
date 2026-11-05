@@ -49,8 +49,8 @@ use restate_util_lifecycle::Scope;
 
 // re-exports
 pub use self::background::{
-    Async, GlobalExecutor, Guarded, Mapped, MappedOk, OpContext, OpFn, Priority, ReadPerf,
-    SinglePoolExecutor, StorageOp, StorageTaskKind, SyncOpFn,
+    AbortOnDrop, Abortable, Async, GlobalExecutor, Guarded, Mapped, MappedOk, OpContext, OpFn,
+    Priority, ReadPerf, SinglePoolExecutor, StorageOp, StorageTaskKind, SyncOpFn,
 };
 pub use self::cf_handles::CfHandles;
 pub use self::db_env::DbEnv;
@@ -60,8 +60,9 @@ pub use self::error::*;
 pub use self::iterator::IterAction;
 use self::iterator::RocksIterator;
 pub use self::perf::{RocksDbPerf, RocksDbPerfExt, RocksDbReadPerfGuard, RocksDbWritePerfGuard};
-use self::reads::ColumnFamilies;
+use self::reads::{ColumnFamilies, Iteration, LeasePolicy, OwnedReadIterator, ScopedReads};
 pub use self::rock_access::RocksAccess;
+pub use futures::future::Aborted;
 pub use restate_util_lifecycle::KeepAlive;
 
 use self::metric_definitions::*;
@@ -599,6 +600,49 @@ impl RocksDb {
         };
         let op = StorageOp::with_context(scope, gate, StorageTaskKind::BackgroundIterator, iterate);
         database.executor.pool(priority).dispatch(op)
+    }
+
+    /// Prepares an iteration over one of `scope`'s column families, handing
+    /// each item to the async `on_item` (see [`ReadIterator::prepare_iteration`]).
+    /// Submit it to one of the database's pools, e.g. `executor().low_pri()`.
+    /// The iterator starts with `initial_action`, and `name` labels its read perf
+    /// metrics. `lease_policy` decides what sealing `gate` does (see
+    /// [`LeasePolicy`]).
+    ///
+    /// # Errors
+    /// Fails with [`AdmissionClosed`] if `gate` is sealed. The iterator is
+    /// created under a lease, so it's never created once the gate is sealed.
+    ///
+    /// # Panics
+    /// In debug builds, panics if `gate` isn't inside `scope`.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    pub fn prepare_iteration<'g, C, F>(
+        scope: &Scope<C>,
+        gate: &'g Arc<Gate>,
+        lease_policy: LeasePolicy,
+        cf: C::Cf,
+        name: &'static str,
+        initial_action: IterAction,
+        mut read_options: rocksdb::ReadOptions,
+        on_item: F,
+    ) -> Result<StorageOp<'g, OwnedReadIterator<Scope<C>>, ReadPerf<Iteration<F>>>, AdmissionClosed>
+    where
+        C: ColumnFamilies,
+        F: AsyncFnMut(Option<Result<(&[u8], &[u8]), RocksError>>) -> IterAction + Send + 'static,
+    {
+        debug_assert!(
+            gate.is_inside(scope.gate()),
+            "the gate isn't inside the scope"
+        );
+        // Covers creating the iterator. The operation takes its own lease once
+        // it's submitted.
+        let _admission = gate.try_acquire().ok_or(AdmissionClosed)?;
+        // The iteration runs on the storage pool, where blocking IO is fine.
+        read_options.set_read_tier(rocksdb::ReadTier::All);
+        Ok(scope
+            .owned_iterator(cf, read_options)
+            .prepare_iteration(gate, lease_policy, Some(initial_action), on_item)
+            .with_read_perf(name))
     }
 
     /// The shared I/O pools this database was created with. Handy for submitting
