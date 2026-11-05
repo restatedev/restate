@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
@@ -43,7 +44,12 @@ pub(crate) async fn run_tests(
     let partition_id = partition_store.partition_id();
 
     let snapshot = partition_store
-        .create_local_snapshot(snapshots_dir.path(), None, SnapshotId::new())
+        .create_local_snapshot(
+            manager.test_capture_guard(partition_id).await,
+            snapshots_dir.path(),
+            None,
+            SnapshotId::new(),
+        )
         .await
         .unwrap();
 
@@ -115,6 +121,48 @@ async fn verify_restored_data(partition: &mut PartitionStore) {
     );
 }
 
+/// While a fence holds, a transaction buffers writes but commits none of them, and refuses a
+/// second fence. Commits wait even with nothing to commit, and neither cancelling a waiting commit
+/// nor clearing the transaction lifts the fence. Dropping the fence lets the commit through.
+#[restate_core::test]
+async fn commit_fence_holds_back_commits() {
+    RocksDbManager::init();
+    let manager = PartitionStoreManager::create(true).await.unwrap();
+    let mut store = manager
+        .open(
+            &Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1)),
+            None,
+        )
+        .await
+        .unwrap();
+    let mut reader = store.clone();
+    let mut txn = store.transaction();
+
+    let fence = txn.fence_commits().unwrap();
+    assert!(txn.fence_commits().is_none());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), txn.commit())
+            .await
+            .is_err()
+    );
+    txn.clear();
+    txn.put_applied_lsn(Lsn::new(100)).unwrap();
+    {
+        let mut commit = std::pin::pin!(txn.commit());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut commit)
+                .await
+                .is_err()
+        );
+        assert_eq!(reader.get_applied_lsn().await.unwrap(), None);
+
+        drop(fence);
+        commit.await.unwrap();
+    }
+    assert_eq!(reader.get_applied_lsn().await.unwrap(), Some(Lsn::new(100)));
+    assert!(txn.fence_commits().is_some());
+}
+
 /// A snapshot records the version that the barrier check requires of its data, counting storage
 /// features this server doesn't know, and whichever of those and the version barrier is newer. It
 /// also records the partition's storage and partition features.
@@ -156,7 +204,12 @@ async fn snapshot_records_what_the_barrier_check_requires() {
 
     let snapshots_dir = tempdir().unwrap();
     let snapshot = store
-        .create_local_snapshot(snapshots_dir.path(), None, SnapshotId::new())
+        .create_local_snapshot(
+            manager.test_capture_guard(partition_id).await,
+            snapshots_dir.path(),
+            None,
+            SnapshotId::new(),
+        )
         .await
         .unwrap();
     let compatibility = snapshot.compatibility.clone().unwrap();
@@ -188,7 +241,12 @@ async fn snapshot_records_what_the_barrier_check_requires() {
     }
 
     let snapshot = store
-        .create_local_snapshot(snapshots_dir.path(), None, SnapshotId::new())
+        .create_local_snapshot(
+            manager.test_capture_guard(partition_id).await,
+            snapshots_dir.path(),
+            None,
+            SnapshotId::new(),
+        )
         .await
         .unwrap();
     let compatibility = snapshot.compatibility.clone().unwrap();
