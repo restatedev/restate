@@ -174,7 +174,6 @@ mod tests {
 
     use parking_lot::Mutex;
 
-    use restate_core::io::IoExecutor;
     use restate_types::protobuf::common::DatabaseKind;
 
     use super::*;
@@ -339,6 +338,7 @@ mod tests {
     #[tokio::test]
     async fn in_memory_resources_follow_open_create_import_and_reopen() -> anyhow::Result<()> {
         use restate_core::TaskCenterBuilder;
+        use restate_core::io::IoExecutor;
 
         use crate::RocksDbManager;
 
