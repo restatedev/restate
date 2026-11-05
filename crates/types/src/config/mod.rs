@@ -498,12 +498,17 @@ impl Configuration {
             return Err(InvalidConfigurationError::ForceNodeIdZero);
         }
 
+        // Matches the visible-ASCII rule the invoker applies to its outbound
+        // `x-restate-cluster-name`, so callers can always send and compare it.
         if self.common.reject_misdirected_requests
-            && let Err(err) = ::http::HeaderValue::from_str(self.common.cluster_name())
+            && !self
+                .common
+                .cluster_name()
+                .chars()
+                .all(|c| (' '..='~').contains(&c))
         {
             return Err(InvalidConfigurationError::InvalidClusterName {
                 cluster_name: self.common.cluster_name().to_owned(),
-                reason: err.to_string(),
             });
         }
 
@@ -701,12 +706,9 @@ pub enum InvalidConfigurationError {
     #[error("node-name is required: {0}")]
     RequiredNodeName(String),
     #[error(
-        "cluster-name '{cluster_name}' is not a valid HTTP header value: {reason}; reject-misdirected-requests requires a visible-ASCII cluster name"
+        "cluster-name '{cluster_name}' must be visible ASCII when reject-misdirected-requests is enabled"
     )]
-    InvalidClusterName {
-        cluster_name: String,
-        reason: String,
-    },
+    InvalidClusterName { cluster_name: String },
     #[error("invalid {key} '{address}': {reason}")]
     AdvertisedAddress {
         key: &'static str,
@@ -1004,6 +1006,11 @@ mod tests {
         let err = config("invalid\ncluster", true).validate().unwrap_err();
         assert!(matches!(
             err,
+            InvalidConfigurationError::InvalidClusterName { .. }
+        ));
+
+        assert!(matches!(
+            config("clüster", true).validate().unwrap_err(),
             InvalidConfigurationError::InvalidClusterName { .. }
         ));
 

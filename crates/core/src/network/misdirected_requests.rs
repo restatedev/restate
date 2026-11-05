@@ -183,6 +183,13 @@ pin_project! {
     }
 }
 
+// `CorsLayer` requires a default (empty) body.
+impl<B> Default for MisdirectedBody<B> {
+    fn default() -> Self {
+        Self::Reject { body: None }
+    }
+}
+
 impl<B> Body for MisdirectedBody<B>
 where
     B: Body<Data = Bytes>,

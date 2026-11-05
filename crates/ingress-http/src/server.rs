@@ -259,9 +259,10 @@ where
                         },
                     ),
             )
-            .layer(misdirected_requests)
             .layer(NormalizePathLayer::trim_trailing_slash())
             .layer(CorsLayer::very_permissive())
+            // Inside CORS so a browser caller can read the 421.
+            .layer(misdirected_requests)
             .layer(layers::load_shed::LoadShedLayer::new(concurrency_limit))
             .layer(layers::tracing_context_extractor::HttpTraceContextExtractorLayer)
             .service(service);
