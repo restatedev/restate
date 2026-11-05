@@ -159,7 +159,11 @@ fn index_command(cmd: &clap::Command, path: String, entries: &mut Vec<Entry>) {
         fields: searchable([&names, &about, &long_about, &context]),
     });
     for sub in cmd.get_subcommands() {
-        if !sub.is_hide_set() && sub.get_name() != "help" {
+        // Deprecated commands are hidden from `--help`, but stay findable by their old name.
+        let deprecated = sub
+            .get_about()
+            .is_some_and(|about| about.to_string().starts_with("Deprecated"));
+        if (!sub.is_hide_set() || deprecated) && sub.get_name() != "help" {
             index_command(sub, format!("{path} {}", sub.get_name()), entries);
         }
     }

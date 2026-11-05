@@ -58,6 +58,7 @@ use crate::ui::service_handlers::{
         "restate deployments register http://localhost:9080 --yes",
         "restate deployments register arn:aws:lambda:eu-central-1:123456789012:function:greeter:3 --dry-run",
         "restate deployments register http://localhost:9080 --force --yes   # overwrite, during development",
+        "restate deployments register connect://greeter-v1                  # a service connected to Restate Cloud with connect()",
     ],
     learn_more: "https://docs.restate.dev/services/versioning",
 ))]
@@ -141,18 +142,22 @@ pub struct Register {
     #[clap(long = "use-http1.1")]
     use_http_11: bool,
 
-    /// Endpoint of the deployment: an HTTP URL, or an AWS Lambda function ARN
+    /// Endpoint of the deployment: an HTTP URL, an AWS Lambda function ARN, or
+    /// `connect://<name>` for a service connected to a Restate Cloud environment
     ///
     /// The URL must be reachable from the Restate server (`localhost` is the server's host),
     /// and defaults to `http://` without a scheme. The Lambda ARN must include the function
     /// version, e.g. `arn:aws:lambda:eu-central-1:123456789012:function:greeter:3`.
+    /// `connect://<name>` is what a service started with the SDK's `connect()` prints: it
+    /// needs the current profile to be the Cloud environment the service connected to (see
+    /// `restate cloud login`).
     #[clap(value_parser = parse_deployment)]
     deployment: DeploymentEndpoint,
 
-    /// Name of the Restate Cloud tunnel to reach the endpoint through (see
-    /// `restate cloud environments tunnel`)
+    /// Name of the Restate Cloud tunnel (`restate cloud tunnel --name`) to reach
+    /// the endpoint through
     #[cfg(feature = "cloud")]
-    #[clap(long = "tunnel-name")]
+    #[clap(long = "tunnel-name", alias = "deployment-name", value_name = "NAME")]
     tunnel_name: Option<String>,
 
     #[clap(flatten)]
@@ -175,6 +180,8 @@ struct Metadata {
 enum DeploymentEndpoint {
     Uri(Uri),
     Lambda(LambdaARN),
+    /// A service connected to the current Restate Cloud environment, by name.
+    Connect(String),
 }
 
 impl DeploymentEndpoint {
@@ -182,6 +189,7 @@ impl DeploymentEndpoint {
         match self {
             DeploymentEndpoint::Uri(uri) => uri.to_string(),
             DeploymentEndpoint::Lambda(arn) => arn.to_string(),
+            DeploymentEndpoint::Connect(name) => format!("connect://{name}"),
         }
     }
 }
@@ -191,6 +199,7 @@ impl Display for DeploymentEndpoint {
         match self {
             DeploymentEndpoint::Uri(uri) => write!(f, "URL {uri}"),
             DeploymentEndpoint::Lambda(arn) => write!(f, "AWS Lambda ARN {arn}"),
+            DeploymentEndpoint::Connect(name) => write!(f, "connected service {name}"),
         }
     }
 }
@@ -233,6 +242,19 @@ fn parse_deployment(
 ) -> Result<DeploymentEndpoint, Box<dyn std::error::Error + Send + Sync + 'static>> {
     let deployment = if raw.starts_with("arn:") {
         DeploymentEndpoint::Lambda(LambdaARN::from_str(raw)?)
+    } else if let Some(name) = raw.strip_prefix("connect://") {
+        let name = name.trim_end_matches('/');
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        {
+            return Err(format!(
+                "invalid deployment name in `{raw}`: use letters, digits, `.`, `_` and `-`"
+            )
+            .into());
+        }
+        DeploymentEndpoint::Connect(name.to_owned())
     } else {
         let mut uri = Uri::from_str(raw).map_err(|e| format!("invalid URL({e})"))?;
         let mut parts = uri.into_parts();
@@ -343,97 +365,45 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     let deployment = match &discover_opts.deployment {
         #[cfg(feature = "cloud")]
         DeploymentEndpoint::Uri(uri) if discover_opts.tunnel_name.is_some() => {
-            use crate::clients::cloud::{CloudClient, CloudClientInterface};
-
             let tunnel_name = discover_opts.tunnel_name.as_ref().unwrap();
-
-            let environment_info = match (
-                &env.config.environment_type,
-                &env.config.cloud.environment_info,
-            ) {
-                (crate::cli_env::EnvironmentType::Cloud, Some(environment_info)) => {
-                    environment_info
-                }
-                _ => {
-                    return Err(anyhow::anyhow!(
-                        "To register URLs with --tunnel-name, first switch to the Cloud environment you're tunnelling to using `restate config use-environment`"
-                    ));
-                }
-            };
-
-            let unprefixed_environment_id = environment_info
-                .environment_id
-                .strip_prefix("env_")
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Unexpected environment ID format: {}",
-                        environment_info.environment_id
-                    )
-                })?;
-
-            let cloud_client = CloudClient::new(&env)?;
-
-            let proxy_base_url = cloud_client
-                .describe_environment(
-                    &environment_info.account_id,
-                    &environment_info.environment_id,
+            let (environment_id, proxy_base_url) = cloud_environment(&env).await?;
+            DeploymentEndpoint::Uri(tunnel_uri(
+                &proxy_base_url,
+                &environment_id,
+                tunnel_name,
+                uri,
+            )?)
+        }
+        #[cfg(feature = "cloud")]
+        DeploymentEndpoint::Connect(name) => {
+            if discover_opts.tunnel_name.is_some() {
+                return Err(RestateCliError::bad_input(
+                    "--tunnel-name is for an HTTP endpoint behind `restate cloud tunnel`; `connect://<name>` names a connected service by itself",
                 )
-                .await?
-                .into_body()
-                .await?
-                .proxy_base_url;
-
-            let proxy_base_url = url::Url::from_str(&proxy_base_url)
-                .context("invalid proxy_base_url in describe environment response")?;
-
-            let proxy_host = proxy_base_url
-                .host_str()
-                .expect("proxy_base_url must have a host");
-
-            // proxy base url doesn't currently have a port but may in future
-            let proxy_port = proxy_base_url.port().unwrap_or(9080);
-
-            let destination_scheme = uri
-                .scheme_str()
-                .context("tunneled URLs must have a scheme")?;
-
-            let destination_host = uri.host().context("tunneled URLs must have a host")?;
-
-            let destination_port = match uri.port_u16() {
-                Some(port) => port,
-                None => match destination_scheme {
-                    "http" => 80,
-                    "https" => 443,
-                    _ => {
-                        return Err(anyhow::anyhow!(
-                            "tunneled URLs must have scheme http or https"
-                        ));
-                    }
-                },
-            };
-
-            let destination_path = uri.path();
-
-            let uri = Uri::builder()
-                .scheme(proxy_base_url.scheme())
-                .authority(format!("{proxy_host}:{proxy_port}"))
-                .path_and_query(format!(
-                    "/{unprefixed_environment_id}/{tunnel_name}/{destination_scheme}/{destination_host}/{destination_port}{destination_path}",
-                ))
-                .build()?;
-
-            DeploymentEndpoint::Uri(uri)
+                .into());
+            }
+            let (environment_id, proxy_base_url) = cloud_environment(&env).await?;
+            DeploymentEndpoint::Uri(connect_uri(&proxy_base_url, &environment_id, name)?)
+        }
+        #[cfg(not(feature = "cloud"))]
+        DeploymentEndpoint::Connect(_) => {
+            return Err(RestateCliError::bad_input(
+                "connect:// endpoints need a CLI built with Restate Cloud support",
+            )
+            .into());
         }
         DeploymentEndpoint::Uri(uri) if uri.scheme_str() == Some("tunnel") => {
-            return Err(anyhow::anyhow!(
-                "tunnel:// URLs are no longer supported; instead use the destination URL and --tunnel-name"
-            ));
+            return Err(RestateCliError::bad_input(
+                "tunnel:// URLs are no longer supported; instead use the destination URL and --tunnel-name",
+            )
+            .into());
         }
         #[cfg(feature = "cloud")]
         _ if discover_opts.tunnel_name.is_some() => {
-            return Err(anyhow::anyhow!(
-                "--tunnel-name is only valid for HTTP endpoints"
-            ));
+            return Err(RestateCliError::bad_input(
+                "--tunnel-name is only valid for HTTP endpoints",
+            )
+            .into());
         }
         other => other.clone(),
     };
@@ -458,9 +428,111 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
             force: Some(force),
             dry_run,
         },
+        DeploymentEndpoint::Connect(_) => unreachable!("resolved to a URL above"),
     };
 
     register(discover_opts, client, mk_request_body).await
+}
+
+/// The current Cloud environment's id and proxy base URL, for connected services and
+/// tunneled endpoints.
+#[cfg(feature = "cloud")]
+async fn cloud_environment(env: &CliEnv) -> Result<(String, url::Url)> {
+    use crate::clients::cloud::{CloudClient, CloudClientInterface};
+
+    let (crate::cli_env::EnvironmentType::Cloud, Some(environment_info)) = (
+        &env.config.environment_type,
+        &env.config.cloud.environment_info,
+    ) else {
+        return Err(RestateCliError::bad_input(format!(
+            "The current profile \"{}\" is not a Restate Cloud environment, which `connect://` and --tunnel-name endpoints need",
+            env.profile
+        ))
+        .with_unformatted_next_step("restate cloud login", "select the Cloud environment")
+        .into());
+    };
+
+    let proxy_base_url = CloudClient::new(env)?
+        .describe_environment(
+            &environment_info.account_id,
+            &environment_info.environment_id,
+        )
+        .await?
+        .into_body()
+        .await?
+        .proxy_base_url;
+    let proxy_base_url = url::Url::from_str(&proxy_base_url)
+        .context("invalid proxy_base_url in describe environment response")?;
+    Ok((environment_info.environment_id.clone(), proxy_base_url))
+}
+
+/// `<proxy base URL>:9080/<environment id without env_>/<name>/http/in-process/9080/`:
+/// the URL of a service connected to the environment with the SDK's `connect()`. The port
+/// is always 9080, whatever `proxy_base_url` says.
+#[cfg(feature = "cloud")]
+fn connect_uri(proxy_base_url: &url::Url, environment_id: &str, name: &str) -> Result<Uri> {
+    let (scheme, host) = proxy_scheme_and_host(proxy_base_url)?;
+    Ok(Uri::builder()
+        .scheme(scheme)
+        .authority(format!("{host}:9080"))
+        .path_and_query(format!(
+            "/{}/{name}/http/in-process/9080/",
+            bare_environment_id(environment_id)?
+        ))
+        .build()?)
+}
+
+/// The URL of `destination` behind the `restate cloud tunnel` named `tunnel_name`.
+#[cfg(feature = "cloud")]
+fn tunnel_uri(
+    proxy_base_url: &url::Url,
+    environment_id: &str,
+    tunnel_name: &str,
+    destination: &Uri,
+) -> Result<Uri> {
+    let (scheme, host) = proxy_scheme_and_host(proxy_base_url)?;
+    // proxy base url doesn't currently have a port but may in future
+    let proxy_port = proxy_base_url.port().unwrap_or(9080);
+
+    let destination_scheme = destination
+        .scheme_str()
+        .context("tunneled URLs must have a scheme")?;
+    let destination_host = destination
+        .host()
+        .context("tunneled URLs must have a host")?;
+    let destination_port = match destination.port_u16() {
+        Some(port) => port,
+        None => match destination_scheme {
+            "http" => 80,
+            "https" => 443,
+            _ => bail!("tunneled URLs must have scheme http or https"),
+        },
+    };
+    let destination_path = destination.path();
+
+    Ok(Uri::builder()
+        .scheme(scheme)
+        .authority(format!("{host}:{proxy_port}"))
+        .path_and_query(format!(
+            "/{}/{tunnel_name}/{destination_scheme}/{destination_host}/{destination_port}{destination_path}",
+            bare_environment_id(environment_id)?
+        ))
+        .build()?)
+}
+
+#[cfg(feature = "cloud")]
+fn proxy_scheme_and_host(proxy_base_url: &url::Url) -> Result<(&str, &str)> {
+    let host = proxy_base_url
+        .host_str()
+        .context("proxy_base_url must have a host")?;
+    Ok((proxy_base_url.scheme(), host))
+}
+
+#[cfg(feature = "cloud")]
+fn bare_environment_id(environment_id: &str) -> Result<&str> {
+    environment_id
+        .strip_prefix("env_")
+        .with_context(|| format!("Unexpected environment ID format: {environment_id}"))
 }
 
 async fn register(
@@ -918,7 +990,7 @@ mod tests {
 
     use restate_admin_rest_model::version::AdminApiVersion;
 
-    use super::{Register, validate_gcp_auth_flags, validate_gcp_federation_support};
+    use super::*;
 
     const PROVIDER: &str =
         "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/r";
@@ -927,6 +999,49 @@ mod tests {
     struct RegisterCommand {
         #[clap(flatten)]
         register: Register,
+    }
+
+    #[cfg(feature = "cloud")]
+    #[test]
+    fn connect_endpoints_build_the_cloud_proxy_url() {
+        // Shared contract: `<proxyBaseUrl>:9080/<environment id without env_>/<name>/http/in-process/9080/`.
+        let proxy = url::Url::parse("https://tunnel.eu.restate.cloud").unwrap();
+        let env_id = "env_201k0yd4rz8yftmd4awh1bajg4v";
+        assert_eq!(
+            connect_uri(&proxy, env_id, "greeter-v1")
+                .unwrap()
+                .to_string(),
+            "https://tunnel.eu.restate.cloud:9080/201k0yd4rz8yftmd4awh1bajg4v/greeter-v1/http/in-process/9080/"
+        );
+        // The port-forward form keeps the destination.
+        let destination: Uri = "http://localhost:9080/".parse().unwrap();
+        assert_eq!(
+            tunnel_uri(&proxy, env_id, "greeter", &destination)
+                .unwrap()
+                .to_string(),
+            "https://tunnel.eu.restate.cloud:9080/201k0yd4rz8yftmd4awh1bajg4v/greeter/http/localhost/9080/"
+        );
+        assert!(connect_uri(&proxy, "201k", "greeter").is_err());
+    }
+
+    #[test]
+    fn connect_endpoints_parse_by_name() {
+        let parsed =
+            RegisterCommand::try_parse_from(["register", "connect://greeter-v1/"]).unwrap();
+        assert!(
+            matches!(&parsed.register.deployment, DeploymentEndpoint::Connect(name) if name == "greeter-v1")
+        );
+        assert_eq!(
+            parsed.register.deployment.cli_parameter_display(),
+            "connect://greeter-v1"
+        );
+        assert!(RegisterCommand::try_parse_from(["register", "connect://bad name"]).is_err());
+        assert!(RegisterCommand::try_parse_from(["register", "connect://"]).is_err());
+        // `tunnel://` stays a URL, rejected with guidance at run time as before.
+        let parsed = RegisterCommand::try_parse_from(["register", "tunnel://greeter"]).unwrap();
+        assert!(
+            matches!(&parsed.register.deployment, DeploymentEndpoint::Uri(uri) if uri.scheme_str() == Some("tunnel"))
+        );
     }
 
     #[test]

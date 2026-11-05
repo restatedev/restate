@@ -14,6 +14,7 @@ use super::CloudClient;
 use types::*;
 
 pub trait CloudClientInterface {
+    async fn get_user_identity(&self) -> reqwest::Result<Envelope<GetUserIdentityResponse>>;
     async fn list_accounts(&self) -> reqwest::Result<Envelope<ListAccountsResponse>>;
     async fn list_environments(
         &self,
@@ -24,9 +25,23 @@ pub trait CloudClientInterface {
         account_id: &str,
         environment_id: &str,
     ) -> reqwest::Result<Envelope<DescribeEnvironmentResponse>>;
+    async fn create_api_key(
+        &self,
+        account_id: &str,
+        request: CreateApiKeyRequest,
+    ) -> reqwest::Result<Envelope<CreateApiKeyResponse>>;
 }
 
 impl CloudClientInterface for CloudClient {
+    async fn get_user_identity(&self) -> reqwest::Result<Envelope<GetUserIdentityResponse>> {
+        let url = self
+            .base_url
+            .join("/cloud/GetUserIdentity")
+            .expect("Bad url!");
+
+        self.run(reqwest::Method::POST, url).await
+    }
+
     async fn list_accounts(&self) -> reqwest::Result<Envelope<ListAccountsResponse>> {
         let url = self.base_url.join("/cloud/ListAccounts").expect("Bad url!");
 
@@ -64,6 +79,20 @@ impl CloudClientInterface for CloudClient {
         )
         .await
     }
+
+    async fn create_api_key(
+        &self,
+        account_id: &str,
+        request: CreateApiKeyRequest,
+    ) -> reqwest::Result<Envelope<CreateApiKeyResponse>> {
+        let url = self
+            .base_url
+            .join(&format!("/cloud/{account_id}/CreateApiKey"))
+            .expect("Bad url!");
+
+        self.run_with_body(reqwest::Method::POST, url, request)
+            .await
+    }
 }
 
 pub mod types {
@@ -79,12 +108,21 @@ pub mod types {
     #[serde(rename_all = "camelCase")]
     pub struct DescribeEnvironmentResponse {
         pub environment_id: String,
+        pub region: String,
         pub name: String,
         pub ingress_base_url: String,
         pub admin_base_url: String,
         pub proxy_base_url: String,
         pub tunnel_srv: String,
         pub signing_public_key: String,
+    }
+
+    /// Who the access token belongs to.
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct GetUserIdentityResponse {
+        pub user_id: String,
+        pub email: Option<String>,
     }
 
     #[derive(Deserialize)]
@@ -97,6 +135,25 @@ pub mod types {
     pub struct ListAccountsResponseAccountsItem {
         pub account_id: String,
         pub name: String,
+    }
+
+    #[derive(Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct CreateApiKeyRequest {
+        pub environment_id: String,
+        /// A `rst:role::…` role id.
+        pub role_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub description: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct CreateApiKeyResponse {
+        pub key_id: String,
+        pub role_id: String,
+        /// The key itself, only ever returned here.
+        pub api_key: String,
     }
 
     #[derive(Deserialize)]
