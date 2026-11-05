@@ -14,7 +14,5 @@ proc-macro = true
 quote = {workspace = true}
 syn = { workspace = true, features = ["full", "extra-traits"] }
 
-restate-workspace-hack = { workspace = true }
-
 [lints]
 workspace = true

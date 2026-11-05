@@ -1862,7 +1862,6 @@ version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
- "restate-workspace-hack",
  "syn 3.0.6",
 ]
 
@@ -7807,7 +7806,6 @@ version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
- "restate-workspace-hack",
  "syn 3.0.6",
 ]
 
@@ -7884,7 +7882,6 @@ name = "restate-encoding-derive"
 version = "0.1.0"
 dependencies = [
  "quote",
- "restate-workspace-hack",
  "syn 3.0.6",
 ]
 
@@ -9362,6 +9359,7 @@ dependencies = [
  "num-traits",
  "once_cell",
  "petgraph",
+ "portable-atomic",
  "pprof_util",
  "proc-macro2",
  "prost",
