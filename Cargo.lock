@@ -9102,6 +9102,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-util-sql"
+version = "1.8.2-dev"
+dependencies = [
+ "datafusion",
+ "restate-util-string",
+ "restate-workspace-hack",
+]
+
+[[package]]
 name = "restate-util-string"
 version = "1.8.2-dev"
 dependencies = [
