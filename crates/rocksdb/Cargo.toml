@@ -25,6 +25,7 @@ restate-util-random = { workspace = true }
 restate-util-time = { workspace = true }
 
 anyhow = { workspace = true }
+async-channel = { workspace = true }
 bytes = { workspace = true }
 codederror = { workspace = true }
 derive_builder = { workspace = true }
@@ -39,7 +40,6 @@ slotmap = { workspace = true }
 static_assertions = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
-threadpool = { version = "1.8" }
 tokio = { workspace = true, features = ["fs"] }
 tokio-util = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
@@ -52,6 +52,12 @@ tikv-jemalloc-sys = { workspace = true }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
+
+criterion = { workspace = true }
+
+[[bench]]
+name = "executor_dispatch"
+harness = false
 
 [lints]
 workspace = true
