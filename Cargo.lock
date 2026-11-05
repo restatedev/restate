@@ -1216,9 +1216,9 @@ dependencies = [
 
 [[package]]
 name = "bilrost"
-version = "0.1016.1"
+version = "0.1016.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7889f8fca3d341b7c2a3fdb13e4579c4a039b7dc5e81231a93d21c61ce3150e3"
+checksum = "5c161b326376ba554d9f3e5336ed8e08a6e6c5c899a7ac538887380b461b7b46"
 dependencies = [
  "autocfg",
  "bilrost-derive",
@@ -1229,15 +1229,15 @@ dependencies = [
 
 [[package]]
 name = "bilrost-derive"
-version = "0.1016.1"
+version = "0.1016.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c9d8b804c1beeeeebcf8cd81099f4d80a88ab8545ac9536876cc7e38e6993ef"
+checksum = "d70f15fe0aca4a9cc60d5dc6f35d4560f403b20cf35fda7c9db1240e053dbe45"
 dependencies = [
  "eyre",
  "itertools 0.15.0",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -9973,6 +9973,7 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
+ "indexmap 2.14.2",
  "itoa",
  "memchr",
  "serde",
