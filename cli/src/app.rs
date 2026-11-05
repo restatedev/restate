@@ -213,6 +213,9 @@ pub enum Command {
     ))]
     State(state::ServiceState),
 
+    Curl(http_tools::Curl),
+    Http(http_tools::Http),
+
     #[clap(subcommand)]
     Completions(Completions),
 
