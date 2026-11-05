@@ -123,6 +123,7 @@ Triggered on: PRs, pushes to `main`, `release/*`, and `hotfix/*` branches, and a
 | `workspace-hack-check` | warp-ubuntu-latest-x64-4x | Verifies `cargo-hakari` workspace-hack is up to date |
 | `build-and-test` | warp-ubuntu-latest-x64-16x | Runs `just verify` (lint + test + doctest) |
 | `docker` | warp-ubuntu-latest-x64-16x | Builds Docker image, uploads as tarball artifact |
+| `docker-pr-cache` | warp-ubuntu-latest-x64-16x | Main pushes only. Builds the `release-lite` dependency layer (the `builder` stage) that PR `docker` builds restore from the cache |
 
 **Integration Tests** (run after docker build):
 
@@ -136,6 +137,8 @@ Triggered on: PRs, pushes to `main`, `release/*`, and `hotfix/*` branches, and a
 | `e2e` | End-to-end tests from `restatedev/e2e` |
 
 Experimental feature tests (`e2e-vqueues`, `e2e-experimental-kafka-ingestion`, etc.) run with `continue-on-error: true` and don't block merges.
+
+A new push to a PR cancels that PR's CI run that is still in progress.
 
 ### Docker Image Artifact Flow
 
@@ -198,11 +201,17 @@ A **reusable workflow** called by this repo and many others in the restatedev or
 - `pushToDockerHub`: Push to Docker Hub in addition to GHCR
 - `profile`: Select which Cargo profile to build
 - `runnerSize`: Select a `16x` or `32x` runner; `auto` uses `32x` for Parca builds and `16x` otherwise
+- `cacheOnly`: Only build the `builder` stage (dependencies) and export it to the build cache. No image is built or pushed
+- `cacheReadOnly`: Read the build cache without exporting to it
+
+`cacheOnly` and `cacheReadOnly` can only be set through `workflow_call`. `workflow_dispatch` is at GitHub's 10-input limit.
 
 **Build optimizations:**
-- Uses `sccache` with WarpBuild cache
+- Uses `sccache` with WarpBuild cache, keyed by Cargo profile and `Cargo.lock`
 - Multi-platform builds via Docker Buildx
-- Caches layers via WarpBuild's GHA cache proxy
+- Caches layers via WarpBuild's GHA cache proxy. Each Cargo profile has its own cache scope. `release` uses the default `buildkit` scope, and other profiles use `buildkit-<profile>`
+- PRs build with `release-lite` and only read the layer cache. `docker-pr-cache` keeps their dependency layer warm on `main`
+- Manually dispatched runs only read the layer cache. That includes CI runs started by hand, since `docker.yml` sees its caller's event. Parca builds don't export it either
 
 ### Release Workflow (`release.yml`)
 
