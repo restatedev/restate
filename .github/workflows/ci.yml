@@ -17,13 +17,13 @@ on:
       # Keep CI on existing maintenance branches during the naming transition.
       - release-*
 
-# One run per PR branch: a new push cancels the older run. Some pushes also start two
+# One run per PR: a new push cancels the older run. Some pushes also start two
 # `pull_request` runs for the same commit at once; this keeps only one of them.
 # Other events get a unique group, so they never wait on or cancel each other.
 # `github.workflow` is the caller's name when Release calls this workflow, which keeps
 # that run from cancelling the PR's own CI run.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.run_id }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
