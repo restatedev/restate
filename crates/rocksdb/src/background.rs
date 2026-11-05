@@ -19,8 +19,9 @@ use futures::task::{LocalFutureObj, LocalSpawn};
 use metrics::{Gauge, gauge, histogram};
 use tracing::Instrument;
 
-use restate_core::io::{AdmissionClosed, Gate, IoExecutor, IoOp, IoTask, TrackedTask};
+use restate_core::io::{AdmissionClosed, FutureTask, Gate, IoExecutor, IoOp, IoTask, TrackedTask};
 
+use crate::RocksDbPerfExt;
 use crate::metric_definitions::{STORAGE_BG_TASK_RUN_DURATION, STORAGE_BG_TASK_WAIT_DURATION};
 use crate::{EXECUTOR, OP_TYPE, STORAGE_BG_TASK_IN_FLIGHT};
 
@@ -89,7 +90,22 @@ pub trait OpContext {
     fn into_owned(self) -> Self::Owned;
 }
 
-/// The work of a [`StorageOp`].
+/// The work of a [`StorageOp`], as it runs on a storage worker with the owned
+/// context. The future need not be `Send`: it stays on one worker.
+///
+/// There is no need to implement it. Sync work ([`SyncOpFn`]) also
+/// implements it, as async work that finishes in a single poll, and
+/// [`StorageOp::with_context_async`] takes async work.
+pub trait OpFn<C: OpContext>: Send + 'static {
+    /// What the work returns.
+    type Output;
+
+    /// Runs the work with the owned context, on a storage worker.
+    fn run_async(self, context: C::Owned) -> impl Future<Output = Self::Output>;
+}
+
+/// The synchronous work of a [`StorageOp`], which can also run on the calling
+/// thread, with [`StorageOp::call`].
 ///
 /// The work gets the operation's context: borrowed when the operation runs on
 /// the calling thread ([`Self::run`]), or owned when it runs on a background
@@ -100,10 +116,7 @@ pub trait OpContext {
 /// every kind of context, and take what the table in [`OpContext`] lists:
 /// `FnOnce(&C)` for a shared handle, `FnOnce(&mut ReadIterator<'_, H>)` for an
 /// iterator, and `FnOnce()` for no context.
-pub trait OpFn<C: OpContext>: Send + 'static {
-    /// What the work returns.
-    type Output;
-
+pub trait SyncOpFn<C: OpContext>: OpFn<C> {
     /// Runs the work with the borrowed context, on the calling thread.
     fn run(self, context: C) -> Self::Output;
 
@@ -119,18 +132,28 @@ impl<C: Clone + Send + Sync + 'static> OpContext for &C {
     }
 }
 
-impl<'a, C, F, R> OpFn<&'a C> for F
+impl<'a, C, F, R> SyncOpFn<&'a C> for F
+where
+    C: Clone + Send + Sync + 'static,
+    F: FnOnce(&C) -> R + Send + 'static,
+{
+    fn run(self, context: &'a C) -> R {
+        self(context)
+    }
+
+    fn run_owned(self, context: C) -> R {
+        self(&context)
+    }
+}
+
+impl<C, F, R> OpFn<&C> for F
 where
     C: Clone + Send + Sync + 'static,
     F: FnOnce(&C) -> R + Send + 'static,
 {
     type Output = R;
 
-    fn run(self, context: &'a C) -> R {
-        self(context)
-    }
-
-    fn run_owned(self, context: C) -> R {
+    async fn run_async(self, context: C) -> R {
         self(&context)
     }
 }
@@ -141,17 +164,26 @@ impl OpContext for () {
     fn into_owned(self) {}
 }
 
+impl<F, R> SyncOpFn<()> for F
+where
+    F: FnOnce() -> R + Send + 'static,
+{
+    fn run(self, (): ()) -> R {
+        self()
+    }
+
+    fn run_owned(self, (): ()) -> R {
+        self()
+    }
+}
+
 impl<F, R> OpFn<()> for F
 where
     F: FnOnce() -> R + Send + 'static,
 {
     type Output = R;
 
-    fn run(self, (): ()) -> R {
-        self()
-    }
-
-    fn run_owned(self, (): ()) -> R {
+    async fn run_async(self, (): ()) -> R {
         self()
     }
 }
@@ -275,7 +307,48 @@ where
     }
 }
 
-impl<'a, C: OpContext, F: OpFn<C>> StorageOp<'a, C, F> {
+impl<'a, 'c, C, F> StorageOp<'a, &'c C, Async<F>>
+where
+    C: Clone + Send + Sync + 'static,
+{
+    /// Like [`Self::with_context`], but for async work, such as a read that
+    /// awaits a channel between lookups.
+    ///
+    /// Async work only runs on a storage worker, so the operation can't be
+    /// called inline with [`StorageOp::call`]: submit it to an executor. The
+    /// worker runs other tasks while it waits, so use
+    /// [`StorageOp::with_read_perf`] rather than [`StorageOp::with_guard`] for
+    /// RocksDB perf counters.
+    ///
+    /// ```no_run
+    /// use restate_core::io::IoExecutor;
+    /// use restate_rocksdb::reads::ColumnFamilies;
+    /// use restate_rocksdb::{RocksDb, StorageOp, StorageTaskKind};
+    /// use restate_util_lifecycle::Scope;
+    ///
+    /// # async fn example<C: ColumnFamilies>(db: &RocksDb, scope: &Scope<C>) -> Result<(), Box<dyn std::error::Error>> {
+    /// let read = StorageOp::with_context_async(scope, scope.gate(), StorageTaskKind::MultiGet, async |scope| {
+    ///     scope.name().to_owned()
+    /// })
+    /// .with_read_perf("lookup");
+    /// let name = db.executor().low_pri().spawn(read)?.await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_context_async<R>(
+        context: &'c C,
+        gate: &'a Arc<Gate>,
+        kind: StorageTaskKind,
+        op: F,
+    ) -> Self
+    where
+        F: AsyncFnOnce(&C) -> R + Send + 'static,
+    {
+        Self::from_parts(context, gate, kind, Async(op))
+    }
+}
+
+impl<'a, C, F> StorageOp<'a, C, F> {
     // An operation on any kind of context, counted in `gate`.
     pub(crate) fn from_parts(
         context: C,
@@ -290,7 +363,28 @@ impl<'a, C: OpContext, F: OpFn<C>> StorageOp<'a, C, F> {
             kind,
         }
     }
+}
 
+impl<'a, C: OpContext, F: OpFn<C>> StorageOp<'a, C, F> {
+    /// Measures RocksDB read perf counters while the work runs, also across
+    /// `.await` points, and reports them under `name` when it finishes.
+    pub fn with_read_perf(self, name: &'static str) -> StorageOp<'a, C, ReadPerf<F>> {
+        let Self {
+            context,
+            op,
+            gate,
+            kind,
+        } = self;
+        StorageOp {
+            context,
+            op: ReadPerf { op, name },
+            gate,
+            kind,
+        }
+    }
+}
+
+impl<'a, C: OpContext, F: SyncOpFn<C>> StorageOp<'a, C, F> {
     /// Calls `make_guard` on the thread that runs the operation, right before it
     /// runs, and drops the guard right after, also if the operation panics. Use it
     /// for setup that must happen on that thread, like RocksDB perf counters. The
@@ -422,7 +516,7 @@ impl<'a, C: OpContext, F: OpFn<C>> StorageOp<'a, C, F> {
     /// ```
     pub fn map_ok<T, E, U, M>(self, f: M) -> StorageOp<'a, C, MappedOk<F, M>>
     where
-        F: OpFn<C, Output = Result<T, E>>,
+        F: SyncOpFn<C, Output = Result<T, E>>,
         M: FnOnce(T) -> U + Send + 'static,
     {
         let Self {
@@ -447,6 +541,21 @@ pub struct Mapped<F, M> {
     f: M,
 }
 
+impl<C, F, M, U> SyncOpFn<C> for Mapped<F, M>
+where
+    C: OpContext,
+    F: SyncOpFn<C>,
+    M: FnOnce(F::Output) -> U + Send + 'static,
+{
+    fn run(self, context: C) -> U {
+        (self.f)(self.op.run(context))
+    }
+
+    fn run_owned(self, context: C::Owned) -> U {
+        (self.f)(self.op.run_owned(context))
+    }
+}
+
 impl<C, F, M, U> OpFn<C> for Mapped<F, M>
 where
     C: OpContext,
@@ -455,12 +564,8 @@ where
 {
     type Output = U;
 
-    fn run(self, context: C) -> U {
-        (self.f)(self.op.run(context))
-    }
-
-    fn run_owned(self, context: C::Owned) -> U {
-        (self.f)(self.op.run_owned(context))
+    async fn run_async(self, context: C::Owned) -> U {
+        (self.f)(self.op.run_async(context).await)
     }
 }
 
@@ -471,14 +576,12 @@ pub struct MappedOk<F, M> {
     f: M,
 }
 
-impl<C, F, M, T, E, U> OpFn<C> for MappedOk<F, M>
+impl<C, F, M, T, E, U> SyncOpFn<C> for MappedOk<F, M>
 where
     C: OpContext,
-    F: OpFn<C, Output = Result<T, E>>,
+    F: SyncOpFn<C, Output = Result<T, E>>,
     M: FnOnce(T) -> U + Send + 'static,
 {
-    type Output = Result<U, E>;
-
     fn run(self, context: C) -> Result<U, E> {
         self.op.run(context).map(self.f)
     }
@@ -488,15 +591,45 @@ where
     }
 }
 
+impl<C, F, M, T, E, U> OpFn<C> for MappedOk<F, M>
+where
+    C: OpContext,
+    F: OpFn<C, Output = Result<T, E>>,
+    M: FnOnce(T) -> U + Send + 'static,
+{
+    type Output = Result<U, E>;
+
+    async fn run_async(self, context: C::Owned) -> Result<U, E> {
+        self.op.run_async(context).await.map(self.f)
+    }
+}
+
 /// The work of an operation returned by [`StorageOp::with_guard`]: the
 /// original work, run while the guard exists.
 ///
-/// It's a named type, rather than an `impl OpFn`, so that async code holding a
+/// It's a named type, rather than an `impl SyncOpFn`, so that async code holding a
 /// prepared operation stays `Send`. The compiler can't always prove that for
 /// an opaque type that carries the lifetime of a borrowed context.
 pub struct Guarded<F, M> {
     op: F,
     make_guard: M,
+}
+
+impl<C, F, G, M> SyncOpFn<C> for Guarded<F, M>
+where
+    C: OpContext,
+    F: SyncOpFn<C>,
+    M: FnOnce() -> G + Send + 'static,
+{
+    fn run(self, context: C) -> F::Output {
+        let _guard = (self.make_guard)();
+        self.op.run(context)
+    }
+
+    fn run_owned(self, context: C::Owned) -> F::Output {
+        let _guard = (self.make_guard)();
+        self.op.run_owned(context)
+    }
 }
 
 impl<C, F, G, M> OpFn<C> for Guarded<F, M>
@@ -507,14 +640,39 @@ where
 {
     type Output = F::Output;
 
-    fn run(self, context: C) -> F::Output {
+    async fn run_async(self, context: C::Owned) -> F::Output {
         let _guard = (self.make_guard)();
-        self.op.run(context)
+        self.op.run_async(context).await
     }
+}
 
-    fn run_owned(self, context: C::Owned) -> F::Output {
-        let _guard = (self.make_guard)();
-        self.op.run_owned(context)
+/// Async work, from [`StorageOp::with_context_async`].
+pub struct Async<F>(F);
+
+impl<C, F, R> OpFn<&C> for Async<F>
+where
+    C: Clone + Send + Sync + 'static,
+    F: AsyncFnOnce(&C) -> R + Send + 'static,
+{
+    type Output = R;
+
+    async fn run_async(self, context: C) -> R {
+        (self.0)(&context).await
+    }
+}
+
+/// The work of an operation returned by [`StorageOp::with_read_perf`]: the
+/// original work, with its RocksDB read perf counters measured.
+pub struct ReadPerf<F> {
+    op: F,
+    name: &'static str,
+}
+
+impl<C: OpContext, F: OpFn<C>> OpFn<C> for ReadPerf<F> {
+    type Output = F::Output;
+
+    async fn run_async(self, context: C::Owned) -> F::Output {
+        self.op.run_async(context).with_read_perf(self.name).await
     }
 }
 
@@ -545,11 +703,14 @@ where
         let op = self.op;
         // The lease is released after the operation and its context are dropped,
         // even if the task is dropped without running.
-        Ok(TrackedTask::new(move || op.run_owned(context), lease))
+        Ok(TrackedTask::new(
+            FutureTask(move || op.run_async(context)),
+            lease,
+        ))
     }
 }
 
-impl<C: OpContext, F: OpFn<C>> StorageOp<'_, C, F> {
+impl<C: OpContext, F: SyncOpFn<C>> StorageOp<'_, C, F> {
     /// Runs the operation now, on the current thread, with its context still
     /// borrowed. Fails with [`AdmissionClosed`] if the database (or scope) is
     /// sealed. Unlike background tasks, it records no task metrics or tracing
