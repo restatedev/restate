@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn control_overrides_merge_into_networking_options() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = restate_test_util::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         std::fs::write(
             &path,

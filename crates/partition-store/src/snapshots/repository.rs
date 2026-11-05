@@ -21,19 +21,22 @@ use object_store::{
     MultipartUpload, ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion,
 };
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
+use serde_with::{DefaultOnError, DisplayFromStr, FromInto, serde_as};
 use tempfile::TempDir;
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio_util::io::StreamReader;
+use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, Span, debug, info, instrument, warn};
 use url::Url;
 
 use restate_clock::WallClock;
 use restate_core::Metadata;
+use restate_memory::ByteCount;
 use restate_object_store_util::create_object_store_client;
+use restate_types::GenerationalNodeId;
 use restate_types::config::SnapshotsOptions;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::{LogId, Lsn};
@@ -41,7 +44,8 @@ use restate_types::nodes_config::ClusterFingerprint;
 use restate_types::time::MillisSinceEpoch;
 
 use super::{
-    LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotDir, SnapshotFormatVersion,
+    LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotCompatibility, SnapshotDir,
+    SnapshotFormatVersion,
 };
 use crate::metric_definitions::{SNAPSHOT_DOWNLOAD_BYTES, SNAPSHOT_UPLOAD_BYTES};
 
@@ -117,6 +121,24 @@ pub struct LatestSnapshot {
     /// The relative path within the snapshot repository where the snapshot data is stored.
     pub path: String,
 
+    // The next fields, here and on each retained snapshot, are `None` when unknown. Servers that
+    // predate them drop them when they publish a snapshot, both for that snapshot and for the
+    // retained ones, so they are never carried over from a different snapshot.
+    /// Generational id of the node that produced the snapshot.
+    #[serde_as(as = "DefaultOnError<Option<DisplayFromStr>>")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<GenerationalNodeId>,
+
+    /// What a server needs in order to use the snapshot's data.
+    #[serde_as(deserialize_as = "DefaultOnError")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility: Option<SnapshotCompatibility>,
+
+    /// Total size of the snapshot's data files, written as a number of bytes.
+    #[serde_as(as = "DefaultOnError<Option<FromInto<u64>>>")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_size_in_bytes: Option<ByteCount>,
+
     /// Retained snapshots ordered by descending applied LSN (newest snapshot first). Pruning
     /// depends on correct ordering. Introduced in V2.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -131,6 +153,18 @@ pub struct SnapshotReference {
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
     pub created_at: jiff::Timestamp,
     pub path: String,
+    /// Generational id of the node that produced the snapshot.
+    #[serde_as(as = "DefaultOnError<Option<DisplayFromStr>>")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<GenerationalNodeId>,
+    /// What a server needs in order to use the snapshot's data.
+    #[serde_as(deserialize_as = "DefaultOnError")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility: Option<SnapshotCompatibility>,
+    /// Total size of the snapshot's data files, written as a number of bytes.
+    #[serde_as(as = "DefaultOnError<Option<FromInto<u64>>>")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_size_in_bytes: Option<ByteCount>,
 }
 
 impl SnapshotReference {
@@ -140,6 +174,9 @@ impl SnapshotReference {
             min_applied_lsn: snapshot.min_applied_lsn,
             created_at: snapshot.created_at,
             path: UniqueSnapshotKey::from_metadata(snapshot).padded_key(),
+            node_id: snapshot.node_id,
+            compatibility: snapshot.compatibility.clone(),
+            data_size_in_bytes: Some(snapshot.data_size_in_bytes()),
         }
     }
 }
@@ -158,6 +195,9 @@ impl LatestSnapshot {
                     min_applied_lsn: self.min_applied_lsn,
                     created_at: self.created_at,
                     path: self.path.clone(),
+                    node_id: self.node_id,
+                    compatibility: self.compatibility.clone(),
+                    data_size_in_bytes: self.data_size_in_bytes,
                 }]
             }
         } else {
@@ -206,6 +246,10 @@ pub struct PartitionSnapshotStatus {
     pub latest_snapshot_id: SnapshotId,
     pub log_id: LogId,
     pub latest_snapshot_created_at: MillisSinceEpoch,
+    /// What a server needs in order to use the latest snapshot's data, if known.
+    pub latest_snapshot_compatibility: Option<SnapshotCompatibility>,
+    /// Total size of the latest snapshot's data files, if known.
+    pub latest_snapshot_data_size_in_bytes: Option<ByteCount>,
 }
 
 impl PartitionSnapshotStatus {
@@ -218,6 +262,8 @@ impl PartitionSnapshotStatus {
             latest_snapshot_id: SnapshotId::INVALID,
             log_id,
             latest_snapshot_created_at: WallClock::recent_ms(),
+            latest_snapshot_compatibility: None,
+            latest_snapshot_data_size_in_bytes: None,
         }
     }
 }
@@ -274,6 +320,8 @@ impl TryFrom<&LatestSnapshot> for PartitionSnapshotStatus {
             latest_snapshot_created_at,
             latest_snapshot_id: latest.snapshot_id,
             log_id,
+            latest_snapshot_compatibility: latest.compatibility.clone(),
+            latest_snapshot_data_size_in_bytes: latest.data_size_in_bytes,
         })
     }
 }
@@ -591,6 +639,10 @@ impl SnapshotRepository {
             snapshot_id: snapshot.snapshot_id,
             min_applied_lsn: snapshot.min_applied_lsn,
             path: new_snapshot_ref.path,
+            // Taken from the new snapshot alone, never from `current`.
+            node_id: new_snapshot_ref.node_id,
+            compatibility: new_snapshot_ref.compatibility,
+            data_size_in_bytes: new_snapshot_ref.data_size_in_bytes,
             retained_snapshots,
         };
 
@@ -694,6 +746,9 @@ impl SnapshotRepository {
 
     /// Discover and download the latest snapshot available. It is the caller's responsibility
     /// to delete the snapshot directory when it is no longer needed.
+    ///
+    /// If `cancellation` fires mid-download, in-flight downloads are aborted and drained before
+    /// the staging directory is removed, and an error is returned.
     #[instrument(
         name = "get-latest-snapshot",
         level = "error",
@@ -703,6 +758,7 @@ impl SnapshotRepository {
     pub async fn get_latest(
         &self,
         partition_id: PartitionId,
+        cancellation: &CancellationToken,
     ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
         use crate::metric_definitions::{
             SNAPSHOT_DOWNLOAD_DURATION, SNAPSHOT_DOWNLOAD_FAILED, SNAPSHOT_DOWNLOAD_INFLIGHT,
@@ -710,9 +766,9 @@ impl SnapshotRepository {
 
         let _inflight = InflightGuard::new(metrics::gauge!(SNAPSHOT_DOWNLOAD_INFLIGHT));
         let start = tokio::time::Instant::now();
-        let result = self.get_latest_inner(partition_id).await;
+        let result = self.get_latest_inner(partition_id, cancellation).await;
 
-        if result.is_err() {
+        if result.is_err() && !cancellation.is_cancelled() {
             metrics::counter!(SNAPSHOT_DOWNLOAD_FAILED).increment(1);
         }
         metrics::histogram!(SNAPSHOT_DOWNLOAD_DURATION).record(start.elapsed());
@@ -723,6 +779,7 @@ impl SnapshotRepository {
     async fn get_latest_inner(
         &self,
         partition_id: PartitionId,
+        cancellation: &CancellationToken,
     ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
         let latest_path = self.latest_snapshot_pointer_path(partition_id);
 
@@ -862,7 +919,15 @@ impl SnapshotRepository {
         }
 
         loop {
-            match downloads.join_next().await {
+            let next = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => {
+                    abort_tasks(downloads).await;
+                    bail!("Snapshot download cancelled");
+                }
+                next = downloads.join_next() => next,
+            };
+            match next {
                 None => {
                     debug!(snapshot_id = %snapshot_metadata.snapshot_id, "All download tasks completed");
                     break;
@@ -899,6 +964,7 @@ impl SnapshotRepository {
             db_comparator_name: snapshot_metadata.db_comparator_name,
             files: snapshot_metadata.files,
             key_range: snapshot_metadata.key_range,
+            compatibility: snapshot_metadata.compatibility,
         }))
     }
 
@@ -1145,6 +1211,10 @@ async fn abort_tasks<T: 'static>(mut join_set: JoinSet<T>) {
 }
 
 #[cfg(test)]
+#[path = "compatibility_tests.rs"]
+mod compatibility_tests;
+
+#[cfg(test)]
 mod tests {
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
@@ -1157,6 +1227,7 @@ mod tests {
     use object_store::{ObjectStoreExt, PutPayload};
     use tempfile::TempDir;
     use tokio::io::AsyncWriteExt;
+    use tokio_util::sync::CancellationToken;
     use tracing::info;
     use url::Url;
 
@@ -1169,11 +1240,14 @@ mod tests {
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
     use restate_types::retries::RetryPolicy;
     use restate_types::sharding::KeyRange;
+    use restate_types::{GenerationalNodeId, SemanticRestateVersion};
 
     use crate::snapshots::repository::{LatestSnapshotVersion, SnapshotUploadProgress};
 
     use super::{LatestSnapshot, SnapshotReference, SnapshotRepository, UniqueSnapshotKey};
-    use super::{PartitionSnapshotMetadata, SnapshotDir, SnapshotFormatVersion};
+    use super::{
+        PartitionSnapshotMetadata, SnapshotCompatibility, SnapshotDir, SnapshotFormatVersion,
+    };
 
     #[restate_core::test]
     async fn overwrite_unparsable_latest() -> anyhow::Result<()> {
@@ -1288,7 +1362,8 @@ mod tests {
             ..SnapshotsOptions::default()
         };
 
-        let repository = SnapshotRepository::new_from_config(&opts, tempdir()?.keep())
+        let staging_dir = tempdir()?.keep();
+        let repository = SnapshotRepository::new_from_config(&opts, staging_dir.clone())
             .await?
             .unwrap();
 
@@ -1349,7 +1424,21 @@ mod tests {
         let (expected_latest2, _) = repository.build_latest_v2(&snapshot2, None)?;
         assert_eq!(expected_latest2, latest);
 
-        let latest = repository.get_latest(PartitionId::MIN).await?.unwrap();
+        // A cancelled download fails and leaves nothing behind in the staging directory.
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert!(
+            repository
+                .get_latest(PartitionId::MIN, &cancelled)
+                .await
+                .is_err()
+        );
+        assert!(std::fs::read_dir(&staging_dir)?.next().is_none());
+
+        let latest = repository
+            .get_latest(PartitionId::MIN, &CancellationToken::new())
+            .await?
+            .unwrap();
         assert_eq!(latest.min_applied_lsn, snapshot2.min_applied_lsn);
         let local_path = latest.base_dir.path().to_string_lossy().to_string();
 
@@ -1398,6 +1487,7 @@ mod tests {
                 m.nodes_config_ref().cluster_fingerprint()
             }),
             node_name: "node".to_string(),
+            node_id: Some(GenerationalNodeId::new(1, 1)),
             partition_id: PartitionId::MIN,
             created_at: jiff::Timestamp::now(),
             snapshot_id: SnapshotId::new(),
@@ -1405,6 +1495,11 @@ mod tests {
             log_id: LogId::MIN,
             min_applied_lsn: Lsn::new(1),
             db_comparator_name: "leveldb.BytewiseComparator".to_string(),
+            compatibility: Some(SnapshotCompatibility {
+                min_restate_version: SemanticRestateVersion::new(1, 7, 9),
+                storage_features: vec!["scoped-state-table".into()],
+                partition_features: vec!["journal_v2".into()],
+            }),
             files: vec![rocksdb::LiveFile {
                 column_family_name: "data-0".to_owned(),
                 name: file_name,
@@ -1543,6 +1638,9 @@ mod tests {
             created_at: snapshot.created_at,
             min_applied_lsn: snapshot.min_applied_lsn,
             path: UniqueSnapshotKey::from_metadata(&snapshot).padded_key(),
+            node_id: None,
+            compatibility: None,
+            data_size_in_bytes: None,
             retained_snapshots: vec![],
         };
 
@@ -1741,24 +1839,36 @@ mod tests {
             snapshot_id: SnapshotId::new(),
             min_applied_lsn: Lsn::new(3484), // This is the newest snapshot
             path: "newest".to_string(),
+            node_id: None,
+            compatibility: None,
+            data_size_in_bytes: None,
             retained_snapshots: vec![
                 SnapshotReference {
                     snapshot_id: SnapshotId::new(),
                     min_applied_lsn: Lsn::new(3484), // Newest (index 0)
                     created_at: Timestamp::from_second(2).unwrap(),
                     path: "snap1".to_string(),
+                    node_id: None,
+                    compatibility: None,
+                    data_size_in_bytes: None,
                 },
                 SnapshotReference {
                     snapshot_id: SnapshotId::new(),
                     min_applied_lsn: Lsn::new(1342), // Oldest by LSN but at index 1
                     created_at: Timestamp::from_second(0).unwrap(),
                     path: "snap3".to_string(),
+                    node_id: None,
+                    compatibility: None,
+                    data_size_in_bytes: None,
                 },
                 SnapshotReference {
                     snapshot_id: SnapshotId::new(),
                     min_applied_lsn: Lsn::new(2839), // Middle LSN at index 2
                     created_at: Timestamp::from_second(1).unwrap(),
                     path: "snap2".to_string(),
+                    node_id: None,
+                    compatibility: None,
+                    data_size_in_bytes: None,
                 },
             ],
         };
@@ -1811,6 +1921,7 @@ mod tests {
             db_comparator_name: "leveldb.BytewiseComparator".to_owned(),
             files: vec![],
             key_range: KeyRange::new(0, 100),
+            compatibility: None,
         }
     }
 

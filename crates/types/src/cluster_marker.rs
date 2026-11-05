@@ -357,6 +357,12 @@ fn mark_cluster_as_provisioned_inner(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::fs::OpenOptions;
+    use std::path::Path;
+
+    use restate_test_util::tempdir;
+
     use crate::SemanticRestateVersion;
     use crate::cluster_marker::{
         CLUSTER_MARKER_FILE_NAME, COMPATIBILITY_INFORMATION, ClusterMarker, ClusterValidationError,
@@ -364,10 +370,6 @@ mod tests {
         validate_and_update_cluster_marker_inner,
     };
     use crate::nodes_config::ClusterFingerprint;
-    use std::fs;
-    use std::fs::OpenOptions;
-    use std::path::Path;
-    use tempfile::tempdir;
 
     fn read_cluster_marker(path: impl AsRef<Path>) -> anyhow::Result<ClusterMarker> {
         let bytes = fs::read(path)?;

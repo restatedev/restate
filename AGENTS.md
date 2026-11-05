@@ -53,6 +53,7 @@ If these rules conflict with normal behavior, always follow the rules above.
 1. New or deprecated config options must have `/// Since vX.Y.Z` in their doc comment.
 1. Use `ByteCount::from(value)` (from `restate_memory`) when displaying byte sizes in errors/logs.
 1. Use `KeyRange` (from `restate_sharding`, re-exported via `restate_types::sharding::KeyRange`) instead of `std::ops::RangeInclusive<PartitionKey>` for partition key ranges. `KeyRange` is `Copy`, 16 bytes (vs 24), and has wire-compatible serde/bilrost encoding.
+1. In tests, create temporary directories with `restate_test_util::tempdir()` instead of the `tempfile` crate (`tempfile::tempdir()`, `TempDir::new()`). Its directories are removed when the test process exits even if destructors don't run, e.g. when a failing `#[restate_core::test]` exits the process from its panic hook.
 
 
 # Validation Before Committing Changes
@@ -64,6 +65,7 @@ After making code changes, always run the following validation steps before comm
 4. **Lint check** (if you modified Rust files): Run `cargo clippy --all-features --all-targets --workspace -- -D warnings` to check for lint warnings.
 5. **Deny check** (if you modified Cargo.toml or Cargo.lock): Run `cargo deny --all-features check` to check for license and security issues.
 6. If you are making changes to Cargo.toml files, make sure to also regenerate workspace-hack (cargo hakari generate)
+7. When adding a proc-macro crate (`proc-macro = true`) to the workspace, add it to `[traversal-excludes] workspace-members` in `.config/hakari.toml` and run `cargo hakari manage-deps` so it doesn't depend on `restate-workspace-hack`. Proc macros are built for the host; depending on workspace-hack makes every build compile the whole workspace-hack a second time.
 
 When renaming or changing trait methods, function signatures, or public APIs, search the entire codebase
 for all usages to ensure they are all updated consistently. Use `grep`, `rg`, or similar tools to find all

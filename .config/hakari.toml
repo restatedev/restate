@@ -8,6 +8,11 @@ workspace-hack-line-style = "workspace-dotted"
 dep-format-version = "4"
 resolver = "2"
 
+# Only unify features for dependencies that are built for both build scripts/proc macros and
+# the target. The default replicates every hoisted dependency into `[build-dependencies]`, which
+# compiles the whole workspace-hack a second time for build scripts.
+unify-target-host = "unify-if-both"
+
 # Add triples corresponding to platforms commonly used by developers here.
 # https://doc.rust-lang.org/rustc/platform-support.html
 platforms = [
@@ -19,7 +24,14 @@ platforms = [
 # exact-versions = true
 
 [traversal-excludes]
-workspace-members = ["service-protocol-wireshark-dissector"]
+# Proc-macro crates are built for the host. If they depended on workspace-hack, every build would
+# compile the whole workspace-hack a second time for them, so keep every proc-macro crate here.
+workspace-members = [
+    "service-protocol-wireshark-dissector",
+    "codederror-derive",
+    "restate-core-derive",
+    "restate-encoding-derive",
+]
 third-party = [
     # excluded to avoid pulling in feature="test-util" by default for non-test builds
     { name = "tokio" },

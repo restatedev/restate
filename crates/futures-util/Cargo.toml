@@ -10,6 +10,8 @@ publish = false
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-util-cache-padded = { workspace = true }
+
 anyhow = { workspace = true }
 async-channel = { workspace = true }
 futures = { workspace = true }
@@ -28,6 +30,10 @@ test-log = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing = { workspace = true }
 tracing-test = { workspace = true }
+
+[[bench]]
+name = "monotonic_token"
+harness = false
 
 [[bench]]
 name = "waiter_queue"

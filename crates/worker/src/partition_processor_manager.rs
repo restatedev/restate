@@ -26,7 +26,6 @@ use ahash::{HashMap, HashSet};
 use anyhow::{Context, bail};
 use futures::FutureExt;
 use futures::stream::{FuturesUnordered, StreamExt};
-use itertools::{Either, Itertools};
 use metrics::{counter, gauge};
 use rand::RngExt;
 use rand::seq::SliceRandom;
@@ -1120,18 +1119,11 @@ where
             return;
         };
 
-        let Some(AutomaticSnapshots {
-            interval: snapshot_interval,
-            min_records: records_per_snapshot,
-        }) = self
-            .updateable_config
-            .live_load()
-            .worker
-            .snapshots
-            .automatic_snapshots()
-        else {
+        let snapshots_options = &self.updateable_config.live_load().worker.snapshots;
+        let Some(triggers) = snapshots_options.automatic_snapshots() else {
             return;
         };
+        let concurrency_limit = snapshots_options.automatic_snapshot_concurrency_limit() as usize;
 
         // Partitions with a status suitable for taking a snapshot without a running snapshot task
         let candidate_partitions = self
@@ -1148,59 +1140,32 @@ where
                     .map(|status| (*partition_id, status))
             });
 
-        let (mut candidate_partitions, unknown_latest_snapshot): (Vec<_>, Vec<_>) =
-            candidate_partitions.partition_map(|(partition_id, processor_status)| {
-                match self.latest_snapshots.get(&partition_id) {
-                    Some(latest_snapshot) => {
-                        Either::Left((partition_id, latest_snapshot.clone(), processor_status))
-                    }
-                    None => Either::Right(partition_id),
-                }
-            });
+        // Limit the number of snapshots in progress, requested ones included
+        let limit = concurrency_limit.saturating_sub(self.pending_snapshots.len());
 
-        for partition_id in &unknown_latest_snapshot {
-            self.spawn_update_latest_snapshot(*partition_id);
+        let mut candidate_partitions: Vec<_> = candidate_partitions.collect();
+        candidate_partitions.shuffle(&mut rand::rng());
+
+        let mut unknown_latest_snapshot = Vec::new();
+        let mut due_partitions = Vec::new();
+        for (partition_id, status) in &candidate_partitions {
+            let Some(latest_snapshot) = self.latest_snapshots.get(partition_id) else {
+                unknown_latest_snapshot.push(*partition_id);
+                continue;
+            };
+            // Stop evaluating once `limit` partitions are due
+            if due_partitions.len() < limit
+                && is_snapshot_due(*partition_id, triggers, latest_snapshot, status)
+            {
+                due_partitions.push(*partition_id);
+            }
         }
 
-        // Limit the number of snapshots we schedule automatically
-        const MAX_CONCURRENT_SNAPSHOTS: usize = 4;
-        let limit = MAX_CONCURRENT_SNAPSHOTS.saturating_sub(self.pending_snapshots.len());
+        for partition_id in unknown_latest_snapshot {
+            self.spawn_update_latest_snapshot(partition_id);
+        }
 
-        candidate_partitions.shuffle(&mut rand::rng());
-        let snapshot_partitions = candidate_partitions
-            .into_iter()
-            .filter_map(|(partition_id, latest_snapshot, status)| {
-                let applied_lsn = status.last_applied_log_lsn.unwrap_or(Lsn::INVALID);
-                // At this point, at least one of time-based or record-based interval is set; if
-                // both requirements are configured, then both must be met.
-                let next_snapshot_target_lsn = records_per_snapshot.map(|target_delta| {
-                    latest_snapshot
-                        .latest_snapshot_lsn
-                        .add(Lsn::from(target_delta.get()))
-                });
-                let latest_snapshot_age = latest_snapshot.latest_snapshot_created_at.elapsed();
-                if next_snapshot_target_lsn.is_none_or(|target| applied_lsn >= target)
-                    && snapshot_interval.is_none_or(|interval| {
-                        latest_snapshot.latest_snapshot_created_at.elapsed()
-                            > interval.add_jitter(0.1)
-                    })
-                {
-                    Some(partition_id)
-                } else {
-                    trace!(
-                        ?partition_id,
-                        ?applied_lsn,
-                        latest_snapshot_lsn = ?latest_snapshot.latest_snapshot_lsn,
-                        ?latest_snapshot_age,
-                        ?next_snapshot_target_lsn,
-                        "Not snapshotting partition yet"
-                    );
-                    None
-                }
-            })
-            .take(limit);
-
-        for partition_id in snapshot_partitions {
+        for partition_id in due_partitions {
             self.spawn_create_snapshot_task(partition_id, None, snapshot_repository.clone(), None);
         }
     }
@@ -1243,29 +1208,37 @@ where
 
                 let snapshot_base_path = config.worker.snapshots.snapshots_dir(partition_id);
                 let snapshot_id = SnapshotId::new();
-                let (node_name, cluster_name, cluster_fingerprint) = Metadata::with_current(|m| {
-                    let nodes_config = m.nodes_config_ref();
-                    let node_name = nodes_config
-                        .find_node_by_id(m.my_node_id())
-                        .expect("my node must be present")
-                        .name
-                        .clone();
-                    (
-                        node_name,
-                        nodes_config.cluster_name().to_owned(),
-                        nodes_config.cluster_fingerprint(),
-                    )
-                });
+                let (node_name, node_id, cluster_name, cluster_fingerprint) =
+                    Metadata::with_current(|m| {
+                        let nodes_config = m.nodes_config_ref();
+                        let node_id = m.my_node_id();
+                        let node_name = nodes_config
+                            .find_node_by_id(node_id)
+                            .expect("my node must be present")
+                            .name
+                            .clone();
+                        (
+                            node_name,
+                            node_id,
+                            nodes_config.cluster_name().to_owned(),
+                            nodes_config.cluster_fingerprint(),
+                        )
+                    });
 
                 let create_snapshot_task = SnapshotPartitionTask {
                     snapshot_id,
                     partition_id,
+                    commit_fence_tx: self
+                        .processor_states
+                        .get(&partition_id)
+                        .and_then(ProcessorState::commit_fence_sender),
                     min_target_lsn,
                     snapshot_base_path,
                     partition_store_manager: self.partition_store_manager.clone(),
                     cluster_name,
                     cluster_fingerprint,
                     node_name,
+                    node_id,
                     snapshot_repository,
                 };
 
@@ -1819,6 +1792,44 @@ enum EventKind {
     PartitionStoreDropped(DropResult),
 }
 
+/// Whether the configured triggers make the partition due for a new snapshot. When both
+/// triggers are set, both must be met.
+///
+/// Expects at least one trigger to be set, as `SnapshotsOptions::automatic_snapshots`
+/// guarantees. With neither set, every partition is due.
+fn is_snapshot_due(
+    partition_id: PartitionId,
+    triggers: AutomaticSnapshots,
+    latest_snapshot: &PartitionSnapshotStatus,
+    processor_status: &PartitionProcessorStatus,
+) -> bool {
+    let applied_lsn = processor_status
+        .last_applied_log_lsn
+        .unwrap_or(Lsn::INVALID);
+    let next_snapshot_target_lsn = triggers.min_records.map(|target_delta| {
+        latest_snapshot
+            .latest_snapshot_lsn
+            .add(Lsn::from(target_delta.get()))
+    });
+    let latest_snapshot_age = latest_snapshot.latest_snapshot_created_at.elapsed();
+
+    let due = next_snapshot_target_lsn.is_none_or(|target| applied_lsn >= target)
+        && triggers
+            .interval
+            .is_none_or(|interval| latest_snapshot_age > interval.add_jitter(0.1));
+    if !due {
+        trace!(
+            ?partition_id,
+            ?applied_lsn,
+            latest_snapshot_lsn = ?latest_snapshot.latest_snapshot_lsn,
+            ?latest_snapshot_age,
+            ?next_snapshot_target_lsn,
+            "Not snapshotting partition yet"
+        );
+    }
+    due
+}
+
 fn report_quantile_gauges(metric_name: &'static str, samples: &mut [u64]) {
     const PARTITION_METRIC_QUANTILES: [(&str, f64); 4] =
         [("0.5", 0.5), ("0.9", 0.9), ("0.99", 0.99), ("1.0", 1.0)];
@@ -1838,7 +1849,7 @@ fn report_quantile_gauges(metric_name: &'static str, samples: &mut [u64]) {
 
 #[cfg(test)]
 mod tests {
-    use crate::partition_processor_manager::PartitionProcessorManager;
+    use crate::partition_processor_manager::{PartitionProcessorManager, is_snapshot_due};
     use googletest::IntoTestResult;
     use restate_bifrost::BifrostService;
     use restate_bifrost::providers::memory_loglet;
@@ -1846,22 +1857,63 @@ mod tests {
     use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder};
     use restate_ingestion_client::{IngestionClient, SessionOptions};
     use restate_partition_store::PartitionStoreManager;
+    use restate_partition_store::snapshots::PartitionSnapshotStatus;
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::Configuration;
+    use restate_types::cluster::cluster_state::PartitionProcessorStatus;
+    use restate_types::config::{AutomaticSnapshots, Configuration};
     use restate_types::health::HealthStatus;
     use restate_types::identifiers::PartitionId;
     use restate_types::live::Live;
-    use restate_types::logs::{Lsn, SequenceNumber};
+    use restate_types::logs::{LogId, Lsn, SequenceNumber};
     use restate_types::net::address::AdvertisedAddress;
     use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
     use restate_types::partitions::state::{
         MemberState, PartitionReplicaSetStates, ReplicaSetState,
     };
+    use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, RestateVersion, Version};
-    use std::num::NonZeroUsize;
+    use std::num::{NonZeroU64, NonZeroUsize};
     use std::time::Duration;
     use test_log::test;
     use tracing::info;
+
+    #[test]
+    fn snapshot_due_triggers() {
+        let min_records = NonZeroU64::new(100);
+        let interval = Some(Duration::from_secs(3600));
+        // Snapshot at LSN 1000; `old` is well past the interval plus its up-to-10% jitter
+        let snapshot = |age: Duration| PartitionSnapshotStatus {
+            latest_snapshot_lsn: Lsn::new(1000),
+            latest_snapshot_created_at: MillisSinceEpoch::now() - age,
+            ..PartitionSnapshotStatus::none(LogId::new(0))
+        };
+        let (fresh, old) = (
+            snapshot(Duration::ZERO),
+            snapshot(Duration::from_secs(7200)),
+        );
+        let due = |interval, min_records, latest: &PartitionSnapshotStatus, applied_lsn| {
+            let status = PartitionProcessorStatus {
+                last_applied_log_lsn: Some(Lsn::new(applied_lsn)),
+                ..Default::default()
+            };
+            let triggers = AutomaticSnapshots {
+                interval,
+                min_records,
+            };
+            is_snapshot_due(PartitionId::MIN, triggers, latest, &status)
+        };
+
+        // Records only: due once `min_records` were applied since the snapshot, whatever its age
+        assert!(!due(None, min_records, &old, 1099));
+        assert!(due(None, min_records, &fresh, 1100));
+        // Interval only: due once the snapshot is older than the interval, whatever was applied
+        assert!(!due(interval, None, &fresh, 5000));
+        assert!(due(interval, None, &old, 1000));
+        // Both: neither alone is enough
+        assert!(!due(interval, min_records, &fresh, 1100));
+        assert!(!due(interval, min_records, &old, 1099));
+        assert!(due(interval, min_records, &old, 1100));
+    }
 
     #[test(restate_core::test)]
     async fn proper_partition_processor_lifecycle_single_db() -> googletest::Result<()> {

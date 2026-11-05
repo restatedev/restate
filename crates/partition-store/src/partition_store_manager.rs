@@ -14,7 +14,8 @@ use std::time::Duration;
 
 use ahash::HashMap;
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{Mutex as AsyncMutex, mpsc};
+use tokio_util::sync::CancellationToken;
 use tracing::{Level, debug, error, info, instrument, warn};
 
 use restate_core::io::IdleTracker;
@@ -33,9 +34,11 @@ use crate::SnapshotError;
 use crate::durable_lsn_tracking::DurableLsnSenders;
 use crate::memory::MemoryController;
 use crate::partition_db::{
-    AllDataCf, PartitionCell, PartitionDb, PartitionStoreDb, RocksConfigurator,
+    AllDataCf, PartitionCell, PartitionDb, PartitionStoreDb, RocksConfigurator, State,
 };
-use crate::snapshots::{LocalPartitionSnapshot, PartitionSnapshotStatus, Snapshots};
+use crate::snapshots::{
+    CommitFenceRequest, LocalPartitionSnapshot, PartitionSnapshotStatus, Snapshots,
+};
 use crate::{BuildError, OpenError, PartitionStore, SnapshotErrorKind};
 
 const PARTITION_CF_PREFIX: &str = "data-";
@@ -310,11 +313,23 @@ impl PartitionStoreManager {
     ///
     /// If `target_lsn` is `None`, then the store will be opened from the local database
     /// regardless of whether there is a snapshot available or not.
-    #[instrument(level = "error", skip_all, fields(partition_id = %partition.partition_id, cf_name = %partition.cf_name()))]
     pub async fn open(
         &self,
         partition: &Partition,
         target_lsn: Option<Lsn>,
+    ) -> Result<PartitionStore, OpenError> {
+        self.open_cancellable(partition, target_lsn, &CancellationToken::new())
+            .await
+    }
+
+    /// Like [`Self::open`], but aborts an in-progress snapshot download and returns
+    /// [`OpenError::Cancelled`] once `cancellation` fires.
+    #[instrument(level = "error", skip_all, fields(partition_id = %partition.partition_id, cf_name = %partition.cf_name()))]
+    pub async fn open_cancellable(
+        &self,
+        partition: &Partition,
+        target_lsn: Option<Lsn>,
+        cancellation: &CancellationToken,
     ) -> Result<PartitionStore, OpenError> {
         let database = self.open_rocksdb(partition).await?;
 
@@ -345,11 +360,15 @@ impl PartitionStoreManager {
         // **
 
         // Attempt to get the latest available snapshot from the snapshot repository:
-        let snapshot = self
+        let snapshot = match self
             .snapshots
-            .download_latest_snapshot(partition.partition_id)
+            .download_latest_snapshot(partition.partition_id, cancellation)
             .await
-            .map_err(OpenError::Snapshot)?;
+        {
+            Ok(snapshot) => snapshot,
+            Err(_) if cancellation.is_cancelled() => return Err(OpenError::Cancelled),
+            Err(err) => return Err(OpenError::Snapshot(err)),
+        };
 
         match (snapshot, target_lsn) {
             (None, None) => {
@@ -429,13 +448,18 @@ impl PartitionStoreManager {
             .await;
     }
 
+    /// Exports a snapshot of the partition while nothing writes to it. An open partition needs
+    /// `commit_fence_tx`, which reaches its running processor so that it holds back its commits.
+    /// A closed partition is exported as it is. A partition that is still closing is refused.
     pub async fn export_partition(
         &self,
         partition_id: PartitionId,
+        commit_fence_tx: Option<&mpsc::Sender<CommitFenceRequest>>,
         min_target_lsn: Option<Lsn>,
         snapshot_id: SnapshotId,
         snapshot_base_path: &Path,
     ) -> Result<LocalPartitionSnapshot, SnapshotError> {
+        let error = |kind| SnapshotError { partition_id, kind };
         // note: we don't hold the map read lock while trying to acquire the partition cell's lock.
         // hence the `cloned()` call.
         let cell = self
@@ -444,30 +468,48 @@ impl PartitionStoreManager {
             .read()
             .get(&partition_id)
             .cloned()
-            .ok_or(SnapshotError {
-                partition_id,
-                kind: SnapshotErrorKind::PartitionNotFound,
-            })?;
-        // Require a lock to prevent closing/reopening stores while a snapshot is ongoing. Failure
-        // to do so can lead to exporting a partially-initialized store.
-        let state_guard = cell.inner.read().await;
-        let Some(db) = state_guard.db() else {
-            return Err(SnapshotError {
-                partition_id,
-                kind: SnapshotErrorKind::PartitionNotFound,
-            });
+            .ok_or_else(|| error(SnapshotErrorKind::PartitionNotFound))?;
+        // Wait for a slot before taking the partition's lock, so that waiting for other exports
+        // doesn't keep this partition's processor from stopping or starting.
+        let permit = self.snapshots.export_slot().await;
+        // The export holds this lock until it finishes, so that the partition can't be closed,
+        // reopened or deleted under it, and no new processor starts writing to it.
+        let cell_guard = cell.inner.clone().read_owned().await;
+        let (db, commit_fence_tx) = match &*cell_guard {
+            State::Open { db } => (
+                db.clone(),
+                Some(commit_fence_tx.ok_or_else(|| error(SnapshotErrorKind::InvalidState))?),
+            ),
+            State::Closed { db, .. } => (db.clone(), None),
+            // Writes the partition accepted before closing may still be running.
+            State::Closing { .. } => return Err(error(SnapshotErrorKind::InvalidState)),
+            _ => return Err(error(SnapshotErrorKind::PartitionNotFound)),
         };
 
-        let partition_store = PartitionStore::from(db.clone());
+        Snapshots::create_local_snapshot(
+            PartitionStore::from(db),
+            permit,
+            cell_guard,
+            commit_fence_tx,
+            min_target_lsn,
+            snapshot_id,
+            snapshot_base_path,
+        )
+        .await
+    }
 
-        self.snapshots
-            .create_local_snapshot(
-                partition_store,
-                min_target_lsn,
-                snapshot_id,
-                snapshot_base_path,
-            )
+    /// A capture guard for an open partition that the test doesn't write to while exporting it.
+    #[cfg(test)]
+    pub(crate) async fn test_capture_guard(
+        &self,
+        partition_id: PartitionId,
+    ) -> crate::snapshots::CaptureGuard {
+        let cell = self.state.get(partition_id).expect("partition is known");
+        let permit = Arc::new(tokio::sync::Semaphore::new(1))
+            .acquire_owned()
             .await
+            .expect("new semaphore has a permit");
+        crate::snapshots::CaptureGuard::new(permit, cell.inner.clone().read_owned().await, None)
     }
 
     /// Deletes this node's local copy of the partition, discarding all of its data.
@@ -552,7 +594,7 @@ mod tests {
 
     use parking_lot::Mutex;
     use rocksdb::AsColumnFamilyRef;
-    use tokio::sync::oneshot;
+    use tokio::sync::{Semaphore, oneshot};
     use tokio::time::timeout;
 
     use restate_core::io::IoExecutor;
@@ -566,10 +608,11 @@ mod tests {
     use restate_types::sharding::KeyRange;
 
     use super::PartitionStoreManager;
-    use crate::PartitionStore;
     use crate::faults::FaultPoint;
     use crate::keys::KeyKind;
-    use crate::partition_db::State;
+    use crate::partition_db::{PartitionCell, State};
+    use crate::snapshots::{CaptureGuard, CommitFenceRequest};
+    use crate::{PartitionStore, PartitionStoreTransaction, SnapshotErrorKind};
 
     async fn write_applied_lsn(store: &mut PartitionStore, lsn: u64) -> anyhow::Result<()> {
         let mut tx = store.transaction();
@@ -1013,7 +1056,7 @@ mod tests {
         const DEADLINE: Duration = Duration::from_secs(10);
         let rocksdb = RocksDbManager::init();
         let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
-        let snapshots = tempfile::tempdir()?;
+        let snapshots = restate_test_util::tempdir()?;
         for layout in [false, true] {
             let manager = PartitionStoreManager::create(layout).await?;
             let database = manager.open_rocksdb(&partition).await?;
@@ -1021,7 +1064,12 @@ mod tests {
                 let mut store = manager.open(&partition, None).await?;
                 write_applied_lsn(&mut store, 50).await?;
                 let mut snapshot = store
-                    .create_local_snapshot(snapshots.path(), None, SnapshotId::new())
+                    .create_local_snapshot(
+                        manager.test_capture_guard(partition.partition_id).await,
+                        snapshots.path(),
+                        None,
+                        SnapshotId::new(),
+                    )
                     .await?;
                 let source = snapshot.base_dir.path().to_owned();
                 if invalid {
@@ -1315,9 +1363,14 @@ mod tests {
             assert_eq!(*store.get_durable_lsn().await?.borrow(), Lsn::INVALID);
 
             write_applied_lsn(&mut store, 300).await?;
-            let snapshots = tempfile::tempdir()?;
+            let snapshots = restate_test_util::tempdir()?;
             let snapshot = store
-                .create_local_snapshot(snapshots.path(), None, SnapshotId::new())
+                .create_local_snapshot(
+                    manager.test_capture_guard(partition.partition_id).await,
+                    snapshots.path(),
+                    None,
+                    SnapshotId::new(),
+                )
                 .await?;
             write_applied_lsn(&mut store, 400).await?;
             store.partition_db().flush_memtables(true).await?;
@@ -1495,7 +1548,7 @@ mod tests {
     async fn snapshot_import_failure_invalidates_only_after_validation() -> anyhow::Result<()> {
         RocksDbManager::init();
         let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
-        let snapshots = tempfile::tempdir()?;
+        let snapshots = restate_test_util::tempdir()?;
 
         for use_multi_db_layout in [false, true] {
             let manager = PartitionStoreManager::create(use_multi_db_layout).await?;
@@ -1504,7 +1557,12 @@ mod tests {
             let old_watch = store.get_durable_lsn().await?;
             write_applied_lsn(&mut store, 100).await?;
             let mut snapshot = store
-                .create_local_snapshot(snapshots.path(), None, SnapshotId::new())
+                .create_local_snapshot(
+                    manager.test_capture_guard(partition.partition_id).await,
+                    snapshots.path(),
+                    None,
+                    SnapshotId::new(),
+                )
                 .await?;
             snapshot.key_range = KeyRange::new(1, u64::MAX);
             assert!(matches!(
@@ -1514,7 +1572,12 @@ mod tests {
             assert!(old_watch.same_channel(&store.get_durable_lsn().await?));
             write_applied_lsn(&mut store, 200).await?;
             let mut snapshot = store
-                .create_local_snapshot(snapshots.path(), None, SnapshotId::new())
+                .create_local_snapshot(
+                    manager.test_capture_guard(partition.partition_id).await,
+                    snapshots.path(),
+                    None,
+                    SnapshotId::new(),
+                )
                 .await?;
             assert_eq!(*old_watch.borrow(), Lsn::new(200));
 
@@ -1713,6 +1776,192 @@ mod tests {
             drop(manager);
             database.close().await.expect("all_storage_users_released");
         }
+        Ok(())
+    }
+
+    /// An open partition is exported only while its processor holds back commits, and without a
+    /// processor to ask, the export is refused. A closed partition is exported as it is. An
+    /// export that waits for a free export slot doesn't keep the partition from closing.
+    #[restate_core::test]
+    async fn export_fences_open_partitions_and_captures_closed_ones() -> anyhow::Result<()> {
+        RocksDbManager::init();
+        let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
+        for use_multi_db_layout in [false, true] {
+            let manager = PartitionStoreManager::create(use_multi_db_layout).await?;
+            let mut store = manager.open(&partition, None).await?;
+            write_applied_lsn(&mut store, 100).await?;
+            let snapshots = restate_test_util::tempdir()?;
+            let export = |commit_fence_tx| {
+                manager.export_partition(
+                    partition.partition_id,
+                    commit_fence_tx,
+                    None,
+                    SnapshotId::new(),
+                    snapshots.path(),
+                )
+            };
+
+            let (commit_fence_tx, mut commit_fence_rx) =
+                tokio::sync::mpsc::channel::<CommitFenceRequest>(1);
+            let mut txn = store.transaction();
+            let processor = async {
+                let request = commit_fence_rx
+                    .recv()
+                    .await
+                    .expect("export asks for a fence");
+                let _ = request.send(txn.fence_commits());
+            };
+            let (snapshot, ()) = tokio::join!(export(Some(&commit_fence_tx)), processor);
+            assert_eq!(snapshot.unwrap().min_applied_lsn, Lsn::new(100));
+
+            let refused = export(None).await.unwrap_err();
+            assert!(matches!(refused.kind, SnapshotErrorKind::InvalidState));
+
+            // With every export slot taken, the export waits without the partition's lock, so
+            // the partition closes. Once it gets a slot, it exports the closed partition.
+            let limit = Configuration::pinned()
+                .worker
+                .snapshots
+                .export_concurrency_limit();
+            let mut slots = Vec::new();
+            for _ in 0..limit {
+                slots.push(manager.snapshots.export_slot().await);
+            }
+            let mut queued = std::pin::pin!(export(None));
+            assert!(
+                queued
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            let cell = manager.state.get(partition.partition_id).unwrap();
+            assert!(cell.inner.try_write().is_ok());
+            manager.close(partition.partition_id).await;
+            drop(slots);
+            assert_eq!(queued.await.unwrap().min_applied_lsn, Lsn::new(100));
+        }
+        Ok(())
+    }
+
+    /// Whoever asked for a snapshot may stop waiting while its export runs or is still queued.
+    /// The export keeps holding back the processor's commits, the partition's lock and its export
+    /// slot until RocksDB is done, or until the worker discards the queued export. An abandoned
+    /// export leaves no files behind.
+    #[restate_core::test]
+    async fn abandoned_export_keeps_its_capture_until_done() -> anyhow::Result<()> {
+        const DEADLINE: Duration = Duration::from_secs(10);
+        let rocksdb = RocksDbManager::init();
+        let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
+        for use_multi_db_layout in [false, true] {
+            let manager = PartitionStoreManager::create(use_multi_db_layout).await?;
+            let mut store = manager.open(&partition, None).await?;
+            write_applied_lsn(&mut store, 100).await?;
+            let cell = manager.state.get(partition.partition_id).unwrap();
+            let slots = Arc::new(Semaphore::new(1));
+            let mut writer = store.clone();
+            let mut txn = writer.transaction();
+            let snapshots = restate_test_util::tempdir()?;
+
+            // Abandoned while the worker runs it: pause right before RocksDB starts exporting.
+            // The probe reports whether RocksDB had written the export when the guard is let go.
+            struct ReleaseProbe(std::path::PathBuf, mpsc::Sender<bool>);
+            impl Drop for ReleaseProbe {
+                fn drop(&mut self) {
+                    let _ = self.1.send(self.0.exists());
+                }
+            }
+            let capture = CaptureGuard::new(
+                slots.clone().acquire_owned().await?,
+                cell.inner.clone().read_owned().await,
+                txn.fence_commits(),
+            );
+            let export_dir = snapshots.path().join("running");
+            let (started, reached) = oneshot::channel();
+            let (resume, paused) = mpsc::channel::<()>();
+            let (exported_tx, exported) = mpsc::channel();
+            let probe = ReleaseProbe(export_dir.clone(), exported_tx);
+            let export = store
+                .partition_db()
+                .prepare_export_cf(export_dir.clone(), move || {
+                    let _ = started.send(());
+                    let _ = paused.recv();
+                    (probe, capture)
+                });
+            let export = rocksdb.lifecycle_executor().spawn(export)?;
+            timeout(DEADLINE, reached).await??;
+            drop(export);
+            txn.put_applied_lsn(Lsn::new(200))?;
+            assert_capture_held(&mut txn, &cell, &slots).await;
+            drop(resume);
+            assert_capture_released(&mut txn, &cell, &slots).await?;
+            assert!(exported.recv_timeout(DEADLINE)?);
+            timeout(DEADLINE, async {
+                while export_dir.exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await?;
+
+            // Abandoned while it waits for a worker, which then discards it.
+            let capture = CaptureGuard::new(
+                slots.clone().acquire_owned().await?,
+                cell.inner.clone().read_owned().await,
+                txn.fence_commits(),
+            );
+            let paused = rocksdb.pause_lifecycle().await;
+            let base = snapshots.path().join("queued");
+            let mut export =
+                Box::pin(store.create_local_snapshot(capture, &base, None, SnapshotId::new()));
+            // The export creates its base directory right before it queues the capture, and the
+            // poll after that queues it.
+            while !base.exists() {
+                assert!(
+                    timeout(Duration::from_millis(10), &mut export)
+                        .await
+                        .is_err()
+                );
+            }
+            assert!(
+                timeout(Duration::from_millis(100), &mut export)
+                    .await
+                    .is_err()
+            );
+            drop(export);
+            txn.put_applied_lsn(Lsn::new(300))?;
+            assert_capture_held(&mut txn, &cell, &slots).await;
+            drop(paused);
+            assert_capture_released(&mut txn, &cell, &slots).await?;
+        }
+        Ok(())
+    }
+
+    /// Asserts that a snapshot capture still holds back `txn`'s commits, the partition's lock and
+    /// the export slot.
+    async fn assert_capture_held(
+        txn: &mut PartitionStoreTransaction<'_>,
+        cell: &PartitionCell,
+        slots: &Semaphore,
+    ) {
+        assert!(
+            timeout(Duration::from_millis(100), txn.commit())
+                .await
+                .is_err()
+        );
+        assert!(cell.inner.try_write().is_err());
+        assert_eq!(slots.available_permits(), 0);
+    }
+
+    /// Waits for a snapshot capture to let go of `txn`'s commits, the partition's lock and the
+    /// export slot.
+    async fn assert_capture_released(
+        txn: &mut PartitionStoreTransaction<'_>,
+        cell: &PartitionCell,
+        slots: &Semaphore,
+    ) -> anyhow::Result<()> {
+        const DEADLINE: Duration = Duration::from_secs(10);
+        timeout(DEADLINE, txn.commit()).await??;
+        drop(timeout(DEADLINE, cell.inner.write()).await?);
+        drop(timeout(DEADLINE, slots.acquire()).await??);
         Ok(())
     }
 }

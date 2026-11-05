@@ -44,6 +44,14 @@
 //! is implicitly included. Always submit work for every token you acquire,
 //! or handle the gap explicitly in your protocol.
 //!
+//! Finally, a sequence runs out once it has handed out half the `usize`
+//! range, and [`Tokens::next`] then aborts the process, as `Arc` does when its
+//! reference count overflows. Starting over from 1 would be worse: a reused
+//! token would look retired already, so its work would be treated as done
+//! before it ran. On 64-bit targets the limit is out of reach (almost 300
+//! years at a billion tokens per second), but on 32-bit targets it is about
+//! two billion tokens, which a busy, long-lived sequence can reach.
+//!
 //! # Notification model
 //!
 //! [`TokenListener::changed`] returns the latest retired token at the moment
@@ -104,6 +112,8 @@ use std::sync::{Arc, atomic};
 
 use tokio::sync::Notify;
 
+use restate_util_cache_padded::CachePadded;
+
 /// An opaque, ordered token drawn from a [`Tokens`] generator.
 ///
 /// Tokens are [`Copy`], [`Ord`], and [`Eq`]. The phantom type `T` prevents
@@ -157,8 +167,19 @@ impl<T> PartialEq for Token<T> {
 
 impl<T> Eq for Token<T> {}
 
+/// The last token a sequence can hand out.
+///
+/// Half the `usize` range, as `Arc` limits its reference count, so that calls racing to the
+/// abort in [`Tokens::next`] can't wrap the counter back to tokens in use. Being a power of two
+/// keeps that check a single sign-bit test.
+const MAX_TOKEN: usize = isize::MAX as usize + 1;
+
 struct Inner {
-    next: AtomicUsize,
+    /// The most recent token handed out, or 0 before the first.
+    ///
+    /// Kept on its own cache line: every [`Tokens::next`] writes it, and sharing a line with
+    /// the fields the owner and listeners touch would slow both sides down.
+    issued: CachePadded<AtomicUsize>,
     retired_through: AtomicUsize,
     notify: Notify,
 }
@@ -183,7 +204,7 @@ impl<T> TokenOwner<T> {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Inner {
-                next: AtomicUsize::new(1),
+                issued: CachePadded::new(AtomicUsize::new(0)),
                 retired_through: AtomicUsize::new(0),
                 notify: Notify::new(),
             }),
@@ -242,21 +263,25 @@ impl<T> Clone for Tokens<T> {
 }
 
 impl<T> Tokens<T> {
-    /// Produces the next token in the sequence.
+    /// Draws the next token in the sequence.
     ///
-    /// Tokens are guaranteed to be strictly increasing across all clones of
-    /// this generator.
+    /// The token is greater than every token drawn before it, from this generator or any of its
+    /// clones, so comparing two tokens tells which was drawn first.
+    ///
+    /// # Aborts
+    ///
+    /// Aborts the process once the sequence has run out of tokens, which is out of reach on
+    /// 64-bit targets; see [Pitfalls](crate::monotonic_token#pitfalls).
     pub fn next(&self) -> Token<T> {
-        // SAFETY: `next` is initialised to 1 and only incremented, so the
-        // value returned by `fetch_add` is always >= 1 (non-zero).
-        unsafe {
-            Token(
-                NonZeroUsize::new_unchecked(
-                    self.inner.next.fetch_add(1, atomic::Ordering::Relaxed),
-                ),
-                PhantomData,
-            )
+        let issued = self.inner.issued.fetch_add(1, atomic::Ordering::Relaxed);
+        // Straight from `Arc::clone`'s playbook: a plain `fetch_add`, then abort past the limit.
+        // It must be an abort, not a panic: callers could catch a panic and keep calling until
+        // the counter wraps around to tokens in use.
+        if issued >= MAX_TOKEN {
+            std::process::abort();
         }
+        // Below `MAX_TOKEN`, so adding one can't saturate; the compiler drops the saturation.
+        Token(NonZeroUsize::MIN.saturating_add(issued), PhantomData)
     }
 
     /// Creates a new [`TokenListener`] that observes retirements on this

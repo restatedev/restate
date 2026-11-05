@@ -13,13 +13,16 @@ use std::path::{Path, PathBuf};
 use rocksdb::LiveFile;
 use serde::{Deserialize, Serialize};
 use serde_with::hex::Hex;
-use serde_with::{DeserializeAs, SerializeAs, serde_as};
+use serde_with::{DefaultOnError, DeserializeAs, DisplayFromStr, SerializeAs, serde_as};
 use tracing::warn;
 
+use restate_memory::ByteCount;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::{LogId, Lsn};
 use restate_types::nodes_config::ClusterFingerprint;
 use restate_types::sharding::KeyRange;
+use restate_types::{GenerationalNodeId, SemanticRestateVersion};
+use restate_util_string::ReString;
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SnapshotFormatVersion {
@@ -27,11 +30,28 @@ pub enum SnapshotFormatVersion {
     V1,
 }
 
+/// What a server needs in order to use a snapshot's data, as of the moment it was exported.
+///
+/// Manifests carry it as an optional, advisory field. Servers that predate it ignore it, and it
+/// is absent from snapshots they create. A value that can't be decoded reads as absent rather
+/// than making the manifest unreadable. Absent means unknown, never compatible.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct SnapshotCompatibility {
+    /// The oldest Restate server version that can open the data: the partition's version
+    /// barrier or the newest version its storage features require, whichever is newer.
+    pub min_restate_version: SemanticRestateVersion,
+    /// Names of the storage features enabled on the data, including ones the reader may not
+    /// know.
+    pub storage_features: Vec<ReString>,
+    /// Names of the partition (state machine) features enabled on the data. Only features known
+    /// to the server that created the snapshot are listed.
+    pub partition_features: Vec<ReString>,
+}
+
 /// A partition store snapshot. Metadata object which is published alongside with the partition
-/// store RocksDB SST files that make up a particular checkpoint for a given partition. Note that
-/// the applied LSN is read from the store itself, before the snapshot checkpoint is created. It
-/// could therefore be smaller than the actual LSN of the snapshot, which can only be determined
-/// when the snapshot is imported and opened for reading.
+/// store RocksDB SST files that make up a particular checkpoint for a given partition. Snapshots
+/// from older servers can record an applied LSN smaller than the actual LSN of their data, which
+/// can only be determined when the snapshot is imported and opened for reading.
 #[serde_as]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(from = "PartitionSnapshotMetadataShadow")]
@@ -50,6 +70,11 @@ pub struct PartitionSnapshotMetadata {
 
     /// Node that produced this snapshot.
     pub node_name: String,
+
+    /// Generational id of the node that produced this snapshot. `None` if unknown.
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<GenerationalNodeId>,
 
     /// Local node time when the snapshot was created.
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
@@ -72,12 +97,22 @@ pub struct PartitionSnapshotMetadata {
     /// The RocksDB comparator name used by the partition processor which generated this snapshot.
     pub db_comparator_name: String,
 
+    /// What a server needs in order to use the snapshot's data. `None` if unknown, including
+    /// when it couldn't be captured consistently with the exported data.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compatibility: Option<SnapshotCompatibility>,
+
     /// The RocksDB SST files comprising the snapshot.
     #[serde_as(as = "Vec<SnapshotSstFile>")]
     pub files: Vec<LiveFile>,
 }
 
 impl PartitionSnapshotMetadata {
+    /// Total size of the snapshot's data files.
+    pub fn data_size_in_bytes(&self) -> ByteCount {
+        ByteCount::from(self.files.iter().map(|file| file.size as u64).sum::<u64>())
+    }
+
     pub fn validate(
         &self,
         cluster_name: &str,
@@ -116,6 +151,9 @@ struct PartitionSnapshotMetadataShadow {
     pub cluster_fingerprint: Option<ClusterFingerprint>,
     pub partition_id: PartitionId,
     pub node_name: String,
+    #[serde_as(deserialize_as = "DefaultOnError<Option<DisplayFromStr>>")]
+    #[serde(default)]
+    pub node_id: Option<GenerationalNodeId>,
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
     pub created_at: jiff::Timestamp,
     pub snapshot_id: SnapshotId,
@@ -123,6 +161,9 @@ struct PartitionSnapshotMetadataShadow {
     pub log_id: Option<LogId>,
     pub min_applied_lsn: Lsn,
     pub db_comparator_name: String,
+    #[serde_as(deserialize_as = "DefaultOnError")]
+    #[serde(default)]
+    pub compatibility: Option<SnapshotCompatibility>,
     #[serde_as(as = "Vec<SnapshotSstFile>")]
     pub files: Vec<LiveFile>,
 }
@@ -135,6 +176,7 @@ impl From<PartitionSnapshotMetadataShadow> for PartitionSnapshotMetadata {
             cluster_fingerprint: value.cluster_fingerprint,
             partition_id: value.partition_id,
             node_name: value.node_name,
+            node_id: value.node_id,
             created_at: value.created_at,
             snapshot_id: value.snapshot_id,
             key_range: value.key_range,
@@ -146,6 +188,7 @@ impl From<PartitionSnapshotMetadataShadow> for PartitionSnapshotMetadata {
                 .unwrap_or_else(|| LogId::default_for_partition(value.partition_id)),
             min_applied_lsn: value.min_applied_lsn,
             db_comparator_name: value.db_comparator_name,
+            compatibility: value.compatibility,
             files: value.files,
         }
     }
@@ -227,6 +270,8 @@ pub struct LocalPartitionSnapshot {
     pub db_comparator_name: String,
     pub files: Vec<LiveFile>,
     pub key_range: KeyRange,
+    /// What a server needs in order to use the snapshot's data. `None` if unknown.
+    pub compatibility: Option<SnapshotCompatibility>,
 }
 /// RocksDB SST file that is part of a snapshot. Serialization wrapper around [LiveFile].
 #[serde_as]

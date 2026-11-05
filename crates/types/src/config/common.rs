@@ -1157,6 +1157,17 @@ experimental! {
     ///
     /// Since v1.8.2
     vqueue_orphaned_active_marker_removal,
+
+    /// # Enables service protocol v8
+    ///
+    /// Set to `true` to enable the experimental service protocol v8,
+    /// adding support for reading state without recording it in the journal.
+    ///
+    /// Only enable once all nodes run v1.8.2 or newer. Once enabled, you **cannot** roll back to a
+    /// Restate-server version older than v1.8.2, as in-flight invocations might be pinned to v8.
+    ///
+    /// Since v1.8.2
+    protocol_v8,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
@@ -2097,7 +2108,7 @@ mod tests {
 
     #[tokio::test]
     async fn control_advertisement_uses_shared_listener_and_explicit_overrides() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = restate_test_util::tempdir().unwrap();
         let mut config = Configuration::default();
         config.common.roles.clear();
         config.common.fabric_listener_options = ListenerOptions {
@@ -2199,7 +2210,7 @@ mod tests {
 
     #[test]
     fn advertised_hosts_are_validated_at_load() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = restate_test_util::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let load = |toml: &str| {
             std::fs::write(&path, toml).unwrap();
@@ -2384,7 +2395,7 @@ mod tests {
     #[test]
     #[ignore]
     fn metadata_client_compatibility() -> googletest::Result<()> {
-        let temp_dir = tempfile::tempdir()?;
+        let temp_dir = restate_test_util::tempdir()?;
         let config_path_address = temp_dir.path().join("config1.toml");
         let config_file_address = r#"
         [metadata-client]
