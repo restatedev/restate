@@ -49,8 +49,8 @@ use restate_util_lifecycle::Scope;
 
 // re-exports
 pub use self::background::{
-    GlobalExecutor, Guarded, Mapped, MappedOk, OpContext, OpFn, Priority, SinglePoolExecutor,
-    StorageOp, StorageTaskKind,
+    Async, GlobalExecutor, Guarded, Mapped, MappedOk, OpContext, OpFn, Priority, ReadPerf,
+    SinglePoolExecutor, StorageOp, StorageTaskKind, SyncOpFn,
 };
 pub use self::cf_handles::CfHandles;
 pub use self::db_env::DbEnv;

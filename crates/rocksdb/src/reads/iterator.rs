@@ -15,7 +15,7 @@ use rocksdb::{DBRawIteratorWithThreadMode, ReadOptions};
 use restate_core::io::Gate;
 
 use super::{ReadSource, Source, TOKEN, iterator_options};
-use crate::{OpContext, OpFn, RawRocksDb, RocksError, StorageOp, StorageTaskKind};
+use crate::{OpContext, OpFn, RawRocksDb, RocksError, StorageOp, StorageTaskKind, SyncOpFn};
 
 /// An iterator over one column family, through a snapshot or of the data as it
 /// was when the iterator was created.
@@ -164,6 +164,20 @@ where
     }
 }
 
+impl<'a, H, F, R> SyncOpFn<ReadIterator<'a, H>> for F
+where
+    H: ReadSource + Send + Sync + 'static,
+    F: FnOnce(&mut ReadIterator<'_, H>) -> R + Send + 'static,
+{
+    fn run(self, mut iterator: ReadIterator<'a, H>) -> R {
+        self(&mut iterator)
+    }
+
+    fn run_owned(self, mut iterator: OwnedReadIterator<H>) -> R {
+        self(&mut iterator)
+    }
+}
+
 impl<'a, H, F, R> OpFn<ReadIterator<'a, H>> for F
 where
     H: ReadSource + Send + Sync + 'static,
@@ -171,11 +185,7 @@ where
 {
     type Output = R;
 
-    fn run(self, mut iterator: ReadIterator<'a, H>) -> R {
-        self(&mut iterator)
-    }
-
-    fn run_owned(self, mut iterator: OwnedReadIterator<H>) -> R {
+    async fn run_async(self, mut iterator: OwnedReadIterator<H>) -> R {
         self(&mut iterator)
     }
 }
