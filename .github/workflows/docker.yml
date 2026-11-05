@@ -52,6 +52,16 @@ on:
         required: false
         default: "restate-server"
         type: string
+      cacheOnly:
+        description: "only build the dependency (builder) stage to warm the build cache; no image is pushed"
+        required: false
+        default: false
+        type: boolean
+      cacheReadOnly:
+        description: "read the build cache but don't export to it"
+        required: false
+        default: false
+        type: boolean
 
   workflow_dispatch:
     inputs:
@@ -146,14 +156,21 @@ jobs:
           driver-opts: |
             network=host
 
+      # Objects are only reusable within one profile, so key on it. The restore-keys
+      # fallback lets a Cargo.lock change start from the previous cache instead of an
+      # empty one. The builder stage doesn't use sccache, so cache-only builds skip it.
       - name: Cache sccache
         id: cache
+        if: ${{ !inputs.cacheOnly }}
         uses: WarpBuilds/cache@v1.4.13
         with:
           path: sccache-cache
-          key: ${{ runner.os }}-sccache-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-sccache-${{ inputs.profile }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-sccache-${{ inputs.profile }}-
 
       - name: Inject sccache-cache into Docker
+        if: ${{ !inputs.cacheOnly }}
         uses: reproducible-containers/buildkit-cache-dance@v3.1.2
         with:
           cache-map: |
@@ -283,10 +300,13 @@ jobs:
           file: "docker/Dockerfile"
           # push if we aren't uploading as a tarball, or if this is main'
           tags: ${{ steps.meta.outputs.tags }}
+          # cache-only builds stop at the builder stage and export nothing but the cache
+          target: ${{ inputs.cacheOnly && 'builder' || '' }}
           # push if we aren't uploading as a tarball, or if this is main
           outputs: |
-            ${{ (inputs.uploadImageAsTarball == '' || github.ref == 'refs/heads/main') && 'type=registry' || '' }}
-            ${{ inputs.uploadImageAsTarball != '' && 'type=oci,dest=restate.tar' || '' }}
+            ${{ inputs.cacheOnly && 'type=cacheonly' || '' }}
+            ${{ !inputs.cacheOnly && (inputs.uploadImageAsTarball == '' || github.ref == 'refs/heads/main') && 'type=registry' || '' }}
+            ${{ !inputs.cacheOnly && inputs.uploadImageAsTarball != '' && 'type=oci,dest=restate.tar' || '' }}
           labels: |
             ${{ steps.meta.outputs.labels }}
             org.opencontainers.image.version=${{ steps.image-version.outputs.version }}
@@ -295,8 +315,8 @@ jobs:
           annotations: |
             index:org.opencontainers.image.version=${{ steps.image-version.outputs.version }}
             manifest:org.opencontainers.image.version=${{ steps.image-version.outputs.version }}
-          # on main, always push both platforms, otherwise use platform input
-          platforms: ${{ github.ref == 'refs/heads/main' && 'linux/arm64,linux/amd64' || (inputs.platforms || 'linux/arm64,linux/amd64') }}
+          # on main, always push both platforms (unless only warming the cache), otherwise use platform input
+          platforms: ${{ github.ref == 'refs/heads/main' && !inputs.cacheOnly && 'linux/arm64,linux/amd64' || (inputs.platforms || 'linux/arm64,linux/amd64') }}
           network: host
           build-args: |
             CARGO_PROFILE=${{ inputs.profile }}
@@ -305,9 +325,11 @@ jobs:
             RESTATE_FEATURES=${{ inputs.features || '' }}
           secrets: |
             parca=${{ secrets.PARCA_TOKEN }}
-          cache-from: type=gha,url=http://127.0.0.1:49160/,version=1
+          # One cache scope per profile, so builds of different profiles on the same ref don't
+          # overwrite each other's cache index. `release` keeps the default scope.
+          cache-from: type=gha,url=http://127.0.0.1:49160/,version=1,scope=${{ inputs.profile == 'release' && 'buildkit' || format('buildkit-{0}', inputs.profile) }}
           # don't cache parca builds, they're too big
-          cache-to: ${{ !inputs.parca && 'type=gha,url=http://127.0.0.1:49160/,mode=max,version=1' || '' }}
+          cache-to: ${{ !inputs.parca && !inputs.cacheReadOnly && format('type=gha,url=http://127.0.0.1:49160/,mode=max,version=1,scope={0}', inputs.profile == 'release' && 'buildkit' || format('buildkit-{0}', inputs.profile)) || '' }}
 
       - name: Upload docker image tar as artifact
         if: ${{ inputs.uploadImageAsTarball != '' }}

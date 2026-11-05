@@ -17,6 +17,13 @@ on:
       # Keep CI on existing maintenance branches during the naming transition.
       - release-*
 
+# One run per PR branch: a new push cancels the older run. Some pushes also start two
+# `pull_request` runs for the same commit at once; this keeps only one of them.
+# Other events get a unique group, so they never wait on or cancel each other.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   workspace-hack-check:
     name: Check workspace-hack
@@ -160,6 +167,26 @@ jobs:
       features: metadata-api
       # faster-linking profile for PRs; main and release builds keep `release` (and its image tags)
       profile: ${{ github.event_name == 'pull_request' && 'release-lite' || 'release' }}
+      # A PR's cache entries land in that PR's own scope, which other PRs can't read, and
+      # exporting the dependency layer took 7-13 minutes. `docker-pr-cache` below warms it from main.
+      cacheReadOnly: ${{ github.event_name == 'pull_request' }}
+
+  docker-pr-cache:
+    name: Warm PR docker build cache
+    # PR docker builds only read the build cache. This builds their dependency layer on
+    # main so PRs can restore it instead of rebuilding ~800 crates.
+    # The inputs must match the PR build of the `docker` job above, or the layer's
+    # cache key won't match.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker.yml
+    with:
+      cacheOnly: true
+      platforms: linux/amd64
+      features: metadata-api
+      profile: release-lite
 
   sdk-java:
     name: Run SDK-Java integration tests
