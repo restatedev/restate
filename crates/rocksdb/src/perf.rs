@@ -8,8 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod collector;
 mod read_perf;
 mod write_perf;
 
+pub use self::collector::{RocksDbPerf, RocksDbPerfExt};
 pub use self::read_perf::RocksDbReadPerfGuard;
 pub use self::write_perf::RocksDbWritePerfGuard;
