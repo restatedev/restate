@@ -229,6 +229,13 @@ pub(crate) fn get_min_restate_version_from_partition_db(
         .map(|version| version.unwrap_or_default())
 }
 
+pub(crate) fn get_state_machine_features_from_partition_db(
+    db: &PartitionDb,
+) -> Result<PersistedFeatures> {
+    get_storage_codec_from_partition_db(db, fsm_variable::STATE_MACHINE_FEATURES)
+        .map(|features| features.unwrap_or_default())
+}
+
 pub(crate) async fn put_storage_version<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
