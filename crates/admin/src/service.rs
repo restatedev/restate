@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use axum::error_handling::HandleErrorLayer;
 use http::{Request, Response, StatusCode};
-use tower::{Layer, ServiceBuilder};
+use tower::ServiceBuilder;
 use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
@@ -113,10 +113,10 @@ where
         let opts = updateable_config.live_load();
         let misdirected_requests = {
             let config = Configuration::pinned();
-            MisdirectedRequestsLayer::new(
-                config.common.reject_misdirected_requests,
-                config.common.cluster_name(),
-            )
+            config
+                .common
+                .reject_misdirected_requests
+                .then(|| MisdirectedRequestsLayer::new(config.common.cluster_name()))
         };
 
         let rest_state = state::AdminServiceState::new(
@@ -228,7 +228,9 @@ where
                     )),
             );
 
-        let router = misdirected_requests.layer(router.into_service());
+        let router = ServiceBuilder::new()
+            .option_layer(misdirected_requests)
+            .service(router.into_service());
         let service = hyper_util::service::TowerToHyperService::new(router);
 
         info!(

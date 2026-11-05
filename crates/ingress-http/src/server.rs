@@ -169,10 +169,10 @@ where
 
         let misdirected_requests = {
             let config = Configuration::pinned();
-            MisdirectedRequestsLayer::new(
-                config.common.reject_misdirected_requests,
-                config.common.cluster_name(),
-            )
+            config
+                .common
+                .reject_misdirected_requests
+                .then(|| MisdirectedRequestsLayer::new(config.common.cluster_name()))
         };
 
         // BodyLimit only applies to the REST handlers. The grpc (ingestion API)
@@ -262,7 +262,7 @@ where
             .layer(NormalizePathLayer::trim_trailing_slash())
             .layer(CorsLayer::very_permissive())
             // Inside CORS so a browser caller can read the 421.
-            .layer(misdirected_requests)
+            .option_layer(misdirected_requests)
             .layer(layers::load_shed::LoadShedLayer::new(concurrency_limit))
             .layer(layers::tracing_context_extractor::HttpTraceContextExtractorLayer)
             .service(service);
