@@ -8580,6 +8580,7 @@ dependencies = [
  "derive_builder",
  "derive_more",
  "enum-map",
+ "futures",
  "metrics",
  "parking_lot",
  "restate-core",
