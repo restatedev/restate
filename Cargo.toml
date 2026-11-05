@@ -88,6 +88,7 @@ restate-util-bytecount = { path = "util/bytecount" }
 restate-util-cache-padded = { path = "util/cache-padded" }
 restate-util-lifecycle = { path = "util/lifecycle" }
 restate-util-random = { path = "util/random" }
+restate-util-sql = { path = "util/sql" }
 restate-util-string = { path = "util/string" }
 restate-util-time = { path = "util/time" }
 restate-test-util = { path = "crates/test-util" }
@@ -159,6 +160,7 @@ datafusion = { version = "55.1.0", default-features = false, features = [
 ] }
 datafusion-functions-json = { version = "0.55.2" }
 datafusion-proto = { version = "55.1.0", default-features = false }
+datafusion-sql = { version = "55.2.0", default-features = false }
 derive_builder = "0.20.2"
 derive_more = { version = "2.1.1", default-features = false }
 dialoguer = { version = "0.12.0" }
