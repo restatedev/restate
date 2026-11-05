@@ -47,6 +47,12 @@ criterion = { version = "0.8", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
 crossbeam-utils = { version = "0.8" }
 dashmap = { version = "6", default-features = false, features = ["inline"] }
+datafusion-common = { version = "55", default-features = false, features = ["object_store", "recursive_protection", "sql"] }
+datafusion-expr = { version = "55", default-features = false, features = ["proto", "recursive_protection", "sql"] }
+datafusion-functions = { version = "55", features = ["crypto_expressions"] }
+datafusion-physical-expr = { version = "55", default-features = false, features = ["proto", "recursive_protection"] }
+datafusion-physical-expr-common = { version = "55", default-features = false, features = ["proto"] }
+datafusion-sql = { version = "55", features = ["recursive_protection"] }
 deranged = { version = "0.5", features = ["serde"] }
 derive_more = { version = "2", features = ["add", "add_assign", "as_ref", "debug", "deref", "deref_mut", "display", "from", "from_str", "index", "index_mut", "into", "into_iterator", "is_variant", "try_from", "try_unwrap"] }
 digest-93f6ce9d446188ac = { package = "digest", version = "0.10", features = ["mac", "std"] }
@@ -120,6 +126,7 @@ serde_with = { version = "3", features = ["base64", "hex", "json"] }
 simd-adler32 = { version = "0.3", default-features = false, features = ["std"] }
 slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde", "union"] }
+sqlparser = { version = "0.62", default-features = false, features = ["recursive-protection", "visitor"] }
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "full", "visit", "visit-mut"] }
 sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
 tempfile = { version = "3" }
