@@ -124,8 +124,8 @@ pub struct IoTaskError;
 
 /// Runs blocking work on background threads.
 ///
-/// Implementors provide [`Self::dispatch_fn`] and [`Self::barrier`]; the other
-/// methods are helpers built on top. Each task comes with the name of the
+/// Implementors provide [`Self::dispatch_fn`]; the other methods are helpers
+/// built on top. Each task comes with the name of the
 /// operation it performs (see [`IoOp::operation`]), which an executor can use to
 /// label the metrics it records about the task. Submission is eager: a task is accepted or
 /// rejected before the method returns, not when the returned future is first
@@ -156,31 +156,6 @@ pub struct IoTaskError;
 /// may still be dropping captured resources. Use a [`TrackedExecutor`] to know
 /// when it is safe to shut down.
 pub trait IoExecutor {
-    /// Runs `callback` once all work submitted before this call has either run
-    /// or been dropped. Work submitted concurrently
-    /// with this call may land on either side of the barrier.
-    ///
-    /// ```text
-    /// dispatch(A); dispatch(B); barrier(cb); dispatch(C);
-    /// // cb runs once A and B are done. C may run concurrently with cb.
-    /// ```
-    ///
-    /// Handy in tests to wait until everything queued so far is done. A barrier
-    /// is only about ordering: it neither seals admission nor waits for leases.
-    /// [`TrackedExecutor`] forwards it to the backend, even when sealed.
-    ///
-    /// The callback must not block waiting for other work on this executor: with
-    /// a single worker, that work could never run.
-    ///
-    /// A typical implementation makes every worker pause once it reaches the
-    /// barrier. When the last one arrives, all earlier work is done, and one
-    /// worker runs the callback. Implementations must:
-    /// - Let the other workers resume *before* running the callback, and not
-    ///   hold internal locks while it runs, so a slow callback doesn't stall
-    ///   the executor.
-    /// - Make sure a panicking callback doesn't leave the other workers paused.
-    fn barrier(&self, callback: impl FnOnce() + Send + 'static);
-
     /// Submits a fire-and-forget task.
     ///
     /// `Ok(())` means the task was accepted and will run exactly once, regardless
@@ -378,10 +353,6 @@ impl<'a, E: IoExecutor> TrackedExecutor<'a, E> {
 }
 
 impl<E: IoExecutor> IoExecutor for TrackedExecutor<'_, E> {
-    fn barrier(&self, callback: impl FnOnce() + Send + 'static) {
-        self.executor.barrier(callback);
-    }
-
     fn dispatch_fn(
         &self,
         operation: &'static str,
@@ -390,6 +361,47 @@ impl<E: IoExecutor> IoExecutor for TrackedExecutor<'_, E> {
         let submission = self.gate.try_acquire().ok_or(AdmissionClosed)?;
         self.executor
             .dispatch_fn(operation, TrackedTask::new(task, submission.into_owned()))
+    }
+}
+
+/// Wraps an executor and counts the tasks submitted through it, or through its
+/// clones, until each has run or been dropped, so callers can wait until none
+/// are left.
+#[derive(Clone)]
+pub struct IdleTracker<E> {
+    executor: E,
+    tasks: Arc<Gate>,
+}
+
+impl<E> IdleTracker<E> {
+    pub fn new(executor: E) -> Self {
+        Self {
+            executor,
+            tasks: Arc::default(),
+        }
+    }
+
+    /// The wrapped executor. Tasks submitted to it directly are not counted.
+    pub fn inner(&self) -> &E {
+        &self.executor
+    }
+
+    /// Waits until every counted task has run or been dropped, including what it
+    /// captured. Tasks submitted meanwhile are waited for too, so under a steady
+    /// stream of new tasks, this may never return.
+    pub async fn wait_idle(&self) {
+        self.tasks.wait_idle().await;
+    }
+}
+
+impl<E: IoExecutor> IoExecutor for IdleTracker<E> {
+    fn dispatch_fn(
+        &self,
+        operation: &'static str,
+        task: impl IoTask<()>,
+    ) -> Result<(), AdmissionClosed> {
+        // The gate is never sealed, so it only counts.
+        TrackedExecutor::new(&self.executor, &self.tasks).dispatch_fn(operation, task)
     }
 }
 
@@ -458,10 +470,6 @@ mod tests {
     struct QueuedExecutor(mpsc::Sender<Box<dyn FnOnce() + Send>>);
 
     impl IoExecutor for QueuedExecutor {
-        fn barrier(&self, callback: impl FnOnce() + Send + 'static) {
-            self.0.send(Box::new(callback)).expect("live test executor");
-        }
-
         fn dispatch_fn(
             &self,
             _operation: &'static str,
@@ -555,10 +563,6 @@ mod tests {
         struct SealDuringDispatch(Arc<Gate>);
 
         impl IoExecutor for SealDuringDispatch {
-            fn barrier(&self, callback: impl FnOnce() + Send + 'static) {
-                callback();
-            }
-
             fn dispatch_fn(
                 &self,
                 _operation: &'static str,

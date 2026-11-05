@@ -343,24 +343,7 @@ async fn pause_lifecycle(manager: &RocksDbManager) -> Vec<mpsc::Sender<()>> {
 }
 
 async fn lifecycle_queue_drained(manager: &RocksDbManager) -> anyhow::Result<()> {
-    executor_drained(&manager.0.lifecycle_executor).await
-}
-
-async fn pools_drained(executor: &crate::GlobalExecutor) -> anyhow::Result<()> {
-    let (tx, rx) = oneshot::channel();
-    executor.barrier(move || {
-        let _ = tx.send(());
-    });
-    timeout(DEADLINE, rx).await??;
-    Ok(())
-}
-
-async fn executor_drained(executor: &impl IoExecutor) -> anyhow::Result<()> {
-    let (tx, rx) = oneshot::channel();
-    executor.barrier(move || {
-        let _ = tx.send(());
-    });
-    timeout(DEADLINE, rx).await??;
+    timeout(DEADLINE, manager.0.lifecycle_executor.wait_idle()).await?;
     Ok(())
 }
 
@@ -717,7 +700,6 @@ fn lifecycle_work_survives_runtime_shutdown_and_busy_global_executor() -> anyhow
             assert!(manager.0.lifecycle_gate.is_idle());
             db.close().await.expect("owner retains the last pin");
             drop((high, low));
-            pools_drained(&executor).await?;
         }
         global.shutdown().await;
         Ok(())
