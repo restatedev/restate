@@ -336,18 +336,26 @@ inherits = "release"
 lto = "off"
 codegen-units = 256
 split-debuginfo = "unpacked"
-debug = true
+# Line tables are enough for flamegraphs; see `profile.dev`. For full debuginfo in the
+# workspace crates, build with `CARGO_PROFILE_RELEASE_LITE_DEBUG=full`.
+debug = "line-tables-only"
 
 [profile.dev]
 panic = "unwind"
 split-debuginfo = "unpacked"
+# Line tables only: enough for file and line in backtraces and flamegraphs. Full debuginfo
+# is mostly the type names of generic and async code, makes up about 90% of our object
+# files, and slows down codegen and linking. To inspect variables in a debugger, build
+# with `CARGO_PROFILE_DEV_DEBUG=full` (see docs/dev/debug.md).
+debug = "line-tables-only"
 
+# Third-party dependencies keep line tables only, also when
+# `CARGO_PROFILE_RELEASE_LITE_DEBUG=full` restores full debuginfo for the workspace crates.
 [profile.release-lite.package."*"]
 debug = "line-tables-only"
 
-# Reduce debug info for third-party dependencies to speed up linking.
-# Keeps full debuginfo for workspace crates (useful for debugging our code)
-# while only emitting line tables for deps (sufficient for backtraces/flamegraphs).
+# Third-party dependencies keep line tables only, also when `CARGO_PROFILE_DEV_DEBUG=full`
+# restores full debuginfo for the workspace crates.
 [profile.dev.package."*"]
 debug = "line-tables-only"
 

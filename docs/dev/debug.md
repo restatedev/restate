@@ -9,6 +9,20 @@ Suggested tools include:
 * A Rust debugger (e.g. Clion)
 * Wireshark for analyzing the network
 
+## Debug info
+
+Dev and test builds only emit line tables: backtraces and profiles show files and lines,
+but a debugger can't show variables or types. To debug with full debug info for the
+workspace crates, build with:
+
+```shell
+CARGO_PROFILE_DEV_DEBUG=full cargo build
+```
+
+In an IDE, set the same environment variable in the run or debug configuration. The first
+build after switching recompiles the workspace crates. The `release-lite` profile also uses
+line tables; use `CARGO_PROFILE_RELEASE_LITE_DEBUG=full` there.
+
 ## Setting up Wireshark
 
 1. Make sure you have Wireshark set up for sniffing packets on localhost. On Linux, this usually requires root privileges.
