@@ -96,7 +96,7 @@ where
     ///
     /// The operation gets the iterator where it was left, positioned by the
     /// last seek or move. When the operation runs on the calling thread
-    /// ([`IoOp::call`](restate_core::io::IoOp::call)), it reads with this
+    /// ([`StorageOp::call`](crate::StorageOp::call)), it reads with this
     /// iterator itself, without cloning anything. When it moves to a background
     /// thread, the iterator becomes owned first ([`Self::into_owned`]), which
     /// clones its snapshot or scope and keeps its position.
