@@ -239,15 +239,16 @@ impl DeadNodes {
         grace_period: Option<Duration>,
         now: Instant,
     ) -> bool {
-        if let Some(grace_period) = grace_period
-            && let Some(dead_since) = self.0.get(&node_id)
-        {
+        let Some(grace_period) = grace_period else {
+            return false;
+        };
+        // A dead node without an entry died after the last `update` (e.g. while a scheduling pass
+        // awaited metadata writes), so its grace period has only just started.
+        self.0.get(&node_id).is_none_or(|dead_since| {
             dead_since
                 .checked_add(grace_period)
                 .is_none_or(|expiry| now < expiry)
-        } else {
-            false
-        }
+        })
     }
 
     /// Returns the earliest future instant at which a dead node's grace period expires.
@@ -1168,6 +1169,7 @@ fn matches_affinity(
 #[cfg(test)]
 mod tests {
     use restate_core::network::FailingConnector;
+    use restate_types::cluster_state::NodeState;
     use restate_types::metadata::Precondition;
     use restate_types::nodes_config::WorkerConfig;
     use restate_types::partitions::placement_policy::{PlacementFreeze, PlacementPolicy};
@@ -1350,5 +1352,109 @@ mod tests {
         );
         assert!(completed.configuration.next.is_none());
         assert_eq!(completed.configuration.placement_policy, policy);
+    }
+
+    #[test]
+    fn grace_period_delays_reconfiguration_away_from_dead_members() {
+        let partition_id = PartitionId::MIN;
+        let replication = ReplicationProperty::new_unchecked(2);
+        let grace_period = Some(Duration::from_secs(60));
+        let now = Instant::now();
+        let expired = now + Duration::from_secs(60);
+
+        let mut nodes_config = NodesConfiguration::new_for_testing();
+        for id in 1..=4 {
+            nodes_config.upsert_node(
+                NodeConfig::builder()
+                    .name(format!("node-{id}"))
+                    .current_generation(GenerationalNodeId::new(id, 1))
+                    .address(format!("unix:/tmp/node-{id}").parse().unwrap())
+                    .roles(Role::Worker.into())
+                    .worker_config(WorkerConfig {
+                        worker_state: WorkerState::Active,
+                    })
+                    .binary_version(RestateVersion::current())
+                    .build(),
+            );
+        }
+
+        // start from the replica set the scheduler picks when all nodes are alive
+        let current = Scheduler::<FailingConnector>::choose_partition_configuration(
+            partition_id,
+            &nodes_config,
+            replication.clone(),
+            NodeSet::default(),
+            |_| true,
+        )
+        .unwrap();
+        let members: Vec<_> = current.replica_set().iter().copied().collect();
+        let state = PartitionState::new(
+            current,
+            None,
+            LeadershipPolicy::default(),
+            PlacementPolicy::default(),
+        );
+
+        let requires_reconfiguration =
+            |alive: &[PlainNodeId], dead_nodes: &DeadNodes, grace_period, now| {
+                let cluster_state = ClusterState::default();
+                let mut updater = cluster_state.clone().updater();
+                for node_id in alive {
+                    updater.upsert_node_state(
+                        GenerationalNodeId::new(u32::from(*node_id), 1),
+                        NodeState::Alive,
+                    );
+                }
+                Scheduler::<FailingConnector>::requires_reconfiguration(
+                    partition_id,
+                    &state,
+                    &replication,
+                    &nodes_config,
+                    &cluster_state,
+                    |node_id| dead_nodes.is_within_grace_period(node_id, grace_period, now),
+                )
+            };
+
+        // one member is dead
+        let dead = members[0];
+        let alive: Vec<_> = (1..=4)
+            .map(PlainNodeId::from)
+            .filter(|id| *id != dead)
+            .collect();
+        let dead_nodes = DeadNodes([(dead, now)].into_iter().collect());
+
+        assert!(!requires_reconfiguration(
+            &alive,
+            &dead_nodes,
+            grace_period,
+            now
+        ));
+        assert!(requires_reconfiguration(
+            &alive,
+            &dead_nodes,
+            grace_period,
+            expired
+        ));
+        assert!(requires_reconfiguration(&alive, &dead_nodes, None, now));
+        // died after the last update of the dead nodes
+        assert!(!requires_reconfiguration(
+            &alive,
+            &DeadNodes::default(),
+            grace_period,
+            now
+        ));
+
+        // all members are dead
+        let alive: Vec<_> = (1..=4)
+            .map(PlainNodeId::from)
+            .filter(|id| !members.contains(id))
+            .collect();
+        let dead_nodes = DeadNodes(members.iter().map(|id| (*id, now)).collect());
+        assert!(requires_reconfiguration(
+            &alive,
+            &dead_nodes,
+            grace_period,
+            now
+        ));
     }
 }
