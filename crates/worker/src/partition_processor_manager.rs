@@ -1119,15 +1119,11 @@ where
             return;
         };
 
-        let Some(triggers) = self
-            .updateable_config
-            .live_load()
-            .worker
-            .snapshots
-            .automatic_snapshots()
-        else {
+        let snapshots_options = &self.updateable_config.live_load().worker.snapshots;
+        let Some(triggers) = snapshots_options.automatic_snapshots() else {
             return;
         };
+        let concurrency_limit = snapshots_options.automatic_snapshot_concurrency_limit() as usize;
 
         // Partitions with a status suitable for taking a snapshot without a running snapshot task
         let candidate_partitions = self
@@ -1144,9 +1140,8 @@ where
                     .map(|status| (*partition_id, status))
             });
 
-        // Limit the number of snapshots we schedule automatically
-        const MAX_CONCURRENT_SNAPSHOTS: usize = 4;
-        let limit = MAX_CONCURRENT_SNAPSHOTS.saturating_sub(self.pending_snapshots.len());
+        // Limit the number of snapshots in progress, requested ones included
+        let limit = concurrency_limit.saturating_sub(self.pending_snapshots.len());
 
         let mut candidate_partitions: Vec<_> = candidate_partitions.collect();
         candidate_partitions.shuffle(&mut rand::rng());

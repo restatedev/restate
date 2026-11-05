@@ -1298,13 +1298,35 @@ pub struct SnapshotsOptions {
 
     /// # Export concurrency limit
     ///
-    /// Maximum number of concurrent partition snapshot exports. This controls how
-    /// many partition stores can simultaneously export snapshots to the snapshot
-    /// repository.
+    /// Maximum number of partition stores that this node exports for snapshots at the same
+    /// time, for automatic and requested snapshots alike. An export captures the partition
+    /// store in a local directory; uploading it to the snapshot repository afterwards doesn't
+    /// count against this limit.
+    ///
+    /// Changes take effect after a restart.
     ///
     /// Default: 4
+    ///
+    /// Since v1.7.0
     #[serde(skip_serializing_if = "Option::is_none")]
     pub export_concurrency_limit: Option<NonZeroU32>,
+
+    /// # Automatic snapshot concurrency limit
+    ///
+    /// Maximum number of snapshots in progress on this node before it stops starting automatic
+    /// ones. A snapshot is in progress from exporting the partition store until it's uploaded to
+    /// the snapshot repository. Snapshots requested with `restatectl` count toward the limit
+    /// while they run, but are never held back by it.
+    ///
+    /// Exports are short and limited separately by `export-concurrency-limit`, so in practice
+    /// this limits how many snapshots are uploaded at the same time. Each one keeps its export
+    /// on local disk until its upload finishes.
+    ///
+    /// Default: 4
+    ///
+    /// Since v1.8.2
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub automatic_snapshot_concurrency_limit: Option<NonZeroU32>,
 
     #[cfg(any(test, feature = "test-util"))]
     pub enable_cleanup: bool,
@@ -1341,6 +1363,7 @@ impl Default for SnapshotsOptions {
             object_store_retry_policy: Self::default_retry_policy(),
             num_retained: default_num_retained(),
             export_concurrency_limit: None,
+            automatic_snapshot_concurrency_limit: None,
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: true,
         }
@@ -1359,6 +1382,12 @@ impl SnapshotsOptions {
 
     pub fn export_concurrency_limit(&self) -> u32 {
         self.export_concurrency_limit.map(|v| v.get()).unwrap_or(4)
+    }
+
+    pub fn automatic_snapshot_concurrency_limit(&self) -> u32 {
+        self.automatic_snapshot_concurrency_limit
+            .map(|v| v.get())
+            .unwrap_or(4)
     }
 
     /// Returns the effective automatic snapshot triggers, or `None` if automatic snapshots are
@@ -1509,6 +1538,17 @@ mod tests {
             }));
             assert_eq!(None, options.automatic_snapshots());
         }
+
+        // The concurrency limit defaults to 4, and can't be set to 0
+        assert_eq!(
+            4,
+            SnapshotsOptions::default().automatic_snapshot_concurrency_limit()
+        );
+        let options = parse(serde_json::json!({ "automatic-snapshot-concurrency-limit": 8 }));
+        assert_eq!(8, options.automatic_snapshot_concurrency_limit());
+        let mut value = serde_json::to_value(SnapshotsOptions::default()).unwrap();
+        value["automatic-snapshot-concurrency-limit"] = 0.into();
+        assert!(serde_json::from_value::<SnapshotsOptions>(value).is_err());
     }
 
     #[test]
