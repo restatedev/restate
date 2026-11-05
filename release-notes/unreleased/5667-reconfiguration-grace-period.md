@@ -22,8 +22,8 @@ when the node was just being restarted, such as during a rolling upgrade.
 - Restarting a node, or a rolling upgrade, no longer moves replicas to other nodes as long as each
   node is back within the grace period.
 - If a node stays down, its partitions run with fewer replicas until the grace period ends.
-- A partition whose replicas are all on down nodes (for example, with a replication factor of 1)
-  stays unavailable until one of those nodes comes back or the grace period ends.
+- If all of a partition's replicas are on down nodes (for example, with a replication factor of 1),
+  Restate moves the partition right away instead of waiting.
 - Moving replicas off nodes that you drain or disable is not delayed.
 
 ### Migration Guidance

@@ -917,7 +917,8 @@ impl<T: TransportConnect> Scheduler<T> {
     ///
     /// Dead members of the replica set that are still within their grace period are treated as
     /// alive. This avoids reconfiguring partitions when a node is only briefly unavailable (e.g.
-    /// during a rolling restart).
+    /// during a rolling restart). If all members of the replica set are dead, the grace period is
+    /// ignored, since the partition is unavailable until it is reconfigured.
     ///
     /// We check `next` if a reconfiguration is ongoing, otherwise `current`.
     fn requires_reconfiguration(
@@ -932,6 +933,10 @@ impl<T: TransportConnect> Scheduler<T> {
             .next
             .as_ref()
             .unwrap_or(&partition_state.current);
+        let any_member_alive = target
+            .replica_set()
+            .iter()
+            .any(|node_id| cluster_state.is_alive((*node_id).into()));
 
         target.replication() != default_replication
             || Self::choose_partition_configuration(
@@ -941,7 +946,8 @@ impl<T: TransportConnect> Scheduler<T> {
                 NodeSet::default(),
                 |node_id| {
                     cluster_state.is_alive(node_id.into())
-                        || (target.replica_set().contains(node_id)
+                        || (any_member_alive
+                            && target.replica_set().contains(node_id)
                             && is_within_grace_period(node_id))
                 },
             )

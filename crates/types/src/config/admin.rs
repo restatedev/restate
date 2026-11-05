@@ -70,8 +70,11 @@ pub struct AdminOptions {
     /// How long the cluster controller waits before moving a partition's replicas away from
     /// dead nodes. If a dead node comes back within this period (e.g. during a rolling restart),
     /// its partitions are not reconfigured, avoiding the cost of building new replicas elsewhere.
-    /// Leadership still fails over to an alive replica immediately. Set to `0s` to reconfigure
-    /// as soon as a node is considered dead.
+    /// Leadership still fails over to an alive replica immediately. If all replicas of a
+    /// partition are on dead nodes, the partition is reconfigured without waiting. Set to `0s`
+    /// to reconfigure as soon as a node is considered dead.
+    ///
+    /// Default: 5 minutes
     ///
     /// Since v1.8.2
     pub reconfiguration_grace_period: FriendlyDuration,
