@@ -58,7 +58,7 @@ on:
         default: false
         type: boolean
       cacheReadOnly:
-        description: "read the build cache but don't export to it"
+        description: "read the build cache but don't export to it (always the case for manually dispatched runs)"
         required: false
         default: false
         type: boolean
@@ -328,8 +328,11 @@ jobs:
           # One cache scope per profile, so builds of different profiles on the same ref don't
           # overwrite each other's cache index. `release` keeps the default scope.
           cache-from: type=gha,url=http://127.0.0.1:49160/,version=1,scope=${{ inputs.profile == 'release' && 'buildkit' || format('buildkit-{0}', inputs.profile) }}
-          # don't cache parca builds, they're too big
-          cache-to: ${{ !inputs.parca && !inputs.cacheReadOnly && format('type=gha,url=http://127.0.0.1:49160/,mode=max,version=1,scope={0}', inputs.profile == 'release' && 'buildkit' || format('buildkit-{0}', inputs.profile)) || '' }}
+          # Don't cache parca builds, they're too big. Manual runs only read the cache: they
+          # mostly build feature branches, whose cache scope nothing else reads, and the export
+          # can take as long as the build. The check also covers callers that were
+          # dispatched manually, since a reusable workflow sees its caller's event.
+          cache-to: ${{ !inputs.parca && !inputs.cacheReadOnly && github.event_name != 'workflow_dispatch' && format('type=gha,url=http://127.0.0.1:49160/,mode=max,version=1,scope={0}', inputs.profile == 'release' && 'buildkit' || format('buildkit-{0}', inputs.profile)) || '' }}
 
       - name: Upload docker image tar as artifact
         if: ${{ inputs.uploadImageAsTarball != '' }}
