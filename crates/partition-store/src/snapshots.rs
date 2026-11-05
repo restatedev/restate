@@ -17,19 +17,48 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::{PartitionStore, SnapshotError, SnapshotErrorKind};
+use crate::partition_db::State;
+use crate::{CommitFence, PartitionStore, SnapshotError, SnapshotErrorKind};
 
 pub use self::metadata::*;
 pub use self::repository::{PartitionSnapshotStatus, SnapshotRepository};
 pub use self::snapshot_task::*;
 
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedRwLockReadGuard, OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
 
 use restate_types::config::{Configuration, SnapshotsOptions};
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::Lsn;
+
+/// Asks a partition processor to hold back its commits during a snapshot export. It replies with
+/// the fence, or `None` if another export already holds its commits back.
+pub type CommitFenceRequest = oneshot::Sender<Option<CommitFence>>;
+
+/// What a snapshot export holds until RocksDB has captured the partition, even if whoever asked
+/// for the snapshot stops waiting: its export slot, so the export concurrency limit holds; the
+/// partition's lock, so it can't be closed, reopened or deleted; and, for an open partition, its
+/// processor's commit fence, so the data doesn't change.
+pub(crate) struct CaptureGuard {
+    _permit: OwnedSemaphorePermit,
+    _cell: OwnedRwLockReadGuard<State>,
+    _fence: Option<CommitFence>,
+}
+
+impl CaptureGuard {
+    pub(crate) fn new(
+        permit: OwnedSemaphorePermit,
+        cell: OwnedRwLockReadGuard<State>,
+        fence: Option<CommitFence>,
+    ) -> Self {
+        Self {
+            _permit: permit,
+            _cell: cell,
+            _fence: fence,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct Snapshots {
@@ -59,28 +88,64 @@ impl Snapshots {
         self.repository.is_some()
     }
 
-    pub async fn create_local_snapshot(
-        &self,
+    /// Waits for a free export slot. Exports are limited to the configured number at a time.
+    pub(crate) async fn export_slot(&self) -> OwnedSemaphorePermit {
+        Arc::clone(&self.concurrency_limit)
+            .acquire_owned()
+            .await
+            .expect("we never close the semaphore")
+    }
+
+    /// Exports the partition while nothing writes to it, so that the snapshot records exactly
+    /// the applied LSN and compatibility of the exported data. `permit` is the export's slot.
+    /// `cell` keeps the partition from being closed or reopened. `commit_fence_tx` reaches the
+    /// processor of an open partition, which holds back its commits; it's `None` for a closed
+    /// partition.
+    pub(crate) async fn create_local_snapshot(
         mut partition_store: PartitionStore,
+        permit: OwnedSemaphorePermit,
+        cell: OwnedRwLockReadGuard<State>,
+        commit_fence_tx: Option<&mpsc::Sender<CommitFenceRequest>>,
         min_target_lsn: Option<Lsn>,
         snapshot_id: SnapshotId,
         snapshot_base_path: &Path,
     ) -> Result<LocalPartitionSnapshot, SnapshotError> {
         let partition_id = partition_store.partition_id();
+        let error = |kind| SnapshotError { partition_id, kind };
 
-        let _permit = self
-            .concurrency_limit
-            .acquire()
-            .await
-            .expect("we never close the semaphore");
+        let fence = match commit_fence_tx {
+            Some(commit_fence_tx) => {
+                // NOTE: Possibly unnecessary optimization:
+                // The export flushes the partition while its commits are held back. Flushing
+                // first leaves the export only what was written since.
+                partition_store
+                    .partition_db()
+                    .flush_memtables(true)
+                    .await
+                    .map_err(|err| error(SnapshotErrorKind::Export(err.into())))?;
+                let (reply_tx, reply_rx) = oneshot::channel();
+                commit_fence_tx
+                    .send(reply_tx)
+                    .await
+                    .map_err(|_| error(SnapshotErrorKind::InvalidState))?;
+                let fence = reply_rx
+                    .await
+                    .map_err(|_| error(SnapshotErrorKind::InvalidState))?
+                    .ok_or_else(|| error(SnapshotErrorKind::SnapshotInProgress))?;
+                Some(fence)
+            }
+            None => None,
+        };
 
         partition_store
-            .create_local_snapshot(snapshot_base_path, min_target_lsn, snapshot_id)
+            .create_local_snapshot(
+                CaptureGuard::new(permit, cell, fence),
+                snapshot_base_path,
+                min_target_lsn,
+                snapshot_id,
+            )
             .await
-            .map_err(|err| SnapshotError {
-                partition_id,
-                kind: SnapshotErrorKind::Export(err.into()),
-            })
+            .map_err(|err| error(SnapshotErrorKind::Export(err.into())))
     }
 
     /// Asks the repository for the partition's latest snapshot status. Returns `None` if

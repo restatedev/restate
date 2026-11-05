@@ -130,7 +130,9 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
         let mut updated = *self.processor.enabled_features();
 
         if !known_changes.is_empty() {
-            // Commit all in-flight changes before running any migrations
+            // Commit all in-flight changes before running any migrations. The migrations write
+            // outside this transaction, so this commit is also what keeps them out of an ongoing
+            // snapshot export: it waits for the export to finish, even with nothing to commit.
             self.txn.commit().await?;
         }
 

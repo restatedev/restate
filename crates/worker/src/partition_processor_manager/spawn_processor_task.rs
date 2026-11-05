@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, instrument, warn};
 
 use restate_core::network::{ShardSender, TransportConnect};
@@ -87,6 +87,8 @@ where
         let (control_tx, control_rx) = watch::channel(TargetLeaderState::Follower);
         let (net_tx, net_rx) = ShardSender::new();
         let (watch_tx, watch_rx) = watch::channel(PartitionProcessorStatus::default());
+        // One snapshot export runs per partition at a time.
+        let (commit_fence_tx, commit_fence_rx) = mpsc::channel(1);
 
         let key_range = partition.key_range;
 
@@ -193,8 +195,13 @@ where
                     }
 
                     let db = partition_store.into_inner();
-                    let pp_builder =
-                        PartitionProcessorBuilder::new(control_rx, net_rx, watch_tx, node_ctx);
+                    let pp_builder = PartitionProcessorBuilder::new(
+                        control_rx,
+                        net_rx,
+                        watch_tx,
+                        commit_fence_rx,
+                        node_ctx,
+                    );
 
                     let run_result = async move {
                         let pp = pp_builder
@@ -218,6 +225,7 @@ where
             control_tx,
             net_tx,
             watch_rx,
+            commit_fence_tx,
         );
 
         Ok((state, root_task_handle))
