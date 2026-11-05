@@ -25,12 +25,15 @@ use crate::ui::fmt::{Field, Formatter, IncludeFormatting, Outcome, OutputFormatt
 
 use super::deployment_name::hostname;
 
-/// The keys the SDKs read, with the role each one needs.
-const KEYS: [(&str, &str); 2] = [
-    ("RESTATE_CONNECT_KEY", "rst:role::TunnelAccess"),
-    ("RESTATE_INGRESS_KEY", "rst:role::IngressAccess"),
+/// The keys the SDKs read, with the role each one needs and whether it carries the
+/// environment's signing key (only the connect key does).
+const KEYS: [(&str, &str, bool); 2] = [
+    ("RESTATE_CONNECT_KEY", "rst:role::TunnelAccess", true),
+    ("RESTATE_INGRESS_KEY", "rst:role::IngressAccess", false),
 ];
 const DEFAULT_OUTPUT: &str = "restate.env";
+/// The prefix of every Restate Cloud key the SDKs read.
+const CLOUD_KEY_PREFIX: &str = "rstcloudv1_";
 
 /// Mint the keys an SDK needs to reach the current Cloud environment, into a dotenv file
 ///
@@ -81,6 +84,22 @@ pub async fn run_connect_sdk(State(env): State<CliEnv>, opts: &ConnectSdk) -> Re
     };
     let client = CloudClient::new(&env)?;
 
+    // The coordinates the keys carry besides the API key.
+    let environment = client
+        .describe_environment(
+            &environment_info.account_id,
+            &environment_info.environment_id,
+        )
+        .await?
+        .into_body()
+        .await?;
+    let region = region_domain(&environment.ingress_base_url).with_context(|| {
+        format!(
+            "Cannot tell the region of environment {} from its ingress URL {}",
+            environment_info.environment_id, environment.ingress_base_url
+        )
+    })?;
+
     // Claim the file before minting anything: a key with no file to land in is lost.
     let mut file = if opts.stdout {
         None
@@ -105,7 +124,7 @@ pub async fn run_connect_sdk(State(env): State<CliEnv>, opts: &ConnectSdk) -> Re
     )];
     let mut values = Vec::with_capacity(KEYS.len());
     let mut minted = Vec::with_capacity(KEYS.len());
-    let mut mint = async |variable: &str, role_id: &str| -> Result<()> {
+    let mut mint = async |variable: &str, role_id: &str, with_signing_key: bool| -> Result<()> {
         let key = client
             .create_api_key(
                 &environment_info.account_id,
@@ -119,7 +138,13 @@ pub async fn run_connect_sdk(State(env): State<CliEnv>, opts: &ConnectSdk) -> Re
             .into_body()
             .await
             .with_context(|| format!("Failed to create the key for {variable}"))?;
-        let value = format!("{variable}=\"{}\"", key.api_key);
+        let cloud_key = cloud_key(
+            &environment_info.environment_id,
+            &key.api_key,
+            &region,
+            with_signing_key.then_some(environment.signing_public_key.as_str()),
+        );
+        let value = format!("{variable}=\"{cloud_key}\"");
         lines.push(format!("# key {} ({})", key.key_id, key.role_id));
         lines.push(value.clone());
         values.push(value);
@@ -147,8 +172,8 @@ pub async fn run_connect_sdk(State(env): State<CliEnv>, opts: &ConnectSdk) -> Re
             ))
         }
     };
-    for (variable, role_id) in KEYS {
-        if let Err(err) = mint(variable, role_id).await {
+    for (variable, role_id, with_signing_key) in KEYS {
+        if let Err(err) = mint(variable, role_id, with_signing_key).await {
             return Err(abandon(err, file.take(), &minted));
         }
     }
@@ -196,7 +221,7 @@ pub async fn run_connect_sdk(State(env): State<CliEnv>, opts: &ConnectSdk) -> Re
                 Field::with_display(
                     &minted,
                     KEYS.iter()
-                        .map(|(variable, _)| *variable)
+                        .map(|(variable, ..)| *variable)
                         .collect::<Vec<_>>()
                         .join(", "),
                 ),
@@ -227,6 +252,37 @@ pub async fn run_connect_sdk(State(env): State<CliEnv>, opts: &ConnectSdk) -> Re
         IncludeFormatting::No,
     );
     f.finish()
+}
+
+/// The region domain of an environment (`eu.restate.cloud`): what follows `.env.` in the
+/// host of its ingress URL (`https://<id>.env.<region>:8080`).
+fn region_domain(ingress_base_url: &str) -> Option<String> {
+    let url = url::Url::parse(ingress_base_url).ok()?;
+    let (_, region) = url.host_str()?.split_once(".env.")?;
+    (!region.is_empty()).then(|| region.to_owned())
+}
+
+/// A Restate Cloud key as the SDKs read it: `rstcloudv1_` followed by the base58 (Bitcoin
+/// alphabet) of the query string `envid=…&apikey=…&region=…`, plus `&signingkey=…` for a
+/// connect key.
+fn cloud_key(
+    environment_id: &str,
+    api_key: &str,
+    region: &str,
+    signing_public_key: Option<&str>,
+) -> String {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query
+        .append_pair("envid", environment_id)
+        .append_pair("apikey", api_key)
+        .append_pair("region", region);
+    if let Some(signing_public_key) = signing_public_key {
+        query.append_pair("signingkey", signing_public_key);
+    }
+    format!(
+        "{CLOUD_KEY_PREFIX}{}",
+        bs58::encode(query.finish()).into_string()
+    )
 }
 
 /// Create `path` for writing, failing if it exists (it's never read or replaced) or can't
@@ -282,5 +338,31 @@ mod tests {
         assert!(create_new(&path).is_ok());
         let err = create_new(&path).unwrap_err().to_string();
         assert!(err.contains("already exists"), "{err}");
+    }
+
+    #[test]
+    fn cloud_key_encodes_the_sdk_query_string() {
+        let key = cloud_key(
+            "env_201kxe0kdaynq7h1fsn2chhcbwb",
+            "key_01abc.secret",
+            "eu.restate.cloud",
+            Some("publickeyv1_ChjENKeMvCtRnqG2mrBK1HmPKufgFUc98K8B3ononQvp"),
+        );
+        let query = bs58::decode(key.strip_prefix(CLOUD_KEY_PREFIX).unwrap())
+            .into_vec()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(query).unwrap(),
+            "envid=env_201kxe0kdaynq7h1fsn2chhcbwb&apikey=key_01abc.secret&region=eu.restate.cloud&signingkey=publickeyv1_ChjENKeMvCtRnqG2mrBK1HmPKufgFUc98K8B3ononQvp"
+        );
+    }
+
+    #[test]
+    fn region_domain_is_what_follows_env_in_the_ingress_host() {
+        assert_eq!(
+            region_domain("https://201kxe0kdaynq7h1fsn2chhcbwb.env.acme.byoc.restate.cloud:8080/")
+                .as_deref(),
+            Some("acme.byoc.restate.cloud")
+        );
     }
 }

@@ -7632,6 +7632,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "bm25",
+ "bs58",
  "bytes",
  "chrono",
  "chrono-humanize",
