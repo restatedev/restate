@@ -9063,6 +9063,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-util-sql"
+version = "1.8.2-dev"
+dependencies = [
+ "datafusion-sql",
+ "restate-util-string",
+ "restate-workspace-hack",
+]
+
+[[package]]
 name = "restate-util-string"
 version = "1.8.2-dev"
 dependencies = [
@@ -9306,6 +9315,12 @@ dependencies = [
  "crossbeam-epoch",
  "crossbeam-utils",
  "dashmap",
+ "datafusion-common",
+ "datafusion-expr",
+ "datafusion-functions",
+ "datafusion-physical-expr",
+ "datafusion-physical-expr-common",
+ "datafusion-sql",
  "deranged",
  "derive_more",
  "derive_more-impl",
@@ -9391,6 +9406,7 @@ dependencies = [
  "simd-adler32",
  "slab",
  "smallvec",
+ "sqlparser",
  "syn 2.0.119",
  "syn 3.0.6",
  "sync_wrapper",
