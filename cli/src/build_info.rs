@@ -18,6 +18,8 @@ use restate_cli_util::c_println;
 use restate_cli_util::ui::console::Icon;
 use restate_types::SemanticRestateVersion;
 
+use crate::clients::github::GithubClient;
+
 /// The version of restate CLI.
 pub const RESTATE_CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const RESTATE_CLI_VERSION_MAJOR: &str = env!("CARGO_PKG_VERSION_MAJOR");
@@ -58,21 +60,17 @@ pub fn is_debug() -> bool {
 }
 
 pub async fn check_if_latest_version() {
-    let octocrab = octocrab::instance();
-    let Ok(mut latest) = octocrab
-        .repos("restatedev", "restate")
-        .releases()
-        .get_latest()
-        .await
-    else {
+    let Ok(client) = GithubClient::new() else {
+        return;
+    };
+    let Ok(latest) = client.latest_release("restatedev", "restate").await else {
         return;
     };
 
     let current_version = SemanticRestateVersion::current().clone();
-    if latest.tag_name.starts_with("v") {
-        // ignore if the tag is not a version
-        let version_str = latest.tag_name.split_off(1);
-        let Ok(latest_release) = SemanticRestateVersion::from_str(&version_str) else {
+    // ignore if the tag is not a version
+    if let Some(version_str) = latest.tag_name.strip_prefix('v') {
+        let Ok(latest_release) = SemanticRestateVersion::from_str(version_str) else {
             return;
         };
 
@@ -85,11 +83,8 @@ pub async fn check_if_latest_version() {
                 Icon("📣⬆️", ""),
                 current_version.to_string(),
                 latest_release.to_string(),
-                latest
-                    .published_at
-                    .map(|d| d.to_string())
-                    .unwrap_or_else(|| "<unknown>".to_owned()),
-                latest.html_url.to_string()
+                latest.published_at.as_deref().unwrap_or("<unknown>"),
+                latest.html_url
             );
         }
     }

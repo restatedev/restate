@@ -46,22 +46,32 @@ pub fn is_debug() -> bool {
     RESTATE_SERVER_DEBUG == "true" && RESTATE_SERVER_DEBUG_STRIPPED != Some("true")
 }
 
-pub async fn check_if_latest_version() {
-    let octocrab = octocrab::instance();
-    let Ok(mut latest) = octocrab
-        .repos("restatedev", "restate")
-        .releases()
-        .get_latest()
+async fn fetch_latest_release() -> reqwest::Result<serde_json::Value> {
+    reqwest::Client::builder()
+        .user_agent(format!("restate-server/{RESTATE_SERVER_VERSION}"))
+        .https_only(true)
+        .build()?
+        .get("https://api.github.com/repos/restatedev/restate/releases/latest")
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
         .await
-    else {
+}
+
+pub async fn check_if_latest_version() {
+    let Ok(latest) = fetch_latest_release().await else {
         return;
     };
 
     let current_version = SemanticRestateVersion::current().clone();
-    if latest.tag_name.starts_with("v") {
-        // ignore if the tag is not a version
-        let version_str = latest.tag_name.split_off(1);
-        let Ok(latest_release) = SemanticRestateVersion::from_str(&version_str) else {
+    // ignore if the tag is not a version
+    if let Some(version_str) = latest["tag_name"]
+        .as_str()
+        .and_then(|tag| tag.strip_prefix('v'))
+    {
+        let Ok(latest_release) = SemanticRestateVersion::from_str(version_str) else {
             return;
         };
 
@@ -73,11 +83,8 @@ pub async fn check_if_latest_version() {
                 %current_version,
                 "📣⬆️New Version Notice: v{} was released at {}, check it out at {}",
                 latest_release.to_string(),
-                latest
-                    .published_at
-                    .map(|d| d.to_string())
-                    .unwrap_or_else(|| "<unknown>".to_owned()),
-                latest.html_url.to_string()
+                latest["published_at"].as_str().unwrap_or("<unknown>"),
+                latest["html_url"].as_str().unwrap_or("<unknown>")
             );
         }
     }
