@@ -8,12 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::Arc;
 use std::time::Instant;
 
 use metrics::{Gauge, gauge, histogram};
-use parking_lot::Mutex;
 
 use restate_core::io::{AdmissionClosed, Gate, IoExecutor, IoOp, IoTask, TrackedTask};
 
@@ -577,7 +575,6 @@ pub struct SinglePoolExecutor(Arc<SinglePoolExecutorInner>);
 struct SinglePoolExecutorInner {
     name: &'static str,
     pool: threadpool::ThreadPool,
-    barrier_submission: Mutex<()>,
 }
 
 impl SinglePoolExecutor {
@@ -589,11 +586,7 @@ impl SinglePoolExecutor {
             .num_threads(num_threads)
             .build();
 
-        Self(Arc::new(SinglePoolExecutorInner {
-            name,
-            pool,
-            barrier_submission: Mutex::new(()),
-        }))
+        Self(Arc::new(SinglePoolExecutorInner { name, pool }))
     }
 
     #[cfg(any(test, feature = "test-util"))]
@@ -603,11 +596,6 @@ impl SinglePoolExecutor {
 }
 
 impl IoExecutor for SinglePoolExecutor {
-    fn barrier(&self, callback: impl FnOnce() + Send + 'static) {
-        let _submission = self.0.barrier_submission.lock();
-        pool_barrier(&self.0.pool, callback);
-    }
-
     fn dispatch_fn(
         &self,
         operation: &'static str,
@@ -698,80 +686,16 @@ impl GlobalExecutor {
             Priority::Low => &self.low_pri,
         }
     }
-
-    /// Runs `callback` once all work submitted to either pool before this call
-    /// has run or been dropped. See [`IoExecutor::barrier`].
-    pub fn barrier(&self, callback: impl FnOnce() + Send + 'static) {
-        // Each pool gets its own barrier. Whichever passes second runs `callback`.
-        let pending = Arc::new(AtomicUsize::new(2));
-        let callback = Arc::new(Mutex::new(Some(callback)));
-        for pool in [&self.high_pri, &self.low_pri] {
-            let pending = Arc::clone(&pending);
-            let callback = Arc::clone(&callback);
-            pool.barrier(move || {
-                if pending.fetch_sub(1, Ordering::AcqRel) == 1 {
-                    let callback = callback.lock().take().expect("runs once");
-                    callback();
-                }
-            });
-        }
-    }
-}
-
-fn pool_barrier(pool: &threadpool::ThreadPool, callback: impl FnOnce() + Send + 'static) {
-    struct Canary<F> {
-        workers: Barrier,
-        callback: Mutex<Option<F>>,
-    }
-
-    // A barrier queues one canary task per worker, and each canary blocks until all
-    // of them are running, which means all earlier work is done. If two barriers'
-    // canaries were interleaved in the queue, every worker could end up blocked in
-    // a half-complete barrier while its remaining canaries wait behind them. The
-    // caller holds the submission lock while we queue the whole batch.
-    let workers = pool.max_count();
-    let canary = Arc::new(Canary {
-        workers: Barrier::new(workers),
-        callback: Mutex::new(Some(callback)),
-    });
-    for _ in 0..workers {
-        let canary = canary.clone();
-        pool.execute(move || {
-            if canary.workers.wait().is_leader() {
-                let callback = canary.callback.lock().take().expect("one leader");
-                callback();
-            }
-        });
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::future::Future;
     use std::rc::Rc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-
-    use tokio::sync::oneshot;
 
     use restate_core::io::{Gate, TrackedExecutor};
 
     use super::*;
-
-    fn observe_barrier(executor: &impl IoExecutor) -> oneshot::Receiver<()> {
-        let (tx, rx) = oneshot::channel();
-        executor.barrier(move || {
-            let _ = tx.send(());
-        });
-        rx
-    }
-
-    fn observe_global_barrier(executor: &GlobalExecutor) -> oneshot::Receiver<()> {
-        let (tx, rx) = oneshot::channel();
-        executor.barrier(move || {
-            let _ = tx.send(());
-        });
-        rx
-    }
 
     #[test]
     fn guards_are_execution_local_and_optional() {
@@ -885,7 +809,6 @@ mod tests {
             );
         }
         gate.drain().await;
-        observe_global_barrier(&backend).await.unwrap();
         assert_eq!(
             backend
                 .low_pri()
@@ -895,128 +818,5 @@ mod tests {
                 .unwrap(),
             42
         );
-    }
-
-    #[tokio::test]
-    async fn global_barrier_covers_both_pools_and_recovers_from_callback_panic() {
-        use std::sync::mpsc;
-        use std::time::Duration;
-
-        let backend = GlobalExecutor::new(
-            SinglePoolExecutor::new("test-high", 2),
-            SinglePoolExecutor::new("test-low", 2),
-        );
-        let mut releases = Vec::new();
-        for priority in [Priority::High, Priority::Low] {
-            let (release, wait) = mpsc::channel::<()>();
-            let (started, reached) = oneshot::channel();
-            backend
-                .pool(priority)
-                .dispatch_fn("test", move || {
-                    let _ = started.send(());
-                    let _ = wait.recv();
-                })
-                .unwrap();
-            reached.await.unwrap();
-            releases.push(release);
-        }
-        // The barrier passes only once the work in both pools is done.
-        let mut completed = observe_global_barrier(&backend);
-        assert!(matches!(
-            completed.try_recv(),
-            Err(oneshot::error::TryRecvError::Empty)
-        ));
-        drop(releases.pop());
-        assert!(matches!(
-            completed.try_recv(),
-            Err(oneshot::error::TryRecvError::Empty)
-        ));
-        drop(releases);
-        tokio::time::timeout(Duration::from_secs(10), completed)
-            .await
-            .unwrap()
-            .unwrap();
-
-        let (tx, rx) = oneshot::channel::<()>();
-        backend.barrier(move || {
-            let _tx = tx;
-            panic!("callback panic must not strand the pools");
-        });
-        assert!(
-            tokio::time::timeout(Duration::from_secs(10), rx)
-                .await
-                .unwrap()
-                .is_err()
-        );
-        tokio::time::timeout(Duration::from_secs(10), observe_global_barrier(&backend))
-            .await
-            .unwrap()
-            .unwrap();
-
-        // A tracked executor forwards barriers to its pool, even once sealed.
-        let gate = Arc::new(Gate::default());
-        gate.seal();
-        let executor = TrackedExecutor::new(backend.low_pri(), &gate);
-        tokio::time::timeout(Duration::from_secs(10), observe_barrier(&executor))
-            .await
-            .unwrap()
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn worker_barriers_wait_for_all_workers_and_survive_cancelled_observers() {
-        use std::sync::mpsc;
-        use std::task::{Context, Poll, Waker};
-        use std::time::Duration;
-
-        let executor = SinglePoolExecutor::new("barrier-test", 3);
-        let (started, reached) = oneshot::channel();
-        let (resume, paused) = mpsc::channel::<()>();
-        executor
-            .dispatch_fn("test", move || {
-                started.send(()).unwrap();
-                let _ = paused.recv();
-            })
-            .unwrap();
-        reached.await.unwrap();
-
-        let mut barrier = Box::pin(observe_barrier(&executor));
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while executor.0.pool.active_count() != 3 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("the other workers reached their canaries");
-        assert!(matches!(
-            barrier
-                .as_mut()
-                .poll(&mut Context::from_waker(Waker::noop())),
-            Poll::Pending
-        ));
-        // Dropping the barrier's receiver must not leave the workers already waiting in
-        // it stuck.
-        drop(barrier);
-        let barriers = std::thread::scope(|scope| {
-            let submissions: Vec<_> = (0..8)
-                .map(|_| {
-                    let executor = &executor;
-                    scope.spawn(move || observe_barrier(executor))
-                })
-                .collect();
-            submissions
-                .into_iter()
-                .map(|submission| submission.join().unwrap())
-                .collect::<Vec<_>>()
-        });
-        drop(resume);
-        tokio::time::timeout(Duration::from_secs(10), async {
-            for barrier in barriers {
-                barrier.await.unwrap();
-            }
-            assert_eq!(executor.spawn_fn("test", || 42).unwrap().await.unwrap(), 42);
-        })
-        .await
-        .unwrap();
     }
 }
