@@ -628,6 +628,8 @@ pub struct CommonOptions {
     /// Hidden, temporary until the HTTP listeners support TLS: reject requests on the
     /// ingress and admin listeners that target another cluster with 421 Misdirected
     /// Request.
+    ///
+    /// Since v1.8.2
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[cfg_attr(feature = "schemars", schemars(skip))]
     pub reject_misdirected_requests: bool,
