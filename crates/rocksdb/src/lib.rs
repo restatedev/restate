@@ -41,7 +41,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
 use restate_core::ShutdownError;
-use restate_core::io::{AdmissionClosed, Gate, IoExecutor, Lease, OwnedLease, TrackedTask};
+use restate_core::io::{AdmissionClosed, Gate, IoExecutor, Lease, OwnedLease};
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::protobuf::common::DatabaseKind;
 pub use restate_types::rocksdb::{BottommostLevelCompaction, ManualCompactionOptions};
@@ -611,7 +611,7 @@ impl RocksDb {
     /// Prepares an operation on this database without running it yet.
     ///
     /// Run it on the current thread with
-    /// [`IoOp::call`](restate_core::io::IoOp::call), or submit it to any
+    /// [`SyncIoOp::call`](restate_core::io::SyncIoOp::call), or submit it to any
     /// [`IoExecutor`], such as one of [`Self::executor`]'s pools, to run it on a
     /// background thread. Admission is checked at that point, not now: a prepared
     /// operation doesn't delay [`Self::drain`], and if the database is sealed first,
@@ -667,16 +667,23 @@ impl RocksDb {
             .registration
             .as_ref()
             .map(|r| r.manager.track_lifecycle());
-        let task = TrackedTask::new(
+        let drop_cf = move || {
+            self.db
+                .as_raw_db()
+                .drop_cf(name.as_str())
+                .map_err(RocksError::from)
+        };
+        // Tuple fields drop in order, so the database is released before the lease,
+        // even if the task is dropped without running. `{ task }` makes the closure
+        // capture the tuple whole, rather than its fields one by one.
+        let task = (drop_cf, lease);
+        StorageOp::without_admission(
             move || {
-                self.db
-                    .as_raw_db()
-                    .drop_cf(name.as_str())
-                    .map_err(RocksError::from)
+                let (drop_cf, _lease) = { task };
+                drop_cf()
             },
-            lease,
-        );
-        StorageOp::without_admission(move || task.run(), StorageTaskKind::DropColumnFamily)
+            StorageTaskKind::DropColumnFamily,
+        )
     }
 
     /// Prepares flushing the memtables of all of `scope`'s column families, to

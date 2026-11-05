@@ -20,7 +20,7 @@ use rocksdb::{ErrorKind, ReadOptions, ReadTier};
 use tokio::time::timeout;
 
 use restate_core::TaskCenterBuilder;
-use restate_core::io::{Gate, IoOp, IoTask};
+use restate_core::io::{Gate, IoOp, IoTask, SyncIoOp};
 use restate_platform::sync::Mutex;
 use restate_types::protobuf::common::DatabaseKind;
 use restate_util_lifecycle::{KeepAlive, Scope, ScopePayload};
@@ -293,7 +293,8 @@ fn reads_see_the_database_as_it_was_when_the_snapshot_was_taken() -> anyhow::Res
     let task = moved
         .prepare(&gate, StorageTaskKind::BackgroundIterator, read_rest)
         .into_task()?;
-    let rest = std::thread::spawn(move || task.run()).join().unwrap()?;
+    let on_other_thread = move || futures::executor::block_on(task.run());
+    let rest = std::thread::spawn(on_other_thread).join().unwrap()?;
     assert_eq!(rest, [kv("b", ""), kv("c", "3")]);
 
     // After sealing the scope, no new snapshot of it can be taken, but reads
