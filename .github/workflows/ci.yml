@@ -257,7 +257,6 @@ jobs:
     uses: restatedev/sdk-typescript/.github/workflows/integration.yaml@main
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
-      serviceImage: "ghcr.io/restatedev/test-services-node:main"
 
   sdk-typescript-protocol-v7:
     name: Run SDK-Typescript integration tests with Protocol V7
