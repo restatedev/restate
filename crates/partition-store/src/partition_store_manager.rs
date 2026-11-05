@@ -284,7 +284,7 @@ impl PartitionStoreManager {
         // note: we don't hold the map read lock while trying to acquire the partition cell's lock.
         // hence the `cloned()` call.
         let cell = self.state.partitions.read().get(&partition_id).cloned()?;
-        cell.clone_db().await
+        cell.clone_db()
     }
 
     /// Returns the partition metadata if the database is open locally
@@ -295,15 +295,17 @@ impl PartitionStoreManager {
         // note: we don't hold the map read lock while trying to acquire the partition cell's lock.
         // hence the `cloned()` call.
         let cell = self.state.partitions.read().get(&partition_id).cloned()?;
-        cell.get_partition_if_open().await
+        cell.get_partition_if_open()
     }
 
-    /// Returns a partition store that's already open by a running partition processor
+    /// Returns a partition store that's already open by a running partition processor. A
+    /// partition in the middle of a transition, such as opening it from a snapshot download,
+    /// reads as not open instead of being waited for.
     pub async fn get_partition_store(&self, partition_id: PartitionId) -> Option<PartitionStore> {
         // note: we don't hold the map read lock while trying to acquire the partition cell's lock.
         // hence the `cloned()` call.
         let cell = self.state.partitions.read().get(&partition_id).cloned()?;
-        cell.clone_db().await.map(PartitionStore::from)
+        cell.clone_db().map(PartitionStore::from)
     }
 
     /// Opens a partition store for the given partition, potentially re-creating it from a snapshot
@@ -654,8 +656,9 @@ mod tests {
             let mut store = manager.open(&partition, None).await?;
             let mut neighbor = manager.open(&sibling, None).await?;
             write_applied_lsn(&mut store, 10).await?;
-            // The memory controller skips a partition in the middle of a transition
-            // instead of waiting for it, and sees it again once the transition is over.
+            // The memory controller and queries skip a partition in the middle of a
+            // transition instead of waiting for it, and see it again once the transition
+            // is over.
             let maybe_open = || {
                 let mut ids: Vec<_> = manager
                     .state
@@ -670,8 +673,31 @@ mod tests {
                 let cell = manager.state.get(partition.partition_id).unwrap();
                 let _transition = cell.inner.write().await;
                 assert_eq!(maybe_open(), [sibling.partition_id]);
+                let id = partition.partition_id;
+                assert!(
+                    timeout(DEADLINE, manager.get_partition_store(id))
+                        .await?
+                        .is_none()
+                );
+                assert!(
+                    timeout(DEADLINE, manager.get_local_partition_if_open(id))
+                        .await?
+                        .is_none()
+                );
+                assert!(
+                    manager
+                        .get_partition_store(sibling.partition_id)
+                        .await
+                        .is_some()
+                );
             }
             assert_eq!(maybe_open(), [partition.partition_id, sibling.partition_id]);
+            assert!(
+                manager
+                    .get_partition_store(partition.partition_id)
+                    .await
+                    .is_some()
+            );
             let database = manager.open_rocksdb(&partition).await?;
             let cf_id = store.cf_for_key_kind(KeyKind::Fsm).id();
             let released = store.partition_db().released();
