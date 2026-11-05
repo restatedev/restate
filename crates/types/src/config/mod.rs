@@ -498,6 +498,15 @@ impl Configuration {
             return Err(InvalidConfigurationError::ForceNodeIdZero);
         }
 
+        if self.common.reject_misdirected_requests
+            && let Err(err) = ::http::HeaderValue::from_str(self.common.cluster_name())
+        {
+            return Err(InvalidConfigurationError::InvalidClusterName {
+                cluster_name: self.common.cluster_name().to_owned(),
+                reason: err.to_string(),
+            });
+        }
+
         if self.common.node_name.is_none() {
             // If the node name is not set, we will fallback to use hostname as the node name.
             // So to avoid changing hostname to make data loss, we must validate the directory's entry.
@@ -691,6 +700,13 @@ pub enum InvalidConfigurationError {
     DeriveBindAddress(String),
     #[error("node-name is required: {0}")]
     RequiredNodeName(String),
+    #[error(
+        "cluster-name '{cluster_name}' is not a valid HTTP header value: {reason}; reject-misdirected-requests requires a visible-ASCII cluster name"
+    )]
+    InvalidClusterName {
+        cluster_name: String,
+        reason: String,
+    },
     #[error("invalid {key} '{address}': {reason}")]
     AdvertisedAddress {
         key: &'static str,
@@ -971,6 +987,27 @@ mod tests {
             parse(Some("1h")),
             Some(std::time::Duration::from_secs(3600))
         );
+    }
+
+    #[test]
+    fn validate_requires_header_safe_cluster_name_for_misdirected_requests() {
+        let config = |cluster_name: &str, reject: bool| {
+            let mut json = serde_json::to_value(Configuration::default()).unwrap();
+            json["cluster-name"] = json!(cluster_name);
+            json["reject-misdirected-requests"] = json!(reject);
+            serde_json::from_value::<Configuration>(json).unwrap()
+        };
+
+        // With the option off, an unusable cluster name is still accepted.
+        assert!(config("invalid\ncluster", false).validate().is_ok());
+
+        let err = config("invalid\ncluster", true).validate().unwrap_err();
+        assert!(matches!(
+            err,
+            InvalidConfigurationError::InvalidClusterName { .. }
+        ));
+
+        assert!(config("valid-cluster", true).validate().is_ok());
     }
 
     #[test]

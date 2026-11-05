@@ -31,11 +31,12 @@ use tower_http::normalize_path::NormalizePathLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{Span, debug, info, info_span, instrument};
 
+use restate_core::network::misdirected_requests::MisdirectedRequestsLayer;
 use restate_core::network::{TransportConnect, hyper_error_status};
 use restate_core::{TaskCenter, TaskCenterFutureExt, cancellation_token, task_center};
 use restate_ingestion_client::IngestionClient;
 use restate_types::Versioned;
-use restate_types::config::IngressOptions;
+use restate_types::config::{Configuration, IngressOptions};
 use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
 use restate_types::live::{BoxLiveLoad, Live, LiveLoad};
@@ -166,6 +167,14 @@ where
             )
         };
 
+        let misdirected_requests = {
+            let config = Configuration::pinned();
+            MisdirectedRequestsLayer::new(
+                config.common.reject_misdirected_requests,
+                config.common.cluster_name(),
+            )
+        };
+
         // BodyLimit only applies to the REST handlers. The grpc (ingestion API)
         // doesn't have a request size limit since it's a continues stream.
         let ingress_service = ServiceBuilder::new()
@@ -250,6 +259,7 @@ where
                         },
                     ),
             )
+            .layer(misdirected_requests)
             .layer(NormalizePathLayer::trim_trailing_slash())
             .layer(CorsLayer::very_permissive())
             .layer(layers::load_shed::LoadShedLayer::new(concurrency_limit))

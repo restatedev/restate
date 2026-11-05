@@ -625,6 +625,13 @@ pub struct CommonOptions {
     /// have the same.
     cluster_name: String,
 
+    /// Hidden, temporary until the HTTP listeners support TLS: reject requests on the
+    /// ingress and admin listeners that target another cluster with 421 Misdirected
+    /// Request.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub reject_misdirected_requests: bool,
+
     /// # Auto cluster provisioning
     ///
     /// If true, then this node is allowed to automatically provision as a new cluster.
@@ -1418,6 +1425,7 @@ impl Default for CommonOptions {
             location: None,
             force_node_id: None,
             cluster_name: "localcluster".to_owned(),
+            reject_misdirected_requests: false,
             // auto provision the cluster by default. This is very likely to change in the future to be
             // false by default. For now, this is true to make the converged deployment backward
             // compatible and easy for users.

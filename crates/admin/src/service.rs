@@ -13,13 +13,14 @@ use std::time::Duration;
 
 use axum::error_handling::HandleErrorLayer;
 use http::{Request, Response, StatusCode};
-use tower::ServiceBuilder;
+use tower::{Layer, ServiceBuilder};
 use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{Span, debug, info, info_span};
 
 use restate_admin_rest_model::version::AdminApiVersion;
+use restate_core::network::misdirected_requests::MisdirectedRequestsLayer;
 use restate_core::network::{TransportConnect, net_util};
 use restate_core::{MetadataWriter, TaskCenter};
 use restate_ingestion_client::IngestionClient;
@@ -28,7 +29,7 @@ use restate_metadata_store::MetadataStoreClient;
 use restate_service_client::HttpClient;
 use restate_service_protocol_v4::discovery::ServiceDiscovery;
 use restate_service_protocol_v4::serdes::SerdesClient;
-use restate_types::config::AdminOptions;
+use restate_types::config::{AdminOptions, Configuration};
 use restate_types::invocation::client::InvocationClient;
 use restate_types::live::LiveLoad;
 use restate_types::net::address::AdminPort;
@@ -110,6 +111,13 @@ where
         mut updateable_config: impl LiveLoad<Live = AdminOptions>,
     ) -> anyhow::Result<()> {
         let opts = updateable_config.live_load();
+        let misdirected_requests = {
+            let config = Configuration::pinned();
+            MisdirectedRequestsLayer::new(
+                config.common.reject_misdirected_requests,
+                config.common.cluster_name(),
+            )
+        };
 
         let rest_state = state::AdminServiceState::new(
             self.schema_registry,
@@ -220,7 +228,8 @@ where
                     )),
             );
 
-        let service = hyper_util::service::TowerToHyperService::new(router.into_service());
+        let router = misdirected_requests.layer(router.into_service());
+        let service = hyper_util::service::TowerToHyperService::new(router);
 
         info!(
             "Admin API starting on: {}",
