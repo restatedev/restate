@@ -49,10 +49,9 @@ pub struct SnapshotCompatibility {
 }
 
 /// A partition store snapshot. Metadata object which is published alongside with the partition
-/// store RocksDB SST files that make up a particular checkpoint for a given partition. Note that
-/// the applied LSN is read from the store itself, before the snapshot checkpoint is created. It
-/// could therefore be smaller than the actual LSN of the snapshot, which can only be determined
-/// when the snapshot is imported and opened for reading.
+/// store RocksDB SST files that make up a particular checkpoint for a given partition. Snapshots
+/// from older servers can record an applied LSN smaller than the actual LSN of their data, which
+/// can only be determined when the snapshot is imported and opened for reading.
 #[serde_as]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(from = "PartitionSnapshotMetadataShadow")]

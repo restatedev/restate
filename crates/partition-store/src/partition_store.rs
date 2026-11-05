@@ -12,6 +12,7 @@ use std::ops::ControlFlow;
 use std::ops::RangeBounds;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use anyhow::anyhow;
 use bytes::Bytes;
@@ -27,9 +28,10 @@ use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
-use tracing::{instrument, trace, warn};
+use tracing::{Level, instrument, trace, warn};
 
-use restate_core::io::{AdmissionClosed, Gate};
+use restate_core::io::{AdmissionClosed, Gate, IoExecutor};
+use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksError};
 use restate_storage_api::fsm_table::ReadFsmTable;
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
@@ -62,7 +64,7 @@ use crate::migrations::MigrationError;
 use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
-use crate::snapshots::{LocalPartitionSnapshot, SnapshotCompatibility, export_dir};
+use crate::snapshots::{CaptureGuard, LocalPartitionSnapshot, SnapshotCompatibility, export_dir};
 use crate::{configure_prefix_iterator_opts, configure_range_iterator_opts};
 
 pub type DB = rocksdb::DB;
@@ -73,6 +75,9 @@ pub(crate) const DB_PREFIX_LENGTH: usize =
 
 // If this changes, we need to know.
 const_assert_eq!(DB_PREFIX_LENGTH, 10);
+
+/// How long a commit can wait for a [`CommitFence`] before it's logged as slow.
+const LOG_SLOW_COMMIT_FENCE_AFTER: Duration = Duration::from_secs(1);
 
 /// Length of the capped prefix extractor of partition-store column families: the key kind, the
 /// partition key and up to 10 more bytes, which tell apart the invocations and vqueues sharing a
@@ -565,20 +570,20 @@ impl PartitionStore {
             storage_features,
             snapshot,
             settings,
+            commit_fence: None,
         }
     }
 
     /// Creates a snapshot of the partition in the given directory, which must not exist prior to
-    /// the export. The snapshot is atomic and contains, at a minimum, the reported applied LSN.
-    /// Additional log records may have been applied between when the LSN was read, and when the
-    /// snapshot was actually created. The actual snapshot applied LSN will always be equal to, or
-    /// greater than, the reported applied LSN.
+    /// the export. `capture` keeps the partition from changing until the export finishes, so the
+    /// applied LSN and compatibility read from the store match the exported data.
     ///
     /// *NB:* Creating a snapshot causes an implicit flush of the column family!
     ///
     /// See [rocksdb::checkpoint::Checkpoint::export_column_family] for additional implementation details.
     pub(crate) async fn create_local_snapshot(
         &mut self,
+        capture: CaptureGuard,
         snapshot_base_path: &Path,
         min_target_lsn: Option<Lsn>,
         snapshot_id: SnapshotId,
@@ -602,19 +607,18 @@ impl PartitionStore {
             .await
             .map_err(|e| StorageError::SnapshotExport(e.into()))?;
 
-        // The partition processor may raise the version barrier or enable partition features
-        // while the export runs. Every part of the compatibility only ever grows, so if it reads
-        // the same before and after the export, the exported data has exactly that. Otherwise
-        // it's unknown. (One exception: enabling vqueues turns off vqueues_skip_completed, which
-        // it supersedes, so an export can miss a brief switch between the two.)
-        let compatibility_before = self.read_snapshot_compatibility();
-        let (base_dir, export_files) = self
+        let compatibility = self.read_snapshot_compatibility();
+        // The export holds the capture until RocksDB is done, even if we stop waiting. The
+        // processor's commits wait for it, so it runs on the high-priority pool like they do.
+        let export = self
             .db
-            .export_cf(export_dir(snapshot_base_path, snapshot_id))
-            .await
-            .map_err(|e| StorageError::SnapshotExport(e.into()))?;
-        let compatibility = compatibility_before
-            .filter(|before| self.read_snapshot_compatibility().as_ref() == Some(before));
+            .prepare_export_cf(export_dir(snapshot_base_path, snapshot_id), move || capture);
+        let (base_dir, export_files) = async {
+            let export = self.db.rocksdb().executor().high_pri().spawn(export)?;
+            anyhow::Ok(export.await??)
+        }
+        .await
+        .map_err(StorageError::SnapshotExport)?;
 
         trace!(
             cf_name = %self.db.partition().cf_name(),
@@ -966,6 +970,14 @@ pub struct PartitionStoreTransaction<'a> {
     storage_features: StorageFeatures,
     snapshot: Option<SnapshotWithThreadMode<'a, rocksdb::DB>>,
     settings: TransactionSettings,
+    /// Resolves once the [`CommitFence`] holding back commits is dropped.
+    commit_fence: Option<oneshot::Receiver<()>>,
+}
+
+/// Holds back the commits of the [`PartitionStoreTransaction`] that created it until dropped.
+/// A snapshot export holds one so that the partition doesn't change under it.
+pub struct CommitFence {
+    _release: oneshot::Sender<()>,
 }
 
 impl<'a> PartitionStoreTransaction<'a> {
@@ -973,7 +985,25 @@ impl<'a> PartitionStoreTransaction<'a> {
         &self.settings
     }
 
-    /// Clears up all buffered operations in the transaction buffer.
+    /// Holds back commits until the returned fence is dropped. Writes still go into the
+    /// transaction's buffer meanwhile; only [`Transaction::commit`] waits, even when there's
+    /// nothing to commit. `None` if another fence still holds commits back.
+    pub fn fence_commits(&mut self) -> Option<CommitFence> {
+        if let Some(released) = &mut self.commit_fence
+            && matches!(
+                released.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            )
+        {
+            return None;
+        }
+        let (release, released) = oneshot::channel();
+        self.commit_fence = Some(released);
+        Some(CommitFence { _release: release })
+    }
+
+    /// Clears up all buffered operations in the transaction buffer. A commit fence stays in
+    /// place, since it belongs to whoever holds the [`CommitFence`].
     pub fn clear(&mut self) {
         self.write_batch_with_index
             .get_or_insert_with(|| rocksdb::WriteBatchWithIndex::new(0, true))
@@ -1077,6 +1107,25 @@ fn assert_partition_key_or_err(
 
 impl Transaction for PartitionStoreTransaction<'_> {
     async fn commit(&mut self) -> Result<()> {
+        // A snapshot export must not see writes made after it started, so wait for it to finish
+        // first. This happens even when there's nothing to commit: the version barrier commits
+        // right before its migrations write to the partition outside this transaction, and it
+        // relies on this wait to keep those writes out of the export too. It also happens before
+        // taking the admission lease, so that closing the partition doesn't wait for the export.
+        if let Some(released) = &mut self.commit_fence {
+            let _ = released
+                .log_slow_after(
+                    LOG_SLOW_COMMIT_FENCE_AFTER,
+                    Level::WARN,
+                    format!(
+                        "Partition {} holding back commits for a snapshot export",
+                        self.meta.partition_id
+                    ),
+                )
+                .await;
+            self.commit_fence = None;
+        }
+
         if self
             .write_batch_with_index
             .as_ref()
