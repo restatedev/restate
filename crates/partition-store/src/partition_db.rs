@@ -23,8 +23,7 @@ use tokio::time::Instant;
 use tracing::{debug, error, info, instrument, warn};
 
 use restate_core::ShutdownError;
-use restate_core::io::IdleTracker;
-use restate_core::io::{AdmissionClosed, Gate, IoExecutor, IoOp};
+use restate_core::io::{AdmissionClosed, Gate, IdleTracker, IoExecutor, IoOp};
 use restate_rocksdb::configuration::{CfConfigurator, DbConfigurator};
 use restate_rocksdb::reads::ColumnFamilies;
 use restate_rocksdb::{
