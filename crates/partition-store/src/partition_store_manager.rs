@@ -17,6 +17,7 @@ use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{Level, debug, error, info, instrument, warn};
 
+use restate_core::io::IdleTracker;
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_rocksdb::{
     CfPrefixPattern, DbRef, DbSpecBuilder, RocksDb, RocksDbManager, RocksError, SinglePoolExecutor,
@@ -44,11 +45,11 @@ const LOG_SLOW_TRANSITION_AFTER: Duration = Duration::from_secs(5);
 
 pub(crate) struct SharedState {
     partitions: RwLock<HashMap<PartitionId, Arc<PartitionCell>>>,
-    executor: SinglePoolExecutor,
+    executor: IdleTracker<SinglePoolExecutor>,
 }
 
 impl SharedState {
-    fn new(executor: SinglePoolExecutor) -> Self {
+    fn new(executor: IdleTracker<SinglePoolExecutor>) -> Self {
         Self {
             partitions: Default::default(),
             executor,
