@@ -27,8 +27,8 @@ use restate_core::io::{AdmissionClosed, Gate, IoExecutor, IoOp};
 use restate_rocksdb::configuration::{CfConfigurator, DbConfigurator};
 use restate_rocksdb::reads::ColumnFamilies;
 use restate_rocksdb::{
-    CfHandles, DbName, Guarded, RawRocksDb, RocksAccess, RocksDb, RocksDbReadPerfGuard, RocksError,
-    SinglePoolExecutor, StorageOp, StorageTaskKind,
+    CfHandles, DbName, Guarded, RawRocksDb, RocksAccess, RocksDb, RocksDbManager,
+    RocksDbReadPerfGuard, RocksError, SinglePoolExecutor, StorageOp, StorageTaskKind,
 };
 use restate_storage_api::StorageError;
 use restate_types::config::Configuration;
@@ -232,6 +232,42 @@ impl PartitionDb {
         );
         self.run_background_op(|scope, gate| RocksDb::prepare_flush(scope, gate, wait))
             .await?
+    }
+
+    /// How much disk space the partition's data takes up, in bytes.
+    ///
+    /// This is the total size of the SST files of all the partition's column families. It is
+    /// exact, not an estimate, and counts each file once, including files that only older
+    /// versions of the data still use, such as the inputs of a running compaction. Data that is
+    /// only in memtables or in the write-ahead log isn't counted. In the single-database layout,
+    /// partitions share the write-ahead log.
+    ///
+    /// Runs on the lifecycle pool, like opening and deleting partitions, so it doesn't wait for
+    /// the regular I/O pools. It isn't part of the partition's session, so it also works on a
+    /// closed partition, and it keeps the column families alive until it's done.
+    pub async fn disk_usage(&self) -> Result<u64, RocksError> {
+        let op = StorageOp::with_context(
+            self.physical_scope(),
+            self.rocksdb().gate(),
+            StorageTaskKind::ReadProperties,
+            |scope: &Scope<PhysicalPartition>| {
+                let cfs = &scope.payload().cfs;
+                let db = cfs.database().inner().as_raw_db();
+                cfs.all()
+                    .iter()
+                    .try_fold(0, |total, cf| -> Result<u64, RocksError> {
+                        // RocksDB always provides this property, so it is never `None`.
+                        let size = db
+                            .property_int_value_cf(cf, rocksdb::properties::TOTAL_SST_FILES_SIZE)?;
+                        Ok(total + size.unwrap_or_default())
+                    })
+            },
+        );
+        RocksDbManager::get()
+            .lifecycle_executor()
+            .spawn(op)?
+            .await
+            .map_err(|_| RocksError::from(ShutdownError))?
     }
 
     /// Returns a future that completes once nothing holds this partition's column
@@ -442,6 +478,16 @@ impl PartitionDb {
         it.seek(scan.start());
         Ok(it)
     }
+}
+
+/// A partition's local store that was deleted, as reported by
+/// [`crate::PartitionStoreManager::drop_partition_store`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DroppedPartitionStore {
+    /// How much disk space the store used right before the deletion, see
+    /// [`PartitionDb::disk_usage`]. `None` if it couldn't be measured, such as for a column
+    /// family that the store didn't know about, or a deletion that had already started.
+    pub disk_usage: Option<u64>,
 }
 
 pub(crate) struct PartitionCell {
@@ -766,6 +812,15 @@ impl PartitionCell {
         guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
     ) -> Result<(), RocksError> {
         guard.finish_abandoned_open().await?;
+        self.start_drop_cf(guard);
+        guard.finish_retirement().await?;
+        self.set_cf_missing(guard).await;
+        Ok(())
+    }
+
+    /// The part of [`Self::drop_cf`] that doesn't wait: the partition stops accepting work, and
+    /// its column family is deleted in the background once nothing uses it anymore.
+    fn start_drop_cf(&self, guard: &mut tokio::sync::RwLockWriteGuard<'_, State>) {
         if let Some(db) = guard.db() {
             db.gate().seal();
             db.unregister_durable_lsn();
@@ -777,13 +832,11 @@ impl PartitionCell {
                 released.await;
             });
         }
-        guard.finish_retirement().await?;
-        self.set_cf_missing(guard).await;
-        Ok(())
     }
 
     /// Deletes the partition's column family, whatever state the cell is in, and
-    /// leaves the cell `CfMissing`. Returns whether there was a column family to delete.
+    /// leaves the cell `CfMissing`. Returns what was deleted, or `None` if there was no
+    /// column family to delete.
     ///
     /// Unlike [`Self::drop_cf`], this also finds a column family the cell doesn't know
     /// about: one that is on disk but wasn't opened by this process yet (`Unknown`),
@@ -792,7 +845,7 @@ impl PartitionCell {
         &self,
         guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
         database: &PartitionStoreDb,
-    ) -> Result<bool, RocksError> {
+    ) -> Result<Option<DroppedPartitionStore>, RocksError> {
         if guard.is_unknown() {
             self.open_cf(guard, database).await;
         }
@@ -809,8 +862,23 @@ impl PartitionCell {
             self.start_retirement(guard, database.rocksdb.clone(), std::future::ready(()));
         }
         let existed = guard.db().is_some() || matches!(**guard, State::Retiring { .. });
+        // Stop accepting work right away, then measure what is about to be deleted. The
+        // deletion waits for the measurement, since `db` keeps the column families alive.
+        let db = guard.db().cloned();
+        self.start_drop_cf(guard);
+        let disk_usage = match db {
+            Some(db) => db
+                .disk_usage()
+                .await
+                .inspect_err(|error| {
+                    warn!(%error, "Could not measure the partition store before dropping it");
+                })
+                .ok(),
+            None => None,
+        };
         self.drop_cf(guard).await?;
-        Ok(self.drop_stale_cf(guard, &database.rocksdb).await? || existed)
+        let dropped = self.drop_stale_cf(guard, &database.rocksdb).await? || existed;
+        Ok(dropped.then_some(DroppedPartitionStore { disk_usage }))
     }
 
     /// Clone the underlying [`PartitionDb`], if it is open.

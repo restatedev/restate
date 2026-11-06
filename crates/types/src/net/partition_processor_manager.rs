@@ -107,16 +107,26 @@ bilrost_wire_codec!(DropPartitionStoreResponse);
 
 /// Asks a node to delete its local copy of a partition's data.
 ///
-/// The node refuses unless it has given up on running the partition (see
-/// [`crate::cluster::cluster_state::BrokenReason`]) or isn't running it at all, so that a healthy
-/// processor can never have its store pulled out from under it. `force` overrides that check by
-/// stopping the processor first.
+/// Without `force`, the node only deletes a store that no processor uses: either the node has given
+/// up on running the partition (see [`crate::cluster::cluster_state::BrokenReason`]), or it is
+/// neither running the partition nor part of its replica set. That way a replica never loses its
+/// store, even while its processor is restarting. `force` skips these checks and stops a running
+/// processor first.
 #[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
 pub struct DropPartitionStoreRequest {
     #[bilrost(1)]
     pub partition_id: PartitionId,
     #[bilrost(2)]
     pub force: bool,
+    /// The newest partition configuration version that the requester based its decision on.
+    /// Without `force`, a node that doesn't know this version yet waits a few seconds for it, and
+    /// refuses if it doesn't arrive. That way the node doesn't act on an older replica set than
+    /// the requester saw. [`Version::INVALID`] doesn't wait.
+    #[bilrost(3)]
+    pub min_partition_configuration_version: Version,
+    /// Why the store is being dropped, as given by the operator. Logged for auditing.
+    #[bilrost(4)]
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, bilrost::Oneof, bilrost::Message)]
@@ -124,7 +134,10 @@ pub enum DropPartitionStoreResponse {
     #[bilrost(empty)]
     Unknown,
     #[bilrost(tag(1), message)]
-    Dropped,
+    Dropped {
+        #[bilrost(1)]
+        deleted_bytes: Option<u64>,
+    },
     #[bilrost(tag(2), message)]
     NoStoreFound,
     #[bilrost(tag(3), message)]
@@ -135,6 +148,15 @@ pub enum DropPartitionStoreResponse {
     UnknownPartition,
     #[bilrost(tag(6))]
     Internal(String),
+    #[bilrost(tag(7), message)]
+    ReplicaSetMember,
+    #[bilrost(tag(8), message)]
+    PartitionConfigurationNotObserved {
+        #[bilrost(1)]
+        required: Version,
+        #[bilrost(2)]
+        observed: Version,
+    },
 }
 
 impl DropPartitionStoreResponse {
@@ -143,12 +165,21 @@ impl DropPartitionStoreResponse {
             Self::Unknown => Err(DropPartitionStoreError::Internal(
                 "the node returned an unknown response".to_owned(),
             )),
-            Self::Dropped => Ok(DropPartitionStoreOutcome::Dropped),
+            Self::Dropped { deleted_bytes } => {
+                Ok(DropPartitionStoreOutcome::Dropped { deleted_bytes })
+            }
             Self::NoStoreFound => Ok(DropPartitionStoreOutcome::NoStoreFound),
             Self::ProcessorRunning => Err(DropPartitionStoreError::ProcessorRunning),
             Self::DropInProgress => Err(DropPartitionStoreError::DropInProgress),
             Self::UnknownPartition => Err(DropPartitionStoreError::UnknownPartition),
             Self::Internal(message) => Err(DropPartitionStoreError::Internal(message)),
+            Self::ReplicaSetMember => Err(DropPartitionStoreError::ReplicaSetMember),
+            Self::PartitionConfigurationNotObserved { required, observed } => {
+                Err(DropPartitionStoreError::PartitionConfigurationNotObserved {
+                    required,
+                    observed,
+                })
+            }
         }
     }
 }
@@ -158,12 +189,19 @@ impl From<Result<DropPartitionStoreOutcome, DropPartitionStoreError>>
 {
     fn from(result: Result<DropPartitionStoreOutcome, DropPartitionStoreError>) -> Self {
         match result {
-            Ok(DropPartitionStoreOutcome::Dropped) => Self::Dropped,
+            Ok(DropPartitionStoreOutcome::Dropped { deleted_bytes }) => {
+                Self::Dropped { deleted_bytes }
+            }
             Ok(DropPartitionStoreOutcome::NoStoreFound) => Self::NoStoreFound,
             Err(DropPartitionStoreError::ProcessorRunning) => Self::ProcessorRunning,
             Err(DropPartitionStoreError::DropInProgress) => Self::DropInProgress,
             Err(DropPartitionStoreError::UnknownPartition) => Self::UnknownPartition,
             Err(DropPartitionStoreError::Internal(message)) => Self::Internal(message),
+            Err(DropPartitionStoreError::ReplicaSetMember) => Self::ReplicaSetMember,
+            Err(DropPartitionStoreError::PartitionConfigurationNotObserved {
+                required,
+                observed,
+            }) => Self::PartitionConfigurationNotObserved { required, observed },
         }
     }
 }
@@ -171,7 +209,10 @@ impl From<Result<DropPartitionStoreOutcome, DropPartitionStoreError>>
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, derive_more::Display)]
 pub enum DropPartitionStoreOutcome {
     #[display("the local partition store was dropped")]
-    Dropped,
+    Dropped {
+        /// How much disk space the store used right before it was deleted, if known.
+        deleted_bytes: Option<u64>,
+    },
     #[display("this node has no local partition store for this partition")]
     NoStoreFound,
 }
@@ -188,6 +229,16 @@ pub enum DropPartitionStoreError {
     UnknownPartition,
     #[display("failed to drop the local partition store: {_0}")]
     Internal(String),
+    #[display("this node is part of the partition's replica set")]
+    ReplicaSetMember,
+    #[display(
+        "this node hasn't learned about partition configuration {required} yet, it only knows \
+        {observed}"
+    )]
+    PartitionConfigurationNotObserved {
+        required: Version,
+        observed: Version,
+    },
 }
 
 #[cfg(test)]
@@ -201,6 +252,8 @@ mod tests {
         let request = DropPartitionStoreRequest {
             partition_id: PartitionId::new_unchecked(42),
             force: true,
+            min_partition_configuration_version: Version::from(7),
+            reason: "stale store".to_owned(),
         };
         assert_eq!(
             DropPartitionStoreRequest::decode(request.encode_to_bytes()).unwrap(),
@@ -209,12 +262,22 @@ mod tests {
 
         for response in [
             DropPartitionStoreResponse::Unknown,
-            DropPartitionStoreResponse::Dropped,
+            DropPartitionStoreResponse::Dropped {
+                deleted_bytes: Some(1024),
+            },
+            DropPartitionStoreResponse::Dropped {
+                deleted_bytes: None,
+            },
             DropPartitionStoreResponse::NoStoreFound,
             DropPartitionStoreResponse::ProcessorRunning,
             DropPartitionStoreResponse::DropInProgress,
             DropPartitionStoreResponse::UnknownPartition,
             DropPartitionStoreResponse::Internal("failed".to_owned()),
+            DropPartitionStoreResponse::ReplicaSetMember,
+            DropPartitionStoreResponse::PartitionConfigurationNotObserved {
+                required: Version::from(7),
+                observed: Version::from(5),
+            },
         ] {
             assert_eq!(
                 DropPartitionStoreResponse::decode(response.encode_to_bytes()).unwrap(),

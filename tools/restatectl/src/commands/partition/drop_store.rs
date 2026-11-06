@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use anyhow::bail;
+use bytesize::ByteSize;
 use cling::prelude::*;
 use tonic::{Code, Status};
 
@@ -22,6 +23,7 @@ use restate_types::identifiers::PartitionId;
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::cluster::{BrokenReason, node_state};
 
+use super::epoch_metadata::read_epoch_metadata;
 use crate::connection::{ConnectionInfo, NodeOperationError, SimpleStatusWrapper};
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
@@ -30,7 +32,9 @@ use crate::connection::{ConnectionInfo, NodeOperationError, SimpleStatusWrapper}
     after_long_help = "Deletes one node's local copy of a partition. All data that node \
     holds for the partition is lost; it recovers by downloading a snapshot or by replaying the \
     log. This is meant for nodes whose partition store has been sealed, which the node reports \
-    as a broken partition processor (see `restatectl partition list`)."
+    as a broken partition processor (see `restatectl partition list`), and for nodes that keep \
+    a store although they are no longer part of the partition's replica set. Without --force, \
+    the node refuses to drop the store of a replica unless it reports the partition as broken."
 )]
 pub struct DropStoreOpts {
     /// The partition whose local store should be deleted
@@ -41,10 +45,15 @@ pub struct DropStoreOpts {
     #[arg(long, short = 'n', required = true)]
     node: PlainNodeId,
 
-    /// Stop a running partition processor before deleting. Without this, the node only accepts
-    /// the request if it has already given up on the partition.
+    /// Stop a running partition processor before deleting, and drop the store even if the node
+    /// is part of the partition's replica set. Without this, the node only accepts the request if
+    /// it has already given up on the partition, or isn't a replica of it.
     #[arg(long)]
     force: bool,
+
+    /// Why the store is being dropped. The admin and the node log it for auditing.
+    #[arg(long, required = true)]
+    reason: String,
 }
 
 async fn drop_partition_store(
@@ -116,6 +125,11 @@ async fn drop_partition_store(
         }
     }
 
+    // the node checks the replica set it knows against at least this version
+    let configuration_version = read_epoch_metadata(connection, opts.partition_id)
+        .await?
+        .map(|epoch_metadata| epoch_metadata.latest_configuration_version());
+
     confirm_or_exit(&format!(
         "Delete node {}'s local copy of partition {}? This cannot be undone",
         opts.node, opts.partition_id
@@ -125,12 +139,14 @@ async fn drop_partition_store(
         partition_id: u32::from(u16::from(opts.partition_id)),
         node_id: Some(opts.node.into()),
         force: opts.force,
+        min_partition_configuration_version: configuration_version.map(Into::into),
+        reason: opts.reason.clone(),
     };
 
     let response = connection
         .try_each(Some(Role::Admin), |channel| async {
             new_cluster_ctrl_client(channel, &CliContext::get().network)
-                .drop_partition_store(request)
+                .drop_partition_store(request.clone())
                 .await
                 .map_err(classify_drop_partition_store_status)
         })
@@ -139,9 +155,10 @@ async fn drop_partition_store(
 
     if response.dropped {
         c_success!(
-            "Dropped node {}'s local copy of partition {}",
+            "Dropped node {}'s local copy of partition {} ({})",
             opts.node,
-            opts.partition_id
+            opts.partition_id,
+            format_deleted_bytes(response.deleted_bytes),
         );
     } else {
         c_noop!(
@@ -154,7 +171,15 @@ async fn drop_partition_store(
     Ok(())
 }
 
-fn classify_drop_partition_store_status(status: Status) -> NodeOperationError {
+/// How much disk space a dropped store used.
+pub(super) fn format_deleted_bytes(deleted_bytes: Option<u64>) -> String {
+    match deleted_bytes {
+        Some(bytes) => ByteSize::b(bytes).display().iec().to_string(),
+        None => "size unknown".to_owned(),
+    }
+}
+
+pub(super) fn classify_drop_partition_store_status(status: Status) -> NodeOperationError {
     let retry_elsewhere = status.code() == Code::Unimplemented;
     let status = SimpleStatusWrapper::from(status);
     if retry_elsewhere {

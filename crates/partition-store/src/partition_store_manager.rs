@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Level, debug, error, info, instrument, warn};
 
 use restate_futures_util::overdue::OverdueLoggingExt;
+use restate_memory::ByteCount;
 use restate_rocksdb::{
     CfPrefixPattern, DbRef, DbSpecBuilder, RocksDb, RocksDbManager, RocksError, SinglePoolExecutor,
 };
@@ -33,7 +34,8 @@ use crate::SnapshotError;
 use crate::durable_lsn_tracking::DurableLsnSenders;
 use crate::memory::MemoryController;
 use crate::partition_db::{
-    AllDataCf, PartitionCell, PartitionDb, PartitionStoreDb, RocksConfigurator, State,
+    AllDataCf, DroppedPartitionStore, PartitionCell, PartitionDb, PartitionStoreDb,
+    RocksConfigurator, State,
 };
 use crate::snapshots::{
     CommitFenceRequest, LocalPartitionSnapshot, PartitionSnapshotStatus, Snapshots,
@@ -512,9 +514,8 @@ impl PartitionStoreManager {
     }
 
     /// Deletes this node's local copy of the partition, discarding all of its data.
-    /// Returns `true` if there was a column family to delete, `false` if there was
-    /// nothing to delete. It also finds a column family that this process hasn't
-    /// opened yet.
+    /// Returns what was deleted, or `None` if there was nothing to delete. It also finds
+    /// a column family that this process hasn't opened yet.
     ///
     /// The partition stops accepting work right away, and its column family is deleted
     /// once nothing uses it anymore. So this waits until every [`PartitionStore`] and
@@ -524,7 +525,10 @@ impl PartitionStoreManager {
     /// the deletion goes ahead even if this call is cancelled. If an earlier deletion
     /// failed, this retries it.
     #[instrument(level = "error", skip_all, fields(partition_id = %partition.partition_id, cf_name = %partition.cf_name()))]
-    pub async fn drop_partition_store(&self, partition: &Partition) -> Result<bool, RocksError> {
+    pub async fn drop_partition_store(
+        &self,
+        partition: &Partition,
+    ) -> Result<Option<DroppedPartitionStore>, RocksError> {
         let dropped = async {
             let database = self.open_rocksdb(partition).await?;
             let cell = self.state.get_or_default(partition);
@@ -541,10 +545,12 @@ impl PartitionStoreManager {
         )
         .await?;
 
-        if dropped {
-            info!("Dropped local partition store");
-        } else {
-            debug!("No local partition store to drop");
+        match dropped {
+            Some(DroppedPartitionStore { disk_usage }) => info!(
+                disk_usage = ?disk_usage.map(ByteCount::from),
+                "Dropped local partition store"
+            ),
+            None => debug!("No local partition store to drop"),
         }
         Ok(dropped)
     }
@@ -611,12 +617,59 @@ mod tests {
     use crate::keys::KeyKind;
     use crate::partition_db::{PartitionCell, State};
     use crate::snapshots::{CaptureGuard, CommitFenceRequest};
-    use crate::{PartitionStore, PartitionStoreTransaction, SnapshotErrorKind};
+    use crate::{
+        DroppedPartitionStore, PartitionStore, PartitionStoreTransaction, SnapshotErrorKind,
+    };
 
     async fn write_applied_lsn(store: &mut PartitionStore, lsn: u64) -> anyhow::Result<()> {
         let mut tx = store.transaction();
         tx.put_applied_lsn(Lsn::new(lsn))?;
         tx.commit().await?;
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn disk_usage_matches_live_files_also_when_closed() -> anyhow::Result<()> {
+        const DEADLINE: Duration = Duration::from_secs(10);
+        let rocksdb = RocksDbManager::init();
+        let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
+        let sibling = Partition::new(PartitionId::from(1), KeyRange::FULL);
+        for layout in [false, true] {
+            let manager = PartitionStoreManager::create(layout).await?;
+            let mut store = manager.open(&partition, None).await?;
+            let mut neighbor = manager.open(&sibling, None).await?;
+            let db = store.partition_db().clone();
+            assert_eq!(db.disk_usage().await?, 0, "nothing flushed yet");
+
+            for lsn in [10, 20] {
+                write_applied_lsn(&mut store, lsn).await?;
+                write_applied_lsn(&mut neighbor, lsn).await?;
+                db.flush_memtables(true).await?;
+                neighbor.partition_db().flush_memtables(true).await?;
+            }
+            let live_files_size = db
+                .rocksdb()
+                .inner()
+                .as_raw_db()
+                .live_files()?
+                .into_iter()
+                .filter(|file| file.column_family_name == partition.cf_name().as_ref())
+                .map(|file| file.size as u64)
+                .sum::<u64>();
+            assert!(live_files_size > 0);
+            assert_eq!(
+                db.disk_usage().await?,
+                live_files_size,
+                "counts the partition's own files only"
+            );
+
+            drop(store);
+            timeout(DEADLINE, manager.close(partition.partition_id)).await?;
+            assert_eq!(db.disk_usage().await?, live_files_size);
+
+            drop((db, neighbor, manager));
+            rocksdb.reset().await?;
+        }
         Ok(())
     }
 
@@ -820,11 +873,15 @@ mod tests {
             rocksdb.reset().await?;
 
             let manager = PartitionStoreManager::create(layout).await?;
+            let dropped = manager
+                .drop_partition_store(&partition)
+                .await?
+                .expect("finds a column family this process never opened");
             assert!(
-                manager.drop_partition_store(&partition).await?,
-                "finds a column family this process never opened"
+                dropped.disk_usage.is_some_and(|size| size > 0),
+                "measures a store this process never opened"
             );
-            assert!(!manager.drop_partition_store(&partition).await?);
+            assert!(manager.drop_partition_store(&partition).await?.is_none());
             let mut neighbor = manager.open(&sibling, None).await?;
             assert_eq!(neighbor.get_applied_lsn().await?, Some(Lsn::new(20)));
 
@@ -833,8 +890,9 @@ mod tests {
                 .rocksdb
                 .inner()
                 .open_cf(partition.cf_name().into())?;
-            assert!(
+            assert_eq!(
                 manager.drop_partition_store(&partition).await?,
+                Some(DroppedPartitionStore { disk_usage: None }),
                 "finds a leftover column family while the cell is CfMissing"
             );
             assert!(
@@ -853,7 +911,11 @@ mod tests {
                 assert_eq!(store.get_applied_lsn().await?, None);
                 write_applied_lsn(&mut store, 30).await?;
                 drop(store);
-                assert!(timeout(DEADLINE, manager.drop_partition_store(&partition)).await??);
+                assert!(
+                    timeout(DEADLINE, manager.drop_partition_store(&partition))
+                        .await??
+                        .is_some()
+                );
             }
             assert_eq!(neighbor.get_applied_lsn().await?, Some(Lsn::new(20)));
             drop((neighbor, manager));
@@ -929,7 +991,7 @@ mod tests {
             ));
             assert!(has_cf());
             assert!(manager.open(&partition, None).await.is_err());
-            assert!(manager.drop_partition_store(&partition).await?);
+            assert!(manager.drop_partition_store(&partition).await?.is_some());
             assert!(!has_cf());
 
             // A slow creation doesn't hold up other partitions. A drop that comes in
@@ -957,7 +1019,7 @@ mod tests {
             );
             drop(opening);
             drop(resume);
-            assert!(timeout(DEADLINE, dropping).await??);
+            assert!(timeout(DEADLINE, dropping).await??.is_some());
             assert!(!has_cf());
             assert_eq!(neighbor.get_applied_lsn().await?, Some(Lsn::new(30)));
 

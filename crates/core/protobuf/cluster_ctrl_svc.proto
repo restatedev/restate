@@ -125,19 +125,31 @@ message CreatePartitionSnapshotResponse {
 // Deletes a single node's local copy of a partition. All data the node holds
 // for this partition is lost; it can only be recovered from a snapshot or by
 // replaying the log. This is intended for recovering a node whose partition
-// store has been sealed (see BrokenReason).
+// store has been sealed (see BrokenReason), and for removing stores that the
+// node keeps although it is no longer part of the partition's replica set.
 message DropPartitionStoreRequest {
   uint32 partition_id = 1;
   // The node to delete the partition store from
   restate.common.NodeId node_id = 2;
-  // Stop a running partition processor before deleting. Without this, the node
-  // rejects the request unless it has already given up on the partition.
+  // Skip the safety checks and stop a running partition processor before
+  // deleting. Without this, the node only deletes a store that no processor
+  // uses: either it has already given up on the partition, or it is neither
+  // running the partition nor part of its replica set.
   bool force = 3;
+  // The newest partition configuration version that the caller based its
+  // decision on. Without force, a node that doesn't know this version yet waits
+  // a few seconds for it, and refuses if it doesn't arrive. Unset doesn't wait.
+  optional restate.common.Version min_partition_configuration_version = 4;
+  // Why the store is being dropped. Logged for auditing.
+  string reason = 5;
 }
 
 message DropPartitionStoreResponse {
   // False if the node had no local partition store to delete
   bool dropped = 1;
+  // How much disk space the deleted store used, in bytes, right before the
+  // deletion. Unset if nothing was dropped or it couldn't be measured.
+  optional uint64 deleted_bytes = 2;
 }
 
 message ChainExtension {
