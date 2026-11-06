@@ -16,6 +16,7 @@ use restate_memory::{LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
 use restate_types::identifiers::ServiceId;
 use restate_types::sharding::KeyRange;
 
+use crate::scan::RowConsumer;
 use crate::{BudgetedReadError, Result};
 
 pub trait ReadStateTable {
@@ -81,13 +82,11 @@ pub trait ReadStateTable {
 }
 
 pub trait ScanStateTable {
-    fn for_each_user_state<
-        F: FnMut((ServiceId, Bytes, &[u8])) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
-    >(
+    fn for_each_user_state<F: for<'a> RowConsumer<Item<'a> = (ServiceId, Bytes, &'a [u8])>>(
         &self,
         range: KeyRange,
         f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
+    ) -> Result<impl Future<Output = Result<F>> + Send>;
 }
 
 pub trait WriteStateTable {

@@ -18,7 +18,6 @@ mod reader;
 mod running_reader;
 
 use std::collections::BTreeSet;
-use std::pin::Pin;
 
 pub use entry::{EntryStatusKey, EntryStatusKeyRef};
 pub use inbox::InboxKey;
@@ -29,6 +28,7 @@ use anyhow::Context;
 use bilrost::{BorrowedMessage, Message, OwnedMessage};
 use bytes::BytesMut;
 use futures::FutureExt;
+use futures::future::BoxFuture;
 use rocksdb::{ReadOptions, WriteBatch, WriteOptions};
 use strum::EnumCount;
 use tracing::error;
@@ -36,6 +36,7 @@ use tracing::error;
 use restate_core::io::IoExecutor;
 use restate_rocksdb::{CfName, Priority, RocksDbReadPerfGuard, StorageTaskKind};
 use restate_storage_api::StorageError;
+use restate_storage_api::scan::RowConsumer;
 use restate_storage_api::vqueue_table::filters::{ScanEntryIdFilter, ScanMetaFilter};
 use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef};
 use restate_storage_api::vqueue_table::{
@@ -59,7 +60,6 @@ use crate::scan::TableScan;
 use crate::vqueue_table::input::InputPayloadKeyRef;
 use crate::{
     PartitionDb, PartitionStore, PartitionStoreTransaction, Result, StorageAccess, TableKind,
-    break_on_err,
 };
 
 impl ScanVQueueTable for PartitionDb {
@@ -564,13 +564,10 @@ impl ScanVQueueMetaTable for PartitionStore {
     fn for_each_vqueue_meta<F>(
         &self,
         filter: ScanMetaFilter,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>
+        f: F,
+    ) -> Result<impl Future<Output = Result<F>> + Send>
     where
-        F: for<'a> FnMut((&'a VQueueId, &'a VQueueMetaRef<'a>)) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
+        F: for<'a> RowConsumer<Item<'a> = (&'a VQueueId, &'a VQueueMetaRef<'a>)>,
     {
         // Fast path: each vqueue id maps to exactly one fixed-length key, so an
         // exact set is served via batched multi-get calls instead of scanning
@@ -596,14 +593,14 @@ impl ScanVQueueMetaTable for PartitionStore {
                 "df-vqueue-meta",
                 Priority::Low,
                 scan,
-                move |(mut key, value)| {
-                    let meta_key = break_on_err(MetaKey::deserialize_from(&mut key))?;
-                    let meta = break_on_err(
-                        VQueueMetaRef::decode_borrowed(value).map_err(StorageError::BilrostDecode),
-                    )?;
+                f,
+                async |f: &mut F, (mut key, value): (&[u8], &[u8])| {
+                    let meta_key = MetaKey::deserialize_from(&mut key)?;
+                    let meta = VQueueMetaRef::decode_borrowed(value)
+                        .map_err(StorageError::BilrostDecode)?;
 
                     let (vqueue_id,) = meta_key.split();
-                    f((&vqueue_id, &meta)).map_break(Ok)
+                    f.consume((&vqueue_id, &meta)).await
                 },
             )
             .map_err(|_| StorageError::OperationalError)?;
@@ -628,12 +625,9 @@ fn multi_get_vqueue_meta<F>(
     store: &PartitionStore,
     ids: BTreeSet<VQueueId>,
     mut f: F,
-) -> impl Future<Output = Result<()>> + Send
+) -> impl Future<Output = Result<F>> + Send
 where
-    F: for<'a> FnMut((&'a VQueueId, &'a VQueueMetaRef<'a>)) -> std::ops::ControlFlow<()>
-        + Send
-        + Sync
-        + 'static,
+    F: for<'a> RowConsumer<Item<'a> = (&'a VQueueId, &'a VQueueMetaRef<'a>)>,
 {
     const KEY_LEN: usize = MetaKey::serialized_length_fixed();
 
@@ -643,7 +637,7 @@ where
         let read = rocksdb.prepare_read(
             "df-vqueue-meta",
             StorageTaskKind::MultiGet,
-            move |raw_db, cfs| -> Result<()> {
+            async move |raw_db, cfs| -> Result<F> {
                 let cf = cfs.get(<MetaKey as EncodeTableKey>::KEY_KIND);
 
                 let batch_capacity = ids.len().min(VQUEUE_META_MULTI_GET_BATCH_SIZE);
@@ -688,8 +682,8 @@ where
                         let meta = VQueueMetaRef::decode_borrowed(value.as_ref())
                             .map_err(StorageError::BilrostDecode)?;
 
-                        if f((id, &meta)).is_break() {
-                            return Ok(());
+                        if f.consume((id, &meta)).await?.is_break() {
+                            return Ok(f);
                         }
                     }
 
@@ -698,7 +692,7 @@ where
                     }
                 }
 
-                Ok(())
+                Ok(f)
             },
         );
         rocksdb
@@ -716,13 +710,10 @@ impl ScanVQueueEntryStatusTable for PartitionStore {
     fn for_each_vqueue_entry_status<F>(
         &self,
         filter: ScanEntryIdFilter,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>
+        f: F,
+    ) -> Result<impl Future<Output = Result<F>> + Send>
     where
-        F: for<'a> FnMut(&'a BaseEntryId, &'a RawStatusHeaderRef<'a>) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
+        F: for<'a> RowConsumer<Item<'a> = (&'a BaseEntryId, &'a RawStatusHeaderRef<'a>)>,
     {
         if let ScanEntryIdFilter::EntryIdSet(ids) = filter {
             return Ok(multi_get_vqueue_entry_status(self, ids, f).boxed());
@@ -746,15 +737,14 @@ impl ScanVQueueEntryStatusTable for PartitionStore {
                 "df-vqueue-entry-status",
                 Priority::Low,
                 scan,
-                move |(mut key, mut value)| {
-                    let status_key = break_on_err(EntryStatusKey::deserialize_from(&mut key))?;
+                f,
+                async |f: &mut F, (mut key, mut value): (&[u8], &[u8])| {
+                    let status_key = EntryStatusKey::deserialize_from(&mut key)?;
                     let (id,) = status_key.split();
-                    let header = break_on_err(
-                        RawStatusHeaderRef::decode_borrowed_length_delimited(&mut value)
-                            .map_err(StorageError::BilrostDecode),
-                    )?;
+                    let header = RawStatusHeaderRef::decode_borrowed_length_delimited(&mut value)
+                        .map_err(StorageError::BilrostDecode)?;
 
-                    f(&id, &header).map_break(Ok)
+                    f.consume((&id, &header)).await
                 },
             )
             .map_err(|_| StorageError::OperationalError)?;
@@ -770,12 +760,9 @@ fn multi_get_vqueue_entry_status<F>(
     store: &PartitionStore,
     ids: BTreeSet<BaseEntryId>,
     mut f: F,
-) -> impl Future<Output = Result<()>> + Send
+) -> impl Future<Output = Result<F>> + Send
 where
-    F: for<'a> FnMut(&'a BaseEntryId, &'a RawStatusHeaderRef<'a>) -> std::ops::ControlFlow<()>
-        + Send
-        + Sync
-        + 'static,
+    F: for<'a> RowConsumer<Item<'a> = (&'a BaseEntryId, &'a RawStatusHeaderRef<'a>)>,
 {
     const KEY_LEN: usize = EntryStatusKey::serialized_length_fixed();
 
@@ -785,7 +772,7 @@ where
         let read = rocksdb.prepare_read(
             "df-vqueue-entry-status",
             StorageTaskKind::MultiGet,
-            move |raw_db, cfs| -> Result<()> {
+            async move |raw_db, cfs| -> Result<F> {
                 let cf = cfs.get(<EntryStatusKey as EncodeTableKey>::KEY_KIND);
 
                 let batch_capacity = ids.len().min(ENTRY_STATUS_MULTI_GET_BATCH_SIZE);
@@ -832,8 +819,8 @@ where
                             RawStatusHeaderRef::decode_borrowed_length_delimited(&mut value)
                                 .map_err(StorageError::BilrostDecode)?;
 
-                        if f(id, &header).is_break() {
-                            return Ok(());
+                        if f.consume((id, &header)).await?.is_break() {
+                            return Ok(f);
                         }
                     }
 
@@ -842,7 +829,7 @@ where
                     }
                 }
 
-                Ok(())
+                Ok(f)
             },
         );
         rocksdb
@@ -871,48 +858,27 @@ fn scan_single_stage<'store, K, F>(
     scanner_name: &'static str,
     range: KeyRange,
     stage: Stage,
-    f: std::sync::Arc<tokio::sync::Mutex<F>>,
-) -> Result<Pin<Box<dyn Future<Output = Result<()>> + Send + 'store>>>
+    f: F,
+) -> Result<BoxFuture<'store, Result<F>>>
 where
     K: EncodeTableKeyPrefix + 'store,
-    F: for<'a> FnMut(
-            (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue),
-        ) -> std::ops::ControlFlow<()>
-        + Send
-        + 'static,
+    F: for<'a> RowConsumer<Item<'a> = (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue)>,
 {
-    // Each stage holds its own Arc clone exclusively inside the iterator
-    // closure. Once iteration acquires the first row, the closure takes the
-    // Arc and converts it to an owned mutex guard that it holds for the rest
-    // of the scan; the guard (and thus the Arc) is dropped on the iterator's
-    // background thread. This keeps the wrapped callback off the tokio
-    // runtime, which is required because data-fusion's `BatchSender` performs
-    // blocking I/O during `Drop`.
-    let mut f_arc = Some(f);
-    let mut f_guard: Option<tokio::sync::OwnedMutexGuard<F>> = None;
-
     let future = partition_store
         .iterator_for_each(
             scanner_name,
             Priority::Low,
             TableScan::ScanPartitionKeyRange::<K>(range),
-            move |(mut key, mut value)| {
+            f,
+            async move |f: &mut F, (mut key, mut value): (&[u8], &[u8])| {
                 // Skip the key-kind byte; the iterator was opened with a stage-specific
                 // prefix so every row belongs to `stage`.
-                break_on_err(KeyKind::deserialize(&mut key))?;
-                let qid: VQueueId = break_on_err(crate::keys::deserialize(&mut key))?;
-                let entry_key: EntryKey = break_on_err(crate::keys::deserialize(&mut key))?;
-                let entry = break_on_err(
-                    EntryValue::decode(&mut value).map_err(StorageError::BilrostDecode),
-                )?;
+                KeyKind::deserialize(&mut key)?;
+                let qid: VQueueId = crate::keys::deserialize(&mut key)?;
+                let entry_key: EntryKey = crate::keys::deserialize(&mut key)?;
+                let entry = EntryValue::decode(&mut value).map_err(StorageError::BilrostDecode)?;
 
-                let f = f_guard.get_or_insert_with(|| {
-                    f_arc
-                        .take()
-                        .expect("Arc is taken at most once per iterator")
-                        .blocking_lock_owned()
-                });
-                f((&qid, stage, &entry_key, &entry)).map_break(Ok)
+                f.consume((&qid, stage, &entry_key, &entry)).await
             },
         )
         .map_err(|_| StorageError::OperationalError)?;
@@ -924,14 +890,10 @@ fn scanner_for_stage<'store, F>(
     partition_store: &'store PartitionStore,
     range: KeyRange,
     stage: Stage,
-    f: std::sync::Arc<tokio::sync::Mutex<F>>,
-) -> Result<Pin<Box<dyn Future<Output = Result<()>> + Send + 'store>>>
+    f: F,
+) -> Result<BoxFuture<'store, Result<F>>>
 where
-    F: for<'a> FnMut(
-            (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue),
-        ) -> std::ops::ControlFlow<()>
-        + Send
-        + 'static,
+    F: for<'a> RowConsumer<Item<'a> = (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue)>,
 {
     match stage {
         Stage::Unknown => Err(StorageError::Generic(anyhow::anyhow!(
@@ -973,24 +935,11 @@ impl ScanVQueueEntries for PartitionStore {
         range: KeyRange,
         stages: S,
         f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>
+    ) -> Result<impl Future<Output = Result<F>> + Send>
     where
-        F: for<'a> FnMut(
-                (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue),
-            ) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
+        F: for<'a> RowConsumer<Item<'a> = (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue)>,
         S: IntoIterator<Item = Stage>,
     {
-        // The Arc must not outlive the iterator closures: BatchSender's Drop
-        // performs blocking I/O, so its final drop has to happen on a storage
-        // thread, not on a tokio worker. We achieve that by moving the *only*
-        // Arc handle through the loop — every stage but the last gets a clone,
-        // and the last stage consumes the remaining handle. Once this function
-        // returns, no Arc references survive outside the spawned iterator
-        // tasks, so the last task to finish runs the Drop on its storage
-        // thread. See also the comment in `scan_single_stage`.
         let stages: Vec<Stage> = {
             let mut iter = stages.into_iter().peekable();
             if iter.peek().is_some() {
@@ -1004,26 +953,14 @@ impl ScanVQueueEntries for PartitionStore {
             "stages iterator and fallback are both non-empty"
         );
 
-        let last_idx = stages.len() - 1;
-        let mut f_opt = Some(std::sync::Arc::new(tokio::sync::Mutex::new(f)));
-        let mut scans = Vec::with_capacity(stages.len());
-        for (i, stage) in stages.into_iter().enumerate() {
-            let f_for_stage = if i < last_idx {
-                f_opt
-                    .as_ref()
-                    .expect("f_opt is taken only on the last stage")
-                    .clone()
-            } else {
-                f_opt.take().expect("f_opt is taken only on the last stage")
-            };
-            scans.push(scanner_for_stage(self, range, stage, f_for_stage)?);
-        }
-
+        // The stages are scanned one after the other, each handing the consumer
+        // to the next.
         Ok(async move {
-            for scan in scans {
-                scan.await?;
+            let mut f = f;
+            for stage in stages {
+                f = scanner_for_stage(self, range, stage, f)?.await?;
             }
-            Ok(())
+            Ok(f)
         })
     }
 }

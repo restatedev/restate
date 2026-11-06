@@ -15,6 +15,7 @@ use bytes::{Buf, BufMut};
 use restate_rocksdb::Priority;
 use restate_storage_api::StorageError;
 use restate_storage_api::lock_table::{LoadLocks, LockState, ScanLocksTable, WriteLockTable};
+use restate_storage_api::scan::RowConsumer;
 use restate_types::identifiers::{PartitionKey, WithPartitionKey};
 use restate_types::sharding::KeyRange;
 use restate_types::{CanonicalLockId, LockName, Scope};
@@ -25,9 +26,7 @@ use crate::keys::{
     OptionalScope, define_table_key,
 };
 use crate::scan::TableScan;
-use crate::{
-    PartitionDb, PartitionStore, PartitionStoreTransaction, Result, StorageAccess, break_on_err,
-};
+use crate::{PartitionDb, PartitionStore, PartitionStoreTransaction, Result, StorageAccess};
 
 // 'lo' | PKEY | CANONICAL_LOCK_ID
 // CanonicalLockId is serialized as follows:
@@ -169,28 +168,26 @@ impl WriteLockTable for PartitionStoreTransaction<'_> {
 // Data fusion queries
 impl ScanLocksTable for PartitionStore {
     fn for_each_lock<
-        F: FnMut((PartitionKey, Option<Scope>, LockName, LockState)) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
+        F: for<'a> RowConsumer<Item<'a> = (PartitionKey, Option<Scope>, LockName, LockState)>,
     >(
         &self,
         range: KeyRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        f: F,
+    ) -> Result<impl Future<Output = Result<F>> + Send> {
         self.iterator_for_each(
             "df-locks",
             Priority::Low,
             TableScan::ScanPartitionKeyRange::<LockKey>(range),
-            move |(mut key, mut value)| {
-                let lock_key = break_on_err(LockKey::deserialize_from(&mut key))?;
-                let lock_state = break_on_err(
-                    LockState::decode(&mut value).map_err(StorageError::BilrostDecode),
-                )?;
+            f,
+            async |f: &mut F, (mut key, mut value): (&[u8], &[u8])| {
+                let lock_key = LockKey::deserialize_from(&mut key)?;
+                let lock_state =
+                    LockState::decode(&mut value).map_err(StorageError::BilrostDecode)?;
 
                 let (partition_key, opt_scope, lock_name) = lock_key.split();
 
-                f((partition_key, opt_scope, lock_name, lock_state)).map_break(Ok)
+                f.consume((partition_key, opt_scope, lock_name, lock_state))
+                    .await
             },
         )
         .map_err(|_| StorageError::OperationalError)
