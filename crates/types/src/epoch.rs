@@ -125,11 +125,7 @@ impl EpochMetadata {
     }
 
     pub fn reconfigure(self, mut next: PartitionConfiguration) -> Self {
-        next.version = self
-            .next
-            .map(|next| next.version())
-            .unwrap_or_else(|| self.current.version())
-            .next();
+        next.version = self.latest_configuration_version().next();
 
         Self {
             version: self.version.next(),
@@ -157,6 +153,20 @@ impl EpochMetadata {
 
     pub fn next(&self) -> Option<&PartitionConfiguration> {
         self.next.as_ref()
+    }
+
+    /// The version of the partition's newest configuration: the next one while a
+    /// reconfiguration is in progress, otherwise the current one. A next configuration is
+    /// always newer than the current one.
+    ///
+    /// Not to be confused with [`Versioned::version`], the version of this metadata as a whole,
+    /// which also changes when a leader is elected or a policy changes. Nodes only learn about
+    /// partition configurations, see
+    /// [`crate::partitions::state::MembershipState::latest_configuration_version`].
+    pub fn latest_configuration_version(&self) -> Version {
+        self.next
+            .as_ref()
+            .map_or_else(|| self.current.version(), |next| next.version())
     }
 
     /// Returns the leadership policy for this partition.
