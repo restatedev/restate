@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod visitor;
+
 use bytes::{Bytes, BytesMut};
 use rocksdb::ReadOptions;
 
@@ -18,6 +20,8 @@ use crate::scan::TableScan::{Prefix, RangeInclusive, ScanPartitionKeyRange};
 use crate::{
     ScanMode, configure_prefix_iterator_opts, configure_range_iterator_opts, convert_to_upper_bound,
 };
+
+pub(crate) use self::visitor::DecodingVisitor;
 
 #[derive(Debug)]
 pub enum TableScan<K> {

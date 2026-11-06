@@ -22,6 +22,7 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
+use restate_storage_api::scan::RowConsumer;
 use restate_types::identifiers::PartitionId;
 use restate_types::sharding::KeyRange;
 
@@ -41,19 +42,14 @@ impl ScanLocalPartitionFilter for KeyRange {
 pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
     type Builder: crate::table_util::Builder + Send;
     type Item<'a>: Send;
-    type ConversionError;
+    type ConversionError: Into<anyhow::Error>;
     type Filter: ScanLocalPartitionFilter + Send + Sync + 'static;
 
-    fn for_each_row<
-        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_row<F: for<'a> RowConsumer<Item<'a> = Self::Item<'a>>>(
         partition_store: &PartitionStore,
         filter: Self::Filter,
         f: F,
-    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError>;
+    ) -> Result<impl Future<Output = restate_storage_api::Result<F>> + Send, StorageError>;
 
     fn append_row<'a>(
         row_builder: &mut Self::Builder,
@@ -109,29 +105,23 @@ where
                 DataFusionError::External(err.into())
             })?;
 
-            // timer starts on first row, stops on scanner drop
-            let mut elapsed_compute = ElapsedCompute::new(elapsed_compute);
-
-            let mut batch_sender =
-                BatchSender::new(projection, tx, predicate.clone(), batch_size, limit);
-
-            S::for_each_row(
-                &partition_store,
-                S::Filter::new(range, predicate),
-                move |row| {
-                    elapsed_compute.start();
-                    match S::append_row(batch_sender.builder_mut(), row) {
-                        Ok(()) => {}
-                        err => return ControlFlow::Break(err),
-                    }
-                    batch_sender.send_if_needed().map_break(Ok)
-                },
-            )
-            .map_err(|err| DataFusionError::External(err.into()))?
-            .await
-            .map_err(|err| DataFusionError::External(err.into()))?;
-
-            Ok(())
+            let consumer = BatchConsumer::<S> {
+                batch_sender: BatchSender::new(
+                    projection,
+                    tx,
+                    predicate.clone(),
+                    batch_size,
+                    limit,
+                ),
+                elapsed_compute: ElapsedCompute::new(elapsed_compute),
+            };
+            let mut consumer =
+                S::for_each_row(&partition_store, S::Filter::new(range, predicate), consumer)
+                    .map_err(|err| DataFusionError::External(err.into()))?
+                    .await
+                    .map_err(|err| DataFusionError::External(err.into()))?;
+            // The scan is over: send what's left.
+            consumer.batch_sender.finish().await
         };
         stream_builder.spawn(background_task);
         Ok(stream_builder.build())
@@ -162,6 +152,28 @@ where
             limit,
             elapsed_compute,
         )
+    }
+}
+
+struct BatchConsumer<S: ScanLocalPartition> {
+    batch_sender: BatchSender<S::Builder>,
+    elapsed_compute: ElapsedCompute,
+}
+
+impl<S: ScanLocalPartition> RowConsumer for BatchConsumer<S> {
+    type Item<'a> = S::Item<'a>;
+
+    async fn consume(
+        &mut self,
+        row: Self::Item<'_>,
+    ) -> restate_storage_api::Result<ControlFlow<()>> {
+        self.elapsed_compute.start();
+        S::append_row(self.batch_sender.builder_mut(), row)
+            .map_err(|error| StorageError::Conversion(error.into()))?;
+        self.batch_sender
+            .send_if_needed()
+            .await
+            .map_err(|error| StorageError::Generic(error.into()))
     }
 }
 
