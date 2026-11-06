@@ -485,6 +485,17 @@ impl MembershipState {
         result
     }
 
+    /// The version of the newest partition configuration this node knows about: the next one
+    /// while a reconfiguration is in progress, otherwise the current one. Comparable with
+    /// [`crate::epoch::EpochMetadata::latest_configuration_version`].
+    pub fn latest_configuration_version(&self) -> Version {
+        self.observed_next_membership
+            .as_ref()
+            .map_or(self.observed_current_membership.version, |next| {
+                next.version
+            })
+    }
+
     /// Returns true if the given node_id is part of the current or next membership.
     pub fn contains(&self, node_id: PlainNodeId) -> bool {
         self.observed_current_membership
