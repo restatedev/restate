@@ -164,7 +164,7 @@ async fn closing_or_dropping_a_partition_waits_for_its_read_snapshots() -> anyho
             assert_eq!(fsm_entries(&snapshot)?, captured);
             drop(snapshot);
             timeout(DEADLINE, released).await?;
-            assert!(timeout(DEADLINE, dropping).await??);
+            assert!(timeout(DEADLINE, dropping).await??.is_some());
 
             // The partition's data is gone.
             let mut fresh = manager.open(&partition, None).await?;

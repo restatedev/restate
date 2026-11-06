@@ -217,9 +217,8 @@ enum ClusterControllerCommand {
         response_tx: oneshot::Sender<anyhow::Result<Snapshot>>,
     },
     DropPartitionStore {
-        partition_id: PartitionId,
         node_id: PlainNodeId,
-        force: bool,
+        request: DropPartitionStoreRequest,
         response_tx:
             oneshot::Sender<Result<DropPartitionStoreOutcome, DropPartitionStoreRequestError>>,
     },
@@ -323,9 +322,8 @@ impl ClusterControllerHandle {
     /// Asks a specific node to delete its local copy of a partition.
     pub(crate) async fn drop_partition_store(
         &self,
-        partition_id: PartitionId,
         node_id: PlainNodeId,
-        force: bool,
+        request: DropPartitionStoreRequest,
     ) -> Result<Result<DropPartitionStoreOutcome, DropPartitionStoreRequestError>, ShutdownError>
     {
         let (response_tx, response_rx) = oneshot::channel();
@@ -333,9 +331,8 @@ impl ClusterControllerHandle {
         let _ = self
             .tx
             .send(ClusterControllerCommand::DropPartitionStore {
-                partition_id,
                 node_id,
-                force,
+                request,
                 response_tx,
             })
             .await;
@@ -547,9 +544,8 @@ impl<T: TransportConnect> Service<T> {
     /// target node is chosen by the operator: only that node's copy is affected.
     fn spawn_drop_partition_store_task(
         &self,
-        partition_id: PartitionId,
         node_id: PlainNodeId,
-        force: bool,
+        request: DropPartitionStoreRequest,
         response_tx: oneshot::Sender<
             Result<DropPartitionStoreOutcome, DropPartitionStoreRequestError>,
         >,
@@ -571,11 +567,8 @@ impl<T: TransportConnect> Service<T> {
             TaskKind::Disposable,
             "drop-partition-store-response",
             async move {
-                let _ = response_tx.send(
-                    node_rpc_client
-                        .drop_partition_store(node_id, partition_id, force)
-                        .await,
-                );
+                let _ =
+                    response_tx.send(node_rpc_client.drop_partition_store(node_id, request).await);
                 Ok(())
             },
         );
@@ -619,18 +612,11 @@ impl<T: TransportConnect> Service<T> {
                 );
             }
             ClusterControllerCommand::DropPartitionStore {
-                partition_id,
                 node_id,
-                force,
+                request,
                 response_tx,
             } => {
-                warn!(
-                    ?partition_id,
-                    %node_id,
-                    %force,
-                    "Drop partition store command received"
-                );
-                self.spawn_drop_partition_store_task(partition_id, node_id, force, response_tx);
+                self.spawn_drop_partition_store_task(node_id, request, response_tx);
             }
             ClusterControllerCommand::UpdateClusterConfiguration {
                 partition_replication,
@@ -889,21 +875,12 @@ where
     pub async fn drop_partition_store(
         &self,
         node_id: GenerationalNodeId,
-        partition_id: PartitionId,
-        force: bool,
+        request: DropPartitionStoreRequest,
     ) -> Result<DropPartitionStoreOutcome, DropPartitionStoreRequestError> {
+        let sort_code = Some(request.partition_id.into());
         let response = self
             .network_sender
-            .call_rpc(
-                node_id,
-                Swimlane::default(),
-                DropPartitionStoreRequest {
-                    partition_id,
-                    force,
-                },
-                Some(partition_id.into()),
-                None,
-            )
+            .call_rpc(node_id, Swimlane::default(), request, sort_code, None)
             .await
             .map_err(|error| DropPartitionStoreRequestError::Rpc { node_id, error })?;
 
