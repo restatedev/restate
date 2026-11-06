@@ -712,12 +712,7 @@ impl<T: TransportConnect> Scheduler<T> {
                         // Check if next has been modified in the meantime. If next is not present,
                         // then check whether current contains a larger version than the expected next
                         // version because we might have completed a reconfiguration in the meantime.
-                        if epoch_metadata
-                            .next()
-                            .map(|next| next.version())
-                            .unwrap_or_else(|| epoch_metadata.current().version())
-                            <= expected_next_version
-                        {
+                        if epoch_metadata.latest_configuration_version() <= expected_next_version {
                             Ok(epoch_metadata.reconfigure(next.clone()))
                         } else {
                             let (_, _, current, next, leadership_policy, placement_policy) =
