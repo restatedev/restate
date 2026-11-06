@@ -23,6 +23,7 @@ use tokio::time::Instant;
 use tracing::{debug, error, info, instrument, warn};
 
 use restate_core::ShutdownError;
+use restate_core::io::IdleTracker;
 use restate_core::io::{AdmissionClosed, Gate, IoExecutor, IoOp};
 use restate_rocksdb::configuration::{CfConfigurator, DbConfigurator};
 use restate_rocksdb::reads::ColumnFamilies;
@@ -446,7 +447,7 @@ impl PartitionDb {
 
 pub(crate) struct PartitionCell {
     meta: Arc<Partition>,
-    executor: SinglePoolExecutor,
+    executor: IdleTracker<SinglePoolExecutor>,
     archived_lsn: watch::Sender<Option<Lsn>>,
     /// Shared so that a snapshot capture can hold the read lock until its export finishes.
     pub(crate) inner: Arc<AsyncRwLock<State>>,
@@ -454,7 +455,7 @@ pub(crate) struct PartitionCell {
 }
 
 impl PartitionCell {
-    pub fn new(partition: Partition, executor: SinglePoolExecutor) -> Self {
+    pub fn new(partition: Partition, executor: IdleTracker<SinglePoolExecutor>) -> Self {
         Self {
             meta: Arc::new(partition),
             executor,
