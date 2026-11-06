@@ -252,7 +252,10 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         )
         .id();
         let force = request.force;
+        let requested_dry_run = request.dry_run;
         let reason = request.reason;
+        // marks log messages about dry runs, so they aren't mistaken for actual drops
+        let prefix = if requested_dry_run { "[DRY RUN] " } else { "" };
 
         let result = self
             .controller_handle
@@ -266,28 +269,49 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
                         .map(Version::from)
                         .unwrap_or(Version::INVALID),
                     reason: reason.clone(),
+                    dry_run: requested_dry_run,
                 },
             )
             .await
             .map_err(|_| Status::unavailable("Node is shutting down"))?;
 
+        // `dry_run` in the response is what the node did, which differs from the request if the
+        // node doesn't support dry runs
         match result {
-            Ok(DropPartitionStoreOutcome::Dropped { deleted_bytes }) => {
-                info!(%partition_id, %node_id, force, reason, "Dropped partition store");
+            Ok(DropPartitionStoreOutcome::Dropped {
+                deleted_bytes,
+                dry_run,
+            }) => {
+                if dry_run {
+                    info!(%partition_id, %node_id, force, reason, "[DRY RUN] Would drop partition store");
+                } else if requested_dry_run {
+                    warn!(
+                        %partition_id,
+                        %node_id,
+                        force,
+                        reason,
+                        "A dry run was requested, but the node doesn't support dry runs and \
+                        dropped the partition store"
+                    );
+                } else {
+                    info!(%partition_id, %node_id, force, reason, "Dropped partition store");
+                }
                 Ok(Response::new(DropPartitionStoreResponse {
                     dropped: true,
                     deleted_bytes,
+                    dry_run,
                 }))
             }
-            Ok(DropPartitionStoreOutcome::NoStoreFound) => {
-                debug!(%partition_id, %node_id, force, reason, "No partition store to drop");
+            Ok(DropPartitionStoreOutcome::NoStoreFound { dry_run }) => {
+                debug!(%partition_id, %node_id, force, reason, "{prefix}No partition store to drop");
                 Ok(Response::new(DropPartitionStoreResponse {
                     dropped: false,
                     deleted_bytes: None,
+                    dry_run,
                 }))
             }
             Err(err) => {
-                warn!(%partition_id, %node_id, force, reason, "Could not drop partition store: {err}");
+                warn!(%partition_id, %node_id, force, reason, "{prefix}Could not drop partition store: {err}");
                 Err(drop_partition_store_status(err))
             }
         }

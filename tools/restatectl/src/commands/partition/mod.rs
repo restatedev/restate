@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod drop_stale_stores;
 mod drop_store;
 mod epoch_metadata;
 mod gen_metadata;
@@ -32,4 +33,6 @@ pub enum Partitions {
     Leadership(leadership::Leadership),
     /// Delete a node's local copy of a partition
     DropStore(drop_store::DropStoreOpts),
+    /// Delete the local copies of partitions that nodes keep although they are no longer replicas
+    DropStaleStores(drop_stale_stores::DropStaleStoresOpts),
 }
