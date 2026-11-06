@@ -19,7 +19,7 @@ use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
 use tonic::codec::CompressionEncoding;
 use tonic::{Request, Response, Status, async_trait};
-use tracing::info;
+use tracing::{debug, info, warn};
 
 use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{Bifrost, Error as BiforstError};
@@ -48,7 +48,7 @@ use restate_types::metadata::{GlobalMetadata, Precondition};
 use restate_types::metadata_store::keys::{NODES_CONFIG_KEY, partition_processor_epoch_key};
 use restate_types::net::connect_opts::GrpcConnectionOptions;
 use restate_types::net::partition_processor_manager::{
-    DropPartitionStoreError, DropPartitionStoreOutcome, Snapshot,
+    self as net_ppm, DropPartitionStoreError, DropPartitionStoreOutcome, Snapshot,
 };
 use restate_types::nodes_config::{NodesConfiguration, Role};
 use restate_types::partitions::PartitionTable;
@@ -232,8 +232,8 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         }
     }
 
-    /// Handles requests from `restatectl partition drop-store` to delete a single node's local
-    /// copy of a partition. Implemented as an RPC call to the targeted worker node.
+    /// Handles requests from `restatectl` to delete a single node's local copy of a partition.
+    /// Implemented as an RPC call to the targeted worker node.
     async fn drop_partition_store(
         &self,
         request: Request<DropPartitionStoreRequest>,
@@ -251,20 +251,45 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
                 .ok_or_else(|| Status::invalid_argument("node_id is required"))?,
         )
         .id();
+        let force = request.force;
+        let reason = request.reason;
 
-        match self
+        let result = self
             .controller_handle
-            .drop_partition_store(partition_id, node_id, request.force)
+            .drop_partition_store(
+                node_id,
+                net_ppm::DropPartitionStoreRequest {
+                    partition_id,
+                    force,
+                    min_partition_configuration_version: request
+                        .min_partition_configuration_version
+                        .map(Version::from)
+                        .unwrap_or(Version::INVALID),
+                    reason: reason.clone(),
+                },
+            )
             .await
-            .map_err(|_| Status::unavailable("Node is shutting down"))?
-        {
+            .map_err(|_| Status::unavailable("Node is shutting down"))?;
+
+        match result {
+            Ok(DropPartitionStoreOutcome::Dropped { deleted_bytes }) => {
+                info!(%partition_id, %node_id, force, reason, "Dropped partition store");
+                Ok(Response::new(DropPartitionStoreResponse {
+                    dropped: true,
+                    deleted_bytes,
+                }))
+            }
+            Ok(DropPartitionStoreOutcome::NoStoreFound) => {
+                debug!(%partition_id, %node_id, force, reason, "No partition store to drop");
+                Ok(Response::new(DropPartitionStoreResponse {
+                    dropped: false,
+                    deleted_bytes: None,
+                }))
+            }
             Err(err) => {
-                info!("Failed to drop partition store: {err}");
+                warn!(%partition_id, %node_id, force, reason, "Could not drop partition store: {err}");
                 Err(drop_partition_store_status(err))
             }
-            Ok(outcome) => Ok(Response::new(DropPartitionStoreResponse {
-                dropped: matches!(outcome, DropPartitionStoreOutcome::Dropped),
-            })),
         }
     }
 
@@ -628,8 +653,12 @@ fn drop_partition_store_status(error: DropPartitionStoreRequestError) -> Status 
         DropPartitionStoreRequestError::Worker { node_id, error } => {
             let message = format!("{node_id} refused to drop its partition store: {error}");
             match error {
-                DropPartitionStoreError::ProcessorRunning => Status::failed_precondition(message),
-                DropPartitionStoreError::DropInProgress => Status::aborted(message),
+                DropPartitionStoreError::ProcessorRunning
+                | DropPartitionStoreError::ReplicaSetMember => Status::failed_precondition(message),
+                DropPartitionStoreError::DropInProgress
+                | DropPartitionStoreError::PartitionConfigurationNotObserved { .. } => {
+                    Status::aborted(message)
+                }
                 DropPartitionStoreError::UnknownPartition => Status::not_found(message),
                 DropPartitionStoreError::Internal(_) => Status::internal(message),
             }
@@ -767,6 +796,17 @@ mod drop_partition_store_tests {
             (
                 DropPartitionStoreError::Internal("failed".to_owned()),
                 tonic::Code::Internal,
+            ),
+            (
+                DropPartitionStoreError::ReplicaSetMember,
+                tonic::Code::FailedPrecondition,
+            ),
+            (
+                DropPartitionStoreError::PartitionConfigurationNotObserved {
+                    required: Version::from(7),
+                    observed: Version::from(5),
+                },
+                tonic::Code::Aborted,
             ),
         ] {
             let status = drop_partition_store_status(DropPartitionStoreRequestError::Worker {
