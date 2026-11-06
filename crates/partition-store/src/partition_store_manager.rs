@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use ahash::HashMap;
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
-use tokio::sync::{Mutex as AsyncMutex, mpsc};
+use tokio::sync::{Mutex as AsyncMutex, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{Level, debug, error, field, info, instrument, warn};
 
@@ -555,6 +555,31 @@ impl PartitionStoreManager {
         Ok(dropped)
     }
 
+    /// Reports what [`Self::drop_partition_store`] would delete right now, without changing
+    /// anything: this node's local copy of the partition with its disk usage, or `None` if
+    /// there is no local copy.
+    #[instrument(level = "error", skip_all, fields(partition_id = %partition.partition_id, cf_name = %partition.cf_name()))]
+    pub async fn preview_drop_partition_store(
+        &self,
+        partition: &Partition,
+    ) -> Result<Option<DroppedPartitionStore>, RocksError> {
+        let database = self.open_rocksdb(partition).await?;
+        // Measure through a handle of our own, so that the partition stays as it is.
+        let Some(db) = PartitionDb::new(
+            Arc::new(partition.clone()),
+            watch::Sender::new(None),
+            database,
+        ) else {
+            return Ok(None);
+        };
+        let disk_usage = db
+            .disk_usage()
+            .await
+            .inspect_err(|error| warn!(%error, "Could not measure the partition store"))
+            .ok();
+        Ok(Some(DroppedPartitionStore { disk_usage }))
+    }
+
     /// Opens a partition store by importing an already-downloaded snapshot, discarding any
     /// existing local state for the partition. Unlike [`Self::open`], this takes a snapshot the
     /// caller has fetched itself (e.g. via [`crate::snapshots::SnapshotRepository::get_latest`]),
@@ -873,6 +898,7 @@ mod tests {
             rocksdb.reset().await?;
 
             let manager = PartitionStoreManager::create(layout).await?;
+            let preview = manager.preview_drop_partition_store(&partition).await?;
             let dropped = manager
                 .drop_partition_store(&partition)
                 .await?
@@ -881,7 +907,18 @@ mod tests {
                 dropped.disk_usage.is_some_and(|size| size > 0),
                 "measures a store this process never opened"
             );
+            assert_eq!(
+                preview,
+                Some(dropped),
+                "a preview reports what the drop deletes, and leaves it in place"
+            );
             assert!(manager.drop_partition_store(&partition).await?.is_none());
+            assert!(
+                manager
+                    .preview_drop_partition_store(&partition)
+                    .await?
+                    .is_none()
+            );
             let mut neighbor = manager.open(&sibling, None).await?;
             assert_eq!(neighbor.get_applied_lsn().await?, Some(Lsn::new(20)));
 

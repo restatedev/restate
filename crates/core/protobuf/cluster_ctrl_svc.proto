@@ -142,14 +142,23 @@ message DropPartitionStoreRequest {
   optional restate.common.Version min_partition_configuration_version = 4;
   // Why the store is being dropped. Logged for auditing.
   string reason = 5;
+  // Only report what would happen, without changing anything. The node makes
+  // the same checks, and answers as if it had dropped the store.
+  bool dry_run = 6;
 }
 
 message DropPartitionStoreResponse {
-  // False if the node had no local partition store to delete
+  // False if the node had no local partition store to delete. In a dry run,
+  // whether it would delete one.
   bool dropped = 1;
   // How much disk space the deleted store used, in bytes, right before the
-  // deletion. Unset if nothing was dropped or it couldn't be measured.
+  // deletion (in a dry run, how much it uses). Unset if nothing was dropped or
+  // it couldn't be measured.
   optional uint64 deleted_bytes = 2;
+  // Whether the node handled the request as a dry run, without changing
+  // anything. Servers that don't support dry runs never set it: if a dry run was
+  // requested but this is false, `dropped` reports a real deletion.
+  bool dry_run = 3;
 }
 
 message ChainExtension {

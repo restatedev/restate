@@ -127,6 +127,10 @@ pub struct DropPartitionStoreRequest {
     /// Why the store is being dropped, as given by the operator. Logged for auditing.
     #[bilrost(4)]
     pub reason: String,
+    /// Only report what would happen, without changing anything. The node makes the same
+    /// checks, and answers with the store it would drop and its disk usage.
+    #[bilrost(5)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, bilrost::Oneof, bilrost::Message)]
@@ -137,9 +141,14 @@ pub enum DropPartitionStoreResponse {
     Dropped {
         #[bilrost(1)]
         deleted_bytes: Option<u64>,
+        #[bilrost(2)]
+        dry_run: bool,
     },
     #[bilrost(tag(2), message)]
-    NoStoreFound,
+    NoStoreFound {
+        #[bilrost(1)]
+        dry_run: bool,
+    },
     #[bilrost(tag(3), message)]
     ProcessorRunning,
     #[bilrost(tag(4), message)]
@@ -165,10 +174,16 @@ impl DropPartitionStoreResponse {
             Self::Unknown => Err(DropPartitionStoreError::Internal(
                 "the node returned an unknown response".to_owned(),
             )),
-            Self::Dropped { deleted_bytes } => {
-                Ok(DropPartitionStoreOutcome::Dropped { deleted_bytes })
+            Self::Dropped {
+                deleted_bytes,
+                dry_run,
+            } => Ok(DropPartitionStoreOutcome::Dropped {
+                deleted_bytes,
+                dry_run,
+            }),
+            Self::NoStoreFound { dry_run } => {
+                Ok(DropPartitionStoreOutcome::NoStoreFound { dry_run })
             }
-            Self::NoStoreFound => Ok(DropPartitionStoreOutcome::NoStoreFound),
             Self::ProcessorRunning => Err(DropPartitionStoreError::ProcessorRunning),
             Self::DropInProgress => Err(DropPartitionStoreError::DropInProgress),
             Self::UnknownPartition => Err(DropPartitionStoreError::UnknownPartition),
@@ -189,10 +204,16 @@ impl From<Result<DropPartitionStoreOutcome, DropPartitionStoreError>>
 {
     fn from(result: Result<DropPartitionStoreOutcome, DropPartitionStoreError>) -> Self {
         match result {
-            Ok(DropPartitionStoreOutcome::Dropped { deleted_bytes }) => {
-                Self::Dropped { deleted_bytes }
+            Ok(DropPartitionStoreOutcome::Dropped {
+                deleted_bytes,
+                dry_run,
+            }) => Self::Dropped {
+                deleted_bytes,
+                dry_run,
+            },
+            Ok(DropPartitionStoreOutcome::NoStoreFound { dry_run }) => {
+                Self::NoStoreFound { dry_run }
             }
-            Ok(DropPartitionStoreOutcome::NoStoreFound) => Self::NoStoreFound,
             Err(DropPartitionStoreError::ProcessorRunning) => Self::ProcessorRunning,
             Err(DropPartitionStoreError::DropInProgress) => Self::DropInProgress,
             Err(DropPartitionStoreError::UnknownPartition) => Self::UnknownPartition,
@@ -206,15 +227,22 @@ impl From<Result<DropPartitionStoreOutcome, DropPartitionStoreError>>
     }
 }
 
+/// What a node did with a drop request that it accepted.
+///
+/// `dry_run` says whether the node handled the request as a dry run, without changing anything.
+/// A node that doesn't support dry runs never sets it, so if a dry run was requested but this
+/// is false, the node really dropped the store.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, derive_more::Display)]
 pub enum DropPartitionStoreOutcome {
+    /// The store was dropped, or in a dry run, would be dropped.
     #[display("the local partition store was dropped")]
     Dropped {
         /// How much disk space the store used right before it was deleted, if known.
         deleted_bytes: Option<u64>,
+        dry_run: bool,
     },
     #[display("this node has no local partition store for this partition")]
-    NoStoreFound,
+    NoStoreFound { dry_run: bool },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, derive_more::Display)]
@@ -254,6 +282,7 @@ mod tests {
             force: true,
             min_partition_configuration_version: Version::from(7),
             reason: "stale store".to_owned(),
+            dry_run: true,
         };
         assert_eq!(
             DropPartitionStoreRequest::decode(request.encode_to_bytes()).unwrap(),
@@ -264,11 +293,13 @@ mod tests {
             DropPartitionStoreResponse::Unknown,
             DropPartitionStoreResponse::Dropped {
                 deleted_bytes: Some(1024),
+                dry_run: false,
             },
             DropPartitionStoreResponse::Dropped {
                 deleted_bytes: None,
+                dry_run: true,
             },
-            DropPartitionStoreResponse::NoStoreFound,
+            DropPartitionStoreResponse::NoStoreFound { dry_run: true },
             DropPartitionStoreResponse::ProcessorRunning,
             DropPartitionStoreResponse::DropInProgress,
             DropPartitionStoreResponse::UnknownPartition,
