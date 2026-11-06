@@ -18,7 +18,7 @@ use anyhow::anyhow;
 use bytes::Bytes;
 use bytes::BytesMut;
 use enum_map::Enum;
-use futures::{FutureExt, Stream, StreamExt, TryFutureExt, future};
+use futures::{FutureExt, Stream, StreamExt, TryFutureExt, future, stream};
 use rocksdb::{
     BoundColumnFamily, DBPinnableSlice, DBRawIteratorWithThreadMode, ReadOptions,
     SnapshotWithThreadMode,
@@ -406,6 +406,7 @@ impl PartitionStore {
         mut f: impl FnMut((&[u8], &[u8])) -> Result<Option<O>> + Send + 'static,
     ) -> Result<impl Stream<Item = Result<O>> + Send + 'static, AdmissionClosed> {
         let (tx, rx) = mpsc::channel(8);
+        let error_tx = tx.clone();
         let mut opts = ReadOptions::default();
         opts.set_async_io(true);
         let driver = self.run_iterator_internal(
@@ -423,12 +424,17 @@ impl PartitionStore {
                 })
             },
         )?;
-        let terminal_error = driver
-            .into_stream()
-            .filter_map(|res: Result<_>| future::ready(res.err().map(Err)));
-        // The driver runs eagerly. Keep it alive while draining buffered rows,
-        // then report any terminal error after those rows.
-        Ok(ReceiverStream::new(rx).chain(terminal_error))
+        // Poll the driver alongside the rows: the visitor it resolves to holds
+        // `tx`, so the rows only end once it's dropped. A terminal error goes
+        // through the channel, after the rows the visitor sent.
+        let driver = async move {
+            if let Err(err) = driver.await {
+                let _ = error_tx.send(Err(err)).await;
+            }
+        }
+        .into_stream()
+        .filter_map(|()| future::ready(None));
+        Ok(stream::select(ReceiverStream::new(rx), driver))
     }
 
     /// Resolves to `visitor` once the iteration ends without an error.
