@@ -33,7 +33,7 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 use tokio::time::MissedTickBehavior;
-use tracing::{debug, error, info, info_span, instrument, trace, warn};
+use tracing::{debug, error, field, info, info_span, instrument, trace, warn};
 
 use restate_bifrost::Bifrost;
 use restate_bifrost::loglet::FindTailOptions;
@@ -48,6 +48,7 @@ use restate_core::{
 };
 use restate_core::{RuntimeTaskHandle, TaskCenter};
 use restate_ingestion_client::IngestionClient;
+use restate_memory::ByteCount;
 use restate_metadata_server::{MetadataStoreClient, ReadModifyWriteError};
 use restate_metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
 use restate_partition_store::PartitionStoreManager;
@@ -55,7 +56,6 @@ use restate_partition_store::snapshots::{
     PartitionSnapshotStatus, SnapshotPartitionTask, SnapshotRepository, remove_leftover_exports,
 };
 use restate_partition_store::{SnapshotError, SnapshotErrorKind};
-use restate_types::GenerationalNodeId;
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{BrokenReason, PartitionProcessorStatus, RunMode};
 use restate_types::config::{AutomaticSnapshots, Configuration};
@@ -80,6 +80,7 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
+use restate_types::{GenerationalNodeId, Version};
 use restate_util_string::format_restring;
 use restate_util_time::DurationExt;
 use restate_wal_protocol::v2::{Envelope, Raw};
@@ -156,9 +157,23 @@ type DropResult = Result<DropPartitionStoreOutcome, DropPartitionStoreError>;
 ///
 /// While one of these exists for a partition, the manager will not start a processor for it,
 /// so that we never race the drop against a fresh `open()`.
+/// How long a drop request without `force` waits for this node to learn about the partition
+/// configuration that the requester saw.
+const DROP_PARTITION_STORE_CONFIGURATION_WAIT: Duration = Duration::from_secs(5);
+
+/// An operator's request to drop this node's local copy of a partition, see
+/// [`DropPartitionStoreRequest`].
+struct DropRequest {
+    force: bool,
+    min_partition_configuration_version: Version,
+    reason: String,
+    sender: oneshot::Sender<DropResult>,
+}
+
 struct PendingDrop {
     /// Set while we are waiting for a running processor to terminate before we can drop.
     awaiting_stop: bool,
+    reason: String,
     sender: oneshot::Sender<DropResult>,
 }
 
@@ -823,6 +838,9 @@ where
                 // No-op: no snapshot repository, partition no longer in the partition table,
                 // or error fetching status (logged upstream)
             }
+            EventKind::DropRequestReady(request) => {
+                self.on_drop_request_ready(partition_id, request);
+            }
             EventKind::PartitionStoreDropped(result) => {
                 self.on_partition_store_dropped(partition_id, result);
             }
@@ -1377,54 +1395,166 @@ where
         Ok(Box::new(epoch.into()))
     }
 
-    /// Deletes this node's local copy of a partition, on operator request.
+    /// Handles an operator's request to delete this node's local copy of a partition.
+    ///
+    /// Unless the request is forced, we first make sure that we know the partition's replica set
+    /// at least as well as the requester did. With an older one, this node could drop its store
+    /// although the requester saw that it was added back to the replica set, or refuse because it
+    /// doesn't know yet that it left. So we wait for a newer partition configuration, for a few
+    /// seconds at most, without blocking the partition's processor in the meantime.
+    fn on_drop_partition_store(&mut self, partition_id: PartitionId, request: DropRequest) {
+        let required = request.min_partition_configuration_version;
+        let observed = self.latest_configuration_version(partition_id);
+        if request.force || observed >= required {
+            self.try_drop_partition_store(partition_id, request);
+            return;
+        }
+
+        debug!(
+            %partition_id,
+            %observed,
+            %required,
+            "Waiting to learn about the partition configuration before dropping the partition store"
+        );
+        let replica_set_states = self.replica_set_states.clone();
+        let cancellation = restate_core::cancellation_token();
+        self.asynchronous_operations
+            .build_task()
+            .name(&format!("drop-partition-store-wait-{partition_id}"))
+            .spawn(
+                async move {
+                    let configuration_observed = async {
+                        loop {
+                            // register before checking, so we don't miss an update in between
+                            let changed = replica_set_states.membership_changed();
+                            if replica_set_states
+                                .membership_state(partition_id)
+                                .latest_configuration_version()
+                                >= required
+                            {
+                                return;
+                            }
+                            changed.await;
+                        }
+                    };
+                    tokio::select! {
+                        _ = tokio::time::timeout(
+                            DROP_PARTITION_STORE_CONFIGURATION_WAIT,
+                            configuration_observed,
+                        ) => {}
+                        _ = cancellation.cancelled() => {}
+                    }
+                    AsynchronousEvent {
+                        partition_id,
+                        inner: EventKind::DropRequestReady(request),
+                    }
+                }
+                .in_current_tc(),
+            )
+            .expect("to spawn drop partition store wait task");
+    }
+
+    fn on_drop_request_ready(&mut self, partition_id: PartitionId, request: DropRequest) {
+        if restate_core::is_cancellation_requested() {
+            // don't start deleting data on the way down; dropping the request fails the
+            // requester's RPC, so it can retry against the restarted node
+            return;
+        }
+
+        let required = request.min_partition_configuration_version;
+        let observed = self.latest_configuration_version(partition_id);
+        if observed < required {
+            refuse_drop(
+                partition_id,
+                request,
+                DropPartitionStoreError::PartitionConfigurationNotObserved { required, observed },
+            );
+            return;
+        }
+        self.try_drop_partition_store(partition_id, request);
+    }
+
+    fn latest_configuration_version(&self, partition_id: PartitionId) -> Version {
+        self.replica_set_states
+            .membership_state(partition_id)
+            .latest_configuration_version()
+    }
+
+    /// Deletes this node's local copy of a partition if that is safe.
     ///
     /// We only touch the store once we are sure that no processor is using it: either this node
-    /// already gave up on the partition, or it isn't a replica of it, or - with `force` - we stop
-    /// the running processor and wait for it to terminate first. [`Self::pending_drops`] keeps the
-    /// manager from starting a new processor in the meantime.
-    #[instrument(level = "info", skip_all, fields(partition_id = %partition_id, force = %force))]
-    fn on_drop_partition_store(
-        &mut self,
-        partition_id: PartitionId,
-        force: bool,
-        sender: oneshot::Sender<DropResult>,
-    ) {
+    /// already gave up on the partition, or it is neither running the partition nor part of its
+    /// replica set. With `force`, we stop a running processor and wait for it to terminate first,
+    /// and drop the store of a replica too. [`Self::pending_drops`] keeps the manager from
+    /// starting a new processor in the meantime. Since this runs on the manager's event loop, no
+    /// processor can start between these checks and recording the pending drop.
+    fn try_drop_partition_store(&mut self, partition_id: PartitionId, request: DropRequest) {
         if self.pending_drops.contains_key(&partition_id) {
-            let _ = sender.send(Err(DropPartitionStoreError::DropInProgress));
+            refuse_drop(
+                partition_id,
+                request,
+                DropPartitionStoreError::DropInProgress,
+            );
             return;
         }
 
         if !self.partition_table.live_load().contains(&partition_id) {
             // without the partition's metadata we don't know which column family to drop
-            let _ = sender.send(Err(DropPartitionStoreError::UnknownPartition));
+            refuse_drop(
+                partition_id,
+                request,
+                DropPartitionStoreError::UnknownPartition,
+            );
             return;
         }
 
         let awaiting_stop = match self.processor_states.get_mut(&partition_id) {
-            // this node isn't running the partition; nothing can race us
-            None => false,
             Some(state) if state.is_broken() => {
                 // no runtime task to await, the processor is already gone
                 self.processor_states.remove(&partition_id);
                 false
             }
-            Some(_) if !force => {
-                let _ = sender.send(Err(DropPartitionStoreError::ProcessorRunning));
-                return;
-            }
-            Some(state) => {
-                warn!("Stopping a running partition processor to drop its local store");
+            Some(state) if request.force => {
+                warn!(
+                    %partition_id,
+                    reason = request.reason,
+                    "Stopping a running partition processor to drop its local store"
+                );
                 state.stop();
                 true
             }
+            Some(_) => {
+                refuse_drop(
+                    partition_id,
+                    request,
+                    DropPartitionStoreError::ProcessorRunning,
+                );
+                return;
+            }
+            // e.g. a replica whose processor is waiting to be restarted
+            None if !request.force
+                && self
+                    .replica_set_states
+                    .membership_state(partition_id)
+                    .contains(Metadata::with_current(|m| m.my_node_id().as_plain())) =>
+            {
+                refuse_drop(
+                    partition_id,
+                    request,
+                    DropPartitionStoreError::ReplicaSetMember,
+                );
+                return;
+            }
+            // this node isn't running the partition; nothing can race us
+            None => false,
         };
 
         self.pending_drops.insert(
             partition_id,
             PendingDrop {
                 awaiting_stop,
-                sender,
+                reason: request.reason,
+                sender: request.sender,
             },
         );
 
@@ -1455,12 +1585,11 @@ where
                         Some(partition) => psm
                             .drop_partition_store(&partition)
                             .await
-                            .map(|dropped| {
-                                if dropped {
-                                    DropPartitionStoreOutcome::Dropped
-                                } else {
-                                    DropPartitionStoreOutcome::NoStoreFound
-                                }
+                            .map(|dropped| match dropped {
+                                Some(store) => DropPartitionStoreOutcome::Dropped {
+                                    deleted_bytes: store.disk_usage,
+                                },
+                                None => DropPartitionStoreOutcome::NoStoreFound,
                             })
                             .map_err(|err| DropPartitionStoreError::Internal(err.to_string())),
                     };
@@ -1476,18 +1605,33 @@ where
     }
 
     fn on_partition_store_dropped(&mut self, partition_id: PartitionId, result: DropResult) {
+        let pending = self.pending_drops.remove(&partition_id);
+        let reason = pending
+            .as_ref()
+            .map_or("", |pending| pending.reason.as_str());
         match &result {
-            Ok(outcome) => {
-                info!(%partition_id, "Drop partition store request completed: {outcome}");
-                // the partition can only have been blocked on data we just deleted
-                gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => partition_id.to_string(), REASON_LABEL => FLARE_REASON_AHEAD_OF_LOG).set(0);
+            Ok(DropPartitionStoreOutcome::Dropped { deleted_bytes }) => {
+                info!(
+                    %partition_id,
+                    reason,
+                    deleted_bytes =
+                        deleted_bytes.map(|bytes| field::display(ByteCount::from(bytes))),
+                    "Dropped local partition store on request"
+                );
+            }
+            Ok(DropPartitionStoreOutcome::NoStoreFound) => {
+                debug!(%partition_id, reason, "No local partition store to drop");
             }
             Err(err) => {
-                warn!(%partition_id, "Drop partition store request failed: {err}");
+                warn!(%partition_id, reason, "Drop partition store request failed: {err}");
             }
         }
+        if result.is_ok() {
+            // the partition can only have been blocked on data we just deleted
+            gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => partition_id.to_string(), REASON_LABEL => FLARE_REASON_AHEAD_OF_LOG).set(0);
+        }
 
-        if let Some(pending) = self.pending_drops.remove(&partition_id) {
+        if let Some(pending) = pending {
             let _ = pending.sender.send(result);
         }
 
@@ -1503,7 +1647,15 @@ where
     ) {
         let (sender, rx) = oneshot::channel();
         let (reciprocal, body) = request.split();
-        self.on_drop_partition_store(body.partition_id, body.force, sender);
+        self.on_drop_partition_store(
+            body.partition_id,
+            DropRequest {
+                force: body.force,
+                min_partition_configuration_version: body.min_partition_configuration_version,
+                reason: body.reason,
+                sender,
+            },
+        );
         tokio::spawn(async move {
             let Ok(result) = rx.await else {
                 // dropping the reciprocal will notify the sender that the request will not
@@ -1780,6 +1932,17 @@ fn is_shutting_down() -> bool {
     TaskCenter::is_shutdown_requested() || restate_core::is_cancellation_requested()
 }
 
+/// Answers a drop request that this node won't carry out.
+fn refuse_drop(partition_id: PartitionId, request: DropRequest, error: DropPartitionStoreError) {
+    warn!(
+        %partition_id,
+        force = request.force,
+        reason = request.reason,
+        "Refusing to drop the local partition store: {error}"
+    );
+    let _ = request.sender.send(Err(error));
+}
+
 struct AsynchronousEvent {
     partition_id: PartitionId,
     inner: EventKind,
@@ -1805,6 +1968,9 @@ enum EventKind {
         snapshot_status: PartitionSnapshotStatus,
     },
     SnapshotStatusUpdateSkipped,
+    /// A drop request is done waiting for this node to learn about a newer partition
+    /// configuration, or gave up waiting.
+    DropRequestReady(DropRequest),
     PartitionStoreDropped(DropResult),
 }
 
@@ -2011,6 +2177,148 @@ mod tests {
 
         resume.send(()).unwrap();
         shutdown.await?;
+        Ok(())
+    }
+
+    #[test(restate_core::test)]
+    async fn drop_partition_store_only_drops_stores_of_former_replicas() -> anyhow::Result<()> {
+        use tokio::sync::oneshot;
+
+        use restate_core::network::TransportConnect;
+        use restate_types::net::metadata::MetadataKind;
+        use restate_types::net::partition_processor_manager::{
+            DropPartitionStoreError, DropPartitionStoreOutcome,
+        };
+
+        use super::{DropRequest, DropResult};
+
+        fn request_drop<T: TransportConnect>(
+            manager: &mut PartitionProcessorManager<T>,
+            partition_id: PartitionId,
+            min_version: u32,
+        ) -> oneshot::Receiver<DropResult> {
+            let (sender, rx) = oneshot::channel();
+            manager.on_drop_partition_store(
+                partition_id,
+                DropRequest {
+                    force: false,
+                    min_partition_configuration_version: Version::from(min_version),
+                    reason: "test".to_owned(),
+                    sender,
+                },
+            );
+            rx
+        }
+
+        async fn answer<T: TransportConnect>(
+            manager: &mut PartitionProcessorManager<T>,
+            mut rx: oneshot::Receiver<DropResult>,
+        ) -> anyhow::Result<DropResult> {
+            loop {
+                if let Ok(result) = rx.try_recv() {
+                    return Ok(result);
+                }
+                let event = manager
+                    .asynchronous_operations
+                    .join_next()
+                    .await
+                    .expect("the request is still being handled")?;
+                manager.on_asynchronous_event(event);
+            }
+        }
+
+        let node_id = GenerationalNodeId::new(42, 42);
+        let mut env_builder = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_my_node_id(node_id)
+            .add_mock_nodes_config();
+        RocksDbManager::init();
+        let bifrost_svc = BifrostService::new(env_builder.metadata_writer.clone())
+            .with_factory(memory_loglet::Factory::default());
+        let replica_set_states = PartitionReplicaSetStates::default();
+        let partition_id = PartitionId::MIN;
+        let note_replica_set = |version: u32, member: GenerationalNodeId| {
+            replica_set_states.note_observed_membership(
+                partition_id,
+                Default::default(),
+                &ReplicaSetState {
+                    version: Version::from(version),
+                    members: vec![MemberState {
+                        node_id: member.as_plain(),
+                        durable_lsn: Lsn::INVALID,
+                    }],
+                },
+                &None,
+            );
+        };
+        note_replica_set(1, node_id);
+        let partition_store_manager = PartitionStoreManager::create(false).await?;
+        let ingestion_client = IngestionClient::new(
+            env_builder.networking.clone(),
+            env_builder.metadata.updateable_partition_table(),
+            PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
+            NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
+            SessionOptions::default(),
+        );
+        let mut manager = PartitionProcessorManager::new(
+            HealthStatus::default(),
+            Live::from_value(Configuration::default()),
+            env_builder.metadata_writer.clone(),
+            partition_store_manager.clone(),
+            replica_set_states.clone(),
+            &mut env_builder.router_builder,
+            bifrost_svc.handle(),
+            None,
+            ingestion_client,
+        );
+        let env = env_builder.build().await;
+        env.metadata
+            .wait_for_version(MetadataKind::PartitionTable, Version::MIN)
+            .await?;
+        let partition = manager
+            .partition_table
+            .live_load()
+            .get(&partition_id)
+            .cloned()
+            .expect("partition is in the partition table");
+        drop(partition_store_manager.open(&partition, None).await?);
+
+        // A replica keeps its store even while it isn't running a processor.
+        let rx = request_drop(&mut manager, partition_id, 1);
+        assert!(matches!(
+            answer(&mut manager, rx).await?,
+            Err(DropPartitionStoreError::ReplicaSetMember)
+        ));
+
+        // The request waits until this node learns that it left the replica set.
+        let rx = request_drop(&mut manager, partition_id, 2);
+        tokio::task::yield_now().await;
+        assert!(
+            manager.pending_drops.is_empty(),
+            "doesn't block the processor"
+        );
+        note_replica_set(2, GenerationalNodeId::new(7, 1));
+        assert!(matches!(
+            answer(&mut manager, rx).await?,
+            Ok(DropPartitionStoreOutcome::Dropped {
+                deleted_bytes: Some(_)
+            })
+        ));
+        assert!(manager.processor_states.is_empty());
+
+        let rx = request_drop(&mut manager, partition_id, 2);
+        assert!(matches!(
+            answer(&mut manager, rx).await?,
+            Ok(DropPartitionStoreOutcome::NoStoreFound)
+        ));
+
+        // Without the newer configuration, the request gives up after a while.
+        tokio::time::pause();
+        let rx = request_drop(&mut manager, partition_id, 3);
+        assert!(matches!(
+            answer(&mut manager, rx).await?,
+            Err(DropPartitionStoreError::PartitionConfigurationNotObserved { required, observed })
+                if required == Version::from(3) && observed == Version::from(2)
+        ));
         Ok(())
     }
 

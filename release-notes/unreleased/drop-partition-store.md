@@ -9,20 +9,30 @@ while the node keeps running its other partitions:
 
 ```shell
 # Drop node N3's copy of partition 7
-restatectl partition drop-store 7 --node N3
+restatectl partition drop-store 7 --node N3 --reason "store sealed after log data loss"
 
 # Also stop the partition on N3 first, if N3 is still running it
-restatectl partition drop-store 7 --node N3 --force
+restatectl partition drop-store 7 --node N3 --force --reason "rebuild from snapshot"
 ```
 
 Only the node you name is affected; other replicas keep their data. After the drop, the node
 rebuilds its copy of the partition if it is still one of its replicas: from the latest snapshot
 when one is available, otherwise by replaying the partition's log.
 
-By default, the node only accepts the request if it isn't running the partition, or if it has
-given up on it, which `restatectl partition list` shows as `Broken (ahead-of-log)`. To drop the
-copy of a partition the node is still running, add `--force`: the node stops the partition
-first, then deletes its data.
+By default, the node only accepts the request in two cases:
+
+- It has given up on the partition, which `restatectl partition list` shows as
+  `Broken (ahead-of-log)`.
+- It is no longer part of the partition's replica set, and keeps a copy that nothing uses anymore.
+
+The node checks this against a replica set that is at least as recent as the one `restatectl`
+saw. If it hasn't learned about that one yet, it waits a few seconds, then refuses. To drop the
+copy of a replica anyway, add `--force`: the node stops the partition first if it is running it,
+then deletes its data.
+
+`--reason` is required. The admin and the node log it next to the request, so you can tell later
+why a store was dropped. After the drop, `restatectl` reports how much disk space the deleted
+data used.
 
 Before sending the request, `restatectl` shows how the node reports the partition, warns you if
 `--force` targets a partition that doesn't look broken, and asks for confirmation.

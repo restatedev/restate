@@ -44,7 +44,7 @@ mod tests;
 pub use error::*;
 pub use journal_table_v2::{OrphanCleanupResult, cleanup_orphaned_completion_id_index_entries};
 pub use migrations::{MigrationError, migrate_to_locks_table};
-pub use partition_db::PartitionDb;
+pub use partition_db::{DroppedPartitionStore, PartitionDb};
 pub use partition_store::*;
 pub use partition_store_manager::*;
 pub use read_snapshot::{PartitionReadSnapshot, PartitionSnapshotReader, PartitionSnapshotScan};
