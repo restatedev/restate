@@ -27,8 +27,8 @@ use restate_core::io::{AdmissionClosed, Gate, IoExecutor, IoOp};
 use restate_rocksdb::configuration::{CfConfigurator, DbConfigurator};
 use restate_rocksdb::reads::ColumnFamilies;
 use restate_rocksdb::{
-    CfHandles, DbName, Guarded, RawRocksDb, RocksAccess, RocksDb, RocksDbReadPerfGuard, RocksError,
-    SinglePoolExecutor, StorageOp, StorageTaskKind,
+    CfHandles, DbName, Guarded, RawRocksDb, RocksAccess, RocksDb, RocksDbManager,
+    RocksDbReadPerfGuard, RocksError, SinglePoolExecutor, StorageOp, StorageTaskKind,
 };
 use restate_storage_api::StorageError;
 use restate_types::config::Configuration;
@@ -232,6 +232,42 @@ impl PartitionDb {
         );
         self.run_background_op(|scope, gate| RocksDb::prepare_flush(scope, gate, wait))
             .await?
+    }
+
+    /// How much disk space the partition's data takes up, in bytes.
+    ///
+    /// This is the total size of the SST files of all the partition's column families. It is
+    /// exact, not an estimate, and counts each file once, including files that only older
+    /// versions of the data still use, such as the inputs of a running compaction. Data that is
+    /// only in memtables or in the write-ahead log isn't counted. In the single-database layout,
+    /// partitions share the write-ahead log.
+    ///
+    /// Runs on the lifecycle pool, like opening and deleting partitions, so it doesn't wait for
+    /// the regular I/O pools. It isn't part of the partition's session, so it also works on a
+    /// closed partition, and it keeps the column families alive until it's done.
+    pub async fn disk_usage(&self) -> Result<u64, RocksError> {
+        let op = StorageOp::with_context(
+            self.physical_scope(),
+            self.rocksdb().gate(),
+            StorageTaskKind::ReadProperties,
+            |scope: &Scope<PhysicalPartition>| {
+                let cfs = &scope.payload().cfs;
+                let db = cfs.database().inner().as_raw_db();
+                cfs.all()
+                    .iter()
+                    .try_fold(0, |total, cf| -> Result<u64, RocksError> {
+                        // RocksDB always provides this property, so it is never `None`.
+                        let size = db
+                            .property_int_value_cf(cf, rocksdb::properties::TOTAL_SST_FILES_SIZE)?;
+                        Ok(total + size.unwrap_or_default())
+                    })
+            },
+        );
+        RocksDbManager::get()
+            .lifecycle_executor()
+            .spawn(op)?
+            .await
+            .map_err(|_| RocksError::from(ShutdownError))?
     }
 
     /// Returns a future that completes once nothing holds this partition's column

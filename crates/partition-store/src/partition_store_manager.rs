@@ -621,6 +621,51 @@ mod tests {
     }
 
     #[restate_core::test]
+    async fn disk_usage_matches_live_files_also_when_closed() -> anyhow::Result<()> {
+        const DEADLINE: Duration = Duration::from_secs(10);
+        let rocksdb = RocksDbManager::init();
+        let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
+        let sibling = Partition::new(PartitionId::from(1), KeyRange::FULL);
+        for layout in [false, true] {
+            let manager = PartitionStoreManager::create(layout).await?;
+            let mut store = manager.open(&partition, None).await?;
+            let mut neighbor = manager.open(&sibling, None).await?;
+            let db = store.partition_db().clone();
+            assert_eq!(db.disk_usage().await?, 0, "nothing flushed yet");
+
+            // A single flush stays below the L0 compaction trigger: a background compaction
+            // would change the files between the measurements below.
+            write_applied_lsn(&mut store, 10).await?;
+            write_applied_lsn(&mut neighbor, 10).await?;
+            db.flush_memtables(true).await?;
+            neighbor.partition_db().flush_memtables(true).await?;
+            let live_files_size = db
+                .rocksdb()
+                .inner()
+                .as_raw_db()
+                .live_files()?
+                .into_iter()
+                .filter(|file| file.column_family_name == partition.cf_name().as_ref())
+                .map(|file| file.size as u64)
+                .sum::<u64>();
+            assert!(live_files_size > 0);
+            assert_eq!(
+                db.disk_usage().await?,
+                live_files_size,
+                "counts the partition's own files only"
+            );
+
+            drop(store);
+            timeout(DEADLINE, manager.close(partition.partition_id)).await?;
+            assert_eq!(db.disk_usage().await?, live_files_size);
+
+            drop((db, neighbor, manager));
+            rocksdb.reset().await?;
+        }
+        Ok(())
+    }
+
+    #[restate_core::test]
     async fn cancelled_open_is_adopted_with_its_original_notifications() -> anyhow::Result<()> {
         const DEADLINE: Duration = Duration::from_secs(10);
         let rocksdb = RocksDbManager::init();

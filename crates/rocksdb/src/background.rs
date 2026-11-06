@@ -52,6 +52,7 @@ pub enum StorageTaskKind {
     CloseDb,
     BackgroundIterator,
     MultiGet,
+    ReadProperties,
 }
 
 impl StorageTaskKind {
