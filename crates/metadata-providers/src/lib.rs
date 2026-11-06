@@ -67,7 +67,7 @@ pub async fn create_client(
         conf @ MetadataClientKind::ObjectStore { .. } => {
             #[cfg(feature = "objstore")]
             {
-                let store = objstore::create_object_store_based_meta_store(conf).await?;
+                let store = objstore::ObjectStoreMetadataStore::new(conf).await?;
                 Ok(MetadataStoreClient::new(store, backoff_policy))
             }
 
