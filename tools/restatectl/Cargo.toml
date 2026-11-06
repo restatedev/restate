@@ -35,6 +35,7 @@ restate-clock = { workspace = true, features = ["jiff"] }
 restate-core = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-log-server-grpc = { workspace = true, features = ["grpc-client"] }
+restate-memory = { workspace = true }
 restate-metadata-server-grpc = { workspace = true, features = ["grpc-client"] }
 restate-metadata-store = { workspace = true, features = ["grpc-client"] }
 restate-util-time = { workspace = true, features = ["serde"] }

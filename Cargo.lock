@@ -9475,6 +9475,7 @@ dependencies = [
  "restate-futures-util",
  "restate-local-cluster-runner",
  "restate-log-server-grpc",
+ "restate-memory",
  "restate-metadata-server",
  "restate-metadata-server-grpc",
  "restate-metadata-store",
