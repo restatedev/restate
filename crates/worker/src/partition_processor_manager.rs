@@ -623,7 +623,6 @@ where
                         }
                     }
                     Err(err) => {
-                        // todo: metrics
                         info!(%partition_id, %err, "Partition processor failed to start");
                         self.processor_states.remove(&partition_id);
                         self.restart_partition_processor_if_replica(
@@ -1576,10 +1575,10 @@ where
     }
 
     /// Whether this node should be running a processor for the given partition, i.e. we are
-    /// part of its replica set, its local store is not being dropped, and the manager itself is
-    /// not shutting down.
+    /// part of its replica set, its local store is not being dropped, and neither the node nor
+    /// the manager is shutting down.
     fn should_run_processor(&self, partition_id: PartitionId) -> bool {
-        !restate_core::is_cancellation_requested()
+        !is_shutting_down()
             && !self.pending_drops.contains_key(&partition_id)
             && self
                 .replica_set_states
@@ -1587,13 +1586,17 @@ where
                 .contains(Metadata::with_current(|m| m.my_node_id().as_plain()))
     }
 
-    /// Starts a partition processor if this node is part of the replica set of the given partition.
-    /// Returns true if this node is part of the replica set of the given partition. Otherwise, false.
+    /// Requests a restart if this node should still run the partition processor.
+    /// Returns false if the processor is no longer eligible to run.
     fn restart_partition_processor_if_replica(
         &mut self,
         partition_id: PartitionId,
         delay: RestartDelay,
     ) -> bool {
+        if is_shutting_down() {
+            debug!(%partition_id, "Not restarting partition processor because shutdown is in progress");
+            return false;
+        }
         if !self.should_run_processor(partition_id) {
             return false;
         }
@@ -1604,6 +1607,13 @@ where
 
     #[instrument(level = "info", skip_all, fields(partition_id = %partition_id))]
     fn start_partition_processor(&mut self, partition_id: PartitionId, delay: Option<Duration>) {
+        // Node shutdown starts before the worker's task is cancelled. Reconciliation can still
+        // request starts in that window, but task-center no longer accepts new runtimes.
+        if is_shutting_down() {
+            debug!("Not starting partition processor because shutdown is in progress");
+            return;
+        }
+
         if self.pending_drops.contains_key(&partition_id) {
             // dropping the column family under a starting processor would corrupt it
             debug!("Not starting partition processor while its local store is being dropped");
@@ -1764,6 +1774,12 @@ enum ProvisionWorkerError {
     MetadataClient(#[from] ReadWriteError),
 }
 
+/// Whether the node is shutting down or this manager is being cancelled. Processors must not
+/// be started then: the task center no longer accepts new runtimes.
+fn is_shutting_down() -> bool {
+    TaskCenter::is_shutdown_requested() || restate_core::is_cancellation_requested()
+}
+
 struct AsynchronousEvent {
     partition_id: PartitionId,
     inner: EventKind,
@@ -1913,6 +1929,89 @@ mod tests {
         assert!(!due(interval, min_records, &fresh, 1100));
         assert!(!due(interval, min_records, &old, 1099));
         assert!(due(interval, min_records, &old, 1100));
+    }
+
+    #[test(restate_core::test)]
+    async fn processor_starts_are_suppressed_before_worker_cancellation() -> anyhow::Result<()> {
+        use tokio::sync::oneshot;
+
+        use restate_core::cancellation_watcher;
+        use restate_types::net::metadata::MetadataKind;
+
+        use super::RestartDelay;
+
+        let node_id = GenerationalNodeId::new(42, 42);
+        let mut env_builder = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_my_node_id(node_id)
+            .add_mock_nodes_config();
+        RocksDbManager::init();
+        let bifrost_svc = BifrostService::new(env_builder.metadata_writer.clone())
+            .with_factory(memory_loglet::Factory::default());
+        let replica_set_states = PartitionReplicaSetStates::default();
+        let partition_id = PartitionId::MIN;
+        replica_set_states.note_observed_membership(
+            partition_id,
+            Default::default(),
+            &ReplicaSetState {
+                version: Version::MIN,
+                members: vec![MemberState {
+                    node_id: node_id.as_plain(),
+                    durable_lsn: Lsn::INVALID,
+                }],
+            },
+            &None,
+        );
+        let ingestion_client = IngestionClient::new(
+            env_builder.networking.clone(),
+            env_builder.metadata.updateable_partition_table(),
+            PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
+            NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
+            SessionOptions::default(),
+        );
+        let mut manager = PartitionProcessorManager::new(
+            HealthStatus::default(),
+            Live::from_value(Configuration::default()),
+            env_builder.metadata_writer.clone(),
+            PartitionStoreManager::create(false).await?,
+            replica_set_states,
+            &mut env_builder.router_builder,
+            bifrost_svc.handle(),
+            None,
+            ingestion_client,
+        );
+        let env = env_builder.build().await;
+        env.metadata
+            .wait_for_version(MetadataKind::PartitionTable, Version::MIN)
+            .await?;
+        assert!(manager.partition_table.live_load().contains(&partition_id));
+        assert!(manager.should_run_processor(partition_id));
+
+        // Hold shutdown before it cancels WorkerRole, with the node-wide flag already set.
+        let (reached, waiting) = oneshot::channel();
+        let (resume, resumed) = oneshot::channel();
+        TaskCenter::spawn(TaskKind::HttpIngressRole, "hold-shutdown", async move {
+            cancellation_watcher().await;
+            reached.send(()).unwrap();
+            resumed.await?;
+            Ok(())
+        })?;
+        let tc = TaskCenter::current();
+        let shutdown = tokio::spawn(async move { tc.shutdown_node("test completed", 0).await });
+        waiting.await?;
+        assert!(TaskCenter::is_shutdown_requested());
+        assert!(!restate_core::is_cancellation_requested());
+
+        assert!(!manager.should_run_processor(partition_id));
+        assert!(
+            !manager.restart_partition_processor_if_replica(partition_id, RestartDelay::Immediate)
+        );
+        manager.start_partition_processor(partition_id, None);
+        assert!(manager.processor_states.is_empty());
+        assert!(manager.asynchronous_operations.is_empty());
+
+        resume.send(()).unwrap();
+        shutdown.await?;
+        Ok(())
     }
 
     #[test(restate_core::test)]
