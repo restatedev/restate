@@ -16,6 +16,7 @@ use restate_types::{LockName, Scope};
 use restate_util_string::ReString;
 
 use crate::Result;
+use crate::scan::RowConsumer;
 
 /// Used for introspection purposes
 #[derive(Debug, Clone, bilrost::Message)]
@@ -57,15 +58,12 @@ pub trait LoadLocks {
 pub trait ScanLocksTable {
     /// Used for data-fusion queries
     fn for_each_lock<
-        F: FnMut((PartitionKey, Option<Scope>, LockName, LockState)) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
+        F: for<'a> RowConsumer<Item<'a> = (PartitionKey, Option<Scope>, LockName, LockState)>,
     >(
         &self,
         range: KeyRange,
         f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
+    ) -> Result<impl Future<Output = Result<F>> + Send>;
 }
 
 /// The Lock table will fully replace the ServiceStatus table after a migration process

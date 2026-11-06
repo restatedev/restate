@@ -19,6 +19,7 @@ use restate_storage_api::journal_table::{ScanJournalTable, ScanJournalTableRange
 use restate_storage_api::journal_table_v2::{
     ScanJournalTable as ScanJournalTableV2, ScanJournalTableRange as ScanJournalTableRangeV2,
 };
+use restate_storage_api::scan::RowConsumer;
 use restate_types::identifiers::JournalEntryId;
 use restate_types::storage::StoredRawEntry;
 
@@ -64,63 +65,65 @@ pub(crate) enum ScannedEntry {
 #[derive(Debug, Clone)]
 struct JournalScanner;
 
+struct V1Consumer<C>(C);
+
+impl<C> RowConsumer for V1Consumer<C>
+where
+    C: for<'a> RowConsumer<Item<'a> = (JournalEntryId, ScannedEntry)>,
+{
+    type Item<'a> = (JournalEntryId, JournalEntry);
+
+    async fn consume(
+        &mut self,
+        (id, entry): Self::Item<'_>,
+    ) -> restate_storage_api::Result<ControlFlow<()>> {
+        self.0.consume((id, ScannedEntry::V1(entry))).await
+    }
+}
+
+struct V2Consumer<C>(C);
+
+impl<C> RowConsumer for V2Consumer<C>
+where
+    C: for<'a> RowConsumer<Item<'a> = (JournalEntryId, ScannedEntry)>,
+{
+    type Item<'a> = (JournalEntryId, StoredRawEntry);
+
+    async fn consume(
+        &mut self,
+        (id, entry): Self::Item<'_>,
+    ) -> restate_storage_api::Result<ControlFlow<()>> {
+        self.0.consume((id, ScannedEntry::V2(entry))).await
+    }
+}
+
 impl ScanLocalPartition for JournalScanner {
     type Builder = SysJournalBuilder;
     type Item<'a> = (JournalEntryId, ScannedEntry);
     type ConversionError = std::convert::Infallible;
     type Filter = InvocationIdFilter;
 
-    fn for_each_row<
-        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_row<F: for<'a> RowConsumer<Item<'a> = Self::Item<'a>>>(
         partition_store: &PartitionStore,
         filter: InvocationIdFilter,
         f: F,
-    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        // these two iterators can run concurrently in theory.
-        // in practice, there are not typically any keys in the first iterator, but rust rightfully forces us to use a mutex to protect the FnMut
-        // the intent here is that iterators race to produce the first row, the winner gets an owned lock guard which it then holds until its done iterating
-        // and then the next iterator is able to get a lock guard.
-
-        let (v1, v2) = {
-            // once we've started iterating, this arc must be dropped from inside the io threads and not in an async context
-            let mut f_v1 = Some(Arc::new(tokio::sync::Mutex::new(f)));
-            let mut f_v2 = f_v1.clone();
-
-            let v1 = ScanJournalTable::for_each_journal(partition_store, filter.clone().into(), {
-                let mut f_locked = None;
-                move |(id, entry)| {
-                    let f = f_locked.get_or_insert_with(|| {
-                        f_v1.take()
-                            .expect("we only take f_v1 once")
-                            .blocking_lock_owned()
-                    });
-                    f((id, ScannedEntry::V1(entry))).map_break(Result::unwrap)
-                }
-            })?;
-
-            let v2 = ScanJournalTableV2::for_each_journal(partition_store, filter.into(), {
-                let mut f_locked = None;
-                move |(id, entry)| {
-                    let f = f_locked.get_or_insert_with(|| {
-                        f_v2.take()
-                            .expect("we only take f_v2 once")
-                            .blocking_lock_owned()
-                    });
-                    f((id, ScannedEntry::V2(entry))).map_break(Result::unwrap)
-                }
-            })?;
-
-            (v1, v2)
-        };
-
-        Ok(async {
-            v1.await?;
-            v2.await?;
-            Ok(())
+    ) -> Result<impl Future<Output = restate_storage_api::Result<F>> + Send, StorageError> {
+        // The v1 scan runs first and hands the consumer to the v2 scan. In
+        // practice, there are not typically any keys in the v1 table.
+        Ok(async move {
+            let V1Consumer(f) = ScanJournalTable::for_each_journal(
+                partition_store,
+                filter.clone().into(),
+                V1Consumer(f),
+            )?
+            .await?;
+            let V2Consumer(f) = ScanJournalTableV2::for_each_journal(
+                partition_store,
+                filter.into(),
+                V2Consumer(f),
+            )?
+            .await?;
+            Ok(f)
         })
     }
 

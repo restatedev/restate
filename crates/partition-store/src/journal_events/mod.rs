@@ -18,6 +18,7 @@ use restate_storage_api::journal_events::{
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::protobuf_types::v1::Event as PbEvent;
+use restate_storage_api::scan::RowConsumer;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
 use restate_types::journal_events::EventType;
@@ -25,7 +26,6 @@ use restate_types::journal_events::raw::RawEvent;
 use restate_types::time::MillisSinceEpoch;
 
 use crate::TableKind::{JournalEvent, State};
-use crate::error::break_on_err;
 use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
 use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
@@ -165,13 +165,11 @@ impl ReadJournalEventsTable for PartitionStore {
 }
 
 impl ScanJournalEventsTable for PartitionStore {
-    fn for_each_journal_event<
-        F: FnMut((InvocationId, EventView)) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
-    >(
+    fn for_each_journal_event<F: for<'a> RowConsumer<Item<'a> = (InvocationId, EventView)>>(
         &self,
         range: ScanJournalEventsTableRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        f: F,
+    ) -> Result<impl Future<Output = Result<F>> + Send> {
         let scan = match range {
             ScanJournalEventsTableRange::PartitionKey(partition_key) => {
                 TableScan::ScanPartitionKeyRange::<JournalEventKeyBuilder>(partition_key)
@@ -193,12 +191,13 @@ impl ScanJournalEventsTable for PartitionStore {
             "df-journal-events",
             Priority::Low,
             scan,
-            move |(mut key, mut value)| {
-                let event_key = break_on_err(JournalEventKey::deserialize_from(&mut key))?;
+            f,
+            async |f: &mut F, (mut key, mut value): (&[u8], &[u8])| {
+                let event_key = JournalEventKey::deserialize_from(&mut key)?;
                 let (pk, inv_uuid, event_type, timestamp, _) = event_key.split();
-                let stored_event = break_on_err(EventWrapper::decode(&mut value))?.0;
+                let stored_event = EventWrapper::decode(&mut value)?.0;
 
-                f((
+                f.consume((
                     InvocationId::from_parts(pk, inv_uuid),
                     EventView {
                         event: RawEvent::new(
@@ -209,7 +208,7 @@ impl ScanJournalEventsTable for PartitionStore {
                         append_time: MillisSinceEpoch::new(timestamp),
                     },
                 ))
-                .map_break(Ok)
+                .await
             },
         )
         .map_err(|_| StorageError::OperationalError)

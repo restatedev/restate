@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-
 use bytes::Bytes;
 use bytestring::ByteString;
 
@@ -18,6 +16,7 @@ use restate_storage_api::promise_table::{
     OwnedPromiseRow, Promise, ReadPromiseTable, ScanPromiseTable, WritePromiseTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
+use restate_storage_api::scan::RowConsumer;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::sharding::KeyRange;
@@ -28,8 +27,7 @@ use crate::features::StorageFeatures;
 use crate::keys::{DecodeTableKey, KeyKind, OptionalScope, define_table_key};
 use crate::scan::TableScan;
 use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind,
-    TableScanIterationDecision, break_on_err,
+    PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind, TableScanIterationDecision,
 };
 
 define_table_key!(
@@ -186,63 +184,58 @@ impl ReadPromiseTable for PartitionStore {
 }
 
 impl ScanPromiseTable for PartitionStore {
-    fn for_each_promise<
-        F: FnMut(OwnedPromiseRow) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
-    >(
+    fn for_each_promise<F: for<'a> RowConsumer<Item<'a> = OwnedPromiseRow>>(
         &self,
         range: KeyRange,
         f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
-        // Share callback between two sequential scans via Arc<Mutex<>>
-        // (needed because iterator_for_each requires 'static closures).
-        // No contention: scans are awaited sequentially.
-        let f = Arc::new(parking_lot::Mutex::new(f));
-
+    ) -> Result<impl Future<Output = Result<F>> + Send> {
         // Only scan the legacy unscoped table while we may still hold data there.
         // After migration the range was deleted, so the scoped scan covers everything.
-        let unscoped = if self.storage_features().is_migrated_to_scoped_promise_table {
-            None
-        } else {
-            let f_unscoped = Arc::clone(&f);
-            Some(
+        let migrated = self.storage_features().is_migrated_to_scoped_promise_table;
+
+        // The scans run one after the other, each handing the consumer to the next.
+        Ok(async move {
+            let f = if migrated {
+                f
+            } else {
                 self.iterator_for_each(
                     "df-promise",
                     Priority::Low,
                     TableScan::ScanPartitionKeyRange::<PromiseKey>(range),
-                    move |(mut k, mut v)| {
-                        let key = break_on_err(PromiseKey::deserialize_from(&mut k))?;
-                        let metadata = break_on_err(Promise::decode(&mut v))?;
+                    f,
+                    async |f: &mut F, (mut k, mut v): (&[u8], &[u8])| {
+                        let key = PromiseKey::deserialize_from(&mut k)?;
+                        let metadata = Promise::decode(&mut v)?;
                         let (partition_key, service_name, service_key, promise_key) = key.split();
                         let service_id = ServiceId::with_partition_key(
                             partition_key,
                             service_name,
-                            break_on_err(ByteString::try_from(service_key).map_err(|e| {
+                            ByteString::try_from(service_key).map_err(|e| {
                                 StorageError::Generic(anyhow::anyhow!(
                                     "Cannot convert to string {e}"
                                 ))
-                            }))?,
+                            })?,
                         );
-                        f_unscoped.lock()(OwnedPromiseRow {
+                        f.consume(OwnedPromiseRow {
                             service_id,
                             key: promise_key,
                             metadata,
                         })
-                        .map_break(Ok)
+                        .await
                     },
                 )
-                .map_err(|_| StorageError::OperationalError)?,
-            )
-        };
+                .map_err(|_| StorageError::OperationalError)?
+                .await?
+            };
 
-        let f_scoped = f;
-        let scoped = self
-            .iterator_for_each(
+            self.iterator_for_each(
                 "df-promise-scoped",
                 Priority::Low,
                 TableScan::ScanPartitionKeyRange::<ScopedPromiseKey>(range),
-                move |(mut k, mut v)| {
-                    let key = break_on_err(ScopedPromiseKey::deserialize_from(&mut k))?;
-                    let metadata = break_on_err(Promise::decode(&mut v))?;
+                f,
+                async |f: &mut F, (mut k, mut v): (&[u8], &[u8])| {
+                    let key = ScopedPromiseKey::deserialize_from(&mut k)?;
+                    let metadata = Promise::decode(&mut v)?;
                     let (_partition_key, scope, service_name, service_key, promise_key) =
                         key.split();
                     let service_id = ServiceId::new(
@@ -250,22 +243,16 @@ impl ScanPromiseTable for PartitionStore {
                         ByteString::from(service_name.as_str()),
                         ByteString::from(service_key.as_str()),
                     );
-                    f_scoped.lock()(OwnedPromiseRow {
+                    f.consume(OwnedPromiseRow {
                         service_id,
                         key: ByteString::from(promise_key.as_str()),
                         metadata,
                     })
-                    .map_break(Ok)
+                    .await
                 },
             )
-            .map_err(|_| StorageError::OperationalError)?;
-
-        Ok(async move {
-            if let Some(unscoped) = unscoped {
-                unscoped.await?;
-            }
-            scoped.await?;
-            Ok(())
+            .map_err(|_| StorageError::OperationalError)?
+            .await
         })
     }
 }
