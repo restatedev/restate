@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -19,9 +20,10 @@ use axum::{Json, http};
 use bytes::Bytes;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::Schema;
+use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::json::writer::JsonArray;
-use datafusion::common::DataFusionError;
+use datafusion::common::{DataFusionError, ParamValues, ScalarValue};
 use futures::{StreamExt, TryStreamExt};
 use http::{HeaderMap, HeaderValue};
 use http_body::Frame;
@@ -29,7 +31,7 @@ use http_body_util::StreamBody;
 use parking_lot::Mutex;
 use serde::Serialize;
 
-use restate_admin_rest_model::query::QueryRequest;
+use restate_admin_rest_model::query::{QueryParams, QueryRequest};
 use restate_core::network::TransportConnect;
 use restate_types::invocation::client::InvocationClient;
 use restate_types::schema::registry::{DiscoveryClient, MetadataService, TelemetryClient};
@@ -50,6 +52,8 @@ struct QueryErrorBody {
 pub(crate) enum QueryError {
     #[error("Datafusion error: {0}")]
     Datafusion(#[from] datafusion::error::DataFusionError),
+    #[error("Invalid value for placeholder {0}: expected a string, number, boolean or null")]
+    InvalidParam(String),
     #[error("Query service not available")]
     Unavailable,
     #[error("Rate limited")]
@@ -73,12 +77,20 @@ impl IntoResponse for QueryError {
     fn into_response(self) -> Response {
         let mut headers = http::HeaderMap::new();
         let status_code = match &self {
-            QueryError::Datafusion(datafusion::error::DataFusionError::Plan(_))
-            | QueryError::Datafusion(datafusion::error::DataFusionError::SchemaError(_, _))
-            | QueryError::Datafusion(datafusion::error::DataFusionError::SQL(_, _)) => {
-                StatusCode::BAD_REQUEST
-            }
-            QueryError::Datafusion(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            // look through wrappers such as `DataFusionError::Context` added by optimizer rules
+            QueryError::Datafusion(err) => match err.find_root() {
+                DataFusionError::Plan(_)
+                | DataFusionError::SchemaError(_, _)
+                | DataFusionError::SQL(_, _) => StatusCode::BAD_REQUEST,
+                // e.g. a value that can't be cast to the type it's compared with
+                DataFusionError::ArrowError(err, _)
+                    if matches!(**err, ArrowError::CastError(_)) =>
+                {
+                    StatusCode::BAD_REQUEST
+                }
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            },
+            QueryError::InvalidParam(_) => StatusCode::BAD_REQUEST,
             QueryError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             QueryError::RateLimited(e) => {
                 headers.insert(
@@ -112,6 +124,7 @@ impl IntoResponse for QueryError {
                 ("application/vnd.apache.arrow.stream"),
                 ("application/json", example = json!({"rows": []}))
             )),
+        (status = 400, description = "Invalid query or parameters", body = QueryErrorBody),
         (status = 500, description = "Datafusion error", body = QueryErrorBody),
         (status = 503, description = "Query service not available", body = QueryErrorBody),
     )
@@ -132,7 +145,10 @@ where
         return Err(QueryError::Unavailable);
     };
 
-    let query_result = query_context.execute(&payload.query).await?;
+    let params = payload.params.map(to_param_values).transpose()?;
+    let query_result = query_context
+        .execute_with_params(&payload.query, params)
+        .await?;
 
     let (result_stream, content_type) = match headers.get(http::header::ACCEPT) {
         Some(v) if v == HeaderValue::from_static("application/json") => (
@@ -165,6 +181,50 @@ where
         .body(StreamBody::new(result_stream))
         .expect("content-type header is correct")
         .into_response())
+}
+
+fn to_param_values(params: QueryParams) -> Result<ParamValues, QueryError> {
+    Ok(match params {
+        QueryParams::Positional(values) => values
+            .into_iter()
+            .enumerate()
+            .map(|(i, value)| to_scalar_value(value).ok_or_else(|| invalid_param(i + 1)))
+            .collect::<Result<Vec<_>, _>>()?
+            .into(),
+        QueryParams::Named(values) => values
+            .into_iter()
+            .map(|(name, value)| match to_scalar_value(value) {
+                Some(value) => Ok((name, value)),
+                None => Err(invalid_param(name)),
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?
+            .into(),
+    })
+}
+
+fn invalid_param(id: impl std::fmt::Display) -> QueryError {
+    QueryError::InvalidParam(format!("${id}"))
+}
+
+/// Returns `None` for arrays and objects.
+fn to_scalar_value(value: serde_json::Value) -> Option<ScalarValue> {
+    use serde_json::Value;
+
+    Some(match value {
+        Value::Null => ScalarValue::Null,
+        Value::Bool(v) => ScalarValue::Boolean(Some(v)),
+        Value::Number(n) => {
+            if let Some(v) = n.as_i64() {
+                ScalarValue::Int64(Some(v))
+            } else if let Some(v) = n.as_u64() {
+                ScalarValue::UInt64(Some(v))
+            } else {
+                ScalarValue::Float64(Some(n.as_f64()?))
+            }
+        }
+        Value::String(v) => ScalarValue::Utf8(Some(v)),
+        Value::Array(_) | Value::Object(_) => return None,
+    })
 }
 
 #[derive(Clone)]
@@ -225,5 +285,51 @@ impl RecordBatchWriter for JsonWriter {
             self.lock_writer.write_all(b"}")?;
         }
         Ok(Bytes::from(self.lock_writer.take()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn param_values_conversion() {
+        let params = serde_json::from_value(json!([null, true, -1, u64::MAX, 1.5, "a"])).unwrap();
+        let ParamValues::List(values) = to_param_values(params).unwrap() else {
+            panic!("expected positional params");
+        };
+        assert_eq!(
+            values.into_iter().map(|v| v.value).collect::<Vec<_>>(),
+            vec![
+                ScalarValue::Null,
+                ScalarValue::Boolean(Some(true)),
+                ScalarValue::Int64(Some(-1)),
+                ScalarValue::UInt64(Some(u64::MAX)),
+                ScalarValue::Float64(Some(1.5)),
+                ScalarValue::new_utf8("a"),
+            ]
+        );
+
+        let params = serde_json::from_value(json!({"id": "inv_1"})).unwrap();
+        let ParamValues::Map(values) = to_param_values(params).unwrap() else {
+            panic!("expected named params");
+        };
+        assert_eq!(values["id"].value, ScalarValue::new_utf8("inv_1"));
+
+        let params = serde_json::from_value(json!(["a", [1]])).unwrap();
+        let err = to_param_values(params).unwrap_err();
+        assert!(
+            matches!(&err, QueryError::InvalidParam(id) if id == "$2"),
+            "{err}"
+        );
+
+        let params = serde_json::from_value(json!({"id": {"a": 1}})).unwrap();
+        let err = to_param_values(params).unwrap_err();
+        assert!(
+            matches!(&err, QueryError::InvalidParam(id) if id == "$id"),
+            "{err}"
+        );
     }
 }
