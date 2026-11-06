@@ -35,8 +35,8 @@ use restate_types::partition_table::{FindPartition, PartitionTable, PartitionTab
 
 use crate::metric_definitions::{
     INVOCATION_CLIENT_REQUESTS, STATUS_COMPLETED, STATUS_INTERNAL_ERROR, STATUS_OVERLOADED_ERROR,
-    STATUS_PROTOCOL_ERROR, STATUS_ROUTING_ERROR, STATUS_SHUTDOWN, STATUS_UNAVAILABLE_ERROR,
-    describe_metrics,
+    STATUS_PARTITION_FULL_ERROR, STATUS_PROTOCOL_ERROR, STATUS_ROUTING_ERROR, STATUS_SHUTDOWN,
+    STATUS_UNAVAILABLE_ERROR, describe_metrics,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -98,6 +98,9 @@ impl fmt::Display for RpcErrorKind {
             }
             RpcErrorKind::Processor(PartitionProcessorRpcError::Internal(msg)) => {
                 write!(f, "internal error: {msg}")
+            }
+            RpcErrorKind::Processor(err @ PartitionProcessorRpcError::PartitionFull { .. }) => {
+                err.fmt(f)
             }
             RpcErrorKind::UnexpectedResponse => {
                 f.write_str("internal error: unexpected response from partition processor")
@@ -165,6 +168,9 @@ impl RpcErrorKind {
             RpcErrorKind::Processor(PartitionProcessorRpcError::Internal(_)) => {
                 STATUS_INTERNAL_ERROR
             }
+            RpcErrorKind::Processor(PartitionProcessorRpcError::PartitionFull { .. }) => {
+                STATUS_PARTITION_FULL_ERROR
+            }
         }
     }
 }
@@ -198,6 +204,8 @@ impl RpcError {
             }
             RpcErrorKind::Reply(err) => !err.maybe_processed(),
             RpcErrorKind::Processor(PartitionProcessorRpcError::NotLeader(_)) => true,
+            // Nothing was proposed, but retrying cannot succeed until space is freed.
+            RpcErrorKind::Processor(PartitionProcessorRpcError::PartitionFull { .. }) => false,
             RpcErrorKind::Processor(
                 PartitionProcessorRpcError::LostLeadership(_)
                 | PartitionProcessorRpcError::Internal(_),
@@ -372,5 +380,29 @@ where
         Ok(self
             .resolve_partition_id_and_send(request_id, request)
             .await?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partition_full_is_reported_and_not_retried() {
+        let err = PartitionProcessorRpcClientError::from(RpcError::from_err(
+            PartitionId::MIN,
+            NodeId::new_plain(1),
+            PartitionProcessorRpcError::PartitionFull {
+                partition_id: PartitionId::MIN,
+                used_bytes: 90,
+                capacity_bytes: 100,
+            },
+        ));
+        assert_eq!(err.as_metric_label(), STATUS_PARTITION_FULL_ERROR);
+
+        let err = PartitionProcessorClientError::from(err);
+        assert!(!err.is_safe_to_retry());
+        assert!(err.is_partition_full());
+        assert!(err.to_string().contains("is out of storage"));
     }
 }

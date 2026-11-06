@@ -38,6 +38,16 @@ impl PartitionProcessorClientError {
         self.is_safe_to_retry
     }
 
+    /// Whether the partition rejected the request because it is out of storage.
+    pub fn is_partition_full(&self) -> bool {
+        self.inner.chain().any(|err| {
+            matches!(
+                err.downcast_ref::<PartitionProcessorRpcError>(),
+                Some(PartitionProcessorRpcError::PartitionFull { .. })
+            )
+        })
+    }
+
     pub fn into_inner(self) -> anyhow::Error {
         self.inner
     }

@@ -151,6 +151,8 @@ pub(super) struct RpcContext<'a, Schemas, Storage> {
     partition_id: PartitionId,
     schemas: &'a Schemas,
     storage: &'a mut Storage,
+    /// Set when the partition is out of storage; requests creating invocations are rejected.
+    partition_full: Option<PartitionProcessorRpcError>,
 }
 
 impl<'a, Schemas, Storage> RpcContext<'a, Schemas, Storage> {
@@ -165,7 +167,16 @@ impl<'a, Schemas, Storage> RpcContext<'a, Schemas, Storage> {
             partition_id,
             schemas,
             storage,
+            partition_full: None,
         }
+    }
+
+    pub(super) fn with_partition_full(
+        mut self,
+        partition_full: Option<PartitionProcessorRpcError>,
+    ) -> Self {
+        self.partition_full = partition_full;
+        self
     }
 }
 

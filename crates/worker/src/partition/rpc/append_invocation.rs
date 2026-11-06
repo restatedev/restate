@@ -30,6 +30,10 @@ impl<'a, TSchemas, TStorage> RpcHandler<AppendInvocationRpcRequest>
             append_invocation_reply_on,
         }: AppendInvocationRpcRequest,
     ) -> Decision<AppendInvocationRpcResponse> {
+        if let Some(err) = self.partition_full {
+            return Decision::Reply(Err(err));
+        }
+
         let request_id = header.request_id;
         let mut service_invocation = ServiceInvocation::from_request(
             Arc::unwrap_or_clone(invocation_request),
@@ -140,6 +144,30 @@ mod tests {
                 ),
             )
         );
+    }
+
+    #[test(restate_core::test)]
+    async fn rejected_when_partition_full() {
+        let decision = RpcHandler::handle(
+            RpcContext::new(true, PartitionId::MIN, &(), &mut ()).with_partition_full(Some(
+                PartitionProcessorRpcError::PartitionFull {
+                    partition_id: PartitionId::MIN,
+                    used_bytes: 90,
+                    capacity_bytes: 100,
+                },
+            )),
+            AppendInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
+                invocation_request: Arc::new(InvocationRequest::mock()),
+                append_invocation_reply_on: AppendInvocationReplyOn::Output,
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            decision,
+            Decision::Reply(Err(PartitionProcessorRpcError::PartitionFull { .. }))
+        ));
     }
 
     #[test(restate_core::test)]
