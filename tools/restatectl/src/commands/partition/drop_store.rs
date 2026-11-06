@@ -179,7 +179,7 @@ pub(super) fn format_deleted_bytes(deleted_bytes: Option<u64>) -> String {
     }
 }
 
-fn classify_drop_partition_store_status(status: Status) -> NodeOperationError {
+pub(super) fn classify_drop_partition_store_status(status: Status) -> NodeOperationError {
     let retry_elsewhere = status.code() == Code::Unimplemented;
     let status = SimpleStatusWrapper::from(status);
     if retry_elsewhere {
