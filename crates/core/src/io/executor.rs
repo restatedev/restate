@@ -129,14 +129,16 @@ pub struct IoTaskError;
 /// rejected before the method returns, not when the returned future is first
 /// polled. Returned futures don't borrow the executor.
 ///
-/// The helpers differ in what happens if the caller loses interest. Work that
-/// has already started is never interrupted.
+/// The helpers differ in what happens if the caller loses interest. Cancellation
+/// is cooperative: it can drop a suspended future, but cannot interrupt a
+/// blocking call or a poll that hasn't returned.
 ///
-/// | Method                     | Returns       | Result future dropped before the task starts |
-/// |----------------------------|---------------|----------------------------------------------|
-/// | `spawn` / `spawn_fn`       | result future | task is skipped                              |
-/// | `spawn_detached`           | result future | task still runs, result is dropped           |
-/// | `dispatch` / `dispatch_fn` | nothing       | n/a, task always runs                        |
+/// | Method                     | Result future dropped before start | Result future dropped while running |
+/// |----------------------------|------------------------------------|-------------------------------------|
+/// | `spawn` / `spawn_fn`       | task is skipped                    | task finishes, result is dropped    |
+/// | `spawn_cancellable`        | task is skipped                    | task is cancelled cooperatively     |
+/// | `spawn_detached`           | task runs, result is dropped       | task finishes, result is dropped    |
+/// | `dispatch` / `dispatch_fn` | n/a, task always runs              | n/a, task always runs               |
 ///
 /// ```ignore
 /// // A read or write: no point doing it if the caller has gone away.
@@ -190,7 +192,9 @@ pub trait IoExecutor {
     /// ```
     ///
     /// Dropping the future doesn't free the task's captures right away; they live
-    /// until a worker runs or drops the task.
+    /// until a worker runs or drops the task. Use [`Self::spawn_cancellable`] to
+    /// cancel running work too, or [`Self::spawn_detached`] or [`Self::dispatch`]
+    /// for work that must run once submitted.
     ///
     /// Beware of results that hold resources (a file handle, a snapshot): task
     /// accounting ends when the task returns, but the result can outlive it. An
@@ -208,7 +212,7 @@ pub trait IoExecutor {
             SendResult {
                 task,
                 tx,
-                skip_if_abandoned: true,
+                cancellation: Cancellation::BeforeStart,
             },
         )?;
         Ok(async move { rx.await.map_err(|_| IoTaskError) })
@@ -217,8 +221,9 @@ pub trait IoExecutor {
     /// Like [`Self::spawn_fn`], but for an [`IoOp`]: prepares it with
     /// [`IoOp::into_task`] and submits the task.
     ///
-    /// Dropping the result future can skip queued work. If the work must run
-    /// regardless, use [`Self::spawn_detached`] or [`Self::dispatch`].
+    /// Dropping the result future can skip queued work; running work finishes.
+    /// Use [`Self::spawn_cancellable`] to cancel running work too. If the work
+    /// must run regardless, use [`Self::spawn_detached`] or [`Self::dispatch`].
     fn spawn<O>(
         &self,
         op: O,
@@ -231,6 +236,41 @@ pub trait IoExecutor {
     {
         let operation = op.operation();
         self.spawn_fn(operation, op.into_task()?)
+    }
+
+    /// Like [`Self::spawn`], but dropping the result future also cancels running
+    /// work cooperatively. The worker is woken and drops the execution future
+    /// when it can next poll it. A blocking call or a poll that hasn't returned
+    /// cannot be interrupted.
+    ///
+    /// Submission is eager, and the result future need not be polled for the
+    /// task to run. Captures are released on the worker, not immediately when
+    /// the result is dropped.
+    ///
+    /// The work must be safe to drop before completion. If it's unsafe to cancel
+    /// the work at any point, then prefer [`Self::spawn`] with custom cancellation
+    /// logic inside the operation itself.
+    fn spawn_cancellable<O>(
+        &self,
+        op: O,
+    ) -> Result<
+        impl Future<Output = Result<O::Output, IoTaskError>> + Send + 'static,
+        AdmissionClosed,
+    >
+    where
+        O: IoOp,
+    {
+        let operation = op.operation();
+        let (tx, rx) = oneshot::channel();
+        self.dispatch_fn(
+            operation,
+            SendResult {
+                task: op.into_task()?,
+                tx,
+                cancellation: Cancellation::Cooperative,
+            },
+        )?;
+        Ok(async move { rx.await.map_err(|_| IoTaskError) })
     }
 
     /// Like [`Self::spawn`], but the work runs even if the result future is
@@ -256,7 +296,7 @@ pub trait IoExecutor {
             SendResult {
                 task: op.into_task()?,
                 tx,
-                skip_if_abandoned: false,
+                cancellation: Cancellation::Never,
             },
         )?;
         Ok(async move { rx.await.map_err(|_| IoTaskError) })
@@ -282,22 +322,45 @@ pub trait IoExecutor {
     }
 }
 
-// Sends the result of `task` to the future that `spawn_fn` or `spawn_detached`
-// returned.
+// When losing interest in a result can stop its work.
+enum Cancellation {
+    BeforeStart,
+    Cooperative,
+    Never,
+}
+
+// Sends the result of `task` to the future returned by a spawn helper.
 struct SendResult<T, O> {
     task: T,
     tx: oneshot::Sender<O>,
-    // Whether the task is no longer wanted once the caller drops the future.
-    skip_if_abandoned: bool,
+    cancellation: Cancellation,
 }
 
 impl<T: IoTask<O>, O: Send + 'static> IoTask<()> for SendResult<T, O> {
     fn is_wanted(&self) -> bool {
-        !(self.skip_if_abandoned && self.tx.is_closed()) && self.task.is_wanted()
+        (matches!(self.cancellation, Cancellation::Never) || !self.tx.is_closed())
+            && self.task.is_wanted()
     }
 
     async fn run(self) {
-        let _ = self.tx.send(self.task.run().await);
+        let Self {
+            task,
+            mut tx,
+            cancellation,
+        } = self;
+        let output = if matches!(cancellation, Cancellation::Cooperative) {
+            // Receiver closure wakes this worker. Dropping the execution future
+            // here releases its captures and leases on the worker, in their
+            // normal order. Check receiver drop first if both futures are ready.
+            tokio::select! {
+                biased;
+                _ = tx.closed() => return,
+                output = async move { task.run().await } => output,
+            }
+        } else {
+            task.run().await
+        };
+        let _ = tx.send(output);
     }
 }
 
@@ -562,6 +625,64 @@ mod tests {
         fn drop(&mut self) {
             self.0.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    #[tokio::test]
+    async fn dropping_cancellable_result_stops_running_work() {
+        use std::time::Duration;
+
+        struct PendingOp {
+            started: oneshot::Sender<()>,
+            captured: DropProbe,
+        }
+
+        impl IoOp for PendingOp {
+            type Output = ();
+
+            fn operation(&self) -> &'static str {
+                "test"
+            }
+
+            fn into_task(self) -> Result<impl IoTask<Self::Output>, AdmissionClosed> {
+                Ok(FutureTask(move || async move {
+                    let _captured = self.captured;
+                    self.started.send(()).unwrap();
+                    futures::future::pending::<()>().await;
+                }))
+            }
+        }
+
+        let gate = Arc::new(Gate::default());
+        let drops = Arc::new(AtomicUsize::new(0));
+        let (tx, rx) = mpsc::channel();
+        let executor = QueuedExecutor(tx);
+        let (started_tx, started_rx) = oneshot::channel();
+        let result = TrackedExecutor::new(&executor, &gate)
+            .spawn_cancellable(PendingOp {
+                started: started_tx,
+                captured: DropProbe(drops.clone()),
+            })
+            .unwrap();
+
+        // Run without a Tokio runtime, like the storage workers.
+        let task = rx.try_recv().unwrap();
+        let worker = std::thread::spawn(move || futures::executor::block_on(task()));
+        tokio::time::timeout(Duration::from_secs(10), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        gate.seal();
+        assert!(!gate.is_idle());
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+
+        // The task cannot finish on its own. Dropping its result must wake the
+        // worker, cancel the pending future, and release the capture and lease.
+        drop(result);
+        tokio::time::timeout(Duration::from_secs(10), gate.drain())
+            .await
+            .unwrap();
+        worker.join().unwrap();
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
