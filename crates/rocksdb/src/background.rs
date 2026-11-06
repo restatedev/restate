@@ -339,17 +339,17 @@ where
 }
 
 impl<'a, C, F> StorageOp<'a, C, F> {
-    // An operation on any kind of context, counted in `gate`.
+    // An operation on any kind of context, counted in `gate`, if any.
     pub(crate) fn from_parts(
         context: C,
-        gate: &'a Arc<Gate>,
+        gate: impl Into<Option<&'a Arc<Gate>>>,
         kind: StorageTaskKind,
         op: F,
     ) -> Self {
         Self {
             context,
             op,
-            gate: Some(gate),
+            gate: gate.into(),
             kind,
         }
     }
@@ -832,7 +832,7 @@ impl Worker {
             // Takes one task at a time, and the next only after this one has
             // finished or is suspended. A worker blocked in a task leaves the
             // queue to the others instead of holding tasks back behind it.
-            Self::yield_now().await;
+            yield_now().await;
         }
     }
 
@@ -841,20 +841,20 @@ impl Worker {
             .spawn_local_obj(task())
             .expect("the pool outlives its worker loop");
     }
+}
 
-    // Lets the pool run its tasks before the worker loop continues.
-    async fn yield_now() {
-        let mut yielded = false;
-        std::future::poll_fn(|cx| {
-            if std::mem::replace(&mut yielded, true) {
-                Poll::Ready(())
-            } else {
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-        })
-        .await
-    }
+// Lets the pool run its tasks before the worker loop continues.
+pub(crate) async fn yield_now() {
+    let mut yielded = false;
+    std::future::poll_fn(|cx| {
+        if std::mem::replace(&mut yielded, true) {
+            Poll::Ready(())
+        } else {
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    })
+    .await
 }
 
 // Counts a task as in flight from creation until it is dropped.
