@@ -60,7 +60,9 @@ pub use self::error::*;
 pub use self::iterator::IterAction;
 use self::iterator::RocksIterator;
 pub use self::perf::{RocksDbPerf, RocksDbPerfExt, RocksDbReadPerfGuard, RocksDbWritePerfGuard};
-use self::reads::ColumnFamilies;
+use self::reads::{
+    ColumnFamilies, Iteration, IteratorVisitor, LeasePolicy, OwnedReadIterator, ScopedReads,
+};
 pub use self::rock_access::RocksAccess;
 pub use restate_util_lifecycle::KeepAlive;
 
@@ -599,6 +601,49 @@ impl RocksDb {
         };
         let op = StorageOp::with_context(scope, gate, StorageTaskKind::BackgroundIterator, iterate);
         database.executor.pool(priority).dispatch(op)
+    }
+
+    /// Prepares an iteration over one of `scope`'s column families, handing
+    /// each item to `visitor` (see [`ReadIterator::prepare_iteration`](reads::ReadIterator::prepare_iteration)).
+    /// Submit it to one of the database's pools, e.g. `executor().low_pri()`.
+    /// The iterator starts with `initial_action`, and `name` labels its read perf
+    /// metrics. `lease_policy` decides what sealing `gate` does (see
+    /// [`LeasePolicy`]).
+    ///
+    /// # Errors
+    /// Fails with [`AdmissionClosed`] if `gate` is sealed. The iterator is
+    /// created under a lease, so it's never created once the gate is sealed.
+    ///
+    /// # Panics
+    /// In debug builds, panics if `gate` isn't inside `scope`.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    pub fn prepare_iteration<'g, C, V>(
+        scope: &Scope<C>,
+        gate: &'g Arc<Gate>,
+        lease_policy: LeasePolicy,
+        cf: C::Cf,
+        name: &'static str,
+        initial_action: IterAction,
+        mut read_options: rocksdb::ReadOptions,
+        visitor: V,
+    ) -> Result<StorageOp<'g, OwnedReadIterator<Scope<C>>, ReadPerf<Iteration<V>>>, AdmissionClosed>
+    where
+        C: ColumnFamilies,
+        V: IteratorVisitor,
+    {
+        debug_assert!(
+            gate.is_inside(scope.gate()),
+            "the gate isn't inside the scope"
+        );
+        // Covers creating the iterator. The operation takes its own lease once
+        // it's submitted.
+        let _admission = gate.try_acquire().ok_or(AdmissionClosed)?;
+        // The iteration runs on the storage pool, where blocking IO is fine.
+        read_options.set_read_tier(rocksdb::ReadTier::All);
+        Ok(scope
+            .owned_iterator(cf, read_options)
+            .prepare_iteration(gate, lease_policy, Some(initial_action), visitor)
+            .with_read_perf(name))
     }
 
     /// The shared I/O pools this database was created with. Handy for submitting
