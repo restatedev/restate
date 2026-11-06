@@ -14,7 +14,7 @@ use cling::prelude::*;
 use tonic::{Code, Status};
 
 use restate_cli_util::ui::console::confirm_or_exit;
-use restate_cli_util::{CliContext, c_eprintln, c_noop, c_success, c_warn};
+use restate_cli_util::{CliContext, c_eprintln, c_noop, c_println, c_success, c_warn};
 use restate_core::protobuf::cluster_ctrl_svc::{
     ClusterStateRequest, DropPartitionStoreRequest, new_cluster_ctrl_client,
 };
@@ -54,6 +54,10 @@ pub struct DropStoreOpts {
     /// Why the store is being dropped. The admin and the node log it for auditing.
     #[arg(long, required = true)]
     reason: String,
+
+    /// Only report what would be dropped. The node makes the same checks, but deletes nothing.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 async fn drop_partition_store(
@@ -130,10 +134,17 @@ async fn drop_partition_store(
         .await?
         .map(|epoch_metadata| epoch_metadata.latest_configuration_version());
 
-    confirm_or_exit(&format!(
-        "This cannot be undone. Delete node {}'s local copy of partition {}?",
-        opts.node, opts.partition_id
-    ))?;
+    let (node, partition_id) = (opts.node, opts.partition_id);
+    confirm_or_exit(&if opts.dry_run {
+        format!(
+            "[DRY RUN] Check whether node {node} would drop its local copy of partition \
+            {partition_id}?"
+        )
+    } else {
+        format!(
+            "This cannot be undone. Delete node {node}'s local copy of partition {partition_id}?"
+        )
+    })?;
 
     let request = DropPartitionStoreRequest {
         partition_id: u32::from(u16::from(opts.partition_id)),
@@ -141,6 +152,7 @@ async fn drop_partition_store(
         force: opts.force,
         min_partition_configuration_version: configuration_version.map(Into::into),
         reason: opts.reason.clone(),
+        dry_run: opts.dry_run,
     };
 
     let response = connection
@@ -153,19 +165,32 @@ async fn drop_partition_store(
         .await?
         .into_inner();
 
-    if response.dropped {
-        c_success!(
-            "Dropped node {}'s local copy of partition {} ({})",
-            opts.node,
-            opts.partition_id,
-            format_deleted_bytes(response.deleted_bytes),
+    let size = format_deleted_bytes(response.deleted_bytes);
+    if opts.dry_run && !response.dry_run {
+        if response.dropped {
+            bail!(
+                "The server doesn't support dry runs and ignored --dry-run: node {node} DROPPED \
+                its local copy of partition {partition_id} ({size})."
+            );
+        }
+        bail!(
+            "The server doesn't support dry runs and ignored --dry-run. Node {node} had no local \
+            copy of partition {partition_id}, so nothing was dropped."
         );
-    } else {
-        c_noop!(
-            "Node {} had no local copy of partition {} to drop",
-            opts.node,
-            opts.partition_id
-        );
+    }
+    match (response.dropped, response.dry_run) {
+        (true, false) => {
+            c_success!("Dropped node {node}'s local copy of partition {partition_id} ({size})")
+        }
+        (true, true) => c_println!(
+            "[DRY RUN] Node {node} would drop its local copy of partition {partition_id} ({size})"
+        ),
+        (false, false) => {
+            c_noop!("Node {node} had no local copy of partition {partition_id} to drop")
+        }
+        (false, true) => {
+            c_noop!("[DRY RUN] Node {node} has no local copy of partition {partition_id} to drop")
+        }
     }
 
     Ok(())
@@ -179,7 +204,7 @@ pub(super) fn format_deleted_bytes(deleted_bytes: Option<u64>) -> String {
     }
 }
 
-fn classify_drop_partition_store_status(status: Status) -> NodeOperationError {
+pub(super) fn classify_drop_partition_store_status(status: Status) -> NodeOperationError {
     let retry_elsewhere = status.code() == Code::Unimplemented;
     let status = SimpleStatusWrapper::from(status);
     if retry_elsewhere {

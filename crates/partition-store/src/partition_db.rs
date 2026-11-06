@@ -480,8 +480,8 @@ impl PartitionDb {
     }
 }
 
-/// A partition's local store that was deleted, as reported by
-/// [`crate::PartitionStoreManager::drop_partition_store`].
+/// A partition's local store that [`crate::PartitionStoreManager::drop_partition_store`]
+/// deleted, or that [`crate::PartitionStoreManager::preview_drop_partition_store`] found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DroppedPartitionStore {
     /// How much disk space the store used right before the deletion, see
