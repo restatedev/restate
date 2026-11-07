@@ -14,6 +14,7 @@ use cling::prelude::*;
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::find_active_invocations_simple;
 use crate::clients::{self, AdminClientInterface, batch_execute};
+use crate::commands::invocations::list::CompletionResult;
 use crate::commands::invocations::{
     DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT, DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
     create_query_filter,
@@ -38,6 +39,7 @@ use crate::ui::invocations::{
     examples: [
         "restate invocations purge inv_1gdJBtdVEcM942bjcDmb1c1khoaJe11Hbz --yes",
         "restate invocations purge Greeter/greet --dry-run",
+        "restate invocations purge Greeter/greet --completion-result success --dry-run",
     ],
     learn_more: "https://docs.restate.dev/services/configuration#retention-of-completed-invocations",
 ))]
@@ -47,6 +49,9 @@ pub struct Purge {
     /// Act on at most this many of the matching invocations, leaving the others untouched
     #[clap(long, default_value_t = DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT)]
     limit: usize,
+    /// Only purge completed invocations with this result: 'success' or 'failure'
+    #[clap(long, ignore_case = true)]
+    completion_result: Option<CompletionResult>,
     #[clap(flatten)]
     dry_run: DryRun,
 }
@@ -55,8 +60,13 @@ pub async fn run_purge(State(env): State<CliEnv>, opts: &Purge) -> Result<()> {
     let client = clients::AdminClient::new(&env).await?;
     let sql_client = clients::DataFusionHttpClient::from(client.clone());
 
+    let completion_filter = opts
+        .completion_result
+        .as_ref()
+        .map(|result| format!(" AND completion_result = '{result}'"))
+        .unwrap_or_default();
     let filter = format!(
-        "{} AND status = 'completed' LIMIT {}",
+        "{} AND status = 'completed'{completion_filter} LIMIT {}",
         create_query_filter(&opts.query)?,
         opts.limit
     );
