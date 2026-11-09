@@ -30,6 +30,7 @@ use restate_core::Metadata;
 use restate_core::MetadataKind;
 use restate_core::ShutdownError;
 use restate_core::my_node_id;
+use restate_platform::prelude::ReString;
 use restate_types::Version;
 use restate_types::Versioned;
 use restate_types::live::Live;
@@ -55,7 +56,9 @@ use crate::bifrost::MaybeLoglet;
 use crate::error::AdminError;
 use crate::loglet::OperationError;
 use crate::loglet_wrapper::LogletReadStreamWrapper;
-use crate::read_stream_registry::{ReadStreamId, ReadStreamState, SharedReadStreamState};
+use crate::read_stream_registry::{
+    ReadStreamId, ReadStreamState, ReadStreamTags, SharedReadStreamState,
+};
 
 /// A read stream reads from the virtual log. The stream provides a unified view over
 /// the virtual log addressing space in the face of seals, reconfiguration, and trims.
@@ -202,6 +205,18 @@ impl LogReadStream {
             records_read: 0,
             bytes_read: 0,
         })
+    }
+
+    /// Names the stream after who reads it, e.g. `pp-3` for partition 3's processor, as shown in
+    /// the `bifrost_read_streams` table.
+    pub fn with_name(self, name: ReString) -> Self {
+        self.shared_state.lock().name = Some(name);
+        self
+    }
+
+    /// A handle to describe what the stream's owner does with it while reading, e.g. its role.
+    pub fn tags(&self) -> ReadStreamTags {
+        ReadStreamTags::new(self.shared_state.clone())
     }
 
     /// Current read pointer. This is the next (possible) record to be read.
@@ -1003,7 +1018,11 @@ mod tests {
         svc.start().await.expect("loglet must start");
 
         // create the reader and put it on the side.
-        let mut reader = bifrost.create_reader(LOG_ID, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?;
+        let mut reader = bifrost
+            .create_reader(LOG_ID, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?
+            .with_name(ReString::from_static("pp-0"));
+        let tags = reader.tags();
+        tags.set_role(ReString::from_static("follower"));
         let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
         // We should be at tail, any attempt to read will yield `pending`.
         assert_that!(
@@ -1141,14 +1160,18 @@ mod tests {
         assert_that!(record.sequence_number(), eq(Lsn::new(16)));
         assert_that!(record.decode_unchecked::<String>(), eq("segment-2-1000"));
 
-        // the stream counted every record it delivered, across the three segments, at the size
-        // the log stores it
+        // the stream keeps the name it was given and shows the role its owner sets last; it
+        // counted every record it delivered, across the three segments, at the size the log
+        // stores it
+        tags.set_role(ReString::from_static("leader"));
         let state = bifrost
             .read_stream_registry()
             .snapshot()
             .into_iter()
             .find(|state| state.log_id == LOG_ID)
             .expect("the reader is registered");
+        assert_eq!(state.name.as_deref(), Some("pp-0"));
+        assert_eq!(state.role.as_deref(), Some("leader"));
         assert_eq!(state.records_read, 16);
         let encoded_size = |body: String| {
             let mut buf = BytesMut::new();

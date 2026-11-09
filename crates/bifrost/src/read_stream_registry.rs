@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ahash::HashMap;
 use parking_lot::Mutex;
 
+use restate_platform::prelude::ReString;
 use restate_types::logs::LogletId;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{LogId, Lsn};
@@ -30,6 +31,11 @@ use restate_types::logs::{LogId, Lsn};
 pub struct ReadStreamState {
     /// The log being read.
     pub log_id: LogId,
+    /// Who reads, as named by the stream's owner, e.g. `pp-3` for partition 3's processor.
+    pub name: Option<ReString>,
+    /// What the owner currently does with the stream, e.g. a partition processor's leadership.
+    /// The owner updates it while reading.
+    pub role: Option<ReString>,
     /// Next LSN to be read.
     pub read_pointer: Lsn,
     /// Inclusive max LSN the stream will read to (`Lsn::MAX` for tailing).
@@ -53,6 +59,8 @@ impl ReadStreamState {
     pub(crate) fn new(log_id: LogId, read_pointer: Lsn, end_lsn: Lsn) -> Self {
         Self {
             log_id,
+            name: None,
+            role: None,
             read_pointer,
             end_lsn,
             state: "New",
@@ -67,6 +75,22 @@ impl ReadStreamState {
 
 /// Shared mutable reference to a stream's state.
 pub type SharedReadStreamState = Arc<Mutex<ReadStreamState>>;
+
+/// Lets the owner of a read stream describe what it does with the stream while reading it, as
+/// shown in the `bifrost_read_streams` table. Cheap to clone; it outlives the stream harmlessly.
+#[derive(Clone, Debug)]
+pub struct ReadStreamTags(SharedReadStreamState);
+
+impl ReadStreamTags {
+    pub(crate) fn new(state: SharedReadStreamState) -> Self {
+        Self(state)
+    }
+
+    /// Sets the stream's role, e.g. `leader` or `follower` for a partition processor.
+    pub fn set_role(&self, role: ReString) {
+        self.0.lock().role = Some(role);
+    }
+}
 
 /// A unique identifier for a read stream within this node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, derive_more::Display)]

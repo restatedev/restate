@@ -47,6 +47,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{debug, error, instrument, trace, warn};
 
 use restate_bifrost::loglet::FindTailOptions;
+use restate_bifrost::read_stream_registry::ReadStreamTags;
 use restate_bifrost::{DataRecord, DataRecordError, LogEntry};
 use restate_core::network::{
     Incoming, RawSvcRpc, Rpc, ServiceMessage, ServiceStream, TransportConnect, Verdict,
@@ -81,6 +82,7 @@ use restate_types::net::partition_processor::{
     ResumeInvocationRpcRequest,
 };
 use restate_types::partitions::PartitionFeatureChange;
+use restate_types::protobuf::cluster::DetailedRunMode;
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::Schema;
 use restate_types::storage::{
@@ -88,7 +90,7 @@ use restate_types::storage::{
 };
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{GenerationalNodeId, SemanticRestateVersion, Version};
-use restate_util_string::ReString;
+use restate_util_string::{ReString, format_restring};
 use restate_util_time::DurationExt;
 use restate_vqueues::context::HasVQueues;
 use restate_wal_protocol::control::{CurrentReplicaSetConfiguration, NextReplicaSetConfiguration};
@@ -264,6 +266,7 @@ impl PartitionProcessorBuilder {
             leader_query_rx,
             commit_fence_rx,
             encoding_arena: BytesMut::new(),
+            read_stream_tags: None,
         })
     }
 }
@@ -279,6 +282,8 @@ pub struct PartitionProcessor<T> {
     leader_query_rx: LeaderQueryReceiver,
     commit_fence_rx: mpsc::Receiver<CommitFenceRequest>,
     encoding_arena: BytesMut,
+    /// Shows the processor's leadership on its read stream in `bifrost_read_streams`.
+    read_stream_tags: Option<ReadStreamTags>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -554,17 +559,18 @@ where
             histogram!(PARTITION_WRITE_BATCH_SIZE_BYTES, LEADER_LABEL => LEADER_LABEL_FOLLOWER);
 
         // Start reading after the last applied lsn
-        let mut record_stream = std::pin::pin!(
-            self.node_ctx
-                .bifrost
-                .create_reader(
-                    log_id,
-                    logs::KeyFilter::Within(self.ctx.key_range().into()),
-                    self.ctx.fsm().last_applied_lsn().next(),
-                    Lsn::MAX,
-                )?
-                .peekable()
-        );
+        let reader = self
+            .node_ctx
+            .bifrost
+            .create_reader(
+                log_id,
+                logs::KeyFilter::Within(self.ctx.key_range().into()),
+                self.ctx.fsm().last_applied_lsn().next(),
+                Lsn::MAX,
+            )?
+            .with_name(format_restring!("pp-{partition_id}"));
+        self.read_stream_tags = Some(reader.tags());
+        let mut record_stream = std::pin::pin!(reader.peekable());
 
         // avoid synchronized timers.
         let mut status_update_timer =
@@ -852,6 +858,11 @@ where
             old.detailed_effective_mode = self.leadership_state.detailed_effective_mode();
             old.updated_at = MillisSinceEpoch::now();
         });
+        if let Some(read_stream_tags) = &self.read_stream_tags {
+            read_stream_tags.set_role(read_stream_role(
+                self.leadership_state.detailed_effective_mode(),
+            ));
+        }
 
         Ok(())
     }
@@ -1263,4 +1274,15 @@ where
         .record(start.elapsed());
         res
     }
+}
+
+/// The role a partition processor shows on its read stream: its leadership, as in its status.
+fn read_stream_role(mode: DetailedRunMode) -> ReString {
+    ReString::from_static(match mode {
+        DetailedRunMode::Leader => "leader",
+        DetailedRunMode::BecomingLeader => "becoming-leader",
+        DetailedRunMode::Candidate => "candidate",
+        DetailedRunMode::Follower => "follower",
+        DetailedRunMode::Unknown => "unknown",
+    })
 }
