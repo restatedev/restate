@@ -26,29 +26,68 @@
 //!   a fresh cursor to observe them.
 
 use std::collections::BTreeSet;
+use std::ops::ControlFlow;
 
 use restate_clock::time::MillisSinceEpoch;
 use restate_limiter::LimitKey;
 use restate_storage_api::Transaction;
+use restate_storage_api::scan::RowConsumer;
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
 use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
 use restate_storage_api::vqueue_table::{
     EntryContext, EntryKey, EntryMetadata, EntryStateRef, EntryStatusHeader, EntryValue, Options,
-    ReadVQueueTable, Stage, Status, VQueueCursor, VQueueRunningCursor, VQueueStore,
-    WriteVQueueTable, stats::EntryStatistics,
+    RawStatusHeaderRef, ReadVQueueTable, Stage, Status, VQueueCursor, VQueueRunningCursor,
+    VQueueStore, WriteVQueueTable, stats::EntryStatistics,
 };
 use restate_storage_api::vqueue_table::{
     ScanVQueueEntries, ScanVQueueEntryStatusTable, ScanVQueueTable,
 };
 use restate_types::clock::UniqueTimestamp;
 use restate_types::config::{Configuration, set_current_config};
-use restate_types::identifiers::PartitionKey;
+use restate_types::identifiers::{BaseEntryId, PartitionKey};
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, VQueueId};
 
 use crate::PartitionStore;
 use crate::keys::{EncodeTableKeyPrefix, KeyKind};
 use crate::vqueue_table::{ActiveKey, ActiveKeyRef};
+
+#[derive(Default)]
+struct CollectStageRows(Vec<(VQueueId, Stage, EntryKey)>);
+
+impl RowConsumer for CollectStageRows {
+    type Item<'a> = (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue);
+
+    async fn consume(
+        &mut self,
+        (qid, stage, key, _): Self::Item<'_>,
+    ) -> restate_storage_api::Result<ControlFlow<()>> {
+        self.0.push((qid.clone(), stage, *key));
+        Ok(ControlFlow::Continue(()))
+    }
+}
+
+type StatusRow = (PartitionKey, EntryId, Stage, Status);
+
+#[derive(Default)]
+struct CollectStatusRows(Vec<StatusRow>);
+
+impl RowConsumer for CollectStatusRows {
+    type Item<'a> = (&'a BaseEntryId, &'a RawStatusHeaderRef<'a>);
+
+    async fn consume(
+        &mut self,
+        (id, header): Self::Item<'_>,
+    ) -> restate_storage_api::Result<ControlFlow<()>> {
+        self.0.push((
+            id.partition_key(),
+            id.to_entry_id(),
+            header.stage,
+            header.status,
+        ));
+        Ok(ControlFlow::Continue(()))
+    }
+}
 
 fn test_qid() -> VQueueId {
     VQueueId::custom(PartitionKey::from(1000u64), "1")
@@ -581,25 +620,13 @@ async fn stage_scan_is_filtered_by_stage(rocksdb: &mut PartitionStore) {
 
     for (index, stage) in stages.into_iter().enumerate() {
         let expected_key = default_entry(100 + index as u8).0;
-        let rows = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let rows_for_scan = rows.clone();
-
-        rocksdb
-            .for_each_vqueue_entry(range, vec![stage], move |(qid, got_stage, key, _)| {
-                rows_for_scan
-                    .lock()
-                    .expect("stage scan lock should not be poisoned")
-                    .push((qid.clone(), got_stage, *key));
-                std::ops::ControlFlow::Continue(())
-            })
+        let CollectStageRows(rows) = rocksdb
+            .for_each_vqueue_entry(range, vec![stage], CollectStageRows::default())
             .expect("stage scan setup should succeed")
             .await
-            .expect("stage scan should succeed");
+            .expect("stage scan should succeed")
+            .into_inner();
 
-        let rows = rows
-            .lock()
-            .expect("stage scan lock should not be poisoned")
-            .clone();
         assert_eq!(rows.len(), 1, "stage {stage} should return one row");
         assert_eq!(rows[0].0, target_qid, "stage {stage} returned wrong qid");
         assert_eq!(rows[0].1, stage, "stage {stage} returned wrong stage");
@@ -653,32 +680,15 @@ async fn entry_status_scan_batches_large_id_set(rocksdb: &mut PartitionStore) {
     let missing_entry_id = entry_id_from_u64(10_000);
     requested_ids.insert(missing_entry_id.to_base_id(partition_key));
 
-    let rows = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let rows_for_scan = rows.clone();
-    rocksdb
+    let CollectStatusRows(rows) = rocksdb
         .for_each_vqueue_entry_status(
             ScanEntryIdFilter::EntryIdSet(requested_ids),
-            move |id, header| {
-                rows_for_scan
-                    .lock()
-                    .expect("entry-status scan lock should not be poisoned")
-                    .push((
-                        id.partition_key(),
-                        id.to_entry_id(),
-                        header.stage,
-                        header.status,
-                    ));
-                std::ops::ControlFlow::Continue(())
-            },
+            CollectStatusRows::default(),
         )
         .expect("entry-status scan setup should succeed")
         .await
-        .expect("entry-status scan should succeed");
-
-    let rows = rows
-        .lock()
-        .expect("entry-status scan lock should not be poisoned")
-        .clone();
+        .expect("entry-status scan should succeed")
+        .into_inner();
     let got_ids = rows
         .iter()
         .map(|(_, entry_id, _, _)| *entry_id)

@@ -302,19 +302,17 @@ mod tests {
 
     impl ScanInvocationStatusTable for MockInvocationStatusReader {
         fn for_each_invocation_status_lazy<
-            E: Into<anyhow::Error> + 'static,
-            F: for<'a> FnMut(
-                    (InvocationId, &'a InvocationStatusV2Lazy<'a>),
-                ) -> std::ops::ControlFlow<std::result::Result<(), E>>
-                + Send
-                + Sync
-                + 'static,
+            F: for<'a> restate_storage_api::scan::RowConsumer<
+                    Item<'a> = (InvocationId, &'a InvocationStatusV2Lazy<'a>),
+                >,
         >(
             &self,
             _: ScanInvocationStatusTableRange,
             _: F,
-        ) -> restate_storage_api::Result<impl Future<Output = restate_storage_api::Result<()>> + Send>
-        {
+        ) -> restate_storage_api::Result<
+            impl Future<Output = restate_storage_api::Result<restate_storage_api::scan::ScanOutcome<F>>>
+            + Send,
+        > {
             unimplemented!();
 
             #[allow(unreachable_code)]

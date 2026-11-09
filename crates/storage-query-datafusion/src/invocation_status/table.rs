@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
@@ -18,6 +17,7 @@ use restate_storage_api::invocation_status_table::{
     ScanInvocationStatusTable, ScanInvocationStatusTableRange,
 };
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
+use restate_storage_api::scan::{RowConsumer, ScanOutcome};
 use restate_types::errors::ConversionError;
 use restate_types::identifiers::InvocationId;
 
@@ -77,16 +77,12 @@ impl ScanLocalPartition for StatusScanner {
     type ConversionError = ConversionError;
     type Filter = InvocationIdFilter;
 
-    fn for_each_row<
-        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_row<F: for<'a> RowConsumer<Item<'a> = Self::Item<'a>>>(
         partition_store: &PartitionStore,
         filter: InvocationIdFilter,
         f: F,
-    ) -> Result<impl Future<Output = Result<(), StorageError>> + Send, StorageError> {
+    ) -> Result<impl Future<Output = Result<ScanOutcome<F>, StorageError>> + Send, StorageError>
+    {
         partition_store.for_each_invocation_status_lazy(filter.into(), f)
     }
 

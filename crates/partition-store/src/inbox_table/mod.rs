@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::ControlFlow;
-
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
@@ -19,6 +17,7 @@ use restate_storage_api::inbox_table::{
     InboxEntry, ReadInboxTable, ScanInboxTable, SequenceNumberInboxEntry, WriteInboxTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
+use restate_storage_api::scan::{RowConsumer, ScanOutcome};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::message::MessageIndex;
@@ -27,8 +26,7 @@ use restate_types::sharding::KeyRange;
 use crate::TableKind::Inbox;
 use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
 use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
-    TableScanIterationDecision, break_on_err,
+    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
 };
 
 define_table_key!(
@@ -107,29 +105,28 @@ impl ReadInboxTable for PartitionStore {
 }
 
 impl ScanInboxTable for PartitionStore {
-    fn for_each_inbox<
-        F: FnMut(SequenceNumberInboxEntry) -> ControlFlow<()> + Send + Sync + 'static,
-    >(
+    fn for_each_inbox<F: for<'a> RowConsumer<Item<'a> = SequenceNumberInboxEntry>>(
         &self,
         range: KeyRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        f: F,
+    ) -> Result<impl Future<Output = Result<ScanOutcome<F>>> + Send> {
         self.iterator_for_each(
             "df-inbox",
             Priority::Low,
             TableScan::ScanPartitionKeyRange::<InboxKey>(range),
-            move |(mut key, mut value)| {
-                let key = break_on_err(InboxKey::deserialize_from(&mut key))?;
-                let inbox_entry = break_on_err(InboxEntry::decode(&mut value))?;
+            f,
+            async |f: &mut F, (mut key, mut value): (&[u8], &[u8])| {
+                let key = InboxKey::deserialize_from(&mut key)?;
+                let inbox_entry = InboxEntry::decode(&mut value)?;
 
-                f(SequenceNumberInboxEntry::new(
+                f.consume(SequenceNumberInboxEntry::new(
                     key.sequence_number,
                     inbox_entry,
                 ))
-                .map_break(Ok)
+                .await
             },
         )
-        .map_err(|_| StorageError::OperationalError)
+        .map_err(|_| StorageError::AdmissionClosed)
     }
 }
 

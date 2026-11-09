@@ -18,6 +18,7 @@ use anyhow::anyhow;
 use bytes::Bytes;
 use bytes::BytesMut;
 use enum_map::Enum;
+use futures::{FutureExt, Stream, StreamExt, TryFutureExt, future, stream};
 use rocksdb::{
     BoundColumnFamily, DBPinnableSlice, DBRawIteratorWithThreadMode, ReadOptions,
     SnapshotWithThreadMode,
@@ -32,9 +33,11 @@ use tracing::{Level, instrument, trace, warn};
 
 use restate_core::io::{AdmissionClosed, Gate, IoExecutor};
 use restate_futures_util::overdue::OverdueLoggingExt;
-use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksDbManager, RocksError};
+use restate_rocksdb::reads::{IterationError, IterationOutcome, IteratorVisitor, LeasePolicy};
+use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksDbManager};
 use restate_storage_api::fsm_table::ReadFsmTable;
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
+use restate_storage_api::scan::{RowConsumer, ScanClosePolicy, ScanOutcome};
 use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
 use restate_types::SemanticRestateVersion;
 use restate_types::config::{Configuration, StorageOptions};
@@ -62,8 +65,7 @@ use crate::fsm_table::{
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
 use crate::migrations::MigrationError;
 use crate::partition_db::PartitionDb;
-use crate::scan::PhysicalScan;
-use crate::scan::TableScan;
+use crate::scan::{DecodingVisitor, PhysicalScan, TableScan};
 use crate::snapshots::{CaptureGuard, LocalPartitionSnapshot, SnapshotCompatibility, export_dir};
 use crate::{configure_prefix_iterator_opts, configure_range_iterator_opts};
 
@@ -374,152 +376,138 @@ impl PartitionStore {
             .map_err(|error| StorageError::Generic(error.into()))
     }
 
-    #[allow(clippy::type_complexity)]
-    fn iterator_step_filter_map<O: Send + 'static>(
-        tx: mpsc::Sender<Result<O>>,
-        mut f: impl FnMut((&[u8], &[u8])) -> Result<Option<O>> + Send + 'static,
-    ) -> impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static {
-        move |item| {
-            let res = match item {
-                // apply the caller's function
-                Ok((key, value)) => match f((key, value)) {
-                    Ok(Some(v)) => v,
-                    Ok(None) => {
-                        if tx.is_closed() {
-                            return IterAction::Stop;
-                        } else {
-                            return IterAction::Next;
-                        }
-                    }
-                    Err(e) => {
-                        let _ = tx.blocking_send(Err(e));
-                        return IterAction::Stop;
-                    }
-                },
-                Err(e) => {
-                    let _ = tx.blocking_send(Err(StorageError::Generic(e.into())));
-                    return IterAction::Stop;
-                }
-            };
-            if tx.blocking_send(Ok(res)).is_err() {
-                return IterAction::Stop;
-            }
-            // the channel is not closed yet, keep iterating
-            IterAction::Next
-        }
-    }
-
-    #[allow(clippy::type_complexity)]
-    fn iterator_step_for_each(
-        tx: oneshot::Sender<StorageError>,
-        mut f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
-    ) -> impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send {
-        let mut tx = Some(tx);
-        move |item| {
-            let mut must_send = |v| match tx.take() {
-                Some(tx) => tx.send(v),
-                None => panic!("Iterator continued after IterAction::Stop"),
-            };
-
-            match item {
-                // apply the caller's function
-                Ok((key, value)) => match f((key, value)) {
-                    ControlFlow::Continue(()) => match &mut tx {
-                        Some(tx_inner) if tx_inner.is_closed() => {
-                            tx = None;
-                            IterAction::Stop
-                        }
-                        // the channel is not closed yet, keep iterating
-                        Some(_) => IterAction::Next,
-                        None => panic!("Iterator continued after IterAction::Stop"),
-                    },
-                    ControlFlow::Break(Ok(())) => {
-                        // function doesn't need any more items
-                        tx = None;
-                        IterAction::Stop
-                    }
-                    ControlFlow::Break(Err(e)) => {
-                        let _ = must_send(e);
-                        IterAction::Stop
-                    }
-                },
-                Err(e) => {
-                    let _ = must_send(StorageError::Generic(e.into()));
-                    IterAction::Stop
-                }
-            }
-        }
-    }
-
-    pub fn iterator_for_each<K: EncodeTableKeyPrefix>(
+    /// Hands each row to `decode` along with `consumer`, and returns the consumer
+    /// in a [`ScanOutcome`] distinguishing exhaustion from a requested stop.
+    ///
+    /// # Errors
+    /// Preparation or submission returns [`AdmissionClosed`] if the partition or
+    /// executor rejects new work. The future returns [`StorageError::ScanInterrupted`]
+    /// if an accepted `CancelOnClose` scan's partition starts closing, or
+    /// [`StorageError::TaskFailed`] if accepted work ends without a result.
+    /// Read failures return [`StorageError::Generic`]; decoding and consumer errors
+    /// are propagated unchanged. See [`restate_storage_api::scan`] for cleanup semantics.
+    pub fn iterator_for_each<K: EncodeTableKeyPrefix, C: RowConsumer>(
         &self,
         name: &'static str,
         priority: Priority,
         scan: TableScan<K>,
-        f: impl FnMut((&[u8], &[u8])) -> std::ops::ControlFlow<Result<()>> + Send + 'static,
-    ) -> Result<impl Future<Output = Result<()>>, AdmissionClosed> {
+        consumer: C,
+        decode: impl AsyncFnMut(&mut C, (&[u8], &[u8])) -> Result<ControlFlow<()>> + Send + 'static,
+    ) -> Result<impl Future<Output = Result<ScanOutcome<C>>>, AdmissionClosed> {
         let mut opts = ReadOptions::default();
         opts.set_async_io(true);
-        self.iterator_for_each_physical(name, priority, opts, scan.into(), f)
+        let driver = self.run_iterator_internal(
+            name,
+            priority,
+            opts,
+            scan.into(),
+            C::SCAN_CLOSE_POLICY,
+            DecodingVisitor { consumer, decode },
+        )?;
+        Ok(driver.map_ok(|outcome| outcome.map(|visitor| visitor.consumer)))
     }
 
+    /// Filters and maps rows into a stream. The stream ends after exhaustion or
+    /// receiver closure; a requested close interrupts it according to `close_policy`.
+    ///
+    /// # Errors
+    /// Preparation or submission returns [`AdmissionClosed`]. Later failures are
+    /// stream items: [`StorageError::ScanInterrupted`] for closure of an accepted
+    /// `CancelOnClose` scan, [`StorageError::TaskFailed`] for missing task results,
+    /// [`StorageError::Generic`] for read failures, or the error returned by `f`.
+    /// A terminal error follows previously buffered rows; it must not be treated
+    /// as successful exhaustion.
     pub fn iterator_filter_map<K: EncodeTableKeyPrefix, O: Send + 'static>(
         &self,
         name: &'static str,
         priority: Priority,
         scan: TableScan<K>,
-        f: impl FnMut((&[u8], &[u8])) -> Result<Option<O>> + Send + 'static,
-    ) -> Result<ReceiverStream<Result<O>>, AdmissionClosed> {
+        close_policy: ScanClosePolicy,
+        mut f: impl FnMut((&[u8], &[u8])) -> Result<Option<O>> + Send + 'static,
+    ) -> Result<impl Stream<Item = Result<O>> + Send + 'static, AdmissionClosed> {
         let (tx, rx) = mpsc::channel(8);
-        let on_iter = Self::iterator_step_filter_map(tx, f);
+        let error_tx = tx.clone();
         let mut opts = ReadOptions::default();
         opts.set_async_io(true);
-        self.run_iterator_internal(name, priority, opts, scan.into(), on_iter)?;
-        Ok(ReceiverStream::new(rx))
-    }
-
-    /// Starts an iterator from already-encoded bounds without re-encoding them.
-    pub(crate) fn iterator_for_each_physical(
-        &self,
-        name: &'static str,
-        priority: Priority,
-        opts: ReadOptions,
-        scan: PhysicalScan<Bytes>,
-        f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
-    ) -> Result<impl Future<Output = Result<()>>, AdmissionClosed> {
-        let (tx, rx) = oneshot::channel();
-        let on_iter = Self::iterator_step_for_each(tx, f);
-        self.run_iterator_internal(name, priority, opts, scan, on_iter)?;
-
-        Ok(async {
-            match rx.await {
-                Ok(storage_err) => Err(storage_err),
-                // The iterator completed without reporting a storage error.
-                Err(_recv_err) => Ok(()),
+        let driver = self.run_iterator_internal(
+            name,
+            priority,
+            opts,
+            scan.into(),
+            close_policy,
+            async move |key: &[u8], value: &[u8]| {
+                let Some(value) = f((key, value))? else {
+                    return Ok(IterAction::Next);
+                };
+                Ok(match tx.send(Ok(value)).await {
+                    Ok(()) => IterAction::Next,
+                    Err(_) => IterAction::Stop,
+                })
+            },
+        )?;
+        // Poll the driver alongside the rows: the visitor it resolves to holds
+        // `tx`, so the rows only end once it's dropped. A terminal error goes
+        // through the channel, after the rows the visitor sent.
+        let driver = async move {
+            if let Err(err) = driver.await {
+                let _ = error_tx.send(Err(err)).await;
             }
-        })
+        }
+        .into_stream()
+        .filter_map(|()| future::ready(None));
+        Ok(stream::select(ReceiverStream::new(rx), driver))
     }
 
-    fn run_iterator_internal(
+    /// Returns the visitor together with the iteration completion reason.
+    fn run_iterator_internal<V: IteratorVisitor<Error = StorageError>>(
         &self,
         name: &'static str,
         priority: Priority,
         mut opts: ReadOptions,
         scan: PhysicalScan<Bytes>,
-        on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
-    ) -> Result<(), AdmissionClosed> {
+        close_policy: ScanClosePolicy,
+        visitor: V,
+    ) -> Result<impl Future<Output = Result<ScanOutcome<V>>> + Send + 'static, AdmissionClosed>
+    {
         scan.configure(&mut opts);
-        RocksDb::run_background_iterator(
+        let lease_policy = match close_policy {
+            ScanClosePolicy::CancelOnClose => LeasePolicy::StopOnSeal,
+            ScanClosePolicy::FinishBeforeClose => LeasePolicy::WholeIteration,
+        };
+        let iteration = RocksDb::prepare_iteration(
             self.db.physical_scope(),
             self.db.gate(),
+            lease_policy,
             scan.key_kind(),
             name,
-            priority,
             IterAction::Seek(scan.into_start()),
             opts,
-            on_iter,
+            visitor,
         )?;
-        Ok(())
+        let result = self
+            .db
+            .rocksdb()
+            .executor()
+            .pool(priority)
+            .spawn_cancellable(iteration)?;
+        Ok(crate::scan::await_scan(
+            Arc::clone(self.db.gate()),
+            close_policy,
+            async move {
+                let outcome = result
+                    .await
+                    .map_err(|_| StorageError::TaskFailed)?
+                    .map_err(|error| match error {
+                        IterationError::Visitor(error) => error,
+                        IterationError::ScopeClosed(_) => StorageError::ScanInterrupted,
+                        IterationError::RocksDb(error) => StorageError::Generic(error.into()),
+                    })?;
+                Ok(match outcome {
+                    IterationOutcome::Exhausted(visitor) => ScanOutcome::Exhausted(visitor),
+                    IterationOutcome::Stopped(visitor) => ScanOutcome::Stopped(visitor),
+                })
+            },
+        ))
     }
 
     pub fn transaction(&mut self) -> PartitionStoreTransaction<'_> {

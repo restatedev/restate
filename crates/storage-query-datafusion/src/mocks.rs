@@ -288,6 +288,10 @@ impl MockQueryEngine {
         &mut self.1
     }
 
+    pub fn partition_store_manager(&self) -> &Arc<PartitionStoreManager> {
+        &self.0
+    }
+
     pub async fn execute(
         &self,
         sql: impl AsRef<str> + Send,

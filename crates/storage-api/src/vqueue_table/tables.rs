@@ -17,6 +17,7 @@ use super::filters::{ScanEntryIdFilter, ScanMetaFilter};
 use super::metadata::{VQueueMeta, VQueueMetaRef};
 use super::{EntryContext, EntryId, EntryKey, EntryStateRef, EntryStatusHeader, EntryValue};
 use crate::Result;
+use crate::scan::{RowConsumer, ScanOutcome};
 
 /// Stages in the inbox/vqueue
 #[derive(
@@ -269,22 +270,19 @@ pub trait ScanVQueueTable {
 pub trait ScanVQueueMetaTable {
     /// Used for data-fusion queries
     fn for_each_vqueue_meta<
-        F: for<'a> FnMut((&'a VQueueId, &'a VQueueMetaRef<'a>)) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
+        F: for<'a> RowConsumer<Item<'a> = (&'a VQueueId, &'a VQueueMetaRef<'a>)>,
     >(
         &self,
         filter: ScanMetaFilter,
         f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
+    ) -> Result<impl Future<Output = Result<ScanOutcome<F>>> + Send>;
 }
 
 pub trait ScanVQueueEntries {
     /// Iterate entries across one or more stages within a partition-key range.
     ///
     /// Stages are scanned sequentially in the order given. An empty `stages`
-    /// iterator scans all stages except [`Stage::Unknown`]. The callback
+    /// iterator scans all stages except [`Stage::Unknown`]. The consumer
     /// receives the originating stage along with each item.
     ///
     /// Used for data-fusion queries.
@@ -293,14 +291,9 @@ pub trait ScanVQueueEntries {
         range: KeyRange,
         stages: S,
         f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>
+    ) -> Result<impl Future<Output = Result<ScanOutcome<F>>> + Send>
     where
-        F: for<'a> FnMut(
-                (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue),
-            ) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
+        F: for<'a> RowConsumer<Item<'a> = (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue)>,
         S: IntoIterator<Item = Stage>;
 }
 
@@ -312,10 +305,7 @@ pub trait ScanVQueueEntryStatusTable {
         &self,
         filter: ScanEntryIdFilter,
         f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>
+    ) -> Result<impl Future<Output = Result<ScanOutcome<F>>> + Send>
     where
-        F: for<'a> FnMut(&'a BaseEntryId, &'a RawStatusHeaderRef<'a>) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static;
+        F: for<'a> RowConsumer<Item<'a> = (&'a BaseEntryId, &'a RawStatusHeaderRef<'a>)>;
 }

@@ -19,6 +19,7 @@ use restate_types::journal::{CompletionResult, EntryType};
 use restate_types::sharding::KeyRange;
 
 use crate::protobuf_types::PartitionStoreProtobufValue;
+use crate::scan::{RowConsumer, ScanOutcome};
 use crate::{BudgetedReadError, Result};
 
 /// Different types of journal entries persisted by the runtime
@@ -113,13 +114,11 @@ pub enum ScanJournalTableRange {
 }
 
 pub trait ScanJournalTable {
-    fn for_each_journal<
-        F: FnMut((JournalEntryId, JournalEntry)) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
-    >(
+    fn for_each_journal<F: for<'a> RowConsumer<Item<'a> = (JournalEntryId, JournalEntry)>>(
         &self,
         range: ScanJournalTableRange,
         f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
+    ) -> Result<impl Future<Output = Result<ScanOutcome<F>>> + Send>;
 }
 
 pub trait WriteJournalTable {

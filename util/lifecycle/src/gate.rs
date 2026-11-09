@@ -108,6 +108,7 @@ use tokio::sync::Notify;
 pub struct Gate {
     state: Mutex<State>,
     drained: Notify,
+    sealed: Notify,
     // Strong, while a parent only keeps weak links to its children, so the
     // links never form a cycle.
     parent: Option<Arc<Gate>>,
@@ -152,6 +153,7 @@ impl Gate {
                 ..State::default()
             }),
             drained: Notify::new(),
+            sealed: Notify::new(),
             parent: Some(Arc::clone(self)),
         });
         state.children.retain(|child| child.strong_count() > 0);
@@ -207,8 +209,31 @@ impl Gate {
             state.sealed = true;
             live_children(&state)
         };
+        self.sealed.notify_waiters();
         for child in children {
             child.seal();
+        }
+    }
+
+    /// Waits until this gate, or a gate above it, is sealed.
+    ///
+    /// Returns right away if the gate is already sealed. Unlike [`Gate::drain`],
+    /// this doesn't wait for leases that were handed out earlier: it only
+    /// reports that no new work is let in. That makes it the signal for work
+    /// that should stop when its resource starts closing, without delaying the
+    /// close.
+    ///
+    /// Dropping the returned future stops the wait, and has no other effect.
+    pub async fn wait_sealed(&self) {
+        loop {
+            // Create the `Notified` future before checking the flag. It receives
+            // `notify_waiters` calls from the moment it exists, so a seal landing
+            // between the check and the `.await` still wakes us.
+            let notified = self.sealed.notified();
+            if self.state.lock().sealed {
+                return;
+            }
+            notified.await;
         }
     }
 
@@ -471,5 +496,26 @@ mod tests {
         assert!(drain.as_mut().poll(&mut cx).is_pending());
         drop(owned);
         drain.await;
+    }
+
+    #[tokio::test]
+    async fn wait_sealed_ignores_leases_and_covers_the_subtree() {
+        let root = Arc::new(Gate::default());
+        let child = root.child();
+        let lease = child.try_acquire().unwrap();
+
+        let mut sealed = pin!(child.wait_sealed());
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(sealed.as_mut().poll(&mut cx).is_pending());
+
+        // Sealing a parent seals the child and wakes the wait, without waiting
+        // for leases that were handed out earlier.
+        root.seal();
+        sealed.await;
+        assert!(child.try_acquire().is_none());
+
+        // A gate that is already sealed reports it right away.
+        root.child().wait_sealed().await;
+        drop(lease);
     }
 }
