@@ -8630,6 +8630,7 @@ version = "1.8.2-dev"
 dependencies = [
  "ahash",
  "anyhow",
+ "async-trait",
  "bilrost",
  "bytes",
  "bytestring",

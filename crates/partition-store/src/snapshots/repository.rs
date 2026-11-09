@@ -70,13 +70,14 @@ pub struct SnapshotRepository {
     prefix: ObjectPath,
     staging_dir: PathBuf,
     num_retained: std::num::NonZeroU8,
+    upload_part_size: usize,
+    upload_single_put_threshold: u64,
     #[cfg(any(test, feature = "test-util"))]
     enable_cleanup: bool,
 }
 
-/// S3 and other stores require a certain minimum size for the parts of a multipart upload. It is an
-/// API error to attempt a multipart put below this size, apart from the final segment.
-const MULTIPART_UPLOAD_CHUNK_SIZE_BYTES: usize = 5 * 1024 * 1024;
+/// S3 and GCS reject multipart uploads with more parts than this.
+const MULTIPART_UPLOAD_MAX_PARTS: u64 = 10_000;
 
 /// Maximum number of concurrent downloads when getting snapshots from the repository.
 const DOWNLOAD_CONCURRENCY_LIMIT: usize = 8;
@@ -356,6 +357,9 @@ impl SnapshotRepository {
         snapshots_options: &SnapshotsOptions,
         staging_dir: PathBuf,
     ) -> anyhow::Result<Option<SnapshotRepository>> {
+        snapshots_options
+            .validate_upload_sizes()
+            .map_err(|e| anyhow!("Invalid snapshot upload settings: {e}"))?;
         let mut destination = if let Some(ref destination) = snapshots_options.destination {
             Url::parse(destination).context("Failed parsing snapshot repository URL")?
         } else {
@@ -387,6 +391,8 @@ impl SnapshotRepository {
             prefix: ObjectPath::from(prefix),
             staging_dir,
             num_retained: snapshots_options.num_retained,
+            upload_part_size: snapshots_options.upload_part_size(),
+            upload_single_put_threshold: snapshots_options.upload_single_put_threshold(),
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: snapshots_options.enable_cleanup,
         }))
@@ -577,6 +583,8 @@ impl SnapshotRepository {
                 &key,
                 &self.object_store,
                 &mut buf,
+                self.upload_part_size,
+                self.upload_single_put_threshold,
             )
             .await
             .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
@@ -1135,18 +1143,23 @@ async fn put_snapshot_object(
     key: &ObjectPath,
     object_store: &Arc<dyn ObjectStore>,
     buf: &mut BytesMut,
+    part_size: usize,
+    single_put_threshold: u64,
 ) -> anyhow::Result<object_store::PutResult> {
     debug!(path = ?file_path, "Putting snapshot object from local file");
     let uploaded_bytes = metrics::counter!(SNAPSHOT_UPLOAD_BYTES);
     let mut snapshot = tokio::fs::File::open(file_path).await?;
 
     let file_len = snapshot.metadata().await?.len();
-    if file_len < MULTIPART_UPLOAD_CHUNK_SIZE_BYTES as u64 {
+    if file_len < single_put_threshold {
         let payload = PutPayload::from(tokio::fs::read(file_path).await?);
         let result = object_store.put(key, payload).await?;
         uploaded_bytes.increment(file_len);
         return Ok(result);
     }
+
+    // Grow the parts of very large files to stay within the maximum number of parts.
+    let part_size = part_size.max(file_len.div_ceil(MULTIPART_UPLOAD_MAX_PARTS) as usize);
 
     debug!("Performing multipart upload for {key}");
     let mut upload = object_store.put_multipart(key).await?;
@@ -1154,10 +1167,10 @@ async fn put_snapshot_object(
     let result: anyhow::Result<_> = async {
         loop {
             let mut len = 0;
-            buf.reserve(MULTIPART_UPLOAD_CHUNK_SIZE_BYTES);
+            buf.reserve(part_size);
 
             // Ensure full buffer unless at EOF
-            while buf.len() < MULTIPART_UPLOAD_CHUNK_SIZE_BYTES {
+            while buf.len() < part_size {
                 len = snapshot.read_buf(buf).await?;
                 if len == 0 {
                     break;
@@ -1217,14 +1230,21 @@ mod compatibility_tests;
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, SystemTime};
 
     use ahash::HashSet;
-    use bytes::Bytes;
+    use bytes::{Bytes, BytesMut};
     use futures::TryStreamExt;
+    use futures::stream::BoxStream;
     use jiff::Timestamp;
+    use object_store::memory::InMemory;
     use object_store::path::Path as ObjectPath;
-    use object_store::{ObjectStoreExt, PutPayload};
+    use object_store::{
+        CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+        ObjectStoreExt, PutMultipartOptions, PutOptions, PutPayload, UploadPart,
+    };
     use tempfile::TempDir;
     use tokio::io::AsyncWriteExt;
     use tokio_util::sync::CancellationToken;
@@ -1244,10 +1264,157 @@ mod tests {
 
     use crate::snapshots::repository::{LatestSnapshotVersion, SnapshotUploadProgress};
 
-    use super::{LatestSnapshot, SnapshotReference, SnapshotRepository, UniqueSnapshotKey};
+    use super::{
+        LatestSnapshot, SnapshotReference, SnapshotRepository, UniqueSnapshotKey,
+        put_snapshot_object,
+    };
     use super::{
         PartitionSnapshotMetadata, SnapshotCompatibility, SnapshotDir, SnapshotFormatVersion,
     };
+
+    /// Wraps an in-memory store, counting single puts and multipart uploads and their parts.
+    #[derive(Debug, Default)]
+    struct CountingStore {
+        inner: InMemory,
+        puts: Arc<AtomicUsize>,
+        multiparts: Arc<AtomicUsize>,
+        parts: Arc<AtomicUsize>,
+    }
+
+    impl std::fmt::Display for CountingStore {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "CountingStore")
+        }
+    }
+
+    #[derive(Debug)]
+    struct CountingUpload(Box<dyn MultipartUpload>, Arc<AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl MultipartUpload for CountingUpload {
+        fn put_part(&mut self, data: PutPayload) -> UploadPart {
+            self.1.fetch_add(1, Ordering::Relaxed);
+            self.0.put_part(data)
+        }
+
+        async fn complete(&mut self) -> object_store::Result<object_store::PutResult> {
+            self.0.complete().await
+        }
+
+        async fn abort(&mut self) -> object_store::Result<()> {
+            self.0.abort().await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for CountingStore {
+        async fn put_opts(
+            &self,
+            location: &ObjectPath,
+            payload: PutPayload,
+            opts: PutOptions,
+        ) -> object_store::Result<object_store::PutResult> {
+            self.puts.fetch_add(1, Ordering::Relaxed);
+            self.inner.put_opts(location, payload, opts).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &ObjectPath,
+            opts: PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn MultipartUpload>> {
+            self.multiparts.fetch_add(1, Ordering::Relaxed);
+            let upload = self.inner.put_multipart_opts(location, opts).await?;
+            Ok(Box::new(CountingUpload(upload, self.parts.clone())))
+        }
+
+        async fn get_opts(
+            &self,
+            location: &ObjectPath,
+            options: GetOptions,
+        ) -> object_store::Result<GetResult> {
+            self.inner.get_opts(location, options).await
+        }
+
+        fn delete_stream(
+            &self,
+            locations: BoxStream<'static, object_store::Result<ObjectPath>>,
+        ) -> BoxStream<'static, object_store::Result<ObjectPath>> {
+            self.inner.delete_stream(locations)
+        }
+
+        fn list(
+            &self,
+            prefix: Option<&ObjectPath>,
+        ) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
+            self.inner.list(prefix)
+        }
+
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&ObjectPath>,
+        ) -> object_store::Result<ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+
+        async fn copy_opts(
+            &self,
+            from: &ObjectPath,
+            to: &ObjectPath,
+            options: CopyOptions,
+        ) -> object_store::Result<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+    }
+
+    #[restate_core::test]
+    async fn upload_uses_single_put_below_threshold_and_multipart_above() -> anyhow::Result<()> {
+        const MIB: usize = 1024 * 1024;
+
+        let dir = tempdir()?;
+        let store = Arc::new(CountingStore::default());
+        let object_store: Arc<dyn ObjectStore> = store.clone();
+        let counts = || {
+            (
+                store.puts.load(Ordering::Relaxed),
+                store.multiparts.load(Ordering::Relaxed),
+                store.parts.load(Ordering::Relaxed),
+            )
+        };
+        let mut buf = BytesMut::new();
+
+        // (file size, expected puts, multipart uploads, parts) with 5 MiB parts and a 12 MiB threshold
+        for (size, expected) in [
+            (11 * MIB, (1, 0, 0)),
+            (12 * MIB + 1, (0, 1, 3)),
+            (10 * MIB, (1, 0, 0)),
+        ] {
+            let data: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+            let path = dir.path().join("data.sst");
+            tokio::fs::write(&path, &data).await?;
+            let key = ObjectPath::from("snapshot/data.sst");
+
+            let before = counts();
+            put_snapshot_object(
+                &path,
+                &key,
+                &object_store,
+                &mut buf,
+                5 * MIB,
+                12 * MIB as u64,
+            )
+            .await?;
+            let after = counts();
+            assert_eq!(
+                expected,
+                (after.0 - before.0, after.1 - before.1, after.2 - before.2),
+                "{size} byte file"
+            );
+            assert_eq!(data, object_store.get(&key).await?.bytes().await?.as_ref());
+        }
+
+        Ok(())
+    }
 
     #[restate_core::test]
     async fn overwrite_unparsable_latest() -> anyhow::Result<()> {

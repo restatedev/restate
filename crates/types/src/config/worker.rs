@@ -33,6 +33,11 @@ use crate::identifiers::PartitionId;
 use crate::net::connect_opts::MESSAGE_SIZE_OVERHEAD;
 use crate::retries::RetryPolicy;
 
+/// Object stores require parts of a multipart upload to be at least this large, except the last.
+const MIN_MULTIPART_UPLOAD_PART_SIZE: usize = 5 * 1024 * 1024;
+/// The largest object that S3 accepts in a single PUT request.
+const MAX_OBJECT_STORE_SINGLE_PUT_SIZE: u64 = 5 * 1024 * 1024 * 1024;
+
 const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
     NonZeroByteCount::new(NonZeroUsize::new(32 * 1024 * 1024).unwrap());
 
@@ -1333,6 +1338,40 @@ pub struct SnapshotsOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub automatic_snapshot_concurrency_limit: Option<NonZeroU32>,
 
+    /// # Snapshot upload part size
+    ///
+    /// Size of each part when uploading a snapshot file to the object store in multiple parts.
+    /// Every part, and the create and complete calls of each multipart upload, is a separate
+    /// object store request, so larger parts mean fewer requests. For files that would need more
+    /// than 10,000 parts, a larger part size is used automatically.
+    ///
+    /// Must be at least 5 MiB. One part at a time is buffered in memory for each file upload
+    /// in progress.
+    ///
+    /// Default: 5 MiB
+    ///
+    /// Since v1.8.2
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upload_part_size: Option<NonZeroByteCount>,
+
+    /// # Snapshot single PUT threshold
+    ///
+    /// Snapshot files smaller than this are uploaded with a single object store request instead
+    /// of a multipart upload. Raising it reduces the number of requests for mid-sized files.
+    ///
+    /// Such a file is read into memory in full, so the worst-case memory use is this value times
+    /// the number of uploads in progress. That is at most `automatic-snapshot-concurrency-limit`
+    /// automatic snapshots, plus any requested with `restatectl`, each uploading one file at a
+    /// time. Values up to 256 MiB are recommended.
+    ///
+    /// Must be at least `upload-part-size`, and at most 5 GiB.
+    ///
+    /// Default: 5 MiB
+    ///
+    /// Since v1.8.2
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upload_single_put_threshold: Option<NonZeroByteCount>,
+
     #[cfg(any(test, feature = "test-util"))]
     pub enable_cleanup: bool,
 }
@@ -1369,6 +1408,8 @@ impl Default for SnapshotsOptions {
             num_retained: default_num_retained(),
             export_concurrency_limit: None,
             automatic_snapshot_concurrency_limit: None,
+            upload_part_size: None,
+            upload_single_put_threshold: None,
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: true,
         }
@@ -1393,6 +1434,48 @@ impl SnapshotsOptions {
         self.automatic_snapshot_concurrency_limit
             .map(|v| v.get())
             .unwrap_or(4)
+    }
+
+    /// Part size for multipart uploads, in bytes.
+    pub fn upload_part_size(&self) -> usize {
+        self.upload_part_size
+            .map_or(MIN_MULTIPART_UPLOAD_PART_SIZE, |v| v.as_usize())
+    }
+
+    /// Files smaller than this many bytes are uploaded with a single request.
+    pub fn upload_single_put_threshold(&self) -> u64 {
+        self.upload_single_put_threshold
+            .map_or(MIN_MULTIPART_UPLOAD_PART_SIZE as u64, |v| v.as_u64())
+    }
+
+    /// Checks the object store upload sizes against the limits of S3-compatible stores.
+    pub fn validate_upload_sizes(&self) -> Result<(), String> {
+        let (part_size, threshold) = (
+            self.upload_part_size() as u64,
+            self.upload_single_put_threshold(),
+        );
+        if part_size < MIN_MULTIPART_UPLOAD_PART_SIZE as u64 {
+            return Err(format!(
+                "upload-part-size ({}) must be at least {}",
+                ByteCount::from(part_size),
+                ByteCount::from(MIN_MULTIPART_UPLOAD_PART_SIZE),
+            ));
+        }
+        if threshold < part_size {
+            return Err(format!(
+                "upload-single-put-threshold ({}) must be at least upload-part-size ({})",
+                ByteCount::from(threshold),
+                ByteCount::from(part_size),
+            ));
+        }
+        if threshold > MAX_OBJECT_STORE_SINGLE_PUT_SIZE {
+            return Err(format!(
+                "upload-single-put-threshold ({}) must be at most {}",
+                ByteCount::from(threshold),
+                ByteCount::from(MAX_OBJECT_STORE_SINGLE_PUT_SIZE),
+            ));
+        }
+        Ok(())
     }
 
     /// Returns the effective automatic snapshot triggers, or `None` if automatic snapshots are
@@ -1554,6 +1637,31 @@ mod tests {
         let mut value = serde_json::to_value(SnapshotsOptions::default()).unwrap();
         value["automatic-snapshot-concurrency-limit"] = 0.into();
         assert!(serde_json::from_value::<SnapshotsOptions>(value).is_err());
+    }
+
+    #[test]
+    fn snapshot_upload_sizes_validation() {
+        const MIB: u64 = 1024 * 1024;
+        let validate = |part_size: u64, threshold: u64| {
+            SnapshotsOptions {
+                upload_part_size: NonZeroByteCount::try_from(part_size).ok(),
+                upload_single_put_threshold: NonZeroByteCount::try_from(threshold).ok(),
+                ..Default::default()
+            }
+            .validate_upload_sizes()
+        };
+
+        // Defaults match the historical behavior of 5 MiB for both
+        let defaults = SnapshotsOptions::default();
+        assert_eq!(5 * MIB as usize, defaults.upload_part_size());
+        assert_eq!(5 * MIB, defaults.upload_single_put_threshold());
+        assert!(defaults.validate_upload_sizes().is_ok());
+
+        assert!(validate(32 * MIB, 128 * MIB).is_ok());
+        assert!(validate(5 * MIB, 5 * MIB).is_ok());
+        assert!(validate(5 * MIB - 1, 128 * MIB).is_err());
+        assert!(validate(32 * MIB, 16 * MIB).is_err());
+        assert!(validate(32 * MIB, 5 * 1024 * MIB + 1).is_err());
     }
 
     #[test]

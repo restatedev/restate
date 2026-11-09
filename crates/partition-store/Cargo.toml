@@ -64,6 +64,7 @@ tracing = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-object-store-util = { workspace = true, features = ["test-util"] }
 restate-rocksdb = { workspace = true, features = ["test-util"] }
