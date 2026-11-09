@@ -49,8 +49,8 @@ use restate_util_lifecycle::Scope;
 
 // re-exports
 pub use self::background::{
-    GlobalExecutor, Guarded, Mapped, MappedOk, OpContext, OpFn, Priority, SinglePoolExecutor,
-    StorageOp, StorageTaskKind,
+    Async, GlobalExecutor, Guarded, Mapped, MappedOk, OpContext, OpFn, Priority, ReadPerf,
+    SinglePoolExecutor, StorageOp, StorageTaskKind, SyncOpFn,
 };
 pub use self::cf_handles::CfHandles;
 pub use self::db_env::DbEnv;
@@ -58,9 +58,10 @@ pub use self::db_manager::{DbRef, RocksDbManager, WeakRocksDbManager};
 pub use self::db_spec::*;
 pub use self::error::*;
 pub use self::iterator::IterAction;
-use self::iterator::RocksIterator;
-pub use self::perf::{RocksDbReadPerfGuard, RocksDbWritePerfGuard};
-use self::reads::ColumnFamilies;
+pub use self::perf::{RocksDbPerf, RocksDbPerfExt, RocksDbReadPerfGuard, RocksDbWritePerfGuard};
+use self::reads::{
+    ColumnFamilies, Iteration, IteratorVisitor, LeasePolicy, OwnedReadIterator, ScopedReads,
+};
 pub use self::rock_access::RocksAccess;
 pub use restate_util_lifecycle::KeepAlive;
 
@@ -522,83 +523,47 @@ impl RocksDb {
         }
     }
 
-    /// Runs an iterator over one of `scope`'s column families on a background
-    /// thread, counted in `gate`, which must be inside the scope. The work keeps
-    /// the scope, and with it the column family, alive until it is done.
-    /// Whatever `on_item` captures is dropped after the iterator and before the
-    /// work counts as finished, so draining the gate also waits for those
-    /// captures.
+    /// Prepares an iteration over one of `scope`'s column families, handing
+    /// each item to `visitor` (see [`ReadIterator::prepare_iteration`](reads::ReadIterator::prepare_iteration)).
+    /// Submit it to one of the database's pools, e.g. `executor().low_pri()`.
+    /// The iterator starts with `initial_action`, and `name` labels its read perf
+    /// metrics. `lease_policy` decides what sealing `gate` does (see
+    /// [`LeasePolicy`]).
     ///
-    /// The iterator runs on the database that the scope's column families belong
-    /// to, so it can't be opened on a database that doesn't have them.
+    /// # Errors
+    /// Fails with [`AdmissionClosed`] if `gate` is sealed. The iterator is
+    /// created under a lease, so it's never created once the gate is sealed.
     ///
     /// # Panics
-    /// In debug builds, panics if `gate` isn't inside `scope`, or is outside the
-    /// scope's database.
-    #[allow(clippy::too_many_arguments)]
-    #[tracing::instrument(skip_all, fields(db = %scope.payload().handles().database().name()))]
-    pub fn run_background_iterator<C: ColumnFamilies>(
+    /// In debug builds, panics if `gate` isn't inside `scope`.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    pub fn prepare_iteration<'g, C, V>(
         scope: &Scope<C>,
-        gate: &Arc<Gate>,
+        gate: &'g Arc<Gate>,
+        lease_policy: LeasePolicy,
         cf: C::Cf,
         name: &'static str,
-        priority: Priority,
         initial_action: IterAction,
         mut read_options: rocksdb::ReadOptions,
-        mut on_item: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
-    ) -> Result<(), AdmissionClosed>
+        visitor: V,
+    ) -> Result<StorageOp<'g, OwnedReadIterator<Scope<C>>, ReadPerf<Iteration<V>>>, AdmissionClosed>
     where
-        C::Cf: Send,
+        C: ColumnFamilies,
+        V: IteratorVisitor,
     {
         debug_assert!(
             gate.is_inside(scope.gate()),
             "the gate isn't inside the scope"
         );
-        // ensure that we allow blocking IO.
+        // Covers creating the iterator. The operation takes its own lease once
+        // it's submitted.
+        let _admission = gate.try_acquire().ok_or(AdmissionClosed)?;
+        // The iteration runs on the storage pool, where blocking IO is fine.
         read_options.set_read_tier(rocksdb::ReadTier::All);
-
-        let database = scope.payload().handles().database();
-        database.debug_assert_inside(gate);
-        // The scope is the operation's context: it is cloned when the operation is
-        // submitted, and the clone keeps the column family alive until it is done.
-        let iterate = move |scope: &Scope<C>| {
-            // note: the perf guard's lifetime encapsulates all operations in the iterator and
-            // the total duration includes all the time spent blocking on the tx's capacity.
-            let _x = RocksDbReadPerfGuard::new(name);
-            let handles = scope.payload().handles();
-            let mut iter = RocksIterator::new(
-                handles
-                    .database()
-                    .inner()
-                    .as_raw_db()
-                    .raw_iterator_cf_opt(handles.get(cf), read_options),
-                initial_action,
-                // Borrow `on_item` instead of moving it in, so what it captures is dropped
-                // only after the iterator is gone.
-                &mut on_item,
-            );
-            loop {
-                match iter.step() {
-                    iterator::Disposition::WouldBlock => {
-                        // we should not be here if the iterator is configured correctly.
-                        // as we are already in the storage thread pool, we expect the
-                        // iterator to be blocking.
-                        //
-                        // Why do we panic? because this iterator will be stopped short of all
-                        // values it should return and we don't want to mislead readers that
-                        // they have consumed the iterator cleanly.
-                        panic!(
-                            "RocksDB iterator is reporting that it WouldBlock but it's \
-                            already on the storage thread pool. This is a bug!"
-                        );
-                    }
-                    iterator::Disposition::Continue => continue,
-                    iterator::Disposition::Stop => return,
-                }
-            }
-        };
-        let op = StorageOp::with_context(scope, gate, StorageTaskKind::BackgroundIterator, iterate);
-        database.executor.pool(priority).dispatch(op)
+        Ok(scope
+            .owned_iterator(cf, read_options)
+            .prepare_iteration(gate, lease_policy, Some(initial_action), visitor)
+            .with_read_perf(name))
     }
 
     /// The shared I/O pools this database was created with. Handy for submitting
