@@ -27,7 +27,7 @@ use super::widgets::{
 use crate::observe::{
     ClusterView, Finding, LogPlacement, LogView, PartitionPlacement, PartitionView,
 };
-use crate::render::{Verdict, group_findings};
+use crate::render::{Verdict, group_findings, snapshot_taken};
 
 /// Rendered output, a line at a time.
 pub struct Page {
@@ -82,7 +82,11 @@ impl Page {
 
 fn captured(view: &ClusterView) -> Line<'static> {
     let at: DateTime<Local> = view.captured_at.into();
-    Line::styled(format!(" {} ", at.format("%H:%M:%S")), theme::muted())
+    let text = match &view.file {
+        Some(_) => snapshot_taken(view.captured_at),
+        None => at.format("%H:%M:%S").to_string(),
+    };
+    Line::styled(format!(" {text} "), theme::muted())
 }
 
 pub fn status(view: &ClusterView, findings: &[Finding], extra: bool, width: u16) -> Page {
@@ -143,7 +147,7 @@ pub fn partitions(
 ) -> Page {
     let mut page = Page::new(width);
     page.table(if replicas {
-        replicas_table(partitions, extra)
+        replicas_table(partitions, extra, view.captured_at)
     } else {
         partitions_table(view, partitions.iter().copied(), extra)
     });

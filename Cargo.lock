@@ -9639,6 +9639,7 @@ dependencies = [
  "humantime",
  "itertools 0.15.0",
  "json-patch",
+ "prost",
  "prost-types",
  "rand 0.10.2",
  "ratatui",
@@ -9654,6 +9655,7 @@ dependencies = [
  "restate-metadata-server-grpc",
  "restate-metadata-store",
  "restate-rocksdb",
+ "restate-test-util",
  "restate-types",
  "restate-util-time",
  "restate-wal-protocol",
@@ -9670,6 +9672,7 @@ dependencies = [
  "tonic",
  "tracing",
  "vergen-gitcl",
+ "zstd 0.14.3",
 ]
 
 [[package]]

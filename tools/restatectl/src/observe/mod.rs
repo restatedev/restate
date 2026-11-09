@@ -15,6 +15,7 @@
 //! nodes configuration is required; anything else that can't be read becomes a warning and the
 //! views go without it.
 
+pub mod dump;
 mod health;
 mod model;
 mod placement;
@@ -28,6 +29,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use futures::future::join_all;
+use tonic::transport::Channel;
 use tonic::{Code, IntoRequest};
 
 use restate_cli_util::CliContext;
@@ -52,39 +54,88 @@ pub use summary::*;
 /// How long to wait for each node's own report
 const NODE_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// What the cluster returned for its status, as it returned it: the views are built from it, and
+/// a dump keeps it.
+#[derive(Clone)]
 pub struct Snapshot {
-    pub captured_at: DateTime<Utc>,
     pub nodes_config: NodesConfiguration,
     pub partition_table: Option<PartitionTable>,
     pub logs: Option<Logs>,
-    pub cluster_state: Option<ClusterState>,
     pub idents: HashMap<PlainNodeId, IdentResponse>,
     pub metadata_servers: BTreeMap<PlainNodeId, Result<StatusResponse, String>>,
-    pub sql: sql::SqlData,
+    /// the SQL tables that change slowly
+    pub tables: sql::Tables,
     /// whether nodes were asked for their own report; not in single-address mode
     pub nodes_probed: bool,
     /// the control address dialed for each node's report
     pub dialed: HashMap<PlainNodeId, String>,
     pub warnings: Vec<String>,
+    /// what changes by the second
+    pub sample: Sample,
 }
 
-impl Snapshot {
-    pub async fn fetch(connection: &ConnectionInfo) -> Result<Self, ConnectionInfoError> {
-        let nodes_config = connection.get_nodes_configuration().await?;
-        let captured_at = Utc::now();
-        let mut warnings = Vec::new();
+/// The part of the cluster's status that changes by the second, from which rates are computed:
+/// the partition processors' and nodes' state, log tails and read streams.
+#[derive(Clone)]
+pub struct Sample {
+    pub captured_at: DateTime<Utc>,
+    pub cluster_state: Option<ClusterState>,
+    pub tables: sql::Tables,
+    pub warnings: Vec<String>,
+}
 
-        let (logs, partition_table, admin) = tokio::join!(
-            connection.get_logs(),
-            connection.get_partition_table(),
-            connection.try_each(Some(Role::Admin), |channel| async move {
+impl Sample {
+    /// Reads a sample from the first admin node that answers, and returns that node's channel.
+    pub async fn fetch(connection: &ConnectionInfo) -> (Self, Option<Channel>) {
+        let captured_at = Utc::now();
+        let admin = connection
+            .try_each(Some(Role::Admin), |channel| async move {
                 let state = new_cluster_ctrl_client(channel.clone(), &CliContext::get().network)
                     .get_cluster_state(ClusterStateRequest::default())
                     .await?
                     .into_inner()
                     .cluster_state;
                 Ok::<_, tonic::Status>((channel, state))
-            }),
+            })
+            .await;
+        match admin {
+            Ok((channel, cluster_state)) => {
+                let tables = sql::fetch(&channel, sql::SAMPLED).await;
+                let sample = Self {
+                    captured_at,
+                    cluster_state,
+                    tables,
+                    warnings: Vec::new(),
+                };
+                (sample, Some(channel))
+            }
+            Err(err) => {
+                let sample = Self {
+                    captured_at,
+                    cluster_state: None,
+                    tables: sql::Tables::new(),
+                    warnings: vec![format!("cluster state unavailable: {err}")],
+                };
+                (sample, None)
+            }
+        }
+    }
+}
+
+impl Snapshot {
+    /// Reads the cluster's status, and the SQL tables in `more_tables` besides those the views
+    /// use.
+    pub async fn fetch(
+        connection: &ConnectionInfo,
+        more_tables: &[&str],
+    ) -> Result<Self, ConnectionInfoError> {
+        let nodes_config = connection.get_nodes_configuration().await?;
+        let mut warnings = Vec::new();
+
+        let (logs, partition_table, (sample, admin)) = tokio::join!(
+            connection.get_logs(),
+            connection.get_partition_table(),
+            Sample::fetch(connection),
         );
         let logs = logs
             .inspect_err(|err| warnings.push(format!("logs metadata unavailable: {err}")))
@@ -92,14 +143,7 @@ impl Snapshot {
         let partition_table = partition_table
             .inspect_err(|err| warnings.push(format!("partition table unavailable: {err}")))
             .ok();
-        let (admin_channel, cluster_state) = match admin {
-            Ok((channel, state)) => (Some(channel), state),
-            Err(err) => {
-                warnings.push(format!("cluster state unavailable: {err}"));
-                (None, None)
-            }
-        };
-
+        let cluster_state = sample.cluster_state.as_ref();
         // Ask every node that isn't known to be dead for its own report, unless restatectl may
         // only talk to the one address it was given.
         let nodes_probed = !connection.is_single_address_mode();
@@ -122,7 +166,7 @@ impl Snapshot {
             .iter()
             .filter(|_| nodes_probed)
             .filter(|(id, _)| {
-                cluster_state.as_ref().is_none_or(|state| {
+                cluster_state.is_none_or(|state| {
                     !matches!(
                         state
                             .nodes
@@ -170,17 +214,15 @@ impl Snapshot {
                 }
             });
 
-        let sql = async {
-            let mut warnings = Vec::new();
-            let data = match admin_channel {
-                Some(channel) => sql::SqlData::fetch(channel, &mut warnings).await,
-                None => sql::SqlData::default(),
-            };
-            (data, warnings)
+        let tables = async {
+            let tables: Vec<&str> = [sql::SETTLED, more_tables].concat();
+            match &admin {
+                Some(channel) => sql::fetch(channel, &tables).await,
+                None => sql::Tables::new(),
+            }
         };
 
-        let (probes, (sql, sql_warnings)) = tokio::join!(join_all(probes), sql);
-        warnings.extend(sql_warnings);
+        let (probes, tables) = tokio::join!(join_all(probes), tables);
 
         let mut idents = HashMap::new();
         let mut metadata_servers = BTreeMap::new();
@@ -194,23 +236,22 @@ impl Snapshot {
         }
 
         Ok(Snapshot {
-            captured_at,
             nodes_config,
             partition_table,
             logs,
-            cluster_state,
             idents,
             metadata_servers,
-            sql,
+            tables,
             nodes_probed,
             dialed,
             warnings,
+            sample,
         })
     }
 }
 
 impl ClusterView {
     pub async fn fetch(connection: &ConnectionInfo) -> Result<Self, ConnectionInfoError> {
-        Ok(ClusterView::build(Snapshot::fetch(connection).await?))
+        Ok(ClusterView::build(Snapshot::fetch(connection, &[]).await?))
     }
 }

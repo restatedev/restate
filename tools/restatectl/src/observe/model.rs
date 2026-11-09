@@ -29,8 +29,8 @@ use restate_types::protobuf::cluster::{
 };
 use restate_types::{GenerationalNodeId, PlainNodeId, Version, Versioned};
 
-use super::Snapshot;
-use super::sql::LogletWorkerRow;
+use super::sql::{LogletWorkerRow, SqlData};
+use super::{Sample, Snapshot};
 use crate::commands::log::deserialize_replicated_log_params;
 
 #[derive(Serialize)]
@@ -51,6 +51,9 @@ pub struct ClusterView {
     /// whether nodes were asked for their own report
     #[serde(skip)]
     pub nodes_probed: bool,
+    /// the file the status was read from, when it isn't the cluster's current one
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
 }
 
 #[derive(Serialize, Clone, PartialEq, Eq)]
@@ -502,18 +505,26 @@ impl LogView {
 impl ClusterView {
     pub fn build(snapshot: Snapshot) -> Self {
         let Snapshot {
-            captured_at,
             nodes_config,
             partition_table,
             logs,
-            cluster_state,
             idents,
             mut metadata_servers,
-            sql,
+            mut tables,
             nodes_probed,
             mut dialed,
-            warnings,
+            mut warnings,
+            sample,
         } = snapshot;
+        let Sample {
+            captured_at,
+            cluster_state,
+            tables: sampled,
+            warnings: sample_warnings,
+        } = sample;
+        warnings.extend(sample_warnings);
+        tables.extend(sampled);
+        let sql = SqlData::parse(&tables, &mut warnings);
 
         let liveness = |node: PlainNodeId| -> (Liveness, Option<&State>) {
             let Some(state) = cluster_state.as_ref() else {
@@ -934,6 +945,7 @@ impl ClusterView {
             logs: log_views,
             warnings,
             nodes_probed,
+            file: None,
         }
     }
 

@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::path::{Path, PathBuf};
+
 use chrono::{DateTime, Local, Utc};
 use clap::Parser;
 use cling::{Collect, Run};
@@ -19,13 +21,15 @@ use tracing::warn;
 use restate_cli_util::_comfy_table::{Color as CellColor, Table};
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::watcher::Watch;
-use restate_cli_util::{c_print, c_println};
+use restate_cli_util::{c_eprintln, c_print, c_println, c_success, c_tip, c_warn};
+use restate_memory::ByteCount;
 
 use crate::commands::log::list_logs::logs_table;
 use crate::commands::metadata_server::list_servers::metadata_servers_table;
 use crate::commands::node::list_nodes::{ListNodesOpts, list_nodes_lite};
 use crate::commands::partition::list::partitions_table;
 use crate::connection::{ConnectionInfo, ConnectionInfoError};
+use crate::observe::dump::{self, Dump};
 use crate::observe::{
     ClusterView, Finding, LogProvider, LogView, NodeView, PartitionView, Summary, Versions,
     analyze, short_duration,
@@ -33,8 +37,9 @@ use crate::observe::{
 use crate::preview;
 use crate::render::{
     ROLE_LEGEND, Verdict, bold, cell, cell_fg, dim, findings_list, paint, partition_health_strip,
-    print_json, role_flags,
+    print_json, role_flags, snapshot_taken,
 };
+use crate::tui::dashboard::Feed;
 use crate::tui::{self, Presentation};
 
 mod legacy;
@@ -47,8 +52,54 @@ pub struct ClusterStatusOpts {
     #[arg(long, short = preview::enabled().then_some('x'))]
     extra: bool,
 
+    /// Save the cluster's status to a file, to look at later or elsewhere with --file. Takes 5
+    /// seconds to sample what changes by the second. Defaults to
+    /// restate-status-<cluster>-<time>.json.zst in the current directory
+    #[arg(
+        long,
+        value_name = "PATH",
+        num_args = 0..=1,
+        conflicts_with_all = ["file", "watch"],
+        help_heading = preview::HEADING
+    )]
+    dump: Option<Option<PathBuf>>,
+
+    #[clap(flatten)]
+    source: Source,
+
     #[clap(flatten, next_help_heading = preview::HEADING)]
     watch: Watch,
+}
+
+/// Where the status comes from: the cluster, or a file written by `status --dump`.
+#[derive(clap::Args, Clone, Collect, Debug)]
+#[command(next_help_heading = preview::HEADING)]
+pub struct Source {
+    /// Show the status saved to a file by `restatectl status --dump` instead of the cluster's
+    #[arg(long, value_name = "PATH")]
+    file: Option<PathBuf>,
+}
+
+impl Source {
+    pub fn is_file(&self) -> bool {
+        self.file.is_some()
+    }
+
+    /// The cluster's status: its current one, or the newest in the file.
+    pub async fn view(&self, connection: &ConnectionInfo) -> anyhow::Result<ClusterView> {
+        match &self.file {
+            Some(path) => Ok(dump::load(path)?.pop().expect("a dump has a sample")),
+            None => Ok(ClusterView::fetch(connection).await?),
+        }
+    }
+
+    /// What the dashboard shows: the cluster as it changes, or the file's samples.
+    pub fn feed<'a>(&self, connection: &'a ConnectionInfo) -> anyhow::Result<Feed<'a>> {
+        Ok(match &self.file {
+            Some(path) => Feed::Recorded(dump::load(path)?),
+            None => Feed::Live(connection),
+        })
+    }
 }
 
 const STATUS_HELP: &str = "\
@@ -65,7 +116,14 @@ partition, log or node for its details and rates over time, and press ? for the 
 
 With --json, the output is one document with the verdict, a summary, the nodes and the findings \
 (each with a severity, a stable code, its subject and a follow-up command); --extra adds the \
-partitions and logs.";
+partitions and logs.
+
+--dump saves everything restatectl reads about the cluster's status to one file, for a closer \
+look later or to send to someone helping you: the metadata, each node's report and the cluster's \
+system tables, with what changes by the second (partition processors, log tails, read streams) \
+sampled 5 times, a second apart, so that rates can be computed. It has the cluster's node \
+addresses and host names, and no application data. `status`, `partitions list` and `logs list` \
+show such a file with --file, and -w opens it in the dashboard.";
 
 async fn cluster_status(
     connection: &ConnectionInfo,
@@ -74,9 +132,12 @@ async fn cluster_status(
     if !preview::enabled() {
         return legacy::cluster_status(connection, opts.extra).await;
     }
+    if let Some(path) = &opts.dump {
+        return dump_status(connection, path.as_deref()).await;
+    }
     if opts.watch.is_enabled() && tui::can_run_dashboard() {
         return tui::dashboard::run(
-            connection,
+            opts.source.feed(connection)?,
             tui::dashboard::Options {
                 tab: tui::dashboard::Tab::Overview,
                 interval: opts.watch.interval(),
@@ -86,6 +147,10 @@ async fn cluster_status(
         )
         .await;
     }
+    if opts.source.is_file() {
+        // a file doesn't change: there's nothing to watch
+        return status(connection, opts).await;
+    }
     opts.watch
         .run(|| async {
             connection.reset().await;
@@ -94,17 +159,102 @@ async fn cluster_status(
         .await
 }
 
+/// Saves the cluster's status to `path`, or to a file named after the cluster and the time.
+async fn dump_status(connection: &ConnectionInfo, path: Option<&Path>) -> anyhow::Result<()> {
+    c_eprintln!(
+        "Reading the cluster's status, {} times a second apart…",
+        dump::SAMPLES
+    );
+    let dump = Dump::collect(connection).await?;
+    let path = path.map_or_else(|| default_dump_path(&dump), Path::to_owned);
+    let size = dump.write(&path)?;
+    let view = dump.views().pop().expect("a dump has a sample");
+    let findings = analyze(&view);
+    let file = path.display().to_string();
+
+    if Presentation::current() == Presentation::Json {
+        return print_json(&DumpReport {
+            file: &file,
+            bytes: size,
+            health: Verdict::of(&findings),
+            cluster_name: &view.cluster_name,
+            captured_at: view.captured_at,
+            samples: dump::SAMPLES,
+            warnings: &view.warnings,
+        });
+    }
+    c_success!("Saved the status of {} to {file}", view.cluster_name);
+    let summary = Summary::new(&view);
+    c_println!(
+        " {}  {}/{} nodes alive · {} partitions · {} logs · {} samples · {}",
+        Verdict::of(&findings).render(),
+        summary.nodes.alive,
+        summary.nodes.total,
+        view.partitions.len(),
+        view.logs.len(),
+        dump::SAMPLES,
+        ByteCount::from(size),
+    );
+    if !view.warnings.is_empty() {
+        c_warn!(
+            "Some of the status couldn't be read:\n{}",
+            view.warnings.join("\n")
+        );
+    }
+    c_tip!(
+        "The file has the cluster's node addresses and host names, and no application data. Look \
+         at it with `{}`, and -w for the dashboard.",
+        preview::command(format_args!("status --file {file}"))
+    );
+    Ok(())
+}
+
+/// `restate-status-<cluster>-<UTC time>.json.zst`
+fn default_dump_path(dump: &Dump) -> PathBuf {
+    let cluster: String = dump
+        .cluster_name()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    PathBuf::from(format!(
+        "restate-status-{cluster}-{}.json.zst",
+        dump.captured_at().format("%Y%m%dT%H%M%SZ")
+    ))
+}
+
+#[derive(Serialize)]
+struct DumpReport<'a> {
+    file: &'a str,
+    bytes: u64,
+    health: Verdict,
+    cluster_name: &'a str,
+    captured_at: DateTime<Utc>,
+    samples: usize,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    warnings: &'a [String],
+}
+
 async fn status(connection: &ConnectionInfo, opts: &ClusterStatusOpts) -> anyhow::Result<()> {
-    let view = match ClusterView::fetch(connection).await {
+    let view = match opts.source.view(connection).await {
         Ok(view) => view,
-        Err(ConnectionInfoError::MetadataValueNotAvailable { contacted_nodes }) => {
-            warn!(
-                "Could not read nodes configuration from cluster, using GetIdent responses to render basic list"
-            );
-            list_nodes_lite(&contacted_nodes, &ListNodesOpts { extra: false });
-            return Err(ConnectionInfoError::ClusterNotProvisioned.into());
+        Err(err) => {
+            if let Some(ConnectionInfoError::MetadataValueNotAvailable { contacted_nodes }) =
+                err.downcast_ref()
+            {
+                warn!(
+                    "Could not read nodes configuration from cluster, using GetIdent responses to render basic list"
+                );
+                list_nodes_lite(contacted_nodes, &ListNodesOpts { extra: false });
+                return Err(ConnectionInfoError::ClusterNotProvisioned.into());
+            }
+            return Err(err);
         }
-        Err(err) => return Err(err.into()),
     };
     let findings = analyze(&view);
 
@@ -157,6 +307,10 @@ fn header(view: &ClusterView, findings: &[Finding]) -> String {
         .unique()
         .join(", ");
     let captured: DateTime<Local> = view.captured_at.into();
+    let captured = match &view.file {
+        Some(_) => snapshot_taken(view.captured_at),
+        None => captured.format("%H:%M:%S").to_string(),
+    };
     lines.push(format!(
         " {}  {}{}  {}",
         Verdict::of(findings).render(),
@@ -166,7 +320,7 @@ fn header(view: &ClusterView, findings: &[Finding]) -> String {
         } else {
             dim(format!(" · restate {versions}"))
         },
-        dim(captured.format("%H:%M:%S")),
+        dim(captured),
     ));
 
     let ratio = |good: usize, total: usize| {
@@ -370,7 +524,10 @@ fn liveness_cell(view: &ClusterView, node: &NodeView) -> restate_cli_util::_comf
         Liveness::Alive => cell_fg("alive", CellColor::Green),
         Liveness::Dead => cell_fg(
             match node.last_seen_alive {
-                Some(t) => format!("dead {}", short_duration((Utc::now() - t).num_seconds())),
+                Some(t) => format!(
+                    "dead {}",
+                    short_duration((view.captured_at - t).num_seconds())
+                ),
                 None => "dead".to_owned(),
             },
             CellColor::Red,
@@ -449,6 +606,9 @@ fn sequencers_cell(node: &NodeView) -> restate_cli_util::_comfy_table::Cell {
 
 #[derive(Serialize)]
 struct StatusReport<'a> {
+    /// the file the status was read from, when it isn't the cluster's current one
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file: Option<&'a str>,
     health: Verdict,
     cluster_name: &'a str,
     captured_at: DateTime<Utc>,
@@ -469,6 +629,7 @@ struct StatusReport<'a> {
 impl<'a> StatusReport<'a> {
     fn new(view: &'a ClusterView, findings: &'a [Finding], extra: bool) -> Self {
         Self {
+            file: view.file.as_deref(),
             health: Verdict::of(findings),
             cluster_name: &view.cluster_name,
             captured_at: view.captured_at,

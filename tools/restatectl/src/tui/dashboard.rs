@@ -44,7 +44,7 @@ use crate::observe::{
     PartitionPlacement, PartitionView, ReaderPhase, SequencerState, Severity, Subject, analyze,
     short_duration,
 };
-use crate::render::{Verdict, compress_ids, group_findings};
+use crate::render::{Verdict, compress_ids, group_findings, snapshot_taken};
 
 /// Samples of the rates kept for the sparklines.
 const HISTORY: usize = 120;
@@ -317,15 +317,30 @@ fn node_rank(node: &NodeView) -> u8 {
 }
 
 /// Runs the dashboard until the user quits.
-pub async fn run(connection: &ConnectionInfo, options: Options) -> anyhow::Result<()> {
+/// What the dashboard shows: the cluster as it changes, or the samples of a dump.
+pub enum Feed<'a> {
+    Live(&'a ConnectionInfo),
+    /// views of a dump's samples, oldest first
+    Recorded(Vec<ClusterView>),
+}
+
+/// Runs the dashboard until the user quits.
+pub async fn run(feed: Feed<'_>, options: Options) -> anyhow::Result<()> {
+    let mut app = App::new(options);
     let (updates_tx, mut updates) = mpsc::channel(1);
     let refresh = Arc::new(Notify::new());
-    let fetcher = tokio::spawn(fetch_loop(
-        connection.clone(),
-        options.interval,
-        updates_tx,
-        Arc::clone(&refresh),
-    ));
+    let fetcher = match feed {
+        Feed::Live(connection) => Some(tokio::spawn(fetch_loop(
+            connection.clone(),
+            app.interval,
+            updates_tx,
+            Arc::clone(&refresh),
+        ))),
+        Feed::Recorded(views) => {
+            app.replay(views);
+            None
+        }
+    };
 
     let (events_tx, mut events) = mpsc::unbounded_channel();
     std::thread::spawn(move || {
@@ -351,7 +366,6 @@ pub async fn run(connection: &ConnectionInfo, options: Options) -> anyhow::Resul
     let _restore = Restore;
     mouse::capture(true)?;
 
-    let mut app = App::new(options);
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     loop {
         terminal.draw(|frame| app.draw(frame))?;
@@ -378,7 +392,9 @@ pub async fn run(connection: &ConnectionInfo, options: Options) -> anyhow::Resul
             Action::None => {}
         }
     }
-    fetcher.abort();
+    if let Some(fetcher) = fetcher {
+        fetcher.abort();
+    }
     Ok(())
 }
 
@@ -549,6 +565,17 @@ struct App {
     last_click: Option<(Instant, Position)>,
     /// a message for the footer, like what was copied, and since when
     notice: Option<(Instant, String)>,
+    /// the dump shown instead of the cluster
+    recording: Option<Recording>,
+}
+
+/// A dump the dashboard shows instead of the cluster.
+struct Recording {
+    /// when its newest sample came in, on the dashboard's clock: the dashboard's data stays there
+    at: Instant,
+    samples: usize,
+    /// from the oldest sample to the newest
+    span: Duration,
 }
 
 impl App {
@@ -581,21 +608,51 @@ impl App {
             selection: None,
             last_click: None,
             notice: None,
+            recording: None,
         }
     }
 
     fn update(&mut self, update: Update) {
-        let now = Instant::now();
+        self.update_at(update, Instant::now());
+    }
+
+    fn update_at(&mut self, update: Update, at: Instant) {
         match update {
             Ok((view, findings)) => {
-                self.history.record(&view, now);
+                self.history.record(&view, at);
                 self.view = Some(view);
                 self.findings = findings;
-                self.updated_at = Some(now);
+                self.updated_at = Some(at);
                 self.error = None;
             }
-            Err(err) => self.error = Some((now, err)),
+            Err(err) => self.error = Some((at, err)),
         }
+    }
+
+    /// Shows a dump's samples, oldest first, as if they had come in when they were taken, and
+    /// stops the clock at the newest.
+    fn replay(&mut self, views: Vec<ClusterView>) {
+        let (Some(first), Some(newest)) = (views.first(), views.last()) else {
+            return;
+        };
+        let (first, newest) = (first.captured_at, newest.captured_at);
+        let at = Instant::now();
+        let samples = views.len();
+        for view in views {
+            let before = (newest - view.captured_at).to_std().unwrap_or_default();
+            let findings = analyze(&view);
+            self.update_at(Ok((view, findings)), at.checked_sub(before).unwrap_or(at));
+        }
+        self.recording = Some(Recording {
+            at,
+            samples,
+            span: (newest - first).to_std().unwrap_or_default(),
+        });
+    }
+
+    /// The time the dashboard's data is at: now, or a dump's newest sample.
+    fn now(&self) -> Instant {
+        self.recording.as_ref().map_or_else(Instant::now, |r| r.at)
     }
 
     fn partitions(&self) -> Vec<&PartitionView> {
@@ -938,11 +995,25 @@ impl App {
         }
         self.draw_footer(frame, footer);
         if self.show_help {
-            draw_help(frame, area);
+            draw_help(frame, area, self.recording.is_none());
         }
     }
 
     fn status_line(&self) -> Line<'static> {
+        if let (Some(recording), Some(view)) = (&self.recording, &self.view) {
+            return Line::from(vec![
+                Span::styled(" ◼ ", theme::fg(BLUE)),
+                Span::styled(snapshot_taken(view.captured_at), theme::bold()),
+                Span::styled(
+                    format!(
+                        " · {} samples over {:.0}s ",
+                        recording.samples,
+                        recording.span.as_secs_f64()
+                    ),
+                    theme::muted(),
+                ),
+            ]);
+        }
         let ago = |at: Instant| short_duration(at.elapsed().as_secs() as i64);
         let mut spans = vec![Span::raw(" ")];
         if let Some((at, err)) = &self.error {
@@ -1064,7 +1135,9 @@ impl App {
             Tab::Findings => keys.push(("⏎", "open the finding's subject", Some(KeyCode::Enter))),
             _ => {}
         }
-        keys.push(("r", "refresh", Some(KeyCode::Char('r'))));
+        if self.recording.is_none() {
+            keys.push(("r", "refresh", Some(KeyCode::Char('r'))));
+        }
         keys.push(("?", "help", Some(KeyCode::Char('?'))));
         let mut spans = Vec::new();
         let mut x = area.x;
@@ -1333,7 +1406,7 @@ impl App {
         .areas(inner);
         text.render(frame, pad(info), &mut self.wraps);
         self.panes.push(inside(replicas));
-        let mut replica_table = replicas_table(&[p], false);
+        let mut replica_table = replicas_table(&[p], false, view.captured_at);
         // the detail pane is narrow: keep the replica's own columns
         replica_table.title = vec![Span::styled("Replicas", theme::bold())];
         frame.render_widget(narrow(replica_table, &[2, 3, 7, 8, 9, 10]), replicas);
@@ -1526,7 +1599,9 @@ impl App {
                     .history
                     .reader_since
                     .get(&(log.id, r.node, r.tailing))
-                    .map(|(_, at)| short_duration(at.elapsed().as_secs() as i64));
+                    .map(|(_, at)| {
+                        short_duration(self.now().saturating_duration_since(*at).as_secs() as i64)
+                    });
                 let state_style = match r.phase() {
                     ReaderPhase::Reading => theme::muted(),
                     ReaderPhase::Switching => theme::fg(AMBER),
@@ -2004,7 +2079,7 @@ fn human_rate(rate: u64) -> String {
     }
 }
 
-fn draw_help(frame: &mut Frame, area: Rect) {
+fn draw_help(frame: &mut Frame, area: Rect, live: bool) {
     let rows = [
         ("q, Esc, Ctrl-C", "quit"),
         ("Tab, →, l / Shift-Tab, ←, h", "next / previous view"),
@@ -2034,7 +2109,8 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         ),
     ];
     let mut lines = vec![Line::default()];
-    for (keys, what) in rows {
+    // a dump doesn't refresh
+    for (keys, what) in rows.into_iter().filter(|(keys, _)| live || *keys != "r") {
         lines.push(Line::from(vec![
             Span::styled(format!("  {keys:<30}"), theme::bold()),
             Span::styled(format!("{what}  "), theme::muted()),
@@ -2124,7 +2200,7 @@ mod tests {
         let partitions: Vec<_> = view.partitions.iter().collect();
         for table in [
             metadata_table(view),
-            replicas_table(&partitions, true),
+            replicas_table(&partitions, true, view.captured_at),
             partitions_table(view, &view.partitions, true),
             logs_table(view, &view.logs),
         ] {
@@ -2392,6 +2468,27 @@ mod tests {
         click_on(&mut app, Hit::Finding(at));
         assert!(app.tab == Tab::Partitions);
         assert_eq!(app.selected_partition, Some(partition));
+    }
+
+    /// A dump shows as a snapshot: its header says when it was taken, its samples give the
+    /// rates, and nothing refreshes.
+    #[test]
+    fn dumps_show_as_snapshots() {
+        let mut app = App::new(Options {
+            tab: Tab::Overview,
+            interval: Duration::from_secs(1),
+            unhealthy_only: false,
+            partition_sort: PartitionSort::Partition,
+        });
+        app.replay(crate::observe::dump::dump_of_large_cluster().views());
+        let mut terminal = Terminal::new(TestBackend::new(200, 56)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let screen = text(terminal.backend().buffer());
+        assert!(screen.contains("snapshot taken"), "{screen}");
+        assert!(screen.contains("5 samples over 4s"), "{screen}");
+        // 256 logs, 50 records a second each
+        assert!(screen.contains("Appends  12.8k/s"), "{screen}");
+        assert!(!screen.contains("refresh"), "{screen}");
     }
 
     /// A 20-node, 256-partition cluster renders in every view, inline and in the dashboard,

@@ -14,7 +14,7 @@
 use std::collections::BTreeSet;
 use std::fmt::{Display, Write};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use crossterm::style::{Attribute, Color, Stylize, style};
 use itertools::Itertools;
 use serde::Serialize;
@@ -331,9 +331,19 @@ pub fn compress_ids(ids: impl Iterator<Item = u32>) -> String {
     out.join(",")
 }
 
-/// How long ago `ts` was, compactly (`3s`, `2m10s`, `1d4h`).
-pub fn ago(ts: Option<DateTime<Utc>>) -> String {
-    ts.map(|ts| short_duration((Utc::now() - ts).num_seconds()))
+/// When a status read from a file was captured, and how long ago that is.
+pub fn snapshot_taken(captured_at: DateTime<Utc>) -> String {
+    let at: DateTime<Local> = captured_at.into();
+    format!(
+        "snapshot taken {} ({} ago)",
+        at.format("%Y-%m-%d %H:%M:%S"),
+        short_duration((Utc::now() - captured_at).num_seconds())
+    )
+}
+
+/// How long before `now` `ts` was, compactly (`3s`, `2m10s`, `1d4h`).
+pub fn ago(ts: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
+    ts.map(|ts| short_duration((now - ts).num_seconds()))
         .unwrap_or_else(|| "-".to_owned())
 }
 
