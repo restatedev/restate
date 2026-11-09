@@ -11,7 +11,7 @@
 use restate_clock::time::MillisSinceEpoch;
 use restate_limiter::LimitKey;
 use restate_types::clock::UniqueTimestamp;
-use restate_types::{LockName, LockNameRef, Scope, ServiceName};
+use restate_types::{LockName, LockNameRef, Priority, Scope, ServiceName};
 use restate_util_string::ReString;
 
 use super::Stage;
@@ -283,6 +283,8 @@ pub struct VQueueMetaRef<'a> {
     pub limit_key: LimitKey<&'a str>,
     #[bilrost(oneof(5, 6))]
     pub link: VQueueLinkRef<'a>,
+    #[bilrost(tag(7))]
+    pub priority: Priority,
 }
 
 impl<'a> VQueueMetaRef<'a> {
@@ -334,6 +336,8 @@ pub struct VQueueMeta {
     pub(crate) limit_key: LimitKey<ReString>,
     #[bilrost(oneof(5, 6))]
     pub(crate) link: VQueueLink,
+    #[bilrost(tag(7))]
+    pub(crate) priority: Priority,
 }
 
 impl VQueueMeta {
@@ -349,7 +353,14 @@ impl VQueueMeta {
             scope,
             limit_key,
             link,
+            priority: Priority::Normal,
         }
+    }
+
+    #[must_use]
+    pub fn with_priority(mut self, priority: Priority) -> Self {
+        self.priority = priority;
+        self
     }
 
     pub fn scope(&self) -> &Option<Scope> {
@@ -377,6 +388,10 @@ impl VQueueMeta {
 
     pub fn limit_key(&self) -> &LimitKey<ReString> {
         &self.limit_key
+    }
+
+    pub fn priority(&self) -> Priority {
+        self.priority
     }
 
     /// Total number of entries (ready + paused + running + suspended + scheduled), but it doesn't
@@ -929,6 +944,7 @@ mod tests {
             scope: Some(Scope::try_from_static("scope-a").unwrap()),
             limit_key: "tenant-1/user-1".parse::<LimitKey<ReString>>().unwrap(),
             link: VQueueLink::Lock(LockName::parse("service-a/key-a").unwrap()),
+            priority: Priority::High,
         };
 
         let encoded = owned.encode_to_bytes();
@@ -937,6 +953,7 @@ mod tests {
         assert_eq!(borrowed.queue_is_paused, owned.queue_is_paused);
 
         assert_eq!(borrowed.scope, Some("scope-a"));
+        assert_eq!(borrowed.priority, Priority::High);
         assert_eq!(borrowed.limit_key.to_string(), "tenant-1/user-1");
         assert_eq!(
             borrowed.limit_key.level1().map(|value| value.as_str()),

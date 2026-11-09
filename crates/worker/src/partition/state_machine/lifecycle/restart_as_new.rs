@@ -273,6 +273,7 @@ where
                     new_invocation_id.partition_key(),
                     &completed_invocation.invocation_target,
                     &completed_invocation.limit_key,
+                    completed_invocation.priority,
                 ))
         });
 

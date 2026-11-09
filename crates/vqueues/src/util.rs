@@ -11,10 +11,10 @@
 use sha2::{Digest, Sha256};
 
 use restate_limiter::LimitKey;
-use restate_types::Scope;
 use restate_types::identifiers::PartitionKey;
 use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType};
 use restate_types::vqueues::VQueueId;
+use restate_types::{Priority, Scope};
 use restate_util_string::ReString;
 
 pub fn generate_vqueue_id(
@@ -24,6 +24,7 @@ pub fn generate_vqueue_id(
     is_exclusive: bool,
     service_name: &str,
     key: Option<&str>,
+    priority: Priority,
 ) -> VQueueId {
     const SEP_CHAR: u8 = 0xFF;
     // separator is 0xFF. (notation: `||`)
@@ -41,7 +42,7 @@ pub fn generate_vqueue_id(
     // it's assumed that lengths all fit into u32 which is a very reasonable assumption to make for
     // the values we're hashing.
     //
-    // let example = "<partition-key> || ty || len(scope) || len(limit-key) || <exclusive/shared?> || service || key";
+    // let example = "<partition-key> || ty || len(scope) || len(limit-key) || <exclusive/shared?> || service || key || priority";
 
     // Partition key
     hasher.update(partition_key.to_le_bytes());
@@ -94,6 +95,12 @@ pub fn generate_vqueue_id(
         hasher.update(key);
     }
 
+    // Priority (if not normal)
+    if !priority.is_normal() {
+        hasher.update(HASH_SEPARATOR);
+        hasher.update([priority as u8]);
+    }
+
     let bytes = hasher.finalize();
 
     VQueueId::new(partition_key, &bytes)
@@ -103,11 +110,20 @@ pub fn infer_vqueue_id_from_invocation(
     partition_key: PartitionKey,
     invocation_target: &InvocationTarget,
     limit_key: &LimitKey<ReString>,
+    priority: Priority,
 ) -> VQueueId {
     match invocation_target {
         InvocationTarget::Service { name, scope, .. } => {
             // Shared service.
-            generate_vqueue_id(partition_key, scope.as_ref(), limit_key, false, name, None)
+            generate_vqueue_id(
+                partition_key,
+                scope.as_ref(),
+                limit_key,
+                false,
+                name,
+                None,
+                priority,
+            )
         }
         InvocationTarget::VirtualObject {
             handler_ty,
@@ -124,19 +140,61 @@ pub fn infer_vqueue_id_from_invocation(
                     true,
                     name,
                     Some(key),
+                    priority,
                 ),
                 VirtualObjectHandlerType::Shared => {
                     // Note: we don't use the "key" here to reduce cardinality.
                     // the downside of this is that we get less scheduler-level fairness
                     // shared handler calls across multiple VOs, but that's on-par with
                     // what we do with normal services.
-                    generate_vqueue_id(partition_key, scope.as_ref(), limit_key, false, name, None)
+                    generate_vqueue_id(
+                        partition_key,
+                        scope.as_ref(),
+                        limit_key,
+                        false,
+                        name,
+                        None,
+                        priority,
+                    )
                 }
             }
         }
         InvocationTarget::Workflow { name, scope, .. } => {
             // Workflows behave like shared services.
-            generate_vqueue_id(partition_key, scope.as_ref(), limit_key, false, name, None)
+            generate_vqueue_id(
+                partition_key,
+                scope.as_ref(),
+                limit_key,
+                false,
+                name,
+                None,
+                priority,
+            )
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn priority_only_changes_the_id_of_non_normal_vqueues() {
+        let target = InvocationTarget::service("Greeter", "greet");
+        let ids = Priority::BY_URGENCY
+            .map(|priority| infer_vqueue_id_from_invocation(1, &target, &LimitKey::None, priority));
+
+        let normal = &ids[2];
+        assert_eq!(
+            normal.as_raw_bytes()[9..],
+            [
+                0x7e, 0x17, 0xea, 0xdc, 0x06, 0x67, 0xec, 0x66, 0xf1, 0x0f, 0x8b, 0x21, 0xe9, 0x59,
+                0xef, 0x11
+            ]
+        );
+        for (i, id) in ids.iter().enumerate() {
+            assert_eq!(id.partition_key(), 1);
+            assert!(ids[i + 1..].iter().all(|other| other != id));
         }
     }
 }
