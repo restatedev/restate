@@ -9,3 +9,6 @@ size of most records it applied. With large records, its batches were limited on
 grow to hundreds of MiB. A write batch larger than the partition's memtables stalls writes to the
 partition store until they're flushed. Leaders now apply more, smaller batches when records are
 large. No configuration changes are required.
+
+The new histogram `restate_partition_write_batch_size_bytes` shows the size of the write batches
+that partition processors commit, labeled by `leader` (`1` for leaders, `0` for followers).
