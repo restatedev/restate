@@ -23,7 +23,6 @@ use tracing::{Instrument, debug, trace, trace_span};
 use ulid::Ulid;
 
 use restate_tracing_instrumentation::semconv::attribute::{RPC_METHOD, RPC_SERVICE};
-use restate_types::Scope;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{InvocationId, WithInvocationId};
 use restate_types::invocation::{
@@ -36,6 +35,7 @@ use restate_types::schema::invocation_target::{
     DeploymentStatus, InvocationTargetMetadata, InvocationTargetResolver,
 };
 use restate_types::time::MillisSinceEpoch;
+use restate_types::{Priority, Scope};
 use restate_util_string::{ReString, RestateString};
 
 use super::HandlerError;
@@ -53,6 +53,8 @@ use crate::metric_definitions::{
 pub(crate) const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
 const LIMIT_KEY_HEADER: HeaderName = HeaderName::from_static("x-restate-limit-key");
 const LIMIT_KEY_QUERY_PARAM: &str = "limit-key";
+const PRIORITY_HEADER: HeaderName = HeaderName::from_static("x-restate-priority");
+const PRIORITY_QUERY_PARAM: &str = "priority";
 const DELAY_QUERY_PARAM: &str = "delay";
 const X_RESTATE_INGRESS_PATH: ByteString = ByteString::from_static("x-restate-ingress-path");
 
@@ -290,6 +292,9 @@ where
                 return Err(HandlerError::LimitKeyWithoutScope);
             }
 
+            // Parse priority from header or query param (header takes precedence)
+            let priority = parse_priority(&parts.headers, parts.uri.query())?;
+
             // Get headers
             let headers = parse_headers(parts)?;
 
@@ -302,6 +307,7 @@ where
                 invocation_request_header.idempotency_key = Some(key);
             }
             invocation_request_header.limit_key = limit_key;
+            invocation_request_header.priority = priority;
             invocation_request_header.headers = headers;
 
             match invoke_ty {
@@ -480,6 +486,32 @@ fn parse_limit_key(
     Ok(LimitKey::None)
 }
 
+/// Parse priority from header or query parameter. Header takes precedence.
+fn parse_priority(headers: &HeaderMap, query: Option<&str>) -> Result<Priority, HandlerError> {
+    // Try header first
+    if let Some(header_value) = headers.get(PRIORITY_HEADER) {
+        let s = header_value
+            .to_str()
+            .map_err(|e| HandlerError::BadHeader(PRIORITY_HEADER, e))?;
+        return s
+            .parse()
+            .map_err(|_| HandlerError::InvalidPriority(s.to_owned()));
+    }
+
+    // Fall back to query parameter
+    if let Some(query) = query {
+        for (k, v) in url::form_urlencoded::parse(query.as_bytes()) {
+            if k.eq_ignore_ascii_case(PRIORITY_QUERY_PARAM) {
+                return v
+                    .parse()
+                    .map_err(|_| HandlerError::InvalidPriority(v.into_owned()));
+            }
+        }
+    }
+
+    Ok(Priority::Normal)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -506,5 +538,27 @@ mod tests {
             parse_delay(Some("delay=60000ms")).unwrap().unwrap(),
             Duration::from_millis(60000),
         );
+    }
+
+    #[test]
+    fn priority() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(parse_priority(&headers, None).unwrap(), Priority::Normal);
+        assert_eq!(
+            parse_priority(&headers, Some("delay=PT1S&Priority=live")).unwrap(),
+            Priority::Live
+        );
+
+        headers.insert(PRIORITY_HEADER, "HIGH".parse().unwrap());
+        assert_eq!(
+            parse_priority(&headers, Some("priority=low")).unwrap(),
+            Priority::High
+        );
+
+        headers.insert(PRIORITY_HEADER, "urgent".parse().unwrap());
+        assert!(matches!(
+            parse_priority(&headers, None),
+            Err(HandlerError::InvalidPriority(value)) if value == "urgent"
+        ));
     }
 }

@@ -129,6 +129,8 @@ message IngestionDefaults {
     optional string key = 6;
     // Total headers size should not exceed a max of 2KiB (keys + values)
     map<string, string> headers = 8;
+    // One of low, normal, high, live. Defaults to normal.
+    optional string priority = 14;
 }
 
 message IngestionInvocation {
@@ -181,6 +183,9 @@ message IngestionInvocation {
     optional string tracestate = 12;
 
     bytes payload = 13;
+
+    // One of low, normal, high, live. Defaults to normal.
+    optional string priority = 14;
 }
 
 message IngestionRequest {

@@ -54,6 +54,7 @@ impl ServiceOpenAPI {
         if service_type != ServiceType::Workflow {
             call_parameters.push(parameters_ref(IDEMPOTENCY_KEY_HEADER_PARAMETER_REF_NAME).into());
         }
+        call_parameters.push(parameters_ref(PRIORITY_HEADER_PARAMETER_REF_NAME).into());
 
         // Scoped call/send carry the scope key from the path plus an optional limit key.
         let mut scoped_call_parameters: Vec<RefOr<Parameter>> =
@@ -615,6 +616,10 @@ fn restate_components() -> Components {
             LIMIT_KEY_HEADER_PARAMETER_REF_NAME,
             limit_key_header_parameter(),
         )
+        .parameter(
+            PRIORITY_HEADER_PARAMETER_REF_NAME,
+            priority_header_parameter(),
+        )
         .response(GENERIC_ERROR_RESPONSE_REF_NAME, generic_error_response())
         .response(
             INVOCATION_NOT_FOUND_ERROR_RESPONSE_REF_NAME,
@@ -725,6 +730,18 @@ fn limit_key_header_parameter() -> Parameter {
         .schema(Some(string_json_schema()))
         .required(Required::False)
         .description(Some("Limit key applied within the concurrency scope, for more details checkout the [flow control documentation](https://docs.restate.dev/services/flow-control)."))
+        .build()
+}
+
+const PRIORITY_HEADER_PARAMETER_REF_NAME: &str = "priorityHeader";
+
+fn priority_header_parameter() -> Parameter {
+    Parameter::builder()
+        .name("x-restate-priority")
+        .parameter_in(ParameterIn::Header)
+        .schema(Some(string_json_schema()))
+        .required(Required::False)
+        .description(Some("Scheduling priority of the invocation: `low`, `normal` (default), `high` or `live`, for more details checkout the [flow control documentation](https://docs.restate.dev/services/flow-control)."))
         .build()
 }
 

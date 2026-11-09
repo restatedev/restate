@@ -98,7 +98,7 @@ use restate_types::logs::{BodyWithKeys, Keys};
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
 use restate_types::sharding::{PartitionKey, WithPartitionKey};
 use restate_types::time::MillisSinceEpoch;
-use restate_types::{Scope, Versioned, limit_key};
+use restate_types::{Priority, Scope, Versioned, limit_key};
 use restate_util_string::{ReString, RestrictedValue, RestrictedValueError};
 use restate_wal_protocol::v2::commands::InvokeCommand;
 use restate_wal_protocol::v2::{Dedup, Envelope, Raw};
@@ -426,6 +426,13 @@ where
             .map_err(|err| Error::BadRequest(BadRequestError::InvalidLimitKey(err)))?
             .unwrap_or_default();
 
+        settings
+            .priority
+            .as_deref()
+            .map(parse_priority)
+            .transpose()
+            .map_err(Error::BadRequest)?;
+
         Ok(())
     }
 
@@ -740,6 +747,15 @@ where
             ));
         }
 
+        let priority = record
+            .priority
+            .as_deref()
+            .or(state.defaults.priority.as_deref())
+            .map(parse_priority)
+            .transpose()
+            .map_err(|err| Error::BadRequestWithOffset(record.offset, err))?
+            .unwrap_or_default();
+
         let invocation_target = match target_meta.target_ty {
             InvocationTargetType::Service => {
                 if record
@@ -870,6 +886,7 @@ where
         invocation.with_retention(invocation_retention);
         invocation.execution_time = execution_time;
         invocation.limit_key = limit_key;
+        invocation.priority = priority;
 
         let dedup = match state.dedup_mode {
             DedupMode::None => Dedup::None,
@@ -1067,6 +1084,8 @@ enum BadRequestError {
     UnexpectedLimitKey,
     #[error("Invalid limit key: {0}")]
     InvalidLimitKey(limit_key::ParseError),
+    #[error("Invalid priority '{0}', expected one of: low, normal, high, live")]
+    InvalidPriority(String),
     #[error("Unexpected idempotency key for the handler type")]
     UnexpectedIdempotencyKey,
     #[error("Deployment '{0}' is deprecated")]
@@ -1085,6 +1104,12 @@ enum NotFoundError {
     UnknownService { service: String },
     #[error("Unknown service handler {service}/{handler}")]
     UnknownHandler { service: String, handler: String },
+}
+
+fn parse_priority(priority: &str) -> Result<Priority, BadRequestError> {
+    priority
+        .parse()
+        .map_err(|_| BadRequestError::InvalidPriority(priority.to_owned()))
 }
 
 #[derive(Debug, Clone, Hash)]
