@@ -21,6 +21,11 @@ define_table!(
         gen_node_id: DataType::Utf8,
         /// The log being read.
         log_id: DataType::UInt32,
+        /// Who reads, as named by the stream's owner, e.g. `pp-3` for partition 3's processor.
+        name: DataType::Utf8,
+        /// What the owner currently does with the stream, e.g. `leader` or `follower` for a
+        /// partition processor.
+        role: DataType::Utf8,
         /// The loglet ID of the current segment
         loglet_id: DataType::Utf8,
         /// Next LSN to be read.
@@ -35,5 +40,10 @@ define_table!(
         current_segment: DataType::UInt32,
         /// Whether this is a tailing read stream (end_lsn == MAX).
         is_tailing: DataType::Boolean,
+        /// Data records the stream has delivered to its reader since it was created, across
+        /// all segments.
+        records_read: DataType::UInt64,
+        /// The size in bytes of those records' bodies, as the log stores them.
+        bytes_read: DataType::UInt64,
     )
 );

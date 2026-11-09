@@ -30,6 +30,7 @@ use restate_core::Metadata;
 use restate_core::MetadataKind;
 use restate_core::ShutdownError;
 use restate_core::my_node_id;
+use restate_platform::prelude::ReString;
 use restate_types::Version;
 use restate_types::Versioned;
 use restate_types::live::Live;
@@ -55,7 +56,9 @@ use crate::bifrost::MaybeLoglet;
 use crate::error::AdminError;
 use crate::loglet::OperationError;
 use crate::loglet_wrapper::LogletReadStreamWrapper;
-use crate::read_stream_registry::{ReadStreamId, ReadStreamState, SharedReadStreamState};
+use crate::read_stream_registry::{
+    ReadStreamId, ReadStreamState, ReadStreamTags, SharedReadStreamState,
+};
 
 /// A read stream reads from the virtual log. The stream provides a unified view over
 /// the virtual log addressing space in the face of seals, reconfiguration, and trims.
@@ -89,6 +92,9 @@ pub struct LogReadStream {
     registry_id: ReadStreamId,
     /// Introspection: shared state updated on each state transition.
     shared_state: SharedReadStreamState,
+    /// Introspection: data records delivered, and the size of their bodies.
+    records_read: u64,
+    bytes_read: u64,
     // IMPORTANT: Do not re-order this field. `inner` must be dropped last. This allows
     // `state` to reference its lifetime as 'static.
     bifrost_inner: Arc<BifrostInner>,
@@ -196,7 +202,21 @@ impl LogReadStream {
             state: State::New,
             registry_id,
             shared_state,
+            records_read: 0,
+            bytes_read: 0,
         })
+    }
+
+    /// Names the stream after who reads it, e.g. `pp-3` for partition 3's processor, as shown in
+    /// the `bifrost_read_streams` table.
+    pub fn with_name(self, name: ReString) -> Self {
+        self.shared_state.lock().name = Some(name);
+        self
+    }
+
+    /// A handle to describe what the stream's owner does with it while reading, e.g. its role.
+    pub fn tags(&self) -> ReadStreamTags {
+        ReadStreamTags::new(self.shared_state.clone())
     }
 
     /// Current read pointer. This is the next (possible) record to be read.
@@ -501,12 +521,15 @@ impl Stream for LogReadStream {
                             // If this record was supposed to be filtered but it was not filtered
                             // by the loglet itself, we skip it ourselves and advance the
                             // read_pointer.
-                            if let Some(data_record) = record.as_record()
-                                && !data_record.matches_key_query(this.filter)
-                            {
-                                // read_pointer is already advanced, just don't return the
-                                // record and fast-forward.
-                                continue;
+                            if let Some(data_record) = record.as_record() {
+                                if !data_record.matches_key_query(this.filter) {
+                                    // read_pointer is already advanced, just don't return the
+                                    // record and fast-forward.
+                                    continue;
+                                }
+                                *this.records_read += 1;
+                                *this.bytes_read +=
+                                    data_record.encoded_body_size().unwrap_or_default() as u64;
                             }
 
                             update_shared_state(&this);
@@ -757,6 +780,8 @@ fn update_shared_state(this: &ReadStreamProj) {
     };
     let mut shared = this.shared_state.lock();
     shared.read_pointer = *this.read_pointer;
+    shared.records_read = *this.records_read;
+    shared.bytes_read = *this.bytes_read;
     shared.state = state_name(&this.state);
     shared.safe_known_tail = safe_tail;
     if let Some((loglet_id, segment)) = current_loglet {
@@ -774,6 +799,7 @@ mod tests {
 
     use std::sync::atomic::AtomicUsize;
 
+    use bytes::BytesMut;
     use googletest::prelude::*;
     use tokio_stream::StreamExt;
     use tracing::info;
@@ -787,6 +813,7 @@ mod tests {
     use restate_types::logs::metadata::{ProviderKind, new_single_node_loglet_params};
     use restate_types::logs::{KeyFilter, SequenceNumber};
     use restate_types::metadata::Precondition;
+    use restate_types::storage::StorageCodec;
 
     use crate::loglet::FindTailOptions;
     use crate::{BifrostService, ErrorRecoveryStrategy};
@@ -991,7 +1018,11 @@ mod tests {
         svc.start().await.expect("loglet must start");
 
         // create the reader and put it on the side.
-        let mut reader = bifrost.create_reader(LOG_ID, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?;
+        let mut reader = bifrost
+            .create_reader(LOG_ID, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?
+            .with_name(ReString::from_static("pp-0"));
+        let tags = reader.tags();
+        tags.set_role(ReString::from_static("follower"));
         let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
         // We should be at tail, any attempt to read will yield `pending`.
         assert_that!(
@@ -1128,6 +1159,30 @@ mod tests {
         let record = reader.next().await.expect("to stay alive")?;
         assert_that!(record.sequence_number(), eq(Lsn::new(16)));
         assert_that!(record.decode_unchecked::<String>(), eq("segment-2-1000"));
+
+        // the stream keeps the name it was given and shows the role its owner sets last; it
+        // counted every record it delivered, across the three segments, at the size the log
+        // stores it
+        tags.set_role(ReString::from_static("leader"));
+        let state = bifrost
+            .read_stream_registry()
+            .snapshot()
+            .into_iter()
+            .find(|state| state.log_id == LOG_ID)
+            .expect("the reader is registered");
+        assert_eq!(state.name.as_deref(), Some("pp-0"));
+        assert_eq!(state.role.as_deref(), Some("leader"));
+        assert_eq!(state.records_read, 16);
+        let encoded_size = |body: String| {
+            let mut buf = BytesMut::new();
+            StorageCodec::encode(&body, &mut buf).unwrap();
+            buf.len() as u64
+        };
+        let bodies = (1..=10)
+            .map(|i| format!("segment-1-{i}"))
+            .chain((11..=15).map(|i| format!("segment-2-{i}")))
+            .chain(["segment-2-1000".to_owned()]);
+        assert_eq!(state.bytes_read, bodies.map(encoded_size).sum::<u64>());
 
         Ok(())
     }

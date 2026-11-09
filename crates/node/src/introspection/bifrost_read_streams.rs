@@ -89,6 +89,12 @@ fn append_row(
     row.fmt_plain_node_id(node_id.as_plain());
     row.fmt_gen_node_id(node_id);
     row.log_id(u32::from(state.log_id));
+    if let Some(name) = &state.name {
+        row.fmt_name(name);
+    }
+    if let Some(role) = &state.role {
+        row.fmt_role(role);
+    }
     row.read_pointer(u64::from(state.read_pointer));
     row.end_lsn(u64::from(state.end_lsn));
     row.fmt_state(state.state);
@@ -106,4 +112,6 @@ fn append_row(
     }
 
     row.is_tailing(state.end_lsn == Lsn::MAX);
+    row.records_read(state.records_read);
+    row.bytes_read(state.bytes_read);
 }
