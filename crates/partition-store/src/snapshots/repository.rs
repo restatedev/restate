@@ -3072,6 +3072,7 @@ mod tests {
             upload_part_size: SnapshotsOptions::default().upload_part_size(),
             upload_single_put_threshold: SnapshotsOptions::default().upload_single_put_threshold(),
             snapshot_type: restate_types::config::SnapshotType::default(),
+            orphan_min_age: super::DEFAULT_ORPHAN_MIN_AGE,
             orphan_cleanup: false,
             last_orphan_scan: Default::default(),
             lease_provider: None,

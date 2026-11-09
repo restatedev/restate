@@ -1568,9 +1568,15 @@ impl SnapshotsOptions {
     }
 
     /// Returns the configured orphan min age for tests, or None to use the default (24 hours).
-    #[cfg(any(test, feature = "test-util"))]
     pub fn orphan_min_age(&self) -> Option<Duration> {
-        self.experimental_orphan_min_age.map(|d| d.into())
+        #[cfg(any(test, feature = "test-util"))]
+        {
+            self.experimental_orphan_min_age.map(|d| d.into())
+        }
+        #[cfg(not(any(test, feature = "test-util")))]
+        {
+            None
+        }
     }
 }
 
