@@ -19,7 +19,6 @@ use enumset::EnumSet;
 use futures_util::StreamExt;
 use googletest::{IntoTestResult, fail};
 use serde::Deserialize;
-use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
 use tonic::transport::Channel;
@@ -33,6 +32,7 @@ use restate_core::protobuf::cluster_ctrl_svc::{
 };
 use restate_local_cluster_runner::cluster::Cluster;
 use restate_local_cluster_runner::node::{BinarySource, HealthCheck, NodeSpec, TerminationSignal};
+use restate_test_util::tempdir;
 use restate_types::config::{Configuration, LogFormat, NetworkingOptions, SnapshotType};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::ProviderKind::Replicated;
@@ -124,7 +124,7 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
     base_config.common.log_format = LogFormat::Compact;
     base_config.common.log_disable_ansi_codes = true;
 
-    let snapshots_dir = TempDir::new()?;
+    let snapshots_dir = tempdir()?;
     base_config.worker.snapshots.destination = Some(
         Url::from_file_path(snapshots_dir.path())
             .unwrap()
@@ -142,13 +142,15 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
         false,
     );
 
-    let mut cluster = Cluster::builder()
-        .cluster_name("incremental-snapshot-chaos")
-        .nodes(nodes)
-        .temp_base_dir("incremental_snapshot_chaos")
-        .build()
-        .start()
-        .await?;
+    let mut cluster = Box::pin(
+        Cluster::builder()
+            .cluster_name("incremental-snapshot-chaos")
+            .nodes(nodes)
+            .temp_base_dir("incremental_snapshot_chaos")
+            .build()
+            .start(),
+    )
+    .await?;
 
     let replicated_loglet_config = ReplicatedLogletConfig {
         target_nodeset_size: NodeSetSize::default(),

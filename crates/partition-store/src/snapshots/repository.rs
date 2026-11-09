@@ -2598,6 +2598,7 @@ mod tests {
             staging_dir: PathBuf::new(),
             num_retained: std::num::NonZeroU8::new(num_retained).unwrap(),
             snapshot_type: restate_types::config::SnapshotType::default(),
+            orphan_min_age: super::DEFAULT_ORPHAN_MIN_AGE,
             orphan_cleanup: false,
             last_orphan_scan: Default::default(),
             lease_provider: None,
