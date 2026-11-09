@@ -20,7 +20,6 @@ use restate_types::journal::{CompletionResult, EntryResult};
 use restate_types::journal_v2::{
     CompletePromiseValue, Failure, FailureMetadata, GetPromiseResult, PeekPromiseResult,
 };
-use restate_types::sharding::KeyRange;
 
 use super::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
@@ -127,16 +126,6 @@ pub trait ReadPromiseTable {
         service_id: &ServiceId,
         key: &ByteString,
     ) -> impl Future<Output = Result<Option<Promise>>> + Send;
-}
-
-pub trait ScanPromiseTable {
-    fn for_each_promise<
-        F: FnMut(OwnedPromiseRow) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
-    >(
-        &self,
-        range: KeyRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
 pub trait WritePromiseTable {

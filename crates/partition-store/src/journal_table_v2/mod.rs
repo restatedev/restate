@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 
 use anyhow::anyhow;
 use futures::Stream;
@@ -16,12 +17,13 @@ use futures_util::stream;
 use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 
 use restate_memory::{LocalMemoryLease, LocalMemoryPool};
-use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
+use restate_rocksdb::RocksDbReadPerfGuard;
 use restate_storage_api::journal_table_v2::{
-    JournalEntryIndex, NotificationEntryIndex, ReadJournalTable, ScanJournalTable,
-    ScanJournalTableRange, StoredEntry, WriteJournalTable,
+    JournalEntryIndex, NotificationEntryIndex, ReadJournalTable, ScanJournalTableRange,
+    StoredEntry, WriteJournalTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
+use restate_storage_api::scan::RowConsumer;
 use restate_storage_api::{BudgetedReadError, Result, StorageError};
 use restate_types::identifiers::{
     EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
@@ -33,7 +35,8 @@ use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use crate::TableKind::Journal;
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
 use crate::owned_iter::OwnedIterator;
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, break_on_err};
+use crate::scan::{ScanOp, ScanPlan};
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan};
 
 define_table_key!(
     Journal,
@@ -606,60 +609,52 @@ impl ReadJournalTable for PartitionStore {
     }
 }
 
-impl ScanJournalTable for PartitionStore {
-    fn for_each_journal<
-        F: FnMut(
-                (restate_types::identifiers::JournalEntryId, StoredRawEntry),
-            ) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
-    >(
-        &self,
-        range: ScanJournalTableRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
-        let scan = match range {
-            ScanJournalTableRange::PartitionKey(partition_key) => {
-                TableScan::ScanPartitionKeyRange::<JournalKeyBuilder>(partition_key)
-            }
+/// The journal entries (v2) of a partition-key range or of a range of
+/// invocations, for data-fusion queries.
+pub struct JournalV2Scan {
+    pub range: ScanJournalTableRange,
+}
+
+impl ScanOp for JournalV2Scan {
+    type Item<'a> = (JournalEntryId, StoredRawEntry);
+    const NAME: &'static str = "df-v2-journal";
+
+    fn plan(&self) -> ScanPlan {
+        match &self.range {
+            ScanJournalTableRange::PartitionKey(partition_key) => ScanPlan::range(
+                TableScan::ScanPartitionKeyRange::<JournalKeyBuilder>(*partition_key),
+            ),
             ScanJournalTableRange::InvocationId(invocation_id) => {
-                let start_partition_key = invocation_id.start().partition_key();
-                let end_partition_key = invocation_id.end().partition_key();
                 let start = JournalKey::builder()
-                    .partition_key(start_partition_key)
+                    .partition_key(invocation_id.start().partition_key())
                     .invocation_uuid(invocation_id.start().invocation_uuid());
-
                 let end = JournalKey::builder()
-                    .partition_key(end_partition_key)
+                    .partition_key(invocation_id.end().partition_key())
                     .invocation_uuid(invocation_id.end().invocation_uuid());
-
-                TableScan::RangeInclusive(start, end)
+                ScanPlan::range(TableScan::RangeInclusive(start, end))
             }
-        };
+        }
+    }
 
-        self.iterator_for_each(
-            "df-v2-journal",
-            Priority::Low,
-            scan,
-            move |(mut key, mut value)| {
-                let journal_key = break_on_err(JournalKey::deserialize_from(&mut key))?;
-                let journal_entry = break_on_err(
-                    StoredEntry::decode(&mut value)
-                        .map_err(|err| StorageError::Conversion(err.into())),
-                )?;
-
-                let (partition_key, invocation_uuid, entry_index) = journal_key.split();
-
-                let journal_entry_id = JournalEntryId::from_parts(
-                    InvocationId::from_parts(partition_key, invocation_uuid),
-                    entry_index,
-                );
-
-                f((journal_entry_id, journal_entry.0)).map_break(Ok)
-            },
-        )
-        .map_err(|_| StorageError::OperationalError)
+    async fn visit<C>(
+        &self,
+        mut key: &[u8],
+        mut value: &[u8],
+        consumer: &mut C,
+    ) -> Result<ControlFlow<()>>
+    where
+        C: for<'a> RowConsumer<Item<'a> = (JournalEntryId, StoredRawEntry)>,
+    {
+        let journal_key = JournalKey::deserialize_from(&mut key)?;
+        let journal_entry = StoredEntry::decode(&mut value)
+            .map_err(|err| StorageError::Conversion(err.into()))?
+            .0;
+        let (partition_key, invocation_uuid, entry_index) = journal_key.split();
+        let journal_entry_id = JournalEntryId::from_parts(
+            InvocationId::from_parts(partition_key, invocation_uuid),
+            entry_index,
+        );
+        consumer.consume((journal_entry_id, journal_entry)).await
     }
 }
 

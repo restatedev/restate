@@ -31,16 +31,6 @@ pub enum ScanJournalEventsTableRange {
     InvocationId(RangeInclusive<InvocationId>),
 }
 
-pub trait ScanJournalEventsTable {
-    fn for_each_journal_event<
-        F: FnMut((InvocationId, EventView)) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
-    >(
-        &self,
-        range: ScanJournalEventsTableRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
-}
-
 pub trait WriteJournalEventsTable {
     fn put_journal_event(
         &mut self,
