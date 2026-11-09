@@ -16,10 +16,14 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
+};
 use itertools::Itertools;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Constraint, Layout, Margin, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Sparkline, TableState, Tabs, Wrap};
@@ -27,6 +31,7 @@ use tokio::sync::{Notify, mpsc};
 
 use restate_types::PlainNodeId;
 
+use super::mouse::{self, Selection, token_at};
 use super::theme::{self, AMBER, BLUE, GREEN, RED};
 use super::widgets::{
     Findings, HEADER_HEIGHT, Header, NodeCards, NodeTiles, PartitionTiles, PlacementBars,
@@ -44,7 +49,16 @@ use crate::render::{Verdict, compress_ids, group_findings};
 /// Samples of the rates kept for the sparklines.
 const HISTORY: usize = 120;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// The most time between the clicks of a double-click.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+/// How long the footer shows a notice, like what was copied.
+const NOTICE: Duration = Duration::from_secs(3);
+
+/// Marks the selected row of a list.
+const HIGHLIGHT: &str = "▶ ";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
     Overview,
     Partitions,
@@ -100,6 +114,15 @@ impl<K: SortKey> Sorting<K> {
         let at = K::ALL.iter().position(|k| *k == self.key).unwrap_or(0);
         self.key = K::ALL[(at + 1) % K::ALL.len()];
         self.reversed = false;
+    }
+
+    /// Orders by the key in `column`, or reverses the order when it already is by that key.
+    fn by_column(&mut self, column: usize) {
+        if self.key.column() == column {
+            self.reversed ^= true;
+        } else if let Some(key) = K::ALL.iter().find(|k| k.column() == column) {
+            *self = Self::new(*key);
+        }
     }
 
     fn sort(&self, items: &mut [&K::Item]) {
@@ -304,12 +327,12 @@ pub async fn run(connection: &ConnectionInfo, options: Options) -> anyhow::Resul
         Arc::clone(&refresh),
     ));
 
-    let (keys_tx, mut keys) = mpsc::unbounded_channel();
+    let (events_tx, mut events) = mpsc::unbounded_channel();
     std::thread::spawn(move || {
-        while !keys_tx.is_closed() {
+        while !events_tx.is_closed() {
             if event::poll(Duration::from_millis(100)).unwrap_or(false)
                 && let Ok(event) = event::read()
-                && keys_tx.send(event).is_err()
+                && events_tx.send(event).is_err()
             {
                 break;
             }
@@ -321,29 +344,38 @@ pub async fn run(connection: &ConnectionInfo, options: Options) -> anyhow::Resul
     struct Restore;
     impl Drop for Restore {
         fn drop(&mut self) {
+            let _ = mouse::capture(false);
             ratatui::restore();
         }
     }
     let _restore = Restore;
+    mouse::capture(true)?;
 
     let mut app = App::new(options);
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     loop {
         terminal.draw(|frame| app.draw(frame))?;
-        tokio::select! {
-            Some(update) = updates.recv() => app.update(update),
-            Some(event) = keys.recv() => {
-                if let Event::Key(key) = event
-                    && key.kind == KeyEventKind::Press
-                {
-                    match app.on_key(key) {
-                        Action::Quit => break,
-                        Action::Refresh => refresh.notify_one(),
-                        Action::None => {}
-                    }
+        let action = tokio::select! {
+            Some(update) = updates.recv() => {
+                app.update(update);
+                Action::None
+            }
+            Some(event) = events.recv() => match event {
+                Event::Key(key) if key.kind == KeyEventKind::Press => app.on_key(key),
+                Event::Mouse(mouse) => app.on_mouse(mouse),
+                _ => Action::None,
+            },
+            _ = tick.tick() => Action::None,
+        };
+        match action {
+            Action::Quit => break,
+            Action::Refresh => refresh.notify_one(),
+            Action::Copy(text) => {
+                if let Err(err) = mouse::copy_to_clipboard(&text) {
+                    app.notice = Some((Instant::now(), format!("can't copy: {err}")));
                 }
             }
-            _ = tick.tick() => {}
+            Action::None => {}
         }
     }
     fetcher.abort();
@@ -377,10 +409,28 @@ async fn fetch_loop(
     }
 }
 
+#[derive(Debug, PartialEq)]
 enum Action {
     None,
     Quit,
     Refresh,
+    /// put the text on the clipboard
+    Copy(String),
+}
+
+/// What a click on part of the screen does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Hit {
+    Tab(Tab),
+    /// a column's header in the view's list: orders the list by it
+    Column(usize),
+    Partition(u32),
+    Log(u32),
+    Node(PlainNodeId),
+    /// a finding, by its index
+    Finding(usize),
+    /// a key shown in the footer: as if it was pressed
+    Key(KeyCode),
 }
 
 /// Values sampled at each refresh, turned into per-second rates.
@@ -485,6 +535,20 @@ struct App {
     partition_sort: Sorting<PartitionSort>,
     log_sort: Sorting<LogSort>,
     node_sort: Sorting<NodeSort>,
+    /// what can be clicked on the last frame drawn, topmost last
+    hits: Vec<(Rect, Hit)>,
+    /// the insides of the panels on the last frame drawn: a selection stays within one
+    panes: Vec<Rect>,
+    /// where a word wrapped from the row above resumes on the last frame drawn
+    wraps: Vec<Position>,
+    /// the last frame drawn, to copy text from
+    screen: Buffer,
+    /// text being selected with the mouse, or that was copied last
+    selection: Option<Selection>,
+    /// when and where the last click that a second one can make a double-click was
+    last_click: Option<(Instant, Position)>,
+    /// a message for the footer, like what was copied, and since when
+    notice: Option<(Instant, String)>,
 }
 
 impl App {
@@ -510,6 +574,13 @@ impl App {
             partition_sort: Sorting::new(options.partition_sort),
             log_sort: Sorting::new(LogSort::Log),
             node_sort: Sorting::new(NodeSort::Node),
+            hits: Vec::new(),
+            panes: Vec::new(),
+            wraps: Vec::new(),
+            screen: Buffer::empty(Rect::default()),
+            selection: None,
+            last_click: None,
+            notice: None,
         }
     }
 
@@ -554,6 +625,7 @@ impl App {
     }
 
     fn on_key(&mut self, key: KeyEvent) -> Action {
+        self.selection = None;
         if self.show_help {
             self.show_help = false;
             return Action::None;
@@ -596,6 +668,126 @@ impl App {
             _ => {}
         }
         Action::None
+    }
+
+    /// A click acts on what's under it, a drag selects text and copies it, a double-click
+    /// copies the word under it, and the wheel moves the selection.
+    fn on_mouse(&mut self, mouse: MouseEvent) -> Action {
+        let at = Position::new(mouse.column, mouse.row);
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) if self.show_help => {
+                self.show_help = false;
+                self.selection = None;
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.selection = Some(Selection::new(self.pane_at(at), at));
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(selection) = &mut self.selection {
+                    selection.extend_to(at);
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => match self.selection {
+                // what was copied stays highlighted until the next click or key
+                Some(selection) if selection.dragged => {
+                    self.last_click = None;
+                    return self.copy(selection.text(&self.screen, &self.wraps));
+                }
+                Some(_) => {
+                    self.selection = None;
+                    return self.click(at);
+                }
+                None => {}
+            },
+            MouseEventKind::ScrollDown if !self.show_help => self.move_selection(1),
+            MouseEventKind::ScrollUp if !self.show_help => self.move_selection(-1),
+            _ => {}
+        }
+        Action::None
+    }
+
+    /// The innermost panel at `at`.
+    fn pane_at(&self, at: Position) -> Rect {
+        self.panes
+            .iter()
+            .filter(|pane| pane.contains(at))
+            .min_by_key(|pane| pane.area())
+            .copied()
+            .unwrap_or(self.screen.area)
+    }
+
+    /// A click that didn't drag: acts on what's under it, or copies the word under it when it
+    /// completes a double-click.
+    fn click(&mut self, at: Position) -> Action {
+        let now = Instant::now();
+        if self
+            .last_click
+            .take()
+            .is_some_and(|(when, pos)| pos == at && now.duration_since(when) <= DOUBLE_CLICK)
+        {
+            return match token_at(&self.screen, self.pane_at(at), &self.wraps, at) {
+                Some(token) => self.copy(token),
+                None => Action::None,
+            };
+        }
+        let tab = self.tab;
+        let hit = self
+            .hits
+            .iter()
+            .rev()
+            .find(|(area, _)| area.contains(at))
+            .map(|(_, hit)| *hit);
+        let action = hit.map_or(Action::None, |hit| self.on_hit(hit));
+        // a second click copies, unless the first pressed a button or changed the view
+        let selects = hit.is_none_or(|hit| {
+            matches!(
+                hit,
+                Hit::Partition(_) | Hit::Log(_) | Hit::Node(_) | Hit::Finding(_)
+            )
+        });
+        if selects && self.tab == tab {
+            self.last_click = Some((now, at));
+        }
+        action
+    }
+
+    fn on_hit(&mut self, hit: Hit) -> Action {
+        match hit {
+            Hit::Tab(tab) => self.tab = tab,
+            Hit::Column(column) => match self.tab {
+                Tab::Partitions => self.partition_sort.by_column(column),
+                Tab::Logs => self.log_sort.by_column(column),
+                Tab::Nodes => self.node_sort.by_column(column),
+                Tab::Overview | Tab::Findings => {}
+            },
+            Hit::Partition(id) => self.go_to(Subject::Partition(id)),
+            Hit::Log(id) => self.go_to(Subject::Log(id)),
+            Hit::Node(id) => self.go_to(Subject::Node(id)),
+            // a click on the selected finding opens it
+            Hit::Finding(at) if self.tab == Tab::Findings && self.selected_finding == at => {
+                self.open();
+            }
+            Hit::Finding(at) => {
+                self.tab = Tab::Findings;
+                self.selected_finding = at;
+            }
+            Hit::Key(code) => return self.on_key(KeyEvent::new(code, KeyModifiers::NONE)),
+        }
+        Action::None
+    }
+
+    /// Copies `text`, and says so in the footer.
+    fn copy(&mut self, text: String) -> Action {
+        if text.trim().is_empty() {
+            return Action::None;
+        }
+        let what = match text.lines().count() {
+            1 if text.chars().count() <= 40 => text.clone(),
+            1 => format!("{} characters", text.chars().count()),
+            lines => format!("{lines} lines"),
+        };
+        self.notice = Some((Instant::now(), format!("copied {what}")));
+        Action::Copy(text)
     }
 
     fn move_selection(&mut self, by: i64) {
@@ -672,6 +864,17 @@ impl App {
     }
 
     fn draw(&mut self, frame: &mut Frame) {
+        self.hits.clear();
+        self.panes.clear();
+        self.wraps.clear();
+        self.draw_screen(frame);
+        self.screen = frame.buffer_mut().clone();
+        if let Some(selection) = self.selection.filter(|s| s.dragged) {
+            selection.highlight(frame.buffer_mut());
+        }
+    }
+
+    fn draw_screen(&mut self, frame: &mut Frame) {
         let area = frame.area();
         let [header, tabs, body, footer] = Layout::vertical([
             Constraint::Length(HEADER_HEIGHT),
@@ -707,6 +910,7 @@ impl App {
             },
             header,
         );
+        self.panes.extend([inside(header), tabs, footer]);
         self.draw_tabs(frame, tabs);
         match self.tab {
             Tab::Overview => self.draw_overview(frame, body),
@@ -722,6 +926,13 @@ impl App {
                     scroll: 0,
                     selected: (!self.findings.is_empty()).then_some(self.selected_finding),
                 };
+                self.panes.push(inside(body));
+                self.hits.extend(
+                    findings
+                        .rows(body)
+                        .into_iter()
+                        .map(|(row, line)| (row, Hit::Finding(findings.lines[line].first))),
+                );
                 frame.render_widget(findings, body);
             }
         }
@@ -752,7 +963,7 @@ impl App {
         Line::from(spans)
     }
 
-    fn draw_tabs(&self, frame: &mut Frame, area: Rect) {
+    fn draw_tabs(&mut self, frame: &mut Frame, area: Rect) {
         let view = self.view.as_ref().expect("drawn with a view");
         let problems = |subject: fn(&Subject) -> bool| {
             self.findings
@@ -808,6 +1019,16 @@ impl App {
                 Span::raw(" "),
             ]),
         ];
+        // as `Tabs` lays them out: a space before each title, a divider after
+        let mut x = area.x;
+        for (tab, title) in TABS.iter().zip(&titles) {
+            let width = 1 + title.width() as u16;
+            self.hits.push((
+                Rect::new(x, area.y, width, 1).intersection(area),
+                Hit::Tab(*tab),
+            ));
+            x = x.saturating_add(width + 1);
+        }
         let selected = TABS.iter().position(|t| *t == self.tab).unwrap_or(0);
         frame.render_widget(
             Tabs::new(titles)
@@ -819,39 +1040,60 @@ impl App {
         );
     }
 
-    fn draw_footer(&self, frame: &mut Frame, area: Rect) {
-        let key = |k: &str, label: &str| {
-            vec![
-                Span::styled(format!(" {k} "), theme::bold()),
-                Span::styled(format!("{label}  "), theme::muted()),
-            ]
-        };
-        let mut spans = Vec::new();
-        spans.extend(key("q", "quit"));
-        spans.extend(key("⇥/1-5", "views"));
-        spans.extend(key("↑↓", "select"));
-        spans.extend(key(
-            "u",
-            if self.unhealthy_only {
-                "show all"
-            } else {
-                "unhealthy only"
-            },
-        ));
+    /// The keys, which can also be clicked, and a notice on the right.
+    fn draw_footer(&mut self, frame: &mut Frame, area: Rect) {
+        let mut keys = vec![
+            ("q", "quit", Some(KeyCode::Char('q'))),
+            ("⇥/1-5", "views", Some(KeyCode::Tab)),
+            ("↑↓", "select", None),
+            (
+                "u",
+                if self.unhealthy_only {
+                    "show all"
+                } else {
+                    "unhealthy only"
+                },
+                Some(KeyCode::Char('u')),
+            ),
+        ];
         if matches!(self.tab, Tab::Partitions | Tab::Logs | Tab::Nodes) {
-            spans.extend(key("s/S", "sort, reverse"));
+            keys.push(("s/S", "sort, reverse", Some(KeyCode::Char('s'))));
         }
         match self.tab {
-            Tab::Overview => spans.extend(key("⏎", "findings")),
-            Tab::Findings => spans.extend(key("⏎", "open the finding's subject")),
+            Tab::Overview => keys.push(("⏎", "findings", Some(KeyCode::Enter))),
+            Tab::Findings => keys.push(("⏎", "open the finding's subject", Some(KeyCode::Enter))),
             _ => {}
         }
-        spans.extend(key("r", "refresh"));
-        spans.extend(key("?", "help"));
+        keys.push(("r", "refresh", Some(KeyCode::Char('r'))));
+        keys.push(("?", "help", Some(KeyCode::Char('?'))));
+        let mut spans = Vec::new();
+        let mut x = area.x;
+        for (key, label, code) in keys {
+            let key = Span::styled(format!(" {key} "), theme::bold());
+            let label = Span::styled(format!("{label}  "), theme::muted());
+            let width = (key.width() + label.width()) as u16;
+            if let Some(code) = code {
+                self.hits.push((
+                    Rect::new(x, area.y, width, 1).intersection(area),
+                    Hit::Key(code),
+                ));
+            }
+            x = x.saturating_add(width);
+            spans.extend([key, label]);
+        }
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        if let Some((at, notice)) = &self.notice
+            && at.elapsed() < NOTICE
+        {
+            frame.render_widget(
+                Paragraph::new(Line::styled(format!(" {notice} "), theme::pill(GREEN)))
+                    .right_aligned(),
+                area,
+            );
+        }
     }
 
-    fn draw_overview(&self, frame: &mut Frame, area: Rect) {
+    fn draw_overview(&mut self, frame: &mut Frame, area: Rect) {
         let view = self.view.as_ref().expect("drawn with a view");
         let cards = show_node_cards(view).then_some(NodeCards {
             view,
@@ -876,8 +1118,23 @@ impl App {
         ])
         .areas(area);
         match cards {
-            Some(cards) => frame.render_widget(cards, nodes_area),
-            None => frame.render_widget(tiles_of_nodes, nodes_area),
+            Some(cards) => {
+                for (card, node) in cards.cards(nodes_area) {
+                    self.panes.push(inside(card));
+                    self.hits.push((card, Hit::Node(node.plain())));
+                }
+                frame.render_widget(cards, nodes_area);
+            }
+            None => {
+                self.panes.push(inside(nodes_area));
+                self.hits.extend(
+                    tiles_of_nodes
+                        .tiles(nodes_area)
+                        .into_iter()
+                        .map(|(tile, node)| (tile, Hit::Node(node.plain()))),
+                );
+                frame.render_widget(tiles_of_nodes, nodes_area);
+            }
         }
         self.draw_rate(
             frame,
@@ -887,15 +1144,27 @@ impl App {
             &self.history.appends,
             BLUE,
         );
-        frame.render_widget(tiles, tiles_area);
-        frame.render_widget(
-            Findings {
-                lines: group_findings(&self.findings, 3),
-                scroll: self.findings_scroll,
-                selected: None,
-            },
-            findings_area,
+        self.panes
+            .extend([rate_area, tiles_area, findings_area].map(inside));
+        self.hits.extend(
+            tiles
+                .tiles(tiles_area)
+                .into_iter()
+                .map(|(tile, p)| (tile, Hit::Partition(p.id))),
         );
+        frame.render_widget(tiles, tiles_area);
+        let findings = Findings {
+            lines: group_findings(&self.findings, 3),
+            scroll: self.findings_scroll,
+            selected: None,
+        };
+        self.hits.extend(
+            findings
+                .rows(findings_area)
+                .into_iter()
+                .map(|(row, line)| (row, Hit::Finding(findings.lines[line].first))),
+        );
+        frame.render_widget(findings, findings_area);
     }
 
     /// A panel with a sparkline of `series`' rate and its latest value in the title.
@@ -970,6 +1239,7 @@ impl App {
             frame,
             list,
             PlacementBars::partitions(&PartitionPlacement::of(view, &partitions)),
+            &mut self.panes,
         );
         let mut table = partitions_table(view, partitions.iter().copied(), false);
         table.sorted = Some(self.partition_sort.sorted_by());
@@ -983,6 +1253,10 @@ impl App {
             .and_then(|id| partitions.iter().position(|p| p.id == id));
         self.partitions_state.select(selected);
         frame.render_stateful_widget(selectable(&table), list, &mut self.partitions_state);
+        self.panes.extend([inside(list), inside(detail)]);
+        list_hits(&mut self.hits, &table, list, &self.partitions_state, |i| {
+            Hit::Partition(partitions[i].id)
+        });
 
         let Some(p) = selected.map(|i| partitions[i]) else {
             frame.render_widget(panel(vec![Span::raw("No partitions")]), detail);
@@ -1000,8 +1274,8 @@ impl App {
         frame.render_widget(block, detail);
 
         let width = pad(inner).width;
-        let label = |text: &str| vec![Span::styled(format!("{text:<9}"), theme::muted())];
-        let mut lines = Vec::new();
+        let label = |text: &str| Span::styled(format!("{text:<9}"), theme::muted());
+        let mut text = Detail::new(width);
         let mut leader = Vec::new();
         match p.leader {
             Some(l) => leader.push(generational_span(l)),
@@ -1010,7 +1284,7 @@ impl App {
         if let Some(epoch) = p.epoch {
             leader.push(Span::styled(format!("  epoch e{epoch}"), theme::muted()));
         }
-        lines.extend(hanging(label("leader"), leader, width));
+        text.field(label("leader"), leader);
         if let Some(m) = &p.membership {
             let mut spans = vec![Span::styled(format!("v{} ", m.version), theme::muted())];
             spans.extend(Itertools::intersperse(
@@ -1027,7 +1301,7 @@ impl App {
                     Span::raw(" "),
                 ));
             }
-            lines.extend(hanging(label("replicas"), spans, width));
+            text.field(label("replicas"), spans);
         }
         let mut log = vec![Span::raw(
             p.log_id.map_or_else(|| "-".to_owned(), |l| l.to_string()),
@@ -1039,26 +1313,26 @@ impl App {
         if let Some(tail) = p.log_tail_lsn {
             log.push(Span::styled(format!("  tail {tail}"), theme::muted()));
         }
-        lines.extend(hanging(label("log"), log, width));
+        text.field(label("log"), log);
         if let Some(keys) = p.key_range {
-            lines.extend(hanging(
+            text.field(
                 label("keys"),
-                vec![Span::styled(
+                Span::styled(
                     format!("{:016x}..{:016x}", keys.start, keys.end),
                     theme::muted(),
-                )],
-                width,
-            ));
+                ),
+            );
         }
 
         let [info, replicas, applied, lag] = Layout::vertical([
-            Constraint::Length(lines.len() as u16 + 1),
+            Constraint::Length(text.height() + 1),
             Constraint::Length(p.replicas.len() as u16 + p.missing.len() as u16 + 3),
             Constraint::Fill(1),
             Constraint::Fill(1),
         ])
         .areas(inner);
-        frame.render_widget(Paragraph::new(lines), pad(info));
+        text.render(frame, pad(info), &mut self.wraps);
+        self.panes.push(inside(replicas));
         let mut replica_table = replicas_table(&[p], false);
         // the detail pane is narrow: keep the replica's own columns
         replica_table.title = vec![Span::styled("Replicas", theme::bold())];
@@ -1137,6 +1411,7 @@ impl App {
             frame,
             list,
             PlacementBars::logs(&LogPlacement::of(view, &logs)),
+            &mut self.panes,
         );
         let mut table = logs_table(view, logs.iter().copied());
         table.sorted = Some(self.log_sort.sorted_by());
@@ -1150,6 +1425,10 @@ impl App {
             .and_then(|id| logs.iter().position(|l| l.id == id));
         self.logs_state.select(selected);
         frame.render_stateful_widget(selectable(&table), list, &mut self.logs_state);
+        self.panes.extend([inside(list), inside(detail)]);
+        list_hits(&mut self.hits, &table, list, &self.logs_state, |i| {
+            Hit::Log(logs[i].id)
+        });
 
         let Some(log) = selected.map(|i| logs[i]) else {
             frame.render_widget(panel(vec![Span::raw("No logs")]), detail);
@@ -1159,74 +1438,65 @@ impl App {
         let inner = block.inner(detail);
         frame.render_widget(block, detail);
         let width = pad(inner).width;
-        let field = |name: &str, value: Vec<Span<'static>>| {
-            hanging(
-                vec![Span::styled(format!("{name:<11}"), theme::muted())],
-                value,
-                width,
-            )
-        };
-        let num = |v: Option<u64>| Span::raw(v.map_or_else(|| "-".to_owned(), |v| v.to_string()));
-        let mut lines: Vec<Line<'static>> = [
-            field(
-                "partition",
-                vec![Span::raw(
-                    log.partition_id
-                        .map_or_else(|| "-".to_owned(), |p| p.to_string()),
-                )],
-            ),
-            field(
-                "segment",
-                vec![
-                    Span::raw(log.tail_segment.to_string()),
-                    Span::styled(
-                        format!(
-                            "  · {} in the chain · base {} · {}",
-                            log.segments, log.base_lsn, log.kind
-                        ),
-                        theme::muted(),
+        let label = |name: &str| Span::styled(format!("{name:<11}"), theme::muted());
+        let num = |v: Option<u64>| v.map_or_else(|| "-".to_owned(), |v| v.to_string());
+        let mut text = Detail::new(width);
+        text.field(
+            label("partition"),
+            log.partition_id
+                .map_or_else(|| "-".to_owned(), |p| p.to_string()),
+        );
+        text.field(
+            label("segment"),
+            vec![
+                Span::raw(log.tail_segment.to_string()),
+                Span::styled(
+                    format!(
+                        "  · {} in the chain · base {} · {}",
+                        log.segments, log.base_lsn, log.kind
                     ),
-                ],
+                    theme::muted(),
+                ),
+            ],
+        );
+        text.field(label("tail"), num(log.tail_lsn));
+        text.field(label("trim point"), num(log.trim_point));
+        text.field(label("retained"), num(log.retained));
+        text.field(
+            label("sequencer"),
+            log.sequencer
+                .map_or_else(|| Span::raw("-"), generational_span),
+        );
+        text.field(
+            label("nodeset"),
+            Itertools::intersperse(log.nodeset.iter().map(|n| node_span(*n)), Span::raw(" "))
+                .collect::<Vec<_>>(),
+        );
+        text.field(
+            label("writable"),
+            format!(
+                "{} of {} · replication {}",
+                log.writable_nodes,
+                log.nodeset.len(),
+                log.replication.as_deref().unwrap_or("-")
             ),
-            field("tail", vec![num(log.tail_lsn)]),
-            field("trim point", vec![num(log.trim_point)]),
-            field("retained", vec![num(log.retained)]),
-            field(
-                "sequencer",
-                log.sequencer
-                    .map_or_else(|| vec![Span::raw("-")], |s| vec![generational_span(s)]),
-            ),
-            field(
-                "nodeset",
-                Itertools::intersperse(log.nodeset.iter().map(|n| node_span(*n)), Span::raw(" "))
-                    .collect(),
-            ),
-            field(
-                "writable",
-                vec![Span::raw(format!(
-                    "{} of {} · replication {}",
-                    log.writable_nodes,
-                    log.nodeset.len(),
-                    log.replication.as_deref().unwrap_or("-")
-                ))],
-            ),
-        ]
-        .concat();
+        );
         if log.sealed {
-            lines.push(Line::styled("tail segment sealed", theme::fg(AMBER)));
+            text.line(Line::styled("tail segment sealed", theme::fg(AMBER)));
         }
         let readers = self.readers_table(log);
         let chain = chain_view(view, log, inner.width.saturating_sub(2));
         let [info, lane, readers_area, rate, lag] = Layout::vertical([
-            Constraint::Length(lines.len() as u16 + 1),
+            Constraint::Length(text.height() + 1),
             Constraint::Length(chain.len() as u16 + 1),
             Constraint::Length(readers.height()),
             Constraint::Fill(1),
             Constraint::Fill(1),
         ])
         .areas(inner);
-        frame.render_widget(Paragraph::new(lines), pad(info));
+        text.render(frame, pad(info), &mut self.wraps);
         frame.render_widget(Paragraph::new(chain), pad(lane));
+        self.panes.push(inside(readers_area));
         frame.render_widget(readers, readers_area);
         self.draw_series(
             frame,
@@ -1300,6 +1570,10 @@ impl App {
             .and_then(|id| nodes.iter().position(|n| n.plain() == id));
         self.nodes_state.select(selected);
         frame.render_stateful_widget(selectable(&table), list, &mut self.nodes_state);
+        self.panes.extend([inside(list), inside(detail)]);
+        list_hits(&mut self.hits, &table, list, &self.nodes_state, |i| {
+            Hit::Node(nodes[i].plain())
+        });
 
         let Some(node) = selected.map(|i| nodes[i]) else {
             return;
@@ -1312,13 +1586,7 @@ impl App {
         let inner = block.inner(detail);
         frame.render_widget(block, detail);
         let width = pad(inner).width;
-        let field = |name: &str, value: String| {
-            hanging(
-                vec![Span::styled(format!("{name:<12}"), theme::muted())],
-                vec![Span::raw(value)],
-                width,
-            )
-        };
+        let label = |name: &str| Span::styled(format!("{name:<12}"), theme::muted());
         let leads = compress_ids(
             view.partitions
                 .iter()
@@ -1334,39 +1602,24 @@ impl App {
                 })
                 .map(|p| p.id),
         );
-        let mut lines: Vec<Line<'static>> = [
-            field("generation", node.id.to_string()),
-            field("roles", node.roles.join(", ")),
-            field(
-                "version",
-                node.binary_version
-                    .clone()
-                    .unwrap_or_else(|| "-".to_owned()),
-            ),
-            field(
-                "leads",
-                if leads.is_empty() {
-                    "-".to_owned()
-                } else {
-                    leads
-                },
-            ),
-            field(
-                "follows",
-                if follows.is_empty() {
-                    "-".to_owned()
-                } else {
-                    follows
-                },
-            ),
-        ]
-        .concat();
+        let mut text = Detail::new(width);
+        text.field(label("generation"), node.id.to_string());
+        text.field(label("roles"), node.roles.join(", "));
+        text.field(
+            label("version"),
+            node.binary_version
+                .clone()
+                .unwrap_or_else(|| "-".to_owned()),
+        );
+        let or_dash = |ids: String| if ids.is_empty() { "-".to_owned() } else { ids };
+        text.field(label("leads"), or_dash(leads));
+        text.field(label("follows"), or_dash(follows));
         if !node.location.is_empty() {
-            lines.extend(field("location", node.location.clone()));
+            text.field(label("location"), node.location.clone());
         }
         if let Some(seen) = &node.seen_versions {
-            lines.extend(field(
-                "has loaded",
+            text.field(
+                label("has loaded"),
                 format!(
                     "nodes v{} · logs v{} · partitions v{} · schema v{}",
                     seen.nodes_config,
@@ -1374,11 +1627,11 @@ impl App {
                     seen.partition_table.unwrap_or_default(),
                     seen.schema.unwrap_or_default()
                 ),
-            ));
+            );
         }
         if let Some(m) = &node.metadata_server {
-            lines.extend(field(
-                "metadata",
+            text.field(
+                label("metadata"),
                 match (&m.error, &m.raft) {
                     (Some(err), _) => err.clone(),
                     (None, Some(raft)) => format!(
@@ -1390,98 +1643,137 @@ impl App {
                     ),
                     (None, None) => m.status.clone().unwrap_or_else(|| m.state.clone()),
                 },
-            ));
+            );
         }
-        lines.push(Line::default());
-        lines.extend(addresses(
+        text.line(Line::default());
+        addresses(
+            &mut text,
             "control",
             &node.ctrl_address,
             &node.ctrl_addresses,
             node.dialed_address.as_deref(),
-            width,
-        ));
-        lines.extend(addresses(
-            "fabric",
-            &node.address,
-            &node.addresses,
-            None,
-            width,
-        ));
-        lines.extend(servers(node, width));
+        );
+        addresses(&mut text, "fabric", &node.address, &node.addresses, None);
+        servers(&mut text, node);
         if node.dialed_address.is_some() {
-            lines.push(Line::from(vec![
+            text.line(vec![
                 Span::styled("▸", theme::fg(BLUE).add_modifier(Modifier::BOLD)),
                 Span::styled(" the address restatectl dials", theme::muted()),
-            ]));
+            ]);
         }
-        frame.render_widget(Paragraph::new(lines), pad(inner));
+        text.render(frame, pad(inner), &mut self.wraps);
     }
 }
 
-/// `label` then `value`, wrapped to `width` with continuation lines starting under the value. A
-/// line breaks after a `/` in its second half where there is one, else after a space or `,`,
-/// else after a `.`, `:` or `-`, so addresses, paths and lists split where they read naturally.
-fn hanging(label: Vec<Span<'static>>, value: Vec<Span<'static>>, width: u16) -> Vec<Line<'static>> {
-    let indent: usize = label.iter().map(Span::width).sum();
-    let room = usize::from(width).saturating_sub(indent).max(8);
-    let chars: Vec<(char, Style)> = value
-        .iter()
-        .flat_map(|span| {
-            let style = span.style;
-            span.content.chars().map(move |c| (c, style))
-        })
-        .collect();
-    let mut lines = Vec::new();
-    let mut label = Some(label);
-    let mut rest = chars.as_slice();
-    loop {
-        let take = if rest.len() <= room {
-            rest.len()
-        } else {
-            let after = |separators: &str| {
-                rest[..room]
-                    .iter()
-                    .rposition(|(c, _)| separators.contains(*c))
-                    .filter(|at| *at >= room / 2)
+/// The text of a detail pane, with long values wrapped under themselves.
+struct Detail {
+    width: u16,
+    lines: Vec<Line<'static>>,
+    /// the lines continuing a word wrapped from the line above, with the column it resumes at
+    wraps: Vec<(usize, u16)>,
+}
+
+impl Detail {
+    fn new(width: u16) -> Self {
+        Self {
+            width,
+            lines: Vec::new(),
+            wraps: Vec::new(),
+        }
+    }
+
+    fn height(&self) -> u16 {
+        self.lines.len() as u16
+    }
+
+    fn line(&mut self, line: impl Into<Line<'static>>) {
+        self.lines.push(line.into());
+    }
+
+    /// `label` then `value`, wrapped with continuation lines starting under the value. A line
+    /// breaks after a `/` in its second half where there is one, else after a space or `,`, else
+    /// after a `.`, `:` or `-`, so addresses, paths and lists split where they read naturally.
+    fn field(&mut self, label: impl Into<Line<'static>>, value: impl Into<Line<'static>>) {
+        let label = label.into();
+        let indent = label.width();
+        let room = usize::from(self.width).saturating_sub(indent).max(8);
+        let chars: Vec<(char, Style)> = value
+            .into()
+            .spans
+            .iter()
+            .flat_map(|span| {
+                let style = span.style;
+                span.content.chars().map(move |c| (c, style))
+            })
+            .collect();
+        let mut label = Some(label.spans);
+        let mut rest = chars.as_slice();
+        loop {
+            let take = if rest.len() <= room {
+                rest.len()
+            } else {
+                let after = |separators: &str| {
+                    rest[..room]
+                        .iter()
+                        .rposition(|(c, _)| separators.contains(*c))
+                        .filter(|at| *at >= room / 2)
+                };
+                after("/")
+                    .or_else(|| after(" ,"))
+                    .or_else(|| after(".:-"))
+                    .map_or(room, |at| at + 1)
             };
-            after("/")
-                .or_else(|| after(" ,"))
-                .or_else(|| after(".:-"))
-                .map_or(room, |at| at + 1)
-        };
-        let (head, tail) = rest.split_at(take);
-        let mut spans = label
-            .take()
-            .unwrap_or_else(|| vec![Span::raw(" ".repeat(indent))]);
-        for (style, run) in &head.iter().chunk_by(|(_, style)| *style) {
-            spans.push(Span::styled(
-                run.map(|(c, _)| *c).collect::<String>(),
-                style,
-            ));
+            let (head, tail) = rest.split_at(take);
+            let mut spans = label
+                .take()
+                .unwrap_or_else(|| vec![Span::raw(" ".repeat(indent))]);
+            for (style, run) in &head.iter().chunk_by(|(_, style)| *style) {
+                spans.push(Span::styled(
+                    run.map(|(c, _)| *c).collect::<String>(),
+                    style,
+                ));
+            }
+            self.lines.push(Line::from(spans));
+            // broken within a word, rather than between two
+            let blank = |c: Option<&(char, Style)>| c.is_none_or(|(c, _)| *c == ' ');
+            if !blank(head.last()) && !blank(tail.first()) {
+                self.wraps.push((self.lines.len(), indent as u16));
+            }
+            rest = tail;
+            while rest.first().is_some_and(|(c, _)| *c == ' ') {
+                rest = &rest[1..];
+            }
+            if rest.is_empty() {
+                return;
+            }
         }
-        lines.push(Line::from(spans));
-        rest = tail;
-        while rest.first().is_some_and(|(c, _)| *c == ' ') {
-            rest = &rest[1..];
-        }
-        if rest.is_empty() {
-            return lines;
-        }
+    }
+
+    /// Draws the text in `area`, adding to `wraps` where a word wrapped from the row above
+    /// resumes.
+    fn render(self, frame: &mut Frame, area: Rect, wraps: &mut Vec<Position>) {
+        wraps.extend(
+            self.wraps
+                .iter()
+                .filter(|(line, _)| *line < usize::from(area.height))
+                .map(|(line, x)| Position::new(area.x + x, area.y + *line as u16)),
+        );
+        frame.render_widget(Paragraph::new(self.lines), area);
     }
 }
 
 /// The node's servers, as it reports them: where each is advertised and where it listens.
-fn servers(node: &NodeView, width: u16) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::styled(
+fn servers(text: &mut Detail, node: &NodeView) {
+    text.line(Line::styled(
         "servers, as the node reports them",
         theme::bold(),
-    )];
+    ));
     if node.servers.is_empty() {
-        lines.push(Line::styled(
+        text.line(Line::styled(
             "  none reported: the node couldn't be reached",
             theme::muted(),
         ));
-        return lines;
+        return;
     }
     for server in &node.servers {
         let name = match server.server.as_str() {
@@ -1492,36 +1784,30 @@ fn servers(node: &NodeView, width: u16) -> Vec<Line<'static>> {
             "tokio-console-server" => "tokio console",
             other => other,
         };
-        let label = |text: String| vec![Span::styled(text, theme::muted())];
-        lines.extend(hanging(
+        let label = |label: String| Span::styled(label, theme::muted());
+        text.field(
             label(format!("  {name:<13}")),
-            vec![match &server.advertised {
+            match &server.advertised {
                 Some(advertised) => Span::raw(advertised.clone()),
                 None => Span::styled("not advertised", theme::muted()),
-            }],
-            width,
-        ));
+            },
+        );
         for (i, address) in server.listens_on.iter().enumerate() {
-            let text = if i == 0 { "listens on" } else { "" };
-            lines.extend(hanging(
-                label(format!("  {:<13}{text:<11}", "")),
-                vec![Span::raw(address.clone())],
-                width,
-            ));
+            let listens = if i == 0 { "listens on" } else { "" };
+            text.field(label(format!("  {:<13}{listens:<11}", "")), address.clone());
         }
     }
-    lines
 }
 
 /// A node's addresses of one kind: those for callers in specific locations, in the node's order
 /// of preference, then the one for everyone else; `▸` marks the one restatectl dials.
 fn addresses(
+    text: &mut Detail,
     kind: &str,
     default: &str,
     located: &[LocatedAddress],
     dialed: Option<&str>,
-    width: u16,
-) -> Vec<Line<'static>> {
+) {
     let mut dialed = dialed;
     // the first entry matching what restatectl dials is the one it picked
     let mut mark = |address: &str| {
@@ -1538,7 +1824,7 @@ fn addresses(
         .max()
         .unwrap_or(0)
         .max(10);
-    let mut lines = vec![Line::styled(format!("{kind} addresses"), theme::bold())];
+    text.line(Line::styled(format!("{kind} addresses"), theme::bold()));
     let entries = located
         .iter()
         .map(|a| {
@@ -1556,16 +1842,14 @@ fn addresses(
             default,
         )]);
     for (location, address) in entries {
-        lines.extend(hanging(
+        text.field(
             vec![
                 mark(address),
                 Span::styled(format!("{location:<location_width$}  "), theme::muted()),
             ],
-            vec![Span::raw(address.to_owned())],
-            width,
-        ));
+            address.to_owned(),
+        );
     }
-    lines
 }
 
 /// A reader's segment, and how many segments it is behind the tail segment.
@@ -1588,15 +1872,50 @@ fn segment_cell(log: &LogView, segment: Option<u32>) -> Line<'static> {
 }
 
 /// Draws `placement` above the list when there's room for both, and returns the list's area.
-fn with_placement(frame: &mut Frame, area: Rect, placement: PlacementBars) -> Rect {
+fn with_placement(
+    frame: &mut Frame,
+    area: Rect,
+    placement: PlacementBars,
+    panes: &mut Vec<Rect>,
+) -> Rect {
     // keep a few rows of the list in view
     if area.height < placement.height() + 6 {
         return area;
     }
     let [placement_area, list] =
         Layout::vertical([Constraint::Length(placement.height()), Constraint::Fill(1)]).areas(area);
+    panes.push(inside(placement_area));
     frame.render_widget(placement, placement_area);
     list
+}
+
+/// Makes the column headers of a list drawn by `selectable` in `area` sort it, and its rows
+/// select `row(index)`.
+fn list_hits(
+    hits: &mut Vec<(Rect, Hit)>,
+    table: &RichTable,
+    area: Rect,
+    state: &TableState,
+    row: impl Fn(usize) -> Hit,
+) {
+    let selection = if state.selected().is_some() {
+        Span::raw(HIGHLIGHT).width() as u16
+    } else {
+        0
+    };
+    let (headers, rows) = table.layout(area, state.offset(), selection);
+    hits.extend(
+        headers
+            .into_iter()
+            .enumerate()
+            .map(|(column, cell)| (cell, Hit::Column(column))),
+    );
+    hits.extend(rows.into_iter().map(|(rect, i)| (rect, row(i))));
+}
+
+/// The inside of a panel drawn in `area`.
+fn inside(area: Rect) -> Rect {
+    area.inner(Margin::new(1, 1))
 }
 
 fn filter_partitions(view: &ClusterView, unhealthy_only: bool) -> Vec<&PartitionView> {
@@ -1640,7 +1959,7 @@ fn selectable(table: &RichTable) -> ratatui::widgets::Table<'static> {
                 .bg(theme::rgb(theme::TRACK))
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("▶ ")
+        .highlight_symbol(HIGHLIGHT)
 }
 
 /// Keeps the columns `keep` of `table`.
@@ -1701,12 +2020,24 @@ fn draw_help(frame: &mut Frame, area: Rect) {
             "sort the list by its next column / reverse the order",
         ),
         ("r", "refresh now"),
+        (
+            "click",
+            "a view, a row, a tile, a key below; a header sorts",
+        ),
+        (
+            "drag, double-click",
+            "copy the text selected, the word clicked",
+        ),
+        (
+            "Shift-drag",
+            "select with the terminal instead (iTerm2: Option-drag)",
+        ),
     ];
     let mut lines = vec![Line::default()];
     for (keys, what) in rows {
         lines.push(Line::from(vec![
             Span::styled(format!("  {keys:<30}"), theme::bold()),
-            Span::styled(what, theme::muted()),
+            Span::styled(format!("{what}  "), theme::muted()),
         ]));
     }
     lines.push(Line::default());
@@ -1718,11 +2049,16 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         "  Rates are measured between refreshes.",
         theme::muted(),
     ));
+    lines.push(Line::styled(
+        "  Copying asks the terminal (OSC 52); in tmux, it needs set-clipboard on.  ",
+        theme::muted(),
+    ));
     let height = lines.len() as u16 + 2;
+    let width = lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 2;
     let popup = Rect {
-        x: area.x + area.width.saturating_sub(80) / 2,
+        x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,
-        width: area.width.min(80),
+        width: width.min(area.width),
         height: height.min(area.height),
     };
     frame.render_widget(Clear, popup);
@@ -1799,11 +2135,13 @@ mod tests {
         }
     }
 
-    /// Long values continue under themselves, breaking after path separators first.
+    /// Long values continue under themselves, breaking after path separators first, and note
+    /// where they break within a word.
     #[test]
     fn long_values_wrap_under_themselves() {
-        let text = |lines: Vec<Line<'static>>| {
-            lines
+        let text = |detail: &Detail| {
+            detail
+                .lines
                 .iter()
                 .map(|l| {
                     l.spans
@@ -1813,15 +2151,13 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        let lines = hanging(
-            vec![Span::raw("listens on ")],
-            vec![Span::raw(
-                "unix:/var/lib/restate/restate-data/node-1/fabric.sock",
-            )],
-            30,
+        let mut detail = Detail::new(30);
+        detail.field(
+            "listens on ",
+            "unix:/var/lib/restate/restate-data/node-1/fabric.sock",
         );
         assert_eq!(
-            text(lines),
+            text(&detail),
             [
                 "listens on unix:/var/lib/",
                 "           restate/restate-",
@@ -1829,15 +2165,17 @@ mod tests {
                 "           fabric.sock",
             ]
         );
-        // what fits stays on one line
+        assert_eq!(detail.wraps, [(1, 11), (2, 11), (3, 11)]);
+
+        // what fits stays on one line, and a break between words isn't within one
+        let mut detail = Detail::new(20);
+        detail.field("tail ", "4190045");
+        detail.field("roles ", "partitions ingress admin");
         assert_eq!(
-            text(hanging(
-                vec![Span::raw("tail ")],
-                vec![Span::raw("4190045")],
-                30
-            )),
-            ["tail 4190045"]
+            text(&detail),
+            ["tail 4190045", "roles partitions ", "      ingress admin"]
         );
+        assert!(detail.wraps.is_empty());
     }
 
     /// `s` orders a list by its next key and `S` reverses it; the selection stays on its item.
@@ -1906,6 +2244,154 @@ mod tests {
         // Enter does nothing outside the overview and the findings
         app.on_key(key(KeyCode::Enter));
         assert!(app.tab == Tab::Logs);
+    }
+
+    /// Clicks select, sort, switch views and open findings; drags and double-clicks copy, and
+    /// what's clickable lines up with what's drawn.
+    #[test]
+    fn mouse_selects_sorts_and_copies() {
+        use MouseButton::Left;
+
+        fn mouse(app: &mut App, kind: MouseEventKind, at: Position) -> Action {
+            app.on_mouse(MouseEvent {
+                kind,
+                column: at.x,
+                row: at.y,
+                modifiers: KeyModifiers::NONE,
+            })
+        }
+        fn click(app: &mut App, at: Position) -> Action {
+            mouse(app, MouseEventKind::Down(Left), at);
+            mouse(app, MouseEventKind::Up(Left), at)
+        }
+        fn redraw(app: &mut App) {
+            let mut terminal = Terminal::new(TestBackend::new(180, 50)).unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+        }
+        fn row(app: &App, area: Rect) -> String {
+            (area.left()..area.right())
+                .map(|x| app.screen[(x, area.y)].symbol())
+                .collect()
+        }
+        fn find(app: &App, text: &str) -> Position {
+            let area = app.screen.area;
+            area.rows()
+                .find_map(|line| {
+                    let cells: Vec<&str> = (area.left()..area.right())
+                        .map(|x| app.screen[(x, line.y)].symbol())
+                        .collect();
+                    (0..cells.len())
+                        .find(|at| cells[*at..].concat().starts_with(text))
+                        .map(|at| Position::new(at as u16, line.y))
+                })
+                .unwrap()
+        }
+        fn hit(app: &App, wanted: Hit) -> Rect {
+            app.hits.iter().find(|(_, hit)| *hit == wanted).unwrap().0
+        }
+        fn center(area: Rect) -> Position {
+            Position::new(area.x + area.width / 2, area.y)
+        }
+        fn click_on(app: &mut App, wanted: Hit) -> Action {
+            let at = center(hit(app, wanted));
+            click(app, at)
+        }
+
+        let mut app = App::new(Options {
+            tab: Tab::Overview,
+            interval: Duration::from_secs(1),
+            unhealthy_only: false,
+            partition_sort: PartitionSort::Partition,
+        });
+        let view = cluster_that_lost_a_node();
+        let findings = analyze(&view);
+        app.update(Ok((view, findings)));
+        redraw(&mut app);
+
+        // a double-click copies the word, a drag what it covers, and both say so
+        let verdict = find(&app, "CRITICAL");
+        assert_eq!(click(&mut app, verdict), Action::None);
+        assert_eq!(
+            click(&mut app, verdict),
+            Action::Copy("CRITICAL".to_owned())
+        );
+        mouse(&mut app, MouseEventKind::Down(Left), verdict);
+        let end = Position::new(verdict.x + 7, verdict.y);
+        mouse(&mut app, MouseEventKind::Drag(Left), end);
+        assert_eq!(
+            mouse(&mut app, MouseEventKind::Up(Left), end),
+            Action::Copy("CRITICAL".to_owned())
+        );
+        let mut terminal = Terminal::new(TestBackend::new(180, 50)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let shown = terminal.backend().buffer();
+        assert!(
+            shown[(verdict.x, verdict.y)]
+                .modifier
+                .contains(Modifier::REVERSED)
+        );
+        assert!(text(shown).contains("copied CRITICAL"));
+
+        // a partition's tile opens it
+        click_on(&mut app, Hit::Partition(1));
+        assert!(app.tab == Tab::Partitions);
+        assert_eq!(app.selected_partition, Some(1));
+        redraw(&mut app);
+
+        // a header sorts by its column, again reverses; it's under the header's name
+        assert!(row(&app, hit(&app, Hit::Column(2))).contains("LEADER"));
+        let ids = |app: &App| app.partitions().iter().map(|p| p.id).collect::<Vec<_>>();
+        let health = center(hit(&app, Hit::Column(1)));
+        click(&mut app, health);
+        assert_eq!(ids(&app), [1, 2, 0]);
+        redraw(&mut app);
+        click(&mut app, health);
+        assert_eq!(ids(&app), [0, 2, 1]);
+        redraw(&mut app);
+
+        // a row selects its partition, the wheel moves on
+        let second = hit(&app, Hit::Partition(2));
+        click(&mut app, center(second));
+        assert_eq!(app.selected_partition, Some(2));
+        redraw(&mut app);
+        assert!(
+            row(&app, second).starts_with("▶ 2"),
+            "{}",
+            row(&app, second)
+        );
+        mouse(&mut app, MouseEventKind::ScrollDown, center(second));
+        assert_eq!(app.selected_partition, Some(1));
+
+        // views and the footer's keys
+        let nodes = hit(&app, Hit::Tab(Tab::Nodes));
+        assert!(row(&app, nodes).contains("Nodes"));
+        click(&mut app, center(nodes));
+        assert!(app.tab == Tab::Nodes);
+        redraw(&mut app);
+        click_on(&mut app, Hit::Key(KeyCode::Char('?')));
+        assert!(app.show_help);
+        click(&mut app, Position::new(0, 0));
+        assert!(!app.show_help);
+
+        // a finding on the overview selects it in the findings, a second click opens it
+        app.tab = Tab::Overview;
+        redraw(&mut app);
+        let (at, partition) = app
+            .findings
+            .iter()
+            .enumerate()
+            .find_map(|(at, f)| match f.subject {
+                Subject::Partition(id) => Some((at, id)),
+                _ => None,
+            })
+            .unwrap();
+        click_on(&mut app, Hit::Finding(at));
+        assert!(app.tab == Tab::Findings);
+        assert_eq!(app.selected_finding, at);
+        redraw(&mut app);
+        click_on(&mut app, Hit::Finding(at));
+        assert!(app.tab == Tab::Partitions);
+        assert_eq!(app.selected_partition, Some(partition));
     }
 
     /// A 20-node, 256-partition cluster renders in every view, inline and in the dashboard,
@@ -2032,5 +2518,24 @@ mod tests {
         // N1 runs every server, and the nodes are sorted by the partitions they lead
         assert!(nodes.contains("listens on"));
         assert!(nodes.contains("LEADS ▼"));
+
+        // a double-click copies a wrapped socket path whole
+        app.tab = Tab::Nodes;
+        let mut terminal = Terminal::new(TestBackend::new(200, 56)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let area = app.screen.area;
+        let unix = area
+            .positions()
+            .find(|at| {
+                (at.x..at.x.saturating_add(5).min(area.right()))
+                    .map(|x| app.screen[(x, at.y)].symbol())
+                    .collect::<String>()
+                    == "unix:"
+            })
+            .unwrap();
+        assert_eq!(
+            token_at(&app.screen, app.pane_at(unix), &app.wraps, unix).as_deref(),
+            Some("unix:/var/lib/restate/restate-data/prod-eu-1-01/fabric.sock")
+        );
     }
 }
