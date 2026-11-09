@@ -16,6 +16,7 @@ use restate_storage_api::StorageError;
 use restate_storage_api::journal_events::{
     EventView, ScanJournalEventsTable, ScanJournalEventsTableRange,
 };
+use restate_storage_api::scan::RowConsumer;
 use restate_types::identifiers::InvocationId;
 
 use crate::context::{QueryContext, SelectPartitions};
@@ -59,20 +60,12 @@ impl ScanLocalPartition for JournalEventsScanner {
     type ConversionError = std::convert::Infallible;
     type Filter = InvocationIdFilter;
 
-    fn for_each_row<
-        F: for<'a> FnMut(
-                Self::Item<'a>,
-            ) -> std::ops::ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_row<F: for<'a> RowConsumer<Item<'a> = Self::Item<'a>>>(
         partition_store: &PartitionStore,
         range: InvocationIdFilter,
-        mut f: F,
-    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        partition_store
-            .for_each_journal_event(range.into(), move |item| f(item).map_break(Result::unwrap))
+        f: F,
+    ) -> Result<impl Future<Output = restate_storage_api::Result<F>> + Send, StorageError> {
+        partition_store.for_each_journal_event(range.into(), f)
     }
 
     fn append_row<'a>(

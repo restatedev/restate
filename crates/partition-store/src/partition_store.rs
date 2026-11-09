@@ -18,6 +18,7 @@ use anyhow::anyhow;
 use bytes::Bytes;
 use bytes::BytesMut;
 use enum_map::Enum;
+use futures::{FutureExt, Stream, StreamExt, TryFutureExt, future};
 use rocksdb::{
     BoundColumnFamily, DBPinnableSlice, DBRawIteratorWithThreadMode, ReadOptions,
     SnapshotWithThreadMode,
@@ -32,9 +33,11 @@ use tracing::{Level, instrument, trace, warn};
 
 use restate_core::io::{AdmissionClosed, Gate, IoExecutor};
 use restate_futures_util::overdue::OverdueLoggingExt;
-use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksDbManager, RocksError};
+use restate_rocksdb::reads::{IterationError, IteratorVisitor, LeasePolicy};
+use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksDbManager};
 use restate_storage_api::fsm_table::ReadFsmTable;
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
+use restate_storage_api::scan::RowConsumer;
 use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
 use restate_types::SemanticRestateVersion;
 use restate_types::config::{Configuration, StorageOptions};
@@ -62,8 +65,7 @@ use crate::fsm_table::{
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
 use crate::migrations::MigrationError;
 use crate::partition_db::PartitionDb;
-use crate::scan::PhysicalScan;
-use crate::scan::TableScan;
+use crate::scan::{DecodingVisitor, PhysicalScan, TableScan};
 use crate::snapshots::{CaptureGuard, LocalPartitionSnapshot, SnapshotCompatibility, export_dir};
 use crate::{configure_prefix_iterator_opts, configure_range_iterator_opts};
 
@@ -374,93 +376,26 @@ impl PartitionStore {
             .map_err(|error| StorageError::Generic(error.into()))
     }
 
-    #[allow(clippy::type_complexity)]
-    fn iterator_step_filter_map<O: Send + 'static>(
-        tx: mpsc::Sender<Result<O>>,
-        mut f: impl FnMut((&[u8], &[u8])) -> Result<Option<O>> + Send + 'static,
-    ) -> impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static {
-        move |item| {
-            let res = match item {
-                // apply the caller's function
-                Ok((key, value)) => match f((key, value)) {
-                    Ok(Some(v)) => v,
-                    Ok(None) => {
-                        if tx.is_closed() {
-                            return IterAction::Stop;
-                        } else {
-                            return IterAction::Next;
-                        }
-                    }
-                    Err(e) => {
-                        let _ = tx.blocking_send(Err(e));
-                        return IterAction::Stop;
-                    }
-                },
-                Err(e) => {
-                    let _ = tx.blocking_send(Err(StorageError::Generic(e.into())));
-                    return IterAction::Stop;
-                }
-            };
-            if tx.blocking_send(Ok(res)).is_err() {
-                return IterAction::Stop;
-            }
-            // the channel is not closed yet, keep iterating
-            IterAction::Next
-        }
-    }
-
-    #[allow(clippy::type_complexity)]
-    fn iterator_step_for_each(
-        tx: oneshot::Sender<StorageError>,
-        mut f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
-    ) -> impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send {
-        let mut tx = Some(tx);
-        move |item| {
-            let mut must_send = |v| match tx.take() {
-                Some(tx) => tx.send(v),
-                None => panic!("Iterator continued after IterAction::Stop"),
-            };
-
-            match item {
-                // apply the caller's function
-                Ok((key, value)) => match f((key, value)) {
-                    ControlFlow::Continue(()) => match &mut tx {
-                        Some(tx_inner) if tx_inner.is_closed() => {
-                            tx = None;
-                            IterAction::Stop
-                        }
-                        // the channel is not closed yet, keep iterating
-                        Some(_) => IterAction::Next,
-                        None => panic!("Iterator continued after IterAction::Stop"),
-                    },
-                    ControlFlow::Break(Ok(())) => {
-                        // function doesn't need any more items
-                        tx = None;
-                        IterAction::Stop
-                    }
-                    ControlFlow::Break(Err(e)) => {
-                        let _ = must_send(e);
-                        IterAction::Stop
-                    }
-                },
-                Err(e) => {
-                    let _ = must_send(StorageError::Generic(e.into()));
-                    IterAction::Stop
-                }
-            }
-        }
-    }
-
-    pub fn iterator_for_each<K: EncodeTableKeyPrefix>(
+    /// Hands each row to `decode` along with `consumer`, and resolves to
+    /// `consumer` once the scan ends without an error.
+    pub fn iterator_for_each<K: EncodeTableKeyPrefix, C: RowConsumer>(
         &self,
         name: &'static str,
         priority: Priority,
         scan: TableScan<K>,
-        f: impl FnMut((&[u8], &[u8])) -> std::ops::ControlFlow<Result<()>> + Send + 'static,
-    ) -> Result<impl Future<Output = Result<()>>, AdmissionClosed> {
+        consumer: C,
+        decode: impl AsyncFnMut(&mut C, (&[u8], &[u8])) -> Result<ControlFlow<()>> + Send + 'static,
+    ) -> Result<impl Future<Output = Result<C>>, AdmissionClosed> {
         let mut opts = ReadOptions::default();
         opts.set_async_io(true);
-        self.iterator_for_each_physical(name, priority, opts, scan.into(), f)
+        let driver = self.run_iterator_internal(
+            name,
+            priority,
+            opts,
+            scan.into(),
+            DecodingVisitor { consumer, decode },
+        )?;
+        Ok(driver.map_ok(|visitor| visitor.consumer))
     }
 
     pub fn iterator_filter_map<K: EncodeTableKeyPrefix, O: Send + 'static>(
@@ -468,58 +403,70 @@ impl PartitionStore {
         name: &'static str,
         priority: Priority,
         scan: TableScan<K>,
-        f: impl FnMut((&[u8], &[u8])) -> Result<Option<O>> + Send + 'static,
-    ) -> Result<ReceiverStream<Result<O>>, AdmissionClosed> {
+        mut f: impl FnMut((&[u8], &[u8])) -> Result<Option<O>> + Send + 'static,
+    ) -> Result<impl Stream<Item = Result<O>> + Send + 'static, AdmissionClosed> {
         let (tx, rx) = mpsc::channel(8);
-        let on_iter = Self::iterator_step_filter_map(tx, f);
         let mut opts = ReadOptions::default();
         opts.set_async_io(true);
-        self.run_iterator_internal(name, priority, opts, scan.into(), on_iter)?;
-        Ok(ReceiverStream::new(rx))
+        let driver = self.run_iterator_internal(
+            name,
+            priority,
+            opts,
+            scan.into(),
+            async move |key: &[u8], value: &[u8]| {
+                let Some(value) = f((key, value))? else {
+                    return Ok(IterAction::Next);
+                };
+                Ok(match tx.send(Ok(value)).await {
+                    Ok(()) => IterAction::Next,
+                    Err(_) => IterAction::Stop,
+                })
+            },
+        )?;
+        let terminal_error = driver
+            .into_stream()
+            .filter_map(|res: Result<_>| future::ready(res.err().map(Err)));
+        // The driver runs eagerly. Keep it alive while draining buffered rows,
+        // then report any terminal error after those rows.
+        Ok(ReceiverStream::new(rx).chain(terminal_error))
     }
 
-    /// Starts an iterator from already-encoded bounds without re-encoding them.
-    pub(crate) fn iterator_for_each_physical(
-        &self,
-        name: &'static str,
-        priority: Priority,
-        opts: ReadOptions,
-        scan: PhysicalScan<Bytes>,
-        f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
-    ) -> Result<impl Future<Output = Result<()>>, AdmissionClosed> {
-        let (tx, rx) = oneshot::channel();
-        let on_iter = Self::iterator_step_for_each(tx, f);
-        self.run_iterator_internal(name, priority, opts, scan, on_iter)?;
-
-        Ok(async {
-            match rx.await {
-                Ok(storage_err) => Err(storage_err),
-                // The iterator completed without reporting a storage error.
-                Err(_recv_err) => Ok(()),
-            }
-        })
-    }
-
-    fn run_iterator_internal(
+    /// Resolves to `visitor` once the iteration ends without an error.
+    fn run_iterator_internal<V: IteratorVisitor<Error = StorageError>>(
         &self,
         name: &'static str,
         priority: Priority,
         mut opts: ReadOptions,
         scan: PhysicalScan<Bytes>,
-        on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
-    ) -> Result<(), AdmissionClosed> {
+        visitor: V,
+    ) -> Result<impl Future<Output = Result<V>> + Send + 'static, AdmissionClosed> {
         scan.configure(&mut opts);
-        RocksDb::run_background_iterator(
+        let iteration = RocksDb::prepare_iteration(
             self.db.physical_scope(),
             self.db.gate(),
+            LeasePolicy::WholeIteration,
             scan.key_kind(),
             name,
-            priority,
             IterAction::Seek(scan.into_start()),
             opts,
-            on_iter,
+            visitor,
         )?;
-        Ok(())
+        let result = self
+            .db
+            .rocksdb()
+            .executor()
+            .pool(priority)
+            .spawn_cancellable(iteration)?;
+        Ok(async move {
+            result
+                .await
+                .map_err(|e| StorageError::Generic(e.into()))?
+                .map_err(|error| match error {
+                    IterationError::Visitor(error) => error,
+                    IterationError::AdmissionClosed(_) => StorageError::OperationalError,
+                    IterationError::RocksDb(error) => StorageError::Generic(error.into()),
+                })
+        })
     }
 
     pub fn transaction(&mut self) -> PartitionStoreTransaction<'_> {
