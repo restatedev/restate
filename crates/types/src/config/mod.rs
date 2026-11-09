@@ -795,6 +795,20 @@ mod tests {
 
     use super::*;
 
+    #[cfg(feature = "schemars")]
+    use schemars::generate::SchemaSettings;
+
+    #[cfg(feature = "schemars")]
+    fn schema_definition_properties<'a>(
+        schema: &'a serde_json::Value,
+        definition: &str,
+    ) -> &'a serde_json::Map<String, serde_json::Value> {
+        schema
+            .pointer(&format!("/$defs/{definition}/properties"))
+            .and_then(serde_json::Value::as_object)
+            .expect("schema definition has properties")
+    }
+
     #[test]
     fn validate_checks_configured_advertised_addresses() {
         // `key` is a dotted path into the configuration, e.g. `admin.advertised-address`.
@@ -1063,5 +1077,41 @@ mod tests {
             InvalidConfigurationError::RequiredNodeName(_) => {}
             _ => panic!("Shoule be RequiredNodeName error"),
         }
+    }
+
+    #[cfg(feature = "schemars")]
+    #[test]
+    fn configuration_schema_exposes_supported_background_budget_keys() {
+        let schema = serde_json::to_value(
+            SchemaSettings::draft2020_12()
+                .into_generator()
+                .into_root_schema_for::<Configuration>(),
+        )
+        .expect("schema is serializable");
+
+        let worker_storage = schema_definition_properties(&schema, "StorageOptions");
+        assert!(worker_storage.contains_key("rocksdb-max-background-flushes"));
+        assert!(worker_storage.contains_key("rocksdb-max-background-compactions"));
+
+        let metadata_server = schema_definition_properties(&schema, "MetadataServerOptions");
+        assert!(metadata_server.contains_key("rocksdb-max-background-flushes"));
+        assert!(metadata_server.contains_key("rocksdb-max-background-compactions"));
+
+        let bifrost = schema_definition_properties(&schema, "BifrostOptions");
+        assert_eq!(
+            bifrost
+                .get("local")
+                .and_then(|value| value.get("$ref"))
+                .and_then(serde_json::Value::as_str),
+            Some("#/$defs/LocalLoglet")
+        );
+
+        let local_loglet = schema_definition_properties(&schema, "LocalLoglet");
+        assert!(local_loglet.contains_key("rocksdb-max-background-flushes"));
+        assert!(local_loglet.contains_key("rocksdb-max-background-compactions"));
+
+        let log_server = schema_definition_properties(&schema, "LogServer");
+        assert!(log_server.contains_key("rocksdb-max-background-compactions"));
+        assert!(!log_server.contains_key("rocksdb-max-background-flushes"));
     }
 }
