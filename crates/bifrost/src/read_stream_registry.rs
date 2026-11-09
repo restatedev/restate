@@ -42,6 +42,11 @@ pub struct ReadStreamState {
     pub current_segment: Option<SegmentIndex>,
     /// The loglet ID of the current segment
     pub loglet_id: Option<LogletId>,
+    /// Data records the stream has delivered to its reader, across all segments.
+    pub records_read: u64,
+    /// The size of those records' bodies as the log stores them. A record whose size isn't known
+    /// (a typed body that was never encoded) adds nothing.
+    pub bytes_read: u64,
 }
 
 impl ReadStreamState {
@@ -54,6 +59,8 @@ impl ReadStreamState {
             safe_known_tail: None,
             current_segment: None,
             loglet_id: None,
+            records_read: 0,
+            bytes_read: 0,
         }
     }
 }

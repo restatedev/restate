@@ -89,6 +89,9 @@ pub struct LogReadStream {
     registry_id: ReadStreamId,
     /// Introspection: shared state updated on each state transition.
     shared_state: SharedReadStreamState,
+    /// Introspection: data records delivered, and the size of their bodies.
+    records_read: u64,
+    bytes_read: u64,
     // IMPORTANT: Do not re-order this field. `inner` must be dropped last. This allows
     // `state` to reference its lifetime as 'static.
     bifrost_inner: Arc<BifrostInner>,
@@ -196,6 +199,8 @@ impl LogReadStream {
             state: State::New,
             registry_id,
             shared_state,
+            records_read: 0,
+            bytes_read: 0,
         })
     }
 
@@ -501,12 +506,15 @@ impl Stream for LogReadStream {
                             // If this record was supposed to be filtered but it was not filtered
                             // by the loglet itself, we skip it ourselves and advance the
                             // read_pointer.
-                            if let Some(data_record) = record.as_record()
-                                && !data_record.matches_key_query(this.filter)
-                            {
-                                // read_pointer is already advanced, just don't return the
-                                // record and fast-forward.
-                                continue;
+                            if let Some(data_record) = record.as_record() {
+                                if !data_record.matches_key_query(this.filter) {
+                                    // read_pointer is already advanced, just don't return the
+                                    // record and fast-forward.
+                                    continue;
+                                }
+                                *this.records_read += 1;
+                                *this.bytes_read +=
+                                    data_record.encoded_body_size().unwrap_or_default() as u64;
                             }
 
                             update_shared_state(&this);
@@ -757,6 +765,8 @@ fn update_shared_state(this: &ReadStreamProj) {
     };
     let mut shared = this.shared_state.lock();
     shared.read_pointer = *this.read_pointer;
+    shared.records_read = *this.records_read;
+    shared.bytes_read = *this.bytes_read;
     shared.state = state_name(&this.state);
     shared.safe_known_tail = safe_tail;
     if let Some((loglet_id, segment)) = current_loglet {
@@ -774,6 +784,7 @@ mod tests {
 
     use std::sync::atomic::AtomicUsize;
 
+    use bytes::BytesMut;
     use googletest::prelude::*;
     use tokio_stream::StreamExt;
     use tracing::info;
@@ -787,6 +798,7 @@ mod tests {
     use restate_types::logs::metadata::{ProviderKind, new_single_node_loglet_params};
     use restate_types::logs::{KeyFilter, SequenceNumber};
     use restate_types::metadata::Precondition;
+    use restate_types::storage::StorageCodec;
 
     use crate::loglet::FindTailOptions;
     use crate::{BifrostService, ErrorRecoveryStrategy};
@@ -1128,6 +1140,26 @@ mod tests {
         let record = reader.next().await.expect("to stay alive")?;
         assert_that!(record.sequence_number(), eq(Lsn::new(16)));
         assert_that!(record.decode_unchecked::<String>(), eq("segment-2-1000"));
+
+        // the stream counted every record it delivered, across the three segments, at the size
+        // the log stores it
+        let state = bifrost
+            .read_stream_registry()
+            .snapshot()
+            .into_iter()
+            .find(|state| state.log_id == LOG_ID)
+            .expect("the reader is registered");
+        assert_eq!(state.records_read, 16);
+        let encoded_size = |body: String| {
+            let mut buf = BytesMut::new();
+            StorageCodec::encode(&body, &mut buf).unwrap();
+            buf.len() as u64
+        };
+        let bodies = (1..=10)
+            .map(|i| format!("segment-1-{i}"))
+            .chain((11..=15).map(|i| format!("segment-2-{i}")))
+            .chain(["segment-2-1000".to_owned()]);
+        assert_eq!(state.bytes_read, bodies.map(encoded_size).sum::<u64>());
 
         Ok(())
     }

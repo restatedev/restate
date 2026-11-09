@@ -106,4 +106,6 @@ fn append_row(
     }
 
     row.is_tailing(state.end_lsn == Lsn::MAX);
+    row.records_read(state.records_read);
+    row.bytes_read(state.bytes_read);
 }

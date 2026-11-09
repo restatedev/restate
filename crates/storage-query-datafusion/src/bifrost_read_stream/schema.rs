@@ -35,5 +35,10 @@ define_table!(
         current_segment: DataType::UInt32,
         /// Whether this is a tailing read stream (end_lsn == MAX).
         is_tailing: DataType::Boolean,
+        /// Data records the stream has delivered to its reader since it was created, across
+        /// all segments.
+        records_read: DataType::UInt64,
+        /// The size in bytes of those records' bodies, as the log stores them.
+        bytes_read: DataType::UInt64,
     )
 );
