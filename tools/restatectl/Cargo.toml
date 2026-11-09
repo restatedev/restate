@@ -68,6 +68,7 @@ json-patch = "4.2.0"
 humantime = { workspace = true }
 prost-types = { workspace = true }
 rand = { workspace = true }
+ratatui = { workspace = true }
 rustls = { workspace = true, features = ["aws-lc-rs"]}
 serde = { workspace = true }
 serde_json = { workspace = true }
