@@ -27,7 +27,7 @@ use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::{Seq, VQueueId};
-use restate_types::{LimitKey, RestateVersion};
+use restate_types::{LimitKey, Priority, RestateVersion};
 use restate_util_string::ReString;
 
 use crate::Result;
@@ -520,6 +520,7 @@ pub struct PreFlightInvocationMetadata {
     pub timestamps: StatusTimestamps,
     pub vqueue_id: Option<VQueueId>,
     pub limit_key: LimitKey<ReString>,
+    pub priority: Priority,
 
     // --- From ServiceInvocation
     pub invocation_target: InvocationTarget,
@@ -585,6 +586,7 @@ impl PreFlightInvocationMetadata {
         Self {
             vqueue_id,
             limit_key: service_invocation.limit_key,
+            priority: service_invocation.priority,
             response_sinks: service_invocation.response_sink.into_iter().collect(),
             timestamps: StatusTimestamps::init(created_at),
             invocation_target: service_invocation.invocation_target,
@@ -651,6 +653,7 @@ pub struct InFlightInvocationMetadata {
     pub invocation_target: InvocationTarget,
     pub vqueue_id: Option<VQueueId>,
     pub limit_key: LimitKey<ReString>,
+    pub priority: Priority,
     /// Restate version the invocation was created with.
     ///
     /// This is agreed among replicas, but be aware **it might come from the future**.
@@ -706,6 +709,7 @@ impl InFlightInvocationMetadata {
                     invocation_target: pre_flight_invocation_metadata.invocation_target,
                     vqueue_id: pre_flight_invocation_metadata.vqueue_id,
                     limit_key: pre_flight_invocation_metadata.limit_key,
+                    priority: pre_flight_invocation_metadata.priority,
                     created_using_restate_version: pre_flight_invocation_metadata
                         .created_using_restate_version,
                     journal_metadata: JournalMetadata::initialize(span_context),
@@ -733,6 +737,7 @@ impl InFlightInvocationMetadata {
                     invocation_target: pre_flight_invocation_metadata.invocation_target,
                     vqueue_id: pre_flight_invocation_metadata.vqueue_id,
                     limit_key: pre_flight_invocation_metadata.limit_key,
+                    priority: pre_flight_invocation_metadata.priority,
                     created_using_restate_version: pre_flight_invocation_metadata
                         .created_using_restate_version,
                     journal_metadata,
@@ -781,6 +786,7 @@ pub struct CompletedInvocation {
     pub vqueue_id: Option<VQueueId>,
     pub invocation_target: InvocationTarget,
     pub limit_key: LimitKey<ReString>,
+    pub priority: Priority,
     /// Restate version the invocation was created with.
     ///
     /// This is agreed among replicas, but be aware **it might come from the future**.
@@ -850,6 +856,7 @@ impl CompletedInvocation {
             invocation_target: metadata.invocation_target,
             vqueue_id: metadata.vqueue_id,
             limit_key: metadata.limit_key,
+            priority: metadata.priority,
             created_using_restate_version: metadata.created_using_restate_version,
             source: metadata.source,
             execution_time: metadata.execution_time,
@@ -879,6 +886,7 @@ impl CompletedInvocation {
             invocation_target: in_flight_invocation_metadata.invocation_target,
             vqueue_id: in_flight_invocation_metadata.vqueue_id,
             limit_key: in_flight_invocation_metadata.limit_key,
+            priority: in_flight_invocation_metadata.priority,
             created_using_restate_version: in_flight_invocation_metadata
                 .created_using_restate_version,
             source: in_flight_invocation_metadata.source,
@@ -1012,6 +1020,7 @@ mod test_util {
                 ),
                 vqueue_id: Some(VQueueId::custom(partition_key, "MyKey")),
                 limit_key: LimitKey::None,
+                priority: Priority::Normal,
                 created_using_restate_version: RestateVersion::current(),
                 response_sinks: HashSet::new(),
                 timestamps: StatusTimestamps::mock(),
@@ -1040,6 +1049,7 @@ mod test_util {
                 ),
                 vqueue_id: None,
                 limit_key: LimitKey::None,
+                priority: Priority::Normal,
                 created_using_restate_version: RestateVersion::current(),
                 response_sinks: HashSet::new(),
                 timestamps: StatusTimestamps::mock(),
@@ -1070,6 +1080,7 @@ mod test_util {
                 ),
                 vqueue_id: Some(VQueueId::custom(partition_key, "MyKey")),
                 limit_key: LimitKey::None,
+                priority: Priority::Normal,
                 created_using_restate_version: RestateVersion::current(),
                 journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
                 pinned_deployment: None,
@@ -1095,6 +1106,7 @@ mod test_util {
                 ),
                 vqueue_id: None,
                 limit_key: LimitKey::None,
+                priority: Priority::Normal,
                 created_using_restate_version: RestateVersion::current(),
                 journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
                 pinned_deployment: None,
@@ -1128,6 +1140,7 @@ mod test_util {
                 ),
                 vqueue_id: Some(VQueueId::custom(partition_key, "MyKey")),
                 limit_key: LimitKey::None,
+                priority: Priority::Normal,
                 created_using_restate_version: RestateVersion::current(),
                 source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
                 execution_time: None,
@@ -1157,6 +1170,7 @@ mod test_util {
                 ),
                 vqueue_id: None,
                 limit_key: LimitKey::None,
+                priority: Priority::Normal,
                 created_using_restate_version: RestateVersion::current(),
                 source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
                 execution_time: None,

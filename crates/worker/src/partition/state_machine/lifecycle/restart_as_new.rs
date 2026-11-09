@@ -312,6 +312,7 @@ where
             source: Source::RestartAsNew(invocation_id),
             vqueue_id: qid,
             limit_key: completed_invocation.limit_key,
+            priority: completed_invocation.priority,
             completion_retention_duration: completed_invocation.completion_retention_duration,
             journal_retention_duration: completed_invocation.journal_retention_duration,
             random_seed,

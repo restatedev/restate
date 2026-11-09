@@ -3800,6 +3800,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                         journal_retention_duration: Default::default(),
                         idempotency_key: request.idempotency_key,
                         limit_key: Default::default(),
+                        priority: invocation_metadata.priority,
                         submit_notification_sink: None,
                         restate_version: RestateVersion::current(),
                     };
@@ -3849,6 +3850,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     journal_retention_duration: Default::default(),
                     idempotency_key: request.idempotency_key,
                     limit_key: Default::default(),
+                    priority: invocation_metadata.priority,
                     submit_notification_sink: None,
                     restate_version: RestateVersion::current(),
                 };

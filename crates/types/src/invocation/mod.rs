@@ -39,6 +39,7 @@ use crate::identifiers::{
 use crate::invocation::client::PatchDeploymentId;
 use crate::journal_v2::{CompletionId, GetInvocationOutputResult, Signal};
 use crate::limit_key::LimitKey;
+use crate::priority::Priority;
 use crate::time::MillisSinceEpoch;
 use crate::{GenerationalNodeId, LockName, RestateVersion, ServiceName};
 
@@ -473,6 +474,11 @@ pub struct InvocationRequestHeader {
     #[serde(default, skip_serializing_if = "LimitKey::is_none")]
     pub limit_key: LimitKey<ReString>,
 
+    /// Scheduling priority of the invocation.
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "Priority::is_normal")]
+    pub priority: Priority,
+
     /// Retention duration of the completed status.
     /// If zero, the completed status is not retained.
     #[serde(default)]
@@ -495,6 +501,7 @@ impl InvocationRequestHeader {
             idempotency_key: None,
             execution_time: None,
             limit_key: LimitKey::None,
+            priority: Priority::Normal,
             completion_retention_duration: Duration::ZERO,
             journal_retention_duration: Duration::ZERO,
         }
@@ -594,6 +601,11 @@ pub struct ServiceInvocation {
     #[serde(default, skip_serializing_if = "LimitKey::is_none")]
     pub limit_key: LimitKey<ReString>,
 
+    /// Scheduling priority of the invocation.
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "Priority::is_normal")]
+    pub priority: Priority,
+
     // Where to send the response, if any
     pub response_sink: Option<ServiceInvocationResponseSink>,
     /// Where to send the submit notification, if any.
@@ -633,6 +645,7 @@ impl ServiceInvocation {
             ),
             idempotency_key: request.header.idempotency_key,
             limit_key: request.header.limit_key,
+            priority: request.header.priority,
             response_sink: None,
             submit_notification_sink: None,
             restate_version: RestateVersion::current(),
@@ -657,6 +670,7 @@ impl ServiceInvocation {
             journal_retention_duration: Duration::ZERO,
             idempotency_key: None,
             limit_key: LimitKey::None,
+            priority: Priority::Normal,
             submit_notification_sink: None,
             restate_version: RestateVersion::current(),
         }
@@ -1589,6 +1603,8 @@ mod serde_hacks {
         pub idempotency_key: Option<ByteString>,
         #[serde(default, skip_serializing_if = "LimitKey::is_none")]
         pub limit_key: LimitKey<ReString>,
+        #[serde(default, skip_serializing_if = "Priority::is_normal")]
+        pub priority: Priority,
         pub response_sink: Option<ServiceInvocationResponseSink>,
         pub submit_notification_sink: Option<SubmitNotificationSink>,
 
@@ -1624,6 +1640,7 @@ mod serde_hacks {
                 journal_retention_duration,
                 idempotency_key,
                 limit_key,
+                priority,
                 response_sink,
                 submit_notification_sink,
                 restate_version,
@@ -1641,6 +1658,7 @@ mod serde_hacks {
                 journal_retention_duration,
                 idempotency_key,
                 limit_key,
+                priority,
                 response_sink: response_sink.map(Into::into),
                 submit_notification_sink: submit_notification_sink.map(Into::into),
                 source: match source {
@@ -1672,6 +1690,7 @@ mod serde_hacks {
                 journal_retention_duration,
                 idempotency_key,
                 limit_key,
+                priority,
                 response_sink,
                 submit_notification_sink,
                 restate_version,
@@ -1694,6 +1713,7 @@ mod serde_hacks {
                 journal_retention_duration,
                 idempotency_key,
                 limit_key,
+                priority,
                 response_sink: response_sink.map(Into::into),
                 submit_notification_sink: submit_notification_sink.map(Into::into),
                 restate_version,
@@ -1923,6 +1943,7 @@ mod mocks {
                 journal_retention_duration: Duration::ZERO,
                 idempotency_key: None,
                 limit_key: LimitKey::None,
+                priority: Priority::Normal,
                 submit_notification_sink: None,
                 restate_version: RestateVersion::current(),
             }
@@ -1948,6 +1969,7 @@ mod mocks {
                 idempotency_key: None,
                 execution_time: None,
                 limit_key: LimitKey::None,
+                priority: Priority::Normal,
                 completion_retention_duration: Default::default(),
                 journal_retention_duration: Default::default(),
             }

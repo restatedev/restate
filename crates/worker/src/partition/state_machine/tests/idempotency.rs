@@ -15,6 +15,7 @@ use restate_storage_api::inbox_table::{InboxEntry, ReadInboxTable, SequenceNumbe
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, JournalMetadata, StatusTimestamps,
 };
+use restate_types::Priority;
 use restate_types::identifiers::PartitionProcessorRpcRequestId;
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationTarget, PurgeInvocationRequest,
@@ -121,6 +122,7 @@ async fn complete_already_completed_invocation() {
         &InvocationStatus::Completed(CompletedInvocation {
             vqueue_id: None,
             limit_key: LimitKey::None,
+            priority: Priority::Normal,
             invocation_target: invocation_target.clone(),
             created_using_restate_version: RestateVersion::current(),
             source: Source::Ingress(PartitionProcessorRpcRequestId::new()),

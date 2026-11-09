@@ -80,6 +80,7 @@ fn invoke_cmd() -> Command {
         journal_retention_duration: Default::default(),
         idempotency_key: Some(idempotency_key),
         limit_key: Default::default(),
+        priority: Default::default(),
         response_sink: Some(
             restate_types::invocation::ServiceInvocationResponseSink::Ingress { request_id },
         ),

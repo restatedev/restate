@@ -127,6 +127,7 @@ where
             journal_retention_duration,
             idempotency_key,
             limit_key,
+            priority: caller_invocation_metadata.priority,
             ..ServiceInvocation::initialize(
                 invocation_id,
                 invocation_target,
@@ -160,6 +161,7 @@ mod tests {
     use bytes::Bytes;
     use googletest::prelude::{all, assert_that, contains, eq, none, pat};
     use googletest::{elements_are, property};
+    use restate_types::Priority;
     use restate_types::identifiers::{InvocationId, ServiceId};
     use restate_types::invocation::{
         Header, InvocationResponse, InvocationTarget, JournalCompletionTarget, ResponseResult,
@@ -273,6 +275,11 @@ mod tests {
         let mut test_env = TestEnv::create().await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
         fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
+        test_env
+            .modify_invocation_status(invocation_id, |status| {
+                status.get_invocation_metadata_mut().unwrap().priority = Priority::High;
+            })
+            .await;
 
         let invocation_id_completion_id = 1;
         let callee_service_id = ServiceId::mock_random();
@@ -316,6 +323,7 @@ mod tests {
                                 } else {
                                     None
                                 }),
+                                priority: eq(Priority::High),
                                 response_sink: none()
                             }
                         ))

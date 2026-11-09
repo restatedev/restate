@@ -272,6 +272,8 @@ message InvocationStatusV2 {
   // Sequence number of the record that created this invocation. Combined with
   // the invocation id, it forms the canonical id of this invocation.
   optional uint64 creation_seq = 36;
+  // Scheduling priority, 0 means normal.
+  uint32 priority = 37;
 }
 
 
@@ -335,6 +337,7 @@ message InvocationStatusV2Lazy {
   // Binary-encoded vqueue id. Empty if this invocation was not migrated to vqueues.
   optional bytes vqueue_id = 34;
   optional uint64 creation_seq = 36;
+  uint32 priority = 37;
 }
 
 message VirtualObjectStatus {
@@ -418,6 +421,8 @@ message ServiceInvocation {
   // "level1" or "level1/level2" which requires parsing on read. Check whether a dedicated
   // Protobuf message would be faster to serialize/deserialize.
   string limit_key = 15;
+  // Scheduling priority, 0 means normal.
+  uint32 priority = 16;
 }
 
 message StateMutation {

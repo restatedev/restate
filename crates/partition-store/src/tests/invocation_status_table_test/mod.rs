@@ -31,7 +31,7 @@ use restate_types::invocation::{
 use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::Seq;
-use restate_types::{LimitKey, RestateVersion};
+use restate_types::{LimitKey, Priority, RestateVersion};
 
 const INVOCATION_TARGET_1: InvocationTarget = InvocationTarget::VirtualObject {
     name: ByteString::from_static("abc"),
@@ -82,6 +82,7 @@ fn invoked_status(invocation_target: InvocationTarget) -> InvocationStatus {
         created_using_restate_version: RestateVersion::current(),
         vqueue_id: None,
         limit_key: LimitKey::None,
+        priority: Priority::Live,
         journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
         pinned_deployment: None,
         response_sinks: HashSet::new(),
@@ -110,6 +111,7 @@ fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
             invocation_target,
             vqueue_id: None,
             limit_key: LimitKey::None,
+            priority: Priority::Normal,
             created_using_restate_version: RestateVersion::current(),
             journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
             pinned_deployment: None,
