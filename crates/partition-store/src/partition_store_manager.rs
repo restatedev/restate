@@ -361,59 +361,58 @@ impl PartitionStoreManager {
         // target-lsn target higher than our local state (probably due to seeing a log trim-gap).
         // **
 
-        // Attempt to get the latest available snapshot from the snapshot repository:
-        let snapshot = match self
+        // Attempt to get a suitable snapshot from the repository:
+        let snapshot_result = self
             .snapshots
-            .download_latest_snapshot(partition.partition_id, cancellation)
-            .await
-        {
-            Ok(snapshot) => snapshot,
-            Err(_) if cancellation.is_cancelled() => return Err(OpenError::Cancelled),
-            Err(err) => return Err(OpenError::Snapshot(err)),
-        };
+            .download_snapshot(partition.partition_id, target_lsn, cancellation)
+            .await;
+        if snapshot_result.is_err() && cancellation.is_cancelled() {
+            return Err(OpenError::Cancelled);
+        }
 
-        match (snapshot, target_lsn) {
-            (None, None) => {
-                debug!("No snapshot found for partition, creating new partition store");
-                let db = cell.provision(&mut state_guard, database).await?;
-                Ok(PartitionStore::from(db))
-            }
-
-            (Some(snapshot), None) => {
+        match (snapshot_result, target_lsn) {
+            (Ok(Some(snapshot)), None) => {
                 info!("Found partition snapshot, restoring it");
                 let db = cell.import_cf(&mut state_guard, snapshot, database).await?;
-
                 Ok(PartitionStore::from(db))
             }
 
-            // Good snapshot
-            (Some(snapshot), Some(fast_forward_lsn))
-                if snapshot.min_applied_lsn >= fast_forward_lsn =>
-            {
+            (Ok(Some(snapshot)), Some(fast_forward_lsn)) => {
+                // Got a snapshot that meets the target LSN requirement (filtered by candidate LSN
+                // and re-verified against the downloaded metadata in `download_snapshot`).
                 info!(
-                    latest_snapshot_lsn = %snapshot.min_applied_lsn,
+                    snapshot_lsn = %snapshot.min_applied_lsn,
                     %fast_forward_lsn,
                     "Found snapshot with LSN >= target LSN, dropping local partition store state",
                 );
                 let db = cell.import_cf(&mut state_guard, snapshot, database).await?;
                 Ok(PartitionStore::from(db))
             }
-            (maybe_snapshot, Some(fast_forward_lsn)) => {
-                // Play it safe and keep the partition store intact; we can't do much else at this
-                // point. We'll likely halt again as soon as the processor starts up.
+
+            (Ok(None), None) => {
+                debug!("No snapshot found for partition, creating new partition store");
+                let db = cell.provision(&mut state_guard, database).await?;
+                Ok(PartitionStore::from(db))
+            }
+
+            (Err(err), _) => {
+                // A snapshot may well exist but we failed to fetch it (transient repository error,
+                // or every retained candidate failed to download). Do NOT provision an empty store
+                // and silently discard data; fail the open so the processor retries later.
+                Err(OpenError::Snapshot(err))
+            }
+
+            // We required a snapshot (fast-forward target) but none exists at or above the
+            // target LSN.
+            (Ok(None), Some(fast_forward_lsn)) => {
                 let recovery_guide_msg = "The partition's log is trimmed to a point from which this processor can not resume. \
                 Visit https://docs.restate.dev/server/clusters#handling-missing-snapshots \
                 to learn more about how to recover this processor.";
 
-                if let Some(snapshot) = maybe_snapshot {
-                    warn!(
-                        latest_snapshot_lsn = %snapshot.min_applied_lsn,
-                        %fast_forward_lsn,
-                        "The latest available snapshot is from an LSN before the target LSN! {}",
-                        recovery_guide_msg,
-                    );
-                    Err(OpenError::SnapshotUnsuitable)
-                } else if !self.snapshots.is_repository_configured() {
+                metrics::counter!(crate::metric_definitions::SNAPSHOT_FAST_FORWARD_FAILED)
+                    .increment(1);
+
+                if !self.snapshots.is_repository_configured() {
                     error!(
                         %fast_forward_lsn,
                         "A log trim gap was encountered, but no snapshot repository is configured! {}",
@@ -423,7 +422,7 @@ impl PartitionStoreManager {
                 } else {
                     error!(
                         %fast_forward_lsn,
-                        "A log trim gap was encountered, but no snapshot is available for this partition! {}",
+                        "A log trim gap was encountered, but no suitable snapshot is available for this partition! {}",
                         recovery_guide_msg,
                     );
                     Err(OpenError::SnapshotRequired)
