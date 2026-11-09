@@ -12,7 +12,7 @@
 
 use std::collections::BTreeSet;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use itertools::Itertools;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Flex, Layout, Margin, Rect};
@@ -329,7 +329,7 @@ fn node_card(
             theme::muted(),
         ),
         Liveness::Dead => span(
-            format!(" dead {} ", ago(node.last_seen_alive)),
+            format!(" dead {} ", ago(node.last_seen_alive, view.captured_at)),
             theme::fg(RED),
         ),
         Liveness::Unknown => span(" unknown ", theme::fg(AMBER)),
@@ -1602,7 +1602,8 @@ pub fn partitions_table<'a>(
 
 /// A row per partition processor, grouped by partition, and a row per replica set member that
 /// runs none.
-pub fn replicas_table(partitions: &[&PartitionView], extra: bool) -> RichTable {
+/// The partitions' replicas, with their ages as of `now`.
+pub fn replicas_table(partitions: &[&PartitionView], extra: bool, now: DateTime<Utc>) -> RichTable {
     let mut rows = Vec::new();
     for p in partitions {
         let mut members: Vec<(PlainNodeId, Option<&ReplicaView>)> = p
@@ -1682,9 +1683,7 @@ pub fn replicas_table(partitions: &[&PartitionView], extra: bool) -> RichTable {
                 Replay::Starting => span("starting", theme::fg(AMBER)),
                 Replay::Unknown => span("unknown", theme::fg(RED)),
             };
-            let stale = r
-                .updated_at
-                .is_some_and(|t| (Utc::now() - t).num_seconds() > 30);
+            let stale = r.updated_at.is_some_and(|t| (now - t).num_seconds() > 30);
             row.extend([
                 Line::from(vec![
                     span(tree, theme::border()),
@@ -1712,7 +1711,7 @@ pub fn replicas_table(partitions: &[&PartitionView], extra: bool) -> RichTable {
                 Line::from(opt_num(r.durable_lsn)),
                 Line::from(opt_num(r.archived_lsn)),
                 Line::from(span(
-                    ago(r.updated_at),
+                    ago(r.updated_at, now),
                     if stale {
                         theme::fg(AMBER)
                     } else {
@@ -1735,7 +1734,7 @@ pub fn replicas_table(partitions: &[&PartitionView], extra: bool) -> RichTable {
                     Line::from(raw(r
                         .rule_book_version
                         .map_or_else(|| "-".to_owned(), |v| format!("v{v}")))),
-                    Line::from(span(ago(r.last_record_applied_at), theme::muted())),
+                    Line::from(span(ago(r.last_record_applied_at, now), theme::muted())),
                     Line::from(span(list(&r.features), theme::muted())),
                     Line::from(span(list(&r.storage_features), theme::muted())),
                 ]);
@@ -1867,7 +1866,10 @@ pub fn logs_table<'a>(
             Line::from(nodeset),
         ];
         if show_since {
-            row.push(Line::from(span(ago(log.created_at), theme::muted())));
+            row.push(Line::from(span(
+                ago(log.created_at, view.captured_at),
+                theme::muted(),
+            )));
         }
         if show_replication {
             row.push(Line::from(raw(log
@@ -2146,7 +2148,7 @@ pub fn nodes_table(view: &ClusterView, nodes: &[&NodeView], compact: bool) -> Ri
             }
             Liveness::Alive => span("● alive", theme::fg(GREEN)),
             Liveness::Dead => span(
-                format!("✗ dead {}", ago(node.last_seen_alive)),
+                format!("✗ dead {}", ago(node.last_seen_alive, view.captured_at)),
                 theme::fg(RED).add_modifier(Modifier::BOLD),
             ),
             Liveness::Unknown => span("? unknown", theme::fg(AMBER)),

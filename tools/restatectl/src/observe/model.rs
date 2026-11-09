@@ -30,8 +30,8 @@ use restate_types::protobuf::cluster::{
 use restate_types::replication::NodeSetChecker;
 use restate_types::{GenerationalNodeId, PlainNodeId, Version, Versioned};
 
-use super::Snapshot;
-use super::sql::LogletWorkerRow;
+use super::sql::{LogletWorkerRow, SqlData};
+use super::{Sample, Snapshot};
 use crate::commands::log::deserialize_replicated_log_params;
 
 #[derive(Serialize)]
@@ -56,6 +56,9 @@ pub struct ClusterView {
     /// without it, which nodes are alive and which processors run is unknown
     #[serde(skip)]
     pub has_cluster_state: bool,
+    /// the file the status was read from, when it isn't the cluster's current one
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
 }
 
 /// The error of a metadata server that can't report its status: it isn't replicated.
@@ -540,18 +543,26 @@ impl LogView {
 impl ClusterView {
     pub fn build(snapshot: Snapshot) -> Self {
         let Snapshot {
-            captured_at,
             nodes_config,
             partition_table,
             logs,
-            cluster_state,
             idents,
             mut metadata_servers,
-            sql,
+            mut tables,
             nodes_probed,
             mut dialed,
-            warnings,
+            mut warnings,
+            sample,
         } = snapshot;
+        let Sample {
+            captured_at,
+            cluster_state,
+            tables: sampled,
+            warnings: sample_warnings,
+        } = sample;
+        warnings.extend(sample_warnings);
+        tables.extend(sampled);
+        let sql = SqlData::parse(&tables, &mut warnings);
         let has_cluster_state = cluster_state.is_some();
 
         let liveness = |node: PlainNodeId| -> (Liveness, Option<&State>) {
@@ -991,6 +1002,7 @@ impl ClusterView {
             warnings,
             nodes_probed,
             has_cluster_state,
+            file: None,
         }
     }
 

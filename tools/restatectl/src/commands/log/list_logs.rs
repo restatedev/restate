@@ -19,7 +19,7 @@ use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::watcher::Watch;
 use restate_cli_util::{c_print, c_println};
 
-use crate::commands::status::provider_label;
+use crate::commands::status::{Source, provider_label};
 use crate::connection::ConnectionInfo;
 use crate::observe::{
     ClusterView, Finding, LogPlacement, LogProvider, LogView, SOURCE_UNAVAILABLE, SequencerState,
@@ -45,6 +45,9 @@ pub struct ListLogsOpts {
     #[arg(long, help_heading = preview::HEADING)]
     unhealthy: bool,
 
+    #[clap(flatten)]
+    source: Source,
+
     #[clap(flatten, next_help_heading = preview::HEADING)]
     watch: Watch,
 }
@@ -68,7 +71,7 @@ pub async fn list_logs(connection: &ConnectionInfo, opts: &ListLogsOpts) -> anyh
     // the dashboard shows every log; a selection refreshes the listing instead
     if opts.watch.is_enabled() && opts.logs.is_empty() && tui::can_run_dashboard() {
         return tui::dashboard::run(
-            connection,
+            opts.source.feed(connection)?,
             tui::dashboard::Options {
                 tab: tui::dashboard::Tab::Logs,
                 interval: opts.watch.interval(),
@@ -77,6 +80,9 @@ pub async fn list_logs(connection: &ConnectionInfo, opts: &ListLogsOpts) -> anyh
             },
         )
         .await;
+    }
+    if opts.source.is_file() {
+        return show_logs(connection, opts).await;
     }
     opts.watch
         .run(|| async {
@@ -87,7 +93,7 @@ pub async fn list_logs(connection: &ConnectionInfo, opts: &ListLogsOpts) -> anyh
 }
 
 async fn show_logs(connection: &ConnectionInfo, opts: &ListLogsOpts) -> anyhow::Result<()> {
-    let view = ClusterView::fetch(connection).await?;
+    let view = opts.source.view(connection).await?;
     let findings = analyze(&view);
     let severity = |log: &LogView| {
         findings
@@ -281,7 +287,7 @@ pub fn logs_table<'a>(view: &ClusterView, logs: impl IntoIterator<Item = &'a Log
             cell(nodeset(view, log)),
         ];
         if show_since {
-            row.push(cell(ago(log.created_at)));
+            row.push(cell(ago(log.created_at, view.captured_at)));
         }
         if show_replication {
             row.push(cell(opt(log.replication.as_deref())));
