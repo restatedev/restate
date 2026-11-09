@@ -31,11 +31,29 @@ pub struct Watch {
     #[clap(short, global = true)]
     watch: bool,
     /// Refresh interval of watch mode (-w), in seconds
-    #[clap(short = 'n', default_value = "1.0")]
+    #[clap(short = 'n', default_value = "1.0", value_parser = parse_interval)]
     interval: f32,
 }
 
+fn parse_interval(value: &str) -> Result<f32, String> {
+    let secs: f32 = value.parse().map_err(|err| format!("{err}"))?;
+    match Duration::try_from_secs_f32(secs) {
+        Ok(interval) if !interval.is_zero() => Ok(secs),
+        _ => Err("must be a positive number of seconds".to_owned()),
+    }
+}
+
 impl Watch {
+    /// Whether watch mode was asked for (`-w`).
+    pub fn is_enabled(&self) -> bool {
+        self.watch
+    }
+
+    /// How often watch mode refreshes (`-n`).
+    pub fn interval(&self) -> Duration {
+        Duration::from_secs_f32(self.interval.max(0.1))
+    }
+
     pub async fn run<F, O>(&self, mut what: F) -> Result<()>
     where
         F: FnMut() -> O,

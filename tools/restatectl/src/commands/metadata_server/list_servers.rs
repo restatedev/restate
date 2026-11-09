@@ -27,6 +27,7 @@ use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::{PlainNodeId, Version};
 
 use crate::connection::ConnectionInfo;
+use crate::observe::ClusterView;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "list_metadata_servers")]
@@ -186,4 +187,64 @@ pub fn render_metadata_server_status(metadata_server_status: MetadataServerStatu
         MetadataServerStatus::Member => Cell::new("Member").fg(Color::Green),
         MetadataServerStatus::Standby => Cell::new("Standby"),
     }
+}
+
+/// The metadata servers' status as captured in `view`.
+pub fn metadata_servers_table(view: &ClusterView) -> Table {
+    let mut table = Table::new_styled();
+    table.set_styled_header(vec![
+        "NODE",
+        "STATUS",
+        "VERSION",
+        "LEADER",
+        "MEMBERS",
+        "APPLIED",
+        "COMMITTED",
+        "TERM",
+        "LOG-LENGTH",
+        "SNAP-INDEX",
+        "SNAP-SIZE",
+    ]);
+    for node in &view.nodes {
+        let Some(server) = &node.metadata_server else {
+            continue;
+        };
+        let status = match (&server.error, server.status.as_deref()) {
+            (Some(err), _) => Cell::new(err).fg(Color::Red),
+            (None, Some("member")) => Cell::new("member").fg(Color::Green),
+            (None, Some(status @ "standby")) => Cell::new(status),
+            (None, Some(status)) => Cell::new(status).fg(Color::Yellow),
+            (None, None) => Cell::new(&server.state),
+        };
+        let raft = server.raft.as_ref();
+        table.add_row(vec![
+            Cell::new(node.plain()),
+            status,
+            Cell::new(
+                server
+                    .config_version
+                    .map(|v| format!("v{v}"))
+                    .unwrap_or_else(|| "-".to_owned()),
+            ),
+            Cell::new(
+                server
+                    .leader
+                    .map(|l| l.to_string())
+                    .unwrap_or_else(|| "-".to_owned()),
+            ),
+            Cell::new(format!("[{}]", server.members.iter().join(","))),
+            Cell::new(raft.map(|r| r.applied).unwrap_or_default()),
+            Cell::new(raft.map(|r| r.committed).unwrap_or_default()),
+            Cell::new(raft.map(|r| r.term).unwrap_or_default()),
+            Cell::new(raft.map(|r| r.log_length).unwrap_or_default()),
+            Cell::new(raft.map(|r| r.snapshot_index).unwrap_or_default()),
+            Cell::new(
+                ByteSize::b(raft.map(|r| r.snapshot_size).unwrap_or_default())
+                    .display()
+                    .iec()
+                    .to_string(),
+            ),
+        ]);
+    }
+    table
 }

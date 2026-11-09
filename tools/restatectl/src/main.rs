@@ -43,7 +43,10 @@ async fn main() -> ClingFinished<CliApp> {
         std::process::exit(1);
     });
 
-    Cling::parse_and_run().await
+    match restatectl::preview::parse::<CliApp>() {
+        Ok(app) => Cling::new(app).run().await,
+        Err(err) => err.exit(),
+    }
 }
 
 #[cfg(test)]
