@@ -346,16 +346,15 @@ where
                             .with_ref_count(initial_ref_count)
                             .build(&output),
                     )?;
-                    Some(ResponseResultRef::Completed(CompletedResult {
-                        blob_id,
-                        status,
-                    }))
+                    ResponseResultRef::Completed(CompletedResult { blob_id, status })
                 } else {
-                    None
+                    // Nothing will reference the blob (no completion retention and no partition
+                    // processor sinks), inline the result for the remaining ingress sinks.
+                    ResponseResultRef::from(output.clone())
                 }
             } else {
                 // always inline, we can't reference the output entry
-                Some(match reason {
+                match reason {
                     EndInvocationReason::Killed => {
                         ResponseResultRef::Failure(KILLED_INVOCATION_ERROR)
                     }
@@ -369,7 +368,7 @@ where
                             ResponseResult::Failure(err) => ResponseResultRef::Failure(err.clone()),
                         }
                     }
-                })
+                }
             };
 
             // Notify invocation result
@@ -384,12 +383,10 @@ where
             );
 
             // Send responses out
-            if let Some(response_result_ref) = response_result_ref.clone()
-                && !invocation_metadata.response_sinks.is_empty()
-            {
+            if !invocation_metadata.response_sinks.is_empty() {
                 ctx.send_response_to_sinks(
                     invocation_metadata.response_sinks.clone(),
-                    response_result_ref,
+                    response_result_ref.clone(),
                     Some(invocation_id),
                     None,
                     Some(&invocation_metadata.invocation_target),
@@ -398,8 +395,6 @@ where
             }
             // Store the completed status, if needed
             if !completion_retention.is_zero() {
-                let response_result_ref = response_result_ref.expect("is some");
-
                 let completed_invocation = CompletedInvocation::from_in_flight_invocation_metadata(
                     invocation_metadata,
                     if journal_retention.is_zero() {
