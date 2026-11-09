@@ -36,6 +36,16 @@ pub struct Watch {
 }
 
 impl Watch {
+    /// Whether watch mode was asked for (`-w`).
+    pub fn is_enabled(&self) -> bool {
+        self.watch
+    }
+
+    /// How often watch mode refreshes (`-n`).
+    pub fn interval(&self) -> Duration {
+        Duration::from_secs_f32(self.interval.max(0.1))
+    }
+
     pub async fn run<F, O>(&self, mut what: F) -> Result<()>
     where
         F: FnMut() -> O,

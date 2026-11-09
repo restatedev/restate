@@ -8,418 +8,639 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::time::Duration;
+use std::path::{Path, PathBuf};
 
-use anyhow::Context;
+use chrono::{DateTime, Local, Utc};
 use clap::Parser;
 use cling::{Collect, Run};
+use crossterm::style::Color;
 use itertools::Itertools;
-use tonic::{Code, IntoRequest};
-use tracing::{error, warn};
+use serde::Serialize;
+use tracing::warn;
 
-use restate_cli_util::_comfy_table::{Cell, Color, Row, Table};
+use restate_cli_util::_comfy_table::{Color as CellColor, Table};
 use restate_cli_util::ui::console::StyledTable;
-use restate_cli_util::{CliContext, c_println};
-use restate_core::protobuf::cluster_ctrl_svc::{ClusterStateRequest, new_cluster_ctrl_client};
-use restate_metadata_server_grpc::grpc::new_metadata_server_client;
-use restate_types::health::MetadataServerStatus;
-use restate_types::logs::metadata::Logs;
-use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
-use restate_types::protobuf::cluster::node_state::State;
-use restate_types::protobuf::cluster::{AliveNode, BrokenReason, RunMode};
-use restate_types::{GenerationalNodeId, NodeId};
-use restate_util_time::DurationExt;
+use restate_cli_util::ui::watcher::Watch;
+use restate_cli_util::{c_eprintln, c_print, c_println, c_success, c_tip, c_warn};
+use restate_memory::ByteCount;
 
-use crate::commands::log::list_logs::{ListLogsOpts, list_logs};
-use crate::commands::metadata_server::list_servers::{ListMetadataServers, list_metadata_servers};
-use crate::commands::node::list_nodes::{ListNodesOpts, list_nodes, list_nodes_lite};
-use crate::commands::partition::list::{ListPartitionsOpts, list_partitions};
+use crate::commands::log::list_logs::logs_table;
+use crate::commands::metadata_server::list_servers::metadata_servers_table;
+use crate::commands::node::list_nodes::{ListNodesOpts, list_nodes_lite};
+use crate::commands::partition::list::partitions_table;
 use crate::connection::{ConnectionInfo, ConnectionInfoError};
-use crate::util::grpc_channel;
+use crate::observe::dump::{self, Dump};
+use crate::observe::{
+    ClusterView, Finding, LogProvider, LogView, NodeView, PartitionView, Summary, Versions,
+    analyze, short_duration,
+};
+use crate::preview;
+use crate::render::{
+    ROLE_LEGEND, Verdict, bold, cell, cell_fg, dim, findings_list, paint, partition_health_strip,
+    print_json, role_flags, snapshot_taken,
+};
+use crate::tui::dashboard::Feed;
+use crate::tui::{self, Presentation};
 
-use super::log::deserialize_replicated_log_params;
-use super::metadata_server::list_servers::render_metadata_server_status;
+mod legacy;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "cluster_status")]
+#[command(after_long_help = preview::enabled().then_some(STATUS_HELP))]
 pub struct ClusterStatusOpts {
     /// Display additional status information
-    #[arg(long)]
+    #[arg(long, short = preview::enabled().then_some('x'))]
     extra: bool,
+
+    /// Save the cluster's status to a file, to look at later or elsewhere with --file. Takes 5
+    /// seconds to sample what changes by the second. Defaults to
+    /// restate-status-<cluster>-<time>.json.zst in the current directory
+    #[arg(
+        long,
+        value_name = "PATH",
+        num_args = 0..=1,
+        conflicts_with_all = ["file", "watch"],
+        help_heading = preview::HEADING
+    )]
+    dump: Option<Option<PathBuf>>,
+
+    #[clap(flatten)]
+    source: Source,
+
+    #[clap(flatten, next_help_heading = preview::HEADING)]
+    watch: Watch,
 }
+
+/// Where the status comes from: the cluster, or a file written by `status --dump`.
+#[derive(clap::Args, Clone, Collect, Debug)]
+#[command(next_help_heading = preview::HEADING)]
+pub struct Source {
+    /// Show the status saved to a file by `restatectl status --dump` instead of the cluster's
+    #[arg(long, value_name = "PATH")]
+    file: Option<PathBuf>,
+}
+
+impl Source {
+    pub fn is_file(&self) -> bool {
+        self.file.is_some()
+    }
+
+    /// The cluster's status: its current one, or the newest in the file.
+    pub async fn view(&self, connection: &ConnectionInfo) -> anyhow::Result<ClusterView> {
+        match &self.file {
+            Some(path) => Ok(dump::load(path)?.pop().expect("a dump has a sample")),
+            None => Ok(ClusterView::fetch(connection).await?),
+        }
+    }
+
+    /// What the dashboard shows: the cluster as it changes, or the file's samples.
+    pub fn feed<'a>(&self, connection: &'a ConnectionInfo) -> anyhow::Result<Feed<'a>> {
+        Ok(match &self.file {
+            Some(path) => Feed::Recorded(dump::load(path)?),
+            None => Feed::Live(connection),
+        })
+    }
+}
+
+const STATUS_HELP: &str = "\
+The verdict is CRITICAL when part of the cluster is unavailable or needs intervention, DEGRADED \
+when it runs with reduced redundancy, and HEALTHY otherwise. Ongoing activity such as replica set \
+reconfigurations is listed without affecting the verdict.
+
+On a terminal that shows colors, the cluster is drawn as panels: a card per node with its \
+leadership, and a tile per partition whose color tells its health (green healthy, blue \
+reconfiguring, amber degraded, red unavailable) and whose left edge has the color of the node \
+leading it. With -w, a live dashboard opens instead: switch views with Tab or 1-5, select a \
+partition, log or node for its details and rates over time, and press ? for the keys. Use \
+--plain for text tables; output that isn't a terminal gets them anyway.
+
+With --json, the output is one document with the verdict, a summary, the nodes and the findings \
+(each with a severity, a stable code, its subject and a follow-up command); --extra adds the \
+partitions and logs.
+
+--dump saves everything restatectl reads about the cluster's status to one file, for a closer \
+look later or to send to someone helping you: the metadata, each node's report and the cluster's \
+system tables, with what changes by the second (partition processors, log tails, read streams) \
+sampled 5 times, a second apart, so that rates can be computed. It has the cluster's node \
+addresses and host names, and no application data. `status`, `partitions list` and `logs list` \
+show such a file with --file, and -w opens it in the dashboard.";
 
 async fn cluster_status(
     connection: &ConnectionInfo,
-    status_opts: &ClusterStatusOpts,
+    opts: &ClusterStatusOpts,
 ) -> anyhow::Result<()> {
-    if !status_opts.extra {
-        return match connection.get_nodes_configuration().await {
-            Ok(nodes_config) => compact_cluster_status(nodes_config, connection).await,
-            Err(ConnectionInfoError::MetadataValueNotAvailable { contacted_nodes }) => {
+    if !preview::enabled() {
+        return legacy::cluster_status(connection, opts.extra).await;
+    }
+    if let Some(path) = &opts.dump {
+        return dump_status(connection, path.as_deref()).await;
+    }
+    if opts.watch.is_enabled() && tui::can_run_dashboard() {
+        return tui::dashboard::run(
+            opts.source.feed(connection)?,
+            tui::dashboard::Options {
+                tab: tui::dashboard::Tab::Overview,
+                interval: opts.watch.interval(),
+                unhealthy_only: false,
+                partition_sort: tui::dashboard::PartitionSort::Partition,
+            },
+        )
+        .await;
+    }
+    if opts.source.is_file() {
+        // a file doesn't change: there's nothing to watch
+        return status(connection, opts).await;
+    }
+    opts.watch
+        .run(|| async {
+            connection.reset().await;
+            status(connection, opts).await
+        })
+        .await
+}
+
+/// Saves the cluster's status to `path`, or to a file named after the cluster and the time.
+async fn dump_status(connection: &ConnectionInfo, path: Option<&Path>) -> anyhow::Result<()> {
+    c_eprintln!(
+        "Reading the cluster's status, {} times a second apart…",
+        dump::SAMPLES
+    );
+    let dump = Dump::collect(connection).await?;
+    let path = path.map_or_else(|| default_dump_path(&dump), Path::to_owned);
+    let size = dump.write(&path)?;
+    let view = dump.views().pop().expect("a dump has a sample");
+    let findings = analyze(&view);
+    let file = path.display().to_string();
+
+    if Presentation::current() == Presentation::Json {
+        return print_json(&DumpReport {
+            file: &file,
+            bytes: size,
+            health: Verdict::of(&findings),
+            cluster_name: &view.cluster_name,
+            captured_at: view.captured_at,
+            samples: dump::SAMPLES,
+            warnings: &view.warnings,
+        });
+    }
+    c_success!("Saved the status of {} to {file}", view.cluster_name);
+    let summary = Summary::new(&view);
+    c_println!(
+        " {}  {}/{} nodes alive · {} partitions · {} logs · {} samples · {}",
+        Verdict::of(&findings).render(),
+        summary.nodes.alive,
+        summary.nodes.total,
+        view.partitions.len(),
+        view.logs.len(),
+        dump::SAMPLES,
+        ByteCount::from(size),
+    );
+    if !view.warnings.is_empty() {
+        c_warn!(
+            "Some of the status couldn't be read:\n{}",
+            view.warnings.join("\n")
+        );
+    }
+    c_tip!(
+        "The file has the cluster's node addresses and host names, and no application data. Look \
+         at it with `{}`, and -w for the dashboard.",
+        preview::command(format_args!("status --file {file}"))
+    );
+    Ok(())
+}
+
+/// `restate-status-<cluster>-<UTC time>.json.zst`
+fn default_dump_path(dump: &Dump) -> PathBuf {
+    let cluster: String = dump
+        .cluster_name()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    PathBuf::from(format!(
+        "restate-status-{cluster}-{}.json.zst",
+        dump.captured_at().format("%Y%m%dT%H%M%SZ")
+    ))
+}
+
+#[derive(Serialize)]
+struct DumpReport<'a> {
+    file: &'a str,
+    bytes: u64,
+    health: Verdict,
+    cluster_name: &'a str,
+    captured_at: DateTime<Utc>,
+    samples: usize,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    warnings: &'a [String],
+}
+
+async fn status(connection: &ConnectionInfo, opts: &ClusterStatusOpts) -> anyhow::Result<()> {
+    let view = match opts.source.view(connection).await {
+        Ok(view) => view,
+        Err(err) => {
+            if let Some(ConnectionInfoError::MetadataValueNotAvailable { contacted_nodes }) =
+                err.downcast_ref()
+            {
                 warn!(
                     "Could not read nodes configuration from cluster, using GetIdent responses to render basic list"
                 );
-
-                list_nodes_lite(&contacted_nodes, &ListNodesOpts { extra: false });
-
-                // short-circuit if called as part of `restatectl status`
-                Err(ConnectionInfoError::ClusterNotProvisioned.into())
+                list_nodes_lite(contacted_nodes, &ListNodesOpts { extra: false });
+                return Err(ConnectionInfoError::ClusterNotProvisioned.into());
             }
-            Err(err) => Err(err.into()),
-        };
+            return Err(err);
+        }
+    };
+    let findings = analyze(&view);
+
+    match Presentation::current() {
+        Presentation::Json => {
+            return print_json(&StatusReport::new(&view, &findings, opts.extra));
+        }
+        Presentation::Rich => {
+            tui::views::status(&view, &findings, opts.extra, tui::width()).print();
+            return Ok(());
+        }
+        Presentation::Plain => {}
     }
 
-    list_nodes(
-        connection,
-        &ListNodesOpts {
-            extra: status_opts.extra,
-        },
-    )
-    .await?;
-    c_println!();
+    c_println!("{}", header(&view, &findings));
+    c_println!("{}", nodes_table(&view, opts.extra));
+    c_println!(" {}", dim(format!("roles: {ROLE_LEGEND}")));
 
-    list_logs(connection, &ListLogsOpts {}).await?;
-    c_println!();
+    if !view.partitions.is_empty() {
+        c_println!();
+        c_println!(" {}", bold("PARTITIONS"));
+        c_println!("{}", partition_health_strip(&view));
+    }
 
-    list_partitions(connection, &ListPartitionsOpts::default()).await?;
-    c_println!();
+    if opts.extra {
+        c_println!(" {}", bold("METADATA SERVERS"));
+        c_println!("{}", metadata_servers_table(&view));
+        c_println!();
+        c_println!(" {}", bold("LOGS"));
+        c_println!("{}", logs_table(&view, &view.logs));
+        c_println!();
+        c_println!(" {}", bold("PARTITION DETAILS"));
+        c_println!("{}", partitions_table(&view, &view.partitions, false));
+        c_println!();
+    }
 
-    list_metadata_servers(connection, &ListMetadataServers {}).await?;
-
+    c_println!(" {}", bold("FINDINGS"));
+    c_print!("{}", findings_list(&findings, 3));
     Ok(())
 }
 
-async fn compact_cluster_status(
-    nodes_config: NodesConfiguration,
-    connection: &ConnectionInfo,
-) -> anyhow::Result<()> {
-    let logs = connection.get_logs().await?;
+fn header(view: &ClusterView, findings: &[Finding]) -> String {
+    let summary = Summary::new(view);
+    let mut lines = Vec::new();
 
-    let cluster_state = connection
-        .try_each(Some(Role::Admin), |channel| async {
-            new_cluster_ctrl_client(channel, &CliContext::get().network)
-                .get_cluster_state(ClusterStateRequest::default())
-                .await
-        })
-        .await?
-        .into_inner()
-        .cluster_state
-        .context("no cluster state returned")?;
+    let versions = view
+        .nodes
+        .iter()
+        .filter_map(|n| n.binary_version.as_deref())
+        .unique()
+        .join(", ");
+    let captured: DateTime<Local> = view.captured_at.into();
+    let captured = match &view.file {
+        Some(_) => snapshot_taken(view.captured_at),
+        None => captured.format("%H:%M:%S").to_string(),
+    };
+    lines.push(format!(
+        " {}  {}{}  {}",
+        Verdict::of(findings).render(),
+        bold(&view.cluster_name),
+        if versions.is_empty() {
+            String::new()
+        } else {
+            dim(format!(" · restate {versions}"))
+        },
+        dim(captured),
+    ));
+
+    let ratio = |good: usize, total: usize| {
+        let text = format!("{good}/{total}");
+        if good == total {
+            text
+        } else {
+            paint(text, Color::Yellow)
+        }
+    };
+    let n = &summary.nodes;
+    let mut nodes = format!("{} alive", ratio(n.alive, n.total));
+    if n.dead > 0 {
+        nodes.push_str(&paint(format!(" · {} dead", n.dead), Color::Red));
+    }
+    lines.push(kv("nodes", nodes));
+
+    let p = &summary.partitions;
+    let mut partitions = format!("{} led", ratio(p.led, p.total));
+    for (count, label, color) in [
+        (p.unavailable, "unavailable", Color::Red),
+        (p.degraded, "degraded", Color::Yellow),
+        (p.reconfiguring, "reconfiguring", Color::Cyan),
+    ] {
+        if count > 0 {
+            partitions.push_str(&format!(" · {}", paint(format!("{count} {label}"), color)));
+        }
+    }
+    if let Some(replication) = &view.partition_replication {
+        partitions.push_str(&dim(format!(" · replication {replication}")));
+    }
+    lines.push(kv("partitions", partitions));
+
+    let mut logs = format!("{}", summary.logs.total);
+    if summary.logs.sealed > 0 {
+        logs.push_str(&paint(
+            format!(" · {} sealed", summary.logs.sealed),
+            Color::Yellow,
+        ));
+    }
+    if summary.logs.sequencer_down > 0 {
+        logs.push_str(&paint(
+            format!(" · {} without a sequencer", summary.logs.sequencer_down),
+            Color::Red,
+        ));
+    }
+    if let Some(provider) = &view.log_provider {
+        logs.push_str(&dim(format!(" · {}", provider_label(provider))));
+    }
+    lines.push(kv("logs", logs));
+
+    if let Some(m) = &summary.metadata {
+        let mut metadata = format!("{} members up", ratio(m.up, m.members));
+        match &m.leader {
+            Some(leader) => metadata.push_str(&format!(" · leader {leader}")),
+            None => metadata.push_str(&paint(" · no leader", Color::Red)),
+        }
+        lines.push(kv("metadata", metadata));
+    }
+
+    let v = &view.versions;
+    lines.push(kv(
+        "versions",
+        dim(format!(
+            "nodes-config v{} · partition-table {} · logs {} · schema {}",
+            v.nodes_config,
+            version(v.partition_table),
+            version(v.logs),
+            version(v.schema)
+        )),
+    ));
+    lines.join("\n") + "\n"
+}
+
+fn kv(key: &str, value: String) -> String {
+    format!("   {}{value}", bold(format!("{key:11}")))
+}
+
+fn version(v: Option<u32>) -> String {
+    v.map(|v| format!("v{v}")).unwrap_or_else(|| "-".to_owned())
+}
+
+pub fn provider_label(provider: &LogProvider) -> String {
+    let mut label = provider.kind.clone();
+    if let Some(replication) = &provider.replication {
+        label.push_str(&format!(" {replication}"));
+    }
+    match provider.nodeset_size {
+        Some(0) => label.push_str(", nodeset size auto"),
+        Some(size) => label.push_str(&format!(", nodeset size {size}")),
+        None => {}
+    }
+    label
+}
+
+fn nodes_table(view: &ClusterView, extra: bool) -> Table {
+    let show_location = view.nodes.iter().any(|n| !n.location.is_empty());
+    let mut header = vec![
+        "NODE",
+        "NAME",
+        "STATUS",
+        "UPTIME",
+        "ROLES",
+        "METADATA",
+        "STORAGE",
+        "WORKER",
+        "LEADERS",
+        "FOLLOWERS",
+        "SEQUENCERS",
+        "NODESETS",
+    ];
+    if show_location {
+        header.push("LOCATION");
+    }
+    let version_skew = view
+        .nodes
+        .iter()
+        .filter_map(|n| n.binary_version.as_ref())
+        .unique()
+        .count()
+        > 1;
+    if extra || version_skew {
+        header.push("VERSION");
+    }
+    if extra {
+        // the metadata versions each node has loaded
+        header.extend(["ADDRESS", "NODES-CFG", "LOGS", "SCHEMA", "P-TABLE"]);
+    }
 
     let mut table = Table::new_styled();
-    table.set_styled_header(NodeRow::header());
-    for (node_id, node_config) in nodes_config.iter().sorted_by_key(|(id, _)| *id) {
-        let mut row = NodeRow::default();
-        row.with_name(node_config.name.clone())
-            .with_roles(node_config.roles.iter());
-
-        let Some(node_state) = cluster_state.nodes.get(&u32::from(node_id)) else {
-            continue;
-        };
-
-        let node_state = node_state.state.as_ref().context("missing node state")?;
-
-        match node_state {
-            State::Alive(alive) => {
-                row.with_id(
-                    GenerationalNodeId::from(
-                        alive.generational_node_id.context("node id is missing")?,
-                    ),
-                    Color::Green,
-                )
-                .with_uptime(Duration::from_secs(alive.uptime_s));
-
-                alive_node_status(
-                    &mut row,
-                    alive,
-                    node_config,
-                    &logs,
-                    connection,
-                    &nodes_config,
-                )
-                .await?;
-            }
-            State::Dead(_dead) => {
-                row.with_id(node_id, Color::Red);
-            }
-        };
-
+    table.set_styled_header(header);
+    for node in &view.nodes {
+        let mut row = vec![
+            node_id_cell(node),
+            cell(&node.name),
+            liveness_cell(view, node),
+            cell(
+                node.uptime_s
+                    .map(|u| short_duration(u as i64))
+                    .unwrap_or_else(|| "-".to_owned()),
+            ),
+            cell(role_flags(node)),
+            metadata_cell(node),
+            state_cell(node.storage_state.as_deref(), "read-write"),
+            state_cell(node.worker_state.as_deref(), "active"),
+            cell(node.partitions.leaders),
+            followers_cell(node),
+            sequencers_cell(node),
+            cell(node.logs.nodeset),
+        ];
+        if show_location {
+            row.push(cell(&node.location));
+        }
+        if extra || version_skew {
+            row.push(cell(node.binary_version.as_deref().unwrap_or("-")));
+        }
+        if extra {
+            row.push(cell(&node.address));
+            let seen = node.seen_versions.as_ref();
+            let current = &view.versions;
+            row.extend([
+                seen_version(seen.map(|s| s.nodes_config), Some(current.nodes_config)),
+                seen_version(seen.and_then(|s| s.logs), current.logs),
+                seen_version(seen.and_then(|s| s.schema), current.schema),
+                seen_version(
+                    seen.and_then(|s| s.partition_table),
+                    current.partition_table,
+                ),
+            ]);
+        }
         table.add_row(row);
     }
-
-    c_println!("Node Configuration ({})", nodes_config.version());
-    c_println!("{}", table);
-    Ok(())
+    table
 }
 
-async fn alive_node_status(
-    row: &mut NodeRow,
-    alive_node: &AliveNode,
-    node_config: &NodeConfig,
-    logs: &Logs,
-    connection: &ConnectionInfo,
-    nodes_config: &NodesConfiguration,
-) -> anyhow::Result<()> {
-    let node_id: GenerationalNodeId = alive_node
-        .generational_node_id
-        .context("node id is missing")?
-        .into();
-
-    let counter = alive_node.partitions.values().fold(
-        PartitionCounter::default(),
-        |mut counter, partition_status| {
-            // a broken processor is neither leading nor following, it isn't running at all
-            if partition_status.broken_reason() != BrokenReason::NotBroken {
-                counter.broken += 1;
-                return counter;
-            }
-
-            let effective =
-                RunMode::try_from(partition_status.effective_mode).expect("valid effective mode");
-            let planned =
-                RunMode::try_from(partition_status.planned_mode).expect("valid planned mode");
-
-            match (effective, planned) {
-                (RunMode::Leader, RunMode::Leader) => counter.leaders += 1,
-                (RunMode::Follower, RunMode::Follower) => counter.followers += 1,
-                (RunMode::Leader, RunMode::Follower) => counter.downgrading += 1,
-                (RunMode::Follower, RunMode::Leader) => counter.upgrading += 1,
-                (_, _) => {
-                    // unknown state!
-                }
-            };
-
-            counter
-        },
-    );
-
-    row.with_partitions(counter);
-
-    let mut counter = LogsCounter::default();
-
-    for (log_id, chain) in logs.iter() {
-        let tail = chain.tail();
-        let Some(replicated_loglet_params) = deserialize_replicated_log_params(&tail) else {
-            continue;
-        };
-
-        if replicated_loglet_params.nodeset.contains(node_id) {
-            counter.nodesets += 1;
+/// A version a node has loaded, yellow when it's behind the newest one.
+fn seen_version(seen: Option<u32>, newest: Option<u32>) -> restate_cli_util::_comfy_table::Cell {
+    match seen {
+        Some(seen) if newest.is_some_and(|newest| seen < newest) => {
+            cell_fg(format!("v{seen}"), CellColor::Yellow)
         }
-
-        if replicated_loglet_params.sequencer != node_id {
-            // sequencer for this log is not running here
-            continue;
-        }
-
-        // check if we also running the partition
-        counter.sequencers += 1;
-        let Some(partition_status) = alive_node.partitions.get(&u32::from(*log_id)) else {
-            // partition is not running here
-            counter.optimal_placement = false;
-            continue;
-        };
-
-        let effective =
-            RunMode::try_from(partition_status.effective_mode).expect("valid effective mode");
-        let planned = RunMode::try_from(partition_status.planned_mode).expect("valid planned mode");
-
-        // or partition is not (or not becoming) the leader
-        if effective != RunMode::Leader && planned != RunMode::Leader {
-            counter.optimal_placement = false;
-        }
-    }
-
-    row.with_logs(counter);
-
-    if node_config.has_role(Role::MetadataServer) {
-        let metadata_channel = grpc_channel(
-            connection
-                .ctrl_address_for(nodes_config, node_config)
-                .into_owned(),
-        );
-        let metadata_store_status =
-            new_metadata_server_client(metadata_channel, &CliContext::get().network)
-                .status(().into_request())
-                .await;
-
-        let metadata_cell = match metadata_store_status {
-            Ok(response) => {
-                let status = MetadataServerStatus::try_from(response.into_inner().status)
-                    .unwrap_or_default();
-                render_metadata_server_status(status)
-            }
-            Err(err) if err.code() == Code::Unimplemented => Cell::new("Local").fg(Color::Yellow),
-            Err(err) => {
-                error!(
-                    "failed to get metadata status from node {}: {}",
-                    node_config.current_generation, err,
-                );
-                Cell::new("ERR!").fg(Color::Red)
-            }
-        };
-
-        row.with_metadata(metadata_cell);
-    }
-
-    Ok(())
-}
-
-#[derive(Default)]
-struct PartitionCounter {
-    leaders: u16,
-    followers: u16,
-    upgrading: u16,
-    downgrading: u16,
-    broken: u16,
-}
-
-impl PartitionCounter {
-    fn leaders(&self) -> String {
-        use std::fmt::Write;
-
-        let mut buf = String::with_capacity(5);
-        write!(buf, "{}", self.leaders).expect("must succeed");
-        if self.upgrading > 0 {
-            write!(buf, "+{}", self.upgrading).expect("must succeed");
-        }
-
-        buf
-    }
-
-    fn followers(&self) -> String {
-        use std::fmt::Write;
-
-        let mut buf = String::with_capacity(5);
-        write!(buf, "{}", self.followers).expect("must succeed");
-        if self.downgrading > 0 {
-            write!(buf, "+{}", self.downgrading).expect("must succeed");
-        }
-        if self.broken > 0 {
-            write!(buf, " ({} broken)", self.broken).expect("must succeed");
-        }
-
-        buf
+        Some(seen) => cell(format!("v{seen}")),
+        None => cell(dim("-")),
     }
 }
 
-struct LogsCounter {
-    sequencers: usize,
-    nodesets: usize,
-    optimal_placement: bool,
+fn node_id_cell(node: &NodeView) -> restate_cli_util::_comfy_table::Cell {
+    use crate::observe::Liveness;
+    match node.liveness {
+        Liveness::Alive => cell(node.id),
+        _ => cell_fg(node.id, CellColor::Red),
+    }
 }
 
-impl Default for LogsCounter {
-    fn default() -> Self {
+fn liveness_cell(view: &ClusterView, node: &NodeView) -> restate_cli_util::_comfy_table::Cell {
+    use crate::observe::Liveness;
+    match node.liveness {
+        Liveness::Alive if view.nodes_probed && node.seen_versions.is_none() => {
+            cell_fg("unreachable", CellColor::Yellow)
+        }
+        Liveness::Alive => cell_fg("alive", CellColor::Green),
+        Liveness::Dead => cell_fg(
+            match node.last_seen_alive {
+                Some(t) => format!(
+                    "dead {}",
+                    short_duration((view.captured_at - t).num_seconds())
+                ),
+                None => "dead".to_owned(),
+            },
+            CellColor::Red,
+        ),
+        Liveness::Unknown => cell_fg("unknown", CellColor::Yellow),
+    }
+}
+
+fn metadata_cell(node: &NodeView) -> restate_cli_util::_comfy_table::Cell {
+    let Some(m) = &node.metadata_server else {
+        return cell(dim("-"));
+    };
+    if m.error.is_some() {
+        return cell_fg("error", CellColor::Red);
+    }
+    match m.status.as_deref() {
+        Some("member") if m.leader == Some(node.plain()) => cell_fg("leader", CellColor::Green)
+            .add_attribute(restate_cli_util::_comfy_table::Attribute::Bold),
+        Some("member") => cell_fg("member", CellColor::Green),
+        Some("standby") => cell("standby"),
+        Some(other) => cell_fg(other, CellColor::Yellow),
+        // not a replicated metadata server, show the configured state
+        None => cell(&m.state),
+    }
+}
+
+fn state_cell(state: Option<&str>, good: &str) -> restate_cli_util::_comfy_table::Cell {
+    match state {
+        None => cell(dim("-")),
+        Some(state) if state == good => cell(state),
+        Some(state @ ("data-loss" | "gone" | "disabled")) => cell_fg(state, CellColor::Red),
+        Some(state) => cell_fg(state, CellColor::Yellow),
+    }
+}
+
+fn followers_cell(node: &NodeView) -> restate_cli_util::_comfy_table::Cell {
+    let p = &node.partitions;
+    let mut text = p.followers.to_string();
+    let mut notes = Vec::new();
+    if p.transitioning > 0 {
+        notes.push(paint(
+            format!("{} transitioning", p.transitioning),
+            Color::Magenta,
+        ));
+    }
+    if p.catching_up > 0 {
+        notes.push(paint(
+            format!("{} catching up", p.catching_up),
+            Color::Yellow,
+        ));
+    }
+    if p.broken > 0 {
+        notes.push(paint(format!("{} broken", p.broken), Color::Red));
+    }
+    if !notes.is_empty() {
+        text.push_str(&format!(" ({})", notes.join(", ")));
+    }
+    cell(text)
+}
+
+fn sequencers_cell(node: &NodeView) -> restate_cli_util::_comfy_table::Cell {
+    let l = &node.logs;
+    if l.sequencer_away_from_leader > 0 {
+        cell(format!(
+            "{} {}",
+            l.sequencer,
+            paint(
+                format!("({} away from leader)", l.sequencer_away_from_leader),
+                Color::Yellow
+            )
+        ))
+    } else {
+        cell(l.sequencer)
+    }
+}
+
+#[derive(Serialize)]
+struct StatusReport<'a> {
+    /// the file the status was read from, when it isn't the cluster's current one
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file: Option<&'a str>,
+    health: Verdict,
+    cluster_name: &'a str,
+    captured_at: DateTime<Utc>,
+    versions: &'a Versions,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    partition_replication: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    log_provider: Option<&'a LogProvider>,
+    summary: Summary,
+    nodes: &'a [NodeView],
+    findings: &'a [Finding],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    partitions: Option<&'a [PartitionView]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logs: Option<&'a [LogView]>,
+}
+
+impl<'a> StatusReport<'a> {
+    fn new(view: &'a ClusterView, findings: &'a [Finding], extra: bool) -> Self {
         Self {
-            sequencers: 0,
-            nodesets: 0,
-            optimal_placement: true,
+            file: view.file.as_deref(),
+            health: Verdict::of(findings),
+            cluster_name: &view.cluster_name,
+            captured_at: view.captured_at,
+            versions: &view.versions,
+            partition_replication: view.partition_replication.as_deref(),
+            log_provider: view.log_provider.as_ref(),
+            summary: Summary::new(view),
+            nodes: &view.nodes,
+            findings,
+            partitions: extra.then_some(view.partitions.as_slice()),
+            logs: extra.then_some(view.logs.as_slice()),
         }
-    }
-}
-
-#[derive(Default)]
-struct NodeRow {
-    id: Option<Cell>,
-    name: Option<Cell>,
-    uptime: Option<Cell>,
-    roles: Option<Cell>,
-    metadata: Option<Cell>,
-    leaders: Option<Cell>,
-    followers: Option<Cell>,
-    nodesets: Option<Cell>,
-    sequencers: Option<Cell>,
-}
-
-impl NodeRow {
-    fn header() -> Vec<&'static str> {
-        vec![
-            "NODE-ID",
-            "NAME",
-            "UPTIME",
-            "METADATA",
-            "LEADER",
-            "FOLLOWER",
-            "NODESET-MEMBER",
-            "SEQUENCER",
-            "ROLES",
-        ]
-    }
-
-    fn with_id<I: Into<NodeId>>(&mut self, node_id: I, color: Color) -> &mut Self {
-        self.id = Some(Cell::new(node_id.into()).fg(color));
-        self
-    }
-
-    fn with_uptime(&mut self, uptime: Duration) -> &mut Self {
-        if uptime.as_secs() == 0 {
-            self.uptime = Some(Cell::new("n/a"));
-        } else {
-            self.uptime = Some(Cell::new(uptime.friendly()));
-        }
-        self
-    }
-
-    fn with_name(&mut self, name: String) -> &mut Self {
-        self.name = Some(Cell::new(name));
-        self
-    }
-
-    fn with_roles(&mut self, roles: impl Iterator<Item = Role>) -> &mut Self {
-        self.roles = Some(Cell::new(roles.map(|r| r.to_string()).sorted().join(" | ")));
-        self
-    }
-
-    fn with_partitions(&mut self, counter: PartitionCounter) -> &mut Self {
-        self.leaders = Some(Cell::new(counter.leaders()));
-        self.followers = Some(Cell::new(counter.followers()));
-        self
-    }
-
-    fn with_logs(&mut self, counter: LogsCounter) -> &mut Self {
-        self.nodesets = Some(Cell::new(counter.nodesets));
-
-        let mut cell = Cell::new(counter.sequencers).fg(Color::Yellow);
-        if counter.optimal_placement {
-            cell = cell.fg(Color::Green);
-        }
-        self.sequencers = Some(cell);
-        self
-    }
-
-    fn with_metadata(&mut self, metadata: Cell) -> &mut Self {
-        self.metadata = Some(metadata);
-        self
-    }
-}
-
-// helper macro to unwrap cells
-macro_rules! unwrap {
-    ($cell:expr) => {
-        $cell.unwrap_or_else(|| Cell::new(""))
-    };
-    ($cell:expr, $default:expr) => {
-        $cell.unwrap_or_else(|| Cell::new($default))
-    };
-    ($cell:expr, $default:expr => $color:expr) => {
-        $cell.unwrap_or_else(|| Cell::new($default).fg($color))
-    };
-}
-
-impl From<NodeRow> for Row {
-    fn from(value: NodeRow) -> Self {
-        let row = vec![
-            value.id.expect("must be set"),
-            unwrap!(value.name),
-            unwrap!(value.uptime, "offline" => Color::Red),
-            unwrap!(value.metadata),
-            unwrap!(value.leaders),
-            unwrap!(value.followers),
-            unwrap!(value.nodesets),
-            unwrap!(value.sequencers),
-            unwrap!(value.roles),
-        ];
-        row.into()
     }
 }
