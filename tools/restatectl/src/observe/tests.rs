@@ -125,6 +125,7 @@ fn reader(node: u32, log: u32, state: &str, read_pointer: u64) -> ReadStreamRow 
         state: Some(state.to_owned()),
         current_segment: Some(0),
         is_tailing: Some(true),
+        ..Default::default()
     }
 }
 
@@ -786,6 +787,11 @@ pub(crate) fn large_cluster_snapshot() -> Snapshot {
                     .rposition(|b| *b <= read_pointer)
                     .map(|at| first_index + at as u32),
                 is_tailing: Some(true),
+                name: Some(format!("pp-{p}")),
+                role: Some(if leads { "leader" } else { "follower" }.to_owned()),
+                // the stream started when the processor did, a while into the log
+                records_read: Some(applied / 4),
+                bytes_read: Some(applied / 4 * 100),
             });
         }
     }
