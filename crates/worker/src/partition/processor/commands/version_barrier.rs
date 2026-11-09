@@ -192,6 +192,8 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
                     PartitionFeatureChange::EnablePreflightInvocationTerminationRetention => {}
                     // Only affects signals applied after this point.
                     PartitionFeatureChange::EnablePreflightSignalRecording => {}
+                    // Only affects invocations applied after this point.
+                    PartitionFeatureChange::EnableInvocationPriorities => {}
                     // Replicas could store state mutations enqueued before v1.8.0 under different
                     // ids (#5416). Removing all pending ones at this log position leaves every
                     // replica with the same entries. The cleanup commits the removals itself; the

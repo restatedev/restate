@@ -49,6 +49,7 @@ pub mod nodes_config;
 pub mod partition_processor;
 pub mod partition_table;
 pub mod partitions;
+pub mod priority;
 pub mod protobuf;
 pub mod rate;
 pub mod replicated_loglet;
@@ -68,6 +69,7 @@ pub use identifiers::PartitionedResourceId;
 pub use limit_key::LimitKey;
 pub use locking::*;
 pub use node_id::*;
+pub use priority::Priority;
 use restate_encoding::BilrostNewType;
 use restate_util_string::{
     Interned, ReString, RestateString, RestrictedValue, RestrictedValueError,
