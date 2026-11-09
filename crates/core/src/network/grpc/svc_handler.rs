@@ -21,7 +21,6 @@ use crate::network::ConnectionManager;
 use crate::network::protobuf::core_node_svc::core_node_svc_server::{
     CoreNodeSvc, CoreNodeSvcServer,
 };
-use crate::network::protobuf::core_node_svc::{RpcRequest, RpcResponse};
 use crate::network::protobuf::network::Message;
 
 pub struct CoreNodeSvcHandler {
@@ -84,12 +83,5 @@ impl CoreNodeSvc for CoreNodeSvcHandler {
         // We map all responses to Ok, we never rely on sending tonic::Status errors explicitly.
         // We use ConnectionControl frames to communicate errors and/or drop the stream when necessary.
         Ok(Response::new(Box::pin(output_stream.map(Ok))))
-    }
-
-    async fn call_rpc(
-        &self,
-        _request: Request<RpcRequest>,
-    ) -> Result<Response<RpcResponse>, Status> {
-        todo!()
     }
 }
