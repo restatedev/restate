@@ -474,9 +474,29 @@ pub struct ReaderView {
     pub segment: Option<u32>,
     /// records between the read pointer and the log's tail
     pub behind: Option<u64>,
+    /// who reads, as the stream's owner names it, e.g. `pp-3` for partition 3's processor
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// what the owner does with the stream, e.g. `leader` or `follower`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// records the stream delivered since it was created
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub records_read: Option<u64>,
+    /// the size of those records, as the log stores them
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_read: Option<u64>,
 }
 
 impl ReaderView {
+    /// Who reads and what for, e.g. `pp-3 leader`, if the server reports it.
+    pub fn owner(&self) -> Option<String> {
+        match (&self.name, &self.role) {
+            (Some(name), Some(role)) => Some(format!("{name} {role}")),
+            (name, role) => name.clone().or_else(|| role.clone()),
+        }
+    }
+
     pub fn phase(&self) -> ReaderPhase {
         match self.state.as_str() {
             "Reading" => ReaderPhase::Reading,
@@ -867,11 +887,15 @@ impl ClusterView {
             {
                 partition.sequencer = log.sequencer;
                 partition.log_tail_lsn = log.tail_lsn;
+                // the processor names its reader after the partition; servers before v1.8.2
+                // don't name readers, so a node's tailing reader is the replica's there
+                let name = format!("pp-{}", partition.id);
                 for replica in &mut partition.replicas {
                     replica.reader = log
                         .readers
                         .iter()
-                        .find(|r| r.tailing && r.node == replica.node.as_plain())
+                        .filter(|r| r.tailing && r.node == replica.node.as_plain())
+                        .find(|r| r.name.as_deref().is_none_or(|n| n == name))
                         .cloned();
                 }
                 // a leader can't make progress without a writable log
@@ -1158,6 +1182,10 @@ fn readers(rows: &[super::sql::ReadStreamRow], tail: Option<u64>) -> Vec<ReaderV
                     .zip(row.read_pointer)
                     .filter(|_| tailing)
                     .map(|(tail, read)| tail.saturating_sub(read)),
+                name: row.name.clone(),
+                role: row.role.clone(),
+                records_read: row.records_read,
+                bytes_read: row.bytes_read,
             })
         })
         .sorted_by_key(|r| (r.node, !r.tailing))

@@ -92,6 +92,12 @@ pub struct ReadStreamRow {
     pub state: Option<String>,
     pub current_segment: Option<u32>,
     pub is_tailing: Option<bool>,
+    /// Since v1.8.2: who reads, e.g. `pp-3`, and what for, e.g. `leader`
+    pub name: Option<String>,
+    pub role: Option<String>,
+    /// Since v1.8.2: records the stream delivered since it was created, and their size
+    pub records_read: Option<u64>,
+    pub bytes_read: Option<u64>,
 }
 
 #[derive(Default)]

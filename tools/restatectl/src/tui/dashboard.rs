@@ -29,6 +29,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Sparkline, TableState, Tabs, Wrap};
 use tokio::sync::{Notify, mpsc};
 
+use restate_memory::ByteCount;
 use restate_types::PlainNodeId;
 
 use super::mouse::{self, Selection, token_at};
@@ -41,8 +42,8 @@ use super::widgets::{
 use crate::connection::ConnectionInfo;
 use crate::observe::{
     ClusterView, Finding, LocatedAddress, LogPlacement, LogView, NodeView, PartitionHealth,
-    PartitionPlacement, PartitionView, ReaderPhase, SequencerState, Severity, Subject, analyze,
-    short_duration,
+    PartitionPlacement, PartitionView, ReaderPhase, ReaderView, SequencerState, Severity, Subject,
+    analyze, short_duration,
 };
 use crate::render::{Verdict, compress_ids, group_findings, snapshot_taken};
 
@@ -492,6 +493,28 @@ struct History {
     reader_lag: HashMap<u32, Series>,
     /// per read stream: its state and since when the dashboard has seen it in that state
     reader_since: HashMap<(u32, PlainNodeId, bool), (String, Instant)>,
+    /// per read stream: the bytes it read, by its own counter, which restarts with the stream
+    reader_bytes: HashMap<ReaderKey, Series>,
+}
+
+/// Who reads `log` with `reader`, as short as the log's details allow: the role alone for the
+/// processor of the log's own partition, else its name and role. The chain above the readers
+/// shows which segment each reads.
+fn reader_owner(log: &LogView, reader: &ReaderView) -> String {
+    let own = log
+        .partition_id
+        .is_some_and(|p| reader.name.as_deref() == Some(format!("pp-{p}").as_str()));
+    match (&reader.role, own) {
+        (Some(role), true) => role.clone(),
+        _ => reader.owner().unwrap_or_else(|| "-".to_owned()),
+    }
+}
+
+/// A read stream across samples: its log, node and name, and whether it tails the log.
+type ReaderKey = (u32, PlainNodeId, Option<String>, bool);
+
+fn reader_key(log: u32, reader: &ReaderView) -> ReaderKey {
+    (log, reader.node, reader.name.clone(), reader.tailing)
 }
 
 impl History {
@@ -506,6 +529,12 @@ impl History {
                 self.reader_lag.entry(log.id).or_default().push(at, behind);
             }
             for reader in &log.readers {
+                if let Some(bytes) = reader.bytes_read {
+                    self.reader_bytes
+                        .entry(reader_key(log.id, reader))
+                        .or_default()
+                        .push(at, bytes);
+                }
                 let key = (log.id, reader.node, reader.tailing);
                 match self.reader_since.get(&key) {
                     Some((state, _)) if *state == reader.state => {}
@@ -1397,9 +1426,10 @@ impl App {
             );
         }
 
-        let [info, replicas, applied, lag] = Layout::vertical([
+        let [info, replicas, applied, read, lag] = Layout::vertical([
             Constraint::Length(text.height() + 1),
             Constraint::Length(p.replicas.len() as u16 + p.missing.len() as u16 + 3),
+            Constraint::Fill(1),
             Constraint::Fill(1),
             Constraint::Fill(1),
         ])
@@ -1415,15 +1445,27 @@ impl App {
             applied,
             "applied/s",
             self.history.applied.get(&p.id),
-            true,
+            Shown::Rate,
             GREEN,
+        );
+        let leader_reads = p
+            .log_id
+            .zip(p.leader_replica().and_then(|r| r.reader.as_ref()))
+            .and_then(|(log, reader)| self.history.reader_bytes.get(&reader_key(log, reader)));
+        self.draw_series(
+            frame,
+            read,
+            "leader reads",
+            leader_reads,
+            Shown::BytesRate,
+            BLUE,
         );
         self.draw_series(
             frame,
             lag,
             "max lag",
             self.history.lag.get(&p.id),
-            false,
+            Shown::Value,
             AMBER,
         );
     }
@@ -1434,10 +1476,13 @@ impl App {
         area: Rect,
         label: &str,
         series: Option<&Series>,
-        as_rate: bool,
+        shown: Shown,
         color: theme::Rgb,
     ) {
-        let data = series.map_or_else(Vec::new, |s| if as_rate { s.rates() } else { s.values() });
+        let data = series.map_or_else(Vec::new, |s| match shown {
+            Shown::Rate | Shown::BytesRate => s.rates(),
+            Shown::Value => s.values(),
+        });
         let current = data.last().copied();
         let [label_area, chart] =
             Layout::horizontal([Constraint::Length(22), Constraint::Fill(1)]).areas(pad(area));
@@ -1447,12 +1492,10 @@ impl App {
                 Line::styled(
                     current.map_or_else(
                         || "…".to_owned(),
-                        |v| {
-                            if as_rate {
-                                human_rate(v)
-                            } else {
-                                v.to_string()
-                            }
+                        |v| match shown {
+                            Shown::Rate => human_rate(v),
+                            Shown::BytesRate => human_bytes_rate(v),
+                            Shown::Value => v.to_string(),
                         },
                     ),
                     theme::fg(color).add_modifier(Modifier::BOLD),
@@ -1576,7 +1619,7 @@ impl App {
             rate,
             "appends/s",
             self.history.tails.get(&log.id),
-            true,
+            Shown::Rate,
             BLUE,
         );
         self.draw_series(
@@ -1584,7 +1627,7 @@ impl App {
             lag,
             "slowest reader behind",
             self.history.reader_lag.get(&log.id),
-            false,
+            Shown::Value,
             AMBER,
         );
     }
@@ -1607,23 +1650,29 @@ impl App {
                     ReaderPhase::Switching => theme::fg(AMBER),
                     ReaderPhase::AwaitingSeal | ReaderPhase::Sealing => theme::fg(RED),
                 };
+                let read_rate = self
+                    .history
+                    .reader_bytes
+                    .get(&reader_key(log.id, r))
+                    .and_then(|s| s.rates().last().copied());
                 vec![
                     Line::from(node_span(r.node)),
+                    Line::styled(reader_owner(log, r), theme::muted()),
                     Line::styled(r.state.clone(), state_style),
-                    segment_cell(log, r.segment),
                     Line::raw(
                         r.read_pointer
                             .map_or_else(|| "-".to_owned(), |p| p.to_string()),
                     ),
                     Line::raw(r.behind.map_or_else(|| "-".to_owned(), |b| b.to_string())),
+                    Line::raw(read_rate.map_or_else(|| "-".to_owned(), human_bytes_rate)),
                     Line::styled(since.unwrap_or_else(|| "-".to_owned()), theme::muted()),
                 ]
             })
             .collect();
         RichTable {
             title: vec![Span::styled("Readers", theme::bold())],
-            header: vec!["NODE", "STATE", "SEGMENT", "AT", "BEHIND", "FOR"],
-            right: vec![3, 4, 5],
+            header: vec!["NODE", "READER", "STATE", "AT", "BEHIND", "READS", "FOR"],
+            right: vec![3, 4, 5, 6],
             rows,
             legend: None,
             sorted: None,
@@ -1927,25 +1976,6 @@ fn addresses(
     }
 }
 
-/// A reader's segment, and how many segments it is behind the tail segment.
-fn segment_cell(log: &LogView, segment: Option<u32>) -> Line<'static> {
-    let Some(segment) = segment else {
-        return Line::styled("-", theme::muted());
-    };
-    let position = |index: u32| log.chain.iter().position(|s| s.index == index);
-    match position(segment).zip(position(log.tail_segment)) {
-        Some((at, tail)) if at < tail => Line::from(vec![
-            Span::raw(segment.to_string()),
-            Span::styled(format!(" {} behind", tail - at), theme::muted()),
-        ]),
-        _ if segment == log.tail_segment => Line::from(vec![
-            Span::raw(segment.to_string()),
-            Span::styled(" tail", theme::muted()),
-        ]),
-        _ => Line::raw(segment.to_string()),
-    }
-}
-
 /// Draws `placement` above the list when there's room for both, and returns the list's area.
 fn with_placement(
     frame: &mut Frame,
@@ -2068,6 +2098,22 @@ fn pad(area: Rect) -> Rect {
 
 fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or_default()
+}
+
+/// What a chart shows, and how its current value reads.
+#[derive(Clone, Copy)]
+enum Shown {
+    /// increase per second, e.g. records
+    Rate,
+    /// increase per second of a size in bytes
+    BytesRate,
+    /// the sampled value itself
+    Value,
+}
+
+/// `1234` → `1.2 KiB/s`
+fn human_bytes_rate(rate: u64) -> String {
+    format!("{}/s", ByteCount::from(rate))
 }
 
 /// `1234` → `1.2k/s`
@@ -2489,6 +2535,23 @@ mod tests {
         // 256 logs, 50 records a second each
         assert!(screen.contains("Appends  12.8k/s"), "{screen}");
         assert!(!screen.contains("refresh"), "{screen}");
+
+        // every reader reads them, 100 bytes each: a log's details tell who reads and how fast,
+        // and a partition's details chart what its leader reads
+        let per_second = human_bytes_rate(5_000);
+        app.tab = Tab::Logs;
+        app.selected_log = Some(0);
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let screen = text(terminal.backend().buffer());
+        assert!(screen.contains("N1    leader"), "{screen}");
+        assert!(screen.contains("N13   follower"), "{screen}");
+        assert!(screen.contains(&per_second), "{screen}");
+        app.tab = Tab::Partitions;
+        app.selected_partition = Some(0);
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let screen = text(terminal.backend().buffer());
+        assert!(screen.contains("leader reads"), "{screen}");
+        assert!(screen.contains(&per_second), "{screen}");
     }
 
     /// A 20-node, 256-partition cluster renders in every view, inline and in the dashboard,
