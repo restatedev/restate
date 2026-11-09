@@ -20,6 +20,9 @@ use serde::de::DeserializeOwned;
 
 use crate::protobuf::common::ProtocolVersion;
 
+mod payload;
+pub use payload::EncodedPayload;
+
 #[derive(thiserror::Error, Debug)]
 pub enum EncodeError {
     #[error(
@@ -34,6 +37,16 @@ pub enum EncodeError {
 
 pub trait WireEncode {
     fn encode_to_bytes(&self, protocol_version: ProtocolVersion) -> Result<Bytes, EncodeError>;
+
+    /// Validate the negotiated version and prepare an outbound payload. Types
+    /// with shared encoded backing may defer the final copy to the transport.
+    fn encode_payload(
+        &self,
+        protocol_version: ProtocolVersion,
+    ) -> Result<EncodedPayload, EncodeError> {
+        self.encode_to_bytes(protocol_version)
+            .map(EncodedPayload::from)
+    }
 }
 
 pub trait WireDecode {
@@ -53,10 +66,17 @@ pub trait WireDecode {
 
 impl<T> WireEncode for Box<T>
 where
-    T: WireEncode,
+    T: WireEncode + ?Sized,
 {
     fn encode_to_bytes(&self, protocol_version: ProtocolVersion) -> Result<Bytes, EncodeError> {
         self.as_ref().encode_to_bytes(protocol_version)
+    }
+
+    fn encode_payload(
+        &self,
+        protocol_version: ProtocolVersion,
+    ) -> Result<EncodedPayload, EncodeError> {
+        self.as_ref().encode_payload(protocol_version)
     }
 }
 

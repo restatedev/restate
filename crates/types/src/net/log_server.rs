@@ -28,6 +28,9 @@ use crate::time::MillisSinceEpoch;
 
 pub use compat::Payloads as CompatibilityPayloads;
 
+mod prepared_store;
+pub use prepared_store::{PreparedPayloads, PreparedStore};
+
 pub struct LogServerDataService;
 define_service! {
     @service = LogServerDataService,

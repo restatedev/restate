@@ -20,7 +20,7 @@ use restate_types::net::selection::{dialable, select_entry};
 use restate_types::nodes_config::{NodeConfig, NodesConfigError, NodesConfiguration};
 
 use super::protobuf::network::Message;
-use super::{ConnectError, Destination, DiscoveryError, Swimlane};
+use super::{ConnectError, Destination, DiscoveryError, OutgoingMessage, Swimlane};
 
 /// The fabric address this process dials for `node`: the walk of
 /// [`restate_types::net::selection`] over the node's lists, with this process's configured
@@ -75,7 +75,7 @@ pub trait TransportConnect: Clone + Send + Sync + 'static {
         &self,
         destination: &Destination,
         swimlane: Swimlane,
-        output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
+        output_stream: impl Stream<Item = OutgoingMessage> + Send + Unpin + 'static,
     ) -> impl Future<
         Output = Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError>,
     > + Send;
@@ -86,7 +86,7 @@ impl<T: TransportConnect> TransportConnect for std::sync::Arc<T> {
         &self,
         destination: &Destination,
         swimlane: Swimlane,
-        output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
+        output_stream: impl Stream<Item = OutgoingMessage> + Send + Unpin + 'static,
     ) -> impl Future<
         Output = Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError>,
     > + Send {
@@ -101,7 +101,7 @@ pub mod test_util {
     use std::sync::Arc;
 
     use ahash::HashMap;
-    use futures::Stream;
+    use futures::{Stream, StreamExt};
     use tokio::sync::Mutex;
     use tokio::sync::mpsc;
     use tracing::info;
@@ -169,8 +169,9 @@ pub mod test_util {
             &self,
             destination: &Destination,
             swimlane: Swimlane,
-            mut output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
+            output_stream: impl Stream<Item = OutgoingMessage> + Send + Unpin + 'static,
         ) -> Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError> {
+            let mut output_stream = output_stream.map(OutgoingMessage::into_message);
             let &Destination::Node(peer_node_id) = destination else {
                 unimplemented!("MockConnector only supports Destination::Node");
             };
@@ -237,7 +238,7 @@ pub mod test_util {
             let connection = MockPeerConnection::new(peer_node_id, swimlane, reactor, connection);
 
             let _ = self.new_connection_sender.send(connection);
-            Ok(egress)
+            Ok(egress.map(OutgoingMessage::into_message))
         }
     }
 
@@ -250,7 +251,7 @@ pub mod test_util {
             &self,
             _destination: &Destination,
             _swimlane: Swimlane,
-            _output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
+            _output_stream: impl Stream<Item = OutgoingMessage> + Send + Unpin + 'static,
         ) -> Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError> {
             Result::<futures::stream::Empty<_>, _>::Err(ConnectError::Transport(
                 "Trying to connect using failing transport".to_string(),
@@ -266,14 +267,14 @@ pub mod test_util {
             &self,
             _destination: &Destination,
             _swimlane: Swimlane,
-            output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
+            output_stream: impl Stream<Item = OutgoingMessage> + Send + Unpin + 'static,
         ) -> Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError> {
             let output = self
                 .0
-                .accept_incoming_connection(output_stream)
+                .accept_incoming_connection(output_stream.map(OutgoingMessage::into_message))
                 .await
                 .map_err(|err| ConnectError::Transport(err.to_string()))?;
-            Ok(output)
+            Ok(output.map(OutgoingMessage::into_message))
         }
     }
 }
