@@ -27,6 +27,7 @@ use crate::commands::sql::SqlOpts;
 use crate::commands::status::ClusterStatusOpts;
 use crate::commands::storage::Storage;
 use crate::connection::ConnectionInfo;
+use crate::preview::{self, PreviewOpts};
 
 /// Restate Cluster Administration Tool
 ///
@@ -44,8 +45,21 @@ pub struct CliApp {
     pub connection: ConnectionInfo,
     #[clap(flatten)]
     pub common_opts: CommonOpts,
+    #[clap(flatten)]
+    pub render: RenderOpts,
+    #[clap(flatten)]
+    pub preview: PreviewOpts,
     #[clap(subcommand)]
     pub cmd: Command,
+}
+
+#[derive(Args, Collect, Clone, Default)]
+#[command(next_help_heading = "Global options")]
+pub struct RenderOpts {
+    /// Print plain text tables even where the terminal could show panels and charts. Output
+    /// that isn't a terminal, NO_COLOR and TERM=dumb get plain text anyway.
+    #[arg(long, global = true, help_heading = preview::HEADING)]
+    pub plain: bool,
 }
 
 #[derive(Run, Subcommand, Clone)]
@@ -90,8 +104,15 @@ pub enum Command {
     Storage(Storage),
 }
 
-fn init(common_opts: &CommonOpts, connection: &ConnectionInfo) -> anyhow::Result<()> {
+fn init(
+    common_opts: &CommonOpts,
+    connection: &ConnectionInfo,
+    render: &RenderOpts,
+) -> anyhow::Result<()> {
     let ctx = CliContext::new(common_opts.clone());
+    if render.plain {
+        crate::tui::force_plain();
+    }
 
     // When TLS materials are provided, register the process-wide fabric TLS
     // client config so every channel dialing an `https://` control or fabric address

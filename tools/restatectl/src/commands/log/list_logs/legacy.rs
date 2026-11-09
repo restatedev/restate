@@ -1,0 +1,94 @@
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+//! `restatectl logs list` without preview.
+
+use std::collections::BTreeMap;
+
+use restate_cli_util::_comfy_table::{Cell, Table};
+use restate_cli_util::c_println;
+use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::ui::output::Console;
+use restate_types::Versioned;
+use restate_types::health::MetadataServerStatus;
+use restate_types::logs::LogId;
+use restate_types::logs::metadata::Chain;
+
+use crate::commands::log::{deserialize_replicated_log_params, render_loglet_params};
+use crate::connection::{ConnectionInfo, ConnectionInfoError};
+use crate::util::write_default_provider;
+
+pub async fn list_logs(connection: &ConnectionInfo) -> anyhow::Result<()> {
+    let logs = connection.get_logs().await?;
+
+    let mut logs_table = Table::new_styled();
+
+    c_println!("Logs {}", logs.version());
+
+    write_default_provider(
+        &mut Console::stdout(),
+        0,
+        &logs.configuration().default_provider,
+    )?;
+
+    // sort by log-id for display
+    let log_chains: BTreeMap<LogId, &Chain> = logs.iter().map(|(id, chain)| (*id, chain)).collect();
+
+    if log_chains.is_empty() {
+        c_println!("No logs were found.");
+
+        // A provisioned cluster with zero partitions legitimately has no logs.
+        match connection.get_nodes_configuration().await {
+            Ok(_) => {}
+            Err(ConnectionInfoError::MetadataValueNotAvailable { contacted_nodes })
+                if contacted_nodes.values().any(|ident| {
+                    ident.metadata_server_status() == MetadataServerStatus::AwaitingProvisioning
+                }) =>
+            {
+                c_println!();
+                c_println!(
+                    "Use `restatectl provision` if you have not provisioned this cluster yet."
+                );
+
+                // short-circuits `restatectl status` to avoid trying to list partitions
+                return Err(ConnectionInfoError::ClusterNotProvisioned.into());
+            }
+            Err(err) => return Err(err.into()),
+        }
+    } else {
+        for (log_id, chain) in log_chains {
+            let params = deserialize_replicated_log_params(&chain.tail());
+            logs_table.add_row(vec![
+                Cell::new(log_id),
+                Cell::new(format!("{}", chain.num_segments())),
+                Cell::new(format!("{}", chain.tail().base_lsn)),
+                Cell::new(format!("{}", chain.tail().config.kind)),
+                render_loglet_params(&params, |p| Cell::new(p.loglet_id)),
+                render_loglet_params(&params, |p| Cell::new(format!("{:#}", p.replication))),
+                render_loglet_params(&params, |p| Cell::new(format!("{:#}", p.sequencer))),
+                render_loglet_params(&params, |p| Cell::new(format!("{:#}", p.nodeset))),
+            ]);
+        }
+
+        logs_table.set_styled_header(vec![
+            "L-ID",
+            "SEGMENTS",
+            "FROM",
+            "KIND",
+            "LOGLET-ID",
+            "REPLICATION",
+            "SEQUENCER",
+            "NODESET",
+        ]);
+        c_println!("{}", logs_table);
+    }
+
+    Ok(())
+}

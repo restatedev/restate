@@ -224,6 +224,15 @@ impl ConnectionInfo {
         self.single_address.is_some()
     }
 
+    /// Forgets the cached metadata and the nodes found unreachable, so the next calls see the
+    /// cluster as it is now. Watch mode calls this before every refresh.
+    pub async fn reset(&self) {
+        *self.nodes_configuration.lock().await = None;
+        *self.logs.lock().await = None;
+        *self.partition_table.lock().await = None;
+        self.dead_nodes.write().unwrap().clear();
+    }
+
     /// The location this tool dials from: `--location`, else the one inferred once from the
     /// seeds, or from the single address, and the first nodes configuration seen.
     fn caller_location(&self, nodes_config: &NodesConfiguration) -> &NodeLocation {
