@@ -9,12 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::lock_table::{LockState, ScanLocksTable};
+use restate_storage_api::scan::RowConsumer;
 use restate_types::identifiers::PartitionKey;
 use restate_types::sharding::KeyRange;
 use restate_types::{LockName, Scope};
@@ -61,17 +61,12 @@ impl ScanLocalPartition for LocksScanner {
     type ConversionError = std::convert::Infallible;
     type Filter = KeyRange;
 
-    fn for_each_row<
-        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_row<F: for<'a> RowConsumer<Item<'a> = Self::Item<'a>>>(
         partition_store: &PartitionStore,
         range: KeyRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        partition_store.for_each_lock(range, move |item| f(item).map_break(Result::unwrap))
+        f: F,
+    ) -> Result<impl Future<Output = restate_storage_api::Result<F>> + Send, StorageError> {
+        partition_store.for_each_lock(range, f)
     }
 
     fn append_row<'a>(

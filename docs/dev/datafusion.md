@@ -238,10 +238,11 @@ As the top-k operator accumulates results, it updates the minimum `modified_at` 
 RocksDB iteration and protobuf deserialization happen on background storage threads, not the tokio runtime. This prevents blocking async tasks.
 
 The mechanism works as follows:
-1. Each table implements the `ScanLocalPartition` trait, defining a `for_each_row` method
-2. These implementations call iterator methods on `PartitionStore` (e.g., `for_each_invocation_status_lazy`)
-3. Under the hood, these use `iterator_for_each` which offloads execution to a background storage task via `run_background_iterator` in the `restate-rocksdb` crate
-4. Batches are sent back to tokio-land via channels, with scheduling overhead only at batch boundaries
+1. Each table implements `ScanLocalPartition::for_each_row` and accepts a typed `RowConsumer`.
+2. DataFusion supplies a consumer that owns the batch builder and sender. Its `consume` method appends a borrowed row and awaits channel capacity when a batch is ready.
+3. Table implementations decode rows through `PartitionStore::iterator_for_each`, which submits an async iteration to the storage pool with `RocksDb::prepare_iteration`. Exact-ID lookups use batched multi-get operations on the same pool.
+4. A scan that ends without an error hands the consumer back, and DataFusion flushes the final batch.
+5. Storage, decoding and batch-building errors return through the scan result. Channels carry completed batches back to the Tokio runtime.
 
 ## Current Limitations and Future Improvements
 

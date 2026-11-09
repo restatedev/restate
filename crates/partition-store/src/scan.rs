@@ -8,9 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::ControlFlow;
+
 use bytes::{Bytes, BytesMut};
 use rocksdb::ReadOptions;
 
+use restate_rocksdb::IterAction;
+use restate_rocksdb::reads::IteratorVisitor;
+use restate_storage_api::scan::RowConsumer;
+use restate_storage_api::{Result, StorageError};
 use restate_types::sharding::KeyRange;
 
 use crate::keys::{EncodeTableKeyPrefix, KeyEncode, KeyKind};
@@ -146,6 +152,29 @@ impl<K: EncodeTableKeyPrefix> From<TableScan<K>> for PhysicalScan<Bytes> {
     fn from(scan: TableScan<K>) -> Self {
         let mut arena = BytesMut::new();
         scan.encode(&mut arena)
+    }
+}
+
+/// Decodes physical rows for a typed row consumer.
+pub(crate) struct DecodingVisitor<C, F> {
+    pub consumer: C,
+    pub decode: F,
+}
+
+impl<C, F> IteratorVisitor for DecodingVisitor<C, F>
+where
+    C: RowConsumer,
+    F: AsyncFnMut(&mut C, (&[u8], &[u8])) -> Result<ControlFlow<()>> + Send + 'static,
+{
+    type Error = StorageError;
+
+    async fn visit(&mut self, key: &[u8], value: &[u8]) -> Result<IterAction> {
+        Ok(
+            match (self.decode)(&mut self.consumer, (key, value)).await? {
+                ControlFlow::Continue(()) => IterAction::Next,
+                ControlFlow::Break(()) => IterAction::Stop,
+            },
+        )
     }
 }
 

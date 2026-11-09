@@ -707,7 +707,7 @@ mod tests {
             let read = store.partition_db().prepare_read(
                 "retirement-read",
                 restate_rocksdb::StorageTaskKind::MultiGet,
-                move |_, _| {
+                async move |_, _| {
                     let _ = started.send(());
                     let _ = paused.recv();
                 },
