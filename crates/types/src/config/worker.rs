@@ -107,9 +107,12 @@ pub struct WorkerOptions {
 
     /// # Maximum command batch size (in bytes) for partition processors
     ///
-    /// Caps the total bytes of Bifrost log records processed opportunistically by the partition processor in
-    /// a single iteration. This works in conjunction with `max-command-batch-size` which caps the
-    /// number of records. The processor will process the batch when whichever limit is hit first.
+    /// Caps the size of the write batch a partition processor commits to its partition store for
+    /// the Bifrost log records it processes opportunistically in a single iteration. Applying a
+    /// record usually writes more than the record's own size. A batch can exceed this limit by
+    /// what its last record writes beyond its own size, or when a single record writes more than
+    /// the limit. This works in conjunction with `max-command-batch-size` which caps the number of
+    /// records. The processor will process the batch when whichever limit is hit first.
     ///
     /// Default: 1 MiB
     ///

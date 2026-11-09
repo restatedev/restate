@@ -658,13 +658,13 @@ where
 
                     // Apply the batch one record at a time, seeded with the record we just awaited.
                     // The first record is always applied, which guarantees forward progress even
-                    // when a single record is larger than `bytes_limit`. Further records are pulled
-                    // only while immediately available and within the record-count and byte limits.
-                    let mut accumulated_bytes = 0;
+                    // when a single record writes more than `bytes_limit`. Further records are
+                    // pulled only while immediately available, within the record-count limit, and
+                    // while the write batch stays within `bytes_limit` after adding the next
+                    // record's own size, as most commands write at least their payload.
                     let mut count = 0usize;
                     let mut next_entry = Some(first);
                     while let Some(entry) = next_entry.take() {
-                        accumulated_bytes += entry.estimated_memory_size();
                         count += 1;
                         match self.apply_log_entry(
                             entry,
@@ -698,7 +698,7 @@ where
                             // batch. Termination/errors resurface on the next `next().await`.
                             _ => break,
                         };
-                        if accumulated_bytes + next_size > bytes_limit {
+                        if txn.estimated_size_in_bytes() + next_size > bytes_limit {
                             // Leave the peeked record in the slot; it leads the next batch.
                             break;
                         }
