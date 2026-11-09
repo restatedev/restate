@@ -18,6 +18,7 @@ use anyhow::anyhow;
 use bytes::Bytes;
 use bytes::BytesMut;
 use enum_map::Enum;
+use metrics::Histogram;
 use rocksdb::{
     BoundColumnFamily, DBPinnableSlice, DBRawIteratorWithThreadMode, ReadOptions,
     SnapshotWithThreadMode,
@@ -571,6 +572,7 @@ impl PartitionStore {
             snapshot,
             settings,
             commit_fence: None,
+            write_batch_size_histogram: None,
         }
     }
 
@@ -982,6 +984,7 @@ pub struct PartitionStoreTransaction<'a> {
     settings: TransactionSettings,
     /// Resolves once the [`CommitFence`] holding back commits is dropped.
     commit_fence: Option<oneshot::Receiver<()>>,
+    write_batch_size_histogram: Option<&'a Histogram>,
 }
 
 /// Holds back the commits of the [`PartitionStoreTransaction`] that created it until dropped.
@@ -1010,6 +1013,13 @@ impl<'a> PartitionStoreTransaction<'a> {
         let (release, released) = oneshot::channel();
         self.commit_fence = Some(released);
         Some(CommitFence { _release: release })
+    }
+
+    /// Records the size in bytes of every write batch that later commits write to the database.
+    /// Commits with nothing to write record nothing. Applies until set again, also across
+    /// [`Self::clear`] and [`Transaction::commit`].
+    pub fn set_write_batch_size_histogram(&mut self, histogram: &'a Histogram) {
+        self.write_batch_size_histogram = Some(histogram);
     }
 
     /// Clears up all buffered operations in the transaction buffer. A commit fence stays in
@@ -1151,6 +1161,9 @@ impl Transaction for PartitionStoreTransaction<'_> {
             .try_acquire()
             .ok_or(StorageError::OperationalError)?;
         let write_batch = self.write_batch_with_index.take().expect("nonempty batch");
+        if let Some(histogram) = self.write_batch_size_histogram {
+            histogram.record(write_batch.size_in_bytes() as f64);
+        }
 
         let io_mode = if Configuration::pinned()
             .worker

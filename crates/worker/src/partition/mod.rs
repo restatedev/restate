@@ -105,7 +105,7 @@ use self::processor::*;
 use self::state_machine::StateMachine;
 use crate::metric_definitions::{
     LEADER_LABEL, LEADER_LABEL_FOLLOWER, LEADER_LABEL_LEADER, PARTITION_APPLY_COMMAND,
-    PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
+    PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, PARTITION_WRITE_BATCH_SIZE_BYTES,
 };
 use crate::partition::leadership::LeadershipState;
 use crate::partition::processor::leadership::LeadershipContext;
@@ -548,6 +548,10 @@ where
         // Note: we didn't remove the leader label to avoid breaking existing dashboards. This can
         // be removed in the future if deemed necessary.
         let leader_record_write_to_read_latency = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, LEADER_LABEL => LEADER_LABEL_LEADER);
+        let leader_write_batch_size =
+            histogram!(PARTITION_WRITE_BATCH_SIZE_BYTES, LEADER_LABEL => LEADER_LABEL_LEADER);
+        let follower_write_batch_size =
+            histogram!(PARTITION_WRITE_BATCH_SIZE_BYTES, LEADER_LABEL => LEADER_LABEL_FOLLOWER);
 
         // Start reading after the last applied lsn
         let mut record_stream = std::pin::pin!(
@@ -644,18 +648,23 @@ where
                     let first = first?;
 
                     txn.clear();
+                    txn.set_write_batch_size_histogram(if self.leadership_state.is_leader() {
+                        &leader_write_batch_size
+                    } else {
+                        &follower_write_batch_size
+                    });
                     // clear buffers used when applying the next record
                     action_collector.clear();
 
                     // Apply the batch one record at a time, seeded with the record we just awaited.
                     // The first record is always applied, which guarantees forward progress even
-                    // when a single record is larger than `bytes_limit`. Further records are pulled
-                    // only while immediately available and within the record-count and byte limits.
-                    let mut accumulated_bytes = 0;
+                    // when a single record writes more than `bytes_limit`. Further records are
+                    // pulled only while immediately available, within the record-count limit, and
+                    // while the write batch stays within `bytes_limit` after adding the next
+                    // record's own size, as most commands write at least their payload.
                     let mut count = 0usize;
                     let mut next_entry = Some(first);
                     while let Some(entry) = next_entry.take() {
-                        accumulated_bytes += entry.estimated_memory_size();
                         count += 1;
                         match self.apply_log_entry(
                             entry,
@@ -689,7 +698,7 @@ where
                             // batch. Termination/errors resurface on the next `next().await`.
                             _ => break,
                         };
-                        if accumulated_bytes + next_size > bytes_limit {
+                        if txn.estimated_size_in_bytes() + next_size > bytes_limit {
                             // Leave the peeked record in the slot; it leads the next batch.
                             break;
                         }
