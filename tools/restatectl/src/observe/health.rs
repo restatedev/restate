@@ -12,7 +12,6 @@
 
 use std::collections::BTreeMap;
 
-use chrono::Utc;
 use itertools::Itertools;
 use serde::Serialize;
 
@@ -127,7 +126,7 @@ pub fn analyze(view: &ClusterView) -> Vec<Finding> {
 }
 
 fn nodes(view: &ClusterView, findings: &mut Vec<Finding>) {
-    let now = Utc::now();
+    let now = view.captured_at;
     for node in &view.nodes {
         let subject = Subject::Node(node.plain());
         match node.liveness {
@@ -362,7 +361,7 @@ fn partition_findings(
     findings: &mut Vec<Finding>,
 ) {
     let subject = Subject::Partition(p.id);
-    let now = Utc::now();
+    let now = view.captured_at;
 
     if p.health == PartitionHealth::Unavailable && p.is_led() {
         findings.push(Finding::new(

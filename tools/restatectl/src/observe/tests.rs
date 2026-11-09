@@ -32,8 +32,32 @@ use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::replication::{NodeSet, ReplicationProperty};
 use restate_types::{GenerationalNodeId, PlainNodeId, RestateVersion, Version};
 
-use super::sql::{PartitionRow, ReadStreamRow, SqlData};
+use super::sql::{PartitionRow, ReadStreamRow, SqlData, Tables};
 use super::*;
+
+/// The tables a cluster returns with `sql`'s rows: those read once, and those sampled.
+fn tables(sql: SqlData) -> (Tables, Tables) {
+    fn rows<T: serde::Serialize>(
+        rows: impl IntoIterator<Item = T>,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        Ok(rows
+            .into_iter()
+            .map(|row| serde_json::to_value(row).expect("rows serialize"))
+            .collect())
+    }
+    let settled = Tables::from([("partitions".to_owned(), rows(sql.memberships.into_values()))]);
+    let sampled = Tables::from([
+        (
+            "loglet_workers".to_owned(),
+            rows(sql.loglet_workers.into_values().flatten()),
+        ),
+        (
+            "bifrost_read_streams".to_owned(),
+            rows(sql.read_streams.into_values().flatten()),
+        ),
+    ]);
+    (settled, sampled)
+}
 
 fn node(id: u32) -> NodeConfig {
     NodeConfig::builder()
@@ -190,38 +214,43 @@ pub(crate) fn cluster_that_lost_a_node() -> ClusterView {
         )
     };
 
+    let (tables, sampled) = tables(SqlData {
+        memberships: HashMap::from([
+            membership(0, "N1,N2", None),
+            membership(1, "N1,N3", None),
+            membership(2, "N2,N3", Some("N1,N2")),
+        ]),
+        loglet_workers: HashMap::new(),
+        read_streams: HashMap::from([
+            (
+                0,
+                vec![reader(1, 0, "Reading", 99), reader(2, 0, "Reading", 40)],
+            ),
+            (
+                2,
+                vec![
+                    reader(2, 2, "AwaitingOrSealChain", 60),
+                    reader(3, 2, "Reading", 1),
+                ],
+            ),
+        ]),
+    });
     ClusterView::build(Snapshot {
-        captured_at: Utc::now(),
         nodes_config,
         partition_table: Some(partition_table),
         logs: Some(logs.build()),
-        cluster_state: Some(cluster_state),
         idents: HashMap::from([ident(1), ident(2)]),
         metadata_servers: BTreeMap::new(),
-        sql: SqlData {
-            memberships: HashMap::from([
-                membership(0, "N1,N2", None),
-                membership(1, "N1,N3", None),
-                membership(2, "N2,N3", Some("N1,N2")),
-            ]),
-            loglet_workers: HashMap::new(),
-            read_streams: HashMap::from([
-                (
-                    0,
-                    vec![reader(1, 0, "Reading", 99), reader(2, 0, "Reading", 40)],
-                ),
-                (
-                    2,
-                    vec![
-                        reader(2, 2, "AwaitingOrSealChain", 60),
-                        reader(3, 2, "Reading", 1),
-                    ],
-                ),
-            ]),
-        },
+        tables,
         nodes_probed: true,
         dialed: HashMap::new(),
         warnings: Vec::new(),
+        sample: Sample {
+            captured_at: Utc::now(),
+            cluster_state: Some(cluster_state),
+            tables: sampled,
+            warnings: Vec::new(),
+        },
     })
 }
 
@@ -328,6 +357,11 @@ fn health_of_a_cluster_that_lost_a_node() {
 /// first has no leader yet, while its log's sequencer is still N7 and its tail segment is
 /// sealed; four replica sets move off N7; logs have up to four segments.
 pub(crate) fn large_cluster() -> ClusterView {
+    ClusterView::build(large_cluster_snapshot())
+}
+
+/// What a cluster returns for `large_cluster`.
+pub(crate) fn large_cluster_snapshot() -> Snapshot {
     use restate_metadata_server_grpc::grpc::{
         MetadataServerConfiguration, RaftSummary, SnapshotSummary, StatusResponse,
     };
@@ -782,19 +816,18 @@ pub(crate) fn large_cluster() -> ClusterView {
         })
         .collect();
 
-    ClusterView::build(Snapshot {
-        captured_at: Utc::now(),
+    let (tables, sampled) = tables(SqlData {
+        memberships,
+        loglet_workers,
+        read_streams,
+    });
+    Snapshot {
         nodes_config,
         partition_table: Some(partition_table),
         logs: Some(logs.build()),
-        cluster_state: Some(cluster_state),
         idents,
         metadata_servers,
-        sql: SqlData {
-            memberships,
-            loglet_workers,
-            read_streams,
-        },
+        tables,
         nodes_probed: true,
         // restatectl runs in eu-west-1 outside the zones: the region-wide entries
         dialed: (1..=NODES)
@@ -806,5 +839,11 @@ pub(crate) fn large_cluster() -> ClusterView {
             })
             .collect(),
         warnings: Vec::new(),
-    })
+        sample: Sample {
+            captured_at: Utc::now(),
+            cluster_state: Some(cluster_state),
+            tables: sampled,
+            warnings: Vec::new(),
+        },
+    }
 }

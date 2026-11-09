@@ -20,6 +20,7 @@ use restate_cli_util::ui::watcher::Watch;
 use restate_cli_util::{c_print, c_println};
 use restate_types::PlainNodeId;
 
+use crate::commands::status::Source;
 use crate::connection::ConnectionInfo;
 use crate::observe::{
     ClusterView, Finding, Mode, PartitionHealth, PartitionPlacement, PartitionView, ReaderPhase,
@@ -62,6 +63,9 @@ pub struct ListPartitionsOpts {
     /// Show additional columns: log and key range, or versions and features with --replicas
     #[arg(long, short = 'x', help_heading = preview::HEADING)]
     extra: bool,
+
+    #[clap(flatten)]
+    source: Source,
 
     #[clap(flatten, next_help_heading = preview::HEADING)]
     watch: Watch,
@@ -108,7 +112,7 @@ async fn list_partitions(
     }
     if opts.watch.is_enabled() && tui::can_run_dashboard() {
         return tui::dashboard::run(
-            connection,
+            opts.source.feed(connection)?,
             tui::dashboard::Options {
                 tab: tui::dashboard::Tab::Partitions,
                 interval: opts.watch.interval(),
@@ -122,6 +126,9 @@ async fn list_partitions(
         )
         .await;
     }
+    if opts.source.is_file() {
+        return show_partitions(connection, opts).await;
+    }
     opts.watch
         .run(|| async {
             connection.reset().await;
@@ -134,7 +141,7 @@ async fn show_partitions(
     connection: &ConnectionInfo,
     opts: &ListPartitionsOpts,
 ) -> anyhow::Result<()> {
-    let view = ClusterView::fetch(connection).await?;
+    let view = opts.source.view(connection).await?;
     let findings = analyze(&view);
 
     let selected: Vec<&PartitionView> = view
@@ -235,7 +242,7 @@ async fn show_partitions(
     }
 
     let table = if opts.replicas {
-        replicas_table(&selected, &opts.sort, opts.extra)
+        replicas_table(&selected, &opts.sort, opts.extra, view.captured_at)
     } else {
         partitions_table(&view, selected.iter().copied(), opts.extra)
     };
@@ -428,7 +435,12 @@ fn sequencer_cell(view: &ClusterView, p: &PartitionView) -> Cell {
 }
 
 /// A row per partition processor, and a row per replica set member that runs none.
-fn replicas_table(partitions: &[&PartitionView], sort: &SortMode, extra: bool) -> Table {
+fn replicas_table(
+    partitions: &[&PartitionView],
+    sort: &SortMode,
+    extra: bool,
+    now: DateTime<Utc>,
+) -> Table {
     let mut header = vec![
         "P", "", "NODE", "MODE", "REPLAY", "MEMBER", "EPOCH", "APPLIED", "LAG", "READ", "DURABLE",
         "ARCHIVED", "UPDATED",
@@ -538,8 +550,8 @@ fn replicas_table(partitions: &[&PartitionView], sort: &SortMode, extra: bool) -
             None => "-".to_owned(),
         };
         let updated = match r.updated_at {
-            Some(t) if (Utc::now() - t).num_seconds() > 30 => paint(ago(Some(t)), Color::Yellow),
-            t => ago(t),
+            Some(t) if (now - t).num_seconds() > 30 => paint(ago(Some(t), now), Color::Yellow),
+            t => ago(t, now),
         };
 
         let mut row = vec![
@@ -561,7 +573,7 @@ fn replicas_table(partitions: &[&PartitionView], sort: &SortMode, extra: bool) -
             row.extend([
                 cell(opt(r.schema_version.map(|v| format!("v{v}")))),
                 cell(opt(r.rule_book_version.map(|v| format!("v{v}")))),
-                cell(ago(r.last_record_applied_at)),
+                cell(ago(r.last_record_applied_at, now)),
                 cell(list_or_dash(&r.features)),
                 cell(list_or_dash(&r.storage_features)),
             ]);

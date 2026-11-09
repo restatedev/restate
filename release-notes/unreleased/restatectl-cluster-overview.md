@@ -100,6 +100,21 @@ second (`-n <seconds>` changes the interval):
 
 Without a terminal (or with `--plain`), `-w` refreshes the plain output instead.
 
+#### Saving the status to a file
+
+`restatectl status --dump [PATH]` saves everything `restatectl` reads about the cluster's status
+to one file, for a closer look later or to send to someone helping you. That covers the metadata,
+each node's report and the cluster's system tables. What changes by the second (partition
+processors, log tails, read streams) is sampled 5 times, a second apart, so the command takes about
+5 seconds. Parts that can't be read, for example because a node is down, are noted in the file
+and the rest is still saved. The file has the cluster's node addresses and host names, and no
+application data. Without a path, it's named `restate-status-<cluster>-<time>.json.zst`.
+
+`restatectl status`, `restatectl partitions list` and `restatectl logs list` show such a file with
+`--file PATH`, as they would show the cluster at the time it was saved, without connecting to it.
+This works in every form: on a terminal, as plain text, as JSON, and with `-w` in the dashboard,
+where the samples give the rates and charts.
+
 ### Why This Matters
 
 Without preview, `restatectl status --extra` prints four long tables and leaves it to you to spot
