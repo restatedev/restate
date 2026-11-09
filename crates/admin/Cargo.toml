@@ -70,7 +70,7 @@ serde_with = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true, features = ["transport", "codegen", "gzip", "zstd"] }
-tower = { workspace = true, features = ["load-shed", "limit"] }
+tower = { workspace = true, features = ["load-shed", "limit", "util"] }
 tower-http = { workspace = true, features = ["compression-br", "compression-gzip", "compression-zstd", "trace"] }
 tracing = { workspace = true }
 urlencoding = { workspace = true }

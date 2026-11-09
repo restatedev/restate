@@ -19,6 +19,7 @@ mod io;
 mod lazy_connection;
 mod message_router;
 pub(crate) mod metric_definitions;
+pub mod misdirected_requests;
 pub mod net_util;
 mod network_sender;
 mod networking;
