@@ -8545,6 +8545,7 @@ dependencies = [
  "futures",
  "metrics",
  "parking_lot",
+ "pin-project-lite",
  "restate-core",
  "restate-errors",
  "restate-futures-util",

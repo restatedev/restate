@@ -59,7 +59,7 @@ pub use self::db_spec::*;
 pub use self::error::*;
 pub use self::iterator::IterAction;
 use self::iterator::RocksIterator;
-pub use self::perf::{RocksDbReadPerfGuard, RocksDbWritePerfGuard};
+pub use self::perf::{RocksDbPerf, RocksDbPerfExt, RocksDbReadPerfGuard, RocksDbWritePerfGuard};
 use self::reads::ColumnFamilies;
 pub use self::rock_access::RocksAccess;
 pub use restate_util_lifecycle::KeepAlive;
