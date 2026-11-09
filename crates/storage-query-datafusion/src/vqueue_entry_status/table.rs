@@ -9,11 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
+use restate_storage_api::scan::{RowConsumer, ScanOutcome};
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
 use restate_storage_api::vqueue_table::{RawStatusHeaderRef, ScanVQueueEntryStatusTable};
 use restate_types::identifiers::BaseEntryId;
@@ -79,19 +79,15 @@ impl ScanLocalPartition for VQueueEntryStatusScanner {
     type ConversionError = std::convert::Infallible;
     type Filter = VQueueEntryIdFilter;
 
-    fn for_each_row<
-        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_row<F: for<'a> RowConsumer<Item<'a> = Self::Item<'a>>>(
         partition_store: &PartitionStore,
         filter: VQueueEntryIdFilter,
-        mut f: F,
-    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        partition_store.for_each_vqueue_entry_status(filter.into(), move |id, header| {
-            f((id, header)).map_break(Result::unwrap)
-        })
+        f: F,
+    ) -> Result<
+        impl Future<Output = restate_storage_api::Result<ScanOutcome<F>>> + Send,
+        StorageError,
+    > {
+        partition_store.for_each_vqueue_entry_status(filter.into(), f)
     }
 
     fn append_row<'a>(

@@ -14,6 +14,7 @@ use std::sync::Arc;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::inbox_table::{ScanInboxTable, SequenceNumberInboxEntry};
+use restate_storage_api::scan::{RowConsumer, ScanOutcome};
 use restate_types::sharding::KeyRange;
 
 use crate::context::{QueryContext, SelectPartitions};
@@ -58,19 +59,15 @@ impl ScanLocalPartition for InboxScanner {
     type ConversionError = std::convert::Infallible;
     type Filter = KeyRange;
 
-    fn for_each_row<
-        F: for<'a> FnMut(
-                Self::Item<'a>,
-            ) -> std::ops::ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_row<F: for<'a> RowConsumer<Item<'a> = Self::Item<'a>>>(
         partition_store: &PartitionStore,
         range: KeyRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        partition_store.for_each_inbox(range, move |item| f(item).map_break(Result::unwrap))
+        f: F,
+    ) -> Result<
+        impl Future<Output = restate_storage_api::Result<ScanOutcome<F>>> + Send,
+        StorageError,
+    > {
+        partition_store.for_each_inbox(range, f)
     }
 
     fn append_row<'a>(

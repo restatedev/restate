@@ -19,10 +19,13 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use bytestring::ByteString;
+use futures::{StreamExt, TryStreamExt};
+use tokio::time::timeout;
 
+use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, JournalMetadata, ReadInvocationStatusTable,
-    StatusTimestamps, WriteInvocationStatusTable,
+    ScanInvocationStatusTable, StatusTimestamps, WriteInvocationStatusTable,
 };
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::{
@@ -177,4 +180,55 @@ async fn invocation_status() {
             .expect("should not fail"),
         invoked_status(INVOCATION_TARGET_2)
     );
+}
+
+#[restate_core::test]
+async fn filter_map_invocation_status_lazy_ends() {
+    let mut rocksdb = storage_test_environment().await;
+    let mut txn = rocksdb.transaction();
+    populate_data(&mut txn).await;
+    txn.commit().await.unwrap();
+    drop(txn);
+
+    // A successful scan ends after its last row.
+    let ids: HashSet<_> = timeout(
+        Duration::from_secs(10),
+        rocksdb
+            .filter_map_invocation_status_lazy(None, |(id, _)| Ok::<_, anyhow::Error>(Some(id)))
+            .unwrap()
+            .try_collect(),
+    )
+    .await
+    .expect("scan should end")
+    .unwrap();
+    assert_eq!(
+        ids,
+        HashSet::from([
+            *INVOCATION_ID_1,
+            *INVOCATION_ID_2,
+            *INVOCATION_ID_3,
+            *INVOCATION_ID_4
+        ])
+    );
+
+    // A failing scan delivers the rows before the error, then ends.
+    let mut seen = 0;
+    let results: Vec<_> = timeout(
+        Duration::from_secs(10),
+        rocksdb
+            .filter_map_invocation_status_lazy(None, move |(id, _)| {
+                seen += 1;
+                if seen == 3 {
+                    anyhow::bail!("boom");
+                }
+                Ok(Some(id))
+            })
+            .unwrap()
+            .collect(),
+    )
+    .await
+    .expect("scan should end");
+    assert_eq!(results.len(), 3);
+    assert!(results[..2].iter().all(Result::is_ok));
+    assert!(results[2].is_err());
 }
