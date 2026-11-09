@@ -23,13 +23,13 @@ use restate_types::config::{Configuration, NetworkingOptions, TlsMode};
 use restate_types::net::address::{AdvertisedAddress, GrpcPort, ListenerPort, PeerNetAddress};
 use restate_types::net::connect_opts::GrpcConnectionOptions;
 
+use super::client::core_node_svc_client::CoreNodeSvcClient;
 use crate::network::grpc::DEFAULT_GRPC_COMPRESSION;
 use crate::network::net_util::{DNSResolution, apply_options, connect_tonic_endpoint};
-use crate::network::protobuf::core_node_svc::core_node_svc_client::CoreNodeSvcClient;
 use crate::network::protobuf::network::Message;
 use crate::network::tls::TlsClientConfig;
 use crate::network::transport_connector::{find_node, select_address};
-use crate::network::{ConnectError, Destination, Swimlane, TransportConnect};
+use crate::network::{ConnectError, Destination, OutgoingMessage, Swimlane, TransportConnect};
 use crate::{Metadata, TaskCenter, TaskKind};
 
 #[derive(Clone, Default)]
@@ -42,7 +42,7 @@ impl TransportConnect for GrpcConnector {
         &self,
         destination: &Destination,
         swimlane: Swimlane,
-        output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
+        output_stream: impl Stream<Item = OutgoingMessage> + Send + Unpin + 'static,
     ) -> Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError> {
         let address = match destination {
             Destination::Node(node_id) => {

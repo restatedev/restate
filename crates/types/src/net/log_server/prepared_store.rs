@@ -17,7 +17,7 @@ use bytes::Bytes;
 
 use crate::GenerationalNodeId;
 use crate::logs::{LogletOffset, Record};
-use crate::net::codec::{EncodeError, WireDecode, WireEncode, encode_as_bilrost};
+use crate::net::codec::{EncodeError, EncodedPayload, WireDecode, WireEncode, encode_as_bilrost};
 use crate::net::{ProtocolVersion, RpcRequest};
 use crate::time::MillisSinceEpoch;
 
@@ -61,7 +61,7 @@ pub struct PreparedStore {
 
 // Keep tags aligned with Store. A nested Payloads message and opaque Bytes
 // have the same length-delimited representation, including empty payloads.
-#[derive(bilrost::Message)]
+#[derive(Debug, bilrost::Message)]
 struct EncodedStore {
     #[bilrost(1)]
     header: LogServerRequestHeader,
@@ -79,6 +79,20 @@ struct EncodedStore {
     payloads: Bytes,
 }
 
+impl PreparedStore {
+    fn encoded(&self) -> EncodedStore {
+        EncodedStore {
+            header: self.header.clone(),
+            timeout_at: self.timeout_at,
+            flags: self.flags.clone(),
+            first_offset: self.first_offset,
+            sequencer: self.sequencer,
+            known_archived: self.known_archived,
+            payloads: self.payloads.encoded.clone(),
+        }
+    }
+}
+
 impl WireEncode for PreparedStore {
     fn encode_to_bytes(&self, protocol_version: ProtocolVersion) -> Result<Bytes, EncodeError> {
         match protocol_version {
@@ -93,16 +107,26 @@ impl WireEncode for PreparedStore {
             }
             .encode_to_bytes(protocol_version),
             ProtocolVersion::V3 | ProtocolVersion::V4 | ProtocolVersion::V6 => {
-                Ok(bilrost::Message::encode_to_bytes(&EncodedStore {
-                    header: self.header.clone(),
-                    timeout_at: self.timeout_at,
-                    flags: self.flags.clone(),
-                    first_offset: self.first_offset,
-                    sequencer: self.sequencer,
-                    known_archived: self.known_archived,
-                    payloads: self.payloads.encoded.clone(),
-                }))
+                Ok(bilrost::Message::encode_to_bytes(&self.encoded()))
             }
+        }
+    }
+
+    fn encode_payload(
+        &self,
+        protocol_version: ProtocolVersion,
+    ) -> Result<EncodedPayload, EncodeError> {
+        match protocol_version {
+            ProtocolVersion::V3 | ProtocolVersion::V4 | ProtocolVersion::V6
+                if self.payloads.encoded.len() >= 8 * 1024 =>
+            {
+                Ok(EncodedPayload::from_bilrost(self.encoded()))
+            }
+            // For small payloads, exact-sized encoding is cheaper than boxing
+            // and invoking the deferred encoder. Retain V2's compatibility path.
+            _ => self
+                .encode_to_bytes(protocol_version)
+                .map(EncodedPayload::from),
         }
     }
 }
@@ -170,6 +194,7 @@ mod tests {
                 payloads: payloads.clone(),
             };
             assert!(request.encode_to_bytes(ProtocolVersion::Unknown).is_err());
+            assert!(request.encode_payload(ProtocolVersion::Unknown).is_err());
             for version in [
                 ProtocolVersion::V2,
                 ProtocolVersion::V3,
@@ -202,6 +227,15 @@ mod tests {
                         payloads: records.clone().into(),
                     };
                     let encoded = request.encode_to_bytes(version).unwrap();
+                    let deferred = request.encode_payload(version).unwrap();
+                    assert_eq!(deferred.len(), encoded.len());
+                    assert_eq!(deferred.into_bytes(), encoded);
+                    let boxed: Box<dyn WireEncode + Send> = Box::new(request.clone());
+                    let deferred = boxed.encode_payload(version).unwrap();
+                    assert_eq!(
+                        deferred.try_into_bytes().is_ok(),
+                        version == ProtocolVersion::V2 || payloads.encoded.len() < 8 * 1024
+                    );
                     assert_eq!(encoded, ordinary.encode_to_bytes(version).unwrap());
                     let decoded = Store::try_decode(encoded.clone(), version).unwrap();
                     assert_eq!(decoded.payloads.len(), record_count);

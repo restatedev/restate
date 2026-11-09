@@ -11,6 +11,8 @@
 use std::env;
 use std::path::PathBuf;
 
+use tonic_prost_build::manual::{Builder, Method, Service};
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
@@ -65,6 +67,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ],
             &["protobuf", "../types/protobuf"],
         )?;
+
+    // Use the generated receive DTOs and service descriptor. CreateConnection's
+    // sending side uses the prepared outbound representation, with the same
+    // route as core_node_svc.proto.
+    for server in [false, true] {
+        let incoming = "crate::network::protobuf::network::Message";
+        let outgoing = "crate::network::OutgoingMessage";
+        let service = Service::builder()
+            .name("CoreNodeSvc")
+            .package("restate.core_node_svc")
+            .method(
+                Method::builder()
+                    .name("create_connection")
+                    .route_name("CreateConnection")
+                    .input_type(if server { incoming } else { outgoing })
+                    .output_type(if server { outgoing } else { incoming })
+                    .client_streaming()
+                    .server_streaming()
+                    .codec_path("crate::network::grpc::codec::FabricCodec")
+                    .build(),
+            )
+            .build();
+        let dir = out_dir.join(if server {
+            "fabric-server"
+        } else {
+            "fabric-client"
+        });
+        std::fs::create_dir_all(&dir)?;
+        Builder::new()
+            .build_client(!server)
+            .build_server(server)
+            .out_dir(dir)
+            .compile(&[service]);
+    }
 
     Ok(())
 }
