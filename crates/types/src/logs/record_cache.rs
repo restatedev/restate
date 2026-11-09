@@ -73,30 +73,27 @@ impl RecordCache {
                     }
 
                     // ensure the cache entry does not retain a much larger buffer
-                    return Op::Put(Self::cache_owned(record));
+                    return Op::Put(Self::cache_owned(record, record.encoded_body_size()));
                 };
 
-                match (existing.value().record.body(), record.body()) {
+                let existing = &existing.value().record;
+                match (existing.body(), record.body()) {
                     (PolyBytes::Bytes(_), PolyBytes::Bytes(_)) => Op::Nop,
-                    (PolyBytes::Bytes(_), PolyBytes::Typed(_)) => {
-                        Op::Put(Self::cache_owned(record))
-                    }
+                    (PolyBytes::Bytes(_), PolyBytes::Typed(_)) => Op::Put(Self::cache_owned(
+                        record,
+                        // the typed value may not know its size, the bytes it replaces do
+                        record
+                            .encoded_body_size()
+                            .or_else(|| existing.encoded_body_size()),
+                    )),
                     (PolyBytes::Bytes(_), PolyBytes::Both(_, _)) => {
                         // we only need to cache the typed value, let's repackage it.
-                        Op::Put(Self::cache_owned(record))
+                        Op::Put(Self::cache_owned(record, record.encoded_body_size()))
                     }
-                    // Shouldn't happen (we only cache Typed or Bytes), but let's handle it anyway.
-                    (PolyBytes::Both(typed, _), _) =>
-                    // repackage the existing value into Typed only
-                    {
-                        Op::Put(RecordCacheEntry {
-                            record: Record::from_parts(
-                                existing.value().record.created_at(),
-                                existing.value().record.keys().clone(),
-                                PolyBytes::Typed(Arc::clone(typed)),
-                            ),
-                            weight: existing.value().weight,
-                        })
+                    // Shouldn't happen (we only cache Typed or Bytes), but let's handle it anyway:
+                    // repackage the existing value into Typed only.
+                    (PolyBytes::Both(_, _), _) => {
+                        Op::Put(Self::cache_owned(existing, existing.encoded_body_size()))
                     }
                     (PolyBytes::Typed(_), _) => Op::Nop,
                 }
@@ -125,9 +122,10 @@ impl RecordCache {
     /// A [`Bytes`] value can be a small slice of a much larger allocation. Copy raw bodies when
     /// admitting a record so the cache capacity accounts for the memory it actually retains.
     /// Typed values are already reference counted, and any `Both` values will be reduced to only
-    /// the typed representation. The weight is retained from the original record because a
-    /// `Typed` value cannot estimate its encoded size.
-    fn cache_owned(record: &Record) -> RecordCacheEntry {
+    /// the typed representation. A typed value keeps `encoded_body_size`, the size of the bytes
+    /// it was encoded to, so that readers know the size of every record served from the cache.
+    /// The entry weighs what the cache keeps: the encoded size of its record.
+    fn cache_owned(record: &Record, encoded_body_size: Option<usize>) -> RecordCacheEntry {
         let body = match record.body() {
             PolyBytes::Bytes(bytes) => PolyBytes::Bytes(Bytes::copy_from_slice(bytes)),
             PolyBytes::Typed(typed) => PolyBytes::Typed(Arc::clone(typed)),
@@ -135,9 +133,11 @@ impl RecordCache {
             PolyBytes::Both(typed, _) => PolyBytes::Typed(Arc::clone(typed)),
         };
 
+        let record = Record::from_parts(record.created_at(), record.keys().clone(), body)
+            .with_typed_body_size(encoded_body_size);
         RecordCacheEntry {
-            record: Record::from_parts(record.created_at(), record.keys().clone(), body),
-            weight: Self::weight(record),
+            weight: Self::weight(&record),
+            record,
         }
     }
 
@@ -187,7 +187,10 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
 
-    use bytes::Bytes;
+    use bilrost::{Message, OwnedMessage};
+    use bytes::{Bytes, BytesMut};
+
+    use restate_platform::memory::EstimatedMemorySize;
 
     use super::{LogletId, LogletOffset, PolyBytes, Record, RecordCache};
     use crate::{logs::Keys, time::NanosSinceEpoch};
@@ -356,6 +359,57 @@ mod tests {
         let inner = cache.inner.as_ref().unwrap();
         inner.run_pending_tasks();
         assert_eq!(inner.weighted_size(), expected_weight);
+    }
+
+    /// A typed entry keeps the size of the bytes it dropped or replaced, which is the size of the
+    /// body a remote reader receives; a typed value that was never encoded has none. Its size
+    /// estimates and its weight in the cache follow from it.
+    #[test]
+    fn typed_entries_keep_their_encoded_body_size() {
+        let cache = RecordCache::new(64 * 1024);
+        let typed = Arc::new("typed body".to_owned());
+        let record = |body| Record::from_parts(NanosSinceEpoch::now(), Keys::None, body);
+
+        let encoded = record(PolyBytes::Typed(typed.clone())).ensure_encoded(&mut BytesMut::new());
+        let size = encoded.encoded_body_size().unwrap();
+        cache.add(LOGLET_ID, OFFSET, &encoded);
+        let cached = cache.get(LOGLET_ID, OFFSET).unwrap();
+        assert_matches!(cached.body(), PolyBytes::Typed(_));
+        assert_eq!(cached.encoded_body_size(), Some(size));
+        assert_eq!(
+            cached.estimated_encode_size(),
+            encoded.estimated_encode_size()
+        );
+        assert_eq!(cached.estimated_memory_size(), size);
+        // the size isn't sent: a receiver gets the body's bytes
+        let received = <Record as OwnedMessage>::decode(cached.encode_to_bytes()).unwrap();
+        assert_matches!(received.body(), PolyBytes::Bytes(bytes) if bytes.len() == size);
+
+        let raw = LogletOffset::new(2);
+        cache.add(
+            LOGLET_ID,
+            raw,
+            &record(PolyBytes::Bytes(Bytes::from_static(b"raw body"))),
+        );
+        cache.add(LOGLET_ID, raw, &record(PolyBytes::Typed(typed.clone())));
+        let cached = cache.get(LOGLET_ID, raw).unwrap();
+        assert_matches!(cached.body(), PolyBytes::Typed(_));
+        assert_eq!(cached.encoded_body_size(), Some(b"raw body".len()));
+
+        let never_encoded = LogletOffset::new(3);
+        cache.add(LOGLET_ID, never_encoded, &record(PolyBytes::Typed(typed)));
+        let cached = cache.get(LOGLET_ID, never_encoded).unwrap();
+        assert_eq!(cached.encoded_body_size(), None);
+
+        // each entry weighs the record the cache keeps
+        let kept: u64 = [OFFSET, raw, never_encoded]
+            .map(|offset| cache.get(LOGLET_ID, offset).unwrap())
+            .iter()
+            .map(|record| u64::from(RecordCache::weight(record)))
+            .sum();
+        let inner = cache.inner.as_ref().unwrap();
+        inner.run_pending_tasks();
+        assert_eq!(inner.weighted_size(), kept);
     }
 
     #[test]

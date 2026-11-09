@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use bytes::BytesMut;
@@ -22,6 +23,7 @@ use super::{KeyFilter, Keys, MatchKeyQuery};
 pub use record_encoding::CustomRecordEncoding;
 
 #[derive(Debug, Clone, bilrost::Message, NetSerde)]
+#[bilrost(default_per_field)]
 pub struct Record {
     #[bilrost(tag(1))]
     created_at: NanosSinceEpoch,
@@ -29,6 +31,11 @@ pub struct Record {
     body: PolyBytes,
     #[bilrost(tag(3))]
     keys: Keys,
+    /// The size of the body's encoded form while only its typed value is kept, as the record
+    /// cache does. It isn't sent: whoever receives a record gets its body encoded.
+    #[bilrost(ignore)]
+    #[net_serde(skip)]
+    typed_body_size: Option<NonZeroU32>,
 }
 
 impl Record {
@@ -37,7 +44,27 @@ impl Record {
             created_at,
             keys,
             body,
+            typed_body_size: None,
         }
+    }
+
+    /// The size of the body's encoded form, as the log stores it. It's known for a body held as
+    /// bytes, and for a typed body served by the record cache, which keeps the size of the bytes
+    /// it drops. It isn't for a typed body that was never encoded.
+    pub fn encoded_body_size(&self) -> Option<usize> {
+        match &self.body {
+            PolyBytes::Bytes(bytes) | PolyBytes::Both(_, bytes) => Some(bytes.len()),
+            PolyBytes::Typed(_) => self.typed_body_size.map(|size| size.get() as usize),
+        }
+    }
+
+    /// Sets the size of the body's encoded form, for a body held only typed; the size of a body
+    /// held as bytes is their length.
+    pub(super) fn with_typed_body_size(mut self, size: Option<usize>) -> Self {
+        self.typed_body_size = size
+            .and_then(|size| u32::try_from(size).ok())
+            .and_then(NonZeroU32::new);
+        self
     }
 
     pub fn created_at(&self) -> NanosSinceEpoch {
@@ -49,7 +76,11 @@ impl Record {
     }
 
     pub fn estimated_encode_size(&self) -> usize {
-        size_of::<Keys>() + size_of::<NanosSinceEpoch>() + self.body.estimated_encode_size()
+        size_of::<Keys>()
+            + size_of::<NanosSinceEpoch>()
+            + self
+                .encoded_body_size()
+                .unwrap_or_else(|| self.body.estimated_encode_size())
     }
 
     pub fn ensure_encoded(self, buf: &mut BytesMut) -> Self {
@@ -67,6 +98,7 @@ impl Record {
             created_at,
             keys,
             body,
+            typed_body_size: self.typed_body_size,
         }
     }
 
@@ -144,9 +176,12 @@ impl From<RecordDecodeError> for StorageDecodeError {
 }
 
 impl EstimatedMemorySize for Record {
+    /// The size of the body's encoded form when it's known, so that a record served typed from
+    /// the record cache counts the same as when it's read as bytes.
     #[inline]
     fn estimated_memory_size(&self) -> usize {
-        self.body.estimated_memory_size()
+        self.encoded_body_size()
+            .unwrap_or_else(|| self.body.estimated_memory_size())
     }
 }
 
@@ -158,21 +193,21 @@ impl MatchKeyQuery for Record {
 
 impl From<String> for Record {
     fn from(value: String) -> Self {
-        Record {
-            created_at: NanosSinceEpoch::now(),
-            keys: Keys::None,
-            body: PolyBytes::Typed(Arc::new(value)),
-        }
+        Record::from_parts(
+            NanosSinceEpoch::now(),
+            Keys::None,
+            PolyBytes::Typed(Arc::new(value)),
+        )
     }
 }
 
 impl From<&str> for Record {
     fn from(value: &str) -> Self {
-        Record {
-            created_at: NanosSinceEpoch::now(),
-            keys: Keys::None,
-            body: PolyBytes::Typed(Arc::new(value.to_owned())),
-        }
+        Record::from_parts(
+            NanosSinceEpoch::now(),
+            Keys::None,
+            PolyBytes::Typed(Arc::new(value.to_owned())),
+        )
     }
 }
 
@@ -221,11 +256,7 @@ mod record_encoding {
         type Proxy = EncodedRecord;
 
         fn decode_proxy(&mut self, proxy: Self::Proxy) -> Result<(), bilrost::DecodeErrorKind> {
-            *self = Self {
-                created_at: proxy.created_at,
-                keys: proxy.keys,
-                body: PolyBytes::Bytes(proxy.body),
-            };
+            *self = Self::from_parts(proxy.created_at, proxy.keys, PolyBytes::Bytes(proxy.body));
 
             Ok(())
         }
