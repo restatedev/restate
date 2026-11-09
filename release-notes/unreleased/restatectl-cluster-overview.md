@@ -90,6 +90,14 @@ second (`-n <seconds>` changes the interval):
 - `u` shows only the partitions and logs that need attention. In the findings view, select a
   finding and press `Enter` to open its partition, log or node; `Enter` on the overview lists the
   findings. `r` refreshes, `?` lists the keys, `q` quits.
+- The mouse works too: click a view, a row, a tile to open its partition or node, a finding to
+  select it (again to open it), a key in the bottom bar, or the header of a column the list can
+  be sorted by (again to reverse the order). The wheel moves the selection. Dragging selects text
+  and copies it to the clipboard, and a double-click copies the word under the pointer, such as
+  an LSN or an address; in the findings view, it opens the finding. An address wrapped over
+  several lines is copied whole. Copying goes through the
+  terminal, so it also works over SSH; in tmux it needs `set -g set-clipboard on`. For the
+  terminal's own selection, hold Shift while dragging (Option in iTerm2).
 
 Without a terminal (or with `--plain`), `-w` refreshes the plain output instead. It also refreshes
 the command's own output when the command selects partitions or logs by id, or uses `--node` or

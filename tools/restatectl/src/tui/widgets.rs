@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use chrono::Utc;
 use itertools::Itertools;
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Flex, Layout, Rect};
+use ratatui::layout::{Constraint, Flex, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Cell, Paragraph, Row, Table, Widget};
@@ -253,12 +253,31 @@ impl NodeCards<'_> {
         let rows = self.view.nodes.len().div_ceil(self.per_row(width));
         rows as u16 * CARD_HEIGHT
     }
+
+    /// Where each node's card goes in `area`, as many as fit.
+    pub fn cards(&self, area: Rect) -> Vec<(Rect, &NodeView)> {
+        let per_row = self.per_row(area.width);
+        let card_width = area.width / per_row as u16;
+        self.view
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, node)| {
+                let rect = Rect {
+                    x: area.x + (i % per_row) as u16 * card_width,
+                    y: area.y + (i / per_row) as u16 * CARD_HEIGHT,
+                    width: card_width,
+                    height: CARD_HEIGHT,
+                };
+                (rect, node)
+            })
+            .take_while(|(rect, _)| rect.bottom() <= area.bottom())
+            .collect()
+    }
 }
 
 impl Widget for NodeCards<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let per_row = self.per_row(area.width);
-        let card_width = area.width / per_row as u16;
         let max_replicas = self
             .view
             .nodes
@@ -268,16 +287,7 @@ impl Widget for NodeCards<'_> {
             .unwrap_or(0)
             .max(1);
         let usual_version = usual_version(self.view);
-        for (i, node) in self.view.nodes.iter().enumerate() {
-            let rect = Rect {
-                x: area.x + (i % per_row) as u16 * card_width,
-                y: area.y + (i / per_row) as u16 * CARD_HEIGHT,
-                width: card_width,
-                height: CARD_HEIGHT,
-            };
-            if rect.bottom() > area.bottom() {
-                break;
-            }
+        for (rect, node) in self.cards(area) {
             node_card(
                 self.view,
                 node,
@@ -490,6 +500,32 @@ impl PartitionTiles<'_> {
         let per_row = (inner / tile).max(1);
         (self.partitions.len() as u16).div_ceil(per_row).max(1) + 2
     }
+
+    /// Where each partition's tile goes in the panel drawn in `area`, as many as fit.
+    pub fn tiles(&self, area: Rect) -> Vec<(Rect, &PartitionView)> {
+        let inner = area.inner(Margin::new(2, 1));
+        let (tile, _) = self.tile_width(inner.width);
+        grid(inner, tile, &self.partitions)
+            .map(|(rect, p)| (rect, *p))
+            .collect()
+    }
+}
+
+/// `items` placed in `area` left to right, then top to bottom, in cells `width` wide, as many as
+/// fit.
+fn grid<T>(area: Rect, width: u16, items: &[T]) -> impl Iterator<Item = (Rect, &T)> {
+    let per_row = (area.width / width).max(1);
+    items
+        .iter()
+        .enumerate()
+        .map(move |(i, item)| {
+            let (col, row) = (i as u16 % per_row, i as u16 / per_row);
+            (
+                Rect::new(area.x + col * width, area.y + row, width, 1),
+                item,
+            )
+        })
+        .take_while(move |(rect, _)| rect.y < area.bottom())
 }
 
 impl Widget for PartitionTiles<'_> {
@@ -530,23 +566,11 @@ impl Widget for PartitionTiles<'_> {
         let block = panel(title)
             .title_top(Line::from(counts).right_aligned())
             .title_bottom(Line::from(legend));
-        let inner = block.inner(area);
         block.render(area, buf);
-        let inner = Rect {
-            x: inner.x + 1,
-            width: inner.width.saturating_sub(2),
-            ..inner
-        };
 
-        let (tile, labeled) = self.tile_width(inner.width);
-        let per_row = (inner.width / tile).max(1);
+        let (tile, labeled) = self.tile_width(area.inner(Margin::new(2, 1)).width);
         let digits = usize::from(tile.saturating_sub(3));
-        for (i, p) in self.partitions.iter().enumerate() {
-            let (col, row) = (i as u16 % per_row, i as u16 / per_row);
-            let (x, y) = (inner.x + col * tile, inner.y + row);
-            if y >= inner.bottom() {
-                break;
-            }
+        for (Rect { x, y, .. }, p) in self.tiles(area) {
             let mut style = theme::tile(p.health);
             if self.selected == Some(p.id) {
                 style = style.add_modifier(Modifier::REVERSED | Modifier::BOLD);
@@ -645,6 +669,37 @@ impl Findings {
     pub fn height(&self, width: u16) -> u16 {
         self.rendered(width.saturating_sub(4)).len() as u16 + 2
     }
+
+    /// The first line shown of `rendered` in `height` rows.
+    fn scroll(&self, rendered: &[(usize, Line<'static>)], height: u16) -> u16 {
+        match self.selected {
+            Some(selected) => {
+                // keep the selected finding, and its hint line, in view
+                let last = rendered
+                    .iter()
+                    .rposition(|(i, _)| *i == selected)
+                    .unwrap_or(0);
+                (last + 1).saturating_sub(usize::from(height)) as u16
+            }
+            None => self.scroll,
+        }
+    }
+
+    /// Where each line shows in the panel drawn in `area`, with the index of its finding line.
+    pub fn rows(&self, area: Rect) -> Vec<(Rect, usize)> {
+        if self.lines.is_empty() {
+            return Vec::new();
+        }
+        let inner = area.inner(Margin::new(2, 1));
+        let rendered = self.rendered(inner.width);
+        let scroll = self.scroll(&rendered, inner.height);
+        rendered
+            .iter()
+            .skip(usize::from(scroll))
+            .zip(inner.rows())
+            .map(|((i, _), row)| (row, *i))
+            .collect()
+    }
 }
 
 impl Widget for Findings {
@@ -667,25 +722,10 @@ impl Widget for Findings {
             }
         }
         let block = panel(title);
-        let inner = block.inner(area);
         block.render(area, buf);
-        let inner = Rect {
-            x: inner.x + 1,
-            width: inner.width.saturating_sub(2),
-            ..inner
-        };
+        let inner = area.inner(Margin::new(2, 1));
         let rendered = self.rendered(inner.width);
-        let scroll = match self.selected {
-            Some(selected) => {
-                // keep the selected finding, and its hint line, in view
-                let last = rendered
-                    .iter()
-                    .rposition(|(i, _)| *i == selected)
-                    .unwrap_or(0);
-                (last + 1).saturating_sub(usize::from(inner.height)) as u16
-            }
-            None => self.scroll,
-        };
+        let scroll = self.scroll(&rendered, inner.height);
         let lines: Vec<Line<'static>> = rendered
             .into_iter()
             .map(|(i, line)| {
@@ -1226,6 +1266,31 @@ impl RichTable {
             }
             _ => name.to_owned(),
         }
+    }
+
+    /// Where the header's cells and the rows show once the table is drawn in `area`, scrolled
+    /// to `offset`, with a highlight column `selection` wide: the cells by column, the rows with
+    /// their index.
+    pub fn layout(
+        &self,
+        area: Rect,
+        offset: usize,
+        selection: u16,
+    ) -> (Vec<Rect>, Vec<(Rect, usize)>) {
+        let inner = area.inner(Margin::new(1, 1));
+        if inner.is_empty() {
+            return Default::default();
+        }
+        // as `Table` lays out its columns
+        let [_, columns] = Layout::horizontal([Constraint::Length(selection), Constraint::Fill(0)])
+            .areas(Rect { height: 1, ..inner });
+        let cells = Layout::horizontal(self.column_widths().into_iter().map(Constraint::Length))
+            .flex(Flex::Start)
+            .spacing(2)
+            .split(columns)
+            .to_vec();
+        let rows = inner.rows().skip(1).zip(offset..self.rows.len()).collect();
+        (cells, rows)
     }
 
     fn column_widths(&self) -> Vec<u16> {
@@ -1986,6 +2051,16 @@ impl NodeTiles<'_> {
         let per_row = (width.saturating_sub(4) / self.tile_width()).max(1);
         (self.view.nodes.len() as u16).div_ceil(per_row) + 2
     }
+
+    /// Where each node's tile goes in the panel drawn in `area`, as many as fit.
+    pub fn tiles(&self, area: Rect) -> Vec<(Rect, &NodeView)> {
+        grid(
+            area.inner(Margin::new(2, 1)),
+            self.tile_width(),
+            &self.view.nodes,
+        )
+        .collect()
+    }
 }
 
 impl Widget for NodeTiles<'_> {
@@ -2025,23 +2100,9 @@ impl Widget for NodeTiles<'_> {
             raw(" "),
             span("details in the Nodes view (4) ", theme::muted()),
         ]));
-        let inner = block.inner(area);
         block.render(area, buf);
-        let inner = Rect {
-            x: inner.x + 1,
-            width: inner.width.saturating_sub(2),
-            ..inner
-        };
         let tile = self.tile_width();
-        let per_row = (inner.width / tile).max(1);
-        for (i, node) in self.view.nodes.iter().enumerate() {
-            let (x, y) = (
-                inner.x + (i as u16 % per_row) * tile,
-                inner.y + i as u16 / per_row,
-            );
-            if y >= inner.bottom() {
-                break;
-            }
+        for (Rect { x, y, .. }, node) in self.tiles(area) {
             let style = theme::tile(node_health(self.view, node));
             buf.set_string(x, y, "▎", style.fg(theme::rgb(theme::node(node.plain()))));
             buf.set_string(

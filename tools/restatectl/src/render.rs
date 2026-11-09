@@ -169,6 +169,8 @@ pub fn partition_health_strip(view: &ClusterView) -> String {
 
 /// One line of a findings list: a finding, or a group of findings of the same kind.
 pub struct FindingLine {
+    /// the index of the finding the line stands for, the first of its group's
+    pub first: usize,
     pub severity: Severity,
     pub subject: String,
     pub message: String,
@@ -180,16 +182,26 @@ pub struct FindingLine {
 /// more than `expand_limit` of them.
 pub fn group_findings(findings: &[Finding], expand_limit: usize) -> Vec<FindingLine> {
     let mut lines = Vec::new();
-    for ((severity, code), group) in &findings.iter().chunk_by(|f| (f.severity, f.code)) {
-        let group: Vec<&Finding> = group.collect();
+    for ((severity, code), group) in &findings
+        .iter()
+        .enumerate()
+        .chunk_by(|(_, f)| (f.severity, f.code))
+    {
+        let (indexes, group): (Vec<usize>, Vec<&Finding>) = group.unzip();
         let actionable = |hint: Option<String>| hint.filter(|_| severity > Severity::Info);
         if group.len() <= expand_limit {
-            lines.extend(group.into_iter().map(|f| FindingLine {
-                severity,
-                subject: subject_label(&f.subject),
-                message: f.message.clone(),
-                hint: actionable(f.hint.clone()),
-            }));
+            lines.extend(
+                indexes
+                    .into_iter()
+                    .zip(group)
+                    .map(|(first, f)| FindingLine {
+                        first,
+                        severity,
+                        subject: subject_label(&f.subject),
+                        message: f.message.clone(),
+                        hint: actionable(f.hint.clone()),
+                    }),
+            );
             continue;
         }
         let subject = group[0].subject;
@@ -207,6 +219,7 @@ pub fn group_findings(findings: &[Finding], expand_limit: usize) -> Vec<FindingL
         };
         let count = group.iter().map(|f| f.subject).unique().count();
         lines.push(FindingLine {
+            first: indexes[0],
             severity,
             subject: format!("{count} {}s", subject.kind()),
             message,

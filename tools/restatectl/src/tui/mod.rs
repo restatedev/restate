@@ -12,6 +12,7 @@
 //! printed inline, and a live dashboard for watch mode.
 
 pub mod dashboard;
+mod mouse;
 pub mod theme;
 pub mod views;
 pub mod widgets;
