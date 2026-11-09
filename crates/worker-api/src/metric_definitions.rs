@@ -20,6 +20,7 @@ pub const INVOKER_CONCURRENCY_SLOTS_RELEASED: &str = "restate.invoker.concurrenc
 pub const STATUS_COMPLETED: &str = "completed";
 pub const STATUS_INTERNAL_ERROR: &str = "internal_error";
 pub const STATUS_OVERLOADED_ERROR: &str = "overloaded_error";
+pub const STATUS_PARTITION_FULL_ERROR: &str = "partition_full_error";
 pub const STATUS_PROTOCOL_ERROR: &str = "protocol_error";
 pub const STATUS_ROUTING_ERROR: &str = "routing_error";
 pub const STATUS_SHUTDOWN: &str = "shutdown";

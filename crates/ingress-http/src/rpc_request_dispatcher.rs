@@ -64,7 +64,7 @@ impl<IC> InvocationClientRequestDispatcher<IC> {
             .retry_policy
             .clone()
             .retry_if(operation, |e| {
-                let retry = is_idempotent || e.is_safe_to_retry();
+                let retry = (is_idempotent || e.is_safe_to_retry()) && !e.is_partition_full();
 
                 if retry {
                     trace!("Retrying rpc because of error: {e}.");
