@@ -58,7 +58,7 @@ mod tests {
     use restate_storage_api::blob_table::{BlobBuilder, RawParts, ReadBlobTable, WriteBlobTable};
     use restate_storage_api::fsm_table::ReadFsmTable;
     use restate_types::SemanticRestateVersion;
-    use restate_types::blob::BlobId;
+    use restate_types::blob::{BlobId, BlobKind};
     use restate_types::identifiers::InvocationId;
     use restate_types::logs::{Keys, Lsn, SequenceNumber};
     use restate_types::message::MessageIndex;
@@ -137,7 +137,7 @@ mod tests {
         let mut txn = storage.transaction();
         txn.put_blob(
             blob,
-            BlobBuilder::default()
+            BlobBuilder::new(BlobKind::Generic)
                 .with_ref_count(NonZeroU16::new(3).unwrap())
                 .build(&b"payload"[..]),
         )

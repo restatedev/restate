@@ -10,7 +10,6 @@
 
 use tracing::warn;
 
-use restate_types::errors::GONE_INVOCATION_ERROR;
 use restate_storage_api::StorageError;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, CompletedResult, CompletionStatus, InvocationStatus,
