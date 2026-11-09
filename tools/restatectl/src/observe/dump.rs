@@ -284,7 +284,8 @@ impl<'de, T: Message + Default> Deserialize<'de> for Proto<T> {
     }
 }
 
-/// A dump of `large_cluster` whose logs take 50 records a second.
+/// A dump of `large_cluster` whose logs take 50 records a second, of 100 bytes each, which
+/// every reader reads.
 #[cfg(test)]
 pub(crate) fn dump_of_large_cluster() -> Dump {
     let snapshot = super::tests::large_cluster_snapshot();
@@ -296,6 +297,14 @@ pub(crate) fn dump_of_large_cluster() -> Dump {
             for row in workers.as_mut().unwrap() {
                 let tail = row["known_global_tail"].as_u64().unwrap_or_default();
                 row["known_global_tail"] = (tail + 50 * i as u64).into();
+            }
+            // and every reader reads them: 100 bytes each
+            let readers = sample.tables.get_mut("bifrost_read_streams").unwrap();
+            for row in readers.as_mut().unwrap() {
+                for (column, per_record) in [("records_read", 1), ("bytes_read", 100)] {
+                    let read = row[column].as_u64().unwrap_or_default();
+                    row[column] = (read + 50 * per_record * i as u64).into();
+                }
             }
             sample
         })

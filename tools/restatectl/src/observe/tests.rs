@@ -125,6 +125,7 @@ fn reader(node: u32, log: u32, state: &str, read_pointer: u64) -> ReadStreamRow 
         state: Some(state.to_owned()),
         current_segment: Some(0),
         is_tailing: Some(true),
+        ..Default::default()
     }
 }
 
@@ -361,6 +362,38 @@ fn health_of_a_cluster_that_lost_a_node() {
     assert!(!placement.nodes[2].sequencer_eligible);
     // most severe first
     assert!(findings.is_sorted_by(|a, b| a.severity >= b.severity));
+}
+
+/// A replica reads the stream named after its partition, even when its node tails the log for
+/// something else too; on a node that doesn't name its streams, the node's tailing one.
+#[test]
+fn replicas_read_their_own_stream() {
+    let mut snapshot = snapshot_of_a_cluster_that_lost_a_node();
+    let on_n1 = |name: Option<&str>, read_pointer| {
+        serde_json::to_value(ReadStreamRow {
+            name: name.map(str::to_owned),
+            ..reader(1, 0, "Reading", read_pointer)
+        })
+        .unwrap()
+    };
+    let streams = snapshot
+        .sample
+        .tables
+        .get_mut("bifrost_read_streams")
+        .unwrap()
+        .as_mut()
+        .unwrap();
+    streams.retain(|row| row["plain_node_id"] != "N1");
+    streams.extend([on_n1(None, 7), on_n1(Some("pp-0"), 99)]);
+
+    let view = ClusterView::build(snapshot);
+    let read_pointer = |node: u32| {
+        view.partitions[0]
+            .replica_on(PlainNodeId::new(node))
+            .and_then(|r| r.reader.as_ref()?.read_pointer)
+    };
+    assert_eq!(read_pointer(1), Some(99));
+    assert_eq!(read_pointer(2), Some(40));
 }
 
 /// Findings need evidence. With the cluster state: N3, dead, is the only metadata member, so the
@@ -786,6 +819,11 @@ pub(crate) fn large_cluster_snapshot() -> Snapshot {
                     .rposition(|b| *b <= read_pointer)
                     .map(|at| first_index + at as u32),
                 is_tailing: Some(true),
+                name: Some(format!("pp-{p}")),
+                role: Some(if leads { "leader" } else { "follower" }.to_owned()),
+                // the stream started when the processor did, a while into the log
+                records_read: Some(applied / 4),
+                bytes_read: Some(applied / 4 * 100),
             });
         }
     }
