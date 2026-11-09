@@ -8,9 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::ControlFlow;
+use std::sync::Arc;
+
 use bytes::{Bytes, BytesMut};
 use rocksdb::ReadOptions;
 
+use restate_core::io::Gate;
+use restate_rocksdb::IterAction;
+use restate_rocksdb::reads::IteratorVisitor;
+use restate_storage_api::scan::{RowConsumer, ScanClosePolicy};
+use restate_storage_api::{Result, StorageError};
 use restate_types::sharding::KeyRange;
 
 use crate::keys::{EncodeTableKeyPrefix, KeyEncode, KeyKind};
@@ -146,6 +154,47 @@ impl<K: EncodeTableKeyPrefix> From<TableScan<K>> for PhysicalScan<Bytes> {
     fn from(scan: TableScan<K>) -> Self {
         let mut arena = BytesMut::new();
         scan.encode(&mut arena)
+    }
+}
+
+/// Applies the close policy to a submitted scan. Dropping `scan` requests
+/// cancellation on the storage worker, which releases its captures when polled.
+pub(crate) async fn await_scan<T>(
+    gate: Arc<Gate>,
+    close_policy: ScanClosePolicy,
+    scan: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    match close_policy {
+        ScanClosePolicy::CancelOnClose => tokio::select! {
+            // Preserve a completed result when closure races with completion.
+            biased;
+            result = scan => result,
+            _ = gate.wait_sealed() => Err(StorageError::ScanInterrupted),
+        },
+        ScanClosePolicy::FinishBeforeClose => scan.await,
+    }
+}
+
+/// Decodes physical rows for a typed row consumer.
+pub(crate) struct DecodingVisitor<C, F> {
+    pub consumer: C,
+    pub decode: F,
+}
+
+impl<C, F> IteratorVisitor for DecodingVisitor<C, F>
+where
+    C: RowConsumer,
+    F: AsyncFnMut(&mut C, (&[u8], &[u8])) -> Result<ControlFlow<()>> + Send + 'static,
+{
+    type Error = StorageError;
+
+    async fn visit(&mut self, key: &[u8], value: &[u8]) -> Result<IterAction> {
+        Ok(
+            match (self.decode)(&mut self.consumer, (key, value)).await? {
+                ControlFlow::Continue(()) => IterAction::Next,
+                ControlFlow::Break(()) => IterAction::Stop,
+            },
+        )
     }
 }
 

@@ -30,6 +30,10 @@ pub enum RocksError {
     #[error(transparent)]
     #[code(unknown)]
     AdmissionClosed(#[from] AdmissionClosed),
+    /// Accepted I/O work ended without a result, for example after a panic.
+    #[error(transparent)]
+    #[code(unknown)]
+    TaskFailed(#[from] IoTaskError),
     #[error("unknown column family: {0}")]
     #[code(unknown)]
     UnknownColumnFamily(CfName),
@@ -54,15 +58,6 @@ pub enum RocksError {
     #[error(transparent)]
     #[code(unknown)]
     Other(#[from] rocksdb::Error),
-}
-
-/// A task that ended without delivering its result: its executor dropped it,
-/// typically while shutting down, or it panicked. Reported as a shutdown, as
-/// callers of background storage work have always done.
-impl From<IoTaskError> for RocksError {
-    fn from(_: IoTaskError) -> Self {
-        RocksError::Shutdown(ShutdownError)
-    }
 }
 
 impl RocksError {

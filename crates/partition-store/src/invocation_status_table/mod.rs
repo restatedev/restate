@@ -9,20 +9,20 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::BTreeSet;
-use std::ops::ControlFlow;
 
 use bytes::BytesMut;
 use futures::{FutureExt, Stream};
 use rocksdb::ReadOptions;
 
 use restate_core::io::IoExecutor;
-use restate_rocksdb::{Priority, RocksDbReadPerfGuard, StorageTaskKind};
+use restate_rocksdb::{RocksDbReadPerfGuard, StorageTaskKind};
 use restate_storage_api::invocation_status_table::{
     InvocationLite, InvocationStatus, InvocationStatusDiscriminants, ReadInvocationStatusTable,
     ScanInvocationStatusTable, ScanInvocationStatusTableRange, WriteInvocationStatusTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
+use restate_storage_api::scan::{RowConsumer, ScanClosePolicy, ScanOutcome};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
 use restate_types::sharding::KeyRange;
@@ -30,7 +30,7 @@ use restate_util_string::format_restring;
 
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
 use crate::scan::TableScan;
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind, break_on_err};
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind};
 
 define_table_key!(
     TableKind::InvocationStatus,
@@ -63,19 +63,14 @@ fn create_invocation_status_key(invocation_id: &InvocationId) -> InvocationStatu
     }
 }
 
-fn multi_get_invocation_status_lazy<E, F>(
+fn multi_get_invocation_status_lazy<F>(
     store: &PartitionStore,
+    executor: &(impl IoExecutor + Sync),
     ids: BTreeSet<InvocationId>,
     mut f: F,
-) -> impl Future<Output = Result<()>> + Send
+) -> impl Future<Output = Result<ScanOutcome<F>>> + Send
 where
-    E: Into<anyhow::Error> + 'static,
-    F: for<'a> FnMut(
-            (InvocationId, &'a InvocationStatusV2Lazy<'a>),
-        ) -> ControlFlow<std::result::Result<(), E>>
-        + Send
-        + Sync
-        + 'static,
+    F: for<'a> RowConsumer<Item<'a> = (InvocationId, &'a InvocationStatusV2Lazy<'a>)>,
 {
     const KEY_LEN: usize = InvocationStatusKey::serialized_length_fixed();
 
@@ -85,7 +80,7 @@ where
         let read = rocksdb.prepare_read(
             "df-for-each-invocation-status",
             StorageTaskKind::MultiGet,
-            move |raw_db, cfs| -> Result<()> {
+            async move |raw_db, cfs| -> Result<ScanOutcome<F>> {
                 let cf = cfs.get(<InvocationStatusKey as EncodeTableKey>::KEY_KIND);
 
                 let batch_capacity = ids.len().min(INVOCATION_STATUS_MULTI_GET_BATCH_SIZE);
@@ -162,12 +157,8 @@ where
                             .merge(value)
                             .map_err(|e| StorageError::Conversion(e.into()))?;
 
-                        match f((*id, &inv_status_v2_lazy)) {
-                            ControlFlow::Continue(()) => {}
-                            ControlFlow::Break(Ok(())) => return Ok(()),
-                            ControlFlow::Break(Err(e)) => {
-                                return Err(StorageError::Conversion(e.into()));
-                            }
+                        if f.consume((*id, &inv_status_v2_lazy)).await?.is_break() {
+                            return Ok(ScanOutcome::Stopped(f));
                         }
                     }
 
@@ -176,17 +167,18 @@ where
                     }
                 }
 
-                Ok(())
+                Ok(ScanOutcome::Exhausted(f))
             },
         );
-        rocksdb
-            .rocksdb()
-            .executor()
-            .low_pri()
-            .spawn(read)
-            .map_err(|_| StorageError::OperationalError)?
-            .await
-            .map_err(|_| StorageError::OperationalError)?
+        let result = executor
+            .spawn_cancellable(read)
+            .map_err(|_| StorageError::AdmissionClosed)?;
+        crate::scan::await_scan(
+            std::sync::Arc::clone(rocksdb.gate()),
+            F::SCAN_CLOSE_POLICY,
+            async move { result.await.map_err(|_| StorageError::TaskFailed)? },
+        )
+        .await
     }
 }
 
@@ -264,22 +256,19 @@ impl ReadInvocationStatusTable for PartitionStore {
     }
 }
 
-impl ScanInvocationStatusTable for PartitionStore {
-    fn for_each_invocation_status_lazy<
-        E: Into<anyhow::Error> + 'static,
-        F: for<'a> FnMut(
-                (InvocationId, &'a InvocationStatusV2Lazy<'a>),
-            ) -> ControlFlow<std::result::Result<(), E>>
-            + Send
-            + Sync
-            + 'static,
+impl PartitionStore {
+    /// Scans on `executor`, for data-fusion queries.
+    pub fn for_each_invocation_status_lazy<
+        's,
+        F: for<'a> RowConsumer<Item<'a> = (InvocationId, &'a InvocationStatusV2Lazy<'a>)>,
     >(
-        &self,
+        &'s self,
+        executor: &'s (impl IoExecutor + Sync),
         range: ScanInvocationStatusTableRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        f: F,
+    ) -> Result<impl Future<Output = Result<ScanOutcome<F>>> + Send> {
         if let ScanInvocationStatusTableRange::InvocationIdSet(ids) = range {
-            return Ok(multi_get_invocation_status_lazy(self, ids, f).boxed());
+            return Ok(multi_get_invocation_status_lazy(self, executor, ids, f).boxed());
         }
 
         let scan = match range {
@@ -303,49 +292,49 @@ impl ScanInvocationStatusTable for PartitionStore {
         let new_status_keys = self
             .iterator_for_each(
                 "df-for-each-invocation-status",
-                Priority::Low,
+                executor,
                 scan,
+                f,
                 {
-                    move |(mut key, mut value)| {
+                    async |f: &mut F, (mut key, mut value): (&[u8], &[u8])| {
                         let status_key =
-                            break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
+                            InvocationStatusKey::deserialize_from(&mut key)?;
 
                         if value.len() < std::mem::size_of::<u8>() {
-                            return ControlFlow::Break(Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::ReadingCodec(format_restring!(
+                            return Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::ReadingCodec(format_restring!(
                                 "remaining bytes in buf '{}' < version bytes '{}'",
                                 value.len(),
                                 std::mem::size_of::<u8>()
-                            )).into())));
+                            )).into()));
                         }
 
                         // read version
-                        let codec = break_on_err(restate_types::storage::StorageCodecKind::try_from(bytes::Buf::get_u8(&mut value)).map_err(|e|StorageError::Conversion(e.into())))?;
+                        let codec = restate_types::storage::StorageCodecKind::try_from(bytes::Buf::get_u8(&mut value)).map_err(|e|StorageError::Conversion(e.into()))?;
 
                         let restate_types::storage::StorageCodecKind::Protobuf = codec else {
-                            return ControlFlow::Break(Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::UnsupportedCodecKind(codec).into())));
+                            return Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::UnsupportedCodecKind(codec).into()));
                         };
 
                         let mut inv_status_v2_lazy = restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy::default();
-                        break_on_err(inv_status_v2_lazy.merge(value).map_err(|e| StorageError::Conversion(e.into())))?;
+                        inv_status_v2_lazy.merge(value).map_err(|e| StorageError::Conversion(e.into()))?;
 
                         let (partition_key, invocation_uuid) = status_key.split();
 
-                        let result = f((
+                        f.consume((
                             InvocationId::from_parts(partition_key, invocation_uuid),
                             &inv_status_v2_lazy,
-                        ));
-
-                        result.map_break(|result| {
-                            result.map_err(|err| StorageError::Conversion(err.into()))
-                        })
+                        ))
+                        .await
                     }
                 },
             )
-            .map_err(|_| StorageError::OperationalError)?;
+            .map_err(|_| StorageError::AdmissionClosed)?;
 
         Ok(new_status_keys.boxed())
     }
+}
 
+impl ScanInvocationStatusTable for PartitionStore {
     fn filter_map_invocation_status_lazy<
         O: Send + 'static,
         E: Into<anyhow::Error>,
@@ -375,8 +364,11 @@ impl ScanInvocationStatusTable for PartitionStore {
         let new_status_keys = self
             .iterator_filter_map(
                 "df-filter-map-invocation-status",
-                Priority::Low,
+                self.partition_db().rocksdb().executor().low_pri(),
                 scan,
+                // The cleaner consumes this stream in paginated batches with
+                // its own cancellation, so it isn't cut short by a close.
+                ScanClosePolicy::FinishBeforeClose,
                 {
                     move |(mut key, mut value)| {
                         let status_key = InvocationStatusKey::deserialize_from(&mut key)?;
@@ -409,7 +401,7 @@ impl ScanInvocationStatusTable for PartitionStore {
                     }
                 },
             )
-            .map_err(|_| StorageError::OperationalError)?;
+            .map_err(|_| StorageError::AdmissionClosed)?;
 
         Ok(new_status_keys)
     }

@@ -12,12 +12,14 @@ use futures::Stream;
 use futures_util::stream;
 use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 
+use restate_core::io::IoExecutor;
 use restate_memory::{LocalMemoryLease, LocalMemoryPool};
-use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
+use restate_rocksdb::RocksDbReadPerfGuard;
 use restate_storage_api::journal_table::{
-    JournalEntry, ReadJournalTable, ScanJournalTable, ScanJournalTableRange, WriteJournalTable,
+    JournalEntry, ReadJournalTable, ScanJournalTableRange, WriteJournalTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
+use restate_storage_api::scan::{RowConsumer, ScanOutcome};
 use restate_storage_api::{BudgetedReadError, Result, StorageError};
 use restate_types::identifiers::{
     EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
@@ -25,7 +27,7 @@ use restate_types::identifiers::{
 
 use crate::TableKind::Journal;
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, break_on_err};
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan};
 
 define_table_key!(
     Journal,
@@ -278,14 +280,16 @@ impl ReadJournalTable for PartitionStore {
     }
 }
 
-impl ScanJournalTable for PartitionStore {
-    fn for_each_journal<
-        F: FnMut((JournalEntryId, JournalEntry)) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
+impl PartitionStore {
+    /// Scans on `executor`, for data-fusion queries.
+    pub fn for_each_journal_v1<
+        F: for<'a> RowConsumer<Item<'a> = (JournalEntryId, JournalEntry)>,
     >(
         &self,
+        executor: &(impl IoExecutor + Sync),
         range: ScanJournalTableRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        f: F,
+    ) -> Result<impl Future<Output = Result<ScanOutcome<F>>> + Send> {
         let scan = match range {
             ScanJournalTableRange::PartitionKey(partition_key) => {
                 TableScan::ScanPartitionKeyRange::<JournalKeyBuilder>(partition_key)
@@ -307,11 +311,12 @@ impl ScanJournalTable for PartitionStore {
 
         self.iterator_for_each(
             "df-v1-journal",
-            Priority::Low,
+            executor,
             scan,
-            move |(mut key, mut value)| {
-                let journal_key = break_on_err(JournalKey::deserialize_from(&mut key))?;
-                let journal_entry = break_on_err(JournalEntry::decode(&mut value))?;
+            f,
+            async |f: &mut F, (mut key, mut value): (&[u8], &[u8])| {
+                let journal_key = JournalKey::deserialize_from(&mut key)?;
+                let journal_entry = JournalEntry::decode(&mut value)?;
 
                 let (partition_key, invocation_uuid, entry_index) = journal_key.split();
 
@@ -320,10 +325,10 @@ impl ScanJournalTable for PartitionStore {
                     entry_index,
                 );
 
-                f((journal_entry_id, journal_entry)).map_break(Ok)
+                f.consume((journal_entry_id, journal_entry)).await
             },
         )
-        .map_err(|_| StorageError::OperationalError)
+        .map_err(|_| StorageError::AdmissionClosed)
     }
 }
 
