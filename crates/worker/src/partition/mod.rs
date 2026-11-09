@@ -105,7 +105,7 @@ use self::processor::*;
 use self::state_machine::StateMachine;
 use crate::metric_definitions::{
     LEADER_LABEL, LEADER_LABEL_FOLLOWER, LEADER_LABEL_LEADER, PARTITION_APPLY_COMMAND,
-    PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
+    PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, PARTITION_WRITE_BATCH_SIZE_BYTES,
 };
 use crate::partition::leadership::LeadershipState;
 use crate::partition::processor::leadership::LeadershipContext;
@@ -548,6 +548,10 @@ where
         // Note: we didn't remove the leader label to avoid breaking existing dashboards. This can
         // be removed in the future if deemed necessary.
         let leader_record_write_to_read_latency = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, LEADER_LABEL => LEADER_LABEL_LEADER);
+        let leader_write_batch_size =
+            histogram!(PARTITION_WRITE_BATCH_SIZE_BYTES, LEADER_LABEL => LEADER_LABEL_LEADER);
+        let follower_write_batch_size =
+            histogram!(PARTITION_WRITE_BATCH_SIZE_BYTES, LEADER_LABEL => LEADER_LABEL_FOLLOWER);
 
         // Start reading after the last applied lsn
         let mut record_stream = std::pin::pin!(
@@ -644,6 +648,11 @@ where
                     let first = first?;
 
                     txn.clear();
+                    txn.set_write_batch_size_histogram(if self.leadership_state.is_leader() {
+                        &leader_write_batch_size
+                    } else {
+                        &follower_write_batch_size
+                    });
                     // clear buffers used when applying the next record
                     action_collector.clear();
 
