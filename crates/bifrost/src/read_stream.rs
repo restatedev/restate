@@ -527,9 +527,11 @@ impl Stream for LogReadStream {
                                     // record and fast-forward.
                                     continue;
                                 }
-                                *this.records_read += 1;
-                                *this.bytes_read +=
-                                    data_record.encoded_body_size().unwrap_or_default() as u64;
+                                // Wrap at 2^64 the same way in every build.
+                                *this.records_read = this.records_read.wrapping_add(1);
+                                *this.bytes_read = this.bytes_read.wrapping_add(
+                                    data_record.encoded_body_size().unwrap_or_default() as u64,
+                                );
                             }
 
                             update_shared_state(&this);
