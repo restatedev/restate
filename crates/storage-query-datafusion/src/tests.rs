@@ -28,7 +28,6 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_storage_api::state_table::WriteStateTable;
 use restate_storage_api::vqueue_table::stats::WaitStats;
-use restate_types::Scope;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::InvocationUuid;
 use restate_types::identifiers::{
@@ -43,6 +42,7 @@ use restate_types::sharding::KeyRange;
 use restate_types::vqueues::EntryId;
 use restate_types::vqueues::Seq;
 use restate_types::vqueues::VQueueId;
+use restate_types::{Priority, Scope};
 use restate_util_string::{ReString, RestateString, RestrictedValue};
 use restate_worker_api::invoker::status_handle::InvocationStatusReportInner;
 use restate_worker_api::invoker::{InvocationErrorReport, InvocationStatusReport, StatusHandle};
@@ -216,6 +216,7 @@ async fn query_sys_invocation() {
         &InvocationStatus::Invoked(InFlightInvocationMetadata {
             invocation_target: invocation_target.clone(),
             response_sinks: Default::default(),
+            priority: Priority::High,
             ..InFlightInvocationMetadata::mock()
         }),
     )
@@ -237,6 +238,7 @@ async fn query_sys_invocation() {
                     "last_failure_related_entry_name" => LargeStringArray: eq("my-side-effect"),
                     "last_failure_related_entry_type" => LargeStringArray: eq(EntryType::Run.to_string()),
                     "last_attempt_server" => LargeStringArray: eq("restate-sdk-java/0.8.0"),
+                    "priority" => LargeStringArray: eq("high"),
                 }
             ))
         );
@@ -252,7 +254,8 @@ async fn query_sys_invocation() {
                 last_failure_related_entry_index,
                 last_failure_related_entry_name,
                 last_failure_related_entry_type,
-                last_attempt_server
+                last_attempt_server,
+                priority
             FROM sys_invocation
             LIMIT 1",
         )
@@ -275,7 +278,8 @@ async fn query_sys_invocation() {
                 last_failure_related_entry_index,
                 last_failure_related_entry_name,
                 last_failure_related_entry_type,
-                last_attempt_server
+                last_attempt_server,
+                priority
             FROM sys_invocation
             ORDER BY last_failure_related_entry_index
             LIMIT 1",
@@ -299,7 +303,8 @@ async fn query_sys_invocation() {
                 last_failure_related_entry_index,
                 last_failure_related_entry_name,
                 last_failure_related_entry_type,
-                last_attempt_server
+                last_attempt_server,
+                priority
             FROM sys_invocation
             WHERE id = '{invocation_id}'
             LIMIT 1"

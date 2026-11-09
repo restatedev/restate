@@ -65,6 +65,10 @@ define_table!(sys_invocation_status(
     /// Since v1.7.0.
     limit_key: DataType::LargeUtf8,
 
+    /// The scheduling priority of the invocation: `low`, `normal`, `high` or `live`.
+    /// Since v1.8.2.
+    priority: DataType::LargeUtf8,
+
     /// Idempotency key, if any.
     idempotency_key: DataType::LargeUtf8,
 

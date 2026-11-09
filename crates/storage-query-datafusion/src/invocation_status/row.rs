@@ -88,6 +88,10 @@ pub(crate) fn append_invocation_status_row<'a>(
         row.fmt_limit_key(limit_key);
     }
 
+    if row.is_priority_defined() {
+        row.priority(<&str>::from(invocation_status.priority()?));
+    }
+
     if row.is_idempotency_key_defined()
         && let Some(key) = invocation_status.idempotency_key()?
     {
