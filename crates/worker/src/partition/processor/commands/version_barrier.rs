@@ -271,6 +271,7 @@ mod tests {
     use restate_rocksdb::RocksDbManager;
     use restate_storage_api::Transaction;
     use restate_storage_api::fsm_table::ReadFsmTable;
+    use restate_types::cluster::cluster_state::PartitionProcessorStatus;
     use restate_types::config::Configuration;
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::logs::{Keys, Lsn, SequenceNumber};
@@ -549,6 +550,51 @@ mod tests {
         }
     }
 
+    /// The processor's status shows the log byte offset of the applied LSN it shows, also in the
+    /// middle of a batch, before it's committed.
+    #[restate_core::test]
+    async fn status_shows_the_log_byte_offset_of_its_applied_lsn() {
+        let env = TestCoreEnv::create_with_single_node(1, 0).await;
+        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
+        let mut storage = open_store().await;
+        let mut processor = processor(PersistedFeatures::default());
+        let mut node_ctx = NodeContext::new(
+            GenerationalNodeId::new(1, 0),
+            Configuration::live(),
+            PartitionReplicaSetStates::default(),
+            RuleBookCacheHandle::detached(),
+            bifrost,
+            InvokerCapacity::new_unlimited(),
+            PartitionLeaderHandlesRegistry::default(),
+        );
+        apply_barrier_at(
+            &mut node_ctx,
+            &mut processor,
+            &mut storage,
+            barrier(
+                SemanticRestateVersion::current().clone(),
+                vec![PartitionFeatureChange::EnableByteOffsets.id()],
+            ),
+            Lsn::new(7),
+        )
+        .await
+        .expect("enable byte offsets");
+
+        // the barrier itself, then two records, in a batch that isn't committed yet
+        let mut txn = storage.transaction();
+        txn.set_fsm_position(processor.fsm_position());
+        for (lsn, bytes) in [(7, 30), (8, 100), (9, 50)] {
+            processor
+                .update_last_applied_lsn(&mut txn, Lsn::new(lsn), bytes)
+                .unwrap();
+        }
+        let mut status = PartitionProcessorStatus::default();
+        processor.merge_with_status(&mut status);
+        assert_that!(status.last_applied_log_lsn, some(eq(Lsn::new(9))));
+        assert_that!(status.byte_offsets_base_lsn, some(eq(Lsn::new(7))));
+        assert_that!(status.log_byte_offset, some(eq(150)));
+    }
+
     #[restate_core::test]
     async fn apply_known_feature_change() {
         let env = TestCoreEnv::create_with_single_node(1, 0).await;
@@ -598,6 +644,10 @@ mod tests {
         assert_that!(
             position.map(|p| (p.byte_offsets_base_lsn, p.log_byte_offset)),
             some(eq((Lsn::OLDEST, 0)))
+        );
+        assert_that!(
+            processor.fsm_position().byte_offsets_base_lsn,
+            eq(Lsn::OLDEST)
         );
     }
 

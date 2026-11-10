@@ -175,6 +175,10 @@ impl ProcessorRawContext {
         } else {
             None
         };
+        let position = Some(self.fsm_cache.fsm_position()).filter(FsmPosition::has_byte_offsets);
+        other.byte_offsets_base_lsn = position.map(|p| p.byte_offsets_base_lsn);
+        other.log_byte_offset = position.map(|p| p.log_byte_offset);
+        other.partition_store_byte_offset = position.map(|p| p.partition_store_byte_offset);
     }
 
     /// Advances the applied LSN to `lsn`, the last LSN of the record or gap the processor has
@@ -186,6 +190,8 @@ impl ProcessorRawContext {
         record_bytes: u64,
     ) -> Result<(), ProcessorError> {
         self.fsm_cache.set_last_applied_lsn(txn, lsn, record_bytes);
+        // so that the status shows the log byte offset of the applied LSN it shows
+        self.refresh_fsm_position(txn);
         if self.status.update_last_applied_lsn(lsn) {
             info!(
                 "Partition {} caught up in {}!",
@@ -200,9 +206,20 @@ impl ProcessorRawContext {
         self.fsm_cache.subscribe_to_last_applied_lsn()
     }
 
-    /// The partition's position as loaded at start, for the processor's transaction.
+    /// The partition's position, as loaded at start or last refreshed from the processor's
+    /// transaction.
     pub fn fsm_position(&self) -> FsmPosition {
         self.fsm_cache.fsm_position()
+    }
+
+    /// Refreshes the partition's position that the status shows from the processor's
+    /// transaction, which maintains it: with every record applied, and after every commit,
+    /// which advances the partition store byte offset. So the status shows the log byte offset
+    /// of the applied LSN it shows, and the partition store byte offset as of the last commit.
+    pub fn refresh_fsm_position(&mut self, txn: &PartitionStoreTransaction<'_>) {
+        if let Some(position) = txn.fsm_position() {
+            self.fsm_cache.set_fsm_position(position);
+        }
     }
 
     /// Turns byte offsets on at the record at `lsn`, which applies the feature.
@@ -211,7 +228,9 @@ impl ProcessorRawContext {
         txn: &mut PartitionStoreTransaction<'_>,
         lsn: Lsn,
     ) -> Result<(), StorageError> {
-        txn.start_byte_offsets(lsn)
+        txn.start_byte_offsets(lsn)?;
+        self.refresh_fsm_position(txn);
+        Ok(())
     }
 }
 
