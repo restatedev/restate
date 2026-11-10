@@ -22,7 +22,7 @@ Incremental snapshots provide significant cost savings for deployments with freq
 
 - **Reduced upload costs**: Only new or changed SST files are uploaded; unchanged files are skipped
 - **Reduced storage costs**: Identical SST files are stored once regardless of how many snapshots reference them
-- **Works with retention**: When combined with `experimental-num-retained`, old snapshots can be pruned while shared SSTs remain available to newer snapshots
+- **Works with retention**: When combined with `num-retained`, old snapshots can be pruned while shared SSTs remain available to newer snapshots
 
 ### Bucket Layout Change
 
@@ -53,7 +53,7 @@ snapshots keep the existing format, so older nodes can still restore from them.
 Once a partition has published its first incremental snapshot, do not downgrade the cluster below
 this version and expect restores from that snapshot to work. If you need to downgrade, first set
 `experimental-snapshot-type = "full"`, then wait until every incremental snapshot has aged out of
-`experimental-num-retained` before rolling back.
+`num-retained` before rolling back.
 
 ### Migration Guidance
 
@@ -63,7 +63,7 @@ this version and expect restores from that snapshot to work. If you need to down
   retaining more snapshots does not help because new snapshots can rotate older full ones out
   before the upgrade finishes.
 - **Reverting to full**: Set `experimental-snapshot-type = "full"`; new snapshots will use full mode, existing incremental snapshots remain readable
-- **Cleanup coordination**: When using incremental mode with `experimental-num-retained`, SST cleanup is coordinated to ensure shared files are only deleted when no retained snapshot references them
+- **Cleanup coordination**: When using incremental mode with `num-retained`, SST cleanup is coordinated to ensure shared files are only deleted when no retained snapshot references them
 
 ### Related Issues
 
