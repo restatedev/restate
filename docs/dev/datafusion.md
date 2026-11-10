@@ -153,7 +153,7 @@ match self.manager.get_partition_target_node(partition_id)? {
 When the partition is local, `LocalPartitionsScanner` coordinates the scan:
 
 1. Get `PartitionStore` from `PartitionStoreManager`
-2. Call the table's `ScanLocalPartition::for_each_row` implementation (e.g., `for_each_invocation_status_lazy`)
+2. Call the table's `ScanLocalPartition::for_each_row` implementation, which runs the table's scan op (e.g., `InvocationStatusScan`) with `PartitionStore::scan`
 3. Deserialize rows, build Arrow record batches
 4. Send batches back via channel to DataFusion
 
@@ -238,10 +238,11 @@ As the top-k operator accumulates results, it updates the minimum `modified_at` 
 RocksDB iteration and protobuf deserialization happen on background storage threads, not the tokio runtime. This prevents blocking async tasks.
 
 The mechanism works as follows:
-1. Each table implements the `ScanLocalPartition` trait, defining a `for_each_row` method
-2. These implementations call iterator methods on `PartitionStore` (e.g., `for_each_invocation_status_lazy`)
-3. Under the hood, these use `iterator_for_each` which offloads execution to a background storage task via `run_background_iterator` in the `restate-rocksdb` crate
-4. Batches are sent back to tokio-land via channels, with scheduling overhead only at batch boundaries
+1. Each table implements `ScanLocalPartition::for_each_row` and accepts a typed `RowConsumer`.
+2. DataFusion supplies a consumer that owns the batch builder and sender. Its `consume` method appends a borrowed row and awaits channel capacity when a batch is ready.
+3. Each table defines a scan op (a `ScanOp`) in partition-store: what to read (key ranges, or a set of keys) and how to decode an entry. `PartitionStore::scan` runs it on the storage pool: ranges as async iterations with `RocksDb::prepare_iteration`, key sets as batched multi-gets.
+4. A scan that ends without an error hands the consumer back, and DataFusion flushes the final batch.
+5. Storage, decoding and batch-building errors return through the scan result. Channels carry completed batches back to the Tokio runtime.
 
 ## Current Limitations and Future Improvements
 

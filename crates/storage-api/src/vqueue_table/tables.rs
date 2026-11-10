@@ -8,13 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_sharding::KeyRange;
 use restate_types::identifiers::BaseEntryId;
 use restate_types::vqueues::{CanonicalEntryId, Seq, VQueueId};
 
-use super::RawStatusHeaderRef;
-use super::filters::{ScanEntryIdFilter, ScanMetaFilter};
-use super::metadata::{VQueueMeta, VQueueMetaRef};
+use super::metadata::VQueueMeta;
 use super::{EntryContext, EntryId, EntryKey, EntryStateRef, EntryStatusHeader, EntryValue};
 use crate::Result;
 
@@ -264,58 +261,4 @@ pub trait ScanVQueueTable {
         &self,
         on_item: impl FnMut(VQueueId, super::metadata::VQueueMeta),
     ) -> Result<()>;
-}
-
-pub trait ScanVQueueMetaTable {
-    /// Used for data-fusion queries
-    fn for_each_vqueue_meta<
-        F: for<'a> FnMut((&'a VQueueId, &'a VQueueMetaRef<'a>)) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
-    >(
-        &self,
-        filter: ScanMetaFilter,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
-}
-
-pub trait ScanVQueueEntries {
-    /// Iterate entries across one or more stages within a partition-key range.
-    ///
-    /// Stages are scanned sequentially in the order given. An empty `stages`
-    /// iterator scans all stages except [`Stage::Unknown`]. The callback
-    /// receives the originating stage along with each item.
-    ///
-    /// Used for data-fusion queries.
-    fn for_each_vqueue_entry<F, S>(
-        &self,
-        range: KeyRange,
-        stages: S,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>
-    where
-        F: for<'a> FnMut(
-                (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue),
-            ) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
-        S: IntoIterator<Item = Stage>;
-}
-
-pub trait ScanVQueueEntryStatusTable {
-    /// Iterate vqueue entry status headers within a partition-key range.
-    ///
-    /// Used for data-fusion queries.
-    fn for_each_vqueue_entry_status<F>(
-        &self,
-        filter: ScanEntryIdFilter,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>
-    where
-        F: for<'a> FnMut(&'a BaseEntryId, &'a RawStatusHeaderRef<'a>) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static;
 }

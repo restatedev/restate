@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::ControlFlow;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use bytes::{Bytes, BytesMut};
@@ -21,8 +21,9 @@ use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 use restate_memory::{
     AvailabilityNotified, LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream,
 };
-use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
-use restate_storage_api::state_table::{ReadStateTable, ScanStateTable, WriteStateTable};
+use restate_rocksdb::RocksDbReadPerfGuard;
+use restate_storage_api::scan::RowConsumer;
+use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_storage_api::{BudgetedReadError, Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::sharding::KeyRange;
@@ -32,9 +33,9 @@ use restate_util_string::ReString;
 use crate::TableKind::State;
 use crate::features::StorageFeatures;
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, OptionalScope, define_table_key};
+use crate::scan::{Chain, ScanOp, ScanPlan};
 use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
-    TableScanIterationDecision, break_on_err,
+    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
 };
 
 define_table_key!(
@@ -355,69 +356,81 @@ impl ReadStateTable for PartitionStore {
     }
 }
 
-impl ScanStateTable for PartitionStore {
-    fn for_each_user_state<
-        F: FnMut((ServiceId, Bytes, &[u8])) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
-    >(
-        &self,
-        range: KeyRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
-        // Share callback between two sequential scans via Arc<Mutex<>>
-        // (needed because iterator_for_each requires 'static closures).
-        // No contention: scans are awaited sequentially.
-        let f = Arc::new(parking_lot::Mutex::new(f));
+/// The user state in a partition-key range, for data-fusion queries: that still
+/// in the legacy table, then that in the scoped table.
+pub type UserStateScan = Chain<Option<LegacyUserStateScan>, ScopedUserStateScan>;
 
+impl UserStateScan {
+    pub fn new(store: &PartitionStore, range: KeyRange) -> Self {
         // Only scan the legacy unscoped table while we may still hold data there.
         // After migration the range was deleted, so the scoped scan covers everything.
-        let unscoped = if self.storage_features().is_migrated_to_scoped_state_table {
-            None
-        } else {
-            let f_unscoped = Arc::clone(&f);
-            Some(
-                self.iterator_for_each(
-                    "df-user-state",
-                    Priority::Low,
-                    TableScan::ScanPartitionKeyRange::<StateKey>(range),
-                    move |(mut key, value)| {
-                        let row_key = break_on_err(StateKey::deserialize_from(&mut key))?;
-                        let (partition_key, service_name, service_key, state_key) = row_key.split();
-                        let service_id =
-                            ServiceId::from_parts(partition_key, service_name, service_key);
-                        f_unscoped.lock()((service_id, state_key, value)).map_break(Ok)
-                    },
-                )
-                .map_err(|_| StorageError::OperationalError)?,
-            )
-        };
+        let legacy = (!store.storage_features().is_migrated_to_scoped_state_table)
+            .then_some(LegacyUserStateScan { range });
+        Chain(legacy, ScopedUserStateScan { range })
+    }
+}
 
-        let f_scoped = f;
-        let scoped = self
-            .iterator_for_each(
-                "df-user-state-scoped",
-                Priority::Low,
-                TableScan::ScanPartitionKeyRange::<ScopedStateKey>(range),
-                move |(mut key, value)| {
-                    let row_key = break_on_err(ScopedStateKey::deserialize_from(&mut key))?;
-                    let (_partition_key, scope, service_name, service_key, state_key) =
-                        row_key.split();
-                    let service_id = ServiceId::new(
-                        scope,
-                        ByteString::from(service_name.as_str()),
-                        ByteString::from(service_key.as_str()),
-                    );
-                    f_scoped.lock()((service_id, state_key, value)).map_break(Ok)
-                },
-            )
-            .map_err(|_| StorageError::OperationalError)?;
+/// The user state in a partition-key range of the legacy, unscoped table.
+pub struct LegacyUserStateScan {
+    pub range: KeyRange,
+}
 
-        Ok(async move {
-            if let Some(unscoped) = unscoped {
-                unscoped.await?;
-            }
-            scoped.await?;
-            Ok(())
-        })
+impl ScanOp for LegacyUserStateScan {
+    type Item<'a> = (ServiceId, Bytes, &'a [u8]);
+    const NAME: &'static str = "df-user-state";
+
+    fn plan(&self) -> ScanPlan {
+        ScanPlan::range(TableScan::ScanPartitionKeyRange::<StateKey>(self.range))
+    }
+
+    async fn visit<C>(
+        &self,
+        mut key: &[u8],
+        value: &[u8],
+        consumer: &mut C,
+    ) -> Result<ControlFlow<()>>
+    where
+        C: for<'a> RowConsumer<Item<'a> = (ServiceId, Bytes, &'a [u8])>,
+    {
+        let (partition_key, service_name, service_key, state_key) =
+            StateKey::deserialize_from(&mut key)?.split();
+        let service_id = ServiceId::from_parts(partition_key, service_name, service_key);
+        consumer.consume((service_id, state_key, value)).await
+    }
+}
+
+/// The user state in a partition-key range of the scoped table.
+pub struct ScopedUserStateScan {
+    pub range: KeyRange,
+}
+
+impl ScanOp for ScopedUserStateScan {
+    type Item<'a> = (ServiceId, Bytes, &'a [u8]);
+    const NAME: &'static str = "df-user-state-scoped";
+
+    fn plan(&self) -> ScanPlan {
+        ScanPlan::range(TableScan::ScanPartitionKeyRange::<ScopedStateKey>(
+            self.range,
+        ))
+    }
+
+    async fn visit<C>(
+        &self,
+        mut key: &[u8],
+        value: &[u8],
+        consumer: &mut C,
+    ) -> Result<ControlFlow<()>>
+    where
+        C: for<'a> RowConsumer<Item<'a> = (ServiceId, Bytes, &'a [u8])>,
+    {
+        let (_partition_key, scope, service_name, service_key, state_key) =
+            ScopedStateKey::deserialize_from(&mut key)?.split();
+        let service_id = ServiceId::new(
+            scope,
+            ByteString::from(service_name.as_str()),
+            ByteString::from(service_key.as_str()),
+        );
+        consumer.consume((service_id, state_key, value)).await
     }
 }
 
