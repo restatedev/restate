@@ -12,13 +12,14 @@ use std::fmt::Debug;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
+use restate_core::io::IoExecutor;
+use restate_partition_store::journal_table::JournalV1Scan;
+use restate_partition_store::journal_table_v2::JournalV2Scan;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_storage_api::StorageError;
 use restate_storage_api::journal_table::JournalEntry;
-use restate_storage_api::journal_table::{ScanJournalTable, ScanJournalTableRange};
-use restate_storage_api::journal_table_v2::{
-    ScanJournalTable as ScanJournalTableV2, ScanJournalTableRange as ScanJournalTableRangeV2,
-};
+use restate_storage_api::journal_table::ScanJournalTableRange;
+use restate_storage_api::journal_table_v2::ScanJournalTableRange as ScanJournalTableRangeV2;
+use restate_storage_api::scan::{RowConsumer, ScanClosePolicy, ScanOutcome};
 use restate_types::identifiers::JournalEntryId;
 use restate_types::storage::StoredRawEntry;
 
@@ -61,6 +62,24 @@ pub(crate) enum ScannedEntry {
     V2(StoredRawEntry),
 }
 
+/// Hands the entries of one journal table to `C` as [`ScannedEntry`]s.
+struct ScannedEntryConsumer<C, E>(C, fn(E) -> ScannedEntry);
+
+impl<C, E> RowConsumer for ScannedEntryConsumer<C, E>
+where
+    C: for<'a> RowConsumer<Item<'a> = (JournalEntryId, ScannedEntry)>,
+    E: Send + 'static,
+{
+    type Item<'a> = (JournalEntryId, E);
+
+    async fn consume(
+        &mut self,
+        (id, entry): Self::Item<'_>,
+    ) -> restate_storage_api::Result<ControlFlow<()>> {
+        self.0.consume((id, (self.1)(entry))).await
+    }
+}
+
 #[derive(Debug, Clone)]
 struct JournalScanner;
 
@@ -70,58 +89,38 @@ impl ScanLocalPartition for JournalScanner {
     type ConversionError = std::convert::Infallible;
     type Filter = InvocationIdFilter;
 
-    fn for_each_row<
-        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
-        partition_store: &PartitionStore,
+    fn for_each_row<'s, F: for<'a> RowConsumer<Item<'a> = Self::Item<'a>>>(
+        partition_store: &'s PartitionStore,
+        executor: &'s (impl IoExecutor + Sync),
         filter: InvocationIdFilter,
+        close_policy: ScanClosePolicy,
         f: F,
-    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        // these two iterators can run concurrently in theory.
-        // in practice, there are not typically any keys in the first iterator, but rust rightfully forces us to use a mutex to protect the FnMut
-        // the intent here is that iterators race to produce the first row, the winner gets an owned lock guard which it then holds until its done iterating
-        // and then the next iterator is able to get a lock guard.
-
-        let (v1, v2) = {
-            // once we've started iterating, this arc must be dropped from inside the io threads and not in an async context
-            let mut f_v1 = Some(Arc::new(tokio::sync::Mutex::new(f)));
-            let mut f_v2 = f_v1.clone();
-
-            let v1 = ScanJournalTable::for_each_journal(partition_store, filter.clone().into(), {
-                let mut f_locked = None;
-                move |(id, entry)| {
-                    let f = f_locked.get_or_insert_with(|| {
-                        f_v1.take()
-                            .expect("we only take f_v1 once")
-                            .blocking_lock_owned()
-                    });
-                    f((id, ScannedEntry::V1(entry))).map_break(Result::unwrap)
-                }
-            })?;
-
-            let v2 = ScanJournalTableV2::for_each_journal(partition_store, filter.into(), {
-                let mut f_locked = None;
-                move |(id, entry)| {
-                    let f = f_locked.get_or_insert_with(|| {
-                        f_v2.take()
-                            .expect("we only take f_v2 once")
-                            .blocking_lock_owned()
-                    });
-                    f((id, ScannedEntry::V2(entry))).map_break(Result::unwrap)
-                }
-            })?;
-
-            (v1, v2)
+    ) -> impl Future<Output = restate_storage_api::Result<ScanOutcome<F>>> + Send {
+        let v1 = JournalV1Scan {
+            range: filter.clone().into(),
         };
-
-        Ok(async {
-            v1.await?;
-            v2.await?;
-            Ok(())
-        })
+        let v2 = JournalV2Scan {
+            range: filter.into(),
+        };
+        async move {
+            // The v1 scan runs first and hands the consumer to the v2 scan. In
+            // practice, there are not typically any keys in the v1 table.
+            let consumer = ScannedEntryConsumer(f, ScannedEntry::V1);
+            let outcome = match partition_store
+                .scan(executor, v1, close_policy, consumer)
+                .await?
+            {
+                ScanOutcome::Exhausted(ScannedEntryConsumer(f, _)) => {
+                    let consumer = ScannedEntryConsumer(f, ScannedEntry::V2);
+                    partition_store
+                        .scan(executor, v2, close_policy, consumer)
+                        .await?
+                        .map(|consumer| consumer.0)
+                }
+                ScanOutcome::Stopped(ScannedEntryConsumer(f, _)) => ScanOutcome::Stopped(f),
+            };
+            Ok(outcome)
+        }
     }
 
     fn append_row<'a>(

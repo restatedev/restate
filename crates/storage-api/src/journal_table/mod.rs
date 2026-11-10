@@ -13,7 +13,7 @@ use std::ops::RangeInclusive;
 use futures::Stream;
 
 use restate_memory::{LocalMemoryLease, LocalMemoryPool};
-use restate_types::identifiers::{EntryIndex, InvocationId, JournalEntryId};
+use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::{CompletionResult, EntryType};
 use restate_types::sharding::KeyRange;
@@ -110,16 +110,6 @@ pub trait ReadJournalTable {
 pub enum ScanJournalTableRange {
     PartitionKey(KeyRange),
     InvocationId(RangeInclusive<InvocationId>),
-}
-
-pub trait ScanJournalTable {
-    fn for_each_journal<
-        F: FnMut((JournalEntryId, JournalEntry)) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
-    >(
-        &self,
-        range: ScanJournalTableRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
 pub trait WriteJournalTable {

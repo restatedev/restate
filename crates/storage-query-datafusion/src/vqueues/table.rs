@@ -8,18 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use futures::FutureExt;
+use futures::{FutureExt, TryFutureExt};
 
+use restate_core::io::IoExecutor;
+use restate_partition_store::vqueue_table::{VQueueEntryStatusScan, VQueueStageScan};
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_storage_api::StorageError;
+use restate_storage_api::scan::{RowConsumer, ScanClosePolicy, ScanOutcome};
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
-use restate_storage_api::vqueue_table::{
-    EntryKey, EntryValue, RawStatusHeaderRef, ScanVQueueEntries, ScanVQueueEntryStatusTable, Stage,
-};
+use restate_storage_api::vqueue_table::{EntryKey, EntryValue, RawStatusHeaderRef, Stage};
+use restate_types::identifiers::BaseEntryId;
 use restate_types::vqueues::{CanonicalEntryId, VQueueId};
 
 use crate::context::{QueryContext, SelectPartitions};
@@ -76,51 +78,92 @@ enum VQueueRow<'a> {
     Status(&'a CanonicalEntryId, &'a RawStatusHeaderRef<'a>),
 }
 
+struct StatusConsumer<C> {
+    consumer: C,
+    stages: Option<BTreeSet<Stage>>,
+}
+
+impl<C> RowConsumer for StatusConsumer<C>
+where
+    C: for<'a> RowConsumer<Item<'a> = VQueueRow<'a>>,
+{
+    type Item<'a> = (&'a BaseEntryId, &'a RawStatusHeaderRef<'a>);
+
+    async fn consume(
+        &mut self,
+        (id, header): Self::Item<'_>,
+    ) -> restate_storage_api::Result<ControlFlow<()>> {
+        if self
+            .stages
+            .as_ref()
+            .is_some_and(|stages| !stages.contains(&header.stage))
+        {
+            return Ok(ControlFlow::Continue(()));
+        }
+        let canonical_id = id.canonicalize(header.seq);
+        self.consumer
+            .consume(VQueueRow::Status(&canonical_id, header))
+            .await
+    }
+}
+
+struct StageConsumer<C>(C);
+
+impl<C> RowConsumer for StageConsumer<C>
+where
+    C: for<'a> RowConsumer<Item<'a> = VQueueRow<'a>>,
+{
+    type Item<'a> = (&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue);
+
+    async fn consume(
+        &mut self,
+        (qid, stage, key, entry): Self::Item<'_>,
+    ) -> restate_storage_api::Result<ControlFlow<()>> {
+        self.0
+            .consume(VQueueRow::Stage(qid, stage, key, entry))
+            .await
+    }
+}
+
 impl ScanLocalPartition for VQueuesScanner {
     type Builder = SysVqueuesBuilder;
     type Item<'a> = VQueueRow<'a>;
     type ConversionError = std::convert::Infallible;
     type Filter = VQueueFilter;
 
-    fn for_each_row<
-        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
-        partition_store: &PartitionStore,
+    fn for_each_row<'s, F: for<'a> RowConsumer<Item<'a> = Self::Item<'a>>>(
+        partition_store: &'s PartitionStore,
+        executor: &'s (impl IoExecutor + Sync),
         filter: VQueueFilter,
-        mut f: F,
-    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
+        close_policy: ScanClosePolicy,
+        f: F,
+    ) -> impl Future<Output = restate_storage_api::Result<ScanOutcome<F>>> + Send {
         if let Some(entry_ids) = filter.entry_ids {
-            let stages = filter.stages;
             return partition_store
-                .for_each_vqueue_entry_status(
-                    ScanEntryIdFilter::EntryIdSet(entry_ids.ids),
-                    move |id, header| {
-                        if stages
-                            .as_ref()
-                            .is_some_and(|stages| !stages.contains(&header.stage))
-                        {
-                            return ControlFlow::Continue(());
-                        }
-
-                        let canonical_id = id.canonicalize(header.seq);
-                        f(VQueueRow::Status(&canonical_id, header)).map_break(Result::unwrap)
+                .scan(
+                    executor,
+                    VQueueEntryStatusScan {
+                        filter: ScanEntryIdFilter::EntryIdSet(entry_ids.ids),
+                    },
+                    close_policy,
+                    StatusConsumer {
+                        consumer: f,
+                        stages: filter.stages,
                     },
                 )
-                .map(FutureExt::boxed);
+                .map_ok(|outcome| outcome.map(|c| c.consumer))
+                .boxed();
         }
 
         partition_store
-            .for_each_vqueue_entry(
-                filter.partition_keys,
-                filter.stages.unwrap_or_default(),
-                move |(qid, stage, entry_key, entry)| {
-                    f(VQueueRow::Stage(qid, stage, entry_key, entry)).map_break(Result::unwrap)
-                },
+            .scan(
+                executor,
+                VQueueStageScan::stages(filter.partition_keys, filter.stages.unwrap_or_default()),
+                close_policy,
+                StageConsumer(f),
             )
-            .map(FutureExt::boxed)
+            .map_ok(|outcome| outcome.map(|c| c.0))
+            .boxed()
     }
 
     fn append_row<'a>(

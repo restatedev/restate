@@ -14,7 +14,6 @@ use futures::Stream;
 
 use restate_memory::{LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
 use restate_types::identifiers::ServiceId;
-use restate_types::sharding::KeyRange;
 
 use crate::{BudgetedReadError, Result};
 
@@ -78,16 +77,6 @@ pub trait ReadStateTable {
         > + Send
         + 'a,
     >;
-}
-
-pub trait ScanStateTable {
-    fn for_each_user_state<
-        F: FnMut((ServiceId, Bytes, &[u8])) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
-    >(
-        &self,
-        range: KeyRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
 pub trait WriteStateTable {

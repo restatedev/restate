@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 use std::future::Future;
-use std::ops::{ControlFlow, RangeInclusive};
+use std::ops::RangeInclusive;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -945,20 +945,6 @@ pub enum ScanInvocationStatusTableRange {
 }
 
 pub trait ScanInvocationStatusTable {
-    fn for_each_invocation_status_lazy<
-        E: Into<anyhow::Error> + 'static,
-        F: for<'a> FnMut(
-                (InvocationId, &'a InvocationStatusV2Lazy<'a>),
-            ) -> ControlFlow<std::result::Result<(), E>>
-            + Send
-            + Sync
-            + 'static,
-    >(
-        &self,
-        range: ScanInvocationStatusTableRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
-
     fn filter_map_invocation_status_lazy<
         O: Send + 'static,
         E: Into<anyhow::Error>,

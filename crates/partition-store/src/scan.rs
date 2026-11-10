@@ -71,15 +71,12 @@ pub struct KeySet {
 
 impl ScanPlan {
     /// A plan to read `scan`.
-    #[allow(dead_code)]
     pub(crate) fn range<K: EncodeTableKeyPrefix>(scan: TableScan<K>) -> Self {
         Self::Range(scan.into())
     }
 
     /// A plan to look up `keys`, `batch_size` at a time. They must be in key
     /// order and all have the fixed length `key_len`.
-    // The table scans in the next commit use this.
-    #[allow(dead_code)]
     pub(crate) fn keys<K: EncodeTableKey>(
         key_len: usize,
         batch_size: usize,
