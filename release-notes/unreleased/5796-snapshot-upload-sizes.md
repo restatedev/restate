@@ -1,6 +1,6 @@
-# New options to tune snapshot upload requests
+# Fewer object store requests for snapshot uploads
 
-## New Feature
+## Behavior Change
 
 ### What Changed
 
@@ -12,7 +12,7 @@ snapshot destination:
 - `upload-single-put-threshold`: files smaller than this are uploaded with a single request instead
   of in multiple parts.
 
-`upload-part-size` defaults to `5 MiB`, which is what Restate has used so far, and
+`upload-part-size` now defaults to `32 MiB`, up from the fixed `5 MiB` Restate used so far, and
 `upload-single-put-threshold` defaults to the part size. Changes take effect after a restart.
 
 ### Why This Matters
@@ -23,7 +23,11 @@ cost of snapshots on S3 and GCS.
 
 ### Impact on Users
 
-- Nothing changes unless you set the options.
+- Snapshot uploads make fewer requests by default. A typical 64 MiB snapshot file now takes 4
+  requests instead of 15, and files under 32 MiB take one.
+- Snapshot uploads use more memory: up to about `32 MiB` per upload in progress, instead of
+  `5 MiB`. With the default `automatic-snapshot-concurrency-limit` of 4 that is about `128 MiB`
+  per node. To keep the old behavior, set both options to `5 MiB`.
 - `upload-part-size` must be at least `5 MiB`. `upload-single-put-threshold` must be at
   least the part size and at most `5 GiB`. Invalid values are rejected when the configuration is
   loaded.
@@ -35,7 +39,8 @@ cost of snapshots on S3 and GCS.
 
 ### Migration Guidance
 
-No action is needed. To make fewer requests, for example:
+No action is needed. On nodes with memory to spare, a threshold above the RocksDB SST target size
+(`rocksdb-max-file-size`, default `64 MiB`) uploads most snapshot files with a single request:
 
 ```toml
 [worker.snapshots]

@@ -35,6 +35,8 @@ use crate::retries::RetryPolicy;
 
 /// Object stores require parts of a multipart upload to be at least this large, except the last.
 const MIN_MULTIPART_UPLOAD_PART_SIZE: usize = 5 * 1024 * 1024;
+/// Default part size for snapshot uploads.
+const DEFAULT_UPLOAD_PART_SIZE: usize = 32 * 1024 * 1024;
 /// The largest object that S3 accepts in a single PUT request.
 const MAX_OBJECT_STORE_SINGLE_PUT_SIZE: u64 = 5 * 1024 * 1024 * 1024;
 
@@ -1348,7 +1350,7 @@ pub struct SnapshotsOptions {
     /// Must be at least 5 MiB. One part at a time is buffered in memory for each file upload
     /// in progress.
     ///
-    /// Default: 5 MiB
+    /// Default: 32 MiB
     ///
     /// Changes take effect after a restart.
     ///
@@ -1443,7 +1445,7 @@ impl SnapshotsOptions {
     /// Part size for multipart uploads, in bytes.
     pub fn upload_part_size(&self) -> usize {
         self.upload_part_size
-            .map_or(MIN_MULTIPART_UPLOAD_PART_SIZE, |v| v.as_usize())
+            .map_or(DEFAULT_UPLOAD_PART_SIZE, |v| v.as_usize())
     }
 
     /// Files smaller than this many bytes are uploaded with a single request.
@@ -1655,10 +1657,10 @@ mod tests {
             .validate_upload_sizes()
         };
 
-        // Defaults match the historical behavior of 5 MiB for both
+        // The threshold follows the part size by default
         let defaults = SnapshotsOptions::default();
-        assert_eq!(5 * MIB as usize, defaults.upload_part_size());
-        assert_eq!(5 * MIB, defaults.upload_single_put_threshold());
+        assert_eq!(32 * MIB as usize, defaults.upload_part_size());
+        assert_eq!(32 * MIB, defaults.upload_single_put_threshold());
         assert!(defaults.validate_upload_sizes().is_ok());
 
         // Setting only the part size raises the threshold with it
