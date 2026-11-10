@@ -11,7 +11,7 @@
 use std::ops::ControlFlow;
 use std::ops::RangeBounds;
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Once, OnceLock};
 use std::time::Duration;
 
 use anyhow::anyhow;
@@ -20,8 +20,8 @@ use bytes::BytesMut;
 use enum_map::Enum;
 use metrics::Histogram;
 use rocksdb::{
-    BoundColumnFamily, DBPinnableSlice, DBRawIteratorWithThreadMode, ReadOptions,
-    SnapshotWithThreadMode,
+    AsColumnFamilyRef, BoundColumnFamily, DBPinnableSlice, DBRawIteratorWithThreadMode,
+    ReadOptions, SnapshotWithThreadMode,
 };
 use static_assertions::const_assert_eq;
 use tokio::sync::mpsc;
@@ -34,7 +34,7 @@ use tracing::{Level, instrument, trace, warn};
 use restate_core::io::{AdmissionClosed, Gate, IoExecutor};
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksDbManager, RocksError};
-use restate_storage_api::fsm_table::ReadFsmTable;
+use restate_storage_api::fsm_table::{FsmPosition, ReadFsmTable};
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
 use restate_types::SemanticRestateVersion;
@@ -50,13 +50,15 @@ use restate_types::storage::StorageEncode;
 use restate_util_string::ReString;
 
 use crate::features::{LoadedStorageFeatures, StorageFeatures};
+use crate::fsm_table::delete_applied_lsn;
 use crate::fsm_table::get_partition_seal;
+use crate::fsm_table::put_fsm_position;
 use crate::fsm_table::put_min_restate_version;
 use crate::fsm_table::put_storage_features;
 use crate::fsm_table::put_storage_version;
 use crate::fsm_table::seal_partition;
 use crate::fsm_table::{
-    get_locally_durable_lsn, get_min_restate_version_from_partition_db,
+    PartitionStateMachineKey, get_locally_durable_lsn, get_min_restate_version_from_partition_db,
     get_state_machine_features_from_partition_db, get_storage_features_from_partition_db,
     get_storage_version_from_partition_db, is_jc_orphan_cleanup_done, put_jc_orphan_cleanup_done,
 };
@@ -573,6 +575,8 @@ impl PartitionStore {
             settings,
             commit_fence: None,
             write_batch_size_histogram: None,
+            fsm_position: None,
+            fsm_position_pending: false,
         }
     }
 
@@ -610,6 +614,11 @@ impl PartitionStore {
             .map_err(|e| StorageError::SnapshotExport(e.into()))?;
 
         let compatibility = self.read_snapshot_compatibility();
+        let position = self
+            .get_fsm_position()
+            .await
+            .map_err(|e| StorageError::SnapshotExport(e.into()))?
+            .filter(FsmPosition::has_byte_offsets);
         // The export holds the capture until RocksDB is done, even if we stop waiting.
         //
         // It runs on the lifecycle pool, next to creating and importing partition stores, rather
@@ -648,6 +657,9 @@ impl PartitionStore {
             min_applied_lsn: applied_lsn,
             key_range: self.db.partition().key_range,
             compatibility,
+            byte_offsets_base_lsn: position.map(|p| p.byte_offsets_base_lsn),
+            log_byte_offset: position.map(|p| p.log_byte_offset),
+            partition_store_byte_offset: position.map(|p| p.partition_store_byte_offset),
         })
     }
 
@@ -877,23 +889,6 @@ impl StorageAccess for PartitionStore {
             .map_err(|error| StorageError::Generic(error.into()))
     }
 
-    fn get_durable<K: AsRef<[u8]>>(
-        &self,
-        table: TableKind,
-        key: K,
-    ) -> Result<Option<DBPinnableSlice<'_>>> {
-        let table = self.table_handle(table);
-        let mut read_opts = ReadOptions::default();
-        read_opts.set_read_tier(rocksdb::ReadTier::Persisted);
-
-        self.db
-            .rocksdb()
-            .inner()
-            .as_raw_db()
-            .get_pinned_cf_opt(table, key, &read_opts)
-            .map_err(|error| StorageError::Generic(error.into()))
-    }
-
     #[inline]
     fn put_cf(
         &mut self,
@@ -985,6 +980,11 @@ pub struct PartitionStoreTransaction<'a> {
     /// Resolves once the [`CommitFence`] holding back commits is dropped.
     commit_fence: Option<oneshot::Receiver<()>>,
     write_batch_size_histogram: Option<&'a Histogram>,
+    /// The partition's position, if this transaction maintains it.
+    fsm_position: Option<FsmPosition>,
+    /// Whether the next commit persists the position even if it has nothing else to write,
+    /// because the applied LSN advanced while only the position holds it.
+    fsm_position_pending: bool,
 }
 
 /// Holds back the commits of the [`PartitionStoreTransaction`] that created it until dropped.
@@ -1020,6 +1020,52 @@ impl<'a> PartitionStoreTransaction<'a> {
     /// [`Self::clear`] and [`Transaction::commit`].
     pub fn set_write_batch_size_histogram(&mut self, histogram: &'a Histogram) {
         self.write_batch_size_histogram = Some(histogram);
+    }
+
+    /// Lets this transaction maintain the partition's position, starting from `position`, the
+    /// one at the partition's applied LSN. [`Self::advance_fsm_position`] advances it with every
+    /// record applied, and every later commit that writes something persists it while the
+    /// partition tracks byte offsets, so that each commit persists the position of the applied
+    /// LSN in that commit. It's kept across [`Self::clear`] and [`Transaction::commit`].
+    pub fn set_fsm_position(&mut self, position: FsmPosition) {
+        self.fsm_position = Some(position);
+    }
+
+    /// The partition's position, as of the records applied with this transaction so far. `None`
+    /// unless the transaction maintains it.
+    pub fn fsm_position(&self) -> Option<FsmPosition> {
+        self.fsm_position
+    }
+
+    /// Advances the partition's position, if this transaction maintains it, to the record or gap
+    /// that ends at `lsn`, of `bytes` as the log stores it.
+    pub fn advance_fsm_position(&mut self, lsn: Lsn, bytes: u64) {
+        if let Some(position) = &mut self.fsm_position {
+            position.advance(lsn, bytes);
+        }
+    }
+
+    /// Turns byte offsets on at the record at `lsn`, which they count from. The position is
+    /// written with this transaction's next commit, which also deletes the applied LSN persisted
+    /// on its own: from then on, only the position holds it. Fails if this transaction doesn't
+    /// maintain the partition's position (see [`Self::set_fsm_position`]).
+    pub fn start_byte_offsets(&mut self, lsn: Lsn) -> Result<()> {
+        let Some(position) = self.fsm_position.as_mut() else {
+            return Err(StorageError::Generic(anyhow!(
+                "can't turn byte offsets on: the transaction doesn't maintain the partition's \
+                 position"
+            )));
+        };
+        position.start_byte_offsets(lsn);
+        let position = *position;
+        delete_applied_lsn(self)?;
+        put_fsm_position(self, &position)
+    }
+
+    /// Has the next commit persist the partition's position even if it has nothing else to
+    /// write, for an applied LSN that only the position holds.
+    pub(crate) fn mark_fsm_position_pending(&mut self) {
+        self.fsm_position_pending = true;
     }
 
     /// Clears up all buffered operations in the transaction buffer. A commit fence stays in
@@ -1101,6 +1147,55 @@ impl<'a> PartitionStoreTransaction<'a> {
         self.meta.partition_id
     }
 
+    /// Puts the partition's `position` into the batch, with its partition store byte offset
+    /// advanced by the size of the batch, this put included. Returns the position it put.
+    fn put_fsm_position_counting_batch(
+        &mut self,
+        mut position: FsmPosition,
+    ) -> Result<FsmPosition> {
+        let batch_size = self.estimated_size_in_bytes();
+        // A position's encoded size only depends on which of its fixed-width fields are zero. Its
+        // store offset isn't once it counts the batch, unless it wraps to exactly zero: it then
+        // counts the 9 bytes that its omitted field doesn't take.
+        let encoded_len = bilrost::Message::encoded_len(&FsmPosition {
+            partition_store_byte_offset: u64::MAX,
+            ..position
+        });
+        let put_size = write_batch_put_size(
+            self.data_cf_handle.id(),
+            PartitionStateMachineKey::serialized_length_fixed(),
+            // StorageCodec's codec byte and the message
+            1 + encoded_len,
+        );
+        position.add_partition_store_bytes((batch_size + put_size) as u64);
+        put_fsm_position(self, &position)?;
+        // The size predicted above follows RocksDB's write batch format. Were it ever off, e.g.
+        // after a change of that format, the position just put would be off by the difference:
+        // carry on from the size actually added, so that the next commit is exact again.
+        let added = self.estimated_size_in_bytes() - batch_size;
+        if added != put_size {
+            debug_assert_eq!(
+                added, put_size,
+                "the position's put adds the size it predicts"
+            );
+            static LOGGED: Once = Once::new();
+            LOGGED.call_once(|| {
+                warn!(
+                    predicted = put_size,
+                    added,
+                    "The partition store byte offset counts a different size for the FSM \
+                     position's put than it adds to the write batch; offsets may be off by the \
+                     difference"
+                )
+            });
+            position.partition_store_byte_offset = position
+                .partition_store_byte_offset
+                .wrapping_add(added as u64)
+                .wrapping_sub(put_size as u64);
+        }
+        Ok(position)
+    }
+
     #[inline]
     pub(crate) fn storage_features(&self) -> StorageFeatures {
         self.storage_features
@@ -1110,6 +1205,19 @@ impl<'a> PartitionStoreTransaction<'a> {
     pub(crate) fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) -> Result<()> {
         assert_partition_key_or_err(self.meta.key_range, partition_key)
     }
+}
+
+/// The bytes that a put adds to a RocksDB write batch, as RocksDB's write batch format lays it out:
+/// the record type, the column family's id unless it's the default one, then the key and the
+/// value, each after its length. The numbers are varint32s.
+fn write_batch_put_size(cf_id: u32, key_len: usize, value_len: usize) -> usize {
+    let varint32_len = |n: usize| (usize::BITS - n.leading_zeros()).div_ceil(7).max(1) as usize;
+    let cf_id_len = if cf_id == 0 {
+        0
+    } else {
+        varint32_len(cf_id as usize)
+    };
+    1 + cf_id_len + varint32_len(key_len) + key_len + varint32_len(value_len) + value_len
 }
 
 fn assert_partition_key_or_err(
@@ -1146,10 +1254,11 @@ impl Transaction for PartitionStoreTransaction<'_> {
             self.commit_fence = None;
         }
 
-        if self
-            .write_batch_with_index
-            .as_ref()
-            .is_none_or(|batch| batch.is_empty())
+        if !self.fsm_position_pending
+            && self
+                .write_batch_with_index
+                .as_ref()
+                .is_none_or(|batch| batch.is_empty())
         {
             return Ok(());
         }
@@ -1160,6 +1269,12 @@ impl Transaction for PartitionStoreTransaction<'_> {
             .admission
             .try_acquire()
             .ok_or(StorageError::OperationalError)?;
+        // The position this commit persists, kept once the write succeeded.
+        let position = self
+            .fsm_position
+            .filter(FsmPosition::has_byte_offsets)
+            .map(|position| self.put_fsm_position_counting_batch(position))
+            .transpose()?;
         let write_batch = self.write_batch_with_index.take().expect("nonempty batch");
         if let Some(histogram) = self.write_batch_size_histogram {
             histogram.record(write_batch.size_in_bytes() as f64);
@@ -1191,6 +1306,10 @@ impl Transaction for PartitionStoreTransaction<'_> {
                 .map_err(|error| StorageError::Generic(error.into()))?,
         );
         self.write_batch_with_index.as_mut().unwrap().clear();
+        if position.is_some() {
+            self.fsm_position = position;
+        }
+        self.fsm_position_pending = false;
         Ok(())
     }
 
@@ -1269,14 +1388,6 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
             .map_err(|error| StorageError::Generic(error.into()))
     }
 
-    fn get_durable<K: AsRef<[u8]>>(
-        &self,
-        _table: TableKind,
-        _key: K,
-    ) -> Result<Option<DBPinnableSlice<'_>>> {
-        unreachable!("ReadTier::Persisted is not meant to be used in WBI");
-    }
-
     #[inline]
     fn put_cf(
         &mut self,
@@ -1316,16 +1427,6 @@ pub(crate) trait StorageAccess {
     fn cleared_value_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut;
 
     fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice<'_>>>;
-
-    /// Forces a read from persistent storage, bypassing memtables and block cache.
-    ///
-    /// This means that that you might not get the latest value, but the value that was persisted
-    /// (flushed) at the time of the call.
-    fn get_durable<K: AsRef<[u8]>>(
-        &self,
-        table: TableKind,
-        key: K,
-    ) -> Result<Option<DBPinnableSlice<'_>>>;
 
     fn put_cf(
         &mut self,
@@ -1429,35 +1530,6 @@ pub(crate) trait StorageAccess {
             })
             .transpose()
             .map_err(|err| StorageError::Generic(err.into()))
-    }
-
-    /// Forces a read from persistent storage, bypassing memtables and block cache.
-    /// This means that that you might not get the latest value, but the value that was
-    /// persisted (flushed) at the time of the call.
-    #[inline]
-    fn get_durable_value<K, V>(&mut self, key: K) -> Result<Option<V>>
-    where
-        K: EncodeTableKey,
-        V: PartitionStoreProtobufValue,
-        <<V as PartitionStoreProtobufValue>::ProtobufType as TryInto<V>>::Error:
-            Into<anyhow::Error>,
-    {
-        let mut buf = self.cleared_key_buffer_mut(key.serialized_length());
-        key.serialize_to(&mut buf);
-        let buf = buf.split();
-
-        match self.get_durable(K::TABLE, &buf) {
-            Ok(value) => {
-                let slice = value.as_ref().map(|v| v.as_ref());
-
-                if let Some(mut slice) = slice {
-                    Ok(Some(V::decode(&mut slice)?))
-                } else {
-                    Ok(None)
-                }
-            }
-            Err(err) => Err(err),
-        }
     }
 
     #[inline]

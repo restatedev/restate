@@ -22,9 +22,10 @@ use tracing::warn;
 
 use restate_platform::sync::RwLock;
 use restate_storage_api::StorageError;
-use restate_storage_api::fsm_table::SequenceNumber;
+use restate_storage_api::fsm_table::{FsmPosition, SequenceNumber};
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_types::logs::SequenceNumber as _;
+use restate_types::storage::StorageCodec;
 use restate_types::{identifiers::PartitionId, logs::Lsn};
 
 use crate::fsm_table::{PartitionStateMachineKey, fsm_variable};
@@ -36,8 +37,42 @@ const APPLIED_LSNS_PROPERTY_PREFIX: &CStr = c"p:";
 
 #[derive(Default)]
 pub(crate) struct AppliedLsnCollector {
-    applied_lsns: HashMap<PartitionId, Lsn>,
+    applied_lsns: HashMap<PartitionId, AppliedLsns>,
     properties: Vec<(CString, CString)>,
+}
+
+/// The highest applied LSN a table holds for a partition in each of the two variables that keep
+/// it. The FSM position's takes precedence, as when the partition's applied LSN is read.
+#[derive(Default)]
+struct AppliedLsns {
+    applied_lsn: Option<Lsn>,
+    fsm_position: Option<Lsn>,
+}
+
+impl AppliedLsns {
+    fn note(&mut self, source: AppliedLsnSource, lsn: Lsn) {
+        let highest = match source {
+            AppliedLsnSource::AppliedLsn => &mut self.applied_lsn,
+            AppliedLsnSource::FsmPosition => &mut self.fsm_position,
+        };
+        *highest = Some(highest.map_or(lsn, |highest| highest.max(lsn)));
+    }
+
+    /// The partition's applied LSN as of the table: the FSM position's if it has one, which
+    /// has none before the first record is applied, else the one kept on its own.
+    fn resolved(&self) -> Option<Lsn> {
+        match self.fsm_position {
+            Some(lsn) => (lsn != Lsn::INVALID).then_some(lsn),
+            None => self.applied_lsn,
+        }
+    }
+}
+
+/// The state-machine variable an applied LSN was read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppliedLsnSource {
+    AppliedLsn,
+    FsmPosition,
 }
 
 impl TablePropertiesCollector for AppliedLsnCollector {
@@ -55,15 +90,11 @@ impl TablePropertiesCollector for AppliedLsnCollector {
 
         match extract_partition_applied_lsn(key, value) {
             Ok(None) => Ok(()),
-            Ok(Some((partition_id, lsn))) => {
+            Ok(Some((partition_id, source, lsn))) => {
                 self.applied_lsns
                     .entry(partition_id)
-                    .and_modify(|existing| {
-                        if lsn > *existing {
-                            *existing = lsn;
-                        }
-                    })
-                    .or_insert(lsn);
+                    .or_default()
+                    .note(source, lsn);
                 Ok(())
             }
             Err(err) => {
@@ -75,7 +106,11 @@ impl TablePropertiesCollector for AppliedLsnCollector {
 
     fn finish(&mut self) -> Result<impl IntoIterator<Item = &(CString, CString)>, CollectorError> {
         let prefix = APPLIED_LSNS_PROPERTY_PREFIX.to_str().unwrap();
-        for (partition_id, lsn) in &self.applied_lsns {
+        for (partition_id, lsn) in self
+            .applied_lsns
+            .iter()
+            .filter_map(|(partition_id, lsns)| Some((partition_id, lsns.resolved()?)))
+        {
             self.properties.push((
                 CString::new(format!("{prefix}{partition_id}")).unwrap(),
                 CString::new(lsn.to_string()).unwrap(),
@@ -247,23 +282,38 @@ impl EventListener for DurableLsnEventListener {
     }
 }
 
-/// Given a raw key-value pair, extract the partition id and its applied LSN, if the key is an Applied LSN FSM variable
+/// Given a raw key-value pair, extract the partition id and its applied LSN, if the key is one of
+/// the FSM variables that keep it: the applied LSN, or the FSM position.
 fn extract_partition_applied_lsn(
     mut key: &[u8],
     mut value: &[u8],
-) -> Result<Option<(PartitionId, Lsn)>, StorageError> {
+) -> Result<Option<(PartitionId, AppliedLsnSource, Lsn)>, StorageError> {
     if !key.starts_with(KeyKind::Fsm.as_bytes()) {
         return Ok(None);
     }
 
     let fsm_key = PartitionStateMachineKey::deserialize_from(&mut key)?;
-    if fsm_key.state_id == fsm_variable::APPLIED_LSN {
-        let partition_id = PartitionId::from(fsm_key.partition_id);
-        let applied_lsn = SequenceNumber::decode(&mut value).map(u64::from)?.into();
-        return Ok(Some((partition_id, applied_lsn)));
+    let partition_id = PartitionId::from(fsm_key.partition_id);
+    match fsm_key.state_id {
+        fsm_variable::APPLIED_LSN => {
+            let applied_lsn = SequenceNumber::decode(&mut value).map(u64::from)?.into();
+            Ok(Some((
+                partition_id,
+                AppliedLsnSource::AppliedLsn,
+                applied_lsn,
+            )))
+        }
+        fsm_variable::FSM_POSITION => {
+            let position: FsmPosition = StorageCodec::decode(&mut value)
+                .map_err(|err| StorageError::Conversion(err.into()))?;
+            Ok(Some((
+                partition_id,
+                AppliedLsnSource::FsmPosition,
+                position.applied_lsn,
+            )))
+        }
+        _ => Ok(None),
     }
-
-    Ok(None)
 }
 
 #[cfg(test)]
@@ -300,7 +350,65 @@ mod tests {
         let value = value_buf.as_ref();
 
         let result = super::extract_partition_applied_lsn(key, value)?;
-        assert_eq!(result, Some((partition_id, lsn)));
+        assert_eq!(
+            result,
+            Some((partition_id, AppliedLsnSource::AppliedLsn, lsn))
+        );
+
+        Ok(())
+    }
+
+    /// A flushed table's applied LSN for a partition is its FSM position's when it has one, as
+    /// when the partition's applied LSN is read; else it's the highest one kept on its own.
+    #[test]
+    fn collector_prefers_the_fsm_position() -> googletest::Result<()> {
+        let key = |partition: u16, state_id| {
+            let mut buf = BytesMut::new();
+            PartitionStateMachineKey {
+                partition_id: PartitionId::from(partition).into(),
+                state_id,
+            }
+            .serialize_to(&mut buf);
+            buf
+        };
+        let applied_lsn = |lsn: u64| {
+            let mut buf = BytesMut::new();
+            let wrapper: ProtobufStorageWrapper<
+                <SequenceNumber as PartitionStoreProtobufValue>::ProtobufType,
+            > = ProtobufStorageWrapper(SequenceNumber::from(lsn).into());
+            StorageCodec::encode(&wrapper, &mut buf).unwrap();
+            buf
+        };
+        let position = |lsn: u64| {
+            let mut buf = BytesMut::new();
+            StorageCodec::encode(&FsmPosition::new(Lsn::new(lsn)), &mut buf).unwrap();
+            buf
+        };
+
+        let mut collector = AppliedLsnCollector::default();
+        let mut add = |key: &[u8], value: &[u8]| {
+            collector
+                .add_user_key(key, value, EntryType::EntryPut, 0, 0)
+                .unwrap()
+        };
+        // partition 1 keeps both; they only differ if something wrote one without the other
+        add(&key(1, fsm_variable::APPLIED_LSN), &applied_lsn(6));
+        add(&key(1, fsm_variable::FSM_POSITION), &position(3));
+        add(&key(1, fsm_variable::FSM_POSITION), &position(4));
+        // partition 2 doesn't track byte offsets
+        add(&key(2, fsm_variable::APPLIED_LSN), &applied_lsn(9));
+        add(&key(2, fsm_variable::APPLIED_LSN), &applied_lsn(8));
+        // partition 3 persisted its position before applying a record
+        add(&key(3, fsm_variable::FSM_POSITION), &position(0));
+
+        let mut properties: Vec<_> = collector
+            .finish()
+            .unwrap()
+            .into_iter()
+            .map(|(key, value)| (key.to_str().unwrap(), value.to_str().unwrap()))
+            .collect();
+        properties.sort_unstable();
+        assert_eq!(properties, vec![("p:1", "4"), ("p:2", "9")]);
 
         Ok(())
     }

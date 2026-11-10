@@ -154,7 +154,7 @@ fn main() -> anyhow::Result<()> {
                         opts,
                         args.report_interval,
                         args.raw_rocksdb_stats,
-                        args.json,
+                        CliContext::get().json_output(),
                     )
                     .await?;
                 }

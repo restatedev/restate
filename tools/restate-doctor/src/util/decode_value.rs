@@ -21,7 +21,9 @@ use restate_partition_store::fsm_table::PartitionStateMachineKey;
 use restate_partition_store::keys::{DecodeTableKey, KeyKind};
 use restate_partition_store::vqueue_table::{EntryStatusKey, InputPayloadKey};
 use restate_storage_api::deduplication_table::DedupSequenceNumber;
-use restate_storage_api::fsm_table::{CachedEpochMetadata, PartitionDurability, SequenceNumber};
+use restate_storage_api::fsm_table::{
+    CachedEpochMetadata, FsmPosition, PartitionDurability, SequenceNumber,
+};
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_api::journal_table::JournalEntry as JournalEntryV1;
@@ -61,6 +63,8 @@ mod fsm_variable {
     pub const SEAL_MARKER: u64 = 11;
     /// *Since v1.7.9*
     pub const STORAGE_FEATURES: u64 = 12;
+    /// *Since v1.8.2*
+    pub const FSM_POSITION: u64 = 13;
 }
 
 /// Result of decoding a value, including codec metadata
@@ -459,6 +463,9 @@ fn decode_fsm_value(key: &[u8], value: &[u8]) -> DecodedValue {
         fsm_variable::STATE_MACHINE_FEATURES => {
             decode_fsm_storage_codec::<PersistedFeatures>(value, codec, payload_size)
         }
+        fsm_variable::FSM_POSITION => {
+            decode_fsm_storage_codec::<FsmPosition>(value, codec, payload_size)
+        }
         unknown => DecodedValue::decoded(
             codec,
             payload_size,
@@ -698,6 +705,18 @@ mod tests {
         assert!(
             matches!(&decoded.content, DecodedContent::Decoded(s) if s.contains("future-feature")),
             "storage features should preserve unknown names, got: {decoded}"
+        );
+
+        // FSM position: a StorageCodec-encoded message
+        let mut position = FsmPosition::new(Lsn::new(1));
+        position.start_byte_offsets(Lsn::new(2));
+        position.advance(Lsn::new(3), 30);
+        let mut value = BytesMut::new();
+        StorageCodec::encode(&position, &mut value).unwrap();
+        let decoded = decode_value(KeyKind::Fsm, &fsm_key(fsm_variable::FSM_POSITION), &value);
+        assert!(
+            matches!(&decoded.content, DecodedContent::Decoded(s) if s.contains("log_byte_offset: 30")),
+            "fsm position should decode, got: {decoded}"
         );
     }
 }

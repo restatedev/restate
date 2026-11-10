@@ -30,6 +30,7 @@ use restate_types::state_mut::ExternalStateMutation;
 
 mod barrier_test;
 mod durable_lsn_tracking_test;
+mod fsm_position_test;
 mod inbox_table_test;
 mod invocation_status_table_test;
 mod journal_events_table_test;

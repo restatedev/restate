@@ -41,7 +41,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
 use restate_core::ShutdownError;
-use restate_core::io::{AdmissionClosed, Gate, IoExecutor, Lease, OwnedLease, TrackedTask};
+use restate_core::io::{AdmissionClosed, Gate, IoExecutor, Lease, OwnedLease};
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::protobuf::common::DatabaseKind;
 pub use restate_types::rocksdb::{BottommostLevelCompaction, ManualCompactionOptions};
@@ -49,8 +49,8 @@ use restate_util_lifecycle::Scope;
 
 // re-exports
 pub use self::background::{
-    GlobalExecutor, Guarded, Mapped, MappedOk, OpContext, OpFn, Priority, SinglePoolExecutor,
-    StorageOp, StorageTaskKind,
+    Async, GlobalExecutor, Guarded, Mapped, MappedOk, OpContext, OpFn, Priority, ReadPerf,
+    SinglePoolExecutor, StorageOp, StorageTaskKind, SyncOpFn,
 };
 pub use self::cf_handles::CfHandles;
 pub use self::db_env::DbEnv;
@@ -59,8 +59,10 @@ pub use self::db_spec::*;
 pub use self::error::*;
 pub use self::iterator::IterAction;
 use self::iterator::RocksIterator;
-pub use self::perf::{RocksDbReadPerfGuard, RocksDbWritePerfGuard};
-use self::reads::ColumnFamilies;
+pub use self::perf::{RocksDbPerf, RocksDbPerfExt, RocksDbReadPerfGuard, RocksDbWritePerfGuard};
+use self::reads::{
+    ColumnFamilies, Iteration, IterationOptions, IteratorVisitor, OwnedReadIterator, ScopedReads,
+};
 pub use self::rock_access::RocksAccess;
 pub use restate_util_lifecycle::KeepAlive;
 
@@ -601,6 +603,60 @@ impl RocksDb {
         database.executor.pool(priority).dispatch(op)
     }
 
+    /// Prepares an iteration over one of `scope`'s column families, handing
+    /// each item to `visitor` (see [`ReadIterator::prepare_iteration`](reads::ReadIterator::prepare_iteration)).
+    /// Submit it to one of the database's pools, e.g. `executor().low_pri()`.
+    /// `options` sets the iterator's first move and what sealing `gate` does
+    /// (see [`reads::LeasePolicy`]), and `name` labels its read perf metrics.
+    ///
+    /// # Errors
+    /// Fails with [`AdmissionClosed`] if `gate` is sealed. The iterator is
+    /// created under a lease, so it's never created once the gate is sealed.
+    /// Submission can separately return [`AdmissionClosed`] if the gate or pool
+    /// closes before it accepts the operation. After acceptance, the operation
+    /// returns [`reads::IterationError::ScopeClosed`] if a read slice is rejected,
+    /// [`reads::IterationError::RocksDb`] for a read error, or
+    /// [`reads::IterationError::Visitor`] for a visitor error. The executor can
+    /// also return [`IoTaskError`](restate_core::io::IoTaskError) if accepted work
+    /// ends without a result. Successful operations distinguish exhaustion from
+    /// a requested stop via [`reads::IterationOutcome`].
+    ///
+    /// # Panics
+    /// In debug builds, panics if `gate` isn't inside `scope`.
+    #[allow(clippy::type_complexity)]
+    pub fn prepare_iteration<'g, C, V>(
+        scope: &Scope<C>,
+        gate: &'g Arc<Gate>,
+        options: IterationOptions,
+        cf: C::Cf,
+        name: &'static str,
+        mut read_options: rocksdb::ReadOptions,
+        visitor: V,
+    ) -> Result<StorageOp<'g, OwnedReadIterator<Scope<C>>, ReadPerf<Iteration<V>>>, AdmissionClosed>
+    where
+        C: ColumnFamilies,
+        V: IteratorVisitor,
+    {
+        debug_assert!(
+            gate.is_inside(scope.gate()),
+            "the gate isn't inside the scope"
+        );
+        // Covers creating the iterator. The operation takes its own lease once
+        // it's submitted.
+        let _admission = gate.try_acquire().ok_or(AdmissionClosed)?;
+        // The iteration runs on the storage pool, where blocking IO is fine.
+        read_options.set_read_tier(rocksdb::ReadTier::All);
+        Ok(scope
+            .owned_iterator(cf, read_options)
+            .prepare_iteration(
+                gate,
+                options.lease_policy,
+                Some(options.initial_action),
+                visitor,
+            )
+            .with_read_perf(name))
+    }
+
     /// The shared I/O pools this database was created with. Handy for submitting
     /// operations prepared with [`Self::prepare`] to one of them, for example
     /// `db.executor().low_pri().spawn(op)`.
@@ -611,7 +667,7 @@ impl RocksDb {
     /// Prepares an operation on this database without running it yet.
     ///
     /// Run it on the current thread with
-    /// [`IoOp::call`](restate_core::io::IoOp::call), or submit it to any
+    /// [`StorageOp::call`](crate::StorageOp::call), or submit it to any
     /// [`IoExecutor`], such as one of [`Self::executor`]'s pools, to run it on a
     /// background thread. Admission is checked at that point, not now: a prepared
     /// operation doesn't delay [`Self::drain`], and if the database is sealed first,
@@ -667,16 +723,23 @@ impl RocksDb {
             .registration
             .as_ref()
             .map(|r| r.manager.track_lifecycle());
-        let task = TrackedTask::new(
+        let drop_cf = move || {
+            self.db
+                .as_raw_db()
+                .drop_cf(name.as_str())
+                .map_err(RocksError::from)
+        };
+        // Tuple fields drop in order, so the database is released before the lease,
+        // even if the task is dropped without running. `{ task }` makes the closure
+        // capture the tuple whole, rather than its fields one by one.
+        let task = (drop_cf, lease);
+        StorageOp::without_admission(
             move || {
-                self.db
-                    .as_raw_db()
-                    .drop_cf(name.as_str())
-                    .map_err(RocksError::from)
+                let (drop_cf, _lease) = { task };
+                drop_cf()
             },
-            lease,
-        );
-        StorageOp::without_admission(move || task.run(), StorageTaskKind::DropColumnFamily)
+            StorageTaskKind::DropColumnFamily,
+        )
     }
 
     /// Prepares flushing the memtables of all of `scope`'s column families, to

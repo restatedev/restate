@@ -10,7 +10,6 @@
 
 mod admin_client;
 mod admin_interface;
-#[cfg(feature = "cloud")]
 pub mod cloud;
 pub mod datafusion_helpers;
 mod datafusion_http_client;

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tokio::sync::Semaphore;
 
-use restate_util_time::NonZeroFriendlyDuration;
+use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 
 use super::{CommonOptions, ListenerOptions, QueryEngineOptions};
 use crate::net::address::{AdminPort, AdvertisedAddress, BindAddress};
@@ -64,6 +64,20 @@ pub struct AdminOptions {
     ///
     /// Controls the interval at which cluster controller polls nodes of the cluster.
     pub heartbeat_interval: NonZeroFriendlyDuration,
+
+    /// # Reconfiguration grace period
+    ///
+    /// How long the cluster controller waits before moving a partition's replicas away from
+    /// dead nodes. If a dead node comes back within this period (e.g. during a rolling restart),
+    /// its partitions are not reconfigured, avoiding the cost of building new replicas elsewhere.
+    /// Leadership still fails over to an alive replica immediately. If all replicas of a
+    /// partition are on dead nodes, the partition is reconfigured without waiting. Set to `0s`
+    /// to reconfigure as soon as a node is considered dead.
+    ///
+    /// Default: 5 minutes
+    ///
+    /// Since v1.8.2
+    pub reconfiguration_grace_period: FriendlyDuration,
 
     /// Disable serving the Restate Web UI on the admin port. Default is `false`.
     pub disable_web_ui: bool,
@@ -129,6 +143,7 @@ impl Default for AdminOptions {
             concurrent_api_requests_limit: None,
             query_engine: Default::default(),
             heartbeat_interval: NonZeroFriendlyDuration::from_millis_unchecked(1500),
+            reconfiguration_grace_period: FriendlyDuration::from_secs(5 * 60),
             #[cfg(any(test, feature = "test-util"))]
             disable_cluster_controller: false,
             disable_web_ui: false,

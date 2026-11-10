@@ -18,10 +18,9 @@ formula = "restate"
 features = ["dev-cmd"]
 
 [features]
-default = ["cloud", "no-trace-logging"]
+default = ["no-trace-logging"]
 # enables restate dev/up command
 dev-cmd = ["restate-lite", "mock-service-endpoint"]
-cloud = []
 no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
 
 [dependencies]
@@ -46,6 +45,7 @@ axum = { workspace = true, default-features = false, features = ["http1", "http2
 bytes = { workspace = true }
 base64 = { workspace = true }
 bm25 = { workspace = true }
+bs58 = { workspace = true }
 chrono = { workspace = true }
 chrono-humanize = { workspace = true }
 clap = { workspace = true, features = ["derive", "env", "wrap_help", "color", "std", "suggestions", "usage"] }
@@ -70,7 +70,7 @@ indicatif = "0.18.3"
 indoc = { version = "2.0.7" }
 itertools = { workspace = true }
 json-patch = "4.1.0"
-mnemonic = "1.1.1"
+hostname = { workspace = true }
 octocrab = { workspace = true, features = ["stream"] }
 open = "5.3.3"
 rand = { workspace = true }
@@ -95,6 +95,7 @@ zip = { version = "9.0" }
 
 [dev-dependencies]
 restate-cli-util = { workspace = true, features = ["test-util"] }
+restate-test-util = { workspace = true }
 
 [build-dependencies]
 vergen-gitcl = { workspace = true }

@@ -8,7 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::assert_matches;
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::pin::pin;
@@ -20,7 +22,7 @@ use rocksdb::{ErrorKind, ReadOptions, ReadTier};
 use tokio::time::timeout;
 
 use restate_core::TaskCenterBuilder;
-use restate_core::io::{Gate, IoOp, IoTask};
+use restate_core::io::{AdmissionClosed, Gate, IoExecutor, IoOp, IoTask, IoTaskError};
 use restate_platform::sync::Mutex;
 use restate_types::protobuf::common::DatabaseKind;
 use restate_util_lifecycle::{KeepAlive, Scope, ScopePayload};
@@ -29,9 +31,10 @@ use super::{ColumnFamilies, PinnedBatch, ReadIterator, ReadSnapshot, ScopedReads
 use crate::configuration::{
     CfConfigurator, DbConfigurator, create_default_cf_options, create_default_db_options,
 };
+use crate::reads::{IterationError, IterationOutcome, LeasePolicy};
 use crate::{
     CfHandles, CfName, CfPrefixPattern, DbEnv, DbName, DbSpec, DbSpecBuilder, GlobalExecutor,
-    RocksAccess, RocksDb, RocksDbManager, RocksError, StorageTaskKind,
+    IterAction, RocksAccess, RocksDb, RocksDbManager, RocksError, StorageTaskKind,
 };
 
 const DEADLINE: Duration = Duration::from_secs(10);
@@ -73,8 +76,8 @@ fn spec(path: &Path) -> DbSpec {
 /// away, on the dropping thread.
 fn standalone(path: &Path) -> anyhow::Result<Arc<RocksDb>> {
     let executor = GlobalExecutor::new(
-        crate::SinglePoolExecutor::new("test-high", 1),
-        crate::SinglePoolExecutor::new("test-low", 1),
+        crate::SinglePoolExecutor::new("test-high", NonZeroUsize::MIN),
+        crate::SinglePoolExecutor::new("test-low", NonZeroUsize::MIN),
     );
     let native = RocksAccess::open_db(spec(path), DbEnv::default())?;
     Ok(Arc::new(RocksDb::new(native, executor)))
@@ -293,7 +296,8 @@ fn reads_see_the_database_as_it_was_when_the_snapshot_was_taken() -> anyhow::Res
     let task = moved
         .prepare(&gate, StorageTaskKind::BackgroundIterator, read_rest)
         .into_task()?;
-    let rest = std::thread::spawn(move || task.run()).join().unwrap()?;
+    let on_other_thread = move || futures::executor::block_on(task.run());
+    let rest = std::thread::spawn(on_other_thread).join().unwrap()?;
     assert_eq!(rest, [kv("b", ""), kv("c", "3")]);
 
     // After sealing the scope, no new snapshot of it can be taken, but reads
@@ -610,5 +614,197 @@ async fn drains_wait_until_snapshots_have_released_everything() -> anyhow::Resul
 
     drop((late, sibling, db));
     task_center.shutdown_for_test().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn prepared_iteration() -> anyhow::Result<()> {
+    let task_center = TaskCenterBuilder::default()
+        .default_runtime_handle(tokio::runtime::Handle::current())
+        .build()?
+        .into_handle();
+    let manager = task_center.run_sync(RocksDbManager::init);
+    let tempdir = restate_test_util::tempdir()?;
+    let (_, opening) = manager.open_db(spec(&tempdir.path().join("db")))?;
+    let db = opening.await?;
+
+    let raw = db.inner().as_raw_db();
+    let data = db.inner().cf_handle("data").unwrap();
+
+    // Write 100 vals
+    for b in 0..100 {
+        raw.put_cf(&data, [b], [b])?;
+    }
+
+    // Single threaded executor
+    let executor = crate::SinglePoolExecutor::new("test", NonZeroUsize::MIN);
+
+    // Create the iterator
+    let scope = test_scope(&db, false);
+    let iterator = scope.owned_iterator(Cf::Data, ReadOptions::default());
+
+    // The output channel
+    let (tx, mut rx) = tokio::sync::mpsc::channel(50);
+
+    let gate = scope.gate().child();
+    let iteration = iterator
+        .prepare_iteration(
+            &gate,
+            LeasePolicy::WholeIteration,
+            Some(IterAction::Seek(bytes::Bytes::from_static(&[0]))),
+            async move |key: &[u8], value: &[u8]| -> Result<IterAction, RocksError> {
+                match tx
+                    .send(Ok::<_, RocksError>((key.to_vec(), value.to_vec())))
+                    .await
+                {
+                    Ok(()) => Ok(IterAction::Next),
+                    Err(_) => Ok(IterAction::Stop),
+                }
+            },
+        )
+        .with_read_perf("test");
+    let driver = executor.spawn(iteration)?;
+
+    // The iteration fills the channel without being polled. Once it's full, the
+    // iteration waits without holding the executor's only thread, so other work
+    // still runs on it.
+    wait_until_full(&rx).await;
+    timeout(DEADLINE, executor.spawn_fn("test", || ())?).await??;
+    assert_eq!(rx.len(), 50);
+
+    // Once we start consuming, the iterator should be able to complete
+    for b in 0..100 {
+        assert_eq!(
+            timeout(DEADLINE, rx.recv()).await?.transpose()?,
+            Some((vec![b], vec![b]))
+        );
+    }
+
+    // Once the iterator is exhausted, the iteration completes.
+    assert_matches!(
+        timeout(DEADLINE, driver)
+            .await?
+            .map(|r| r.map(|outcome| matches!(outcome, IterationOutcome::Exhausted(_)))),
+        Ok(Ok(true))
+    );
+
+    // No more items, and the sender is gone with the iteration.
+    assert!(matches!(
+        rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+    ));
+
+    drop(data);
+    drop((scope, db));
+    task_center.shutdown_for_test().await;
+    Ok(())
+}
+
+/// A callback that sends each key to `tx`.
+#[allow(clippy::type_complexity)]
+fn send_keys(
+    tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+) -> impl AsyncFnMut(&[u8], &[u8]) -> Result<IterAction, RocksError> + Send + 'static {
+    async move |key: &[u8], _value: &[u8]| match tx.send(key.to_vec()).await {
+        Ok(()) => Ok(IterAction::Next),
+        Err(_) => Ok(IterAction::Stop),
+    }
+}
+
+/// Waits until the iteration has filled `rx`, so it's waiting for room.
+async fn wait_until_full<T>(rx: &tokio::sync::mpsc::Receiver<T>) {
+    timeout(DEADLINE, async {
+        while rx.capacity() > 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn prepared_iteration_ends_early_on_panic_cancellation_or_seal() -> anyhow::Result<()> {
+    let tempdir = restate_test_util::tempdir()?;
+    let db = standalone(&tempdir.path().join("db"))?;
+    let data = db.inner().cf_handle("data").unwrap();
+    for b in 0..100 {
+        db.inner().as_raw_db().put_cf(&data, [b], [b])?;
+    }
+    let scope = test_scope(&db, false);
+    let executor = crate::SinglePoolExecutor::new("test", NonZeroUsize::MIN);
+    let gate = scope.gate().child();
+
+    // An iteration that panics fails, and the pool keeps working.
+    let iteration = scope
+        .owned_iterator(Cf::Data, ReadOptions::default())
+        .prepare_iteration(
+            &gate,
+            LeasePolicy::StopOnSeal,
+            Some(IterAction::SeekToFirst),
+            async |key: &[u8], _value: &[u8]| -> Result<IterAction, RocksError> {
+                assert_ne!(key, [5], "callback panic");
+                Ok(IterAction::Next)
+            },
+        );
+    let driver = executor.spawn(iteration)?;
+    assert_matches!(
+        timeout(DEADLINE, driver).await?.map(|r| r.map(drop)),
+        Err(IoTaskError)
+    );
+    timeout(DEADLINE, executor.spawn_fn("test", || ())?).await??;
+
+    // Dropping a cancellable iteration's result future while the callback waits for
+    // room cancels it: no more items arrive, and the iterator and the callback
+    // are dropped.
+    let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+    let iteration_gate = scope.gate().child();
+    let iteration = scope
+        .owned_iterator(Cf::Data, ReadOptions::default())
+        .prepare_iteration(
+            &iteration_gate,
+            LeasePolicy::WholeIteration,
+            Some(IterAction::SeekToFirst),
+            send_keys(tx),
+        );
+    let driver = executor.spawn_cancellable(iteration)?;
+    wait_until_full(&rx).await;
+    drop(driver);
+    timeout(DEADLINE, iteration_gate.wait_idle()).await?;
+    let mut received = 0;
+    while rx.recv().await.is_some() {
+        received += 1;
+    }
+    assert_eq!(received, 10);
+
+    // Sealing the gate while the callback waits for room ends the iteration
+    // once the callback is done, with `ScopeClosed`. Waiting holds no
+    // lease, so the gate drains meanwhile.
+    let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+    let iteration = scope
+        .owned_iterator(Cf::Data, ReadOptions::default())
+        .prepare_iteration(
+            &gate,
+            LeasePolicy::StopOnSeal,
+            Some(IterAction::SeekToFirst),
+            send_keys(tx),
+        );
+    let driver = executor.spawn(iteration)?;
+    wait_until_full(&rx).await;
+    gate.seal();
+    timeout(DEADLINE, gate.drain()).await?;
+    assert_eq!(rx.recv().await, Some(vec![0]));
+    assert_matches!(
+        timeout(DEADLINE, driver).await?.map(|r| r.map(drop)),
+        Ok(Err(IterationError::ScopeClosed(AdmissionClosed)))
+    );
+
+    // The item the callback was waiting to send still arrives, and nothing
+    // after it.
+    let mut received = 1;
+    while rx.recv().await.is_some() {
+        received += 1;
+    }
+    assert_eq!(received, 11);
+
     Ok(())
 }

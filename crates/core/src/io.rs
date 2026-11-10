@@ -10,8 +10,8 @@
 
 //! Blocking I/O off the async runtime, with shutdown-safe accounting.
 //!
-//! - [`IoOp`] describes a blocking operation that can run inline or be
-//!   prepared as a background [`IoTask`].
+//! - [`IoOp`] describes an operation that can be prepared as a background
+//!   [`IoTask`].
 //! - [`IoExecutor`] runs tasks on background threads.
 //! - [`Gate`] counts unfinished work, so an owner (e.g. a database)
 //!   can stop accepting work and wait for what's in flight before closing.
@@ -20,6 +20,7 @@
 mod executor;
 
 pub use executor::{
-    AdmissionClosed, IoExecutor, IoOp, IoTask, IoTaskError, TrackedExecutor, TrackedTask,
+    AdmissionClosed, FutureTask, IdleTracker, IoExecutor, IoOp, IoTask, IoTaskError,
+    TrackedExecutor, TrackedTask,
 };
 pub use restate_util_lifecycle::{Gate, Lease, OwnedLease};

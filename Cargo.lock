@@ -3413,12 +3413,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dotenvy"
-version = "0.15.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
-
-[[package]]
 name = "downcast"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5683,12 +5677,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mnemonic"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2b8f3a258db515d5e91a904ce4ae3f73e091149b90cadbdb93d210bee07f63b"
-
-[[package]]
 name = "mock-service-endpoint"
 version = "1.8.2-dev"
 dependencies = [
@@ -7775,6 +7763,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "bm25",
+ "bs58",
  "bytes",
  "chrono",
  "chrono-humanize",
@@ -7791,6 +7780,7 @@ dependencies = [
  "figment",
  "futures",
  "hickory-resolver",
+ "hostname",
  "http",
  "humantime",
  "hyper",
@@ -7800,7 +7790,6 @@ dependencies = [
  "indoc",
  "itertools 0.15.0",
  "json-patch",
- "mnemonic",
  "mock-service-endpoint",
  "octocrab",
  "open",
@@ -7813,6 +7802,7 @@ dependencies = [
  "restate-limiter",
  "restate-lite",
  "restate-serde-util",
+ "restate-test-util",
  "restate-types",
  "restate-util-string",
  "restate-util-time",
@@ -7852,7 +7842,6 @@ dependencies = [
  "crossterm",
  "dialoguer",
  "dirs",
- "dotenvy",
  "lambda_runtime",
  "restate-test-util",
  "restate-types",
@@ -8706,13 +8695,17 @@ name = "restate-rocksdb"
 version = "1.8.2-dev"
 dependencies = [
  "anyhow",
+ "async-channel",
  "bytes",
  "codederror",
+ "criterion",
  "derive_builder",
  "derive_more",
  "enum-map",
+ "futures",
  "metrics",
  "parking_lot",
+ "pin-project-lite",
  "restate-core",
  "restate-errors",
  "restate-futures-util",
@@ -8730,7 +8723,6 @@ dependencies = [
  "static_assertions",
  "strum",
  "thiserror 2.0.20",
- "threadpool",
  "tikv-jemalloc-sys",
  "tokio",
  "tokio-util",
@@ -10915,15 +10907,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
 dependencies = [
  "cfg-if",
-]
-
-[[package]]
-name = "threadpool"
-version = "1.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d050e60b33d41c19108b32cea32164033a9013fe3b46cbd4457559bfbf77afaa"
-dependencies = [
- "num_cpus",
 ]
 
 [[package]]

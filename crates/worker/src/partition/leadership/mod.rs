@@ -41,7 +41,6 @@ use restate_storage_api::deduplication_table::EpochSequenceNumber;
 use restate_storage_api::outbox_table::{OutboxMessage, ReadOutboxTable};
 use restate_storage_api::timer_table::{ReadTimerTable, TimerKey};
 use restate_timer::TokioClock;
-use restate_types::GenerationalNodeId;
 use restate_types::cluster::cluster_state::RunMode;
 use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
@@ -57,6 +56,7 @@ use restate_types::partitions::PartitionFeatureChange;
 use restate_types::protobuf::cluster::DetailedRunMode;
 use restate_types::schema::Schema;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
+use restate_types::{GenerationalNodeId, RESTATE_VERSION_1_9_0, SemanticRestateVersion};
 use restate_util_string::format_restring;
 use restate_util_time::DurationExt;
 use restate_vqueues::context::{HasVQueues, HasVQueuesMut};
@@ -603,6 +603,20 @@ where
                     .is_preflight_signal_recording_enabled()
             {
                 feature_changes.push(PartitionFeatureChange::EnablePreflightSignalRecording);
+            }
+
+            // On by default from v1.9.0, including development and release-candidate builds, once
+            // every worker runs it: until then, the cluster can still roll back to any v1.8.x.
+            let byte_offsets_by_default = SemanticRestateVersion::current()
+                .release_is_equal_or_newer_than(&RESTATE_VERSION_1_9_0)
+                && Metadata::with_current(|m| {
+                    m.nodes_config_ref()
+                        .all_workers_run_at_least(&RESTATE_VERSION_1_9_0)
+                });
+            if (byte_offsets_by_default || config.common.experimental.is_byte_offsets_enabled())
+                && !processor.fsm().features().is_byte_offsets_enabled()
+            {
+                feature_changes.push(PartitionFeatureChange::EnableByteOffsets);
             }
 
             if !feature_changes.is_empty() {
@@ -1158,9 +1172,8 @@ mod tests {
             )
             .await?;
 
-        // Winning the campaign first proposes a VersionBarrier to enable the journal-v2
-        // default (since v1.7.0) and the unique-random-seeds and vqueues defaults (since
-        // v1.8.0); the processor stays `BecomingLeader` until that barrier is applied.
+        // Winning the campaign first proposes a VersionBarrier to enable the default features;
+        // the processor stays `BecomingLeader` until that barrier is applied.
         assert!(matches!(state.state, State::BecomingLeader { .. }));
 
         let record = reader.next().await.unwrap()?;
@@ -1187,12 +1200,13 @@ mod tests {
 
         // Simulate the barrier being applied to the FSM, then complete the transition
         // into a full leader (no further feature changes remain to be proposed).
-        ctx.set_enabled_features_in_memory(PersistedFeatures {
-            journal_v2: true,
-            unique_random_seeds: true,
-            vqueues: true,
-            ..PersistedFeatures::default()
-        });
+        ctx.set_enabled_features_in_memory(
+            barrier
+                .feature_changes
+                .into_iter()
+                .map(|id| PartitionFeatureChange::from_repr(id).expect("known feature change"))
+                .collect(),
+        );
         state
             .finish_becoming_leader(&mut node_ctx, &mut ctx, &mut partition_store)
             .await?;
@@ -1248,6 +1262,7 @@ mod tests {
                 preflight_invocation_termination_retention: true,
                 inconsistent_state_mutation_cleanup: true,
                 preflight_signal_recording: true,
+                byte_offsets: true,
             },
         );
         let (leader_query_tx, _leader_query_rx) = restate_worker_api::channel();

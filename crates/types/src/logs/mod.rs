@@ -136,6 +136,46 @@ impl From<Lsn> for crate::protobuf::common::Lsn {
     }
 }
 
+/// Lets messages encode an `Lsn` with a fixed width (`encoding(fixed)`) instead of as a varint.
+mod bilrost_encoding {
+    use bilrost::encoding::{DistinguishedProxiable, Proxiable};
+    use bilrost::{Canonicity, DecodeErrorKind};
+
+    use super::Lsn;
+
+    struct FixedLsnTag;
+
+    impl Proxiable<FixedLsnTag> for Lsn {
+        type Proxy = u64;
+
+        fn encode_proxy(&self) -> Self::Proxy {
+            self.0
+        }
+
+        fn decode_proxy(&mut self, proxy: Self::Proxy) -> Result<(), DecodeErrorKind> {
+            self.0 = proxy;
+            Ok(())
+        }
+    }
+
+    impl DistinguishedProxiable<FixedLsnTag> for Lsn {
+        fn decode_proxy_distinguished(
+            &mut self,
+            proxy: Self::Proxy,
+        ) -> Result<Canonicity, DecodeErrorKind> {
+            self.decode_proxy(proxy)?;
+            Ok(Canonicity::Canonical)
+        }
+    }
+
+    bilrost::delegate_proxied_encoding!(
+        use encoding (bilrost::encoding::Fixed)
+        to encode proxied type (Lsn) using proxy tag (FixedLsnTag)
+        with encoding (bilrost::encoding::Fixed)
+        including distinguished
+    );
+}
+
 impl SequenceNumber for Lsn {
     /// The maximum possible sequence number, this is useful when creating a read stream
     /// with an open-ended tail.

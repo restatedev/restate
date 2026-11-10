@@ -25,7 +25,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use restate_core::io::{Gate, IoExecutor, OwnedLease};
+use restate_core::io::{Gate, IdleTracker, IoExecutor, OwnedLease};
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
 use restate_platform::sync::Mutex;
 use restate_types::config::{CommonOptions, Configuration};
@@ -106,7 +106,7 @@ struct ManagerInner {
     // still be accepted and counted.
     lifecycle_gate: Arc<Gate>,
     executor: GlobalExecutor,
-    lifecycle_executor: SinglePoolExecutor,
+    lifecycle_executor: IdleTracker<SinglePoolExecutor>,
     // Keep at the end of the struct to ensure it's dropped last
     db_env: DbEnv,
 }
@@ -143,8 +143,10 @@ impl RocksDbManager {
         // doesn't wait behind regular I/O or block Tokio, and one slow database doesn't
         // hold up the others. The pool is never shut down, so databases dropped after
         // shutdown can still be closed.
-        let lifecycle_executor =
-            SinglePoolExecutor::new("rs:io-lifecycle", opts.storage_lifecycle_bg_threads().get());
+        let lifecycle_executor = IdleTracker::new(SinglePoolExecutor::new(
+            "rs:io-lifecycle",
+            opts.storage_lifecycle_bg_threads(),
+        ));
 
         let manager = RocksDbManager(Arc::new(ManagerInner {
             db_env,
@@ -231,7 +233,7 @@ impl RocksDbManager {
     /// Other components can share it for lifecycle work that must not wait behind
     /// regular storage I/O, such as creating or importing partition stores. That
     /// work competes with opening and closing databases for the same threads.
-    pub fn lifecycle_executor(&self) -> &SinglePoolExecutor {
+    pub fn lifecycle_executor(&self) -> &IdleTracker<SinglePoolExecutor> {
         &self.0.lifecycle_executor
     }
 
@@ -483,8 +485,9 @@ impl RocksDbManager {
     #[cfg(any(test, feature = "test-util"))]
     pub async fn pause_lifecycle(&self) -> Vec<std::sync::mpsc::Sender<()>> {
         let pool = &self.0.lifecycle_executor;
-        let mut resumes = Vec::with_capacity(pool.max_count());
-        for _ in 0..pool.max_count() {
+        let workers = pool.inner().max_count();
+        let mut resumes = Vec::with_capacity(workers);
+        for _ in 0..workers {
             let (resume, paused) = std::sync::mpsc::channel();
             let (started, reached) = tokio::sync::oneshot::channel();
             resumes.push(resume);

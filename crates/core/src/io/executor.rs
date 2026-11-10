@@ -24,10 +24,11 @@ use super::{Gate, OwnedLease};
 #[error("I/O admission is closed")]
 pub struct AdmissionClosed;
 
-/// Blocking work that can move to an executor thread.
+/// Work that can move to an executor thread, blocking or async. The executor
+/// calls [`Self::run`] on the thread that runs the task.
 ///
 /// Whatever it captures stays alive until it has run or been dropped. Any
-/// closure is a task that is always wanted.
+/// closure is a task that is always wanted; [`FutureTask`] wraps async work.
 pub trait IoTask<O>: Send + 'static {
     /// Whether the task should still run. An executor asks right before it
     /// starts the task, and drops the task without running it if the answer is
@@ -37,18 +38,34 @@ pub trait IoTask<O>: Send + 'static {
         true
     }
 
-    /// Runs the task.
-    fn run(self) -> O;
+    /// Runs the task. The executor calls this on the thread that will poll the
+    /// returned future, so the future need not be `Send`.
+    fn run(self) -> impl Future<Output = O>;
 }
 
 impl<O, F: FnOnce() -> O + Send + 'static> IoTask<O> for F {
-    fn run(self) -> O {
+    async fn run(self) -> O {
         self()
     }
 }
 
-/// A blocking operation that can either run inline on the current thread, or be
-/// turned into an [`IoTask`] for background execution.
+/// Wraps a function that returns a future, so async work can be submitted as an
+/// [`IoTask`]. The function is called on the executor thread, so the future need
+/// not be `Send`.
+pub struct FutureTask<F>(pub F);
+
+impl<O, Fut, F> IoTask<O> for FutureTask<F>
+where
+    Fut: Future<Output = O>,
+    F: FnOnce() -> Fut + Send + 'static,
+{
+    fn run(self) -> impl Future<Output = O> {
+        (self.0)()
+    }
+}
+
+/// Work that an [`IoExecutor`] can run: a label for its metrics, and a way to
+/// become an [`IoTask`].
 ///
 /// The operation itself may borrow (e.g. `&Db`) and need not be `Send`; only the
 /// task returned by [`Self::into_task`] must be `Send + 'static`.
@@ -61,11 +78,6 @@ impl<O, F: FnOnce() -> O + Send + 'static> IoTask<O> for F {
 ///
 /// impl IoOp for Flush<'_> {
 ///     type Output = Result<(), FlushError>;
-///
-///     fn call(self) -> Result<Self::Output, AdmissionClosed> {
-///         let _lease = self.gate.try_acquire().ok_or(AdmissionClosed)?;
-///         Ok(self.db.flush())
-///     }
 ///
 ///     fn operation(&self) -> &'static str {
 ///         "flush"
@@ -86,16 +98,6 @@ pub trait IoOp: Sized {
     /// small, fixed set.
     fn operation(&self) -> &'static str;
 
-    /// Runs the operation inline on the current thread, with no background-task
-    /// setup or background-only instrumentation.
-    ///
-    /// Nonblocking attempts and retry decisions belong in the caller, before
-    /// this call consumes the operation. For example, try a write with
-    /// `no_slowdown` first, and only fall back to blocking if it would stall.
-    ///
-    /// Returns `AdmissionClosed` if the operation's scope has been sealed.
-    fn call(self) -> Result<Self::Output, AdmissionClosed>;
-
     /// Prepares the operation for background execution and returns the task.
     ///
     /// This runs on the submitting thread, before the executor has accepted
@@ -106,8 +108,8 @@ pub trait IoOp: Sized {
     ///   been dropped; [`TrackedTask`] takes care of that.
     /// - Turn borrowed resources into owned ones, e.g. clone an `Arc`.
     ///
-    /// The executor runs the returned task, never [`Self::call`]. It also measures
-    /// the task (how long it waited and ran), so the task doesn't need to.
+    /// The executor measures the task (how long it waited and ran), so the task
+    /// doesn't need to.
     ///
     /// The task may be rejected or dropped without ever running, so preparing it
     /// must not record an execution.
@@ -124,21 +126,23 @@ pub struct IoTaskError;
 
 /// Runs blocking work on background threads.
 ///
-/// Implementors provide [`Self::dispatch_fn`] and [`Self::barrier`]; the other
-/// methods are helpers built on top. Each task comes with the name of the
+/// Implementors provide [`Self::dispatch_fn`]; the other methods are helpers
+/// built on top. Each task comes with the name of the
 /// operation it performs (see [`IoOp::operation`]), which an executor can use to
 /// label the metrics it records about the task. Submission is eager: a task is accepted or
 /// rejected before the method returns, not when the returned future is first
 /// polled. Returned futures don't borrow the executor.
 ///
-/// The helpers differ in what happens if the caller loses interest. Work that
-/// has already started is never interrupted.
+/// The helpers differ in what happens if the caller loses interest. Cancellation
+/// is cooperative: it can drop a suspended future, but cannot interrupt a
+/// blocking call or a poll that hasn't returned.
 ///
-/// | Method                     | Returns       | Result future dropped before the task starts |
-/// |----------------------------|---------------|----------------------------------------------|
-/// | `spawn` / `spawn_fn`       | result future | task is skipped                              |
-/// | `spawn_detached`           | result future | task still runs, result is dropped           |
-/// | `dispatch` / `dispatch_fn` | nothing       | n/a, task always runs                        |
+/// | Method                     | Result future dropped before start | Result future dropped while running |
+/// |----------------------------|------------------------------------|-------------------------------------|
+/// | `spawn` / `spawn_fn`       | task is skipped                    | task finishes, result is dropped    |
+/// | `spawn_cancellable`        | task is skipped                    | task is cancelled cooperatively     |
+/// | `spawn_detached`           | task runs, result is dropped       | task finishes, result is dropped    |
+/// | `dispatch` / `dispatch_fn` | n/a, task always runs              | n/a, task always runs               |
 ///
 /// ```ignore
 /// // A read or write: no point doing it if the caller has gone away.
@@ -156,31 +160,6 @@ pub struct IoTaskError;
 /// may still be dropping captured resources. Use a [`TrackedExecutor`] to know
 /// when it is safe to shut down.
 pub trait IoExecutor {
-    /// Runs `callback` once all work submitted before this call has either run
-    /// or been dropped. Work submitted concurrently
-    /// with this call may land on either side of the barrier.
-    ///
-    /// ```text
-    /// dispatch(A); dispatch(B); barrier(cb); dispatch(C);
-    /// // cb runs once A and B are done. C may run concurrently with cb.
-    /// ```
-    ///
-    /// Handy in tests to wait until everything queued so far is done. A barrier
-    /// is only about ordering: it neither seals admission nor waits for leases.
-    /// [`TrackedExecutor`] forwards it to the backend, even when sealed.
-    ///
-    /// The callback must not block waiting for other work on this executor: with
-    /// a single worker, that work could never run.
-    ///
-    /// A typical implementation makes every worker pause once it reaches the
-    /// barrier. When the last one arrives, all earlier work is done, and one
-    /// worker runs the callback. Implementations must:
-    /// - Let the other workers resume *before* running the callback, and not
-    ///   hold internal locks while it runs, so a slow callback doesn't stall
-    ///   the executor.
-    /// - Make sure a panicking callback doesn't leave the other workers paused.
-    fn barrier(&self, callback: impl FnOnce() + Send + 'static);
-
     /// Submits a fire-and-forget task.
     ///
     /// `Ok(())` means the task was accepted and will run exactly once, regardless
@@ -217,7 +196,9 @@ pub trait IoExecutor {
     /// ```
     ///
     /// Dropping the future doesn't free the task's captures right away; they live
-    /// until a worker runs or drops the task.
+    /// until a worker runs or drops the task. Use [`Self::spawn_cancellable`] to
+    /// cancel running work too, or [`Self::spawn_detached`] or [`Self::dispatch`]
+    /// for work that must run once submitted.
     ///
     /// Beware of results that hold resources (a file handle, a snapshot): task
     /// accounting ends when the task returns, but the result can outlive it. An
@@ -235,7 +216,7 @@ pub trait IoExecutor {
             SendResult {
                 task,
                 tx,
-                skip_if_abandoned: true,
+                cancellation: Cancellation::BeforeStart,
             },
         )?;
         Ok(async move { rx.await.map_err(|_| IoTaskError) })
@@ -244,8 +225,9 @@ pub trait IoExecutor {
     /// Like [`Self::spawn_fn`], but for an [`IoOp`]: prepares it with
     /// [`IoOp::into_task`] and submits the task.
     ///
-    /// Dropping the result future can skip queued work. If the work must run
-    /// regardless, use [`Self::spawn_detached`] or [`Self::dispatch`].
+    /// Dropping the result future can skip queued work; running work finishes.
+    /// Use [`Self::spawn_cancellable`] to cancel running work too. If the work
+    /// must run regardless, use [`Self::spawn_detached`] or [`Self::dispatch`].
     fn spawn<O>(
         &self,
         op: O,
@@ -258,6 +240,41 @@ pub trait IoExecutor {
     {
         let operation = op.operation();
         self.spawn_fn(operation, op.into_task()?)
+    }
+
+    /// Like [`Self::spawn`], but dropping the result future also cancels running
+    /// work cooperatively. The worker is woken and drops the execution future
+    /// when it can next poll it. A blocking call or a poll that hasn't returned
+    /// cannot be interrupted.
+    ///
+    /// Submission is eager, and the result future need not be polled for the
+    /// task to run. Captures are released on the worker, not immediately when
+    /// the result is dropped.
+    ///
+    /// The work must be safe to drop before completion. If it's unsafe to cancel
+    /// the work at any point, then prefer [`Self::spawn`] with custom cancellation
+    /// logic inside the operation itself.
+    fn spawn_cancellable<O>(
+        &self,
+        op: O,
+    ) -> Result<
+        impl Future<Output = Result<O::Output, IoTaskError>> + Send + 'static,
+        AdmissionClosed,
+    >
+    where
+        O: IoOp,
+    {
+        let operation = op.operation();
+        let (tx, rx) = oneshot::channel();
+        self.dispatch_fn(
+            operation,
+            SendResult {
+                task: op.into_task()?,
+                tx,
+                cancellation: Cancellation::Cooperative,
+            },
+        )?;
+        Ok(async move { rx.await.map_err(|_| IoTaskError) })
     }
 
     /// Like [`Self::spawn`], but the work runs even if the result future is
@@ -283,7 +300,7 @@ pub trait IoExecutor {
             SendResult {
                 task: op.into_task()?,
                 tx,
-                skip_if_abandoned: false,
+                cancellation: Cancellation::Never,
             },
         )?;
         Ok(async move { rx.await.map_err(|_| IoTaskError) })
@@ -309,22 +326,45 @@ pub trait IoExecutor {
     }
 }
 
-// Sends the result of `task` to the future that `spawn_fn` or `spawn_detached`
-// returned.
+// When losing interest in a result can stop its work.
+enum Cancellation {
+    BeforeStart,
+    Cooperative,
+    Never,
+}
+
+// Sends the result of `task` to the future returned by a spawn helper.
 struct SendResult<T, O> {
     task: T,
     tx: oneshot::Sender<O>,
-    // Whether the task is no longer wanted once the caller drops the future.
-    skip_if_abandoned: bool,
+    cancellation: Cancellation,
 }
 
 impl<T: IoTask<O>, O: Send + 'static> IoTask<()> for SendResult<T, O> {
     fn is_wanted(&self) -> bool {
-        !(self.skip_if_abandoned && self.tx.is_closed()) && self.task.is_wanted()
+        (matches!(self.cancellation, Cancellation::Never) || !self.tx.is_closed())
+            && self.task.is_wanted()
     }
 
-    fn run(self) {
-        let _ = self.tx.send(self.task.run());
+    async fn run(self) {
+        let Self {
+            task,
+            mut tx,
+            cancellation,
+        } = self;
+        let output = if matches!(cancellation, Cancellation::Cooperative) {
+            // Receiver closure wakes this worker. Dropping the execution future
+            // here releases its captures and leases on the worker, in their
+            // normal order. Check receiver drop first if both futures are ready.
+            tokio::select! {
+                biased;
+                _ = tx.closed() => return,
+                output = async move { task.run().await } => output,
+            }
+        } else {
+            task.run().await
+        };
+        let _ = tx.send(output);
     }
 }
 
@@ -339,8 +379,8 @@ impl<T: IoTask<O>, O: 'static> IoTask<()> for DiscardResult<T, O> {
         self.task.is_wanted()
     }
 
-    fn run(self) {
-        drop(self.task.run());
+    async fn run(self) {
+        drop(self.task.run().await);
     }
 }
 
@@ -378,10 +418,6 @@ impl<'a, E: IoExecutor> TrackedExecutor<'a, E> {
 }
 
 impl<E: IoExecutor> IoExecutor for TrackedExecutor<'_, E> {
-    fn barrier(&self, callback: impl FnOnce() + Send + 'static) {
-        self.executor.barrier(callback);
-    }
-
     fn dispatch_fn(
         &self,
         operation: &'static str,
@@ -390,6 +426,47 @@ impl<E: IoExecutor> IoExecutor for TrackedExecutor<'_, E> {
         let submission = self.gate.try_acquire().ok_or(AdmissionClosed)?;
         self.executor
             .dispatch_fn(operation, TrackedTask::new(task, submission.into_owned()))
+    }
+}
+
+/// Wraps an executor and counts the tasks submitted through it, or through its
+/// clones, until each has run or been dropped, so callers can wait until none
+/// are left.
+#[derive(Clone)]
+pub struct IdleTracker<E> {
+    executor: E,
+    tasks: Arc<Gate>,
+}
+
+impl<E> IdleTracker<E> {
+    pub fn new(executor: E) -> Self {
+        Self {
+            executor,
+            tasks: Arc::default(),
+        }
+    }
+
+    /// The wrapped executor. Tasks submitted to it directly are not counted.
+    pub fn inner(&self) -> &E {
+        &self.executor
+    }
+
+    /// Waits until every counted task has run or been dropped, including what it
+    /// captured. Tasks submitted meanwhile are waited for too, so under a steady
+    /// stream of new tasks, this may never return.
+    pub async fn wait_idle(&self) {
+        self.tasks.wait_idle().await;
+    }
+}
+
+impl<E: IoExecutor> IoExecutor for IdleTracker<E> {
+    fn dispatch_fn(
+        &self,
+        operation: &'static str,
+        task: impl IoTask<()>,
+    ) -> Result<(), AdmissionClosed> {
+        // The gate is never sealed, so it only counts.
+        TrackedExecutor::new(&self.executor, &self.tasks).dispatch_fn(operation, task)
     }
 }
 
@@ -419,19 +496,6 @@ impl<T, L> TrackedTask<T, L> {
             _execution: lease,
         }
     }
-
-    /// Runs the task, then releases the lease. The returned value outlives the
-    /// lease, so a resource-bearing result needs its own.
-    ///
-    /// Unlike [`IoTask::run`], this also works with a borrowed lease, for work
-    /// that runs on the current thread.
-    pub fn run<R>(self) -> R
-    where
-        T: IoTask<R>,
-    {
-        let Self { task, _execution } = self;
-        task.run()
-    }
 }
 
 impl<R, T: IoTask<R>, L: Send + 'static> IoTask<R> for TrackedTask<T, L> {
@@ -439,29 +503,34 @@ impl<R, T: IoTask<R>, L: Send + 'static> IoTask<R> for TrackedTask<T, L> {
         self.task.is_wanted()
     }
 
-    fn run(self) -> R {
-        TrackedTask::run(self)
+    /// Runs the task, then releases the lease. The returned value outlives the
+    /// lease, so a resource-bearing result needs its own.
+    async fn run(self) -> R {
+        let Self { task, _execution } = self;
+        task.run().await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
-    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::panic::AssertUnwindSafe;
+    use std::pin::Pin;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, mpsc};
+
+    use futures::FutureExt;
 
     use super::*;
 
     // Queues tasks instead of running them, so each test decides exactly when a
     // task runs. Testing cancellation before a task starts then needs no sleeps.
-    struct QueuedExecutor(mpsc::Sender<Box<dyn FnOnce() + Send>>);
+    // A queued task builds its future when called, like a worker starting it.
+    type QueuedTask = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()>>> + Send>;
+
+    struct QueuedExecutor(mpsc::Sender<QueuedTask>);
 
     impl IoExecutor for QueuedExecutor {
-        fn barrier(&self, callback: impl FnOnce() + Send + 'static) {
-            self.0.send(Box::new(callback)).expect("live test executor");
-        }
-
         fn dispatch_fn(
             &self,
             _operation: &'static str,
@@ -469,10 +538,12 @@ mod tests {
         ) -> Result<(), AdmissionClosed> {
             // Asks whether the task is wanted when the test runs it, like a worker
             // about to start it.
-            let run = move || {
-                if task.is_wanted() {
-                    task.run();
-                }
+            let run = move || -> Pin<Box<dyn Future<Output = ()>>> {
+                Box::pin(async move {
+                    if task.is_wanted() {
+                        task.run().await;
+                    }
+                })
             };
             self.0.send(Box::new(run)).map_err(|_| AdmissionClosed)
         }
@@ -522,7 +593,7 @@ mod tests {
         );
         gate.seal();
         let task = rx.try_recv().unwrap();
-        let worker = std::thread::spawn(task);
+        let worker = std::thread::spawn(move || futures::executor::block_on(task()));
         tokio::time::timeout(Duration::from_secs(10), paused)
             .await
             .unwrap()
@@ -551,14 +622,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dropping_cancellable_result_stops_running_work() {
+        use std::time::Duration;
+
+        struct PendingOp {
+            started: oneshot::Sender<()>,
+            captured: DropProbe,
+        }
+
+        impl IoOp for PendingOp {
+            type Output = ();
+
+            fn operation(&self) -> &'static str {
+                "test"
+            }
+
+            fn into_task(self) -> Result<impl IoTask<Self::Output>, AdmissionClosed> {
+                Ok(FutureTask(move || async move {
+                    let _captured = self.captured;
+                    self.started.send(()).unwrap();
+                    futures::future::pending::<()>().await;
+                }))
+            }
+        }
+
+        let gate = Arc::new(Gate::default());
+        let drops = Arc::new(AtomicUsize::new(0));
+        let (tx, rx) = mpsc::channel();
+        let executor = QueuedExecutor(tx);
+        let (started_tx, started_rx) = oneshot::channel();
+        let result = TrackedExecutor::new(&executor, &gate)
+            .spawn_cancellable(PendingOp {
+                started: started_tx,
+                captured: DropProbe(drops.clone()),
+            })
+            .unwrap();
+
+        // Run without a Tokio runtime, like the storage workers.
+        let task = rx.try_recv().unwrap();
+        let worker = std::thread::spawn(move || futures::executor::block_on(task()));
+        tokio::time::timeout(Duration::from_secs(10), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        gate.seal();
+        assert!(!gate.is_idle());
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+
+        // The task cannot finish on its own. Dropping its result must wake the
+        // worker, cancel the pending future, and release the capture and lease.
+        drop(result);
+        tokio::time::timeout(Duration::from_secs(10), gate.drain())
+            .await
+            .unwrap();
+        worker.join().unwrap();
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
     async fn tracked_dispatch_covers_submission_disposal_and_retained_results() {
         struct SealDuringDispatch(Arc<Gate>);
 
         impl IoExecutor for SealDuringDispatch {
-            fn barrier(&self, callback: impl FnOnce() + Send + 'static) {
-                callback();
-            }
-
             fn dispatch_fn(
                 &self,
                 _operation: &'static str,
@@ -567,7 +692,7 @@ mod tests {
                 self.0.seal();
                 assert!(!self.0.is_idle(), "accepted task is counted before handoff");
                 if task.is_wanted() {
-                    task.run();
+                    futures::executor::block_on(task.run());
                 }
                 Ok(())
             }
@@ -610,7 +735,7 @@ mod tests {
             !gate.is_idle(),
             "observer cancellation does not complete work"
         );
-        rx.try_recv().unwrap()();
+        rx.try_recv().unwrap()().await;
         assert_eq!(
             ran.load(Ordering::Relaxed),
             0,
@@ -620,7 +745,7 @@ mod tests {
         // `wait_idle` doesn't seal: new leases can still be acquired.
         let retained = gate.try_acquire().unwrap().into_owned();
         let observer = executor.spawn_fn("test", move || retained).unwrap();
-        rx.try_recv().unwrap()();
+        rx.try_recv().unwrap()().await;
         gate.seal();
         assert!(!gate.is_idle(), "buffered output owns its explicit flight");
         drop(observer);
@@ -639,7 +764,7 @@ mod tests {
             gate.seal();
             let task = rx.try_recv().unwrap();
             if execute {
-                assert!(catch_unwind(AssertUnwindSafe(task)).is_err());
+                assert!(AssertUnwindSafe(task()).catch_unwind().await.is_err());
             } else {
                 // A backend dropping the job must still release captures before
                 // the lease, and the observer must see an error, not success.
@@ -674,17 +799,13 @@ mod tests {
             "borrowed"
         }
 
-        fn call(self) -> Result<Self::Output, AdmissionClosed> {
-            Ok(DropProbe(self.drops.clone()))
-        }
-
         fn into_task(self) -> Result<impl IoTask<Self::Output>, AdmissionClosed> {
             self.preparations.set(self.preparations.get() + 1);
             let background_runs = self.background_runs.clone();
             let drops = self.drops.clone();
             Ok(move || {
                 // Background-only instrumentation runs at task entry, not when
-                // the operation is called inline or prepared for dispatch.
+                // the operation is prepared for dispatch.
                 background_runs.fetch_add(1, Ordering::Relaxed);
                 DropProbe(drops)
             })
@@ -699,19 +820,6 @@ mod tests {
         let observer = {
             let executor = QueuedExecutor(tx);
             let preparations = Cell::new(0);
-
-            drop(
-                BorrowedOp {
-                    preparations: &preparations,
-                    background_runs: &background_runs,
-                    drops: &drops,
-                }
-                .call()
-                .unwrap(),
-            );
-            assert_eq!(preparations.get(), 0);
-            assert_eq!(background_runs.load(Ordering::Relaxed), 0);
-            assert_eq!(drops.load(Ordering::Relaxed), 1);
 
             drop(
                 BorrowedOp {
@@ -740,10 +848,10 @@ mod tests {
             .try_recv()
             .expect("submitted without polling the observer");
         drop(observer);
-        assert_eq!(drops.load(Ordering::Relaxed), 1);
-        task();
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        task().await;
         assert_eq!(background_runs.load(Ordering::Relaxed), 0);
-        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
 
         let (tx, rx) = mpsc::channel();
         let executor = QueuedExecutor(tx);
@@ -757,16 +865,16 @@ mod tests {
             })
             .unwrap();
         assert_eq!(background_runs.load(Ordering::Relaxed), 0);
-        rx.try_recv().unwrap()();
+        rx.try_recv().unwrap()().await;
         assert_eq!(background_runs.load(Ordering::Relaxed), 1);
-        assert_eq!(drops.load(Ordering::Relaxed), 1, "result is buffered");
+        assert_eq!(drops.load(Ordering::Relaxed), 0, "result is buffered");
         drop(observer);
-        assert_eq!(drops.load(Ordering::Relaxed), 2);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
 
         let observer = executor
             .spawn_fn("test", || Err::<(), _>("operation failed"))
             .unwrap();
-        rx.try_recv().unwrap()();
+        rx.try_recv().unwrap()().await;
         assert_eq!(observer.await.unwrap(), Err("operation failed"));
 
         executor
@@ -778,10 +886,10 @@ mod tests {
             .unwrap();
         assert_eq!(preparations.get(), 2);
         assert_eq!(background_runs.load(Ordering::Relaxed), 1);
-        assert_eq!(drops.load(Ordering::Relaxed), 2);
-        rx.try_recv().unwrap()();
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        rx.try_recv().unwrap()().await;
         assert_eq!(background_runs.load(Ordering::Relaxed), 2);
-        assert_eq!(drops.load(Ordering::Relaxed), 3, "dispatch discards output");
+        assert_eq!(drops.load(Ordering::Relaxed), 2, "dispatch discards output");
 
         let observer = executor
             .spawn_detached(BorrowedOp {
@@ -791,11 +899,11 @@ mod tests {
             })
             .unwrap();
         drop(observer);
-        rx.try_recv().unwrap()();
+        rx.try_recv().unwrap()().await;
         assert_eq!(background_runs.load(Ordering::Relaxed), 3);
         assert_eq!(
             drops.load(Ordering::Relaxed),
-            4,
+            3,
             "spawn_detached survives observer drop"
         );
 
@@ -810,7 +918,7 @@ mod tests {
         ));
         assert_eq!(preparations.get(), 4);
         assert_eq!(background_runs.load(Ordering::Relaxed), 3);
-        assert_eq!(drops.load(Ordering::Relaxed), 4);
+        assert_eq!(drops.load(Ordering::Relaxed), 3);
     }
 
     #[tokio::test]
@@ -825,7 +933,12 @@ mod tests {
                 panic!("execution failed after acceptance");
             })
             .unwrap();
-        assert!(catch_unwind(AssertUnwindSafe(rx.try_recv().unwrap())).is_err());
+        assert!(
+            AssertUnwindSafe(rx.try_recv().unwrap()())
+                .catch_unwind()
+                .await
+                .is_err()
+        );
         assert_eq!(drops.load(Ordering::Relaxed), 1);
         assert!(matches!(observer.await, Err(IoTaskError)));
 

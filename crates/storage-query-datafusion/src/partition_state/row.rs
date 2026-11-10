@@ -77,4 +77,16 @@ pub(crate) fn append_partition_row(
     row.enabled_features(state.enabled_features.enabled_names().map(Some));
 
     row.enabled_storage_features(state.enabled_storage_features.iter().map(Some));
+
+    if let Some(lsn) = state.byte_offsets_base_lsn {
+        row.byte_offsets_base_lsn(lsn.into());
+    }
+
+    if let Some(offset) = state.log_byte_offset {
+        row.log_byte_offset(offset);
+    }
+
+    if let Some(offset) = state.partition_store_byte_offset {
+        row.partition_store_byte_offset(offset);
+    }
 }

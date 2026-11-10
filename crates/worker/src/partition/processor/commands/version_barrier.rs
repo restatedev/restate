@@ -192,6 +192,10 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
                     PartitionFeatureChange::EnablePreflightInvocationTerminationRetention => {}
                     // Only affects signals applied after this point.
                     PartitionFeatureChange::EnablePreflightSignalRecording => {}
+                    // The byte offsets count the records after this one.
+                    PartitionFeatureChange::EnableByteOffsets => {
+                        self.processor.start_byte_offsets(self.txn, lsn)?;
+                    }
                     // Replicas could store state mutations enqueued before v1.8.0 under different
                     // ids (#5416). Removing all pending ones at this log position leaves every
                     // replica with the same entries. The cleanup commits the removals itself; the
@@ -267,6 +271,7 @@ mod tests {
     use restate_rocksdb::RocksDbManager;
     use restate_storage_api::Transaction;
     use restate_storage_api::fsm_table::ReadFsmTable;
+    use restate_types::cluster::cluster_state::PartitionProcessorStatus;
     use restate_types::config::Configuration;
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::logs::{Keys, Lsn, SequenceNumber};
@@ -349,16 +354,23 @@ mod tests {
         storage: &mut PartitionStore,
         command: VersionBarrierCommand,
     ) -> std::result::Result<(), ProcessorError> {
+        apply_barrier_at(node_ctx, processor, storage, command, Lsn::OLDEST).await
+    }
+
+    /// Like [`apply_barrier`], with the record at `lsn`.
+    async fn apply_barrier_at(
+        node_ctx: &mut NodeContext,
+        processor: &mut ProcessorRawContext,
+        storage: &mut PartitionStore,
+        command: VersionBarrierCommand,
+        lsn: Lsn,
+    ) -> std::result::Result<(), ProcessorError> {
         let envelope = VersionBarrierCommand::test_envelope(command);
-        let record = DataRecord::new(
-            NanosSinceEpoch::RESTATE_EPOCH,
-            Keys::None,
-            Lsn::OLDEST,
-            envelope,
-        );
+        let record = DataRecord::new(NanosSinceEpoch::RESTATE_EPOCH, Keys::None, lsn, envelope);
 
         let partition_db = storage.partition_db().clone();
         let mut txn = storage.transaction();
+        txn.set_fsm_position(processor.fsm_position());
         let mut leadership = NoLeadershipPromotion;
         let next_step = VersionBarrierContext {
             txn: &mut txn,
@@ -373,7 +385,7 @@ mod tests {
         assert_that!(
             next_step,
             pat!(NextStep::AdvanceLastAppliedLsn {
-                lsn: eq(Lsn::OLDEST),
+                lsn: eq(lsn),
                 dedup: eq(v2::Dedup::None),
                 scope: pat!(CommandScope::PartitionScoped),
             })
@@ -499,6 +511,90 @@ mod tests {
         );
     }
 
+    /// Byte offsets count from the barrier that turns them on. Applying that barrier again, as
+    /// after a crash, or a later barrier that lists the feature again, doesn't move their base.
+    #[restate_core::test]
+    async fn byte_offsets_start_at_the_enabling_barrier() {
+        let env = TestCoreEnv::create_with_single_node(1, 0).await;
+        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
+        let mut storage = open_store().await;
+        let mut processor = processor(PersistedFeatures::default());
+        let mut node_ctx = NodeContext::new(
+            GenerationalNodeId::new(1, 0),
+            Configuration::live(),
+            PartitionReplicaSetStates::default(),
+            RuleBookCacheHandle::detached(),
+            bifrost,
+            InvokerCapacity::new_unlimited(),
+            PartitionLeaderHandlesRegistry::default(),
+        );
+
+        for lsn in [7, 7, 9] {
+            apply_barrier_at(
+                &mut node_ctx,
+                &mut processor,
+                &mut storage,
+                barrier(
+                    SemanticRestateVersion::current().clone(),
+                    vec![PartitionFeatureChange::EnableByteOffsets.id()],
+                ),
+                Lsn::new(lsn),
+            )
+            .await
+            .expect("enable byte offsets");
+            let position = storage.get_fsm_position().await.unwrap();
+            assert_that!(
+                position.map(|p| (p.byte_offsets_base_lsn, p.log_byte_offset)),
+                some(eq((Lsn::new(7), 0)))
+            );
+        }
+    }
+
+    /// The processor's status shows the log byte offset of the applied LSN it shows, also in the
+    /// middle of a batch, before it's committed.
+    #[restate_core::test]
+    async fn status_shows_the_log_byte_offset_of_its_applied_lsn() {
+        let env = TestCoreEnv::create_with_single_node(1, 0).await;
+        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
+        let mut storage = open_store().await;
+        let mut processor = processor(PersistedFeatures::default());
+        let mut node_ctx = NodeContext::new(
+            GenerationalNodeId::new(1, 0),
+            Configuration::live(),
+            PartitionReplicaSetStates::default(),
+            RuleBookCacheHandle::detached(),
+            bifrost,
+            InvokerCapacity::new_unlimited(),
+            PartitionLeaderHandlesRegistry::default(),
+        );
+        apply_barrier_at(
+            &mut node_ctx,
+            &mut processor,
+            &mut storage,
+            barrier(
+                SemanticRestateVersion::current().clone(),
+                vec![PartitionFeatureChange::EnableByteOffsets.id()],
+            ),
+            Lsn::new(7),
+        )
+        .await
+        .expect("enable byte offsets");
+
+        // the barrier itself, then two records, in a batch that isn't committed yet
+        let mut txn = storage.transaction();
+        txn.set_fsm_position(processor.fsm_position());
+        for (lsn, bytes) in [(7, 30), (8, 100), (9, 50)] {
+            processor
+                .update_last_applied_lsn(&mut txn, Lsn::new(lsn), bytes)
+                .unwrap();
+        }
+        let mut status = PartitionProcessorStatus::default();
+        processor.merge_with_status(&mut status);
+        assert_that!(status.last_applied_log_lsn, some(eq(Lsn::new(9))));
+        assert_that!(status.byte_offsets_base_lsn, some(eq(Lsn::new(7))));
+        assert_that!(status.log_byte_offset, some(eq(150)));
+    }
+
     #[restate_core::test]
     async fn apply_known_feature_change() {
         let env = TestCoreEnv::create_with_single_node(1, 0).await;
@@ -522,7 +618,7 @@ mod tests {
             eq(false)
         );
 
-        // Enable vqueues, then re-apply: idempotent.
+        // Enable vqueues and byte offsets, then re-apply: idempotent.
         for _ in 0..2 {
             apply_barrier(
                 &mut node_ctx,
@@ -530,16 +626,29 @@ mod tests {
                 &mut storage,
                 barrier(
                     SemanticRestateVersion::current().clone(),
-                    vec![PartitionFeatureChange::EnableVqueues.id()],
+                    vec![
+                        PartitionFeatureChange::EnableVqueues.id(),
+                        PartitionFeatureChange::EnableByteOffsets.id(),
+                    ],
                 ),
             )
             .await
-            .expect("enable vqueues");
-            assert_that!(
-                storage.get_state_machine_features().await.unwrap().vqueues,
-                eq(true)
-            );
+            .expect("enable vqueues and byte offsets");
+            let features = storage.get_state_machine_features().await.unwrap();
+            assert_that!(features.vqueues, eq(true));
+            assert_that!(features.byte_offsets, eq(true));
         }
+
+        // Byte offsets count from the barrier that turned them on.
+        let position = storage.get_fsm_position().await.unwrap();
+        assert_that!(
+            position.map(|p| (p.byte_offsets_base_lsn, p.log_byte_offset)),
+            some(eq((Lsn::OLDEST, 0)))
+        );
+        assert_that!(
+            processor.fsm_position().byte_offsets_base_lsn,
+            eq(Lsn::OLDEST)
+        );
     }
 
     #[restate_core::test]

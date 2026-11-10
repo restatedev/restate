@@ -13,9 +13,9 @@ use std::sync::Arc;
 use tokio::sync::watch;
 
 use restate_limiter::RuleBook;
-use restate_partition_store::PartitionStore;
+use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
 use restate_storage_api::fsm_table::{
-    CachedEpochMetadata, PartitionDurability, ReadFsmTable, WriteFsmTable,
+    CachedEpochMetadata, FsmPosition, PartitionDurability, ReadFsmTable, WriteFsmTable,
 };
 use restate_storage_api::{StorageError, Transaction};
 use restate_types::logs::{Lsn, SequenceNumber};
@@ -58,6 +58,10 @@ pub(super) struct Fsm {
     /// path also pushes the same value into the node-level
     /// `RuleBookCache` (one allocation, cheap clones).
     rule_book: Arc<RuleBook>,
+    /// The partition's position: loaded at start for the processor's transaction, which
+    /// maintains it, and refreshed from that transaction for the processor's status.
+    /// *Since v1.8.2*
+    fsm_position: FsmPosition,
 }
 
 impl Fsm {
@@ -73,6 +77,7 @@ impl Fsm {
             durable_point: None,
             enabled_features,
             rule_book: Arc::new(RuleBook::default()),
+            fsm_position: FsmPosition::new(Lsn::INVALID),
         }
     }
 
@@ -101,6 +106,11 @@ impl Fsm {
         let rule_book = Arc::new(storage.get_rule_book().await?.unwrap_or_default());
         // Load persisted partition configuration state (since v1.6)
         let epoch_metadata = storage.get_partition_config_state().await?;
+        // Load the persisted position (since v1.8.2)
+        let fsm_position = storage
+            .get_fsm_position()
+            .await?
+            .unwrap_or_else(|| FsmPosition::new(last_applied_lsn));
 
         let last_applied_lsn_watch = watch::Sender::new(last_applied_lsn);
         Ok(Self {
@@ -113,6 +123,7 @@ impl Fsm {
             epoch_metadata,
             durable_point,
             rule_book,
+            fsm_position,
         })
     }
 
@@ -156,11 +167,30 @@ impl Fsm {
         &self.enabled_features
     }
 
+    /// Advances to `lsn`, the last LSN of the record or gap the processor has applied or
+    /// skipped, of `record_bytes` as the log stores it.
     // Set to pub(super) to reduce the chance of accidentally using it directly
     // without updating the replay status of the processor.
-    pub(super) fn set_last_applied_lsn<S: WriteFsmTable>(&mut self, txn: &mut S, lsn: Lsn) {
+    pub(super) fn set_last_applied_lsn(
+        &mut self,
+        txn: &mut PartitionStoreTransaction<'_>,
+        lsn: Lsn,
+        record_bytes: u64,
+    ) {
         self.last_applied_lsn = lsn;
         txn.put_applied_lsn(lsn).expect("infallible serde");
+        txn.advance_fsm_position(lsn, record_bytes);
+    }
+
+    /// The partition's position, as loaded at start or last refreshed.
+    pub fn fsm_position(&self) -> FsmPosition {
+        self.fsm_position
+    }
+
+    /// Keeps a copy of the partition's position, which the processor's transaction maintains,
+    /// for the processor's status.
+    pub fn set_fsm_position(&mut self, position: FsmPosition) {
+        self.fsm_position = position;
     }
 
     pub fn release_applied_lsn(&mut self) {
@@ -308,5 +338,72 @@ impl FsmMut for Fsm {
     fn set_inbox_seq_number<S: WriteFsmTable>(&mut self, txn: &mut S, seq: MessageIndex) {
         self.inbox_seq_number = seq;
         txn.put_inbox_seq_number(seq).expect("infallible serde");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use restate_partition_store::PartitionStoreManager;
+    use restate_rocksdb::RocksDbManager;
+    use restate_storage_api::Transaction;
+    use restate_storage_api::fsm_table::{FsmPosition, ReadFsmTable};
+    use restate_types::identifiers::PartitionId;
+    use restate_types::logs::Lsn;
+    use restate_types::partitions::Partition;
+    use restate_types::sharding::KeyRange;
+
+    use super::Fsm;
+
+    /// The log byte offset counts the records after the one that turns byte offsets on, also
+    /// when the processor applies that record again after restarting from a commit it made while
+    /// applying it, and each commit persists it with its applied LSN.
+    #[restate_core::test]
+    async fn log_byte_offset_counts_the_records_after_the_enabling_one() -> anyhow::Result<()> {
+        RocksDbManager::init();
+        let mut store = PartitionStoreManager::create(true)
+            .await?
+            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+            .await?;
+        // Applied LSN, base LSN and log byte offset; the partition store byte offset is local.
+        let log_position = |position: Option<FsmPosition>| {
+            position.map(|p| {
+                (
+                    p.applied_lsn.as_u64(),
+                    p.byte_offsets_base_lsn.as_u64(),
+                    p.log_byte_offset,
+                )
+            })
+        };
+
+        // The version barrier at LSN 2 turns byte offsets on and commits before its own applied
+        // LSN, right before the processor stops.
+        let mut fsm = Fsm::create(&mut store).await?;
+        let mut txn = store.transaction();
+        txn.set_fsm_position(fsm.fsm_position());
+        fsm.set_last_applied_lsn(&mut txn, Lsn::new(1), 10);
+        assert!(!txn.fsm_position().unwrap().has_byte_offsets());
+        txn.start_byte_offsets(Lsn::new(2))?;
+        txn.commit().await?;
+        drop(txn);
+        assert_eq!(
+            log_position(store.get_fsm_position().await?),
+            Some((1, 2, 0))
+        );
+
+        // After restarting, it applies the barrier again, which doesn't count, and the next record.
+        let mut fsm = Fsm::create(&mut store).await?;
+        assert_eq!(log_position(Some(fsm.fsm_position())), Some((1, 2, 0)));
+        let mut txn = store.transaction();
+        txn.set_fsm_position(fsm.fsm_position());
+        fsm.set_last_applied_lsn(&mut txn, Lsn::new(2), 20);
+        fsm.set_last_applied_lsn(&mut txn, Lsn::new(3), 30);
+        txn.commit().await?;
+        let position = txn.fsm_position();
+        drop(txn);
+        assert_eq!(log_position(position), Some((3, 2, 30)));
+        let fsm = Fsm::create(&mut store).await?;
+        assert_eq!(Some(fsm.fsm_position()), position);
+        assert_eq!(fsm.last_applied_lsn, Lsn::new(3));
+        Ok(())
     }
 }

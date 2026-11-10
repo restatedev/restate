@@ -15,7 +15,7 @@ use rocksdb::{DBRawIteratorWithThreadMode, ReadOptions};
 use restate_core::io::Gate;
 
 use super::{ReadSource, Source, TOKEN, iterator_options};
-use crate::{OpContext, OpFn, RawRocksDb, RocksError, StorageOp, StorageTaskKind};
+use crate::{OpContext, OpFn, RawRocksDb, RocksError, StorageOp, StorageTaskKind, SyncOpFn};
 
 /// An iterator over one column family, through a snapshot or of the data as it
 /// was when the iterator was created.
@@ -96,7 +96,7 @@ where
     ///
     /// The operation gets the iterator where it was left, positioned by the
     /// last seek or move. When the operation runs on the calling thread
-    /// ([`IoOp::call`](restate_core::io::IoOp::call)), it reads with this
+    /// ([`StorageOp::call`](crate::StorageOp::call)), it reads with this
     /// iterator itself, without cloning anything. When it moves to a background
     /// thread, the iterator becomes owned first ([`Self::into_owned`]), which
     /// clones its snapshot or scope and keeps its position.
@@ -144,12 +144,17 @@ where
     where
         F: FnOnce(&mut ReadIterator<'_, H>) -> R + Send + 'static,
     {
+        self.debug_assert_inside(gate);
+        StorageOp::from_parts(self, gate, kind, op)
+    }
+
+    // In debug builds, panics if `gate` is outside the iterator's database.
+    pub(super) fn debug_assert_inside(&self, gate: &Arc<Gate>) {
         self.source
             .get()
             .handles(TOKEN)
             .database()
             .debug_assert_inside(gate);
-        StorageOp::from_parts(self, gate, kind, op)
     }
 }
 
@@ -164,6 +169,16 @@ where
     }
 }
 
+impl<'a, H, F, R> SyncOpFn<ReadIterator<'a, H>> for F
+where
+    H: ReadSource + Send + Sync + 'static,
+    F: FnOnce(&mut ReadIterator<'_, H>) -> R + Send + 'static,
+{
+    fn run(self, mut iterator: ReadIterator<'a, H>) -> R {
+        self(&mut iterator)
+    }
+}
+
 impl<'a, H, F, R> OpFn<ReadIterator<'a, H>> for F
 where
     H: ReadSource + Send + Sync + 'static,
@@ -171,11 +186,7 @@ where
 {
     type Output = R;
 
-    fn run(self, mut iterator: ReadIterator<'a, H>) -> R {
-        self(&mut iterator)
-    }
-
-    fn run_owned(self, mut iterator: OwnedReadIterator<H>) -> R {
+    async fn run_async(self, mut iterator: OwnedReadIterator<H>) -> R {
         self(&mut iterator)
     }
 }

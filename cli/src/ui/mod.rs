@@ -10,13 +10,20 @@
 
 use indicatif::ProgressBar;
 
+use restate_cli_util::CliContext;
+
 pub mod datetime;
 pub mod deployments;
 pub mod fmt;
 pub mod invocations;
 pub mod service_handlers;
 
+/// A spinner with `msg` while `f` runs; nothing when there's no terminal to show it on
+/// (`--json`, CI), the spinner would just be noise there.
 pub async fn with_progress<T>(msg: &'static str, f: impl Future<Output = T>) -> T {
+    if !CliContext::get().is_interactive() {
+        return f.await;
+    }
     let progress = ProgressBar::new_spinner();
     progress
         .set_style(indicatif::ProgressStyle::with_template("{spinner} [{elapsed}] {msg}").unwrap());

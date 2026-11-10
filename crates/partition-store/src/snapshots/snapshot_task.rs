@@ -128,6 +128,9 @@ impl SnapshotPartitionTask {
             min_applied_lsn: snapshot.min_applied_lsn,
             db_comparator_name: snapshot.db_comparator_name.clone(),
             compatibility: snapshot.compatibility.clone(),
+            byte_offsets_base_lsn: snapshot.byte_offsets_base_lsn,
+            log_byte_offset: snapshot.log_byte_offset,
+            partition_store_byte_offset: snapshot.partition_store_byte_offset,
             files: snapshot.files.clone(),
         }
     }

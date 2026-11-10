@@ -8,15 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier};
+use std::num::NonZeroUsize;
+use std::panic::AssertUnwindSafe;
+use std::sync::Arc;
+use std::task::Poll;
 use std::time::Instant;
 
+use futures::FutureExt;
+use futures::executor::{LocalPool, LocalSpawner};
+use futures::task::{LocalFutureObj, LocalSpawn};
 use metrics::{Gauge, gauge, histogram};
-use parking_lot::Mutex;
+use tracing::Instrument;
 
-use restate_core::io::{AdmissionClosed, Gate, IoExecutor, IoOp, IoTask, TrackedTask};
+use restate_core::io::{AdmissionClosed, FutureTask, Gate, IoExecutor, IoOp, IoTask, TrackedTask};
 
+use crate::RocksDbPerfExt;
 use crate::metric_definitions::{STORAGE_BG_TASK_RUN_DURATION, STORAGE_BG_TASK_WAIT_DURATION};
 use crate::{EXECUTOR, OP_TYPE, STORAGE_BG_TASK_IN_FLIGHT};
 
@@ -64,7 +70,7 @@ impl StorageTaskKind {
 /// What a prepared [`StorageOp`] works on, such as the database or a scope.
 ///
 /// A context stays borrowed for as long as it can: while the operation is
-/// prepared, and while it runs on the calling thread with [`IoOp::call`].
+/// prepared, and while it runs on the calling thread with [`StorageOp::call`].
 /// Nothing is cloned for that. Only when the operation becomes a task for a
 /// background thread does [`Self::into_owned`] turn the context into something
 /// the task can own, because a borrow can't move to another thread.
@@ -86,26 +92,35 @@ pub trait OpContext {
     fn into_owned(self) -> Self::Owned;
 }
 
-/// The work of a [`StorageOp`].
+/// The work of a [`StorageOp`], as it runs on a storage worker with the owned
+/// context. The future need not be `Send`: it stays on one worker.
+///
+/// There is no need to implement it. Sync work ([`SyncOpFn`]) also
+/// implements it, as async work that finishes in a single poll, and
+/// [`StorageOp::with_context_async`] takes async work.
+pub trait OpFn<C: OpContext>: Send + 'static {
+    /// What the work returns.
+    type Output;
+
+    /// Runs the work with the owned context, on a storage worker.
+    fn run_async(self, context: C::Owned) -> impl Future<Output = Self::Output>;
+}
+
+/// The synchronous work of a [`StorageOp`], which can also run on the calling
+/// thread, with [`StorageOp::call`].
 ///
 /// The work gets the operation's context: borrowed when the operation runs on
-/// the calling thread ([`Self::run`]), or owned when it runs on a background
-/// thread ([`Self::run_owned`]). It sees the same thing either way, so one
+/// the calling thread ([`Self::run`]), or owned when it runs on a storage
+/// worker ([`OpFn::run_async`]). It sees the same thing either way, so one
 /// closure serves both.
 ///
 /// There is no need to implement it: pass a closure. Closures implement it for
 /// every kind of context, and take what the table in [`OpContext`] lists:
 /// `FnOnce(&C)` for a shared handle, `FnOnce(&mut ReadIterator<'_, H>)` for an
 /// iterator, and `FnOnce()` for no context.
-pub trait OpFn<C: OpContext>: Send + 'static {
-    /// What the work returns.
-    type Output;
-
+pub trait SyncOpFn<C: OpContext>: OpFn<C> {
     /// Runs the work with the borrowed context, on the calling thread.
     fn run(self, context: C) -> Self::Output;
-
-    /// Runs the work with the owned context, on a background thread.
-    fn run_owned(self, context: C::Owned) -> Self::Output;
 }
 
 impl<C: Clone + Send + Sync + 'static> OpContext for &C {
@@ -116,18 +131,24 @@ impl<C: Clone + Send + Sync + 'static> OpContext for &C {
     }
 }
 
-impl<'a, C, F, R> OpFn<&'a C> for F
+impl<'a, C, F, R> SyncOpFn<&'a C> for F
+where
+    C: Clone + Send + Sync + 'static,
+    F: FnOnce(&C) -> R + Send + 'static,
+{
+    fn run(self, context: &'a C) -> R {
+        self(context)
+    }
+}
+
+impl<C, F, R> OpFn<&C> for F
 where
     C: Clone + Send + Sync + 'static,
     F: FnOnce(&C) -> R + Send + 'static,
 {
     type Output = R;
 
-    fn run(self, context: &'a C) -> R {
-        self(context)
-    }
-
-    fn run_owned(self, context: C) -> R {
+    async fn run_async(self, context: C) -> R {
         self(&context)
     }
 }
@@ -138,17 +159,22 @@ impl OpContext for () {
     fn into_owned(self) {}
 }
 
+impl<F, R> SyncOpFn<()> for F
+where
+    F: FnOnce() -> R + Send + 'static,
+{
+    fn run(self, (): ()) -> R {
+        self()
+    }
+}
+
 impl<F, R> OpFn<()> for F
 where
     F: FnOnce() -> R + Send + 'static,
 {
     type Output = R;
 
-    fn run(self, (): ()) -> R {
-        self()
-    }
-
-    fn run_owned(self, (): ()) -> R {
+    async fn run_async(self, (): ()) -> R {
         self()
     }
 }
@@ -156,13 +182,13 @@ where
 /// An operation on the database that has been prepared but hasn't run yet,
 /// for example with [`RocksDb::prepare`](crate::RocksDb::prepare).
 ///
-/// Run it on the current thread with [`IoOp::call`], or submit it to an
+/// Run it on the current thread with [`StorageOp::call`], or submit it to an
 /// executor, which runs it on a background thread:
 ///
 /// ```no_run
 /// use std::sync::Arc;
 ///
-/// use restate_core::io::{IoExecutor, IoOp};
+/// use restate_core::io::IoExecutor;
 /// use restate_rocksdb::{RocksDb, StorageTaskKind};
 ///
 /// # async fn example(db: &Arc<RocksDb>) -> Result<(), Box<dyn std::error::Error>> {
@@ -246,7 +272,6 @@ where
     /// [`ReadIterator::prepare`](crate::reads::ReadIterator::prepare) instead.
     ///
     /// ```no_run
-    /// use restate_core::io::IoOp;
     /// use restate_rocksdb::reads::ColumnFamilies;
     /// use restate_rocksdb::{StorageOp, StorageTaskKind};
     /// use restate_util_lifecycle::Scope;
@@ -273,99 +298,69 @@ where
     }
 }
 
-impl<'a, C: OpContext, F: OpFn<C>> StorageOp<'a, C, F> {
-    // An operation on any kind of context, counted in `gate`.
+impl<'a, 'c, C, F> StorageOp<'a, &'c C, Async<F>>
+where
+    C: Clone + Send + Sync + 'static,
+{
+    /// Like [`Self::with_context`], but for async work, such as a read that
+    /// awaits a channel between lookups.
+    ///
+    /// Async work only runs on a storage worker, so the operation can't be
+    /// called inline with [`StorageOp::call`]: submit it to an executor. The
+    /// worker runs other tasks while it waits, so use
+    /// [`StorageOp::with_read_perf`] rather than [`StorageOp::with_guard`] for
+    /// RocksDB perf counters. Workers don't run a tokio runtime: the work can
+    /// await channels, but not tokio timers, IO or `tokio::spawn`.
+    ///
+    /// ```no_run
+    /// use restate_core::io::IoExecutor;
+    /// use restate_rocksdb::reads::ColumnFamilies;
+    /// use restate_rocksdb::{RocksDb, StorageOp, StorageTaskKind};
+    /// use restate_util_lifecycle::Scope;
+    ///
+    /// # async fn example<C: ColumnFamilies>(db: &RocksDb, scope: &Scope<C>) -> Result<(), Box<dyn std::error::Error>> {
+    /// let read = StorageOp::with_context_async(scope, scope.gate(), StorageTaskKind::MultiGet, async |scope| {
+    ///     scope.name().to_owned()
+    /// })
+    /// .with_read_perf("lookup");
+    /// let name = db.executor().low_pri().spawn(read)?.await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_context_async<R>(
+        context: &'c C,
+        gate: &'a Arc<Gate>,
+        kind: StorageTaskKind,
+        op: F,
+    ) -> Self
+    where
+        F: AsyncFnOnce(&C) -> R + Send + 'static,
+    {
+        Self::from_parts(context, gate, kind, Async(op))
+    }
+}
+
+impl<'a, C, F> StorageOp<'a, C, F> {
+    // An operation on any kind of context, counted in `gate`, if any.
     pub(crate) fn from_parts(
         context: C,
-        gate: &'a Arc<Gate>,
+        gate: impl Into<Option<&'a Arc<Gate>>>,
         kind: StorageTaskKind,
         op: F,
     ) -> Self {
         Self {
             context,
             op,
-            gate: Some(gate),
+            gate: gate.into(),
             kind,
         }
     }
+}
 
-    /// Calls `make_guard` on the thread that runs the operation, right before it
-    /// runs, and drops the guard right after, also if the operation panics. Use it
-    /// for setup that must happen on that thread, like RocksDB perf counters. The
-    /// guard doesn't need to be `Send`. If the operation is rejected or dropped
-    /// without running, `make_guard` is never called. Calling `with_guard` again
-    /// wraps the operation once more.
-    ///
-    /// # Examples
-    ///
-    /// Opt into RocksDB read metrics. Construct the guard inside the factory,
-    /// rather than capturing an existing guard: RocksDB perf guards are thread-local.
-    /// Use `RocksDbWritePerfGuard` instead for write operations.
-    ///
-    /// ```no_run
-    /// use restate_core::io::IoOp;
-    /// use restate_rocksdb::{RocksDb, RocksDbReadPerfGuard, StorageTaskKind};
-    /// use std::sync::Arc;
-    ///
-    /// # fn example(db: &Arc<RocksDb>) -> Result<(), Box<dyn std::error::Error>> {
-    /// let value = db
-    ///     .prepare(StorageTaskKind::MultiGet, |db| db.inner().as_raw_db().get(b"key"))
-    ///     .with_guard(|| RocksDbReadPerfGuard::new("lookup"))
-    ///     .call()??;
-    /// # Ok(())
-    /// # }
-    /// ```
-    ///
-    /// Inject latency before background execution. The factory can return `()`
-    /// when no cleanup is needed. The delay happens on the worker, not at submission.
-    ///
-    /// ```no_run
-    /// use restate_core::io::IoExecutor;
-    /// use restate_rocksdb::{RocksDb, StorageTaskKind};
-    /// use std::{sync::Arc, time::Duration};
-    ///
-    /// # fn example(db: &Arc<RocksDb>, executor: &impl IoExecutor) -> Result<(), Box<dyn std::error::Error>> {
-    /// let op = db
-    ///     .prepare(StorageTaskKind::MultiGet, |db| db.inner().as_raw_db().get(b"key"))
-    ///     .with_guard(|| std::thread::sleep(Duration::from_millis(50)));
-    /// let result = executor.spawn(op)?;
-    /// // Keep `result` alive and await it; dropping it can skip queued work.
-    /// // Use `executor.dispatch(op)` instead for fire-and-forget execution.
-    /// # Ok(())
-    /// # }
-    /// ```
-    ///
-    /// Scope a test-only thread-local fault flag to execution, restoring its
-    /// previous value even if the operation unwinds. The operation (or a helper
-    /// it calls) can consult the flag to decide whether to inject a failure.
-    ///
-    /// ```no_run
-    /// use restate_core::io::IoOp;
-    /// use restate_rocksdb::{RocksDb, StorageTaskKind};
-    /// use std::{cell::Cell, sync::Arc};
-    ///
-    /// thread_local! {
-    ///     static INJECT_FAILURE: Cell<bool> = const { Cell::new(false) };
-    /// }
-    /// struct RestoreFaultFlag(bool);
-    /// impl Drop for RestoreFaultFlag {
-    ///     fn drop(&mut self) {
-    ///         INJECT_FAILURE.set(self.0);
-    ///     }
-    /// }
-    ///
-    /// # fn example(db: &Arc<RocksDb>) -> Result<(), Box<dyn std::error::Error>> {
-    /// db.prepare(StorageTaskKind::MultiGet, |_db| assert!(INJECT_FAILURE.get()))
-    ///     .with_guard(|| RestoreFaultFlag(INJECT_FAILURE.replace(true)))
-    ///     .call()?;
-    /// assert!(!INJECT_FAILURE.get());
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn with_guard<G, M>(self, make_guard: M) -> StorageOp<'a, C, Guarded<F, M>>
-    where
-        M: FnOnce() -> G + Send + 'static,
-    {
+impl<'a, C: OpContext, F: OpFn<C>> StorageOp<'a, C, F> {
+    /// Measures RocksDB read perf counters while the work runs, also across
+    /// `.await` points, and reports them under `name` when it finishes.
+    pub fn with_read_perf(self, name: &'static str) -> StorageOp<'a, C, ReadPerf<F>> {
         let Self {
             context,
             op,
@@ -374,7 +369,7 @@ impl<'a, C: OpContext, F: OpFn<C>> StorageOp<'a, C, F> {
         } = self;
         StorageOp {
             context,
-            op: Guarded { op, make_guard },
+            op: ReadPerf { op, name },
             gate,
             kind,
         }
@@ -440,11 +435,113 @@ impl<'a, C: OpContext, F: OpFn<C>> StorageOp<'a, C, F> {
     }
 }
 
+impl<'a, C: OpContext, F: SyncOpFn<C>> StorageOp<'a, C, F> {
+    /// Calls `make_guard` on the thread that runs the operation, right before it
+    /// runs, and drops the guard right after, also if the operation panics. Use it
+    /// for setup that must happen on that thread, like RocksDB perf counters. The
+    /// guard doesn't need to be `Send`. If the operation is rejected or dropped
+    /// without running, `make_guard` is never called. Calling `with_guard` again
+    /// wraps the operation once more.
+    ///
+    /// # Examples
+    ///
+    /// Opt into RocksDB read metrics. Construct the guard inside the factory,
+    /// rather than capturing an existing guard: RocksDB perf guards are thread-local.
+    /// Use `RocksDbWritePerfGuard` instead for write operations.
+    ///
+    /// ```no_run
+    /// use restate_rocksdb::{RocksDb, RocksDbReadPerfGuard, StorageTaskKind};
+    /// use std::sync::Arc;
+    ///
+    /// # fn example(db: &Arc<RocksDb>) -> Result<(), Box<dyn std::error::Error>> {
+    /// let value = db
+    ///     .prepare(StorageTaskKind::MultiGet, |db| db.inner().as_raw_db().get(b"key"))
+    ///     .with_guard(|| RocksDbReadPerfGuard::new("lookup"))
+    ///     .call()??;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Inject latency before background execution. The factory can return `()`
+    /// when no cleanup is needed. The delay happens on the worker, not at submission.
+    ///
+    /// ```no_run
+    /// use restate_core::io::IoExecutor;
+    /// use restate_rocksdb::{RocksDb, StorageTaskKind};
+    /// use std::{sync::Arc, time::Duration};
+    ///
+    /// # fn example(db: &Arc<RocksDb>, executor: &impl IoExecutor) -> Result<(), Box<dyn std::error::Error>> {
+    /// let op = db
+    ///     .prepare(StorageTaskKind::MultiGet, |db| db.inner().as_raw_db().get(b"key"))
+    ///     .with_guard(|| std::thread::sleep(Duration::from_millis(50)));
+    /// let result = executor.spawn(op)?;
+    /// // Keep `result` alive and await it; dropping it can skip queued work.
+    /// // Use `executor.dispatch(op)` instead for fire-and-forget execution.
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Scope a test-only thread-local fault flag to execution, restoring its
+    /// previous value even if the operation unwinds. The operation (or a helper
+    /// it calls) can consult the flag to decide whether to inject a failure.
+    ///
+    /// ```no_run
+    /// use restate_rocksdb::{RocksDb, StorageTaskKind};
+    /// use std::{cell::Cell, sync::Arc};
+    ///
+    /// thread_local! {
+    ///     static INJECT_FAILURE: Cell<bool> = const { Cell::new(false) };
+    /// }
+    /// struct RestoreFaultFlag(bool);
+    /// impl Drop for RestoreFaultFlag {
+    ///     fn drop(&mut self) {
+    ///         INJECT_FAILURE.set(self.0);
+    ///     }
+    /// }
+    ///
+    /// # fn example(db: &Arc<RocksDb>) -> Result<(), Box<dyn std::error::Error>> {
+    /// db.prepare(StorageTaskKind::MultiGet, |_db| assert!(INJECT_FAILURE.get()))
+    ///     .with_guard(|| RestoreFaultFlag(INJECT_FAILURE.replace(true)))
+    ///     .call()?;
+    /// assert!(!INJECT_FAILURE.get());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_guard<G, M>(self, make_guard: M) -> StorageOp<'a, C, Guarded<F, M>>
+    where
+        M: FnOnce() -> G + Send + 'static,
+    {
+        let Self {
+            context,
+            op,
+            gate,
+            kind,
+        } = self;
+        StorageOp {
+            context,
+            op: Guarded { op, make_guard },
+            gate,
+            kind,
+        }
+    }
+}
+
 /// The work of an operation returned by [`StorageOp::map`]: the original work,
 /// followed by the function that changes its result.
 pub struct Mapped<F, M> {
     op: F,
     f: M,
+}
+
+impl<C, F, M, U> SyncOpFn<C> for Mapped<F, M>
+where
+    C: OpContext,
+    F: SyncOpFn<C>,
+    M: FnOnce(F::Output) -> U + Send + 'static,
+{
+    fn run(self, context: C) -> U {
+        (self.f)(self.op.run(context))
+    }
 }
 
 impl<C, F, M, U> OpFn<C> for Mapped<F, M>
@@ -455,12 +552,8 @@ where
 {
     type Output = U;
 
-    fn run(self, context: C) -> U {
-        (self.f)(self.op.run(context))
-    }
-
-    fn run_owned(self, context: C::Owned) -> U {
-        (self.f)(self.op.run_owned(context))
+    async fn run_async(self, context: C::Owned) -> U {
+        (self.f)(self.op.run_async(context).await)
     }
 }
 
@@ -471,6 +564,17 @@ pub struct MappedOk<F, M> {
     f: M,
 }
 
+impl<C, F, M, T, E, U> SyncOpFn<C> for MappedOk<F, M>
+where
+    C: OpContext,
+    F: SyncOpFn<C, Output = Result<T, E>>,
+    M: FnOnce(T) -> U + Send + 'static,
+{
+    fn run(self, context: C) -> Result<U, E> {
+        self.op.run(context).map(self.f)
+    }
+}
+
 impl<C, F, M, T, E, U> OpFn<C> for MappedOk<F, M>
 where
     C: OpContext,
@@ -479,24 +583,32 @@ where
 {
     type Output = Result<U, E>;
 
-    fn run(self, context: C) -> Result<U, E> {
-        self.op.run(context).map(self.f)
-    }
-
-    fn run_owned(self, context: C::Owned) -> Result<U, E> {
-        self.op.run_owned(context).map(self.f)
+    async fn run_async(self, context: C::Owned) -> Result<U, E> {
+        self.op.run_async(context).await.map(self.f)
     }
 }
 
 /// The work of an operation returned by [`StorageOp::with_guard`]: the
 /// original work, run while the guard exists.
 ///
-/// It's a named type, rather than an `impl OpFn`, so that async code holding a
+/// It's a named type, rather than an `impl SyncOpFn`, so that async code holding a
 /// prepared operation stays `Send`. The compiler can't always prove that for
 /// an opaque type that carries the lifetime of a borrowed context.
 pub struct Guarded<F, M> {
     op: F,
     make_guard: M,
+}
+
+impl<C, F, G, M> SyncOpFn<C> for Guarded<F, M>
+where
+    C: OpContext,
+    F: SyncOpFn<C>,
+    M: FnOnce() -> G + Send + 'static,
+{
+    fn run(self, context: C) -> F::Output {
+        let _guard = (self.make_guard)();
+        self.op.run(context)
+    }
 }
 
 impl<C, F, G, M> OpFn<C> for Guarded<F, M>
@@ -507,14 +619,39 @@ where
 {
     type Output = F::Output;
 
-    fn run(self, context: C) -> F::Output {
+    async fn run_async(self, context: C::Owned) -> F::Output {
         let _guard = (self.make_guard)();
-        self.op.run(context)
+        self.op.run_async(context).await
     }
+}
 
-    fn run_owned(self, context: C::Owned) -> F::Output {
-        let _guard = (self.make_guard)();
-        self.op.run_owned(context)
+/// Async work, from [`StorageOp::with_context_async`].
+pub struct Async<F>(F);
+
+impl<C, F, R> OpFn<&C> for Async<F>
+where
+    C: Clone + Send + Sync + 'static,
+    F: AsyncFnOnce(&C) -> R + Send + 'static,
+{
+    type Output = R;
+
+    async fn run_async(self, context: C) -> R {
+        (self.0)(&context).await
+    }
+}
+
+/// The work of an operation returned by [`StorageOp::with_read_perf`]: the
+/// original work, with its RocksDB read perf counters measured.
+pub struct ReadPerf<F> {
+    op: F,
+    name: &'static str,
+}
+
+impl<C: OpContext, F: OpFn<C>> OpFn<C> for ReadPerf<F> {
+    type Output = F::Output;
+
+    async fn run_async(self, context: C::Owned) -> F::Output {
+        self.op.run_async(context).with_read_perf(self.name).await
     }
 }
 
@@ -528,22 +665,6 @@ where
 
     fn operation(&self) -> &'static str {
         self.kind.as_static_str()
-    }
-
-    /// Runs the operation now, on the current thread, with its context still
-    /// borrowed. Fails with [`AdmissionClosed`] if the database (or scope) is
-    /// sealed. Unlike background tasks, it records no task metrics or tracing
-    /// span.
-    fn call(self) -> Result<F::Output, AdmissionClosed> {
-        let lease = self
-            .gate
-            .map(|gate| gate.try_acquire().ok_or(AdmissionClosed))
-            .transpose()?;
-        // `run` consumes the operation and its context, so both are dropped
-        // before the lease is released.
-        let output = self.op.run(self.context);
-        drop(lease);
-        Ok(output)
     }
 
     fn into_task(self) -> Result<impl IoTask<F::Output>, AdmissionClosed> {
@@ -561,7 +682,28 @@ where
         let op = self.op;
         // The lease is released after the operation and its context are dropped,
         // even if the task is dropped without running.
-        Ok(TrackedTask::new(move || op.run_owned(context), lease))
+        Ok(TrackedTask::new(
+            FutureTask(move || op.run_async(context)),
+            lease,
+        ))
+    }
+}
+
+impl<C: OpContext, F: SyncOpFn<C>> StorageOp<'_, C, F> {
+    /// Runs the operation now, on the current thread, with its context still
+    /// borrowed. Fails with [`AdmissionClosed`] if the database (or scope) is
+    /// sealed. Unlike background tasks, it records no task metrics or tracing
+    /// span.
+    pub fn call(self) -> Result<F::Output, AdmissionClosed> {
+        let lease = self
+            .gate
+            .map(|gate| gate.try_acquire().ok_or(AdmissionClosed))
+            .transpose()?;
+        // `run` consumes the operation and its context, so both are dropped
+        // before the lease is released.
+        let output = self.op.run(self.context);
+        drop(lease);
+        Ok(output)
     }
 }
 
@@ -577,38 +719,47 @@ pub struct SinglePoolExecutor(Arc<SinglePoolExecutorInner>);
 
 struct SinglePoolExecutorInner {
     name: &'static str,
-    pool: threadpool::ThreadPool,
-    barrier_submission: Mutex<()>,
+    // Every worker takes tasks from this queue (see `Worker::run`).
+    queue: async_channel::Sender<QueuedTask>,
+    num_threads: NonZeroUsize,
 }
 
 impl SinglePoolExecutor {
     /// Starts a pool of `num_threads` threads. `name` names the threads, and
     /// labels the metrics of the tasks that run on them.
-    pub fn new(name: &'static str, num_threads: usize) -> Self {
-        let pool = threadpool::Builder::new()
-            .thread_name(name.to_owned())
-            .num_threads(num_threads)
-            .build();
-
+    pub fn new(name: &'static str, num_threads: NonZeroUsize) -> Self {
+        let (queue, tasks) = async_channel::unbounded();
+        for _ in 0..num_threads.get() {
+            Worker::start(name, tasks.clone());
+        }
         Self(Arc::new(SinglePoolExecutorInner {
             name,
-            pool,
-            barrier_submission: Mutex::new(()),
+            queue,
+            num_threads,
         }))
     }
 
-    #[cfg(any(test, feature = "test-util"))]
+    /// The number of threads, and so of tasks that can run at once.
     pub fn max_count(&self) -> usize {
-        self.0.pool.max_count()
+        self.0.num_threads.get()
+    }
+
+    // `task` builds the future on the worker that runs it, so the future need not
+    // be `Send`.
+    fn spawn<F: Future<Output = ()> + 'static>(&self, task: impl FnOnce() -> F + Send + 'static) {
+        self.0
+            .queue
+            .try_send(Box::new(move || {
+                // Unlike tokio, `LocalPool` doesn't contain a task's panic, which would
+                // otherwise end the worker. The panic was already reported by the hook.
+                let task = AssertUnwindSafe(task()).catch_unwind().map(drop);
+                LocalFutureObj::new(Box::new(task))
+            }))
+            .expect("storage workers outlive the pool's handles");
     }
 }
 
 impl IoExecutor for SinglePoolExecutor {
-    fn barrier(&self, callback: impl FnOnce() + Send + 'static) {
-        let _submission = self.0.barrier_submission.lock();
-        pool_barrier(&self.0.pool, callback);
-    }
-
     fn dispatch_fn(
         &self,
         operation: &'static str,
@@ -621,23 +772,93 @@ impl IoExecutor for SinglePoolExecutor {
         // task runs, is skipped, or is dropped from the queue.
         let task = TrackedTask::new(task, in_flight);
         let span = tracing::Span::current();
-        self.0.pool.execute(move || {
+        self.spawn(move || async move {
             // A task that is no longer wanted is dropped without being measured:
             // it didn't run.
             if !task.is_wanted() {
                 return;
             }
             // Run inside the submitter's span, which tells where the work came from.
-            span.in_scope(|| {
+            async move {
                 histogram!(STORAGE_BG_TASK_WAIT_DURATION, &labels).record(submitted_at.elapsed());
-                let _span = tracing::debug_span!("storage-task", operation).entered();
-                let started_at = Instant::now();
-                task.run();
-                histogram!(STORAGE_BG_TASK_RUN_DURATION, &labels).record(started_at.elapsed());
-            });
+                async move {
+                    let started_at = Instant::now();
+                    task.run().await;
+                    histogram!(STORAGE_BG_TASK_RUN_DURATION, &labels).record(started_at.elapsed());
+                }
+                .instrument(tracing::debug_span!("storage-task", operation))
+                .await;
+            }
+            .instrument(span)
+            .await;
         });
         Ok(())
     }
+}
+
+type QueuedTask = Box<dyn FnOnce() -> LocalFutureObj<'static, ()> + Send>;
+
+struct Worker {
+    spawner: LocalSpawner,
+    queue: async_channel::Receiver<QueuedTask>,
+}
+
+impl Worker {
+    // Runs tasks on a thread's own `LocalPool`, so they need not be `Send`. The
+    // thread exits once all senders are dropped and the queued tasks are done.
+    //
+    // The worker deliberately doesn't run a tokio runtime. Most tasks are blocking
+    // work that may call tokio's `blocking_*` methods (or drop values that do),
+    // which panic on a thread driving a runtime. In turn, tasks can't use tokio's
+    // timers, IO or `tokio::spawn`.
+    fn start(name: &'static str, queue: async_channel::Receiver<QueuedTask>) {
+        std::thread::Builder::new()
+            .name(name.to_owned())
+            .spawn(move || {
+                let mut pool = LocalPool::new();
+                let worker = Self {
+                    spawner: pool.spawner(),
+                    queue,
+                };
+                pool.run_until(worker.run());
+                // Finish the tasks that are still running.
+                pool.run();
+            })
+            .expect("storage worker thread starts");
+    }
+
+    async fn run(self) {
+        while let Ok(task) = self.queue.recv().await {
+            self.spawn(task);
+            // Takes one task at a time, and the next only after this one has
+            // finished or is suspended. A worker blocked in a task that never
+            // suspends leaves the queue to the others instead of holding tasks
+            // back behind it. A suspended task that blocks once woken doesn't
+            // get this: the worker may already be waiting for the next task,
+            // which then waits behind the blocked one.
+            yield_now().await;
+        }
+    }
+
+    fn spawn(&self, task: QueuedTask) {
+        self.spawner
+            .spawn_local_obj(task())
+            .expect("the pool outlives its worker loop");
+    }
+}
+
+// Lets the pool run its tasks before the worker loop continues.
+pub(crate) async fn yield_now() {
+    let mut yielded = false;
+    std::future::poll_fn(|cx| {
+        if std::mem::replace(&mut yielded, true) {
+            Poll::Ready(())
+        } else {
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    })
+    .await
 }
 
 // Counts a task as in flight from creation until it is dropped.
@@ -673,8 +894,8 @@ impl GlobalExecutor {
     /// Creates the two pools with the configured numbers of threads.
     pub fn from_options(opts: &restate_types::config::CommonOptions) -> Self {
         Self::new(
-            SinglePoolExecutor::new("rs:io-hi", opts.storage_high_priority_bg_threads().into()),
-            SinglePoolExecutor::new("rs:io-lo", opts.storage_low_priority_bg_threads().into()),
+            SinglePoolExecutor::new("rs:io-hi", opts.storage_high_priority_bg_threads()),
+            SinglePoolExecutor::new("rs:io-lo", opts.storage_low_priority_bg_threads()),
         )
     }
 
@@ -699,80 +920,16 @@ impl GlobalExecutor {
             Priority::Low => &self.low_pri,
         }
     }
-
-    /// Runs `callback` once all work submitted to either pool before this call
-    /// has run or been dropped. See [`IoExecutor::barrier`].
-    pub fn barrier(&self, callback: impl FnOnce() + Send + 'static) {
-        // Each pool gets its own barrier. Whichever passes second runs `callback`.
-        let pending = Arc::new(AtomicUsize::new(2));
-        let callback = Arc::new(Mutex::new(Some(callback)));
-        for pool in [&self.high_pri, &self.low_pri] {
-            let pending = Arc::clone(&pending);
-            let callback = Arc::clone(&callback);
-            pool.barrier(move || {
-                if pending.fetch_sub(1, Ordering::AcqRel) == 1 {
-                    let callback = callback.lock().take().expect("runs once");
-                    callback();
-                }
-            });
-        }
-    }
-}
-
-fn pool_barrier(pool: &threadpool::ThreadPool, callback: impl FnOnce() + Send + 'static) {
-    struct Canary<F> {
-        workers: Barrier,
-        callback: Mutex<Option<F>>,
-    }
-
-    // A barrier queues one canary task per worker, and each canary blocks until all
-    // of them are running, which means all earlier work is done. If two barriers'
-    // canaries were interleaved in the queue, every worker could end up blocked in
-    // a half-complete barrier while its remaining canaries wait behind them. The
-    // caller holds the submission lock while we queue the whole batch.
-    let workers = pool.max_count();
-    let canary = Arc::new(Canary {
-        workers: Barrier::new(workers),
-        callback: Mutex::new(Some(callback)),
-    });
-    for _ in 0..workers {
-        let canary = canary.clone();
-        pool.execute(move || {
-            if canary.workers.wait().is_leader() {
-                let callback = canary.callback.lock().take().expect("one leader");
-                callback();
-            }
-        });
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::future::Future;
     use std::rc::Rc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-
-    use tokio::sync::oneshot;
 
     use restate_core::io::{Gate, TrackedExecutor};
 
     use super::*;
-
-    fn observe_barrier(executor: &impl IoExecutor) -> oneshot::Receiver<()> {
-        let (tx, rx) = oneshot::channel();
-        executor.barrier(move || {
-            let _ = tx.send(());
-        });
-        rx
-    }
-
-    fn observe_global_barrier(executor: &GlobalExecutor) -> oneshot::Receiver<()> {
-        let (tx, rx) = oneshot::channel();
-        executor.barrier(move || {
-            let _ = tx.send(());
-        });
-        rx
-    }
 
     #[test]
     fn guards_are_execution_local_and_optional() {
@@ -824,7 +981,8 @@ mod tests {
         assert!(gate.is_idle());
         let task = task.into_task().unwrap();
         assert_eq!(drops.load(Ordering::Relaxed), 1);
-        assert_eq!(std::thread::spawn(move || task.run()).join().unwrap(), 43);
+        let on_other_thread = move || futures::executor::block_on(task.run());
+        assert_eq!(std::thread::spawn(on_other_thread).join().unwrap(), 43);
         assert_eq!(drops.load(Ordering::Relaxed), 2);
         assert!(gate.is_idle());
 
@@ -857,10 +1015,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn async_work_yields_the_worker_and_holds_admission_while_pending() {
+        let executor = SinglePoolExecutor::new("test-async", NonZeroUsize::MIN);
+        let gate = Arc::new(Gate::default());
+        let context = "ctx".to_owned();
+        let (tx, rx) = futures::channel::oneshot::channel::<u32>();
+        let pending = IoExecutor::spawn(
+            &executor,
+            StorageOp::with_context_async(
+                &context,
+                &gate,
+                StorageTaskKind::MultiGet,
+                async move |context: &String| format!("{context}:{}", rx.await.unwrap()),
+            )
+            .with_read_perf("test"),
+        )
+        .unwrap();
+
+        // The only worker runs other tasks while the first one waits.
+        let other = IoExecutor::spawn(
+            &executor,
+            StorageOp::new(
+                || std::thread::current().name().unwrap().to_owned(),
+                &gate,
+                StorageTaskKind::MultiGet,
+            ),
+        )
+        .unwrap();
+        assert_eq!(other.await.unwrap(), "test-async");
+        assert!(!gate.is_idle());
+
+        tx.send(7).unwrap();
+        assert_eq!(pending.await.unwrap(), "ctx:7");
+        // Draining returns once the finished task releases its lease.
+        gate.seal();
+        gate.drain().await;
+    }
+
+    #[tokio::test]
     async fn global_executor_routes_work_to_its_pools_and_outlives_owner_admission() {
         let backend = GlobalExecutor::new(
-            SinglePoolExecutor::new("test-high", 1),
-            SinglePoolExecutor::new("test-low", 1),
+            SinglePoolExecutor::new("test-high", NonZeroUsize::MIN),
+            SinglePoolExecutor::new("test-low", NonZeroUsize::MIN),
         );
         let gate = Arc::new(Gate::default());
         let high_pri = TrackedExecutor::new(backend.high_pri(), &gate);
@@ -886,7 +1082,6 @@ mod tests {
             );
         }
         gate.drain().await;
-        observe_global_barrier(&backend).await.unwrap();
         assert_eq!(
             backend
                 .low_pri()
@@ -896,128 +1091,5 @@ mod tests {
                 .unwrap(),
             42
         );
-    }
-
-    #[tokio::test]
-    async fn global_barrier_covers_both_pools_and_recovers_from_callback_panic() {
-        use std::sync::mpsc;
-        use std::time::Duration;
-
-        let backend = GlobalExecutor::new(
-            SinglePoolExecutor::new("test-high", 2),
-            SinglePoolExecutor::new("test-low", 2),
-        );
-        let mut releases = Vec::new();
-        for priority in [Priority::High, Priority::Low] {
-            let (release, wait) = mpsc::channel::<()>();
-            let (started, reached) = oneshot::channel();
-            backend
-                .pool(priority)
-                .dispatch_fn("test", move || {
-                    let _ = started.send(());
-                    let _ = wait.recv();
-                })
-                .unwrap();
-            reached.await.unwrap();
-            releases.push(release);
-        }
-        // The barrier passes only once the work in both pools is done.
-        let mut completed = observe_global_barrier(&backend);
-        assert!(matches!(
-            completed.try_recv(),
-            Err(oneshot::error::TryRecvError::Empty)
-        ));
-        drop(releases.pop());
-        assert!(matches!(
-            completed.try_recv(),
-            Err(oneshot::error::TryRecvError::Empty)
-        ));
-        drop(releases);
-        tokio::time::timeout(Duration::from_secs(10), completed)
-            .await
-            .unwrap()
-            .unwrap();
-
-        let (tx, rx) = oneshot::channel::<()>();
-        backend.barrier(move || {
-            let _tx = tx;
-            panic!("callback panic must not strand the pools");
-        });
-        assert!(
-            tokio::time::timeout(Duration::from_secs(10), rx)
-                .await
-                .unwrap()
-                .is_err()
-        );
-        tokio::time::timeout(Duration::from_secs(10), observe_global_barrier(&backend))
-            .await
-            .unwrap()
-            .unwrap();
-
-        // A tracked executor forwards barriers to its pool, even once sealed.
-        let gate = Arc::new(Gate::default());
-        gate.seal();
-        let executor = TrackedExecutor::new(backend.low_pri(), &gate);
-        tokio::time::timeout(Duration::from_secs(10), observe_barrier(&executor))
-            .await
-            .unwrap()
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn worker_barriers_wait_for_all_workers_and_survive_cancelled_observers() {
-        use std::sync::mpsc;
-        use std::task::{Context, Poll, Waker};
-        use std::time::Duration;
-
-        let executor = SinglePoolExecutor::new("barrier-test", 3);
-        let (started, reached) = oneshot::channel();
-        let (resume, paused) = mpsc::channel::<()>();
-        executor
-            .dispatch_fn("test", move || {
-                started.send(()).unwrap();
-                let _ = paused.recv();
-            })
-            .unwrap();
-        reached.await.unwrap();
-
-        let mut barrier = Box::pin(observe_barrier(&executor));
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while executor.0.pool.active_count() != 3 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("the other workers reached their canaries");
-        assert!(matches!(
-            barrier
-                .as_mut()
-                .poll(&mut Context::from_waker(Waker::noop())),
-            Poll::Pending
-        ));
-        // Dropping the barrier's receiver must not leave the workers already waiting in
-        // it stuck.
-        drop(barrier);
-        let barriers = std::thread::scope(|scope| {
-            let submissions: Vec<_> = (0..8)
-                .map(|_| {
-                    let executor = &executor;
-                    scope.spawn(move || observe_barrier(executor))
-                })
-                .collect();
-            submissions
-                .into_iter()
-                .map(|submission| submission.join().unwrap())
-                .collect::<Vec<_>>()
-        });
-        drop(resume);
-        tokio::time::timeout(Duration::from_secs(10), async {
-            for barrier in barriers {
-                barrier.await.unwrap();
-            }
-            assert_eq!(executor.spawn_fn("test", || 42).unwrap().await.unwrap(), 42);
-        })
-        .await
-        .unwrap();
     }
 }

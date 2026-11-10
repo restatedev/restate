@@ -12,7 +12,6 @@ use std::path::Path;
 
 use anyhow::Result;
 use cling::prelude::*;
-use figment::Profile;
 use itertools::Itertools;
 use serde_json::{Value, json};
 use strum::IntoEnumIterator;
@@ -24,7 +23,7 @@ use restate_cli_util::{CliContext, c_eprintln, c_error, c_println, c_success, ex
 use restate_types::art::render_restate_logo;
 
 use crate::build_info;
-use crate::cli_env::{CliEnv, EnvironmentType};
+use crate::cli_env::{CliEnv, EnvironmentType, LOCAL_PROFILE, ProfileSource};
 use crate::clients::AdminClientInterface;
 use crate::clients::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
 use crate::ui::fmt::{Field, Formatter, OutputFormatter};
@@ -32,7 +31,7 @@ use crate::ui::fmt::{Field, Formatter, OutputFormatter};
 /// Show the server the CLI talks to, and check that it's reachable
 ///
 /// Prints the admin and ingress URLs in use, whether a bearer token is set (never the token),
-/// the selected environment and where it comes from, the CLI config paths, and the CLI build.
+/// the selected profile and where it comes from, the CLI config paths, and the CLI build.
 /// Then checks the admin API: exits with code 5 (network error) if it can't be reached, 8
 /// (server error) if it's unhealthy.
 #[derive(Run, Parser, Clone)]
@@ -89,7 +88,7 @@ pub async fn run(State(env): State<CliEnv>) -> Result<()> {
     f.title("🔗", "Connection");
     f.detail("connection", &connection);
 
-    // Local environment. Paths are `{path, exists}` in JSON, annotated for humans.
+    // The profile and the config paths. Paths are `{path, exists}` in JSON, annotated for humans.
     let path_field = |path: &Path| {
         let exists = path.exists();
         let annotation = if exists { "exists" } else { "does not exist" };
@@ -98,32 +97,21 @@ pub async fn run(State(env): State<CliEnv>) -> Result<()> {
             format!("{} ({annotation})", path.display()),
         )
     };
-    let (name, source) = (
-        env.environment.to_string(),
-        env.environment_source.to_string(),
-    );
-    let display = if env.environment == Profile::Default {
-        name.clone()
-    } else {
-        format!("{name} (source: {source})")
-    };
-    let environment = Field::with_display(json!({ "name": name, "source": source }), display);
-    f.title("🏠", "Local Environment");
+    let (name, source) = (env.profile.to_string(), env.profile_source.to_string());
+    let display =
+        if env.profile == LOCAL_PROFILE && matches!(env.profile_source, ProfileSource::None) {
+            name.clone()
+        } else {
+            format!("{name} (source: {source})")
+        };
+    let profile = Field::with_display(json!({ "name": name, "source": source }), display);
+    f.title("🏠", "Profile");
     f.detail(
-        "environment",
+        "profile",
         [
+            ("profile", profile),
             ("config_dir", path_field(&env.config_home)),
-            ("environment_file", path_field(&env.environment_file)),
-            ("environment", environment),
             ("config_file", path_field(&env.config_file)),
-            (
-                "loaded_dotenv",
-                or_none(
-                    CliContext::get()
-                        .loaded_dotenv()
-                        .map(|p| p.display().to_string()),
-                ),
-            ),
         ],
     );
 
@@ -162,18 +150,34 @@ pub async fn run(State(env): State<CliEnv>) -> Result<()> {
     // Cloud.
     match env.config.environment_type {
         EnvironmentType::Default => {}
-        #[cfg(feature = "cloud")]
         EnvironmentType::Cloud => {
-            let (account_id, environment_id) = match &env.config.cloud.environment_info {
-                Some(environment_info) => (
-                    Some(environment_info.account_id.as_str().to_owned()),
-                    Some(environment_info.environment_id.as_str().to_owned()),
+            // Named things show their name, with the id in JSON; older profiles only have ids.
+            let named = |id: Option<&str>, name: Option<&str>| match (id, name) {
+                (Some(id), name) => Field::with_display(
+                    json!({ "id": id, "name": name }),
+                    name.unwrap_or(id).to_owned(),
                 ),
-                None => (None, None),
+                (None, _) => or_none(None::<String>),
             };
+            let info = env.config.cloud.environment_info.as_ref();
+            let user_id = info.and_then(|info| info.user_id.as_deref());
+            let user = named(
+                user_id,
+                user_id
+                    .and_then(|id| env.config.cloud.users.get(id))
+                    .and_then(|user| user.email.as_deref()),
+            );
+            let account = named(
+                info.map(|info| info.account_id.as_str()),
+                info.and_then(|info| info.account_name.as_deref()),
+            );
+            let environment = named(
+                info.map(|info| info.environment_id.as_str()),
+                info.and_then(|info| info.environment_name.as_deref()),
+            );
 
-            let (logged_in, logged_in_status) = match &env.config.cloud.credentials {
-                Some(credentials) => match credentials.expiry() {
+            let (logged_in, logged_in_status) = match env.cloud_credentials() {
+                Ok((_, credentials)) => match credentials.expiry() {
                     Ok(expiry) => {
                         let delta = expiry.signed_duration_since(chrono::Utc::now());
                         if delta > chrono::TimeDelta::zero() {
@@ -188,14 +192,19 @@ pub async fn run(State(env): State<CliEnv>) -> Result<()> {
                     }
                     Err(_) => (false, "invalid token".to_string()),
                 },
-                None => (false, "no token".to_string()),
+                Err(_) if info.is_some_and(|info| info.user_id.is_none()) => (
+                    false,
+                    "written by an older CLI; run `restate cloud login`".to_string(),
+                ),
+                Err(_) => (false, "no token".to_string()),
             };
             f.title("☁️", "Cloud");
             f.detail(
                 "cloud",
                 [
-                    ("account_id", or_none(account_id)),
-                    ("environment_id", or_none(environment_id)),
+                    ("user", user),
+                    ("account", account),
+                    ("environment", environment),
                     (
                         "logged_in",
                         Field::with_display(

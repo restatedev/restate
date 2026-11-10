@@ -216,6 +216,25 @@ pub struct PartitionProcessorStatus {
     #[into_prost(map = "enabled_storage_features_to_proto")]
     #[bilrost(19)]
     pub enabled_storage_features: Vec<ReString>,
+    /// The LSN of the record that turned byte offsets on for the partition, which they count
+    /// from. `None` while the partition doesn't track byte offsets.
+    ///
+    /// Since v1.8.2
+    #[bilrost(20)]
+    pub byte_offsets_base_lsn: Option<Lsn>,
+    /// How far the partition processor has applied its log in bytes. Replicas at the same applied
+    /// LSN normally agree on it, but it can differ slightly between them. `None` while the
+    /// partition doesn't track byte offsets.
+    ///
+    /// Since v1.8.2
+    #[bilrost(21)]
+    pub log_byte_offset: Option<u64>,
+    /// How far the partition processor has written its partition store in bytes. Local to this
+    /// replica's store. `None` while the partition doesn't track byte offsets.
+    ///
+    /// Since v1.8.2
+    #[bilrost(22)]
+    pub partition_store_byte_offset: Option<u64>,
 }
 
 impl PartitionProcessorStatus {
@@ -281,6 +300,9 @@ impl Default for PartitionProcessorStatus {
             enabled_features: PersistedFeatures::default(),
             broken_reason: BrokenReason::NotBroken,
             enabled_storage_features: Vec::new(),
+            byte_offsets_base_lsn: None,
+            log_byte_offset: None,
+            partition_store_byte_offset: None,
         }
     }
 }
