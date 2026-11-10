@@ -80,8 +80,8 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.8.1*
     EnablePreflightSignalRecording = 7,
-    /// Track how far the partition has applied its log in bytes, counting from the record that
-    /// applies this change.
+    /// Track how far the partition has applied its log and written its partition store in
+    /// bytes, counting from the record that applies this change.
     ///
     /// *Since v1.8.2*
     EnableByteOffsets = 8,
@@ -207,7 +207,8 @@ pub struct PersistedFeatures {
     #[bilrost(tag(7))]
     pub preflight_signal_recording: bool,
 
-    /// The partition tracks how far it has applied its log in bytes.
+    /// The partition tracks how far it has applied its log and written its partition store in
+    /// bytes.
     ///
     /// *Since v1.8.2*
     #[bilrost(tag(8))]

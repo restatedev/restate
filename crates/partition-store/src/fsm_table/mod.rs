@@ -129,10 +129,16 @@ pub(crate) mod fsm_variable {
     pub(crate) const STORAGE_FEATURES: u64 = 12;
 
     /// The partition's [`FsmPosition`](restate_storage_api::fsm_table::FsmPosition): its applied
-    /// LSN, and how far it has applied its log in bytes since the record that turned byte offsets
-    /// on. Written with every commit while the partition tracks byte offsets, in place of
-    /// [`APPLIED_LSN`], which the commit that turns them on deletes. If both are present, the
-    /// position takes precedence. The byte offsets wrap at 2^64.
+    /// LSN, and how far it has applied its log and written its partition store in bytes since the
+    /// record that turned byte offsets on. Written with every commit while the partition tracks
+    /// byte offsets, in place of [`APPLIED_LSN`], which the commit that turns them on deletes. If
+    /// both are present, the position takes precedence. The byte offsets wrap at 2^64.
+    ///
+    /// The partition store byte offset is local (not replicated), like [`SEAL_MARKER`] and
+    /// [`STORAGE_FEATURES`]: it counts this store's write batches, and a store restored from a
+    /// snapshot continues from the snapshot's. The applied LSN and the base LSN are the same on
+    /// every replica; replicas at the same applied LSN normally agree on the log byte offset too,
+    /// but it can differ slightly between them.
     ///
     /// *Since v1.8.2*
     pub(crate) const FSM_POSITION: u64 = 13;

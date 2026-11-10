@@ -358,6 +358,16 @@ mod tests {
             .await?
             .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
             .await?;
+        // Applied LSN, base LSN and log byte offset; the partition store byte offset is local.
+        let log_position = |position: Option<FsmPosition>| {
+            position.map(|p| {
+                (
+                    p.applied_lsn.as_u64(),
+                    p.byte_offsets_base_lsn.as_u64(),
+                    p.log_byte_offset,
+                )
+            })
+        };
 
         // The version barrier at LSN 2 turns byte offsets on and commits before its own applied
         // LSN, right before the processor stops.
@@ -369,16 +379,14 @@ mod tests {
         txn.start_byte_offsets(Lsn::new(2))?;
         txn.commit().await?;
         drop(txn);
-        let started = FsmPosition {
-            applied_lsn: Lsn::new(1),
-            byte_offsets_base_lsn: Lsn::new(2),
-            log_byte_offset: 0,
-        };
-        assert_eq!(store.get_fsm_position().await?, Some(started));
+        assert_eq!(
+            log_position(store.get_fsm_position().await?),
+            Some((1, 2, 0))
+        );
 
         // After restarting, it applies the barrier again, which doesn't count, and the next record.
         let mut fsm = Fsm::create(&mut store).await?;
-        assert_eq!(fsm.fsm_position(), started);
+        assert_eq!(log_position(Some(fsm.fsm_position())), Some((1, 2, 0)));
         let mut txn = store.transaction();
         txn.set_fsm_position(fsm.fsm_position());
         fsm.set_last_applied_lsn(&mut txn, Lsn::new(2), 20);
@@ -386,14 +394,9 @@ mod tests {
         txn.commit().await?;
         let position = txn.fsm_position();
         drop(txn);
-        let applied = FsmPosition {
-            applied_lsn: Lsn::new(3),
-            log_byte_offset: 30,
-            ..started
-        };
-        assert_eq!(position, Some(applied));
+        assert_eq!(log_position(position), Some((3, 2, 30)));
         let fsm = Fsm::create(&mut store).await?;
-        assert_eq!(fsm.fsm_position(), applied);
+        assert_eq!(Some(fsm.fsm_position()), position);
         assert_eq!(fsm.last_applied_lsn, Lsn::new(3));
         Ok(())
     }

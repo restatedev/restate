@@ -11,7 +11,7 @@
 use std::ops::ControlFlow;
 use std::ops::RangeBounds;
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Once, OnceLock};
 use std::time::Duration;
 
 use anyhow::anyhow;
@@ -20,8 +20,8 @@ use bytes::BytesMut;
 use enum_map::Enum;
 use metrics::Histogram;
 use rocksdb::{
-    BoundColumnFamily, DBPinnableSlice, DBRawIteratorWithThreadMode, ReadOptions,
-    SnapshotWithThreadMode,
+    AsColumnFamilyRef, BoundColumnFamily, DBPinnableSlice, DBRawIteratorWithThreadMode,
+    ReadOptions, SnapshotWithThreadMode,
 };
 use static_assertions::const_assert_eq;
 use tokio::sync::mpsc;
@@ -58,7 +58,7 @@ use crate::fsm_table::put_storage_features;
 use crate::fsm_table::put_storage_version;
 use crate::fsm_table::seal_partition;
 use crate::fsm_table::{
-    get_locally_durable_lsn, get_min_restate_version_from_partition_db,
+    PartitionStateMachineKey, get_locally_durable_lsn, get_min_restate_version_from_partition_db,
     get_state_machine_features_from_partition_db, get_storage_features_from_partition_db,
     get_storage_version_from_partition_db, is_jc_orphan_cleanup_done, put_jc_orphan_cleanup_done,
 };
@@ -1139,6 +1139,55 @@ impl<'a> PartitionStoreTransaction<'a> {
         self.meta.partition_id
     }
 
+    /// Puts the partition's `position` into the batch, with its partition store byte offset
+    /// advanced by the size of the batch, this put included. Returns the position it put.
+    fn put_fsm_position_counting_batch(
+        &mut self,
+        mut position: FsmPosition,
+    ) -> Result<FsmPosition> {
+        let batch_size = self.estimated_size_in_bytes();
+        // A position's encoded size only depends on which of its fixed-width fields are zero. Its
+        // store offset isn't once it counts the batch, unless it wraps to exactly zero: it then
+        // counts the 9 bytes that its omitted field doesn't take.
+        let encoded_len = bilrost::Message::encoded_len(&FsmPosition {
+            partition_store_byte_offset: u64::MAX,
+            ..position
+        });
+        let put_size = write_batch_put_size(
+            self.data_cf_handle.id(),
+            PartitionStateMachineKey::serialized_length_fixed(),
+            // StorageCodec's codec byte and the message
+            1 + encoded_len,
+        );
+        position.add_partition_store_bytes((batch_size + put_size) as u64);
+        put_fsm_position(self, &position)?;
+        // The size predicted above follows RocksDB's write batch format. Were it ever off, e.g.
+        // after a change of that format, the position just put would be off by the difference:
+        // carry on from the size actually added, so that the next commit is exact again.
+        let added = self.estimated_size_in_bytes() - batch_size;
+        if added != put_size {
+            debug_assert_eq!(
+                added, put_size,
+                "the position's put adds the size it predicts"
+            );
+            static LOGGED: Once = Once::new();
+            LOGGED.call_once(|| {
+                warn!(
+                    predicted = put_size,
+                    added,
+                    "The partition store byte offset counts a different size for the FSM \
+                     position's put than it adds to the write batch; offsets may be off by the \
+                     difference"
+                )
+            });
+            position.partition_store_byte_offset = position
+                .partition_store_byte_offset
+                .wrapping_add(added as u64)
+                .wrapping_sub(put_size as u64);
+        }
+        Ok(position)
+    }
+
     #[inline]
     pub(crate) fn storage_features(&self) -> StorageFeatures {
         self.storage_features
@@ -1148,6 +1197,19 @@ impl<'a> PartitionStoreTransaction<'a> {
     pub(crate) fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) -> Result<()> {
         assert_partition_key_or_err(self.meta.key_range, partition_key)
     }
+}
+
+/// The bytes that a put adds to a RocksDB write batch, as RocksDB's write batch format lays it out:
+/// the record type, the column family's id unless it's the default one, then the key and the
+/// value, each after its length. The numbers are varint32s.
+fn write_batch_put_size(cf_id: u32, key_len: usize, value_len: usize) -> usize {
+    let varint32_len = |n: usize| (usize::BITS - n.leading_zeros()).div_ceil(7).max(1) as usize;
+    let cf_id_len = if cf_id == 0 {
+        0
+    } else {
+        varint32_len(cf_id as usize)
+    };
+    1 + cf_id_len + varint32_len(key_len) + key_len + varint32_len(value_len) + value_len
 }
 
 fn assert_partition_key_or_err(
@@ -1199,9 +1261,12 @@ impl Transaction for PartitionStoreTransaction<'_> {
             .admission
             .try_acquire()
             .ok_or(StorageError::OperationalError)?;
-        if let Some(position) = self.fsm_position.filter(FsmPosition::has_byte_offsets) {
-            put_fsm_position(self, &position)?;
-        }
+        // The position this commit persists, kept once the write succeeded.
+        let position = self
+            .fsm_position
+            .filter(FsmPosition::has_byte_offsets)
+            .map(|position| self.put_fsm_position_counting_batch(position))
+            .transpose()?;
         let write_batch = self.write_batch_with_index.take().expect("nonempty batch");
         if let Some(histogram) = self.write_batch_size_histogram {
             histogram.record(write_batch.size_in_bytes() as f64);
@@ -1233,6 +1298,9 @@ impl Transaction for PartitionStoreTransaction<'_> {
                 .map_err(|error| StorageError::Generic(error.into()))?,
         );
         self.write_batch_with_index.as_mut().unwrap().clear();
+        if position.is_some() {
+            self.fsm_position = position;
+        }
         self.fsm_position_pending = false;
         Ok(())
     }
