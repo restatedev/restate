@@ -245,6 +245,7 @@ fn old_manifests_read_as_unknown() -> anyhow::Result<()> {
     assert_eq!(status.latest_snapshot_lsn, Lsn::new(2000));
     assert_eq!(status.latest_snapshot_compatibility, None);
     assert_eq!(status.latest_snapshot_data_size_in_bytes, None);
+    assert_eq!(status.archived_log_byte_offset, None);
     assert!(latest.retained_snapshots.iter().all(is_unknown));
 
     // Values this server can't decode, e.g. written in another shape by a future server, also
@@ -253,15 +254,23 @@ fn old_manifests_read_as_unknown() -> anyhow::Result<()> {
     latest["node_id"] = "not a node".into();
     latest["compatibility"] = serde_json::json!({ "min_restate_version": 2 });
     latest["data_size_in_bytes"] = "large".into();
+    latest["byte_offsets_base_lsn"] = "first".into();
+    latest["log_byte_offset"] = (-1).into();
     latest["retained_snapshots"][0]["node_id"] = 7.into();
     latest["retained_snapshots"][0]["compatibility"] = serde_json::json!([]);
     latest["retained_snapshots"][0]["data_size_in_bytes"] = (-1).into();
+    latest["retained_snapshots"][0]["byte_offsets_base_lsn"] = serde_json::json!([]);
+    latest["retained_snapshots"][0]["log_byte_offset"] = "far".into();
     let latest: LatestSnapshot = serde_json::from_str(&latest.to_string())?;
     assert_eq!(latest.min_applied_lsn, Lsn::new(2000));
     assert_eq!(latest.retained_snapshots.len(), 2);
     assert_eq!(latest.node_id, None);
     assert_eq!(latest.compatibility, None);
     assert_eq!(latest.data_size_in_bytes, None);
+    assert_eq!(
+        (latest.byte_offsets_base_lsn, latest.log_byte_offset),
+        (None, None)
+    );
     assert!(latest.retained_snapshots.iter().all(is_unknown));
 
     let mut metadata: serde_json::Value = serde_json::from_str(V1_8_1_METADATA)?;
@@ -288,6 +297,8 @@ fn is_unknown(snapshot: &SnapshotReference) -> bool {
     snapshot.node_id.is_none()
         && snapshot.compatibility.is_none()
         && snapshot.data_size_in_bytes.is_none()
+        && snapshot.byte_offsets_base_lsn.is_none()
+        && snapshot.log_byte_offset.is_none()
 }
 
 /// Old and new servers take turns publishing snapshots of the same partition. Each reads what the
@@ -327,6 +338,8 @@ async fn old_and_new_servers_alternate_publishing() -> anyhow::Result<()> {
                     s.node_id,
                     s.compatibility.clone(),
                     s.data_size_in_bytes,
+                    s.byte_offsets_base_lsn,
+                    s.log_byte_offset,
                 )
             })
             .collect()
@@ -337,9 +350,11 @@ async fn old_and_new_servers_alternate_publishing() -> anyhow::Result<()> {
             s.node_id,
             s.compatibility.clone(),
             Some(s.data_size_in_bytes()),
+            s.byte_offsets_base_lsn,
+            s.log_byte_offset,
         )
     };
-    let unknown = |s: &PartitionSnapshotMetadata| (s.snapshot_id, None, None, None);
+    let unknown = |s: &PartitionSnapshotMetadata| (s.snapshot_id, None, None, None, None, None);
 
     // A new server publishes A, and old servers read its manifests.
     let (a, a_dir) = snapshot(Lsn::new(1000), b"a-data").await?;
@@ -357,6 +372,16 @@ async fn old_and_new_servers_alternate_publishing() -> anyhow::Result<()> {
     let raw: serde_json::Value = serde_json::from_slice(&read(&repository, &latest_path).await?)?;
     assert_eq!(raw["data_size_in_bytes"], 6);
     assert_eq!(raw["retained_snapshots"][0]["data_size_in_bytes"], 6);
+    assert_eq!(raw["log_byte_offset"], 100_000);
+    assert_eq!(raw["retained_snapshots"][0]["byte_offsets_base_lsn"], 10);
+    // The status reports the byte offsets of the snapshot at the archived LSN.
+    assert_eq!(
+        (
+            status.archived_log_byte_offset,
+            status.archived_byte_offsets_base_lsn
+        ),
+        (a.log_byte_offset, a.byte_offsets_base_lsn)
+    );
     let metadata_path = repository.snapshot_file_path(&a, "metadata.json");
     let metadata_json = read(&repository, &metadata_path).await?;
     let old_metadata: legacy::PartitionSnapshotMetadata = serde_json::from_slice(&metadata_json)?;
@@ -388,6 +413,8 @@ async fn old_and_new_servers_alternate_publishing() -> anyhow::Result<()> {
     let status = latest_status().await?;
     assert_eq!(status.latest_snapshot_id, b.snapshot_id);
     assert_eq!(status.latest_snapshot_compatibility, None);
+    // A is still the archived snapshot, the oldest one retained
+    assert_eq!(status.archived_log_byte_offset, a.log_byte_offset);
     assert_eq!(
         status.latest_snapshot_data_size_in_bytes,
         Some(ByteCount::from(13_u64))
@@ -412,6 +439,7 @@ async fn old_and_new_servers_alternate_publishing() -> anyhow::Result<()> {
     assert_eq!(status.archived_lsn, Lsn::new(1000));
     assert_eq!(status.latest_snapshot_compatibility, None);
     assert_eq!(status.latest_snapshot_data_size_in_bytes, None);
+    assert_eq!(status.archived_log_byte_offset, None);
     let stored = latest().await?;
     assert_eq!(stored.node_id, None);
     assert_eq!(retained(&stored), [unknown(&c), unknown(&b), unknown(&a)]);

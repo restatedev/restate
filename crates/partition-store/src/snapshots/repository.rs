@@ -139,6 +139,17 @@ pub struct LatestSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_size_in_bytes: Option<ByteCount>,
 
+    /// The LSN that the snapshot's log byte offset counts from, if the partition tracked byte
+    /// offsets when the snapshot was taken.
+    #[serde_as(deserialize_as = "DefaultOnError")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_offsets_base_lsn: Option<Lsn>,
+
+    /// How far the partition had applied its log in bytes, at the snapshot's applied LSN.
+    #[serde_as(deserialize_as = "DefaultOnError")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_byte_offset: Option<u64>,
+
     /// Retained snapshots ordered by descending applied LSN (newest snapshot first). Pruning
     /// depends on correct ordering. Introduced in V2.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -165,6 +176,17 @@ pub struct SnapshotReference {
     #[serde_as(as = "DefaultOnError<Option<FromInto<u64>>>")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_size_in_bytes: Option<ByteCount>,
+
+    /// The LSN that the snapshot's log byte offset counts from, if the partition tracked byte
+    /// offsets when the snapshot was taken.
+    #[serde_as(deserialize_as = "DefaultOnError")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_offsets_base_lsn: Option<Lsn>,
+
+    /// How far the partition had applied its log in bytes, at the snapshot's applied LSN.
+    #[serde_as(deserialize_as = "DefaultOnError")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_byte_offset: Option<u64>,
 }
 
 impl SnapshotReference {
@@ -177,6 +199,8 @@ impl SnapshotReference {
             node_id: snapshot.node_id,
             compatibility: snapshot.compatibility.clone(),
             data_size_in_bytes: Some(snapshot.data_size_in_bytes()),
+            byte_offsets_base_lsn: snapshot.byte_offsets_base_lsn,
+            log_byte_offset: snapshot.log_byte_offset,
         }
     }
 }
@@ -198,6 +222,8 @@ impl LatestSnapshot {
                     node_id: self.node_id,
                     compatibility: self.compatibility.clone(),
                     data_size_in_bytes: self.data_size_in_bytes,
+                    byte_offsets_base_lsn: self.byte_offsets_base_lsn,
+                    log_byte_offset: self.log_byte_offset,
                 }]
             }
         } else {
@@ -250,6 +276,10 @@ pub struct PartitionSnapshotStatus {
     pub latest_snapshot_compatibility: Option<SnapshotCompatibility>,
     /// Total size of the latest snapshot's data files, if known.
     pub latest_snapshot_data_size_in_bytes: Option<ByteCount>,
+    /// The log byte offset of the snapshot at the archived LSN, if it recorded one.
+    pub archived_log_byte_offset: Option<u64>,
+    /// The LSN that the archived snapshot's log byte offset counts from.
+    pub archived_byte_offsets_base_lsn: Option<Lsn>,
 }
 
 impl PartitionSnapshotStatus {
@@ -264,6 +294,8 @@ impl PartitionSnapshotStatus {
             latest_snapshot_created_at: WallClock::recent_ms(),
             latest_snapshot_compatibility: None,
             latest_snapshot_data_size_in_bytes: None,
+            archived_log_byte_offset: None,
+            archived_byte_offsets_base_lsn: None,
         }
     }
 }
@@ -290,18 +322,26 @@ impl TryFrom<&LatestSnapshot> for PartitionSnapshotStatus {
             }
         };
 
-        let (archived_lsn, latest_snapshot_created_at) = match latest.version {
-            LatestSnapshotVersion::V1 => (latest.min_applied_lsn, latest.created_at.into()),
+        let latest_byte_offsets = (latest.log_byte_offset, latest.byte_offsets_base_lsn);
+        let (archived_lsn, archived_byte_offsets, latest_snapshot_created_at) = match latest.version
+        {
+            LatestSnapshotVersion::V1 => (
+                latest.min_applied_lsn,
+                latest_byte_offsets,
+                latest.created_at.into(),
+            ),
             LatestSnapshotVersion::V2 => {
                 // Report the earliest as the archived LSN, enables restoring from any of them.
                 // We deliberately iterate instead of relying on the descending sort order
                 // invariant as a defensive measure against e.g. manually edited metadata.
-                let archived_lsn = latest
+                let archived = latest
                     .retained_snapshots
                     .iter()
-                    .min_by_key(|s| s.min_applied_lsn)
-                    .map(|s| s.min_applied_lsn)
-                    .unwrap_or(latest.min_applied_lsn);
+                    .min_by_key(|s| s.min_applied_lsn);
+                let archived_lsn = archived.map_or(latest.min_applied_lsn, |s| s.min_applied_lsn);
+                let archived_byte_offsets = archived.map_or(latest_byte_offsets, |s| {
+                    (s.log_byte_offset, s.byte_offsets_base_lsn)
+                });
 
                 let latest_snapshot_created_at = latest
                     .retained_snapshots
@@ -310,7 +350,11 @@ impl TryFrom<&LatestSnapshot> for PartitionSnapshotStatus {
                     .map(|s| s.created_at.into())
                     .unwrap_or_else(|| latest.created_at.into());
 
-                (archived_lsn, latest_snapshot_created_at)
+                (
+                    archived_lsn,
+                    archived_byte_offsets,
+                    latest_snapshot_created_at,
+                )
             }
         };
 
@@ -322,6 +366,8 @@ impl TryFrom<&LatestSnapshot> for PartitionSnapshotStatus {
             log_id,
             latest_snapshot_compatibility: latest.compatibility.clone(),
             latest_snapshot_data_size_in_bytes: latest.data_size_in_bytes,
+            archived_log_byte_offset: archived_byte_offsets.0,
+            archived_byte_offsets_base_lsn: archived_byte_offsets.1,
         })
     }
 }
@@ -643,6 +689,8 @@ impl SnapshotRepository {
             node_id: new_snapshot_ref.node_id,
             compatibility: new_snapshot_ref.compatibility,
             data_size_in_bytes: new_snapshot_ref.data_size_in_bytes,
+            byte_offsets_base_lsn: new_snapshot_ref.byte_offsets_base_lsn,
+            log_byte_offset: new_snapshot_ref.log_byte_offset,
             retained_snapshots,
         };
 
@@ -1647,6 +1695,8 @@ mod tests {
             node_id: None,
             compatibility: None,
             data_size_in_bytes: None,
+            byte_offsets_base_lsn: None,
+            log_byte_offset: None,
             retained_snapshots: vec![],
         };
 
@@ -1848,6 +1898,8 @@ mod tests {
             node_id: None,
             compatibility: None,
             data_size_in_bytes: None,
+            byte_offsets_base_lsn: None,
+            log_byte_offset: None,
             retained_snapshots: vec![
                 SnapshotReference {
                     snapshot_id: SnapshotId::new(),
@@ -1857,6 +1909,8 @@ mod tests {
                     node_id: None,
                     compatibility: None,
                     data_size_in_bytes: None,
+                    byte_offsets_base_lsn: None,
+                    log_byte_offset: None,
                 },
                 SnapshotReference {
                     snapshot_id: SnapshotId::new(),
@@ -1866,6 +1920,8 @@ mod tests {
                     node_id: None,
                     compatibility: None,
                     data_size_in_bytes: None,
+                    byte_offsets_base_lsn: None,
+                    log_byte_offset: None,
                 },
                 SnapshotReference {
                     snapshot_id: SnapshotId::new(),
@@ -1875,6 +1931,8 @@ mod tests {
                     node_id: None,
                     compatibility: None,
                     data_size_in_bytes: None,
+                    byte_offsets_base_lsn: None,
+                    log_byte_offset: None,
                 },
             ],
         };

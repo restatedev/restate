@@ -953,6 +953,10 @@ where
                 }
 
                 status.last_archived_log_lsn = latest_snapshot.map(|s| s.archived_lsn);
+                status.last_archived_log_byte_offset =
+                    latest_snapshot.and_then(|s| s.archived_log_byte_offset);
+                status.last_archived_byte_offsets_base_lsn =
+                    latest_snapshot.and_then(|s| s.archived_byte_offsets_base_lsn);
 
                 let current_tail_lsn = self.target_tail_lsns.get(partition_id).cloned();
                 let target_tail_lsn = if current_tail_lsn > status.target_tail_lsn {
