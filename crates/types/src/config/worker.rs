@@ -1360,7 +1360,7 @@ pub struct SnapshotsOptions {
     ///
     /// Default: `Full`
     ///
-    /// Since v1.7.3
+    /// Since v1.8.2
     #[serde(default)]
     pub experimental_snapshot_type: SnapshotType,
 
@@ -1371,7 +1371,7 @@ pub struct SnapshotsOptions {
     ///
     /// Default: `30s`
     ///
-    /// Since v1.7.3
+    /// Since v1.8.2
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_interval: Option<FriendlyDuration>,
 }
