@@ -20,8 +20,10 @@ mod resume;
 mod signal;
 
 use anyhow::Result;
+use clap::builder::{PossibleValuesParser, TypedValueParser};
 use cling::prelude::*;
 
+use restate_types::Priority;
 use restate_types::identifiers::InvocationId;
 
 use crate::error::RestateCliError;
@@ -65,6 +67,12 @@ fn parse_invocation_id(id: &str) -> Result<InvocationId> {
     id.trim().parse().map_err(|err| {
         RestateCliError::bad_input(format!("invalid invocation id '{id}': {err}")).into()
     })
+}
+
+/// Parses `--priority`, listing the priorities in the help.
+fn priority_parser() -> impl TypedValueParser<Value = Priority> {
+    PossibleValuesParser::new(Priority::BY_URGENCY.map(<&str>::from))
+        .try_map(|priority| priority.parse::<Priority>())
 }
 
 /// See [cancel::Cancel] for more details on query

@@ -13,7 +13,7 @@ use cling::prelude::*;
 
 use restate_cli_util::ui::watcher::Watch;
 
-use super::{VQUEUE_COLUMNS, VQueueRow, optional_str};
+use super::{VQueueRow, optional_str, vqueue_columns};
 use crate::cli_env::CliEnv;
 use crate::clients::DataFusionHttpClient;
 use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
@@ -43,9 +43,10 @@ pub async fn run_list(State(env): State<CliEnv>, opts: &List) -> Result<()> {
 
 async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     let client = DataFusionHttpClient::new(env).await?;
+    let columns = vqueue_columns(&client).await?;
     let rows: Vec<VQueueRow> = client
         .run_json_query(format!(
-            "SELECT {VQUEUE_COLUMNS} FROM sys_vqueue_meta LIMIT {}",
+            "SELECT {columns} FROM sys_vqueue_meta LIMIT {}",
             opts.limit
         ))
         .await?;
@@ -58,6 +59,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
                 optional_str(row.service_name.as_deref()),
                 optional_str(row.scope.as_deref()),
                 optional_str(row.limit_key.as_deref()),
+                optional_str(row.priority.as_deref()),
                 optional_str(row.lock_name.as_deref()),
                 Field::new(row.queue_is_paused),
                 Field::new(row.num_inbox),
@@ -77,6 +79,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
             "service",
             "scope",
             "limit_key",
+            "priority",
             "lock",
             "queue_paused",
             "inbox",

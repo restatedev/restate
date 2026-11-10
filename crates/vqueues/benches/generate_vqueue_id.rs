@@ -14,8 +14,8 @@ use std::time::Duration;
 use criterion::{Criterion, criterion_group, criterion_main};
 
 use restate_limiter::LimitKey;
-use restate_types::Scope;
 use restate_types::identifiers::PartitionKey;
+use restate_types::{Priority, Scope};
 use restate_util_string::ReString;
 use restate_vqueues::generate_vqueue_id;
 
@@ -46,6 +46,7 @@ fn bench_generate_vqueue_id(c: &mut Criterion) {
                 black_box(false),
                 black_box(service_name),
                 black_box(None),
+                black_box(Priority::Normal),
             ))
         });
     });
@@ -59,6 +60,7 @@ fn bench_generate_vqueue_id(c: &mut Criterion) {
                 black_box(false),
                 black_box(service_name),
                 black_box(None),
+                black_box(Priority::Normal),
             ))
         });
     });
@@ -72,6 +74,7 @@ fn bench_generate_vqueue_id(c: &mut Criterion) {
                 black_box(false),
                 black_box(service_name),
                 black_box(None),
+                black_box(Priority::Normal),
             ))
         });
     });
@@ -85,6 +88,7 @@ fn bench_generate_vqueue_id(c: &mut Criterion) {
                 black_box(false),
                 black_box(service_name),
                 black_box(None),
+                black_box(Priority::Normal),
             ))
         });
     });
@@ -98,6 +102,7 @@ fn bench_generate_vqueue_id(c: &mut Criterion) {
                 black_box(true),
                 black_box(service_name),
                 black_box(Some(key)),
+                black_box(Priority::Normal),
             ))
         });
     });

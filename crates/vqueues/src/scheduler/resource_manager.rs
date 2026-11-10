@@ -14,10 +14,10 @@ mod invoker_throttle;
 mod locks;
 mod permit;
 mod user_limiter;
+mod waiters;
 
 pub use self::permit::PermitBuilder;
 
-use std::collections::VecDeque;
 use std::task::Poll;
 
 use tokio::sync::mpsc;
@@ -44,12 +44,10 @@ use self::invoker_throttle::{InvokerThrottlingLimiter, ThrottlingAcquire};
 use self::locks::Locks;
 use self::permit::ProvisionalPermit;
 use self::user_limiter::UserLimiter;
+use self::waiters::Waiters;
 use super::VQueueHandle;
 use super::eligible::EligibilityTracker;
 use crate::GlobalTokenBucket;
-
-// A set of queues waiting on a resource
-type Waiters = VecDeque<VQueueHandle>;
 
 pub struct ResourceManager {
     // Resources
@@ -236,6 +234,7 @@ impl ResourceManager {
                     );
                     self.user_limiter.add_to_waiters(
                         vqueue,
+                        meta.priority(),
                         scope,
                         meta.limit_key(),
                         blocked_level,
@@ -267,7 +266,9 @@ impl ResourceManager {
                 // Do we have one?
                 if !current_permit.has_invoker_permit() {
                     // poll for one or die trying
-                    let Some(invoker_permit) = self.invoker_concurrency.poll_acquire(cx, vqueue)
+                    let Some(invoker_permit) =
+                        self.invoker_concurrency
+                            .poll_acquire(cx, vqueue, meta.priority())
                     else {
                         return AcquireOutcome::BlockedOn(ResourceKind::InvokerConcurrency);
                     };
@@ -276,7 +277,10 @@ impl ResourceManager {
 
                 // If we have the concurrency permit, let's see if we need to wait for throttling
                 if !current_permit.has_invoker_throttling_token() {
-                    match self.invoker_throttling.poll_acquire(cx, vqueue) {
+                    match self
+                        .invoker_throttling
+                        .poll_acquire(cx, vqueue, meta.priority())
+                    {
                         ThrottlingAcquire::Acquired(throttling_token) => {
                             current_permit.set_throttling_permit(throttling_token);
                         }

@@ -18,11 +18,10 @@ use restate_storage_api::StorageError;
 use restate_storage_api::lock_table::LoadLocks;
 use restate_types::{LockName, Scope};
 
-use super::Waiters;
 use crate::scheduler::VQueueHandle;
 
 #[derive(Default)]
-struct Inner(HashMap<LockName, Waiters>);
+struct Inner(HashMap<LockName, VecDeque<VQueueHandle>>);
 
 #[derive(Default)]
 pub struct Locks {

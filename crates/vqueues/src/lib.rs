@@ -48,7 +48,7 @@ use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::{BaseEntryId, DeploymentId, InvocationId, PartitionKey};
 use restate_types::invocation::{InvocationTarget, InvocationTargetType, VirtualObjectHandlerType};
 use restate_types::vqueues::{EntryId, EntryTargetExt, EntryTargetRef, Seq, VQueueId};
-use restate_types::{LockName, Scope};
+use restate_types::{LockName, Priority, Scope};
 use restate_util_string::{ReString, ToReString};
 use restate_worker_api::invoker::YieldReason;
 
@@ -111,14 +111,15 @@ pub struct VQueue<'a, A, S> {
 }
 
 impl VQueue<'_, (), ()> {
-    /// Determines the vqueue id from the invocation id, invocation target, and limit key.
+    /// Determines the vqueue id from the invocation id, invocation target, limit key, and priority.
     #[inline]
     pub fn infer_vqueue_id_from_invocation(
         partition_key: PartitionKey,
         invocation_target: &InvocationTarget,
         limit_key: &LimitKey<ReString>,
+        priority: Priority,
     ) -> VQueueId {
-        util::infer_vqueue_id_from_invocation(partition_key, invocation_target, limit_key)
+        util::infer_vqueue_id_from_invocation(partition_key, invocation_target, limit_key, priority)
     }
 }
 
@@ -173,6 +174,7 @@ where
         }))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn vqueue_from_invocation_target(
         at: UniqueTimestamp,
         qid: &VQueueId,
@@ -181,6 +183,7 @@ where
         cache: &'a mut VQueuesMetaCache,
         action_collector: Option<&'a mut Vec<A>>,
         limit_key: &LimitKey<ReString>,
+        priority: Priority,
     ) -> Result<Self, StorageError> {
         let cache_key = match cache.load(storage, qid).await? {
             Some(key) => key,
@@ -196,7 +199,8 @@ where
                     invocation_target.scope().cloned(),
                     limit_key.clone(),
                     link,
-                );
+                )
+                .with_priority(priority);
                 storage.create_vqueue(qid, &meta);
                 cache.insert(qid.clone(), meta)
             }

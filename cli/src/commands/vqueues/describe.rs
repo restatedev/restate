@@ -96,6 +96,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
             ("service", optional_str(queue.service_name.as_deref())),
             ("scope", optional_str(queue.scope.as_deref())),
             ("limit_key", optional_str(queue.limit_key.as_deref())),
+            ("priority", optional_str(queue.priority.as_deref())),
             ("lock", optional_str(queue.lock_name.as_deref())),
             ("active", Field::new(queue.is_active)),
             ("paused", Field::new(queue.queue_is_paused)),

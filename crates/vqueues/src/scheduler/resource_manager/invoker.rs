@@ -11,6 +11,7 @@
 use std::task::{Poll, Waker, ready};
 
 use restate_futures_util::concurrency::{Concurrency, Permit};
+use restate_types::Priority;
 
 use super::Waiters;
 use crate::scheduler::VQueueHandle;
@@ -78,6 +79,7 @@ impl InvokerConcurrencyLimiter {
         &mut self,
         cx: &mut std::task::Context<'_>,
         vqueue: VQueueHandle,
+        priority: Priority,
     ) -> Option<Permit> {
         self.waker.clone_from(cx.waker());
 
@@ -103,7 +105,7 @@ impl InvokerConcurrencyLimiter {
 
         // Blocked queues are only retried after notification or removal from this wait-list.
         if self.waiters.front() != Some(&vqueue) {
-            self.waiters.push_back(vqueue);
+            self.waiters.push_back(vqueue, priority);
         }
         None
     }
@@ -160,14 +162,22 @@ mod tests {
         };
         let mut limiter = InvokerConcurrencyLimiter::new(capacity.clone());
         for &waiter in &waiters {
-            assert!(limiter.poll_acquire(&mut cx, waiter).is_none());
+            assert!(
+                limiter
+                    .poll_acquire(&mut cx, waiter, Priority::Normal)
+                    .is_none()
+            );
         }
 
         drop(first);
         assert!(matches!(limiter.poll_head(&mut cx), Poll::Ready(Some(h)) if h == waiters[0]));
         assert!(limiter.poll_head(&mut cx).is_pending());
         assert_eq!(limiter.waiters.len(), waiters.len() - 1);
-        assert!(limiter.poll_acquire(&mut cx, newcomer).is_none());
+        assert!(
+            limiter
+                .poll_acquire(&mut cx, newcomer, Priority::Normal)
+                .is_none()
+        );
 
         // An outstanding notification must not reserve more of the node-wide capacity.
         drop(second);
@@ -175,7 +185,9 @@ mod tests {
         let Poll::Ready(other_partition) = capacity.poll_acquire(&mut cx) else {
             panic!("the other partition must be able to acquire the second permit");
         };
-        let permit = limiter.poll_acquire(&mut cx, waiters[0]).unwrap();
+        let permit = limiter
+            .poll_acquire(&mut cx, waiters[0], Priority::Normal)
+            .unwrap();
         assert!(limiter.poll_head(&mut cx).is_pending());
         drop(permit);
 
@@ -183,11 +195,46 @@ mod tests {
         for &waiter in waiters.iter().skip(1).chain(std::iter::once(&newcomer)) {
             assert!(matches!(limiter.poll_head(&mut cx), Poll::Ready(Some(h)) if h == waiter));
             assert!(limiter.poll_head(&mut cx).is_pending());
-            drop(limiter.poll_acquire(&mut cx, waiter).unwrap());
+            drop(
+                limiter
+                    .poll_acquire(&mut cx, waiter, Priority::Normal)
+                    .unwrap(),
+            );
         }
         assert!(matches!(limiter.poll_head(&mut cx), Poll::Ready(None)));
         drop(other_partition);
         assert_eq!(capacity.available_permits(), 2);
+    }
+
+    #[test]
+    fn higher_priority_waiters_are_notified_first() {
+        let mut handles = SlotMap::<VQueueHandle, ()>::with_key();
+        let [normal, low, high, live] = std::array::from_fn(|_| handles.insert(()));
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut capacity = Concurrency::new(Some(NonZeroUsize::MIN));
+        let Poll::Ready(held) = capacity.poll_acquire(&mut cx) else {
+            panic!("initial capacity is available");
+        };
+        let mut limiter = InvokerConcurrencyLimiter::new(capacity.clone());
+        for (waiter, priority) in [
+            (normal, Priority::Normal),
+            (low, Priority::Low),
+            (high, Priority::High),
+            (live, Priority::Live),
+        ] {
+            assert!(limiter.poll_acquire(&mut cx, waiter, priority).is_none());
+        }
+
+        drop(held);
+        for waiter in [live, high, normal, low] {
+            assert!(matches!(limiter.poll_head(&mut cx), Poll::Ready(Some(h)) if h == waiter));
+            drop(
+                limiter
+                    .poll_acquire(&mut cx, waiter, Priority::Normal)
+                    .unwrap(),
+            );
+        }
+        assert!(matches!(limiter.poll_head(&mut cx), Poll::Ready(None)));
     }
 
     #[test]
@@ -203,7 +250,11 @@ mod tests {
         };
         let mut limiter = InvokerConcurrencyLimiter::new(capacity.clone());
         for waiter in [first, second, third, fourth] {
-            assert!(limiter.poll_acquire(&mut cx, waiter).is_none());
+            assert!(
+                limiter
+                    .poll_acquire(&mut cx, waiter, Priority::Normal)
+                    .is_none()
+            );
         }
 
         limiter.remove_from_waiters(fourth);
@@ -228,7 +279,11 @@ mod tests {
         assert!(matches!(limiter.poll_head(&mut cx), Poll::Ready(None)));
 
         // A fresh load after idle can acquire immediately.
-        drop(limiter.poll_acquire(&mut cx, fourth).unwrap());
+        drop(
+            limiter
+                .poll_acquire(&mut cx, fourth, Priority::Normal)
+                .unwrap(),
+        );
         assert_eq!(capacity.available_permits(), 1);
     }
 }

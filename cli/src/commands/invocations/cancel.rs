@@ -13,11 +13,12 @@ use cling::prelude::*;
 
 use restate_cli_util::ui::console::Styled;
 use restate_cli_util::ui::stylesheet::Style;
+use restate_types::Priority;
 
 use crate::cli_env::CliEnv;
 use crate::clients::batch_execute;
 use crate::clients::datafusion_helpers::find_active_invocations_simple;
-use crate::clients::{self, AdminClientInterface};
+use crate::clients::{self, AdminClientInterface, ClientError};
 use crate::commands::invocations::{
     DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT, DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
     create_query_filter,
@@ -36,6 +37,7 @@ use crate::ui::with_progress;
     examples: [
         "restate invocations cancel inv_1gdJBtdVEcM942bjcDmb1c1khoaJe11Hbz --yes",
         "restate invocations cancel Cart/u1 --dry-run     # every invocation on key u1 of Cart",
+        "restate invocations cancel Cart --priority low --dry-run   # low-priority Cart calls",
     ],
     learn_more: "https://docs.restate.dev/services/invocation/managing-invocations#cancel",
 ))]
@@ -45,6 +47,9 @@ pub struct Cancel {
     /// Kill instead of cancelling, same as `restate invocations kill`
     #[clap(long)]
     pub(super) kill: bool,
+    /// Only act on the matching invocations with this priority
+    #[clap(long, ignore_case = true, value_parser = super::priority_parser())]
+    pub(super) priority: Option<Priority>,
     /// Act on at most this many of the matching invocations, leaving the others untouched
     #[clap(long, default_value_t = DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT)]
     pub(super) limit: usize,
@@ -56,11 +61,22 @@ pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> 
     let client = clients::AdminClient::new(&env).await?;
     let sql_client = clients::DataFusionHttpClient::from(client.clone());
 
-    let filter = format!(
-        "{} AND status != 'completed' LIMIT {}",
-        create_query_filter(&opts.query)?,
-        opts.limit
-    );
+    let mut filter = create_query_filter(&opts.query)?;
+    if let Some(priority) = opts.priority {
+        if !sql_client
+            .check_columns_exists("sys_invocation_status", &["priority"])
+            .await?
+        {
+            return Err(ClientError::UnsupportedServerVersion {
+                feature: "Filtering invocations by priority",
+                min_version: "1.8.2",
+                server_version: sql_client.server_version().clone(),
+            }
+            .into());
+        }
+        filter.push_str(&format!(" AND priority = '{priority}'"));
+    }
+    let filter = format!("{filter} AND status != 'completed' LIMIT {}", opts.limit);
 
     let invocations = with_progress(
         "Reading invocations...",

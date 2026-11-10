@@ -20,6 +20,7 @@ use restate_limiter::RuleHandle;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::VQueueStore;
 use restate_storage_api::vqueue_table::metadata::VQueueMeta;
+use restate_types::Priority;
 use restate_types::time::MillisSinceEpoch;
 use restate_util_string::ReString;
 use restate_worker_api::{ResourceKind, SchedulingStatus};
@@ -62,11 +63,110 @@ pub(super) enum State {
     BlockedOn(ResourceKind),
 }
 
+/// Ready vqueues, served from the most urgent priority with ready vqueues.
+///
+/// Vqueues are added to `incoming` and only placed by their priority when the scheduler picks the
+/// next eligible vqueue, as that is where their metadata is at hand.
+#[derive(Debug, Default)]
+struct ReadyRing {
+    incoming: VecDeque<VQueueHandle>,
+    live: VecDeque<VQueueHandle>,
+    high: VecDeque<VQueueHandle>,
+    normal: VecDeque<VQueueHandle>,
+    low: VecDeque<VQueueHandle>,
+    selected: Priority,
+}
+
+impl ReadyRing {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            normal: VecDeque::with_capacity(capacity),
+            ..Default::default()
+        }
+    }
+
+    fn push_back(&mut self, handle: VQueueHandle) {
+        self.incoming.push_back(handle);
+    }
+
+    fn place_incoming(&mut self, metas: VQueuesMeta<'_>) {
+        while let Some(handle) = self.incoming.pop_front() {
+            let priority = metas
+                .get(handle)
+                .map_or(Priority::Normal, |slot| slot.meta().priority());
+            self.queue_mut(priority).push_back(handle);
+        }
+    }
+
+    fn select(&mut self, priority: Priority) {
+        self.selected = priority;
+    }
+
+    fn selected_len(&self) -> usize {
+        self.queue(self.selected).len()
+    }
+
+    fn front(&self) -> Option<&VQueueHandle> {
+        self.queue(self.selected).front()
+    }
+
+    fn pop_front(&mut self) -> Option<VQueueHandle> {
+        self.queue_mut(self.selected).pop_front()
+    }
+
+    fn rotate_left(&mut self, n: usize) {
+        self.queue_mut(self.selected).rotate_left(n);
+    }
+
+    fn len(&self) -> usize {
+        [
+            &self.incoming,
+            &self.live,
+            &self.high,
+            &self.normal,
+            &self.low,
+        ]
+        .into_iter()
+        .map(VecDeque::len)
+        .sum()
+    }
+
+    fn contains(&self, handle: &VQueueHandle) -> bool {
+        [
+            &self.incoming,
+            &self.live,
+            &self.high,
+            &self.normal,
+            &self.low,
+        ]
+        .into_iter()
+        .any(|queue| queue.contains(handle))
+    }
+
+    fn queue(&self, priority: Priority) -> &VecDeque<VQueueHandle> {
+        match priority {
+            Priority::Live => &self.live,
+            Priority::High => &self.high,
+            Priority::Normal => &self.normal,
+            Priority::Low => &self.low,
+        }
+    }
+
+    fn queue_mut(&mut self, priority: Priority) -> &mut VecDeque<VQueueHandle> {
+        match priority {
+            Priority::Live => &mut self.live,
+            Priority::High => &mut self.high,
+            Priority::Normal => &mut self.normal,
+            Priority::Low => &mut self.low,
+        }
+    }
+}
+
 #[derive(derive_more::Debug)]
 pub(crate) struct EligibilityTracker {
     #[debug(skip)]
     delayed_eligibility: DelayQueue<VQueueHandle>,
-    ready_ring: VecDeque<VQueueHandle>,
+    ready_ring: ReadyRing,
     #[debug(skip)]
     states: SecondaryMap<VQueueHandle, State>,
 }
@@ -75,7 +175,7 @@ impl EligibilityTracker {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             delayed_eligibility: DelayQueue::with_capacity(capacity),
-            ready_ring: VecDeque::with_capacity(capacity),
+            ready_ring: ReadyRing::with_capacity(capacity),
             states: SecondaryMap::with_capacity(capacity),
         }
     }
@@ -140,91 +240,95 @@ impl EligibilityTracker {
         vqueues: &mut SecondaryMap<VQueueHandle, VQueueState<S>>,
         refill_mode: RefillMode,
     ) -> Result<Option<VQueueHandle>, StorageError> {
-        let n = self.ready_ring.len();
-        // avoid rescanning the ready ring multiple rounds
-        for _ in 0..n {
-            // Bound eligibility transitions as well as decisions. Merely rotating an
-            // IO-pending queue restores the budget so an idle scan does not self-wake forever.
-            let coop = match tokio::task::coop::poll_proceed(cx) {
-                Poll::Ready(coop) => coop,
-                Poll::Pending => return Ok(None),
-            };
-            // what is my current status
-            let Some(handle) = self.ready_ring.front().copied() else {
-                return Ok(None);
-            };
+        self.ready_ring.place_incoming(metas);
+        'priorities: for priority in Priority::BY_URGENCY {
+            self.ready_ring.select(priority);
+            let n = self.ready_ring.selected_len();
+            // avoid rescanning the ready ring multiple rounds
+            for _ in 0..n {
+                // Bound eligibility transitions as well as decisions. Merely rotating an
+                // IO-pending queue restores the budget so an idle scan does not self-wake forever.
+                let coop = match tokio::task::coop::poll_proceed(cx) {
+                    Poll::Ready(coop) => coop,
+                    Poll::Pending => return Ok(None),
+                };
+                // what is my current status
+                let Some(handle) = self.ready_ring.front().copied() else {
+                    continue 'priorities;
+                };
 
-            let Some(qstate) = vqueues.get_mut(handle) else {
-                // the vqueue has been removed probably it's empty therefore, it's
-                // safe to assume that it's not eligible.
-                self.remove(handle);
-                self.ready_ring.pop_front();
-                coop.made_progress();
-                continue;
-            };
-
-            let Some(current_state) = self.states.get_mut(handle) else {
-                // The vqueue is not eligible anymore. This can happen if the vqueue became dormant
-                // due to items being removed externally (killed, etc.)
-                self.ready_ring.pop_front();
-                coop.made_progress();
-                continue;
-            };
-
-            let Some(slot) = metas.get(handle) else {
-                // The vqueue is not eligible anymore. This can happen if the vqueue became dormant
-                // due to items being removed externally (killed, etc.)
-                self.remove(handle);
-                self.ready_ring.pop_front();
-                coop.made_progress();
-                continue;
-            };
-
-            match current_state {
-                State::NeedsPoll => {
-                    // update the state based on eligibility.
-                    match qstate.poll_eligibility(cx, slot, storage, refill_mode) {
-                        Poll::Ready(Ok(Eligibility::Eligible)) => {
-                            *current_state = State::Ready;
-                            coop.made_progress();
-                            return Ok(Some(handle));
-                        }
-                        Poll::Ready(Ok(Eligibility::EligibleAt(ts))) => {
-                            let ts = ts.as_unix_millis();
-                            let timer_key = self.delayed_eligibility.insert(
-                                handle,
-                                // Cap the parked delay. See`MAX_PARK`.
-                                ts.duration_since(SchedulerClock.now_millis()).min(MAX_PARK),
-                            );
-                            *current_state = State::Scheduled {
-                                wake_up: WakeUp { ts, timer_key },
-                            };
-                            self.ready_ring.pop_front();
-                            coop.made_progress();
-                            continue;
-                        }
-                        Poll::Ready(Ok(Eligibility::NotEligible)) => {
-                            self.ready_ring.pop_front();
-                            self.remove(handle);
-                            coop.made_progress();
-                            continue;
-                        }
-                        Poll::Ready(Err(err)) => {
-                            return Err(err);
-                        }
-                        Poll::Pending => {
-                            self.ready_ring.rotate_left(1);
-                            continue;
-                        }
-                    }
-                }
-                State::BlockedOn(_) | State::Scheduled { .. } => {
+                let Some(qstate) = vqueues.get_mut(handle) else {
+                    // the vqueue has been removed probably it's empty therefore, it's
+                    // safe to assume that it's not eligible.
+                    self.remove(handle);
                     self.ready_ring.pop_front();
                     coop.made_progress();
-                }
-                State::Ready => {
+                    continue;
+                };
+
+                let Some(current_state) = self.states.get_mut(handle) else {
+                    // The vqueue is not eligible anymore. This can happen if the vqueue became dormant
+                    // due to items being removed externally (killed, etc.)
+                    self.ready_ring.pop_front();
                     coop.made_progress();
-                    return Ok(Some(handle));
+                    continue;
+                };
+
+                let Some(slot) = metas.get(handle) else {
+                    // The vqueue is not eligible anymore. This can happen if the vqueue became dormant
+                    // due to items being removed externally (killed, etc.)
+                    self.remove(handle);
+                    self.ready_ring.pop_front();
+                    coop.made_progress();
+                    continue;
+                };
+
+                match current_state {
+                    State::NeedsPoll => {
+                        // update the state based on eligibility.
+                        match qstate.poll_eligibility(cx, slot, storage, refill_mode) {
+                            Poll::Ready(Ok(Eligibility::Eligible)) => {
+                                *current_state = State::Ready;
+                                coop.made_progress();
+                                return Ok(Some(handle));
+                            }
+                            Poll::Ready(Ok(Eligibility::EligibleAt(ts))) => {
+                                let ts = ts.as_unix_millis();
+                                let timer_key = self.delayed_eligibility.insert(
+                                    handle,
+                                    // Cap the parked delay. See`MAX_PARK`.
+                                    ts.duration_since(SchedulerClock.now_millis()).min(MAX_PARK),
+                                );
+                                *current_state = State::Scheduled {
+                                    wake_up: WakeUp { ts, timer_key },
+                                };
+                                self.ready_ring.pop_front();
+                                coop.made_progress();
+                                continue;
+                            }
+                            Poll::Ready(Ok(Eligibility::NotEligible)) => {
+                                self.ready_ring.pop_front();
+                                self.remove(handle);
+                                coop.made_progress();
+                                continue;
+                            }
+                            Poll::Ready(Err(err)) => {
+                                return Err(err);
+                            }
+                            Poll::Pending => {
+                                self.ready_ring.rotate_left(1);
+                                continue;
+                            }
+                        }
+                    }
+                    State::BlockedOn(_) | State::Scheduled { .. } => {
+                        self.ready_ring.pop_front();
+                        coop.made_progress();
+                    }
+                    State::Ready => {
+                        coop.made_progress();
+                        return Ok(Some(handle));
+                    }
                 }
             }
         }

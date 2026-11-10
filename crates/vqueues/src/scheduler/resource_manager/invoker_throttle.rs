@@ -15,6 +15,7 @@ use std::time::Duration;
 use hashbrown::HashMap;
 use tokio_util::time::{DelayQueue, delay_queue};
 
+use restate_types::Priority;
 use restate_types::time::MillisSinceEpoch;
 use restate_worker_api::resources::ThrottlingToken;
 
@@ -87,13 +88,14 @@ impl InvokerThrottlingLimiter {
         &mut self,
         cx: &mut std::task::Context<'_>,
         vqueue: VQueueHandle,
+        priority: Priority,
     ) -> ThrottlingAcquire {
         if self.token_bucket.is_none() {
             return ThrottlingAcquire::Acquired(ThrottlingToken);
         }
 
         if self.waiters.front().is_none_or(|head| *head != vqueue) {
-            self.enqueue_waiter(vqueue);
+            self.enqueue_waiter(vqueue, priority);
         }
         self.poll_timers(cx);
         self.replenish_reservations();
@@ -161,9 +163,9 @@ impl InvokerThrottlingLimiter {
         }
     }
 
-    fn enqueue_waiter(&mut self, vqueue: VQueueHandle) {
+    fn enqueue_waiter(&mut self, vqueue: VQueueHandle, priority: Priority) {
         if !self.waiters.contains(&vqueue) {
-            self.waiters.push_back(vqueue);
+            self.waiters.push_back(vqueue, priority);
         }
     }
 
@@ -293,11 +295,11 @@ mod tests {
         let mut cx = std::task::Context::from_waker(waker);
 
         assert!(matches!(
-            limiter.poll_acquire(&mut cx, vq1),
+            limiter.poll_acquire(&mut cx, vq1, Priority::Normal),
             ThrottlingAcquire::Acquired(_)
         ));
 
-        let estimated_retry_at = match limiter.poll_acquire(&mut cx, vq2) {
+        let estimated_retry_at = match limiter.poll_acquire(&mut cx, vq2, Priority::Normal) {
             ThrottlingAcquire::Blocked { estimated_retry_at } => estimated_retry_at,
             ThrottlingAcquire::Acquired(_) => panic!("expected throttling to block"),
         };
@@ -312,7 +314,7 @@ mod tests {
         assert!(matches!(limiter.poll_head(&mut cx), Poll::Ready(Some(h)) if h == vq2));
         assert!(matches!(limiter.poll_head(&mut cx), Poll::Pending));
         assert!(matches!(
-            limiter.poll_acquire(&mut cx, vq2),
+            limiter.poll_acquire(&mut cx, vq2, Priority::Normal),
             ThrottlingAcquire::Acquired(_)
         ));
 
@@ -341,23 +343,23 @@ mod tests {
         let mut cx = std::task::Context::from_waker(waker);
 
         assert!(matches!(
-            limiter.poll_acquire(&mut cx, consume_1),
+            limiter.poll_acquire(&mut cx, consume_1, Priority::Normal),
             ThrottlingAcquire::Acquired(_)
         ));
         assert!(matches!(
-            limiter.poll_acquire(&mut cx, consume_2),
+            limiter.poll_acquire(&mut cx, consume_2, Priority::Normal),
             ThrottlingAcquire::Acquired(_)
         ));
 
-        let estimate_1 = match limiter.poll_acquire(&mut cx, vq1) {
+        let estimate_1 = match limiter.poll_acquire(&mut cx, vq1, Priority::Normal) {
             ThrottlingAcquire::Blocked { estimated_retry_at } => estimated_retry_at,
             ThrottlingAcquire::Acquired(_) => panic!("expected throttling to block"),
         };
-        let estimate_2 = match limiter.poll_acquire(&mut cx, vq2) {
+        let estimate_2 = match limiter.poll_acquire(&mut cx, vq2, Priority::Normal) {
             ThrottlingAcquire::Blocked { estimated_retry_at } => estimated_retry_at,
             ThrottlingAcquire::Acquired(_) => panic!("expected throttling to block"),
         };
-        let estimate_3 = match limiter.poll_acquire(&mut cx, vq3) {
+        let estimate_3 = match limiter.poll_acquire(&mut cx, vq3, Priority::Normal) {
             ThrottlingAcquire::Blocked { estimated_retry_at } => estimated_retry_at,
             ThrottlingAcquire::Acquired(_) => panic!("expected throttling to block"),
         };
@@ -386,11 +388,11 @@ mod tests {
         let mut cx = std::task::Context::from_waker(waker);
 
         assert!(matches!(
-            limiter.poll_acquire(&mut cx, consume),
+            limiter.poll_acquire(&mut cx, consume, Priority::Normal),
             ThrottlingAcquire::Acquired(_)
         ));
 
-        let estimate = match limiter.poll_acquire(&mut cx, waiter) {
+        let estimate = match limiter.poll_acquire(&mut cx, waiter, Priority::Normal) {
             ThrottlingAcquire::Blocked { estimated_retry_at } => estimated_retry_at,
             ThrottlingAcquire::Acquired(_) => panic!("expected throttling to block"),
         };

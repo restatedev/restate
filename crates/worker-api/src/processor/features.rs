@@ -65,6 +65,13 @@ pub trait PartitionFeatures {
     fn is_preflight_signal_recording_enabled(&self) -> bool {
         self.has_feature(PartitionFeatureChange::EnablePreflightSignalRecording)
     }
+
+    /// Whether invocations with a non-normal priority are placed into their own vqueues.
+    ///
+    /// *Since v1.8.2*
+    fn is_invocation_priorities_enabled(&self) -> bool {
+        self.has_feature(PartitionFeatureChange::EnableInvocationPriorities)
+    }
 }
 
 impl PartitionFeatures for PersistedFeatures {
@@ -84,6 +91,7 @@ impl PartitionFeatures for PersistedFeatures {
             PartitionFeatureChange::EnablePreflightSignalRecording => {
                 self.preflight_signal_recording
             }
+            PartitionFeatureChange::EnableInvocationPriorities => self.invocation_priorities,
         }
     }
 

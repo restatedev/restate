@@ -1154,6 +1154,19 @@ experimental! {
     /// Since v1.8.1
     preflight_signal_recording,
 
+    /// # Invocation priorities
+    ///
+    /// When enabled, invocations sent with a priority other than `normal` are placed into their
+    /// own vqueues, which are scheduled before vqueues of lower priority.
+    ///
+    /// Only enable once all nodes run v1.8.2 or newer. Once a partition has enabled it, it stays
+    /// enabled even if this option is removed.
+    ///
+    /// Once enabled, you **cannot** roll back to a Restate-server version older than v1.8.2.
+    ///
+    /// Since v1.8.2
+    invocation_priorities,
+
     /// # Remove orphaned active VQueue markers on startup
     ///
     /// Escape hatch for partitions that fail to start because an active vqueue has no

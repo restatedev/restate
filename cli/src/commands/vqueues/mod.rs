@@ -13,6 +13,8 @@ mod list;
 mod pause;
 mod resume;
 
+use std::borrow::Cow;
+
 use chrono::{DateTime, Local};
 use cling::prelude::*;
 use serde::Deserialize;
@@ -50,6 +52,7 @@ struct VQueueRow {
     service_name: Option<String>,
     scope: Option<String>,
     limit_key: Option<String>,
+    priority: Option<String>,
     lock_name: Option<String>,
     created_at: DateTime<Local>,
     last_enqueued_at: Option<DateTime<Local>>,
@@ -63,13 +66,28 @@ struct VQueueRow {
     num_finished: u64,
 }
 
+/// [`VQUEUE_COLUMNS`] plus the columns the connected server has from newer versions.
+async fn vqueue_columns(client: &DataFusionHttpClient) -> anyhow::Result<Cow<'static, str>> {
+    Ok(
+        if client
+            .check_columns_exists("sys_vqueue_meta", &["priority"])
+            .await?
+        {
+            Cow::Owned(format!("{VQUEUE_COLUMNS}, priority"))
+        } else {
+            Cow::Borrowed(VQUEUE_COLUMNS)
+        },
+    )
+}
+
 async fn get_vqueue(
     client: &DataFusionHttpClient,
     vqueue_id: &VQueueId,
 ) -> anyhow::Result<VQueueRow> {
+    let columns = vqueue_columns(client).await?;
     let mut rows: Vec<VQueueRow> = client
         .run_json_query(format!(
-            "SELECT {VQUEUE_COLUMNS} FROM sys_vqueue_meta WHERE id = '{vqueue_id}'"
+            "SELECT {columns} FROM sys_vqueue_meta WHERE id = '{vqueue_id}'"
         ))
         .await?;
     rows.pop().ok_or_else(|| {

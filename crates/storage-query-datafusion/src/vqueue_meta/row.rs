@@ -48,6 +48,10 @@ pub(crate) fn append_vqueues_meta_row(
         row.fmt_limit_key(&meta.limit_key);
     }
 
+    if row.is_priority_defined() {
+        row.priority(<&str>::from(meta.priority));
+    }
+
     if row.is_lock_name_defined()
         && let Some(lock_name) = meta.lock_name()
     {

@@ -24,6 +24,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures::{StreamExt, TryStreamExt};
 use googletest::{all, assert_that, pat};
+use rstest::rstest;
 use test_log::test;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -710,6 +711,65 @@ async fn invocation_creation_seq() -> TestResult {
 
 /// Invocations created before the creation seq was introduced get it backfilled from their
 /// vqueue entry on transitions that write the invocation status anyway.
+/// A priority only selects its own vqueue once the partition has enabled priorities.
+#[rstest]
+#[case(false)]
+#[case(true)]
+#[restate_core::test]
+async fn invocation_priority_selects_vqueue(#[case] priorities_enabled: bool) -> TestResult {
+    let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter(
+        [
+            PartitionFeatureChange::EnableJournalV2,
+            PartitionFeatureChange::EnableVqueues,
+        ]
+        .into_iter()
+        .chain(priorities_enabled.then_some(PartitionFeatureChange::EnableInvocationPriorities)),
+    ))
+    .await;
+    let invocation = ServiceInvocation {
+        priority: Priority::Live,
+        ..ServiceInvocation::mock()
+    };
+    let invocation_id = invocation.invocation_id;
+    let expected_priority = if priorities_enabled {
+        Priority::Live
+    } else {
+        Priority::Normal
+    };
+    let expected_qid = VQueue::infer_vqueue_id_from_invocation(
+        invocation.partition_key(),
+        &invocation.invocation_target,
+        &invocation.limit_key,
+        expected_priority,
+    );
+    test_env
+        .apply(commands::InvokeCommand::test_envelope(invocation))
+        .await;
+
+    let mut transaction = test_env.storage.transaction();
+    let qid = transaction
+        .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
+        .await?
+        .unwrap()
+        .vqueue_id()
+        .clone();
+    assert_eq!(qid, expected_qid);
+    assert_eq!(
+        transaction.get_vqueue(&qid).await?.unwrap().priority(),
+        expected_priority
+    );
+    let InvocationStatus::Inboxed(inboxed) =
+        transaction.get_invocation_status(&invocation_id).await?
+    else {
+        panic!("invocation must be inboxed");
+    };
+    assert_eq!(inboxed.metadata.priority, expected_priority);
+    drop(transaction);
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
 #[test(restate_core::test)]
 async fn invocation_creation_seq_backfill() -> TestResult {
     let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([

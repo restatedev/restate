@@ -109,7 +109,7 @@ pub mod v1 {
         use restate_types::service_protocol::ServiceProtocolVersion;
         use restate_types::time::MillisSinceEpoch;
         use restate_types::vqueues::{Seq, VQueueId};
-        use restate_types::{GenerationalNodeId, LimitKey, Scope, journal_v2};
+        use restate_types::{GenerationalNodeId, LimitKey, Priority, Scope, journal_v2};
         use restate_util_string::RestateString;
 
         use super::dedup_sequence_number::Variant;
@@ -404,6 +404,7 @@ pub mod v1 {
                     status,
                     vqueue_id,
                     limit_key,
+                    priority,
                     invocation_target,
                     source,
                     span_context,
@@ -442,6 +443,7 @@ pub mod v1 {
                 let creation_seq = creation_seq.map(Seq::new);
 
                 let limit_key = LimitKey::from_str(&limit_key).expect("valid limit key format");
+                let priority = priority_from_pb(priority)?;
                 let created_using_restate_version =
                     restate_version_from_pb(created_using_restate_version);
                 let timestamps = crate::invocation_status_table::StatusTimestamps::new(
@@ -498,6 +500,7 @@ pub mod v1 {
                                     crate::invocation_status_table::PreFlightInvocationMetadata {
                                         vqueue_id,
                                         limit_key,
+                                        priority,
                                         response_sinks,
                                         timestamps,
                                         invocation_target,
@@ -549,6 +552,7 @@ pub mod v1 {
                                     crate::invocation_status_table::PreFlightInvocationMetadata {
                                         vqueue_id,
                                         limit_key,
+                                        priority,
                                         response_sinks,
                                         timestamps,
                                         invocation_target,
@@ -575,6 +579,7 @@ pub mod v1 {
                             crate::invocation_status_table::InFlightInvocationMetadata {
                                 vqueue_id,
                                 limit_key,
+                                priority,
                                 response_sinks,
                                 timestamps,
                                 invocation_target,
@@ -618,6 +623,7 @@ pub mod v1 {
                                     crate::invocation_status_table::InFlightInvocationMetadata {
                                         vqueue_id,
                                         limit_key,
+                                        priority,
                                         response_sinks,
                                         timestamps,
                                         invocation_target,
@@ -656,6 +662,7 @@ pub mod v1 {
                             crate::invocation_status_table::InFlightInvocationMetadata {
                                 vqueue_id,
                                 limit_key,
+                                priority,
                                 response_sinks,
                                 timestamps,
                                 invocation_target,
@@ -689,6 +696,7 @@ pub mod v1 {
                             crate::invocation_status_table::CompletedInvocation {
                                 vqueue_id,
                                 limit_key,
+                                priority,
                                 timestamps,
                                 invocation_target,
                                 created_using_restate_version,
@@ -733,6 +741,7 @@ pub mod v1 {
                                     response_sinks,
                                     vqueue_id,
                                     limit_key,
+                                    priority,
                                     timestamps,
                                     invocation_target,
                                     created_using_restate_version,
@@ -755,6 +764,7 @@ pub mod v1 {
                         status: invocation_status_v2::Status::Scheduled.into(),
                         vqueue_id: vqueue_id.map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
                         limit_key: limit_key.to_string(),
+                        priority: priority as u32,
                         invocation_target: Some(invocation_target.into()),
                         source: Some(source.into()),
                         span_context: Some(span_context.into()),
@@ -804,6 +814,7 @@ pub mod v1 {
                                 crate::invocation_status_table::PreFlightInvocationMetadata {
                                     vqueue_id,
                                     limit_key,
+                                    priority,
                                     response_sinks,
                                     timestamps,
                                     invocation_target,
@@ -838,6 +849,7 @@ pub mod v1 {
                             vqueue_id: vqueue_id
                                 .map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
                             limit_key: limit_key.to_string(),
+                            priority: priority as u32,
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
@@ -891,6 +903,7 @@ pub mod v1 {
                                 crate::invocation_status_table::PreFlightInvocationMetadata {
                                     vqueue_id,
                                     limit_key,
+                                    priority,
                                     response_sinks,
                                     timestamps,
                                     invocation_target,
@@ -915,6 +928,7 @@ pub mod v1 {
                         status: invocation_status_v2::Status::Inboxed.into(),
                         vqueue_id: vqueue_id.map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
                         limit_key: limit_key.to_string(),
+                        priority: priority as u32,
                         invocation_target: Some(invocation_target.into()),
                         source: Some(source.into()),
                         span_context: Some(span_context.into()),
@@ -964,6 +978,7 @@ pub mod v1 {
                                 crate::invocation_status_table::PreFlightInvocationMetadata {
                                     vqueue_id,
                                     limit_key,
+                                    priority,
                                     response_sinks,
                                     timestamps,
                                     invocation_target,
@@ -998,6 +1013,7 @@ pub mod v1 {
                             vqueue_id: vqueue_id
                                 .map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
                             limit_key: limit_key.to_string(),
+                            priority: priority as u32,
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
@@ -1049,6 +1065,7 @@ pub mod v1 {
                         crate::invocation_status_table::InFlightInvocationMetadata {
                             vqueue_id,
                             limit_key,
+                            priority,
                             invocation_target,
                             created_using_restate_version,
                             journal_metadata,
@@ -1078,6 +1095,7 @@ pub mod v1 {
                             vqueue_id: vqueue_id
                                 .map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
                             limit_key: limit_key.to_string(),
+                            priority: priority as u32,
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
@@ -1130,6 +1148,7 @@ pub mod v1 {
                             crate::invocation_status_table::InFlightInvocationMetadata {
                                 vqueue_id,
                                 limit_key,
+                                priority,
                                 invocation_target,
                                 created_using_restate_version,
                                 journal_metadata,
@@ -1181,6 +1200,7 @@ pub mod v1 {
                             vqueue_id: vqueue_id
                                 .map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
                             limit_key: limit_key.to_string(),
+                            priority: priority as u32,
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
@@ -1232,6 +1252,7 @@ pub mod v1 {
                         crate::invocation_status_table::InFlightInvocationMetadata {
                             vqueue_id,
                             limit_key,
+                            priority,
                             invocation_target,
                             created_using_restate_version,
                             journal_metadata,
@@ -1261,6 +1282,7 @@ pub mod v1 {
                             vqueue_id: vqueue_id
                                 .map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
                             limit_key: limit_key.to_string(),
+                            priority: priority as u32,
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
@@ -1312,6 +1334,7 @@ pub mod v1 {
                         crate::invocation_status_table::CompletedInvocation {
                             vqueue_id,
                             limit_key,
+                            priority,
                             invocation_target,
                             created_using_restate_version,
                             source,
@@ -1340,6 +1363,7 @@ pub mod v1 {
                             vqueue_id: vqueue_id
                                 .map(|qid| Bytes::copy_from_slice(qid.as_raw_bytes())),
                             limit_key: limit_key.to_string(),
+                            priority: priority as u32,
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
@@ -1711,6 +1735,7 @@ pub mod v1 {
                     submit_notification_sink,
                     restate_version,
                     limit_key,
+                    priority,
                 } = value;
 
                 let invocation_id = restate_types::identifiers::InvocationId::try_from(
@@ -1766,6 +1791,7 @@ pub mod v1 {
 
                 // Scope is persisted as part of InvocationTarget since v1.7.0
                 let limit_key = limit_key.parse().map_err(ConversionError::invalid_data)?;
+                let priority = priority_from_pb(priority)?;
 
                 Ok(restate_types::invocation::ServiceInvocation {
                     invocation_id,
@@ -1780,6 +1806,7 @@ pub mod v1 {
                     journal_retention_duration,
                     idempotency_key,
                     limit_key,
+                    priority,
                     submit_notification_sink,
                     restate_version: restate_version_from_pb(restate_version),
                 })
@@ -1811,6 +1838,7 @@ pub mod v1 {
                     submit_notification_sink: value.submit_notification_sink.map(Into::into),
                     restate_version: value.restate_version.into_string(),
                     limit_key,
+                    priority: value.priority as u32,
                 }
             }
         }
@@ -1845,6 +1873,7 @@ pub mod v1 {
                     submit_notification_sink: value.submit_notification_sink.map(Into::into),
                     restate_version: value.restate_version.clone().into_string(),
                     limit_key: value.limit_key.to_string(),
+                    priority: value.priority as u32,
                 }
             }
         }
@@ -4205,6 +4234,13 @@ pub mod v1 {
             }
         }
 
+        pub(super) fn priority_from_pb(priority: u32) -> Result<Priority, ConversionError> {
+            u8::try_from(priority)
+                .ok()
+                .and_then(Priority::from_repr)
+                .ok_or_else(|| ConversionError::invalid_data_static("priority"))
+        }
+
         fn restate_version_from_pb(restate_version: String) -> restate_types::RestateVersion {
             if restate_version.is_empty() {
                 restate_types::RestateVersion::unknown()
@@ -4222,6 +4258,7 @@ pub mod v1 {
         use restate_types::journal_v2::UnresolvedFuture;
         use restate_types::vqueues::VQueueId;
         use restate_types::{
+            Priority,
             errors::ConversionError,
             identifiers::{DeploymentId, InvocationId, SubscriptionId},
             invocation::ServiceType,
@@ -4230,7 +4267,7 @@ pub mod v1 {
 
         use crate::protobuf_types::v1::{
             InvocationTarget, ResponseResult, Source, SpanContextLite,
-            pb_conversion::{expect_or_fail, try_bytes_into_trace_id},
+            pb_conversion::{expect_or_fail, priority_from_pb, try_bytes_into_trace_id},
             response_result, source,
         };
 
@@ -4409,6 +4446,10 @@ pub mod v1 {
                 } else {
                     Some(StrFormatter(self.limit_key))
                 }
+            }
+
+            pub fn priority(&self) -> std::result::Result<Priority, ConversionError> {
+                priority_from_pb(self.inner.priority)
             }
 
             pub fn service_protocol_version(

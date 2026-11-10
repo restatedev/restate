@@ -158,7 +158,6 @@
 //! transiently be zero while waiters still exist if many releases happen before woken vqueues
 //! are re-evaluated.
 
-use std::collections::VecDeque;
 use std::fmt;
 use std::num::NonZeroU32;
 
@@ -168,12 +167,13 @@ use hashbrown::HashMap;
 use restate_limiter::{
     Level, Limit, LimitKey, Pattern, RuleHandle, RulePattern, Rules, StructuredLimits,
 };
-use restate_types::Scope;
 use restate_types::identifiers::PartitionKey;
+use restate_types::{Priority, Scope};
 use restate_util_string::{ReString, RestrictedValue};
 use restate_worker_api::UserLimitCounterEntry;
 use restate_worker_api::resources::{RuleUpdate, UserLimits};
 
+use super::Waiters;
 use crate::scheduler::VQueueHandle;
 
 #[derive(Clone, Copy, Debug)]
@@ -259,12 +259,13 @@ impl UserLimiter {
     pub(super) fn add_to_waiters(
         &mut self,
         handle: VQueueHandle,
+        priority: Priority,
         scope: &Scope,
         limit_key: &LimitKey<ReString>,
         blocked_level: Level,
     ) {
         self.state
-            .add_to_waiters(handle, scope, limit_key, blocked_level);
+            .add_to_waiters(handle, priority, scope, limit_key, blocked_level);
     }
 
     /// Removes a vqueue from the waiter list using caller-provided routing info.
@@ -410,7 +411,7 @@ struct State {
 #[derive(Debug, Default)]
 struct ScopeNode {
     value: Usage,
-    waiters: VecDeque<VQueueHandle>,
+    waiters: Waiters,
     l1: HashMap<RestrictedValue<ReString>, L1Node>,
 }
 
@@ -418,7 +419,7 @@ struct ScopeNode {
 #[derive(Debug, Default)]
 struct L1Node {
     value: Usage,
-    waiters: VecDeque<VQueueHandle>,
+    waiters: Waiters,
     l2: HashMap<RestrictedValue<ReString>, L2Leaf>,
 }
 
@@ -440,7 +441,7 @@ impl L1Node {
 #[derive(Debug, Default)]
 struct L2Leaf {
     value: Usage,
-    waiters: VecDeque<VQueueHandle>,
+    waiters: Waiters,
 }
 
 impl L2Leaf {
@@ -588,6 +589,7 @@ impl State {
     fn add_to_waiters(
         &mut self,
         handle: VQueueHandle,
+        priority: Priority,
         scope: &Scope,
         limit_key: &LimitKey<ReString>,
         blocked_level: Level,
@@ -595,7 +597,7 @@ impl State {
         let scope_node = self.scopes.entry_ref(scope).or_default();
         match blocked_level {
             Level::Scope => {
-                scope_node.waiters.push_back(handle);
+                scope_node.waiters.push_back(handle, priority);
             }
             Level::Level1 => {
                 let l1_key = limit_key
@@ -606,7 +608,7 @@ impl State {
                     .entry_ref(l1_key)
                     .or_default()
                     .waiters
-                    .push_back(handle);
+                    .push_back(handle, priority);
             }
             Level::Level2 => {
                 let l1_key = limit_key
@@ -623,7 +625,7 @@ impl State {
                     .entry_ref(l2_key)
                     .or_default()
                     .waiters
-                    .push_back(handle);
+                    .push_back(handle, priority);
             }
         }
     }
@@ -674,7 +676,7 @@ impl State {
         match pattern {
             RulePattern::Scope(scope_pat) => {
                 for_each_matching_scope(&mut self.scopes, scope_pat, |scope_node| {
-                    woken.extend(scope_node.waiters.drain(..));
+                    woken.extend(scope_node.waiters.drain());
                 });
             }
             RulePattern::L1 {
@@ -683,7 +685,7 @@ impl State {
             } => {
                 for_each_matching_scope(&mut self.scopes, scope_pat, |scope_node| {
                     for_each_matching(&mut scope_node.l1, l1_pat, |l1_node| {
-                        woken.extend(l1_node.waiters.drain(..));
+                        woken.extend(l1_node.waiters.drain());
                     });
                 });
             }
@@ -695,7 +697,7 @@ impl State {
                 for_each_matching_scope(&mut self.scopes, scope_pat, |scope_node| {
                     for_each_matching(&mut scope_node.l1, l1_pat, |l1_node| {
                         for_each_matching(&mut l1_node.l2, l2_pat, |l2_leaf| {
-                            woken.extend(l2_leaf.waiters.drain(..));
+                            woken.extend(l2_leaf.waiters.drain());
                         });
                     });
                 });
@@ -1156,9 +1158,15 @@ mod tests {
         let lk = limit_key("foo/bar");
 
         // Add waiters at different levels
-        limiter.add_to_waiters(handles[0], &s, &LimitKey::None, Level::Scope);
-        limiter.add_to_waiters(handles[1], &s, &lk, Level::Level1);
-        limiter.add_to_waiters(handles[2], &s, &lk, Level::Level2);
+        limiter.add_to_waiters(
+            handles[0],
+            Priority::Normal,
+            &s,
+            &LimitKey::None,
+            Level::Scope,
+        );
+        limiter.add_to_waiters(handles[1], Priority::Normal, &s, &lk, Level::Level1);
+        limiter.add_to_waiters(handles[2], Priority::Normal, &s, &lk, Level::Level2);
 
         // Verify they're there
         assert_eq!(limiter.state.scopes[&s].waiters.len(), 1);
@@ -1187,12 +1195,24 @@ mod tests {
         limiter.increment_all(&s, &lk, LimitKind::Concurrency);
 
         // Park 2 waiters at each level
-        limiter.add_to_waiters(handles[0], &s, &LimitKey::None, Level::Scope);
-        limiter.add_to_waiters(handles[1], &s, &LimitKey::None, Level::Scope);
-        limiter.add_to_waiters(handles[2], &s, &lk, Level::Level1);
-        limiter.add_to_waiters(handles[3], &s, &lk, Level::Level1);
-        limiter.add_to_waiters(handles[4], &s, &lk, Level::Level2);
-        limiter.add_to_waiters(handles[5], &s, &lk, Level::Level2);
+        limiter.add_to_waiters(
+            handles[0],
+            Priority::Normal,
+            &s,
+            &LimitKey::None,
+            Level::Scope,
+        );
+        limiter.add_to_waiters(
+            handles[1],
+            Priority::Normal,
+            &s,
+            &LimitKey::None,
+            Level::Scope,
+        );
+        limiter.add_to_waiters(handles[2], Priority::Normal, &s, &lk, Level::Level1);
+        limiter.add_to_waiters(handles[3], Priority::Normal, &s, &lk, Level::Level1);
+        limiter.add_to_waiters(handles[4], Priority::Normal, &s, &lk, Level::Level2);
+        limiter.add_to_waiters(handles[5], Priority::Normal, &s, &lk, Level::Level2);
 
         // Release 1 permit for the full L2 path
         let woken = limiter.release_concurrency(&s, &lk);
@@ -1217,12 +1237,24 @@ mod tests {
         let s = scope("s1");
 
         // Park waiters at scope level
-        limiter.add_to_waiters(handles[0], &s, &LimitKey::None, Level::Scope);
-        limiter.add_to_waiters(handles[1], &s, &LimitKey::None, Level::Scope);
+        limiter.add_to_waiters(
+            handles[0],
+            Priority::Normal,
+            &s,
+            &LimitKey::None,
+            Level::Scope,
+        );
+        limiter.add_to_waiters(
+            handles[1],
+            Priority::Normal,
+            &s,
+            &LimitKey::None,
+            Level::Scope,
+        );
 
         // Also park one at L1 level under a different counter
         let lk = limit_key("foo");
-        limiter.add_to_waiters(handles[2], &s, &lk, Level::Level1);
+        limiter.add_to_waiters(handles[2], Priority::Normal, &s, &lk, Level::Level1);
 
         // Upsert a scope-level rule: should drain scope waiters only
         let woken = limiter.apply_rule_updates(vec![RuleUpdate::Upsert {
@@ -1247,15 +1279,21 @@ mod tests {
         // Park waiters at L2 nodes matching the pattern s1/*/t1
         let lk1 = limit_key("foo/t1");
         let lk2 = limit_key("bar/t1");
-        limiter.add_to_waiters(handles[0], &s, &lk1, Level::Level2);
-        limiter.add_to_waiters(handles[1], &s, &lk2, Level::Level2);
+        limiter.add_to_waiters(handles[0], Priority::Normal, &s, &lk1, Level::Level2);
+        limiter.add_to_waiters(handles[1], Priority::Normal, &s, &lk2, Level::Level2);
 
         // Park a waiter at L2 for a different l2 key (should NOT be drained)
         let lk3 = limit_key("foo/t2");
-        limiter.add_to_waiters(handles[2], &s, &lk3, Level::Level2);
+        limiter.add_to_waiters(handles[2], Priority::Normal, &s, &lk3, Level::Level2);
 
         // Park a waiter at scope (should NOT be drained)
-        limiter.add_to_waiters(handles[3], &s, &LimitKey::None, Level::Scope);
+        limiter.add_to_waiters(
+            handles[3],
+            Priority::Normal,
+            &s,
+            &LimitKey::None,
+            Level::Scope,
+        );
 
         // Remove the L2 rule: should drain L2 waiters matching s1/*/t1
         let woken = limiter.apply_rule_updates(vec![RuleUpdate::Remove {
@@ -1280,9 +1318,27 @@ mod tests {
         let (_sm, handles) = make_handles(3);
 
         // Park waiters at different scope nodes
-        limiter.add_to_waiters(handles[0], &scope("s1"), &LimitKey::None, Level::Scope);
-        limiter.add_to_waiters(handles[1], &scope("s2"), &LimitKey::None, Level::Scope);
-        limiter.add_to_waiters(handles[2], &scope("s3"), &LimitKey::None, Level::Scope);
+        limiter.add_to_waiters(
+            handles[0],
+            Priority::Normal,
+            &scope("s1"),
+            &LimitKey::None,
+            Level::Scope,
+        );
+        limiter.add_to_waiters(
+            handles[1],
+            Priority::Normal,
+            &scope("s2"),
+            &LimitKey::None,
+            Level::Scope,
+        );
+        limiter.add_to_waiters(
+            handles[2],
+            Priority::Normal,
+            &scope("s3"),
+            &LimitKey::None,
+            Level::Scope,
+        );
 
         // Update wildcard scope rule: should drain ALL scope waiters
         let woken = limiter.apply_rule_updates(vec![RuleUpdate::Upsert {

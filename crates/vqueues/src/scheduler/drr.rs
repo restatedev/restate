@@ -477,17 +477,18 @@ mod tests {
     };
     use restate_rocksdb::RocksDbManager;
     use restate_storage_api::Transaction;
+    use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
     use restate_storage_api::vqueue_table::scheduler::SchedulerAction;
     use restate_storage_api::vqueue_table::stats::WaitStats;
     use restate_storage_api::vqueue_table::{
         EntryKey, EntryMetadata, EntryStatusHeader, ReadVQueueTable, Stage, Status,
     };
-    use restate_types::ServiceName;
     use restate_types::clock::UniqueTimestamp;
     use restate_types::identifiers::{BaseEntryId, PartitionId, PartitionKey};
     use restate_types::partitions::Partition;
     use restate_types::sharding::KeyRange;
     use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, VQueueId};
+    use restate_types::{Priority, ServiceName};
     use restate_worker_api::BlockedResource;
 
     use crate::cache::VQueuesMetaCache;
@@ -1764,6 +1765,69 @@ mod tests {
         assert_eq!(keys.len(), 2);
         assert_eq!(keys[0].seq().as_u64(), 4);
         assert_eq!(keys[1].seq().as_u64(), 5);
+    }
+
+    #[restate_core::test]
+    async fn higher_priority_vqueues_are_scheduled_first() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+
+        let mut txn = rocksdb.transaction();
+        for (id, priority) in [
+            (1, Priority::Normal),
+            (2, Priority::Low),
+            (3, Priority::High),
+            (4, Priority::Live),
+        ] {
+            let created_at = UniqueTimestamp::try_from(1000u64 + id as u64).unwrap();
+            VQueue::<VQueueEvent, _>::get_or_insert_with(
+                &VQueueId::custom(15_000, [id]),
+                &mut txn,
+                &mut cache,
+                || {
+                    VQueueMeta::new(
+                        created_at,
+                        None,
+                        LimitKey::None,
+                        VQueueLink::Service(ServiceName::new("test")),
+                    )
+                    .with_priority(priority)
+                },
+            )
+            .await
+            .expect("vqueue should be created")
+            .enqueue_new(
+                created_at,
+                &entry_target(),
+                id as u64,
+                None,
+                EntryId::new(EntryKind::Invocation, [id; EntryId::REMAINDER_LEN]),
+                EntryMetadata::default(),
+            );
+        }
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = DRRScheduler::new(
+            NonZeroU16::new(100).unwrap(),
+            NonZeroU16::new(1).unwrap(),
+            create_resource_manager(db, Concurrency::new_unlimited()).await,
+            db.clone(),
+            cache.view(),
+            RefillMode::Blocking,
+        );
+
+        for expected in [4, 3, 1, 2] {
+            let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
+            else {
+                panic!("expected decision");
+            };
+            let keys = run_keys(&decision);
+            assert_eq!(keys.len(), 1);
+            assert_eq!(keys[0].seq().as_u64(), expected);
+        }
+        assert!(poll_scheduler(Pin::new(&mut scheduler), cache.view()).is_pending());
     }
 
     #[restate_core::test]

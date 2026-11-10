@@ -18,7 +18,7 @@ use crate::storage::{
 };
 use crate::{
     RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, RESTATE_VERSION_1_7_5, RESTATE_VERSION_1_7_8,
-    RESTATE_VERSION_1_8_0, RESTATE_VERSION_1_8_1, SemanticRestateVersion,
+    RESTATE_VERSION_1_8_0, RESTATE_VERSION_1_8_1, RESTATE_VERSION_1_8_2, SemanticRestateVersion,
 };
 
 /// A change to the set of state-machine features enabled on a partition.
@@ -80,6 +80,10 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.8.1*
     EnablePreflightSignalRecording = 7,
+    /// Place invocations with a non-normal priority into their own vqueues.
+    ///
+    /// *Since v1.8.2*
+    EnableInvocationPriorities = 8,
 }
 
 impl PartitionFeatureChange {
@@ -100,6 +104,7 @@ impl PartitionFeatureChange {
             Self::EnablePreflightInvocationTerminationRetention => &RESTATE_VERSION_1_7_8,
             Self::EnableInconsistentStateMutationCleanup => &RESTATE_VERSION_1_8_0,
             Self::EnablePreflightSignalRecording => &RESTATE_VERSION_1_8_1,
+            Self::EnableInvocationPriorities => &RESTATE_VERSION_1_8_2,
         }
     }
 
@@ -129,6 +134,9 @@ impl PartitionFeatureChange {
             }
             Self::EnablePreflightSignalRecording => {
                 !std::mem::replace(&mut features.preflight_signal_recording, true)
+            }
+            Self::EnableInvocationPriorities => {
+                !std::mem::replace(&mut features.invocation_priorities, true)
             }
         }
     }
@@ -199,6 +207,12 @@ pub struct PersistedFeatures {
     /// *Since v1.8.1*
     #[bilrost(tag(7))]
     pub preflight_signal_recording: bool,
+
+    /// Invocations with a non-normal priority are placed into their own vqueues.
+    ///
+    /// *Since v1.8.2*
+    #[bilrost(tag(8))]
+    pub invocation_priorities: bool,
 }
 
 impl PersistedFeatures {
@@ -218,6 +232,8 @@ impl PersistedFeatures {
                 .then_some("inconsistent_state_mutation_cleanup"),
             self.preflight_signal_recording
                 .then_some("preflight_signal_recording"),
+            self.invocation_priorities
+                .then_some("invocation_priorities"),
         ]
         .into_iter()
         .flatten()

@@ -42,7 +42,7 @@ use restate_types::sharding::{PartitionId, WithPartitionKey};
 use restate_types::state_mut::StateMutationInput;
 use restate_types::storage::StorageCodec;
 use restate_types::vqueues::{EntryId, EntryKind, EntryTargetExt, Seq};
-use restate_types::{LimitKey, LockName, ServiceName};
+use restate_types::{LimitKey, LockName, Priority, ServiceName};
 use restate_util_string::{ReString, ToReString};
 use restate_util_time::DurationExt;
 
@@ -272,6 +272,7 @@ async fn migrate_inboxes(
                 true,
                 &key.service_name,
                 Some(&key.service_key),
+                Priority::Normal,
             ));
         }
         let qid = current_vqueue_id.as_ref().unwrap();
@@ -528,6 +529,7 @@ async fn migrate_scheduled_invocation(
         &scheduled.metadata.invocation_target,
         // old invocations cannot have a limit-key.
         &LimitKey::None,
+        Priority::Normal,
     );
 
     let mut vqueue = VQueue::<VQueueEvent, _>::get_or_insert_with(&qid, txn, cache, || {
@@ -604,6 +606,7 @@ async fn migrate_invoked_invocation(
         &invoked.invocation_target,
         // old invocations cannot have a limit-key.
         &LimitKey::None,
+        Priority::Normal,
     );
 
     let mut vqueue = VQueue::<VQueueEvent, _>::get_or_insert_with(&qid, txn, cache, || {
@@ -643,6 +646,7 @@ async fn migrate_completed_invocation(
         &completed.invocation_target,
         // old invocations cannot have a limit-key.
         &LimitKey::None,
+        Priority::Normal,
     );
 
     let mut vqueue = VQueue::<VQueueEvent, _>::get_or_insert_with(&qid, txn, cache, || {
@@ -682,6 +686,7 @@ async fn migrate_paused_invocation(
         &paused.invocation_target,
         // old invocations cannot have a limit-key.
         &LimitKey::None,
+        Priority::Normal,
     );
 
     let mut vqueue = VQueue::<VQueueEvent, _>::get_or_insert_with(&qid, txn, cache, || {
@@ -721,6 +726,7 @@ async fn migrate_suspended_invocation(
         &suspended.invocation_target,
         // old invocations cannot have a limit-key.
         &LimitKey::None,
+        Priority::Normal,
     );
 
     let mut vqueue = VQueue::<VQueueEvent, _>::get_or_insert_with(&qid, txn, cache, || {

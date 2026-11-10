@@ -787,6 +787,14 @@ async fn record_rejections_carry_the_offset() {
             ErrorKind::BadRequest,
             "Unexpected limit key without scope",
         ),
+        (
+            "unknown priority",
+            with_service(SERVICE, |record| {
+                record.priority = Some("urgent".to_owned())
+            }),
+            ErrorKind::BadRequest,
+            "Invalid priority 'urgent'",
+        ),
     ];
 
     for (case, record, kind, message) in cases {

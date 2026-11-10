@@ -114,8 +114,8 @@ use restate_types::storage::{
 };
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::{self, EntryId, EntryTargetExt, EntryTargetRef, Seq, VQueueId};
+use restate_types::{Priority, RestateVersion, SemanticRestateVersion};
 use restate_types::{RESTATE_VERSION_1_9_0, journal::*};
-use restate_types::{RestateVersion, SemanticRestateVersion};
 use restate_util_string::{ReString, ToReString};
 use restate_vqueues::{VQueue, VQueueHandle};
 use restate_wal_protocol::timer::TimerKeyDisplay;
@@ -793,6 +793,15 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 invocation_id.to_random_seed_with_wal_record_time(self.record_created_at.as_u64())
             });
 
+        if !self
+            .processor
+            .fsm()
+            .features()
+            .is_invocation_priorities_enabled()
+        {
+            service_invocation.priority = Priority::Normal;
+        }
+
         // Prepare PreFlightInvocationMetadata structure
         let submit_notification_sink = service_invocation.submit_notification_sink.take();
 
@@ -805,6 +814,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 service_invocation.partition_key(),
                 &service_invocation.invocation_target,
                 &service_invocation.limit_key,
+                service_invocation.priority,
             ));
 
         let pre_flight_invocation_metadata = PreFlightInvocationMetadata::from_service_invocation(
@@ -1015,6 +1025,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             self.processor.vqueues_mut(),
             self.leader.is_some().then_some(self.action_collector),
             &metadata.limit_key,
+            metadata.priority,
         )
         .await?
         .enqueue_new(
@@ -3800,6 +3811,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                         journal_retention_duration: Default::default(),
                         idempotency_key: request.idempotency_key,
                         limit_key: Default::default(),
+                        priority: invocation_metadata.priority,
                         submit_notification_sink: None,
                         restate_version: RestateVersion::current(),
                     };
@@ -3849,6 +3861,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     journal_retention_duration: Default::default(),
                     idempotency_key: request.idempotency_key,
                     limit_key: Default::default(),
+                    priority: invocation_metadata.priority,
                     submit_notification_sink: None,
                     restate_version: RestateVersion::current(),
                 };
@@ -5552,6 +5565,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             service_id.partition_key(),
             &target,
             &limit_key,
+            Priority::Normal,
         );
 
         let mut vqueue = VQueue::vqueue_from_invocation_target(
@@ -5562,6 +5576,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             self.processor.vqueues_mut(),
             self.leader.is_some().then_some(self.action_collector),
             &limit_key,
+            Priority::Normal,
         )
         .await?;
 

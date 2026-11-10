@@ -66,6 +66,8 @@ pub(crate) enum HandlerError {
     LimitKeyWithoutScope,
     #[error("invalid limit-key: {0}")]
     InvalidLimitKey(String),
+    #[error("invalid priority '{0}', expected one of: low, normal, high, live")]
+    InvalidPriority(String),
     #[error("bad header {0}: {1:?}")]
     BadHeader(header::HeaderName, #[source] header::ToStrError),
     #[error("bad delay query parameter, must be a ISO8601 duration: {0}")]
@@ -195,6 +197,7 @@ impl HandlerError {
             | HandlerError::BadRestateApiPath
             | HandlerError::LimitKeyWithoutScope
             | HandlerError::InvalidLimitKey(_)
+            | HandlerError::InvalidPriority(_)
             | HandlerError::BadScopeValue(_)
             | HandlerError::BadRequestBody(_)
             | HandlerError::BadPath(_) => StatusCode::BAD_REQUEST,

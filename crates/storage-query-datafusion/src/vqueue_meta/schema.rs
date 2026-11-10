@@ -42,6 +42,9 @@ define_table!(
     /// The name of the limit-key assigned to this vqueue
     limit_key: DataType::LargeUtf8,
 
+    /// The scheduling priority of this vqueue: `low`, `normal`, `high` or `live`.
+    priority: DataType::LargeUtf8,
+
     /// The name of the lock (in the format of `service/key`)
     ///
     /// This is only set if this is a vqueue for a virtual object.
