@@ -605,10 +605,15 @@ where
                 feature_changes.push(PartitionFeatureChange::EnablePreflightSignalRecording);
             }
 
-            // Enable by default from v1.9.0, including development and release-candidate builds.
-            if (SemanticRestateVersion::current()
+            // On by default from v1.9.0, including development and release-candidate builds, once
+            // every worker runs it: until then, the cluster can still roll back to any v1.8.x.
+            let byte_offsets_by_default = SemanticRestateVersion::current()
                 .release_is_equal_or_newer_than(&RESTATE_VERSION_1_9_0)
-                || config.common.experimental.is_byte_offsets_enabled())
+                && Metadata::with_current(|m| {
+                    m.nodes_config_ref()
+                        .all_workers_run_at_least(&RESTATE_VERSION_1_9_0)
+                });
+            if (byte_offsets_by_default || config.common.experimental.is_byte_offsets_enabled())
                 && !processor.fsm().features().is_byte_offsets_enabled()
             {
                 feature_changes.push(PartitionFeatureChange::EnableByteOffsets);
