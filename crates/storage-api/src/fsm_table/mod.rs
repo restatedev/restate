@@ -102,8 +102,8 @@ pub trait WriteFsmTable {
     fn put_state_machine_features(&mut self, features: &PersistedFeatures) -> Result<()>;
 }
 
-/// Where a partition stands in its log: its applied LSN, and how far it has applied its log in
-/// bytes.
+/// Where a partition stands in its log and partition store: its applied LSN, and how far it has
+/// applied its log and written its partition store in bytes.
 ///
 /// The byte offsets are positions: they count from the record that turned byte offsets on for
 /// the partition, its byte offsets base LSN, and wrap at 2^64. They move forward as the partition
@@ -134,6 +134,17 @@ pub struct FsmPosition {
     /// differently; nothing depends on them agreeing.
     #[bilrost(tag(3), encoding(fixed))]
     pub log_byte_offset: u64,
+    /// How far the partition processor has written its partition store, in bytes: the size of
+    /// the write batches it committed since byte offsets were turned on, as RocksDB lays them
+    /// out (each with its 12-byte header), up to and including the one that persisted this
+    /// position. That's the data the store took in, before compression and compaction. It's
+    /// local to each replica's store, since replicas batch differently and some writes depend on
+    /// local storage features. A replica that crashed replays the commits it hadn't flushed in
+    /// different batches, so at the same applied LSN its offset can differ from before the crash,
+    /// and a replica restored from a snapshot continues from the snapshot's, so its offset can
+    /// jump either way. Writes outside the processor's commits, such as migrations, don't count.
+    #[bilrost(tag(4), encoding(fixed))]
+    pub partition_store_byte_offset: u64,
 }
 
 bilrost_storage_encode_decode!(FsmPosition);
@@ -145,6 +156,7 @@ impl FsmPosition {
             applied_lsn,
             byte_offsets_base_lsn: Lsn::INVALID,
             log_byte_offset: 0,
+            partition_store_byte_offset: 0,
         }
     }
 
@@ -154,10 +166,11 @@ impl FsmPosition {
     }
 
     /// Turns byte offsets on at the record at `lsn`: they start at zero and count the records
-    /// after it.
+    /// after it, and the partition store commits from the one that applies it.
     pub fn start_byte_offsets(&mut self, lsn: Lsn) {
         self.byte_offsets_base_lsn = lsn;
         self.log_byte_offset = 0;
+        self.partition_store_byte_offset = 0;
     }
 
     /// Advances to the record or gap that ends at `lsn`, of `bytes` as the log stores it. The log
@@ -167,6 +180,11 @@ impl FsmPosition {
         if self.has_byte_offsets() && lsn > self.byte_offsets_base_lsn {
             self.log_byte_offset = self.log_byte_offset.wrapping_add(bytes);
         }
+    }
+
+    /// Advances the partition store byte offset by a committed write batch of `bytes`.
+    pub fn add_partition_store_bytes(&mut self, bytes: u64) {
+        self.partition_store_byte_offset = self.partition_store_byte_offset.wrapping_add(bytes);
     }
 }
 
@@ -272,12 +290,15 @@ impl StorageDecode for CachedEpochMetadata {
 
 #[cfg(test)]
 mod tests {
+    use bilrost::Message;
+
     use restate_types::logs::Lsn;
 
     use super::FsmPosition;
 
     /// The log byte offset counts the records after the one that turned byte offsets on, and
-    /// wraps at 2^64; without byte offsets, a position only follows the applied LSN.
+    /// both offsets wrap at 2^64; without byte offsets, a position only follows the applied LSN.
+    /// The encoded size doesn't depend on the values of non-zero fields.
     #[test]
     fn fsm_position_counts_the_records_after_the_base_lsn() {
         let mut position = FsmPosition::new(Lsn::new(1));
@@ -296,11 +317,18 @@ mod tests {
                 applied_lsn: Lsn::new(5),
                 byte_offsets_base_lsn: Lsn::new(3),
                 log_byte_offset: 90,
+                partition_store_byte_offset: 0,
             }
         );
 
+        position.add_partition_store_bytes(100);
+        let encoded_len = position.encoded_len();
         position.log_byte_offset = u64::MAX - 5;
+        position.partition_store_byte_offset = u64::MAX - 5;
+        assert_eq!(position.encoded_len(), encoded_len);
         position.advance(Lsn::new(6), 10);
+        position.add_partition_store_bytes(10);
         assert_eq!(position.log_byte_offset, 4);
+        assert_eq!(position.partition_store_byte_offset, 4);
     }
 }
