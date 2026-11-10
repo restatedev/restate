@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
@@ -158,8 +159,8 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
     let manager = owned_manager(global);
 
     let executor = crate::GlobalExecutor::new(
-        crate::SinglePoolExecutor::new("test-high", 1),
-        crate::SinglePoolExecutor::new("test-low", 1),
+        crate::SinglePoolExecutor::new("test-high", NonZeroUsize::MIN),
+        crate::SinglePoolExecutor::new("test-low", NonZeroUsize::MIN),
     );
     let spec = db_spec("standalone", None);
     let env = manager.db_env().clone();
@@ -239,7 +240,7 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
     assert_pending(drained.as_mut());
     // `prepared` took its lease in into_task() before sealing, so it still runs and
     // drain() waits for it.
-    let external = crate::SinglePoolExecutor::new("external-storage", 1);
+    let external = crate::SinglePoolExecutor::new("external-storage", NonZeroUsize::MIN);
     external.spawn_fn("test", prepared)?.await??;
     timeout(DEADLINE, drained).await?;
     // `unadmitted` was prepared but never submitted, so it didn't hold up the drain.
@@ -609,8 +610,8 @@ fn lifecycle_work_survives_runtime_shutdown_and_busy_global_executor() -> anyhow
             // Give this manager its own shared backend so blocking it does not
             // affect the singleton or the next iteration.
             let executor = crate::GlobalExecutor::new(
-                crate::SinglePoolExecutor::new("test-high", 1),
-                crate::SinglePoolExecutor::new("test-low", 1),
+                crate::SinglePoolExecutor::new("test-high", NonZeroUsize::MIN),
+                crate::SinglePoolExecutor::new("test-low", NonZeroUsize::MIN),
             );
             Arc::get_mut(&mut manager.0)
                 .expect("unshared manager")

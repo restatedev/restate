@@ -145,7 +145,7 @@ impl RocksDbManager {
         // shutdown can still be closed.
         let lifecycle_executor = IdleTracker::new(SinglePoolExecutor::new(
             "rs:io-lifecycle",
-            opts.storage_lifecycle_bg_threads().get(),
+            opts.storage_lifecycle_bg_threads(),
         ));
 
         let manager = RocksDbManager(Arc::new(ManagerInner {
