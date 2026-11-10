@@ -845,6 +845,25 @@ impl SnapshotRepository {
             .map_err(|e| PutSnapshotError::from(e, progress.clone()))
     }
 
+    /// Full snapshots keep format V1 so that released nodes can still restore from them;
+    /// incremental ones are V2, which those nodes reject up front instead of failing to find
+    /// the SSTs.
+    fn with_file_keys(
+        &self,
+        snapshot: &PartitionSnapshotMetadata,
+        file_keys: std::collections::BTreeMap<String, String>,
+    ) -> PartitionSnapshotMetadata {
+        use restate_types::config::SnapshotType;
+
+        let mut snapshot = snapshot.clone();
+        snapshot.version = match self.snapshot_type {
+            SnapshotType::Full => SnapshotFormatVersion::V1,
+            SnapshotType::Incremental => SnapshotFormatVersion::V2,
+        };
+        snapshot.file_keys = file_keys;
+        snapshot
+    }
+
     async fn upload_snapshot(
         &self,
         snapshot: &PartitionSnapshotMetadata,
@@ -858,8 +877,7 @@ impl SnapshotRepository {
             .await
             .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
 
-        let mut snapshot_with_keys = snapshot.clone();
-        snapshot_with_keys.file_keys = file_keys;
+        let snapshot_with_keys = self.with_file_keys(snapshot, file_keys);
 
         let metadata_key = self.snapshot_file_path(snapshot, "metadata.json");
         let metadata_json_payload = PutPayload::from(
@@ -1788,12 +1806,6 @@ impl GetSnapshotError {
 /// Parses and validates a snapshot's `metadata.json`. Any error means the snapshot is unusable.
 fn parse_snapshot_metadata(bytes: &[u8]) -> anyhow::Result<PartitionSnapshotMetadata> {
     let snapshot_metadata: PartitionSnapshotMetadata = serde_json::from_slice(bytes)?;
-    if !matches!(snapshot_metadata.version, SnapshotFormatVersion::V1) {
-        bail!(
-            "Unsupported snapshot format version: {:?}",
-            snapshot_metadata.version
-        );
-    }
     Metadata::with_current(|m| {
         let nodes_config = m.nodes_config_ref();
         snapshot_metadata.validate(
@@ -2865,12 +2877,14 @@ mod tests {
         let evicted_ref = SnapshotReference::from_metadata(&evicted);
         let retained_ref = SnapshotReference::from_metadata(&retained);
         let evicted_metadata = partition
-            .child(evicted_ref.path.as_str())
-            .child("metadata.json");
+            .clone()
+            .join(evicted_ref.path.as_str())
+            .join("metadata.json");
         let retained_metadata = partition
-            .child(retained_ref.path.as_str())
-            .child("metadata.json");
-        let sst = partition.child("ssts").child("shared.sst");
+            .clone()
+            .join(retained_ref.path.as_str())
+            .join("metadata.json");
+        let sst = partition.join("ssts").join("shared.sst");
 
         store.put(&sst, PutPayload::from_static(b"sst")).await?;
         store
@@ -2919,6 +2933,33 @@ mod tests {
         cleanup().await?;
         assert!(store.head(&sst).await.is_ok());
         assert!(store.head(&evicted_metadata).await.is_err());
+
+        Ok(())
+    }
+
+    /// Full snapshots stay V1 so released nodes can restore from them; incremental ones are V2 so
+    /// those nodes reject them up front. New code reads both.
+    #[restate_core::test]
+    async fn snapshot_format_version_follows_snapshot_type() -> anyhow::Result<()> {
+        use restate_types::config::SnapshotType;
+
+        let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let mut repository = mock_repository(1);
+        let snapshot = mock_snapshot_metadata("/data.sst".to_owned(), "/".to_owned(), 0);
+        let keys = || {
+            std::collections::BTreeMap::from([("/data.sst".to_owned(), "ssts/x.sst".to_owned())])
+        };
+
+        for (snapshot_type, version, name) in [
+            (SnapshotType::Full, SnapshotFormatVersion::V1, "V1"),
+            (SnapshotType::Incremental, SnapshotFormatVersion::V2, "V2"),
+        ] {
+            repository.snapshot_type = snapshot_type;
+            let json = serde_json::to_string(&repository.with_file_keys(&snapshot, keys()))?;
+            assert!(json.contains(&format!("\"version\":\"{name}\"")), "{json}");
+            let parsed = super::parse_snapshot_metadata(json.as_bytes())?;
+            assert_eq!(parsed.version, version);
+        }
 
         Ok(())
     }

@@ -29,6 +29,10 @@ use restate_util_string::ReString;
 pub enum SnapshotFormatVersion {
     #[default]
     V1,
+    /// Incremental snapshot: SST files live in the shared `ssts/` prefix and are located through
+    /// `file_keys`. Servers that only know V1 reject it up front instead of failing to find the
+    /// files during restore.
+    V2,
 }
 
 /// What a server needs in order to use a snapshot's data, as of the moment it was exported.
@@ -111,16 +115,10 @@ pub struct PartitionSnapshotMetadata {
     /// Key: exact filename as it appears in LiveFile.name (e.g., "/000752.sst")
     /// Value: relative object store key (e.g., "`ssts/a1b2c3d4e5f67890a1b2c3d4e5f67890.sst`")
     ///
-    /// This map is used as an implicit format discriminator: when empty the snapshot was
-    /// written by the legacy full-snapshot path and SSTs live at `{lsn}-{snap_id}/{filename}`;
-    /// when non-empty the snapshot is incremental and the map must cover every entry in
-    /// `files`. Mixed (partial) coverage is not produced by any writer in this crate;
-    /// readers treat per-file lookup misses as the legacy case for forward compatibility.
-    ///
-    /// The discriminator is therefore only reliable in one direction: an incremental snapshot
-    /// with no SST files at all is indistinguishable from a legacy one. That is inert today
-    /// because resolution is per-file, but it is the reason not to build format-versioning
-    /// decisions on this field - add an explicit format version instead.
+    /// Snapshots with format version V2 (incremental) must cover every entry in `files`; for
+    /// V1 (full) snapshots the map is empty and SSTs live at `{lsn}-{snap_id}/{filename}`.
+    /// Mixed (partial) coverage is not produced by any writer in this crate; readers treat
+    /// per-file lookup misses as the legacy case for forward compatibility.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub file_keys: BTreeMap<String, String>,
 }

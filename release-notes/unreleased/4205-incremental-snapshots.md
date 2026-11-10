@@ -45,13 +45,13 @@ The snapshot metadata file (`metadata.json`) now includes a `file_keys` field th
 
 ### Downgrade Caveat
 
-Incremental snapshots are still written with `SnapshotFormatVersion::V1`, so the format check does
-not reject them on an older node. A node running a version without incremental support will read
-an incremental snapshot, silently ignore `file_keys`, look for the SST files inside the snapshot
-directory where they no longer are, and fail the restore with a bare "not found" error.
+Incremental snapshots are marked with a new snapshot format version. A node running a version
+without incremental support refuses to restore from an incremental snapshot with an
+unrecognised snapshot format error, rather than failing later on missing files. Full
+snapshots keep the existing format, so older nodes can still restore from them.
 
 Once a partition has published its first incremental snapshot, do not downgrade the cluster below
-this version and expect restores to work. If you need to downgrade, first set
+this version and expect restores from that snapshot to work. If you need to downgrade, first set
 `experimental-snapshot-type = "full"`, then wait until every incremental snapshot has aged out of
 `experimental-num-retained` before rolling back.
 
