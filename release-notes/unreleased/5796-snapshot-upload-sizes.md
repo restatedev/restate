@@ -12,7 +12,8 @@ snapshot destination:
 - `upload-single-put-threshold`: files smaller than this are uploaded with a single request instead
   of in multiple parts.
 
-Both default to `5 MiB`, which is what Restate has used so far.
+`upload-part-size` defaults to `5 MiB`, which is what Restate has used so far, and
+`upload-single-put-threshold` defaults to the part size. Changes take effect after a restart.
 
 ### Why This Matters
 

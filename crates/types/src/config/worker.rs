@@ -1350,6 +1350,8 @@ pub struct SnapshotsOptions {
     ///
     /// Default: 5 MiB
     ///
+    /// Changes take effect after a restart.
+    ///
     /// Since v1.8.2
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upload_part_size: Option<NonZeroByteCount>,
@@ -1366,7 +1368,9 @@ pub struct SnapshotsOptions {
     ///
     /// Must be at least `upload-part-size`, and at most 5 GiB.
     ///
-    /// Default: 5 MiB
+    /// Default: the value of `upload-part-size`
+    ///
+    /// Changes take effect after a restart.
     ///
     /// Since v1.8.2
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1445,7 +1449,7 @@ impl SnapshotsOptions {
     /// Files smaller than this many bytes are uploaded with a single request.
     pub fn upload_single_put_threshold(&self) -> u64 {
         self.upload_single_put_threshold
-            .map_or(MIN_MULTIPART_UPLOAD_PART_SIZE as u64, |v| v.as_u64())
+            .map_or_else(|| self.upload_part_size() as u64, |v| v.as_u64())
     }
 
     /// Checks the object store upload sizes against the limits of S3-compatible stores.
@@ -1656,6 +1660,14 @@ mod tests {
         assert_eq!(5 * MIB as usize, defaults.upload_part_size());
         assert_eq!(5 * MIB, defaults.upload_single_put_threshold());
         assert!(defaults.validate_upload_sizes().is_ok());
+
+        // Setting only the part size raises the threshold with it
+        let part_size_only = SnapshotsOptions {
+            upload_part_size: NonZeroByteCount::try_from(32 * MIB).ok(),
+            ..Default::default()
+        };
+        assert_eq!(32 * MIB, part_size_only.upload_single_put_threshold());
+        assert!(part_size_only.validate_upload_sizes().is_ok());
 
         assert!(validate(32 * MIB, 128 * MIB).is_ok());
         assert!(validate(5 * MIB, 5 * MIB).is_ok());
