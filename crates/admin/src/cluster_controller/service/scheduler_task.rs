@@ -124,6 +124,11 @@ where
                     // up to the tail of the log and can now become a leader.
                     self.on_cluster_state_change(&cs, &legacy_cluster_state, nodes_config.live_load(), partition_table.live_load()).await
                 }
+                Some(()) = OptionFuture::from(self.scheduler.next_grace_period_expiry().map(tokio::time::sleep_until)) => {
+                    // The reconfiguration grace period of a dead node expired. Its partitions
+                    // might need to be reconfigured now.
+                    self.on_cluster_state_change(&cs, &self.cluster_state_watcher.current(), nodes_config.live_load(), partition_table.live_load()).await
+                }
                 Some(epoch_metadata) = OptionFuture::from(fetch_epoch_metadata_task.as_mut()) => {
                     trace!("applying new epoch metadata fetched from the metadata store");
                     match epoch_metadata {

@@ -12,9 +12,11 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
 use std::fmt;
+use std::time::Duration;
 
 use ahash::HashMap;
 use futures::StreamExt;
+use tokio::time::Instant;
 use tracing::{debug, info, trace};
 
 use restate_core::network::{NetworkSender as _, Networking, Swimlane, TransportConnect};
@@ -24,13 +26,14 @@ use restate_metadata_store::{
 };
 use restate_types::cluster::cluster_state::LegacyClusterState;
 use restate_types::cluster_state::ClusterState;
+use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, ProcessorCommand,
 };
-use restate_types::nodes_config::{NodeConfig, NodesConfiguration, WorkerState};
+use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role, WorkerState};
 use restate_types::partition_table::PartitionTable;
 use restate_types::partitions::leadership_policy::{LeaderAffinity, LeadershipPolicy};
 use restate_types::partitions::placement_policy::PlacementPolicy;
@@ -212,12 +215,59 @@ impl fmt::Display for PartitionConfigurationTransitions {
     }
 }
 
+/// Tracks since when worker nodes have been observed as not alive, so that the reconfiguration of
+/// replica sets with dead members can be delayed by the reconfiguration grace period.
+///
+/// The state is only kept in memory and starts empty whenever this node becomes the cluster
+/// controller leader. This errs on the side of waiting longer before reconfiguring.
+#[derive(Default)]
+struct DeadNodes(HashMap<PlainNodeId, Instant>);
+
+impl DeadNodes {
+    fn update(&mut self, nodes_config: &NodesConfiguration, cluster_state: &ClusterState) {
+        let now = Instant::now();
+        self.0 = nodes_config
+            .iter_role(Role::Worker)
+            .filter(|(node_id, _)| !cluster_state.is_alive((*node_id).into()))
+            .map(|(node_id, _)| (node_id, self.0.get(&node_id).copied().unwrap_or(now)))
+            .collect();
+    }
+
+    fn is_within_grace_period(
+        &self,
+        node_id: PlainNodeId,
+        grace_period: Option<Duration>,
+        now: Instant,
+    ) -> bool {
+        let Some(grace_period) = grace_period else {
+            return false;
+        };
+        // A dead node without an entry died after the last `update` (e.g. while a scheduling pass
+        // awaited metadata writes), so its grace period has only just started.
+        self.0.get(&node_id).is_none_or(|dead_since| {
+            dead_since
+                .checked_add(grace_period)
+                .is_none_or(|expiry| now < expiry)
+        })
+    }
+
+    /// Returns the earliest future instant at which a dead node's grace period expires.
+    fn next_grace_period_expiry(&self, grace_period: Duration, now: Instant) -> Option<Instant> {
+        self.0
+            .values()
+            .filter_map(|dead_since| dead_since.checked_add(grace_period))
+            .filter(|expiry| *expiry > now)
+            .min()
+    }
+}
+
 pub struct Scheduler<T> {
     metadata_writer: MetadataWriter,
     networking: Networking<T>,
     partitions: HashMap<PartitionId, PartitionState>,
     replica_set_states: PartitionReplicaSetStates,
     cluster_state: ClusterState,
+    dead_nodes: DeadNodes,
 }
 
 /// The scheduler is responsible for assigning partition processors to nodes and to electing
@@ -236,7 +286,19 @@ impl<T: TransportConnect> Scheduler<T> {
             partitions: HashMap::default(),
             replica_set_states,
             cluster_state: TaskCenter::with_current(|h| h.cluster_state().clone()),
+            dead_nodes: DeadNodes::default(),
         }
+    }
+
+    /// Returns the next instant at which the reconfiguration grace period of a dead node expires.
+    /// The scheduler should be re-run at this point to reconfigure the affected partitions.
+    pub fn next_grace_period_expiry(&self) -> Option<Instant> {
+        let grace_period = Configuration::pinned()
+            .admin
+            .reconfiguration_grace_period
+            .to_non_zero_std()?;
+        self.dead_nodes
+            .next_grace_period_expiry(grace_period, Instant::now())
     }
 
     pub fn update_partition_configuration(
@@ -305,6 +367,8 @@ impl<T: TransportConnect> Scheduler<T> {
             self.load_all_partition_configuration(partition_table)
                 .await?;
         }
+
+        self.dead_nodes.update(nodes_config, &self.cluster_state);
 
         // prioritise leadership changes over partition reconfiguration
         // when a pp leader shuts down, the time until we instruct a new leader is partition unavailability.
@@ -438,8 +502,14 @@ impl<T: TransportConnect> Scheduler<T> {
         transitions: &mut PartitionConfigurationTransitions,
     ) -> Result<(), Error> {
         let mut membership_updates = self.replica_set_states.membership_update_batch();
+        let grace_period = Configuration::pinned()
+            .admin
+            .reconfiguration_grace_period
+            .to_non_zero_std();
 
         for partition_id in partition_table.iter_ids().copied() {
+            // read per partition since metadata operations of earlier partitions can take a while
+            let now = Instant::now();
             let entry = self.partitions.entry(partition_id);
 
             // make sure that we have a valid partition processor configuration
@@ -453,6 +523,10 @@ impl<T: TransportConnect> Scheduler<T> {
                             &partition_replication,
                             nodes_config,
                             &self.cluster_state,
+                            |node_id| {
+                                self.dead_nodes
+                                    .is_within_grace_period(node_id, grace_period, now)
+                            },
                         )
                     {
                         trace!("Partition {} requires reconfiguration", partition_id);
@@ -462,7 +536,7 @@ impl<T: TransportConnect> Scheduler<T> {
                             nodes_config,
                             partition_replication,
                             NodeSet::new(),
-                            &self.cluster_state,
+                            |node_id| self.cluster_state.is_alive(node_id.into()),
                         ) {
                             let partition_configuration_update =
                                 Self::reconfigure_partition_configuration(
@@ -503,7 +577,7 @@ impl<T: TransportConnect> Scheduler<T> {
                         nodes_config,
                         partition_replication.clone(),
                         NodeSet::default(),
-                        &self.cluster_state,
+                        |node_id| self.cluster_state.is_alive(node_id.into()),
                     ) {
                         let occupied_entry = entry.insert_entry(
                             Self::store_initial_partition_configuration(
@@ -533,6 +607,7 @@ impl<T: TransportConnect> Scheduler<T> {
                 nodes_config,
                 partition_state,
                 legacy_cluster_state,
+                &self.cluster_state,
             ) {
                 let CompleteReconfigurationResult {
                     configuration: partition_configuration_update,
@@ -578,7 +653,8 @@ impl<T: TransportConnect> Scheduler<T> {
     ///
     /// * The next configuration is empty
     /// * All workers in the current configuration are disabled
-    /// * Any of the partition processors in the next configuration is active (== caught up)
+    /// * Any of the partition processors in the next configuration is active (== caught up) and
+    ///   its node is alive
     ///
     /// Note: We don't complete the reconfiguration if all current nodes are dead for some time,
     /// because we might need any of them to send a partition store snapshot to the next nodes once
@@ -588,6 +664,7 @@ impl<T: TransportConnect> Scheduler<T> {
         nodes_config: &NodesConfiguration,
         partition_state: &PartitionState,
         legacy_cluster_state: &LegacyClusterState,
+        cluster_state: &ClusterState,
     ) -> bool {
         // we can only complete the reconfiguration if a next configuration has been set
         let Some(next) = partition_state.next.as_ref() else {
@@ -602,9 +679,13 @@ impl<T: TransportConnect> Scheduler<T> {
 
         // check whether we can transition from the current configuration to the next
         // configuration, which is possible as soon as a single partition processor from the
-        // next configuration has become active
+        // next configuration has become active. The legacy cluster state is refreshed periodically
+        // and can still report a processor as active after its node died. Since dead members of
+        // next are kept during the reconfiguration grace period, we also check liveness to avoid
+        // completing to a replica set without any live member.
         let any_next_pp_active = next.replica_set().iter().any(|node_id| {
-            legacy_cluster_state.is_partition_processor_active(&partition_id, node_id)
+            cluster_state.is_alive((*node_id).into())
+                && legacy_cluster_state.is_partition_processor_active(&partition_id, node_id)
         });
 
         next.replica_set().is_empty() || all_current_workers_disabled || any_next_pp_active
@@ -828,53 +909,45 @@ impl<T: TransportConnect> Scheduler<T> {
     ///
     /// * Partition replication has changed.
     /// * Possible improvement/re-balance in replica-set, this includes if a node has been dead for
-    ///   some time.
+    ///   longer than the reconfiguration grace period.
     ///
-    /// Note: if we take whether a node is dead or not into account, we can do great job but we
-    /// need to rest our dead timers/instants when we switch from follower to leader. This is to
-    /// avoid knee-jerk reaction if we are new leaders with outdated view of the world.
+    /// Dead members of the replica set that are still within their grace period are treated as
+    /// alive. This avoids reconfiguring partitions when a node is only briefly unavailable (e.g.
+    /// during a rolling restart). If all members of the replica set are dead, the grace period is
+    /// ignored, since the partition is unavailable until it is reconfigured.
     ///
-    /// In this case, the method returns true, otherwise false.
+    /// We check `next` if a reconfiguration is ongoing, otherwise `current`.
     fn requires_reconfiguration(
         partition_id: PartitionId,
         partition_state: &PartitionState,
         default_replication: &ReplicationProperty,
         nodes_config: &NodesConfiguration,
         cluster_state: &ClusterState,
+        is_within_grace_period: impl Fn(PlainNodeId) -> bool,
     ) -> bool {
-        // We only need to check current if next == None. If next != None, then there is a
-        // reconfiguration ongoing, and we need to check whether this target configuration requires
-        // reconfiguration.
-        if let Some(next) = partition_state.next.as_ref() {
-            next.replication() != default_replication ||
-                // check if a different replica-set is eminent
-                Self::choose_partition_configuration(
-                    partition_id,
-                    nodes_config,
-                    default_replication.clone(),
-                    NodeSet::default(),
-                    cluster_state,
-                )
-                    .map(|new_config|
-                        !new_config.replica_set().is_equivalent(next.replica_set()))
-                    .unwrap_or(false)
-        } else {
-            // if we are here then there is no reconfiguration ongoing
-            partition_state.current.replication() != default_replication
-                || Self::choose_partition_configuration(
-                    partition_id,
-                    nodes_config,
-                    default_replication.clone(),
-                    NodeSet::default(),
-                    cluster_state,
-                )
-                .map(|new_config| {
-                    !new_config
-                        .replica_set()
-                        .is_equivalent(partition_state.current.replica_set())
-                })
-                .unwrap_or(false)
-        }
+        let target = partition_state
+            .next
+            .as_ref()
+            .unwrap_or(&partition_state.current);
+        let any_member_alive = target
+            .replica_set()
+            .iter()
+            .any(|node_id| cluster_state.is_alive((*node_id).into()));
+
+        target.replication() != default_replication
+            || Self::choose_partition_configuration(
+                partition_id,
+                nodes_config,
+                default_replication.clone(),
+                NodeSet::default(),
+                |node_id| {
+                    cluster_state.is_alive(node_id.into())
+                        || (any_member_alive
+                            && target.replica_set().contains(node_id)
+                            && is_within_grace_period(node_id))
+                },
+            )
+            .is_some_and(|new_config| !new_config.replica_set().is_equivalent(target.replica_set()))
     }
 
     fn choose_partition_configuration(
@@ -882,12 +955,12 @@ impl<T: TransportConnect> Scheduler<T> {
         nodes_config: &NodesConfiguration,
         partition_replication: ReplicationProperty,
         preferred_nodes: NodeSet,
-        cluster_state: &ClusterState,
+        is_alive: impl Fn(PlainNodeId) -> bool,
     ) -> Option<PartitionConfiguration> {
         let options =
             SelectorOptions::new(u64::from(partition_id)).with_preferred_nodes(preferred_nodes);
         let filter = |node_id: PlainNodeId, node_config: &NodeConfig| {
-            cluster_state.is_alive(node_id.into()) && worker_candidate_filter(node_id, node_config)
+            is_alive(node_id) && worker_candidate_filter(node_id, node_config)
         };
 
         BalancedSpreadSelector::select(nodes_config, &partition_replication, filter, &options)
@@ -1091,8 +1164,9 @@ fn matches_affinity(
 #[cfg(test)]
 mod tests {
     use restate_core::network::FailingConnector;
+    use restate_types::cluster_state::NodeState;
     use restate_types::metadata::Precondition;
-    use restate_types::nodes_config::{Role, WorkerConfig};
+    use restate_types::nodes_config::WorkerConfig;
     use restate_types::partitions::placement_policy::{PlacementFreeze, PlacementPolicy};
     use restate_types::{GenerationalNodeId, RestateVersion};
 
@@ -1257,6 +1331,7 @@ mod tests {
                 &nodes_configuration,
                 &state,
                 &LegacyClusterState::empty(),
+                &ClusterState::default(),
             )
         );
         let completed = Scheduler::<FailingConnector>::complete_reconfiguration(
@@ -1272,5 +1347,109 @@ mod tests {
         );
         assert!(completed.configuration.next.is_none());
         assert_eq!(completed.configuration.placement_policy, policy);
+    }
+
+    #[test]
+    fn grace_period_delays_reconfiguration_away_from_dead_members() {
+        let partition_id = PartitionId::MIN;
+        let replication = ReplicationProperty::new_unchecked(2);
+        let grace_period = Some(Duration::from_secs(60));
+        let now = Instant::now();
+        let expired = now + Duration::from_secs(60);
+
+        let mut nodes_config = NodesConfiguration::new_for_testing();
+        for id in 1..=4 {
+            nodes_config.upsert_node(
+                NodeConfig::builder()
+                    .name(format!("node-{id}"))
+                    .current_generation(GenerationalNodeId::new(id, 1))
+                    .address(format!("unix:/tmp/node-{id}").parse().unwrap())
+                    .roles(Role::Worker.into())
+                    .worker_config(WorkerConfig {
+                        worker_state: WorkerState::Active,
+                    })
+                    .binary_version(RestateVersion::current())
+                    .build(),
+            );
+        }
+
+        // start from the replica set the scheduler picks when all nodes are alive
+        let current = Scheduler::<FailingConnector>::choose_partition_configuration(
+            partition_id,
+            &nodes_config,
+            replication.clone(),
+            NodeSet::default(),
+            |_| true,
+        )
+        .unwrap();
+        let members: Vec<_> = current.replica_set().iter().copied().collect();
+        let state = PartitionState::new(
+            current,
+            None,
+            LeadershipPolicy::default(),
+            PlacementPolicy::default(),
+        );
+
+        let requires_reconfiguration =
+            |alive: &[PlainNodeId], dead_nodes: &DeadNodes, grace_period, now| {
+                let cluster_state = ClusterState::default();
+                let mut updater = cluster_state.clone().updater();
+                for node_id in alive {
+                    updater.upsert_node_state(
+                        GenerationalNodeId::new(u32::from(*node_id), 1),
+                        NodeState::Alive,
+                    );
+                }
+                Scheduler::<FailingConnector>::requires_reconfiguration(
+                    partition_id,
+                    &state,
+                    &replication,
+                    &nodes_config,
+                    &cluster_state,
+                    |node_id| dead_nodes.is_within_grace_period(node_id, grace_period, now),
+                )
+            };
+
+        // one member is dead
+        let dead = members[0];
+        let alive: Vec<_> = (1..=4)
+            .map(PlainNodeId::from)
+            .filter(|id| *id != dead)
+            .collect();
+        let dead_nodes = DeadNodes([(dead, now)].into_iter().collect());
+
+        assert!(!requires_reconfiguration(
+            &alive,
+            &dead_nodes,
+            grace_period,
+            now
+        ));
+        assert!(requires_reconfiguration(
+            &alive,
+            &dead_nodes,
+            grace_period,
+            expired
+        ));
+        assert!(requires_reconfiguration(&alive, &dead_nodes, None, now));
+        // died after the last update of the dead nodes
+        assert!(!requires_reconfiguration(
+            &alive,
+            &DeadNodes::default(),
+            grace_period,
+            now
+        ));
+
+        // all members are dead
+        let alive: Vec<_> = (1..=4)
+            .map(PlainNodeId::from)
+            .filter(|id| !members.contains(id))
+            .collect();
+        let dead_nodes = DeadNodes(members.iter().map(|id| (*id, now)).collect());
+        assert!(requires_reconfiguration(
+            &alive,
+            &dead_nodes,
+            grace_period,
+            now
+        ));
     }
 }
