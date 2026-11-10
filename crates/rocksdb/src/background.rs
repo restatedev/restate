@@ -208,10 +208,11 @@ where
 /// Nothing is admitted until the operation runs or is submitted: that is when
 /// it takes its lease from its gate. So a prepared operation doesn't hold up
 /// draining, and if the gate is sealed first, it fails with
-/// [`AdmissionClosed`]. The exception is
+/// [`AdmissionClosed`]. The exceptions are
 /// [`RocksDb::prepare_drop_cf`](crate::RocksDb::prepare_drop_cf), which takes no
 /// lease, so that a column family can still be deleted after the database is
-/// sealed.
+/// sealed, and an operation with [`LeasePolicy::StopOnSeal`], which takes its
+/// lease when it starts on a worker.
 ///
 /// `C` is the operation's context, what it works on, such as the database. It
 /// stays borrowed until the operation moves to a background thread (see
@@ -370,6 +371,29 @@ impl<'a, C: OpContext, F: OpFn<C>> StorageOp<'a, C, F> {
         StorageOp {
             context,
             op: ReadPerf { op, name },
+            gate,
+            kind,
+        }
+    }
+
+    /// Decides what sealing the operation's gate does once the operation is
+    /// submitted (see [`LeasePolicy`]). The operation then returns
+    /// [`AdmissionClosed`] if [`LeasePolicy::StopOnSeal`] stopped it.
+    pub fn with_lease_policy(self, policy: LeasePolicy) -> StorageOp<'a, C, Sealable<F>> {
+        let Self {
+            context,
+            op,
+            gate,
+            kind,
+        } = self;
+        let (gate, stop_on_seal) = match policy {
+            // No lease at submission: the operation admits itself on the worker.
+            LeasePolicy::StopOnSeal => (None, gate.map(Arc::clone)),
+            LeasePolicy::WholeOperation => (gate, None),
+        };
+        StorageOp {
+            context,
+            op: Sealable { op, stop_on_seal },
             gate,
             kind,
         }
@@ -652,6 +676,58 @@ impl<C: OpContext, F: OpFn<C>> OpFn<C> for ReadPerf<F> {
 
     async fn run_async(self, context: C::Owned) -> F::Output {
         self.op.run_async(context).with_read_perf(self.name).await
+    }
+}
+
+/// What happens to a submitted operation once its gate is sealed. See
+/// [`StorageOp::with_lease_policy`].
+///
+/// - [`Self::StopOnSeal`]: the operation stops early. Use it for reads that
+///   are pointless once their owner shuts down, such as a query on a partition
+///   that is closing.
+/// - [`Self::WholeOperation`]: the operation runs to completion, and shutting
+///   down waits for it. Use it for work that must not be cut short.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeasePolicy {
+    /// The operation takes its lease when it starts on a worker, not when it's
+    /// submitted, so a queued operation doesn't hold up draining. If the gate
+    /// is sealed by then, it doesn't run. Once running, it stops as soon as the
+    /// gate is sealed and it hits a yielding point.
+    ///
+    /// Stopping drops the operation and its context before the lease, and with
+    /// them any lease the context holds, such as a
+    /// [`ReadSnapshot`](crate::reads::ReadSnapshot)'s.
+    StopOnSeal,
+    /// The operation takes one lease when it's submitted and holds it until it
+    /// ends and its context is dropped. Draining the gate waits for it.
+    WholeOperation,
+}
+
+/// The work of an operation returned by [`StorageOp::with_lease_policy`].
+pub struct Sealable<F> {
+    op: F,
+    // Set with `LeasePolicy::StopOnSeal`: the gate to admit through and watch.
+    stop_on_seal: Option<Arc<Gate>>,
+}
+
+impl<C: OpContext, F: OpFn<C>> OpFn<C> for Sealable<F> {
+    type Output = Result<F::Output, AdmissionClosed>;
+
+    async fn run_async(self, context: C::Owned) -> Self::Output {
+        let Some(gate) = self.stop_on_seal else {
+            return Ok(self.op.run_async(context).await);
+        };
+        let lease = gate.try_acquire().ok_or(AdmissionClosed)?;
+        let op = self.op;
+        let output = tokio::select! {
+            biased;
+            _ = gate.wait_sealed() => Err(AdmissionClosed),
+            // Lazy, so that the work doesn't start if the gate is already sealed.
+            output = async move { op.run_async(context).await } => Ok(output),
+        };
+        // The work and its context are dropped by now, before the lease.
+        drop(lease);
+        output
     }
 }
 
