@@ -109,6 +109,13 @@ message PartitionProcessorStatus {
 
   // Partition-store on-disk local storage features
   repeated string enabled_storage_features = 19;
+
+  // Byte offsets, unset while the partition doesn't track them. Both count the
+  // records after the one at byte_offsets_base_lsn. The partition store byte
+  // offset is local to this replica's store.
+  optional restate.common.Lsn byte_offsets_base_lsn = 20;
+  optional uint64 log_byte_offset = 21;
+  optional uint64 partition_store_byte_offset = 22;
 }
 
 message ReplicationProperty { string replication_property = 1; }

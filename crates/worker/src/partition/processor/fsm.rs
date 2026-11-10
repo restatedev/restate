@@ -58,8 +58,8 @@ pub(super) struct Fsm {
     /// path also pushes the same value into the node-level
     /// `RuleBookCache` (one allocation, cheap clones).
     rule_book: Arc<RuleBook>,
-    /// The partition's position as loaded at start. The processor's transaction maintains it
-    /// from there on.
+    /// The partition's position: loaded at start for the processor's transaction, which
+    /// maintains it, and refreshed from that transaction for the processor's status.
     /// *Since v1.8.2*
     fsm_position: FsmPosition,
 }
@@ -182,9 +182,15 @@ impl Fsm {
         txn.advance_fsm_position(lsn, record_bytes);
     }
 
-    /// The partition's position as loaded at start, for the processor's transaction.
+    /// The partition's position, as loaded at start or last refreshed.
     pub fn fsm_position(&self) -> FsmPosition {
         self.fsm_position
+    }
+
+    /// Keeps a copy of the partition's position, which the processor's transaction maintains,
+    /// for the processor's status.
+    pub fn set_fsm_position(&mut self, position: FsmPosition) {
+        self.fsm_position = position;
     }
 
     pub fn release_applied_lsn(&mut self) {

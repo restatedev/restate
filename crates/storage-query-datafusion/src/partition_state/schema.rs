@@ -73,5 +73,20 @@ define_table!(
 
         /// Partition-store on-disk local storage features.
         enabled_storage_features: Utf8List,
+
+        /// LSN of the record that turned byte offsets on for the partition, which they count
+        /// from. NULL while the partition doesn't track byte offsets.
+        byte_offsets_base_lsn: DataType::UInt64,
+
+        /// How far the partition has applied its log in bytes, since `byte_offsets_base_lsn`.
+        /// Replicas at the same applied LSN normally agree on it, but it can differ slightly
+        /// between them. NULL while the partition doesn't track byte offsets.
+        log_byte_offset: DataType::UInt64,
+
+        /// How much data this replica has written to its partition store in bytes, before
+        /// compression, since `byte_offsets_base_lsn`, as of its last commit. Local to each
+        /// replica; a replica restored from a snapshot continues from the snapshot's. NULL while
+        /// the partition doesn't track byte offsets.
+        partition_store_byte_offset: DataType::UInt64,
     )
 );

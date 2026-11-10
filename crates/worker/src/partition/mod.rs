@@ -742,6 +742,7 @@ where
 
                     // Commit our changes and notify actuators about actions if we are the leader
                     txn.commit().await?;
+                    self.ctx.refresh_fsm_position(&txn);
                     self.ctx.release_applied_lsn();
                     self.leadership_state.handle_actions(&mut self.ctx, action_collector.drain(..))?;
 
