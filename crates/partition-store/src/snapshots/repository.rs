@@ -644,8 +644,9 @@ impl SnapshotRepository {
 
         // Uploads can outlive a lease duration, so re-check immediately before publishing rather
         // than trusting the lease we held when the upload started. This narrows, but cannot close,
-        // the window: the lease may still lapse between here and the CAS landing. The
-        // descending-LSN sort in build_latest_v2 is what makes that residual race harmless.
+        // the window: the lease may still lapse between here and the CAS landing. A late writer
+        // that loses the race to a newer snapshot is turned away by the LSN check in
+        // build_latest_v2 or, if it checked first, by the conditional put.
         if !lease_guard.is_valid() {
             return Err(PutSnapshotError::from(
                 anyhow::anyhow!(
@@ -744,19 +745,29 @@ impl SnapshotRepository {
             .map(|l| l.effective_retained_snapshots())
             .unwrap_or_default();
 
-        retained_snapshots.push(new_snapshot_ref.clone());
+        // A snapshot that is not newer than the published latest is abandoned rather than
+        // published: the pointer fields below must never move backwards. This can only happen when
+        // a writer that lost its lease mid-upload reaches the pointer CAS after a newer snapshot.
+        if let Some(current) = current
+            && snapshot.min_applied_lsn <= current.min_applied_lsn
+        {
+            warn!(
+                snapshot_id = %snapshot.snapshot_id,
+                snapshot_lsn = %snapshot.min_applied_lsn,
+                latest_snapshot_id = %current.snapshot_id,
+                latest_lsn = %current.min_applied_lsn,
+                "Abandoning snapshot: its LSN is not newer than the latest published snapshot; \
+                 leaving the latest snapshot pointer unchanged"
+            );
+            anyhow::bail!(
+                "snapshot at LSN {} is not newer than the latest published snapshot at LSN {}; abandoning",
+                snapshot.min_applied_lsn,
+                current.min_applied_lsn
+            );
+        }
 
-        // Eviction below is positional, and both pruning and restore rely on descending-LSN order.
-        // The snapshot lease normally makes us the only writer, so the new snapshot would already
-        // be the newest - but a holder that lost its lease mid-upload can still win the pointer
-        // CAS below. Sorting keeps the invariant a property of this function rather than of the
-        // lease, so a late writer can no longer displace a newer snapshot from the head of the
-        // list and get it evicted.
-        retained_snapshots.sort_by(|a, b| {
-            b.min_applied_lsn
-                .cmp(&a.min_applied_lsn)
-                .then_with(|| b.created_at.cmp(&a.created_at))
-        });
+        // Retained snapshots are kept in descending LSN order, and the new one is the newest.
+        retained_snapshots.insert(0, new_snapshot_ref.clone());
 
         let evicted_snapshots = retained_snapshots
             .split_off((self.num_retained.get() as usize).min(retained_snapshots.len()));
@@ -1820,11 +1831,46 @@ mod tests {
             .await?;
 
         let latest = object_store
-            .get(&partition_prefix.join("latest.json"))
+            .get(&partition_prefix.clone().join("latest.json"))
             .await?;
         let latest: LatestSnapshot = serde_json::from_slice(&latest.bytes().await?)?;
         let (expected_latest2, _) = repository.build_latest_v2(&snapshot2, None)?;
         assert_eq!(expected_latest2, latest);
+
+        // Publishing a lower-LSN snapshot after a higher one is abandoned and leaves latest.json
+        // byte-for-byte unchanged.
+        let latest_before = object_store
+            .get(&partition_prefix.clone().join("latest.json"))
+            .await?
+            .bytes()
+            .await?;
+        let stale_source = tempdir()?;
+        tokio::fs::write(stale_source.path().join("data.sst"), data).await?;
+        let mut stale = mock_snapshot_metadata(
+            "/data.sst".to_owned(),
+            stale_source.path().to_string_lossy().to_string(),
+            data.len(),
+        );
+        stale.min_applied_lsn = snapshot1.min_applied_lsn;
+        assert!(
+            repository
+                .put(
+                    &stale,
+                    SnapshotDir::new(stale_source.path().to_path_buf()),
+                    Arc::new(SnapshotLeaseGuard::noop()),
+                )
+                .await
+                .is_err()
+        );
+        let latest_after = object_store
+            .get(&partition_prefix.clone().join("latest.json"))
+            .await?
+            .bytes()
+            .await?;
+        assert_eq!(latest_before, latest_after);
+        let unchanged: LatestSnapshot = serde_json::from_slice(&latest_after)?;
+        assert_eq!(unchanged.snapshot_id, snapshot2.snapshot_id);
+        assert_eq!(unchanged.min_applied_lsn, snapshot2.min_applied_lsn);
 
         // A cancelled download fails and leaves nothing behind in the staging directory.
         let cancelled = CancellationToken::new();
@@ -1876,13 +1922,12 @@ mod tests {
     }
 
     /// A snapshot published by a writer that lost its lease mid-upload can reach the pointer CAS
-    /// after a newer snapshot was already published. Eviction is positional, so the retained list
-    /// must be ordered by LSN rather than by arrival, or the late writer displaces - and then
-    /// evicts - the newest snapshot.
+    /// after a newer snapshot was already published. It must be abandoned rather than regress the
+    /// pointer fields or evict the newer snapshot.
     #[restate_core::test]
-    async fn build_latest_v2_orders_by_lsn_not_arrival() -> anyhow::Result<()> {
+    async fn build_latest_v2_abandons_stale_snapshot() -> anyhow::Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
-        let repository = mock_repository(1);
+        let repository = mock_repository(2);
 
         let newest = SnapshotReference {
             snapshot_id: SnapshotId::new(),
@@ -1897,34 +1942,32 @@ mod tests {
         };
         let current = mock_latest_snapshot(&newest);
 
-        let mut late = mock_snapshot_metadata("/data.sst".to_owned(), "/".to_owned(), 0);
-        late.min_applied_lsn = Lsn::new(50);
-        let (latest, evicted) = repository.build_latest_v2(&late, Some(&current))?;
+        // Lower and equal LSNs are both abandoned.
+        for lsn in [50, 100] {
+            let mut late = mock_snapshot_metadata("/data.sst".to_owned(), "/".to_owned(), 0);
+            late.min_applied_lsn = Lsn::new(lsn);
+            let err = repository
+                .build_latest_v2(&late, Some(&current))
+                .expect_err("a snapshot that is not newer than latest must be abandoned");
+            assert!(err.to_string().contains("not newer"), "{err}");
+        }
 
+        // The ordinary case - a genuinely newer snapshot - takes the head position and the
+        // top-level pointer fields.
+        let mut newer = mock_snapshot_metadata("/data.sst".to_owned(), "/".to_owned(), 0);
+        newer.min_applied_lsn = Lsn::new(150);
+        let (latest, evicted) = repository.build_latest_v2(&newer, Some(&current))?;
+        assert_eq!(latest.snapshot_id, newer.snapshot_id);
+        assert_eq!(latest.min_applied_lsn, Lsn::new(150));
         assert_eq!(
             latest
                 .retained_snapshots
                 .iter()
                 .map(|s| s.min_applied_lsn)
                 .collect::<Vec<_>>(),
-            vec![Lsn::new(100)],
-            "the newest snapshot must stay at the head of the retained list"
+            vec![Lsn::new(150), Lsn::new(100)]
         );
-        assert_eq!(
-            evicted
-                .iter()
-                .map(|s| s.min_applied_lsn)
-                .collect::<Vec<_>>(),
-            vec![Lsn::new(50)],
-            "the late, lower-LSN snapshot is the one that gets evicted"
-        );
-
-        // The ordinary case - a genuinely newer snapshot - still takes the head position.
-        let mut newer = mock_snapshot_metadata("/data.sst".to_owned(), "/".to_owned(), 0);
-        newer.min_applied_lsn = Lsn::new(150);
-        let (latest, evicted) = repository.build_latest_v2(&newer, Some(&current))?;
-        assert_eq!(latest.retained_snapshots[0].min_applied_lsn, Lsn::new(150));
-        assert_eq!(evicted[0].min_applied_lsn, Lsn::new(100));
+        assert!(evicted.is_empty());
 
         Ok(())
     }
