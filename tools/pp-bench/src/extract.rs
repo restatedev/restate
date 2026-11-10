@@ -28,9 +28,11 @@ use restate_log_server::rocksdb_logstore::metadata_merge::{
 };
 use restate_log_server::rocksdb_logstore::record_format::DataRecordDecoder;
 use restate_log_server::rocksdb_logstore::{DATA_CF, METADATA_CF};
+use restate_partition_store::fsm_table::read_applied_lsn_from_db;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{LogId, LogletId, LogletOffset, Lsn, SequenceNumber};
+use restate_types::partition_table::CfName;
 use restate_types::storage::StorageCodec;
 use restate_util_bytecount::ByteCount;
 use restate_wal_protocol::v2::{Envelope, Raw};
@@ -68,7 +70,9 @@ pub fn extract_snapshot_bundle(opts: &ExtractOpts) -> anyhow::Result<()> {
     // -----------------------------------------------------------------------
     c_println!("Checkpointing partition store...");
 
-    let applied_lsn = checkpoint_partition_store(&partition_store_path, &checkpoint_path)?;
+    let partition_id = PartitionId::from(opts.partition_id);
+    let applied_lsn =
+        checkpoint_partition_store(&partition_store_path, &checkpoint_path, partition_id)?;
     c_success!(
         "Partition store checkpoint created (applied_lsn={})",
         u64::from(applied_lsn)
@@ -77,7 +81,6 @@ pub fn extract_snapshot_bundle(opts: &ExtractOpts) -> anyhow::Result<()> {
     // -----------------------------------------------------------------------
     // Step 2: Determine LSN range for extraction
     // -----------------------------------------------------------------------
-    let partition_id = PartitionId::from(opts.partition_id);
     let from_lsn = opts
         .from_lsn
         .map(Lsn::from)
@@ -150,7 +153,11 @@ pub fn extract_snapshot_bundle(opts: &ExtractOpts) -> anyhow::Result<()> {
 // Partition store checkpoint + applied_lsn extraction
 // ---------------------------------------------------------------------------
 
-fn checkpoint_partition_store(db_path: &Path, checkpoint_path: &Path) -> anyhow::Result<Lsn> {
+fn checkpoint_partition_store(
+    db_path: &Path,
+    checkpoint_path: &Path,
+    partition_id: PartitionId,
+) -> anyhow::Result<Lsn> {
     // Open the partition store DB in read-only mode
     let cf_names = DB::list_cf(&Options::default(), db_path)
         .context("Failed to list partition store column families")?;
@@ -175,10 +182,7 @@ fn checkpoint_partition_store(db_path: &Path, checkpoint_path: &Path) -> anyhow:
     let db = DB::open_cf_descriptors_read_only(&opts, db_path, descriptors, false)
         .context("Failed to open partition store. Is the Restate server stopped?")?;
 
-    // Read applied_lsn from the FSM table.
-    // Key format: KeyKind::Fsm (2 bytes, big-endian) + PaddedPartitionId (8 bytes) + state_id (8 bytes, LE)
-    // applied_lsn state_id = 2
-    let applied_lsn = read_applied_lsn_raw(&db, &cf_names)?;
+    let applied_lsn = read_applied_lsn_raw(&db, partition_id)?;
 
     // Create checkpoint using hardlinks
     let checkpoint =
@@ -190,36 +194,21 @@ fn checkpoint_partition_store(db_path: &Path, checkpoint_path: &Path) -> anyhow:
     Ok(applied_lsn)
 }
 
-/// Read the applied_lsn directly from the partition store's FSM table using raw key access.
-/// This avoids needing the full PartitionStoreManager + TaskCenter machinery.
-fn read_applied_lsn_raw(db: &DB, cf_names: &[String]) -> anyhow::Result<Lsn> {
-    // Find the data CF (named "data-0" for partition 0, or similar)
-    let data_cf_name = cf_names
-        .iter()
-        .find(|name| name.starts_with("data-"))
-        .context("No data column family found in partition store")?;
+/// Reads the partition's applied LSN from the store, the way the partition reads it. This avoids
+/// needing the full PartitionStoreManager + TaskCenter machinery.
+fn read_applied_lsn_raw(db: &DB, partition_id: PartitionId) -> anyhow::Result<Lsn> {
+    let cf_name = CfName::for_partition(partition_id);
+    let cf = db.cf_handle(cf_name.as_ref()).with_context(|| {
+        format!(
+            "No column family {} for partition {partition_id} in the partition store",
+            cf_name.as_ref()
+        )
+    })?;
 
-    let cf = db
-        .cf_handle(data_cf_name)
-        .context("Data column family handle not found")?;
-
-    // The FSM key for applied_lsn is constructed as:
-    // KeyKind::Fsm = 0x0006 (big-endian 2 bytes)
-    // PaddedPartitionId = partition_id as u64 big-endian (8 bytes)
-    // state_id = 2_u64 (little-endian 8 bytes)
-    //
-    // We scan for FSM keys with state_id=2 (APPLIED_LSN).
-    // For simplicity, try partition_id=0 first (the common case).
-    let mut key = Vec::with_capacity(18);
-    key.extend_from_slice(&0x0006_u16.to_be_bytes()); // KeyKind::Fsm
-    key.extend_from_slice(&0_u64.to_be_bytes()); // PaddedPartitionId (partition 0)
-    key.extend_from_slice(&2_u64.to_le_bytes()); // state_id = APPLIED_LSN
-
-    if let Some(value) = db.get_cf(&cf, &key)?
-        && value.len() >= 8
+    if let Some(applied_lsn) = read_applied_lsn_from_db(db, &cf, partition_id)
+        .context("Failed to read the partition's applied LSN")?
     {
-        let seq = u64::from_le_bytes(value[..8].try_into().unwrap());
-        return Ok(Lsn::from(seq));
+        return Ok(applied_lsn);
     }
 
     // Fallback: if no applied_lsn is stored, the partition is fresh
