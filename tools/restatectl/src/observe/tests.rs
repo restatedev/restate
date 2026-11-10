@@ -400,6 +400,70 @@ fn replicas_read_their_own_stream() {
 /// metadata quorum is lost though no server answered; log 0's writable nodes are both in one
 /// zone, too few for its replication across two; N1 and N2 both lead partition 0 in its newest
 /// epoch. Without it, nothing tells which nodes are alive and which processors run.
+/// A log tells how much of it lies between its partition's snapshot and its tail: the bytes from
+/// the snapshot's log byte offset to that of the replica furthest along, if both count from the
+/// same base LSN, and the records that replica hasn't applied yet.
+#[test]
+fn bytes_between_the_snapshot_and_the_tail() {
+    let mut view = large_cluster();
+    let snapshot_to_tail = |view: &ClusterView| {
+        let log = view
+            .logs
+            .iter()
+            .find(|l| l.partition_id == Some(0))
+            .unwrap();
+        view.snapshot_to_tail(log)
+    };
+    let p = &view.partitions[0];
+    let snapshot_lsn = p.leader_replica().unwrap().archived_lsn.unwrap();
+    let applied = p
+        .replicas
+        .iter()
+        .filter_map(|r| r.applied_lsn)
+        .max()
+        .unwrap();
+    let tail = view
+        .logs
+        .iter()
+        .find(|l| l.partition_id == Some(0))
+        .unwrap()
+        .tail_lsn
+        .unwrap();
+    // 120 bytes for each of the 120,000 records after the snapshot
+    assert_eq!(
+        snapshot_to_tail(&view),
+        Some(SnapshotToTail {
+            snapshot_lsn,
+            bytes: Some(SnapshotBytes {
+                bytes: 120 * 120_000,
+                unapplied: tail - applied - 1,
+            }),
+        })
+    );
+
+    // Replicas that count from another base LSN, e.g. after a snapshot from before byte offsets
+    // turned on, can't be compared with the snapshot: only its LSN is known.
+    for r in &mut view.partitions[0].replicas {
+        r.byte_offsets_base_lsn = Some(3);
+    }
+    let expected = Some(SnapshotToTail {
+        snapshot_lsn,
+        bytes: None,
+    });
+    assert_eq!(snapshot_to_tail(&view), expected);
+    // Neither without the snapshot's byte offset, from servers that don't report it.
+    for r in &mut view.partitions[0].replicas {
+        r.byte_offsets_base_lsn = Some(2);
+        r.archived_log_byte_offset = None;
+    }
+    assert_eq!(snapshot_to_tail(&view), expected);
+    // And without a snapshot, there's nothing to tell.
+    for r in &mut view.partitions[0].replicas {
+        r.archived_lsn = None;
+    }
+    assert_eq!(snapshot_to_tail(&view), None);
+}
+
 #[test]
 fn findings_need_evidence() {
     let snapshot = || {
@@ -800,6 +864,11 @@ pub(crate) fn large_cluster_snapshot() -> Snapshot {
                 last_applied_schema_version: Some(common::Version { value: 17 }),
                 enabled_features: vec!["journal_v2".to_owned(), "vqueues".to_owned()],
                 updated_at: Some(std::time::SystemTime::now().into()),
+                // 120 bytes per record, also in the snapshot the leader reports
+                byte_offsets_base_lsn: Some(common::Lsn { value: 2 }),
+                log_byte_offset: Some(applied * 120),
+                last_archived_log_byte_offset: leads.then_some((leader_applied - 120_000) * 120),
+                last_archived_byte_offsets_base_lsn: leads.then_some(common::Lsn { value: 2 }),
                 ..Default::default()
             };
             processors.entry(node).or_default().push((p, status));

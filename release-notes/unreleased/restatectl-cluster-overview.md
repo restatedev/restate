@@ -78,7 +78,9 @@ second (`-n <seconds>` changes the interval):
   over the time the dashboard has been running. The overview charts the cluster's appends per
   second. A log shows its chain of segments, each in the color of the node that sequences it,
   with trimmed records shaded, its partition's newest snapshot, and where each reader is on it;
-  and how long each reader has been in its state. On servers that report it (v1.8.2 and newer),
+  and how long each reader has been in its state. When the partition tracks byte offsets (see
+  `experimental-enable-byte-offsets`) and its nodes report its snapshot's (v1.8.2 and newer), the
+  log's details also tell how many bytes of log lie between that snapshot and the tail. On servers that report it (v1.8.2 and newer),
   it also shows who each reader is, such as the partition's leader or a follower, and how many
   bytes per second it reads, and a partition's details chart the bytes per second its leader
   reads. The partitions and logs views start with their spread over the nodes.

@@ -390,6 +390,17 @@ pub struct ReplicaView {
     pub target_tail_lsn: Option<u64>,
     /// records between the applied LSN and the log tail
     pub lag: Option<u64>,
+    /// LSN of the record that turned byte offsets on for the partition, which they count from
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub byte_offsets_base_lsn: Option<u64>,
+    /// how far the replica applied its log, in bytes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_byte_offset: Option<u64>,
+    /// the log byte offset of the snapshot at the archived LSN, and the LSN it counts from
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_log_byte_offset: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_byte_offsets_base_lsn: Option<u64>,
     pub schema_version: Option<u32>,
     pub rule_book_version: Option<u32>,
     pub features: Vec<String>,
@@ -1050,6 +1061,46 @@ impl ClusterView {
             .count()
     }
 
+    /// How much of `log` lies between its partition's archived snapshot and its tail, the newest
+    /// archived snapshot its replicas report. `None` if the log has no partition, or the partition
+    /// no archived snapshot.
+    pub fn snapshot_to_tail(&self, log: &LogView) -> Option<SnapshotToTail> {
+        let partition = self
+            .partitions
+            .iter()
+            .find(|p| Some(p.id) == log.partition_id)?;
+        let snapshot = partition
+            .replicas
+            .iter()
+            .filter(|r| r.archived_lsn.is_some())
+            .max_by_key(|r| r.archived_lsn)?;
+        let snapshot_lsn = snapshot.archived_lsn?;
+        // The bytes between the snapshot and the replica furthest along that counts from the same
+        // base LSN: the log the replicas applied after the snapshot.
+        let bytes = snapshot
+            .archived_log_byte_offset
+            .zip(snapshot.archived_byte_offsets_base_lsn)
+            .and_then(|(snapshot_offset, base)| {
+                let (applied, offset) = partition
+                    .replicas
+                    .iter()
+                    .filter(|r| r.byte_offsets_base_lsn == Some(base))
+                    .filter_map(|r| Some((r.applied_lsn?, r.log_byte_offset?)))
+                    .filter(|(applied, _)| *applied >= snapshot_lsn)
+                    .max_by_key(|(applied, _)| *applied)?;
+                Some(SnapshotBytes {
+                    bytes: offset.wrapping_sub(snapshot_offset),
+                    unapplied: log
+                        .tail_lsn
+                        .map_or(0, |tail| tail.saturating_sub(applied + 1)),
+                })
+            });
+        Some(SnapshotToTail {
+            snapshot_lsn,
+            bytes,
+        })
+    }
+
     /// The replicated metadata servers' members and how many are up, as far as their reports
     /// tell. `None` without replicated metadata servers, or when the nodes weren't asked.
     pub fn metadata_members(&self) -> Option<MetadataMembers> {
@@ -1095,6 +1146,25 @@ impl ClusterView {
             reported,
         })
     }
+}
+
+/// How much of a log lies between its partition's archived snapshot and its tail.
+#[derive(Debug, PartialEq, Eq)]
+pub struct SnapshotToTail {
+    /// the applied LSN of the snapshot
+    pub snapshot_lsn: u64,
+    /// on servers that report the snapshot's byte offset (v1.8.2 and newer, with byte offsets
+    /// on), and if it counts from the same base LSN as a replica's
+    pub bytes: Option<SnapshotBytes>,
+}
+
+/// See [`SnapshotToTail::bytes`].
+#[derive(Debug, PartialEq, Eq)]
+pub struct SnapshotBytes {
+    /// the log bytes between the snapshot and the replica furthest along
+    pub bytes: u64,
+    /// the records between that replica's applied LSN and the tail, which `bytes` doesn't count
+    pub unapplied: u64,
 }
 
 /// See [`ClusterView::metadata_members`].
@@ -1190,6 +1260,10 @@ fn replica_view(
         lag: target_tail
             .zip(applied)
             .map(|(tail, applied)| tail.saturating_sub(applied + 1)),
+        byte_offsets_base_lsn: status.byte_offsets_base_lsn.map(|l| l.value),
+        log_byte_offset: status.log_byte_offset,
+        archived_log_byte_offset: status.last_archived_log_byte_offset,
+        archived_byte_offsets_base_lsn: status.last_archived_byte_offsets_base_lsn.map(|l| l.value),
         schema_version: status
             .last_applied_schema_version
             .map(|v| Version::from(v).into()),
