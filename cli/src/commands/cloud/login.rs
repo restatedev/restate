@@ -34,9 +34,9 @@ use crate::{
 ///
 /// The browser decides who you log in as. Back here, every account and environment that
 /// user can reach becomes a profile named `<email>/<account>/<environment>` (existing ones
-/// are refreshed under their current name, ones you can no longer reach are removed), and
-/// one is selected: the current profile when it is that user's, the only one, or the one
-/// you pick. Logging in as another user adds their profiles alongside.
+/// are refreshed under their current name, none is removed), and one is selected: the
+/// current profile when it is that user's, the only one, or the one you pick. Logging in as
+/// another user adds their profiles alongside.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_login")]
 #[command(after_help = after_help!(
@@ -80,7 +80,13 @@ pub async fn run_login(State(env): State<CliEnv>, opts: &Login) -> Result<()> {
 
     let mut doc = env.load_config_document()?;
     write_user_credentials(&mut doc, &identity, &access_token);
-    let report = sync_cloud_profiles(&mut doc, &identity.user_id, &user_label, &environments);
+    let report = sync_cloud_profiles(
+        &mut doc,
+        &env.config.cloud,
+        &identity.user_id,
+        &user_label,
+        &environments,
+    );
 
     let mut f = Formatter::new();
     f.outcome(
@@ -217,21 +223,13 @@ fn write_user_credentials(
 
 /// The profiles table: what the sync did to each.
 fn report_profiles(f: &mut Formatter, report: &SyncReport, environments: &[CloudEnvironment]) {
-    let row = |change: &str, name: &str, environment: Option<&CloudEnvironment>| {
-        let (account, environment, region) = match environment {
-            Some(e) => (
-                e.account_name.as_str(),
-                e.environment.name.as_str(),
-                e.environment.region.as_str(),
-            ),
-            None => ("", "", ""),
-        };
+    let row = |change: &str, name: &str, e: &CloudEnvironment| {
         [
             Field::new(change),
             Field::new(name),
-            Field::new(account),
-            Field::new(environment),
-            Field::new(region),
+            Field::new(e.account_name.as_str()),
+            Field::new(e.environment.name.as_str()),
+            Field::new(e.environment.region.as_str()),
         ]
     };
     // The sync yields one profile per environment, in order.
@@ -239,8 +237,7 @@ fn report_profiles(f: &mut Formatter, report: &SyncReport, environments: &[Cloud
         .profiles
         .iter()
         .zip(environments)
-        .map(|((name, change), environment)| row(change.as_str(), name, Some(environment)))
-        .chain(report.removed.iter().map(|name| row("removed", name, None)))
+        .map(|((name, change), environment)| row(change.as_str(), name, environment))
         .collect();
     f.table(
         "profiles",

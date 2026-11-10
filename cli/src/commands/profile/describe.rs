@@ -18,10 +18,7 @@ use crate::{
     ui::fmt::{Field, Formatter, IncludeFormatting, OutputFormatter},
 };
 
-use super::{
-    list::cloud_columns,
-    sections::{is_local, list_profiles},
-};
+use super::list::cloud_columns;
 
 /// Show a profile: its type, the Cloud user, account and environment, and its URLs
 ///
@@ -55,27 +52,20 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
         }
         None => env.profile.as_str().as_str(),
     };
-    if !is_local(name)
-        && !list_profiles(&env.load_config_document()?)
-            .iter()
-            .any(|p| p == name)
-    {
+    let profile = Profile::new(name);
+    let Some(config) = CliEnv::profile_config(&env.config_file, &profile)? else {
         return Err(RestateCliError::not_found(format!(
             "No profile \"{name}\" in {}",
             env.config_file.display()
         ))
         .with_next_step("restate profile list", "see the profiles")
         .into());
-    }
-
-    let profile = Profile::new(name);
-    let config = CliEnv::profile_config(&env.config_file, &profile)?;
+    };
     let current = profile == env.profile && !matches!(env.profile_source, ProfileSource::Variables);
     let (user, account, environment) = cloud_columns(&config);
     let url = |url: Option<String>| Field::with_display(&url, url.as_deref().unwrap_or("(NONE)"));
     let credential = match (&config.bearer_token, &config.environment_type) {
         (Some(_), _) => "bearer_token",
-        #[cfg(feature = "cloud")]
         (None, EnvironmentType::Cloud) => "cloud_login",
         (None, EnvironmentType::Default) => "none",
     };
@@ -93,7 +83,6 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
                 "type",
                 Field::new(match config.environment_type {
                     EnvironmentType::Default => "self_hosted",
-                    #[cfg(feature = "cloud")]
                     EnvironmentType::Cloud => "cloud",
                 }),
             ),

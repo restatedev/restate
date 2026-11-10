@@ -38,7 +38,9 @@ pub async fn run_list(State(env): State<CliEnv>, _opts: &List) -> Result<()> {
     let mut rows = Vec::with_capacity(names.len());
     for name in names {
         let profile = Profile::new(&name);
-        let config = CliEnv::profile_config(&env.config_file, &profile)?;
+        let Some(config) = CliEnv::profile_config(&env.config_file, &profile)? else {
+            continue;
+        };
         let current =
             profile == env.profile && !matches!(env.profile_source, ProfileSource::Variables);
         let (user, account, environment) = cloud_columns(&config);
@@ -47,7 +49,6 @@ pub async fn run_list(State(env): State<CliEnv>, _opts: &List) -> Result<()> {
             Field::new(name),
             Field::new(match config.environment_type {
                 EnvironmentType::Default => "self_hosted",
-                #[cfg(feature = "cloud")]
                 EnvironmentType::Cloud => "cloud",
             }),
             user,
@@ -78,7 +79,6 @@ pub async fn run_list(State(env): State<CliEnv>, _opts: &List) -> Result<()> {
 
 /// The user, account and environment of a Cloud profile: names for humans (ids when a
 /// profile predates them), both in JSON; blank for other profiles.
-#[cfg(feature = "cloud")]
 pub(super) fn cloud_columns(config: &CliConfig) -> (Field, Field, Field) {
     let named = |id: Option<&str>, name: Option<&str>| match id {
         Some(id) => Field::with_display(
@@ -105,10 +105,4 @@ pub(super) fn cloud_columns(config: &CliConfig) -> (Field, Field, Field) {
             info.and_then(|info| info.environment_name.as_deref()),
         ),
     )
-}
-
-#[cfg(not(feature = "cloud"))]
-pub(super) fn cloud_columns(_config: &CliConfig) -> (Field, Field, Field) {
-    let blank = || Field::with_display(None::<String>, "");
-    (blank(), blank(), blank())
 }

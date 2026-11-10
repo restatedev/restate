@@ -234,7 +234,6 @@ pub enum Command {
     ))]
     Config(config::Config),
 
-    #[cfg(feature = "cloud")]
     #[clap(subcommand)]
     /// Manage Restate Cloud
     Cloud(cloud::Cloud),
@@ -256,6 +255,9 @@ fn init(common_opts: &CommonOpts, global_opts: &GlobalOpts) -> Result<State<CliE
         c_warn!("-e/--environment is deprecated; use -p/--profile");
     }
     let env = CliEnv::load(global_opts)?;
+    for warning in &env.warnings {
+        c_warn!("{warning}");
+    }
 
     match &env.profile_source {
         ProfileSource::Argument => {

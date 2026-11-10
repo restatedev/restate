@@ -12,13 +12,12 @@
 //! `restate profile use` and `restate cloud login` write them.
 
 use anyhow::Result;
-#[cfg(feature = "cloud")]
-use toml_edit::Item;
-use toml_edit::{DocumentMut, table, value};
+use toml_edit::{DocumentMut, Item, table, value};
 
 use restate_types::net::address::{AdminPort, AdvertisedAddress, HttpIngressPort};
 
 use crate::cli_env::{CliEnv, LOCAL_PROFILE};
+use crate::commands::cloud::CloudConfig;
 use crate::error::RestateCliError;
 
 /// What a section of the config file says about its profile.
@@ -28,16 +27,16 @@ pub(crate) enum ProfileSpec<'a> {
         ingress_base_url: Option<&'a AdvertisedAddress<HttpIngressPort>>,
         bearer_token: Option<&'a str>,
     },
-    #[cfg(feature = "cloud")]
     Cloud {
         user_id: &'a str,
         environment: &'a CloudEnvironment,
+        /// The Cloud settings the login ran with.
+        cloud: &'a CloudConfig,
     },
 }
 
 /// A Restate Cloud environment as a profile stores it: the account it belongs to and the
 /// details from `DescribeEnvironment`.
-#[cfg(feature = "cloud")]
 pub(crate) struct CloudEnvironment {
     pub account_id: String,
     pub account_name: String,
@@ -52,9 +51,12 @@ pub(crate) fn list_profiles(doc: &DocumentMut) -> Vec<String> {
         .collect()
 }
 
-/// `default` and `global` are the config file's shared sections, not profiles.
+/// `default` and `global` are the config file's shared sections, not profiles; names starting
+/// with `__` are kept for the CLI's own (e.g. the profile of the `RESTATE_*` variables).
 pub(crate) fn is_reserved(name: &str) -> bool {
-    name.eq_ignore_ascii_case("global") || name.eq_ignore_ascii_case("default")
+    name.eq_ignore_ascii_case("global")
+        || name.eq_ignore_ascii_case("default")
+        || name.starts_with("__")
 }
 
 pub(crate) fn is_local(name: &str) -> bool {
@@ -65,6 +67,8 @@ pub(crate) fn is_local(name: &str) -> bool {
 pub(crate) fn check_name(name: &str) -> Result<()> {
     let reason = if name.trim().is_empty() {
         "it is empty"
+    } else if name.starts_with("__") {
+        "names starting with `__` are reserved for the CLI"
     } else if is_reserved(name) {
         "it is reserved for the config file's shared settings"
     } else if is_local(name) {
@@ -93,13 +97,13 @@ pub(crate) fn write_section(doc: &mut DocumentMut, name: &str, spec: &ProfileSpe
                 profile["bearer_token"] = value(*bearer_token);
             }
         }
-        #[cfg(feature = "cloud")]
         ProfileSpec::Cloud {
             user_id,
             environment,
+            cloud,
         } => {
             profile["environment_type"] = value("cloud");
-            write_cloud_fields(profile, user_id, environment);
+            write_cloud_fields(profile, user_id, environment, cloud);
         }
     }
 }
@@ -113,9 +117,15 @@ pub(crate) fn select_profile(env: &CliEnv, name: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// Set the URLs and the `cloud` table of a Cloud profile, keeping anything else in it.
-#[cfg(feature = "cloud")]
-fn write_cloud_fields(profile: &mut Item, user_id: &str, environment: &CloudEnvironment) {
+/// Set the URLs and the `cloud` table of a Cloud profile, keeping anything else in it. A login
+/// against a Cloud API other than the default one (or with its own client id) records it, so
+/// the profile keeps talking to that API.
+fn write_cloud_fields(
+    profile: &mut Item,
+    user_id: &str,
+    environment: &CloudEnvironment,
+    login: &CloudConfig,
+) {
     profile["admin_base_url"] = value(&environment.environment.admin_base_url);
     profile["ingress_base_url"] = value(&environment.environment.ingress_base_url);
     let cloud = profile["cloud"].or_insert(table());
@@ -124,16 +134,20 @@ fn write_cloud_fields(profile: &mut Item, user_id: &str, environment: &CloudEnvi
     cloud["account_name"] = value(&environment.account_name);
     cloud["environment_id"] = value(&environment.environment.environment_id);
     cloud["environment_name"] = value(&environment.environment.name);
+    if let Some(api_base_url) = &login.api_base_url {
+        cloud["api_base_url"] = value(api_base_url.as_str());
+    }
+    if let Some(client_id) = &login.client_id {
+        cloud["client_id"] = value(client_id);
+    }
 }
 
-#[cfg(feature = "cloud")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Change {
     Added,
     Updated,
 }
 
-#[cfg(feature = "cloud")]
 impl Change {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -145,14 +159,11 @@ impl Change {
 
 /// What [`sync_cloud_profiles`] did, as profile names: `profiles` has one entry per
 /// environment given, in the same order.
-#[cfg(feature = "cloud")]
 #[derive(Default, Debug, PartialEq, Eq)]
 pub(crate) struct SyncReport {
     pub profiles: Vec<(String, Change)>,
-    pub removed: Vec<String>,
 }
 
-#[cfg(feature = "cloud")]
 impl SyncReport {
     /// The profiles of the user after the sync.
     pub fn kept(&self) -> impl Iterator<Item = &str> {
@@ -160,29 +171,23 @@ impl SyncReport {
     }
 }
 
-/// Make the config document's Cloud profiles of user `user_id` match `environments`, the
-/// ones they can reach: a profile exists per (user, account, environment). Existing ones
-/// are refreshed in place under their current name, new ones are added as
-/// `<user>/<account>/<environment>` (`user_label` is the email, else the user id; the
-/// environment id is appended when that name is taken), and the user's profiles for
-/// environments they can no longer reach are removed, clearing the saved selection when
-/// it pointed at one. Profiles written before credentials were kept per user, which name
-/// the environment but no user, are adopted. The config file isn't written.
-#[cfg(feature = "cloud")]
+/// Make sure the config document has a Cloud profile per environment of `environments`, the
+/// ones user `user_id` can reach through the Cloud API of `login`. Existing ones (same user,
+/// account, environment and Cloud API) are refreshed in place under their current name, new
+/// ones are added as `<user>/<account>/<environment>` (`user_label` is the email, else the
+/// user id; the environment id is appended when that name is taken). Profiles written before
+/// credentials were kept per user, which name the environment but no user, are adopted.
+/// Nothing is removed: profiles of environments the user can no longer reach, of other users
+/// or of another Cloud API stay as they are. The config file isn't written.
 pub(crate) fn sync_cloud_profiles(
     doc: &mut DocumentMut,
+    login: &CloudConfig,
     user_id: &str,
     user_label: &str,
     environments: &[CloudEnvironment],
 ) -> SyncReport {
-    use crate::cli_env::set_saved_profile;
-
+    let api = login.api_base_url();
     let mut report = SyncReport::default();
-    let mut stale: Vec<String> = list_profiles(doc)
-        .into_iter()
-        .filter(|name| cloud_user_of(&doc[name]) == Some(user_id))
-        .collect();
-
     for environment in environments {
         let (account_id, environment_id) = (
             environment.account_id.as_str(),
@@ -192,11 +197,11 @@ pub(crate) fn sync_cloud_profiles(
             let section = &doc[name];
             cloud_user_of(section).is_none_or(|user| user == user_id)
                 && is_cloud_environment(section, account_id, environment_id)
+                && cloud_api_of(doc, name).as_ref() == Some(&api)
         });
         match existing {
             Some(name) => {
-                write_cloud_fields(&mut doc[&name], user_id, environment);
-                stale.retain(|s| *s != name);
+                write_cloud_fields(&mut doc[&name], user_id, environment, login);
                 report.profiles.push((name, Change::Updated));
             }
             None => {
@@ -213,30 +218,34 @@ pub(crate) fn sync_cloud_profiles(
                     &ProfileSpec::Cloud {
                         user_id,
                         environment,
+                        cloud: login,
                     },
                 );
                 report.profiles.push((name, Change::Added));
             }
         }
     }
-
-    let saved = doc
-        .get("global")
-        .and_then(|global| global.get(crate::cli_env::PROFILE_KEY))
-        .and_then(Item::as_str)
-        .map(str::to_owned);
-    for name in stale {
-        doc.remove(&name);
-        if saved.as_deref() == Some(name.as_str()) {
-            set_saved_profile(doc, None);
-        }
-        report.removed.push(name);
-    }
     report
 }
 
+/// The Cloud API profile `name` talks to, as the CLI reads the config file: its
+/// `cloud.api_base_url`, overridden by `[global]`'s, falling back to `[default]`'s, else the
+/// default API. `None` when it isn't a valid URL.
+fn cloud_api_of(doc: &DocumentMut, name: &str) -> Option<url::Url> {
+    let api = |section: &str| {
+        doc.get(section)?
+            .get("cloud")?
+            .get("api_base_url")?
+            .as_str()
+    };
+    let url = api("global")
+        .or_else(|| api(name))
+        .or_else(|| api("default"))
+        .unwrap_or(crate::commands::cloud::DEFAULT_API_BASE_URL);
+    url::Url::parse(url).ok()
+}
+
 /// The `cloud.user_id` of a section, if it's a Cloud profile with one.
-#[cfg(feature = "cloud")]
 fn cloud_user_of(section: &Item) -> Option<&str> {
     section
         .get("cloud")
@@ -245,7 +254,6 @@ fn cloud_user_of(section: &Item) -> Option<&str> {
 }
 
 /// Whether a section is the Cloud environment `environment_id` of account `account_id`.
-#[cfg(feature = "cloud")]
 fn is_cloud_environment(section: &Item, account_id: &str, environment_id: &str) -> bool {
     let field = |key: &str| {
         section
@@ -296,26 +304,15 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "cloud")]
     #[test]
-    fn sync_adds_refreshes_adopts_and_removes_the_users_profiles() {
-        use crate::clients::cloud::types::DescribeEnvironmentResponse;
+    fn check_name_rejects_the_reserved_prefix() {
+        assert!(check_name("__env_vars__").is_err());
+    }
 
-        let environment = |account: &str, id: &str, name: &str| CloudEnvironment {
-            account_id: format!("acc_{account}"),
-            account_name: account.to_owned(),
-            environment: DescribeEnvironmentResponse {
-                environment_id: id.to_owned(),
-                region: "eu".to_owned(),
-                name: name.to_owned(),
-                ingress_base_url: format!("https://{id}:8080"),
-                admin_base_url: format!("https://{id}:9070"),
-                proxy_base_url: String::new(),
-                tunnel_srv: String::new(),
-                signing_public_key: String::new(),
-            },
-        };
-        let mut doc = r#"
+    const DEV_API: &str = "https://api.dev.restate.cloud/";
+
+    /// The config file `alice` (user `u1`) logs in to: one profile of hers per case.
+    const CONFIG: &str = r#"
 [global]
 profile = "gone"
 
@@ -336,44 +333,99 @@ cloud = { account_id = "acc_acme", environment_id = "env_2" }
 environment_type = "cloud"
 cloud = { user_id = "u2", account_id = "acc_acme", environment_id = "env_old" }
 
+[dev]
+environment_type = "cloud"
+admin_base_url = "https://dev:9070"
+cloud = { user_id = "u1", account_id = "acc_acme", environment_id = "env_1", api_base_url = "https://api.dev.restate.cloud" }
+
 ["alice@acme.dev/acme/new"]
 admin_base_url = "http://self-hosted:9070"
-"#
-        .parse::<DocumentMut>()
-        .unwrap();
+"#;
 
+    /// Alice's login through the Cloud API of `login`, reaching `env_1`, `env_2` and `env_3`.
+    fn login(login: &CloudConfig) -> (DocumentMut, SyncReport) {
+        use crate::clients::cloud::types::DescribeEnvironmentResponse;
+
+        let environment = |id: &str, name: &str| CloudEnvironment {
+            account_id: "acc_acme".to_owned(),
+            account_name: "acme".to_owned(),
+            environment: DescribeEnvironmentResponse {
+                environment_id: id.to_owned(),
+                region: "eu".to_owned(),
+                name: name.to_owned(),
+                ingress_base_url: format!("https://{id}:8080"),
+                admin_base_url: format!("https://{id}:9070"),
+                proxy_base_url: String::new(),
+                tunnel_srv: String::new(),
+                signing_public_key: String::new(),
+            },
+        };
         let environments = [
-            environment("acme", "env_1", "prod"),
-            environment("acme", "env_2", "staging"),
-            environment("acme", "env_3", "new"),
+            environment("env_1", "prod"),
+            environment("env_2", "staging"),
+            environment("env_3", "new"),
         ];
-        let report = sync_cloud_profiles(&mut doc, "u1", "alice@acme.dev", &environments);
+        let mut doc = CONFIG.parse::<DocumentMut>().unwrap();
+        let report = sync_cloud_profiles(&mut doc, login, "u1", "alice@acme.dev", &environments);
+        (doc, report)
+    }
 
+    fn dev_login() -> CloudConfig {
+        CloudConfig {
+            api_base_url: Some(DEV_API.parse().unwrap()),
+            ..CloudConfig::default()
+        }
+    }
+
+    #[test]
+    fn sync_refreshes_adopts_and_adds_the_users_profiles() {
+        let (_, report) = login(&CloudConfig::default());
         assert_eq!(
-            report,
-            SyncReport {
-                profiles: vec![
-                    ("renamed".to_owned(), Change::Updated),
-                    ("legacy".to_owned(), Change::Updated),
-                    ("alice@acme.dev/acme/new/env_3".to_owned(), Change::Added),
-                ],
-                removed: vec!["gone".to_owned()],
-            }
+            report.profiles,
+            vec![
+                ("renamed".to_owned(), Change::Updated),
+                ("legacy".to_owned(), Change::Updated),
+                ("alice@acme.dev/acme/new/env_3".to_owned(), Change::Added),
+            ]
         );
-        // Refreshed in place under its name; the legacy section now has a user.
+    }
+
+    #[test]
+    fn sync_refreshes_a_profile_in_place() {
+        let (doc, _) = login(&CloudConfig::default());
         assert_eq!(
             doc["renamed"]["admin_base_url"].as_str(),
             Some("https://env_1:9070")
         );
+    }
+
+    #[test]
+    fn sync_keeps_profiles_the_user_can_no_longer_reach() {
+        let (doc, _) = login(&CloudConfig::default());
+        assert!(doc.contains_key("gone"));
+    }
+
+    #[test]
+    fn sync_leaves_profiles_of_another_cloud_api_alone() {
+        let (doc, _) = login(&CloudConfig::default());
         assert_eq!(
-            doc["renamed"]["cloud"]["environment_name"].as_str(),
-            Some("prod")
+            doc["dev"].to_string(),
+            CONFIG.parse::<DocumentMut>().unwrap()["dev"].to_string()
         );
-        assert_eq!(doc["legacy"]["cloud"]["user_id"].as_str(), Some("u1"));
-        // Other users' profiles and self-hosted ones are untouched; the selection is cleared.
-        assert!(doc.contains_key("other-user"));
-        assert!(doc.contains_key("alice@acme.dev/acme/new"));
-        assert!(!doc.contains_key("gone"));
-        assert!(doc["global"].get("profile").is_none());
+    }
+
+    #[test]
+    fn sync_against_another_cloud_api_records_it_in_the_profiles() {
+        let (doc, _) = login(&dev_login());
+        assert_eq!(
+            doc["alice@acme.dev/acme/staging"]["cloud"]["api_base_url"].as_str(),
+            Some(DEV_API)
+        );
+    }
+
+    #[test]
+    fn sync_against_another_cloud_api_refreshes_its_profiles() {
+        let (_, report) = login(&dev_login());
+        assert_eq!(report.profiles[0], ("dev".to_owned(), Change::Updated));
     }
 }

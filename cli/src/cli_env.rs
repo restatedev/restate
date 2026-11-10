@@ -23,6 +23,8 @@ use restate_cli_util::OsEnv;
 use restate_types::net::address::{AdminPort, AdvertisedAddress, HttpIngressPort};
 
 use crate::app::GlobalOpts;
+use crate::commands::cloud::{CloudConfig, Credentials};
+use crate::commands::profile::sections::is_reserved;
 
 pub const CONFIG_FILENAME: &str = "config.toml";
 
@@ -58,8 +60,7 @@ pub struct CliConfig {
     pub admin_base_url: Option<AdvertisedAddress<AdminPort>>,
     pub bearer_token: Option<String>,
 
-    #[cfg(feature = "cloud")]
-    pub cloud: crate::commands::cloud::CloudConfig,
+    pub cloud: CloudConfig,
 }
 
 pub const LOCAL_PROFILE: Profile = Profile::const_new("local");
@@ -73,8 +74,7 @@ impl CliConfig {
             admin_base_url: Some(AdvertisedAddress::default()),
             bearer_token: None,
 
-            #[cfg(feature = "cloud")]
-            cloud: crate::commands::cloud::CloudConfig::default(),
+            cloud: CloudConfig::default(),
         }
     }
 }
@@ -84,7 +84,6 @@ impl CliConfig {
 pub enum EnvironmentType {
     #[default]
     Default,
-    #[cfg(feature = "cloud")]
     Cloud,
 }
 
@@ -102,6 +101,9 @@ pub struct CliEnv {
     pub profile_source: ProfileSource,
     /// The profile's settings
     pub config: CliConfig,
+    /// What picking the profile ignored (variables shadowed by `-p`, a profile shadowed by
+    /// the variables, a saved profile that no longer exists), for the user to see.
+    pub warnings: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -119,8 +121,17 @@ pub enum ProfileSource {
     None,
 }
 
-/// The name of the profile made of the `RESTATE_*` variables.
-pub const VARIABLES_PROFILE: Profile = Profile::const_new("variables");
+/// The name of the profile made of the `RESTATE_*` variables. The `__` prefix is reserved
+/// (see `is_reserved`), so no profile of the config file can take it.
+pub const VARIABLES_PROFILE: Profile = Profile::const_new("__env_vars__");
+
+/// The variables that make a profile of their own (see [`adhoc_config`]).
+const ADHOC_VARS: [&str; 4] = [
+    ADMIN_URL_ENV,
+    INGRESS_URL_ENV,
+    RESTATE_AUTH_TOKEN_ENV,
+    RESTATE_HOST_ENV,
+];
 
 impl Display for ProfileSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -161,31 +172,77 @@ impl CliEnv {
             .or_else(|| os_env.get("VISUAL"))
             .or_else(|| os_env.get("EDITOR"));
 
-        // The chain: the first level present wins outright, nothing layers.
+        // The chain: the first level present wins outright, nothing layers. What it shadows
+        // is reported in `warnings`, not dropped silently.
+        let adhoc_vars = || {
+            ADHOC_VARS
+                .iter()
+                .filter(|var| os_env.get(var).is_some())
+                .map(|var| format!("${var}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let profile_var = [PROFILE_ENV, LEGACY_PROFILE_ENV]
+            .into_iter()
+            .find_map(|var| os_env.get(var).map(|profile| (var, profile)));
+        let local = || {
+            Ok::<_, anyhow::Error>(
+                Self::profile_config(&config_file, &LOCAL_PROFILE)?
+                    .unwrap_or_else(CliConfig::local),
+            )
+        };
+        let mut warnings = vec![];
         let (profile, profile_source, config) = if let Some(profile) = &global_opts.profile {
             // 1. command line argument
-            let config = Self::profile_config(&config_file, profile)?;
+            let config = Self::profile_config(&config_file, profile)?
+                .ok_or_else(|| missing_profile(&config_file, profile, "-p/--profile"))?;
+            // The variables aren't used, so they aren't parsed either: only named.
+            let ignored = adhoc_vars();
+            if !ignored.is_empty() {
+                warnings.push(format!(
+                    "Ignoring {ignored}: -p/--profile selects profile \"{profile}\""
+                ));
+            }
             (profile.clone(), ProfileSource::Argument, config)
         } else if let Some(config) = adhoc_config(os_env)? {
             // 2. the RESTATE_* variables, a server of their own
+            // Not for `local`: the variables stand in for it.
+            let shadowed = match &profile_var {
+                Some((var, name)) => Some((name.clone(), format!("profile \"{name}\" of ${var}"))),
+                None => saved_profile(&config_file, &legacy_profile_file)?
+                    .map(|name| (name.clone(), format!("the current profile \"{name}\""))),
+            };
+            if let Some((_, shadowed)) = shadowed.filter(|(name, _)| LOCAL_PROFILE != name.as_str())
+            {
+                warnings.push(format!(
+                    "Ignoring {shadowed}: using the server described by {}",
+                    adhoc_vars()
+                ));
+            }
             (VARIABLES_PROFILE, ProfileSource::Variables, config)
-        } else if let Some((var, profile)) = [PROFILE_ENV, LEGACY_PROFILE_ENV]
-            .into_iter()
-            .find_map(|var| os_env.get(var).map(|profile| (var, profile)))
-        {
+        } else if let Some((var, name)) = profile_var {
             // 3. $RESTATE_PROFILE (or its former name)
-            let profile = Profile::new(&profile);
-            let config = Self::profile_config(&config_file, &profile)?;
+            let profile = Profile::new(&name);
+            let config = Self::profile_config(&config_file, &profile)?
+                .ok_or_else(|| missing_profile(&config_file, &profile, &format!("${var}")))?;
             (profile, ProfileSource::EnvVar(var), config)
-        } else if let Some(profile) = saved_profile(&config_file, &legacy_profile_file)? {
-            // 4. the config file (`restate profile use`)
-            let profile = Profile::new(&profile);
-            let config = Self::profile_config(&config_file, &profile)?;
-            (profile, ProfileSource::File, config)
+        } else if let Some(name) = saved_profile(&config_file, &legacy_profile_file)? {
+            // 4. the config file (`restate profile use`); a profile removed since falls back
+            // to `local`, so that `restate profile use` still runs to pick another
+            let profile = Profile::new(&name);
+            match Self::profile_config(&config_file, &profile)? {
+                Some(config) => (profile, ProfileSource::File, config),
+                None => {
+                    warnings.push(format!(
+                        "The current profile \"{name}\" doesn't exist; using \"local\" instead. \
+                         Pick another with `restate profile use`"
+                    ));
+                    (LOCAL_PROFILE, ProfileSource::None, local()?)
+                }
+            }
         } else {
             // 5. default to 'local'
-            let config = Self::profile_config(&config_file, &LOCAL_PROFILE)?;
-            (LOCAL_PROFILE, ProfileSource::None, config)
+            (LOCAL_PROFILE, ProfileSource::None, local()?)
         };
 
         Ok(Self {
@@ -196,18 +253,17 @@ impl CliEnv {
             profile,
             profile_source,
             config,
+            warnings,
         })
     }
 
-    /// The settings of profile `profile` of the config file (`local` is built in).
-    pub fn profile_config(config_file: &Path, profile: &Profile) -> Result<CliConfig> {
-        let mut figment = Figment::from(Serialized::defaults(CliConfig::default()))
-            .merge(Serialized::from(CliConfig::local(), LOCAL_PROFILE))
-            .select(profile.clone());
-        if config_file.is_file() {
-            figment = figment.merge(Toml::file_exact(config_file).nested());
-        }
-        Ok(figment.extract()?)
+    /// The settings of profile `profile` of the config file (`local` is built in), `None`
+    /// when the config file doesn't define it.
+    pub fn profile_config(config_file: &Path, profile: &Profile) -> Result<Option<CliConfig>> {
+        let figment = profiles_figment(config_file);
+        let defined = defined_profiles(&figment).any(|p| p == profile);
+        let config = figment.select(profile.clone()).extract()?;
+        Ok(defined.then_some(config))
     }
 
     /// Opens `path` in the user's editor. In non-interactive mode it fails instead,
@@ -272,7 +328,6 @@ impl CliEnv {
     pub fn bearer_token(&self) -> Result<Option<&str>> {
         match self.config.environment_type {
             EnvironmentType::Default => Ok(self.config.bearer_token.as_deref()),
-            #[cfg(feature = "cloud")]
             EnvironmentType::Cloud => {
                 // a bearer token in the profile wins over the Cloud credentials
                 if let Some(bearer_token) = &self.config.bearer_token {
@@ -286,8 +341,7 @@ impl CliEnv {
     /// The Restate Cloud credentials of the profile's user, and who that is (email, else
     /// user id): valid or not. A Cloud profile without a user was written by an older CLI
     /// and needs a login first.
-    #[cfg(feature = "cloud")]
-    pub fn cloud_credentials(&self) -> Result<(String, &crate::commands::cloud::Credentials)> {
+    pub fn cloud_credentials(&self) -> Result<(String, &Credentials)> {
         use crate::error::{ErrorKind, RestateCliError};
 
         let cloud = &self.config.cloud;
@@ -319,7 +373,6 @@ impl CliEnv {
     }
 
     /// A valid Restate Cloud access token for the profile's user.
-    #[cfg(feature = "cloud")]
     pub fn cloud_access_token(&self) -> Result<&str> {
         let (who, credentials) = self.cloud_credentials()?;
         credentials.access_token().map_err(|_| {
@@ -387,17 +440,49 @@ pub fn set_saved_profile(doc: &mut DocumentMut, profile: Option<&str>) {
     }
 }
 
+/// The profiles of the config file, `local` built in, unselected.
+fn profiles_figment(config_file: &Path) -> Figment {
+    let figment = Figment::from(Serialized::defaults(CliConfig::default()))
+        .merge(Serialized::from(CliConfig::local(), LOCAL_PROFILE));
+    if config_file.is_file() {
+        figment.merge(Toml::file_exact(config_file).nested())
+    } else {
+        figment
+    }
+}
+
+/// The profiles a figment defines, without the config file's shared sections.
+fn defined_profiles(figment: &Figment) -> impl Iterator<Item = &Profile> {
+    figment
+        .profiles()
+        .filter(|p| !is_reserved(p.as_str().as_str()))
+}
+
+/// The error for a profile the config file doesn't define, selected by `source`.
+fn missing_profile(config_file: &Path, profile: &Profile, source: &str) -> anyhow::Error {
+    let figment = profiles_figment(config_file);
+    let names: Vec<String> = defined_profiles(&figment)
+        .map(ToString::to_string)
+        .collect();
+    crate::error::RestateCliError::not_found(format!(
+        "No profile \"{profile}\" (from {source}) in {}; the profiles are: [{}]",
+        config_file.display(),
+        names.join(", ")
+    ))
+    .into()
+}
+
 /// The server the `RESTATE_*` variables describe, when any of them is set: URLs from
 /// `RESTATE_ADMIN_URL` / `RESTATE_INGRESS_URL`, else from `RESTATE_HOST` (and
 /// `RESTATE_HOST_SCHEME`), else those of `local`; the token from `RESTATE_AUTH_TOKEN`.
 fn adhoc_config(os_env: &OsEnv) -> Result<Option<CliConfig>> {
+    if ADHOC_VARS.iter().all(|var| os_env.get(var).is_none()) {
+        return Ok(None);
+    }
     let host = os_env.get(RESTATE_HOST_ENV);
     let admin_url = os_env.get(ADMIN_URL_ENV);
     let ingress_url = os_env.get(INGRESS_URL_ENV);
     let bearer_token = os_env.get(RESTATE_AUTH_TOKEN_ENV);
-    if host.is_none() && admin_url.is_none() && ingress_url.is_none() && bearer_token.is_none() {
-        return Ok(None);
-    }
     let scheme = os_env
         .get(RESTATE_HOST_SCHEME_ENV)
         .unwrap_or_else(|| RESTATE_HOST_SCHEME_DEFAULT.to_owned());
@@ -430,8 +515,7 @@ fn adhoc_config(os_env: &OsEnv) -> Result<Option<CliConfig>> {
         admin_base_url,
         ingress_base_url,
         bearer_token,
-        #[cfg(feature = "cloud")]
-        cloud: crate::commands::cloud::CloudConfig::default(),
+        cloud: CloudConfig::default(),
     }))
 }
 
@@ -578,6 +662,117 @@ mod tests {
         Ok(())
     }
 
+    /// A config home with `config` as the config file, and the environment pointing at it.
+    fn home_with(config: &str) -> (tempfile::TempDir, OsEnv<'static>) {
+        let home = restate_test_util::tempdir().unwrap();
+        std::fs::write(home.path().join(CONFIG_FILENAME), config).unwrap();
+        let mut os_env = OsEnv::default();
+        os_env.insert(CLI_CONFIG_HOME_ENV, home.path().display().to_string());
+        (home, os_env)
+    }
+
+    const STAGING: &str = "[staging]\nadmin_base_url = \"https://staging:9070\"\n";
+
+    fn with_profile(profile: &str) -> GlobalOpts {
+        GlobalOpts {
+            profile: Some(Profile::new(profile)),
+        }
+    }
+
+    #[test]
+    fn a_profile_flag_naming_no_profile_fails() {
+        let (_home, os_env) = home_with(STAGING);
+        let err = CliEnv::load_from_env(&os_env, &with_profile("typo"))
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            err.starts_with("No profile \"typo\" (from -p/--profile)")
+                && err.ends_with("the profiles are: [local, staging]"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn restate_profile_naming_no_profile_fails() {
+        let (_home, mut os_env) = home_with(STAGING);
+        os_env.insert(PROFILE_ENV, "typo".into());
+        let err = CliEnv::load_from_env(&os_env, &GlobalOpts::default())
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            err.starts_with("No profile \"typo\" (from $RESTATE_PROFILE)"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_saved_profile_that_no_longer_exists_falls_back_to_local() {
+        let (_home, os_env) = home_with(&format!("[global]\nprofile = \"gone\"\n\n{STAGING}"));
+        let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default()).unwrap();
+        assert_eq!(
+            (cli_env.profile, cli_env.warnings),
+            (
+                LOCAL_PROFILE,
+                vec![
+                    "The current profile \"gone\" doesn't exist; using \"local\" instead. \
+                     Pick another with `restate profile use`"
+                        .to_owned()
+                ]
+            )
+        );
+    }
+
+    #[test]
+    fn the_profile_flag_warns_about_the_variables_it_ignores() {
+        let (_home, mut os_env) = home_with(STAGING);
+        os_env.insert(RESTATE_AUTH_TOKEN_ENV, "token".into());
+        let cli_env = CliEnv::load_from_env(&os_env, &with_profile("staging")).unwrap();
+        assert_eq!(
+            cli_env.warnings,
+            vec!["Ignoring $RESTATE_AUTH_TOKEN: -p/--profile selects profile \"staging\""]
+        );
+    }
+
+    #[test]
+    fn the_profile_flag_doesnt_parse_the_variables_it_ignores() {
+        let (_home, mut os_env) = home_with(STAGING);
+        os_env.insert(ADMIN_URL_ENV, "not a url".into());
+        assert!(CliEnv::load_from_env(&os_env, &with_profile("staging")).is_ok());
+    }
+
+    #[test]
+    fn the_variables_warn_about_the_profile_they_ignore() {
+        let (_home, mut os_env) =
+            home_with(&format!("[global]\nprofile = \"staging\"\n\n{STAGING}"));
+        os_env.insert(ADMIN_URL_ENV, "http://ci:9070".into());
+        let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default()).unwrap();
+        assert_eq!(
+            cli_env.warnings,
+            vec![
+                "Ignoring the current profile \"staging\": using the server described by \
+                 $RESTATE_ADMIN_URL"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_variables_dont_warn_about_ignoring_local() {
+        let (_home, mut os_env) = home_with("[global]\nprofile = \"local\"\n");
+        os_env.insert(ADMIN_URL_ENV, "http://ci:9070".into());
+        let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default()).unwrap();
+        assert!(cli_env.warnings.is_empty());
+    }
+
+    #[test]
+    fn the_variables_alone_dont_warn() {
+        let (_home, mut os_env) = home_with(STAGING);
+        os_env.insert(ADMIN_URL_ENV, "http://ci:9070".into());
+        let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default()).unwrap();
+        assert!(cli_env.warnings.is_empty());
+    }
+
     #[test]
     fn a_token_alone_targets_localhost_and_beats_the_selected_profile() {
         let home = tempfile::tempdir().unwrap();
@@ -604,15 +799,18 @@ mod tests {
 
     #[test]
     fn saved_profile_comes_from_the_config_file_then_the_legacy_file() {
-        let home = tempfile::tempdir().unwrap();
-        let mut os_env = OsEnv::default();
-        os_env.insert(CLI_CONFIG_HOME_ENV, home.path().display().to_string());
+        let (home, mut os_env) = home_with("");
 
         // Nothing saved: `local`.
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default()).unwrap();
         assert_eq!(cli_env.profile, LOCAL_PROFILE);
 
         // The legacy file is still honoured.
+        std::fs::write(
+            home.path().join(CONFIG_FILENAME),
+            "[old]\n[staging]\n[old-var]\n[new-var]\n",
+        )
+        .unwrap();
         std::fs::write(home.path().join(LEGACY_PROFILE_FILENAME), "old\n").unwrap();
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default()).unwrap();
         assert_eq!(cli_env.profile, Profile::new("old"));
@@ -635,7 +833,6 @@ mod tests {
         assert_eq!(cli_env.profile_source.to_string(), "$RESTATE_PROFILE");
     }
 
-    #[cfg(feature = "cloud")]
     #[test]
     fn cloud_credentials_come_from_the_profiles_user() {
         use base64::Engine;

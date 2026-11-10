@@ -7802,6 +7802,7 @@ dependencies = [
  "restate-limiter",
  "restate-lite",
  "restate-serde-util",
+ "restate-test-util",
  "restate-types",
  "restate-util-string",
  "restate-util-time",
