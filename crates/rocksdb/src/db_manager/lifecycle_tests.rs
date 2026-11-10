@@ -194,7 +194,7 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
         db_refs
     );
     let task = db.prepare(StorageTaskKind::MultiGet, count).into_task()?;
-    assert_eq!(task.run(), db_refs + 1);
+    assert_eq!(task.run().await, db_refs + 1);
     assert!(db.gate.is_idle());
     let discarded = db
         .prepare(StorageTaskKind::MultiGet, |_| {
