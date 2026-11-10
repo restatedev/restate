@@ -691,25 +691,31 @@ impl SnapshotRepository {
             .map(|l| l.effective_retained_snapshots())
             .unwrap_or_default();
 
-        // A snapshot that is not newer than the published latest is abandoned rather than
+        // A snapshot that is not newer than every published snapshot is abandoned rather than
         // published: the pointer fields below must never move backwards. This can only happen when
         // a writer that lost its lease mid-upload reaches the pointer CAS after a newer snapshot.
-        if let Some(current) = current
-            && snapshot.min_applied_lsn <= current.min_applied_lsn
-        {
-            warn!(
-                snapshot_id = %snapshot.snapshot_id,
-                snapshot_lsn = %snapshot.min_applied_lsn,
-                latest_snapshot_id = %current.snapshot_id,
-                latest_lsn = %current.min_applied_lsn,
-                "Abandoning snapshot: its LSN is not newer than the latest published snapshot; \
-                 leaving the latest snapshot pointer unchanged"
-            );
-            anyhow::bail!(
-                "snapshot at LSN {} is not newer than the latest published snapshot at LSN {}; abandoning",
-                snapshot.min_applied_lsn,
-                current.min_applied_lsn
-            );
+        // The retained list is checked too, because an older release could leave the top-level
+        // pointer behind the newest retained snapshot.
+        if let Some(current) = current {
+            let newest_lsn = retained_snapshots
+                .iter()
+                .map(|s| s.min_applied_lsn)
+                .fold(current.min_applied_lsn, Lsn::max);
+            if snapshot.min_applied_lsn <= newest_lsn {
+                warn!(
+                    snapshot_id = %snapshot.snapshot_id,
+                    snapshot_lsn = %snapshot.min_applied_lsn,
+                    latest_snapshot_id = %current.snapshot_id,
+                    newest_lsn = %newest_lsn,
+                    "Abandoning snapshot: its LSN is not newer than the newest published snapshot; \
+                     leaving the latest snapshot pointer unchanged"
+                );
+                anyhow::bail!(
+                    "snapshot at LSN {} is not newer than the newest published snapshot at LSN {}; abandoning",
+                    snapshot.min_applied_lsn,
+                    newest_lsn
+                );
+            }
         }
 
         // Retained snapshots are kept in descending LSN order, and the new one is the newest.
@@ -1732,6 +1738,20 @@ mod tests {
                 .expect_err("a snapshot that is not newer than latest must be abandoned");
             assert!(err.to_string().contains("not newer"), "{err}");
         }
+
+        // A latest.json whose top-level pointer already regressed behind its retained list (as an
+        // older release could write) is judged by the newest retained snapshot.
+        let regressed_head = SnapshotReference {
+            snapshot_id: SnapshotId::new(),
+            min_applied_lsn: Lsn::new(80),
+            path: "lsn_00000000000000000080-snap_2".to_owned(),
+            ..newest.clone()
+        };
+        let mut regressed = mock_latest_snapshot(&regressed_head);
+        regressed.retained_snapshots = vec![newest, regressed_head];
+        let mut late = mock_snapshot_metadata("/data.sst".to_owned(), "/".to_owned(), 0);
+        late.min_applied_lsn = Lsn::new(90);
+        assert!(repository.build_latest_v2(&late, Some(&regressed)).is_err());
 
         // The ordinary case - a genuinely newer snapshot - takes the head position and the
         // top-level pointer fields.
