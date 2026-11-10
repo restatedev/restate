@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use super::AdminClient;
-use super::admin_client::Envelope;
+use super::admin_client::{DISCOVERY_REQUEST_TIMEOUT, Envelope};
 use super::errors::ClientError;
 use bytes::Bytes;
 use futures::StreamExt;
@@ -268,7 +268,12 @@ impl AdminClientInterface for AdminClient {
     ) -> impl Future<Output = reqwest::Result<Envelope<RegisterDeploymentResponse>>> + Send + 'static
     {
         let url = self.versioned_url(["deployments"]);
-        self.run_with_body(reqwest::Method::POST, url, body)
+        self.run_with_body_and_timeout(
+            reqwest::Method::POST,
+            url,
+            body,
+            self.request_timeout.max(DISCOVERY_REQUEST_TIMEOUT),
+        )
     }
 
     fn cancel_invocation(

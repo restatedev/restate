@@ -217,6 +217,20 @@ impl RestateCliError {
         self
     }
 
+    /// Like [`with_next_step`](Self::with_next_step), for a command that mustn't inherit
+    /// the output flags (e.g. one that only works in a terminal).
+    pub fn with_unformatted_next_step(
+        mut self,
+        command: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        self.next_steps.push(NextStep {
+            formatting: IncludeFormatting::No,
+            ..NextStep::new(command, description)
+        });
+        self
+    }
+
     /// Prefix the message with the `anyhow` context messages that wrapped this error.
     pub(crate) fn with_context(mut self, contexts: Vec<String>) -> Self {
         if !contexts.is_empty() {

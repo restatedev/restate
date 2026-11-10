@@ -81,15 +81,13 @@ pub struct CloudClient {
 }
 
 impl CloudClient {
+    /// A client authenticated as the user of the current Cloud profile.
     pub fn new(env: &CliEnv) -> anyhow::Result<Self> {
-        let access_token = if let Some(credentials) = &env.config.cloud.credentials {
-            credentials.access_token()?.to_string()
-        } else {
-            return Err(anyhow::anyhow!(
-                "Restate Cloud credentials have not been provided; first run `restate cloud login`"
-            ));
-        };
+        Self::with_token(env, env.cloud_access_token()?.to_owned())
+    }
 
+    /// A client authenticated with `access_token`, e.g. one just obtained by logging in.
+    pub fn with_token(env: &CliEnv, access_token: String) -> anyhow::Result<Self> {
         let raw_client = reqwest::Client::builder()
             .user_agent(format!(
                 "{}/{} {}-{}",

@@ -32,6 +32,11 @@ use crate::clients::AdminClientInterface;
 
 use super::errors::{ApiError, ApiErrorBody, ClientError};
 
+/// Discovery is one request that waits for the server to reach the endpoint, which can take
+/// longer than the default request timeout (e.g. a Restate Cloud tunnel that isn't there
+/// takes ~20s to say so). It gets at least this much, or `--request-timeout` when higher.
+pub(crate) const DISCOVERY_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Min/max supported admin API versions
 pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V2;
 pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V5;
@@ -314,8 +319,25 @@ impl AdminClient {
         T: DeserializeOwned + Send,
         B: Serialize + std::fmt::Debug + Send,
     {
+        self.run_with_body_and_timeout(method, path, body, self.request_timeout)
+    }
+
+    /// Like [`Self::run_with_body`], with `timeout` instead of the configured request timeout.
+    pub(crate) fn run_with_body_and_timeout<T, B>(
+        &self,
+        method: reqwest::Method,
+        path: Url,
+        body: B,
+        timeout: Duration,
+    ) -> impl Future<Output = reqwest::Result<Envelope<T>>> + 'static
+    where
+        T: DeserializeOwned + Send,
+        B: Serialize + std::fmt::Debug + Send,
+    {
         debug!("Sending request {} ({}): {:?}", method, path, body);
-        let request = self.prepare_with_body(method, path.clone(), body);
+        let request = self
+            .prepare_with_body(method, path.clone(), body)
+            .timeout(timeout);
         async move {
             let resp = request.send().await?;
             debug!("Response from {} ({})", path, resp.status());

@@ -16,9 +16,11 @@ pub mod deployments;
 #[cfg(feature = "dev-cmd")]
 pub mod dev;
 pub mod examples;
+pub mod http_tools;
 pub mod invocations;
 pub mod kafkaclusters;
 pub mod openapi;
+pub mod profile;
 pub mod rules;
 pub mod search;
 pub mod services;
@@ -38,4 +40,10 @@ pub fn kafka_integration_notice() {
              https://github.com/restatedev/ingress-integration-kafka"
         );
     }
+}
+
+/// One line on stderr before a deprecated command does its job, pointing at its
+/// replacement. Never in `--json` output (stdout).
+pub fn deprecated(old: &str, new: &str) {
+    restate_cli_util::c_warn!("`{old}` is deprecated, use `{new}`");
 }

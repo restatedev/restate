@@ -41,13 +41,11 @@
 //! 4. `CLICOLOR_FORCE` environment variable (overrides all above if set)
 
 use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use dotenvy::dotenv;
-use tracing::{info, warn};
+use tracing::warn;
 use tracing_log::AsTrace;
 
 use crate::opts::{
@@ -73,7 +71,6 @@ pub struct CliContext {
     non_interactive: bool,
     /// The `CI` environment variable is set to a truthy value.
     ci: bool,
-    loaded_dotenv: Option<PathBuf>,
 }
 
 impl Default for CliContext {
@@ -86,7 +83,6 @@ impl Default for CliContext {
             json_output: false,
             non_interactive: false,
             ci: false,
-            loaded_dotenv: None,
         }
     }
 }
@@ -94,7 +90,7 @@ impl Default for CliContext {
 impl CliContext {
     /// Create a new CLI context from command-line options.
     ///
-    /// This initializes color detection, logging, and loads `.env` files.
+    /// This initializes color detection and logging. Nothing is loaded from `.env` files.
     /// Call [`set_as_global()`] after creation to make it the global context.
     pub fn new(opts: CommonOpts) -> Self {
         let os_env = OsEnv::default();
@@ -118,15 +114,6 @@ impl CliContext {
             warn!("Failed to initialize tracing subscriber: {}", err);
         }
 
-        // We only log after we've initialized the logger with the desired log
-        // level.
-        match &ctx.loaded_dotenv {
-            Some(path) => {
-                info!("Loaded .env file from: {}", path.display())
-            }
-            None => info!("Didn't load '.env' file"),
-        };
-
         ctx
     }
 
@@ -140,11 +127,8 @@ impl CliContext {
         Self::build(&os_env, &opts)
     }
 
-    /// Core builder: color detection, dotenv, and UI setup without tracing.
+    /// Core builder: color detection and UI setup without tracing.
     fn build(os_env: &OsEnv, opts: &CommonOpts) -> Self {
-        // Load .env file. Best effort.
-        let maybe_dotenv = dotenv();
-
         // color setup
         // NO_COLOR=1 with any value other than "0" means user doesn't want colors.
         // e.g.
@@ -210,7 +194,6 @@ impl CliContext {
             json_output: opts.output.json,
             non_interactive,
             ci,
-            loaded_dotenv: maybe_dotenv.ok(),
         }
     }
 
@@ -301,11 +284,6 @@ impl CliContext {
     /// Whether TLS certificate verification should be skipped.
     pub fn insecure_skip_tls_verify(&self) -> bool {
         self.network.insecure_skip_tls_verify
-    }
-
-    /// Get the path to the loaded `.env` file, if any.
-    pub fn loaded_dotenv(&self) -> Option<&Path> {
-        self.loaded_dotenv.as_deref()
     }
 }
 

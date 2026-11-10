@@ -8,15 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::path::{Path, PathBuf};
+
 use anyhow::Result;
 use clap::CommandFactory;
 use cling::prelude::*;
-use figment::Profile;
 use tracing::info;
 
-use restate_cli_util::{CliContext, CommonOpts};
+use restate_cli_util::{CliContext, CommonOpts, c_warn};
 
-use crate::cli_env::{CliEnv, EnvironmentSource};
+use crate::cli_env::{CliEnv, LEGACY_PROFILE_ENV, PROFILE_ENV, ProfileSource};
 use crate::commands::completions::Completions;
 use crate::commands::*;
 
@@ -63,11 +64,14 @@ const ROOT_LONG_HELP: &str = concat!(
     heading!("Connecting to a server:"),
     "
   By default the CLI talks to a server on this machine (admin API at http://localhost:9070).
-  To target another one, set $RESTATE_ADMIN_URL, plus $RESTATE_AUTH_TOKEN for a bearer token:
+  To target another one, select a profile of the CLI config file with `restate profile use`,
+  -p/--profile or $RESTATE_PROFILE: `restate cloud login` adds a profile per Restate Cloud
+  environment you can reach, `restate profile add` one per self-hosted server (see
+  `restate profile --help`). Or describe the server with variables, e.g. for CI:
     RESTATE_ADMIN_URL=https://restate.example.com:9070 RESTATE_AUTH_TOKEN=... restate whoami
-  or add an environment to the CLI config file (see `restate config --help`) and select it
-  with -e/--environment or `restate config use-environment`. The variables take precedence
-  over the config file.
+  When any of $RESTATE_ADMIN_URL, $RESTATE_INGRESS_URL, $RESTATE_AUTH_TOKEN or $RESTATE_HOST
+  is set they describe the whole server: the config file isn't consulted, and a missing URL
+  defaults to localhost. Only -p beats them.
 
 ",
     after_help!(learn_more: "https://docs.restate.dev/"),
@@ -75,7 +79,7 @@ const ROOT_LONG_HELP: &str = concat!(
 
 /// Global options also listed in subcommand help, the ones agents and scripts need most.
 /// `restate --help` lists all of them.
-const SUBCOMMAND_HELP_GLOBALS: [&str; 3] = ["json", "yes", "environment"];
+const SUBCOMMAND_HELP_GLOBALS: [&str; 3] = ["json", "yes", "profile"];
 
 const SUBCOMMAND_HELP_TEMPLATE: &str = "\
 {before-help}{about-with-newline}
@@ -113,11 +117,18 @@ fn trim_global_help(cmd: clap::Command, hidden: &[clap::Arg]) -> clap::Command {
 #[derive(Args, Collect, Clone, Default)]
 #[command(next_help_heading = "Global options")]
 pub struct GlobalOpts {
-    /// Environment (a section of the CLI config file) to use. When omitted: $RESTATE_ENVIRONMENT,
-    /// else the one selected with `restate config use-environment`, else `local` (a server on
-    /// this machine). List them with `restate config list-environments`.
-    #[arg(long, short, global = true, display_order = 0)]
-    pub environment: Option<Profile>,
+    /// Profile (a section of the CLI config file) to use. When omitted: $RESTATE_PROFILE, else
+    /// the one selected with `restate profile use`, else `local` (a server on this machine).
+    /// List them with `restate profile list`.
+    #[arg(
+        long,
+        short,
+        global = true,
+        display_order = 0,
+        alias = "environment",
+        short_alias = 'e'
+    )]
+    pub profile: Option<figment::Profile>,
 }
 
 #[derive(Run, Subcommand, Clone)]
@@ -202,10 +213,20 @@ pub enum Command {
     ))]
     State(state::ServiceState),
 
+    Curl(http_tools::Curl),
+    Http(http_tools::Http),
+
     #[clap(subcommand)]
     Completions(Completions),
 
-    /// Manage the CLI config file and its environments (servers to talk to)
+    /// Manage the profiles the CLI talks to: list, select, add, remove, rename
+    #[clap(subcommand)]
+    #[command(after_help = after_help!(
+        learn_more: "https://docs.restate.dev/references/cli-config",
+    ))]
+    Profile(profile::Profile),
+
+    /// View and edit the CLI config file (see also `restate profile`)
     #[clap(subcommand, alias = "conf")]
     #[command(verbatim_doc_comment)]
     #[command(after_help = after_help!(
@@ -224,22 +245,80 @@ pub enum Command {
 
 fn init(common_opts: &CommonOpts, global_opts: &GlobalOpts) -> Result<State<CliEnv>> {
     CliContext::new(common_opts.clone()).set_as_global();
+    if let Some(path) = dotenv_with_restate_vars(Path::new(".")) {
+        c_warn!(
+            "Found {} but the CLI no longer loads `.env` files; export its variables, or run \
+             `restate profile add` to configure the server it names",
+            path.display()
+        );
+    }
+    if global_opts.profile.is_some() && legacy_profile_flag_used(std::env::args_os()) {
+        c_warn!("-e/--environment is deprecated; use -p/--profile");
+    }
     let env = CliEnv::load(global_opts)?;
 
-    match &env.environment_source {
-        EnvironmentSource::Argument => {
-            info!("Using environment from --environment")
+    match &env.profile_source {
+        ProfileSource::Argument => {
+            info!("Using the profile from --profile")
         }
-        EnvironmentSource::Environment => {
-            info!("Using environment from $RESTATE_ENVIRONMENT")
+        ProfileSource::Variables => {
+            info!("Using the server described by the RESTATE_* variables")
         }
-        EnvironmentSource::File => {
-            info!("Using environment from {}", env.environment_file.display())
+        ProfileSource::EnvVar(var) => {
+            if *var == LEGACY_PROFILE_ENV {
+                c_warn!("${LEGACY_PROFILE_ENV} is deprecated; use ${PROFILE_ENV}");
+            }
+            info!("Using the profile from ${var}")
         }
-        EnvironmentSource::None => {
-            info!("Didn't load an environment")
+        ProfileSource::File => {
+            info!("Using the profile from {}", env.config_file.display())
+        }
+        ProfileSource::None => {
+            info!("Didn't select a profile")
         }
     }
 
     Ok(State(env))
+}
+
+/// Whether the profile was passed with the deprecated `-e`/`--environment` spelling.
+fn legacy_profile_flag_used(args: impl IntoIterator<Item = std::ffi::OsString>) -> bool {
+    args.into_iter().any(|arg| {
+        let arg = arg.to_string_lossy();
+        arg == "-e" || arg == "--environment" || arg.starts_with("--environment=")
+    })
+}
+
+/// `dir/.env`, if it exists and defines a `RESTATE_*` variable: worth a hint, as the CLI
+/// used to load it.
+fn dotenv_with_restate_vars(dir: &Path) -> Option<PathBuf> {
+    let path = dir.join(".env");
+    let content = std::fs::read_to_string(&path).ok()?;
+    content
+        .lines()
+        .map(|line| line.trim_start().trim_start_matches("export "))
+        .any(|line| line.starts_with("RESTATE_"))
+        .then_some(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_a_dotenv_with_restate_variables() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(dotenv_with_restate_vars(dir.path()), None);
+        std::fs::write(dir.path().join(".env"), "# comment\nFOO=bar\n").unwrap();
+        assert_eq!(dotenv_with_restate_vars(dir.path()), None);
+        std::fs::write(
+            dir.path().join(".env"),
+            "FOO=bar\n  export RESTATE_AUTH_TOKEN=key_x\n",
+        )
+        .unwrap();
+        assert_eq!(
+            dotenv_with_restate_vars(dir.path()),
+            Some(dir.path().join(".env"))
+        );
+    }
 }
