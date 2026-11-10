@@ -57,7 +57,11 @@ this version and expect restores from that snapshot to work. If you need to down
 
 ### Migration Guidance
 
-- **Enabling**: Add `experimental-snapshot-type = "incremental"` to your configuration
+- **Enabling**: First upgrade every node in the cluster to this version, then add
+  `experimental-snapshot-type = "incremental"` to your configuration. Do not enable it during a
+  rolling upgrade: a node on an older version cannot restore from incremental snapshots, and
+  retaining more snapshots does not help because new snapshots can rotate older full ones out
+  before the upgrade finishes.
 - **Reverting to full**: Set `experimental-snapshot-type = "full"`; new snapshots will use full mode, existing incremental snapshots remain readable
 - **Cleanup coordination**: When using incremental mode with `experimental-num-retained`, SST cleanup is coordinated to ensure shared files are only deleted when no retained snapshot references them
 
