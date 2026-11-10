@@ -1046,6 +1046,10 @@ impl SnapshotRepository {
             .await
             .context("Cannot proceed with cleanup; aborting to prevent potential data loss")?;
 
+        let referenced_sst_keys = self
+            .build_referenced_sst_keys(partition_id, &retained_snapshots)
+            .await?;
+
         for snapshot_ref in &evicted_snapshots {
             if !lease_guard.is_valid() {
                 debug!(
@@ -1057,7 +1061,7 @@ impl SnapshotRepository {
 
             // Errors are logged inside delete_snapshot_files; if cleanup fails,
             // these snapshots become orphans to be cleaned by future scan-sweep.
-            self.delete_snapshot_files(partition_id, snapshot_ref, &retained_snapshots)
+            self.delete_snapshot_files(partition_id, snapshot_ref, &referenced_sst_keys)
                 .await;
         }
 
@@ -1116,7 +1120,7 @@ impl SnapshotRepository {
         &self,
         partition_id: PartitionId,
         snapshot_ref: &SnapshotReference,
-        retained_snapshots: &[SnapshotReference],
+        referenced_sst_keys: &HashSet<ObjectPath>,
     ) {
         let metadata_path = self
             .prefix
@@ -1152,73 +1156,15 @@ impl SnapshotRepository {
             }
         };
 
-        // Build set of SST keys that are still referenced by retained snapshots
-        let mut referenced_sst_keys = HashSet::new();
-        for retained_ref in retained_snapshots {
-            let retained_metadata_path = self
-                .prefix
-                .clone()
-                .join(partition_id.to_string())
-                .join(retained_ref.path.as_str())
-                .join("metadata.json");
-
-            if let Ok(data) = self.object_store.get(&retained_metadata_path).await
-                && let Ok(bytes) = data.bytes().await
-                && let Ok(retained_metadata) =
-                    serde_json::from_slice::<PartitionSnapshotMetadata>(&bytes)
-            {
-                for file in &retained_metadata.files {
-                    let filename = strip_leading_slash(&file.name);
-                    let sst_key =
-                        if let Some(relative_key) = retained_metadata.file_keys.get(&file.name) {
-                            let parts: Vec<&str> = relative_key.split('/').collect();
-                            if parts.len() == 2 {
-                                self.prefix
-                                    .clone()
-                                    .join(partition_id.to_string())
-                                    .join(parts[0])
-                                    .join(parts[1])
-                            } else {
-                                self.prefix
-                                    .clone()
-                                    .join(partition_id.to_string())
-                                    .join(relative_key.as_str())
-                            }
-                        } else {
-                            self.prefix
-                                .clone()
-                                .join(partition_id.to_string())
-                                .join(retained_ref.path.as_str())
-                                .join(filename)
-                        };
-                    referenced_sst_keys.insert(sst_key);
-                }
-            }
-        }
-
         let mut any_failed = false;
         for file in &metadata.files {
             let filename = strip_leading_slash(&file.name);
-            let path = if let Some(relative_key) = metadata.file_keys.get(&file.name) {
-                // Incremental snapshot: SST is in shared ssts/ directory
-                // Format: "ssts/{hash}.sst" (content-addressed) or legacy "ssts/{node_id}_{filename}"
-                let parts: Vec<&str> = relative_key.split('/').collect();
-                if parts.len() == 2 {
-                    self.prefix
-                        .clone()
-                        .join(partition_id.to_string())
-                        .join(parts[0])
-                        .join(parts[1])
-                } else {
-                    self.prefix
-                        .clone()
-                        .join(partition_id.to_string())
-                        .join(relative_key.as_str())
-                }
-            } else {
-                // Legacy full snapshot: SST is in snapshot-specific directory
-                self.snapshot_file_path(&metadata, filename)
-            };
+            let path = self.resolve_file_path(
+                partition_id,
+                metadata.file_keys.get(&file.name).map(|s| s.as_str()),
+                &snapshot_ref.path,
+                filename,
+            );
 
             if referenced_sst_keys.contains(&path) {
                 debug!(%path, "Skipping deletion of SST file still referenced by retained snapshots");
@@ -1577,6 +1523,119 @@ impl SnapshotRepository {
         filename: &str,
     ) -> ObjectPath {
         self.base_prefix(snapshot_metadata).join(filename)
+    }
+
+    /// Resolves a file reference to its full object path.
+    ///
+    /// Handles two storage formats:
+    /// - Incremental snapshots: `relative_key` contains "ssts/{hash}.sst" (content-addressed)
+    /// - Legacy full snapshots: file is stored at `{snapshot_path}/{filename}`
+    fn resolve_file_path(
+        &self,
+        partition_id: PartitionId,
+        relative_key: Option<&str>,
+        snapshot_path: &str,
+        filename: &str,
+    ) -> ObjectPath {
+        if let Some(key) = relative_key {
+            // Incremental snapshot: SST is in shared ssts/ directory.
+            // Format: "ssts/{hash}.sst" (two segments). Any other shape is treated as opaque
+            // and joined as-is for forward compatibility, but the upload path only produces
+            // the two-segment form.
+            let parts: Vec<&str> = key.split('/').collect();
+            if parts.len() == 2 {
+                self.prefix
+                    .clone()
+                    .join(partition_id.to_string())
+                    .join(parts[0])
+                    .join(parts[1])
+            } else {
+                warn!(
+                    %filename,
+                    relative_key = %key,
+                    "Unexpected file_keys entry shape; treating as opaque path"
+                );
+                self.prefix.clone().join(partition_id.to_string()).join(key)
+            }
+        } else {
+            // Legacy full snapshot: SST is in snapshot-specific directory
+            self.prefix
+                .clone()
+                .join(partition_id.to_string())
+                .join(snapshot_path)
+                .join(filename)
+        }
+    }
+
+    /// Builds the set of SST keys referenced by the given retained snapshots.
+    ///
+    /// Returns an error if any retained snapshot's metadata cannot be read or parsed
+    /// to prevent orphan cleanup from deleting SSTs that are still referenced.
+    async fn build_referenced_sst_keys(
+        &self,
+        partition_id: PartitionId,
+        retained_snapshots: &[SnapshotReference],
+    ) -> anyhow::Result<HashSet<ObjectPath>> {
+        let mut referenced_sst_keys = HashSet::new();
+
+        for retained_ref in retained_snapshots {
+            let retained_metadata_path = self
+                .prefix
+                .clone()
+                .join(partition_id.to_string())
+                .join(retained_ref.path.as_str())
+                .join("metadata.json");
+
+            let data = match self.object_store.get(&retained_metadata_path).await {
+                Ok(data) => data,
+                Err(object_store::Error::NotFound { .. }) => {
+                    // Metadata missing - could be race condition or transient failure.
+                    // Bail to prevent potential data loss as we can't know which SSTs are retained.
+                    warn!(
+                        path = %retained_ref.path,
+                        "Retained snapshot metadata not found - aborting to prevent data loss"
+                    );
+                    return Err(anyhow::anyhow!(
+                        "Cannot verify retained snapshot {}: metadata not found",
+                        retained_ref.path
+                    ));
+                }
+                Err(err) => {
+                    return Err(anyhow::anyhow!(
+                        "Failed to read metadata for retained snapshot {}: {}",
+                        retained_ref.path,
+                        err
+                    ));
+                }
+            };
+
+            let bytes = data.bytes().await.context(format!(
+                "Failed to read metadata bytes for retained snapshot {}",
+                retained_ref.path
+            ))?;
+
+            let retained_metadata: PartitionSnapshotMetadata = serde_json::from_slice(&bytes)
+                .context(format!(
+                    "Failed to parse metadata for retained snapshot {}",
+                    retained_ref.path
+                ))?;
+
+            for file in &retained_metadata.files {
+                let filename = strip_leading_slash(&file.name);
+                let sst_key = self.resolve_file_path(
+                    partition_id,
+                    retained_metadata
+                        .file_keys
+                        .get(&file.name)
+                        .map(|s| s.as_str()),
+                    &retained_ref.path,
+                    filename,
+                );
+                referenced_sst_keys.insert(sst_key);
+            }
+        }
+
+        Ok(referenced_sst_keys)
     }
 }
 
@@ -2781,6 +2840,85 @@ mod tests {
                 .filter(|p| !retained_snapshot_paths.contains(p.as_str()))
                 .collect::<Vec<_>>()
         );
+
+        Ok(())
+    }
+
+    /// If a retained snapshot's metadata cannot be read (missing or unparseable), cleanup cannot
+    /// tell which shared SSTs are live and must delete nothing.
+    #[restate_core::test]
+    async fn cleanup_aborts_if_retained_metadata_unreadable() -> anyhow::Result<()> {
+        let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let repository = mock_repository(1);
+        let store = &repository.object_store;
+        let partition = ObjectPath::from(PartitionId::MIN.to_string());
+
+        let snapshot_with_shared_sst = |lsn: u64| {
+            let mut s = mock_snapshot_metadata("/000001.sst".to_owned(), "/".to_owned(), 0);
+            s.min_applied_lsn = Lsn::new(lsn);
+            s.file_keys
+                .insert("/000001.sst".to_owned(), "ssts/shared.sst".to_owned());
+            s
+        };
+        let evicted = snapshot_with_shared_sst(1);
+        let retained = snapshot_with_shared_sst(2);
+        let evicted_ref = SnapshotReference::from_metadata(&evicted);
+        let retained_ref = SnapshotReference::from_metadata(&retained);
+        let evicted_metadata = partition
+            .child(evicted_ref.path.as_str())
+            .child("metadata.json");
+        let retained_metadata = partition
+            .child(retained_ref.path.as_str())
+            .child("metadata.json");
+        let sst = partition.child("ssts").child("shared.sst");
+
+        store.put(&sst, PutPayload::from_static(b"sst")).await?;
+        store
+            .put(
+                &evicted_metadata,
+                PutPayload::from(serde_json::to_vec(&evicted)?),
+            )
+            .await?;
+        store
+            .put(
+                &repository.latest_snapshot_pointer_path(PartitionId::MIN),
+                PutPayload::from(serde_json::to_vec(&mock_latest_snapshot(&retained_ref))?),
+            )
+            .await?;
+
+        let cleanup = || async {
+            repository
+                .cleanup_evicted_snapshots_inner(
+                    PartitionId::MIN,
+                    vec![evicted_ref.clone()],
+                    &Arc::new(SnapshotLeaseGuard::noop()),
+                )
+                .await
+        };
+
+        // Retained metadata.json missing, then corrupt: cleanup errors and deletes nothing.
+        for corrupt in [false, true] {
+            if corrupt {
+                store
+                    .put(&retained_metadata, PutPayload::from_static(b"not json"))
+                    .await?;
+            }
+            assert!(cleanup().await.is_err());
+            assert!(store.head(&sst).await.is_ok());
+            assert!(store.head(&evicted_metadata).await.is_ok());
+        }
+
+        // Once readable, the evicted snapshot's metadata goes but the SST the retained snapshot
+        // still references stays.
+        store
+            .put(
+                &retained_metadata,
+                PutPayload::from(serde_json::to_vec(&retained)?),
+            )
+            .await?;
+        cleanup().await?;
+        assert!(store.head(&sst).await.is_ok());
+        assert!(store.head(&evicted_metadata).await.is_err());
 
         Ok(())
     }
