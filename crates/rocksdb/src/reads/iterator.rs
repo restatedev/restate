@@ -144,12 +144,17 @@ where
     where
         F: FnOnce(&mut ReadIterator<'_, H>) -> R + Send + 'static,
     {
+        self.debug_assert_inside(gate);
+        StorageOp::from_parts(self, gate, kind, op)
+    }
+
+    // In debug builds, panics if `gate` is outside the iterator's database.
+    pub(super) fn debug_assert_inside(&self, gate: &Arc<Gate>) {
         self.source
             .get()
             .handles(TOKEN)
             .database()
             .debug_assert_inside(gate);
-        StorageOp::from_parts(self, gate, kind, op)
     }
 }
 
