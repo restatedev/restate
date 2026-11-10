@@ -166,24 +166,44 @@ pub fn get_locally_durable_lsn(partition_store: &mut PartitionStore) -> Result<O
     read_applied_lsn(partition_store.partition_db(), rocksdb::ReadTier::Persisted)
 }
 
+/// The applied LSN of partition `partition_id`, from its column family `cf` in a partition store
+/// that a tool opened with RocksDB directly. It's read the way the partition reads it: from its
+/// [`FsmPosition`] if it has one, else from the applied LSN persisted on its own.
+pub fn read_applied_lsn_from_db(
+    db: &rocksdb::DB,
+    cf: &impl rocksdb::AsColumnFamilyRef,
+    partition_id: PartitionId,
+) -> Result<Option<Lsn>> {
+    read_applied_lsn_from(db, cf, partition_id, rocksdb::ReadTier::All)
+}
+
+fn read_applied_lsn(db: &PartitionDb, read_tier: rocksdb::ReadTier) -> Result<Option<Lsn>> {
+    read_applied_lsn_from(
+        db.rocksdb().inner().as_raw_db(),
+        db.cf_handle(),
+        db.partition().id(),
+        read_tier,
+    )
+}
+
 /// The partition's applied LSN as [`resolve_applied_lsn`] picks it, with [`FSM_POSITION`] and
 /// [`APPLIED_LSN`] read at the same point in time, so that a commit or flush between two reads
 /// can't make them look different.
 ///
 /// [`FSM_POSITION`]: fsm_variable::FSM_POSITION
 /// [`APPLIED_LSN`]: fsm_variable::APPLIED_LSN
-fn read_applied_lsn(db: &PartitionDb, read_tier: rocksdb::ReadTier) -> Result<Option<Lsn>> {
-    let partition_id = db.partition().id();
-    let cf = db.cf_handle();
+fn read_applied_lsn_from(
+    db: &rocksdb::DB,
+    cf: &impl rocksdb::AsColumnFamilyRef,
+    partition_id: PartitionId,
+    read_tier: rocksdb::ReadTier,
+) -> Result<Option<Lsn>> {
     let keys = [fsm_variable::FSM_POSITION, fsm_variable::APPLIED_LSN]
         .map(|state_id| create_key(partition_id, state_id).to_bytes());
     let mut read_opts = rocksdb::ReadOptions::default();
     read_opts.set_read_tier(read_tier);
     // a multi-get reads all keys from one view of the column family, also of the persisted tier
     let [position, applied_lsn]: [_; 2] = db
-        .rocksdb()
-        .inner()
-        .as_raw_db()
         .multi_get_cf_opt(keys.iter().map(|key| (cf, key)), &read_opts)
         .try_into()
         .expect("a value per key");
