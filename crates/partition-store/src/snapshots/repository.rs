@@ -113,6 +113,8 @@ pub struct SnapshotRepository {
     upload_single_put_threshold: u64,
     snapshot_type: restate_types::config::SnapshotType,
     orphan_cleanup: bool,
+    /// When the orphan sweep last ran for each partition on this node.
+    last_orphan_scan: Arc<parking_lot::Mutex<HashMap<PartitionId, std::time::Instant>>>,
     lease_provider: Option<LeaseProvider>,
     #[cfg(any(test, feature = "test-util"))]
     enable_cleanup: bool,
@@ -133,6 +135,9 @@ const DOWNLOAD_CONCURRENCY_LIMIT: usize = 8;
 
 /// Minimum age for files to be considered orphan candidates during repository scan.
 const ORPHAN_MIN_AGE: Duration = Duration::from_hours(24);
+
+/// Minimum time between orphan sweeps of a partition. Each sweep LISTs the partition prefix.
+const ORPHAN_SCAN_INTERVAL: Duration = Duration::from_hours(24);
 
 /// Object store keys eligible for sweeping. Anything not matching a pattern here is never
 /// deleted, so unrecognised files fail safe by leaking rather than by being swept. When adding
@@ -570,7 +575,11 @@ impl SnapshotRepository {
             snapshot_type: snapshots_options.experimental_snapshot_type,
             orphan_cleanup: snapshots_options
                 .experimental_orphan_cleanup
-                .unwrap_or(false),
+                .unwrap_or(matches!(
+                    snapshots_options.experimental_snapshot_type,
+                    restate_types::config::SnapshotType::Incremental
+                )),
+            last_orphan_scan: Default::default(),
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: snapshots_options.enable_cleanup,
             lease_provider,
@@ -1010,10 +1019,12 @@ impl SnapshotRepository {
         #[cfg(any(test, feature = "test-util"))]
         let enable_cleanup = self.enable_cleanup;
 
-        if enable_cleanup && (!evicted_snapshots.is_empty() || self.orphan_cleanup) {
+        if enable_cleanup
+            && (!evicted_snapshots.is_empty() || self.orphan_scan_due(snapshot.partition_id))
+        {
             // Cleanup task handles both evicted snapshot deletion and orphan sweep.
-            // We spawn it even when no snapshots are evicted so orphan sweep runs
-            // after every successful upload.
+            // We spawn it even when no snapshots are evicted so the orphan sweep runs
+            // at most once per ORPHAN_SCAN_INTERVAL.
             self.spawn_cleanup_task(snapshot.partition_id, evicted_snapshots, lease_guard);
         }
 
@@ -1222,6 +1233,26 @@ impl SnapshotRepository {
         }
     }
 
+    fn orphan_scan_due(&self, partition_id: PartitionId) -> bool {
+        self.orphan_cleanup
+            && self
+                .last_orphan_scan
+                .lock()
+                .get(&partition_id)
+                .is_none_or(|last| last.elapsed() >= ORPHAN_SCAN_INTERVAL)
+    }
+
+    /// Returns whether the orphan sweep is due, and if so records it as started now.
+    fn claim_orphan_scan(&self, partition_id: PartitionId) -> bool {
+        if !self.orphan_scan_due(partition_id) {
+            return false;
+        }
+        self.last_orphan_scan
+            .lock()
+            .insert(partition_id, std::time::Instant::now());
+        true
+    }
+
     fn spawn_cleanup_task(
         &self,
         partition_id: PartitionId,
@@ -1318,7 +1349,7 @@ impl SnapshotRepository {
             .await;
         }
 
-        if self.orphan_cleanup && lease_guard.is_valid() {
+        if lease_guard.is_valid() && self.claim_orphan_scan(partition_id) {
             use crate::metric_definitions::{
                 SNAPSHOT_ORPHAN_FILES_DELETED, SNAPSHOT_ORPHAN_SCAN_FAILED,
                 SNAPSHOT_ORPHAN_SCAN_TOTAL,
@@ -3017,6 +3048,29 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn orphan_scan_runs_at_most_once_per_interval_per_partition() {
+        let mut repository = mock_repository(1);
+        let (p0, p1) = (PartitionId::MIN, PartitionId::from(1));
+        assert!(
+            !repository.claim_orphan_scan(p0),
+            "disabled sweep is never due"
+        );
+
+        repository.orphan_cleanup = true;
+        assert!(repository.orphan_scan_due(p0));
+        assert!(repository.claim_orphan_scan(p0));
+        assert!(!repository.orphan_scan_due(p0) && !repository.claim_orphan_scan(p0));
+        assert!(
+            repository.claim_orphan_scan(p1),
+            "partitions are tracked separately"
+        );
+
+        let earlier = std::time::Instant::now() - super::ORPHAN_SCAN_INTERVAL;
+        repository.last_orphan_scan.lock().insert(p0, earlier);
+        assert!(repository.claim_orphan_scan(p0));
+    }
+
     fn mock_repository(num_retained: u8) -> SnapshotRepository {
         SnapshotRepository {
             object_store: Arc::new(object_store::memory::InMemory::new()),
@@ -3028,6 +3082,7 @@ mod tests {
             upload_single_put_threshold: SnapshotsOptions::default().upload_single_put_threshold(),
             snapshot_type: restate_types::config::SnapshotType::default(),
             orphan_cleanup: false,
+            last_orphan_scan: Default::default(),
             lease_provider: None,
             enable_cleanup: false,
         }

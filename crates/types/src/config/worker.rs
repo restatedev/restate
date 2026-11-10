@@ -1422,10 +1422,12 @@ pub struct SnapshotsOptions {
 
     /// # Orphan cleanup
     ///
-    /// Prune orphaned SST files and snapshot directories after each cleanup.
-    /// Orphans can accumulate from crashes, failed uploads, or interrupted cleanups.
+    /// Prune orphaned SST files and snapshot directories that no retained snapshot references.
+    /// Orphans can accumulate from crashes, failed uploads, or interrupted cleanups. The sweep runs
+    /// at most once a day per partition, after a successful snapshot, and only deletes objects
+    /// older than 24 hours. Each sweep lists the partition's snapshot prefix.
     ///
-    /// Default: `false`
+    /// Default: `true` when `experimental-snapshot-type` is `incremental`, `false` otherwise
     ///
     /// Since v1.8.2
     #[serde(default, skip_serializing_if = "Option::is_none")]
