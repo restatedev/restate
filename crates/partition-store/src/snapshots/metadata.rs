@@ -102,6 +102,23 @@ pub struct PartitionSnapshotMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compatibility: Option<SnapshotCompatibility>,
 
+    /// The LSN of the record that turned byte offsets on for the partition, which the byte
+    /// offsets below count from. A log byte offset from elsewhere (another snapshot or a replica)
+    /// can only be compared with this one if their base LSNs are equal. `None` if the partition
+    /// didn't track byte offsets, or if unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_offsets_base_lsn: Option<Lsn>,
+
+    /// How far the partition had applied its log in bytes, at the snapshot's applied LSN.
+    /// Replicas at that LSN normally have the same, but it can differ slightly between them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_byte_offset: Option<u64>,
+
+    /// How far the node that created the snapshot had written its partition store in bytes, at
+    /// the snapshot's applied LSN. Local to that node's store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition_store_byte_offset: Option<u64>,
+
     /// The RocksDB SST files comprising the snapshot.
     #[serde_as(as = "Vec<SnapshotSstFile>")]
     pub files: Vec<LiveFile>,
@@ -164,6 +181,15 @@ struct PartitionSnapshotMetadataShadow {
     #[serde_as(deserialize_as = "DefaultOnError")]
     #[serde(default)]
     pub compatibility: Option<SnapshotCompatibility>,
+    #[serde_as(deserialize_as = "DefaultOnError")]
+    #[serde(default)]
+    pub byte_offsets_base_lsn: Option<Lsn>,
+    #[serde_as(deserialize_as = "DefaultOnError")]
+    #[serde(default)]
+    pub log_byte_offset: Option<u64>,
+    #[serde_as(deserialize_as = "DefaultOnError")]
+    #[serde(default)]
+    pub partition_store_byte_offset: Option<u64>,
     #[serde_as(as = "Vec<SnapshotSstFile>")]
     pub files: Vec<LiveFile>,
 }
@@ -189,6 +215,9 @@ impl From<PartitionSnapshotMetadataShadow> for PartitionSnapshotMetadata {
             min_applied_lsn: value.min_applied_lsn,
             db_comparator_name: value.db_comparator_name,
             compatibility: value.compatibility,
+            byte_offsets_base_lsn: value.byte_offsets_base_lsn,
+            log_byte_offset: value.log_byte_offset,
+            partition_store_byte_offset: value.partition_store_byte_offset,
             files: value.files,
         }
     }
@@ -272,6 +301,12 @@ pub struct LocalPartitionSnapshot {
     pub key_range: KeyRange,
     /// What a server needs in order to use the snapshot's data. `None` if unknown.
     pub compatibility: Option<SnapshotCompatibility>,
+    /// The base LSN of the byte offsets below, as in [`PartitionSnapshotMetadata`].
+    pub byte_offsets_base_lsn: Option<Lsn>,
+    /// The log byte offset at `min_applied_lsn`, as in [`PartitionSnapshotMetadata`].
+    pub log_byte_offset: Option<u64>,
+    /// The partition store byte offset at `min_applied_lsn`, as in [`PartitionSnapshotMetadata`].
+    pub partition_store_byte_offset: Option<u64>,
 }
 /// RocksDB SST file that is part of a snapshot. Serialization wrapper around [LiveFile].
 #[serde_as]

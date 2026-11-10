@@ -965,6 +965,9 @@ impl SnapshotRepository {
             files: snapshot_metadata.files,
             key_range: snapshot_metadata.key_range,
             compatibility: snapshot_metadata.compatibility,
+            byte_offsets_base_lsn: snapshot_metadata.byte_offsets_base_lsn,
+            log_byte_offset: snapshot_metadata.log_byte_offset,
+            partition_store_byte_offset: snapshot_metadata.partition_store_byte_offset,
         }))
     }
 
@@ -1500,6 +1503,9 @@ mod tests {
                 storage_features: vec!["scoped-state-table".into()],
                 partition_features: vec!["journal_v2".into()],
             }),
+            byte_offsets_base_lsn: None,
+            log_byte_offset: None,
+            partition_store_byte_offset: None,
             files: vec![rocksdb::LiveFile {
                 column_family_name: "data-0".to_owned(),
                 name: file_name,
@@ -1922,6 +1928,9 @@ mod tests {
             files: vec![],
             key_range: KeyRange::new(0, 100),
             compatibility: None,
+            byte_offsets_base_lsn: None,
+            log_byte_offset: None,
+            partition_store_byte_offset: None,
         }
     }
 
