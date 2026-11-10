@@ -1427,7 +1427,7 @@ pub struct SnapshotsOptions {
     ///
     /// Default: `false`
     ///
-    /// Since v1.7.3
+    /// Since v1.8.2
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub experimental_orphan_cleanup: Option<bool>,
 }
