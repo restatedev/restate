@@ -51,10 +51,6 @@ pub struct Arguments {
     #[arg(long, global = true, default_value = "5s")]
     pub report_interval: FriendlyDuration,
 
-    /// Emit a machine-readable JSON summary instead of the human-readable table.
-    #[arg(long, global = true)]
-    pub json: bool,
-
     #[clap(flatten)]
     pub common_opts: CommonOpts,
 
