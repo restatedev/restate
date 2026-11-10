@@ -13,6 +13,8 @@ use super::DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT;
 use anyhow::Result;
 use cling::prelude::*;
 
+use restate_types::Priority;
+
 use crate::cli_env::CliEnv;
 use crate::commands::invocations::cancel::{Cancel, run_cancel};
 use crate::ui::fmt::DryRun;
@@ -33,6 +35,9 @@ use crate::ui::fmt::DryRun;
 pub struct Kill {
     #[arg(help = super::QUERY_HELP, long_help = super::QUERY_LONG_HELP)]
     query: String,
+    /// Only act on the matching invocations with this priority
+    #[clap(long, ignore_case = true, value_parser = super::priority_parser())]
+    priority: Option<Priority>,
     /// Act on at most this many of the matching invocations, leaving the others untouched
     #[clap(long, default_value_t = DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT)]
     limit: usize,
@@ -46,6 +51,7 @@ pub async fn run_kill(state: State<CliEnv>, opts: &Kill) -> Result<()> {
         &Cancel {
             query: opts.query.clone(),
             kill: true,
+            priority: opts.priority,
             limit: opts.limit,
             dry_run: opts.dry_run.clone(),
         },
