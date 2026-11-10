@@ -1428,7 +1428,7 @@ pub struct SnapshotsOptions {
     ///
     /// Default: 24 hours
     ///
-    /// Since v1.7.0
+    /// Since v1.8.2
     #[cfg(any(test, feature = "test-util"))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub experimental_orphan_min_age: Option<FriendlyDuration>,
