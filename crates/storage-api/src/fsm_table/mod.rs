@@ -14,7 +14,7 @@ use bytes::BytesMut;
 
 use restate_limiter::RuleBook;
 use restate_types::identifiers::LeaderEpoch;
-use restate_types::logs::Lsn;
+use restate_types::logs::{Lsn, SequenceNumber as _};
 use restate_types::message::MessageIndex;
 use restate_types::partitions::features::PersistedFeatures;
 use restate_types::partitions::state::ReplicaSetState;
@@ -25,7 +25,9 @@ use restate_types::storage::{
     encode,
 };
 use restate_types::time::MillisSinceEpoch;
-use restate_types::{GenerationalNodeId, SemanticRestateVersion, Version};
+use restate_types::{
+    GenerationalNodeId, SemanticRestateVersion, Version, bilrost_storage_encode_decode,
+};
 
 use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
@@ -35,7 +37,14 @@ pub trait ReadFsmTable {
 
     fn get_outbox_seq_number(&mut self) -> impl Future<Output = Result<MessageIndex>> + Send + '_;
 
+    /// The applied LSN: the one in the [`FsmPosition`] if the partition has one, else the one
+    /// persisted on its own. A position persisted before any record was applied has none.
     fn get_applied_lsn(&mut self) -> impl Future<Output = Result<Option<Lsn>>> + Send + '_;
+
+    /// The partition's position, `None` while it doesn't track byte offsets.
+    /// *Since v1.8.2*
+    fn get_fsm_position(&mut self)
+    -> impl Future<Output = Result<Option<FsmPosition>>> + Send + '_;
 
     fn get_min_restate_version(
         &mut self,
@@ -91,6 +100,74 @@ pub trait WriteFsmTable {
     /// Persist the set of state-machine features enabled for this partition.
     /// *Since v1.7.0*
     fn put_state_machine_features(&mut self, features: &PersistedFeatures) -> Result<()>;
+}
+
+/// Where a partition stands in its log: its applied LSN, and how far it has applied its log in
+/// bytes.
+///
+/// The byte offsets are positions: they count from the record that turned byte offsets on for
+/// the partition, its byte offsets base LSN, and wrap at 2^64. They move forward as the partition
+/// applies its log. A replica that restarts from an older position, its last flushed commit after
+/// a crash or a snapshot, continues from that position's offsets. A partition
+/// persists its position with every commit while it tracks byte offsets; without a base LSN
+/// ([`Lsn::INVALID`]), it doesn't.
+///
+/// Every field has a fixed-width encoding, so the size of an encoded position depends only on
+/// which of its fields are zero (omitted). New fields can be added under new tags; servers that
+/// don't know them skip them.
+///
+/// *Since v1.8.2*
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bilrost::Message)]
+pub struct FsmPosition {
+    /// The partition's applied LSN.
+    #[bilrost(tag(1), encoding(fixed))]
+    pub applied_lsn: Lsn,
+    /// The LSN of the record that turned byte offsets on. The byte offsets count the records
+    /// after it. The same on every replica.
+    #[bilrost(tag(2), encoding(fixed))]
+    pub byte_offsets_base_lsn: Lsn,
+    /// How far the partition has applied its log, in bytes: the size of the records it read
+    /// from its log after the base LSN, up to the applied LSN, as the log stores them. Records
+    /// it skips as duplicates count too; records outside the partition's key range never reach
+    /// it and don't. Replicas at the same applied LSN normally agree on it, but it's an estimate
+    /// that can differ slightly between them, for example between versions that size records
+    /// differently; nothing depends on them agreeing.
+    #[bilrost(tag(3), encoding(fixed))]
+    pub log_byte_offset: u64,
+}
+
+bilrost_storage_encode_decode!(FsmPosition);
+
+impl FsmPosition {
+    /// The position of a partition at `applied_lsn` that doesn't track byte offsets.
+    pub fn new(applied_lsn: Lsn) -> Self {
+        Self {
+            applied_lsn,
+            byte_offsets_base_lsn: Lsn::INVALID,
+            log_byte_offset: 0,
+        }
+    }
+
+    /// Whether the partition tracks byte offsets.
+    pub fn has_byte_offsets(&self) -> bool {
+        self.byte_offsets_base_lsn != Lsn::INVALID
+    }
+
+    /// Turns byte offsets on at the record at `lsn`: they start at zero and count the records
+    /// after it.
+    pub fn start_byte_offsets(&mut self, lsn: Lsn) {
+        self.byte_offsets_base_lsn = lsn;
+        self.log_byte_offset = 0;
+    }
+
+    /// Advances to the record or gap that ends at `lsn`, of `bytes` as the log stores it. The log
+    /// byte offset counts it if it comes after the base LSN.
+    pub fn advance(&mut self, lsn: Lsn, bytes: u64) {
+        self.applied_lsn = lsn;
+        if self.has_byte_offsets() && lsn > self.byte_offsets_base_lsn {
+            self.log_byte_offset = self.log_byte_offset.wrapping_add(bytes);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, derive_more::From, derive_more::Into)]
@@ -190,5 +267,40 @@ impl StorageDecode for CachedEpochMetadata {
         assert_eq!(kind, StorageCodecKind::Bilrost);
 
         decode::decode_bilrost(buf)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use restate_types::logs::Lsn;
+
+    use super::FsmPosition;
+
+    /// The log byte offset counts the records after the one that turned byte offsets on, and
+    /// wraps at 2^64; without byte offsets, a position only follows the applied LSN.
+    #[test]
+    fn fsm_position_counts_the_records_after_the_base_lsn() {
+        let mut position = FsmPosition::new(Lsn::new(1));
+        position.advance(Lsn::new(2), 20);
+        assert!(!position.has_byte_offsets());
+        assert_eq!(position, FsmPosition::new(Lsn::new(2)));
+
+        position.start_byte_offsets(Lsn::new(3));
+        for (lsn, bytes) in [(3, 30), (4, 40), (5, 50)] {
+            position.advance(Lsn::new(lsn), bytes);
+        }
+        assert!(position.has_byte_offsets());
+        assert_eq!(
+            position,
+            FsmPosition {
+                applied_lsn: Lsn::new(5),
+                byte_offsets_base_lsn: Lsn::new(3),
+                log_byte_offset: 90,
+            }
+        );
+
+        position.log_byte_offset = u64::MAX - 5;
+        position.advance(Lsn::new(6), 10);
+        assert_eq!(position.log_byte_offset, 4);
     }
 }

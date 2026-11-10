@@ -18,7 +18,7 @@ use crate::storage::{
 };
 use crate::{
     RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, RESTATE_VERSION_1_7_5, RESTATE_VERSION_1_7_8,
-    RESTATE_VERSION_1_8_0, RESTATE_VERSION_1_8_1, SemanticRestateVersion,
+    RESTATE_VERSION_1_8_0, RESTATE_VERSION_1_8_1, RESTATE_VERSION_1_8_2, SemanticRestateVersion,
 };
 
 /// A change to the set of state-machine features enabled on a partition.
@@ -80,6 +80,11 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.8.1*
     EnablePreflightSignalRecording = 7,
+    /// Track how far the partition has applied its log in bytes, counting from the record that
+    /// applies this change.
+    ///
+    /// *Since v1.8.2*
+    EnableByteOffsets = 8,
 }
 
 impl PartitionFeatureChange {
@@ -100,6 +105,7 @@ impl PartitionFeatureChange {
             Self::EnablePreflightInvocationTerminationRetention => &RESTATE_VERSION_1_7_8,
             Self::EnableInconsistentStateMutationCleanup => &RESTATE_VERSION_1_8_0,
             Self::EnablePreflightSignalRecording => &RESTATE_VERSION_1_8_1,
+            Self::EnableByteOffsets => &RESTATE_VERSION_1_8_2,
         }
     }
 
@@ -130,6 +136,7 @@ impl PartitionFeatureChange {
             Self::EnablePreflightSignalRecording => {
                 !std::mem::replace(&mut features.preflight_signal_recording, true)
             }
+            Self::EnableByteOffsets => !std::mem::replace(&mut features.byte_offsets, true),
         }
     }
 }
@@ -199,6 +206,12 @@ pub struct PersistedFeatures {
     /// *Since v1.8.1*
     #[bilrost(tag(7))]
     pub preflight_signal_recording: bool,
+
+    /// The partition tracks how far it has applied its log in bytes.
+    ///
+    /// *Since v1.8.2*
+    #[bilrost(tag(8))]
+    pub byte_offsets: bool,
 }
 
 impl PersistedFeatures {
@@ -218,6 +231,7 @@ impl PersistedFeatures {
                 .then_some("inconsistent_state_mutation_cleanup"),
             self.preflight_signal_recording
                 .then_some("preflight_signal_recording"),
+            self.byte_offsets.then_some("byte_offsets"),
         ]
         .into_iter()
         .flatten()
@@ -278,6 +292,21 @@ mod tests {
         PartitionFeatureChange::EnableUniqueRandomSeeds.apply_to(&mut features);
         assert!(features.vqueues);
         assert!(features.unique_random_seeds);
+
+        // Byte offsets can only be turned on once, by servers from v1.8.2 on.
+        let byte_offsets = PartitionFeatureChange::EnableByteOffsets;
+        assert_eq!(PartitionFeatureChange::from_repr(8), Some(byte_offsets));
+        assert_eq!(
+            byte_offsets.min_required_version(),
+            &*crate::RESTATE_VERSION_1_8_2
+        );
+        assert!(byte_offsets.apply_to(&mut features));
+        assert!(!byte_offsets.apply_to(&mut features));
+        assert!(features.byte_offsets);
+        assert_eq!(
+            features.enabled_names().collect::<Vec<_>>(),
+            ["vqueues", "unique_random_seeds", "byte_offsets"]
+        );
     }
 
     #[test]

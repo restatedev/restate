@@ -34,7 +34,7 @@ use tracing::{Level, instrument, trace, warn};
 use restate_core::io::{AdmissionClosed, Gate, IoExecutor};
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksDbManager, RocksError};
-use restate_storage_api::fsm_table::ReadFsmTable;
+use restate_storage_api::fsm_table::{FsmPosition, ReadFsmTable};
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
 use restate_types::SemanticRestateVersion;
@@ -50,7 +50,9 @@ use restate_types::storage::StorageEncode;
 use restate_util_string::ReString;
 
 use crate::features::{LoadedStorageFeatures, StorageFeatures};
+use crate::fsm_table::delete_applied_lsn;
 use crate::fsm_table::get_partition_seal;
+use crate::fsm_table::put_fsm_position;
 use crate::fsm_table::put_min_restate_version;
 use crate::fsm_table::put_storage_features;
 use crate::fsm_table::put_storage_version;
@@ -573,6 +575,8 @@ impl PartitionStore {
             settings,
             commit_fence: None,
             write_batch_size_histogram: None,
+            fsm_position: None,
+            fsm_position_pending: false,
         }
     }
 
@@ -877,23 +881,6 @@ impl StorageAccess for PartitionStore {
             .map_err(|error| StorageError::Generic(error.into()))
     }
 
-    fn get_durable<K: AsRef<[u8]>>(
-        &self,
-        table: TableKind,
-        key: K,
-    ) -> Result<Option<DBPinnableSlice<'_>>> {
-        let table = self.table_handle(table);
-        let mut read_opts = ReadOptions::default();
-        read_opts.set_read_tier(rocksdb::ReadTier::Persisted);
-
-        self.db
-            .rocksdb()
-            .inner()
-            .as_raw_db()
-            .get_pinned_cf_opt(table, key, &read_opts)
-            .map_err(|error| StorageError::Generic(error.into()))
-    }
-
     #[inline]
     fn put_cf(
         &mut self,
@@ -985,6 +972,11 @@ pub struct PartitionStoreTransaction<'a> {
     /// Resolves once the [`CommitFence`] holding back commits is dropped.
     commit_fence: Option<oneshot::Receiver<()>>,
     write_batch_size_histogram: Option<&'a Histogram>,
+    /// The partition's position, if this transaction maintains it.
+    fsm_position: Option<FsmPosition>,
+    /// Whether the next commit persists the position even if it has nothing else to write,
+    /// because the applied LSN advanced while only the position holds it.
+    fsm_position_pending: bool,
 }
 
 /// Holds back the commits of the [`PartitionStoreTransaction`] that created it until dropped.
@@ -1020,6 +1012,52 @@ impl<'a> PartitionStoreTransaction<'a> {
     /// [`Self::clear`] and [`Transaction::commit`].
     pub fn set_write_batch_size_histogram(&mut self, histogram: &'a Histogram) {
         self.write_batch_size_histogram = Some(histogram);
+    }
+
+    /// Lets this transaction maintain the partition's position, starting from `position`, the
+    /// one at the partition's applied LSN. [`Self::advance_fsm_position`] advances it with every
+    /// record applied, and every later commit that writes something persists it while the
+    /// partition tracks byte offsets, so that each commit persists the position of the applied
+    /// LSN in that commit. It's kept across [`Self::clear`] and [`Transaction::commit`].
+    pub fn set_fsm_position(&mut self, position: FsmPosition) {
+        self.fsm_position = Some(position);
+    }
+
+    /// The partition's position, as of the records applied with this transaction so far. `None`
+    /// unless the transaction maintains it.
+    pub fn fsm_position(&self) -> Option<FsmPosition> {
+        self.fsm_position
+    }
+
+    /// Advances the partition's position, if this transaction maintains it, to the record or gap
+    /// that ends at `lsn`, of `bytes` as the log stores it.
+    pub fn advance_fsm_position(&mut self, lsn: Lsn, bytes: u64) {
+        if let Some(position) = &mut self.fsm_position {
+            position.advance(lsn, bytes);
+        }
+    }
+
+    /// Turns byte offsets on at the record at `lsn`, which they count from. The position is
+    /// written with this transaction's next commit, which also deletes the applied LSN persisted
+    /// on its own: from then on, only the position holds it. Fails if this transaction doesn't
+    /// maintain the partition's position (see [`Self::set_fsm_position`]).
+    pub fn start_byte_offsets(&mut self, lsn: Lsn) -> Result<()> {
+        let Some(position) = self.fsm_position.as_mut() else {
+            return Err(StorageError::Generic(anyhow!(
+                "can't turn byte offsets on: the transaction doesn't maintain the partition's \
+                 position"
+            )));
+        };
+        position.start_byte_offsets(lsn);
+        let position = *position;
+        delete_applied_lsn(self)?;
+        put_fsm_position(self, &position)
+    }
+
+    /// Has the next commit persist the partition's position even if it has nothing else to
+    /// write, for an applied LSN that only the position holds.
+    pub(crate) fn mark_fsm_position_pending(&mut self) {
+        self.fsm_position_pending = true;
     }
 
     /// Clears up all buffered operations in the transaction buffer. A commit fence stays in
@@ -1146,10 +1184,11 @@ impl Transaction for PartitionStoreTransaction<'_> {
             self.commit_fence = None;
         }
 
-        if self
-            .write_batch_with_index
-            .as_ref()
-            .is_none_or(|batch| batch.is_empty())
+        if !self.fsm_position_pending
+            && self
+                .write_batch_with_index
+                .as_ref()
+                .is_none_or(|batch| batch.is_empty())
         {
             return Ok(());
         }
@@ -1160,6 +1199,9 @@ impl Transaction for PartitionStoreTransaction<'_> {
             .admission
             .try_acquire()
             .ok_or(StorageError::OperationalError)?;
+        if let Some(position) = self.fsm_position.filter(FsmPosition::has_byte_offsets) {
+            put_fsm_position(self, &position)?;
+        }
         let write_batch = self.write_batch_with_index.take().expect("nonempty batch");
         if let Some(histogram) = self.write_batch_size_histogram {
             histogram.record(write_batch.size_in_bytes() as f64);
@@ -1191,6 +1233,7 @@ impl Transaction for PartitionStoreTransaction<'_> {
                 .map_err(|error| StorageError::Generic(error.into()))?,
         );
         self.write_batch_with_index.as_mut().unwrap().clear();
+        self.fsm_position_pending = false;
         Ok(())
     }
 
@@ -1269,14 +1312,6 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
             .map_err(|error| StorageError::Generic(error.into()))
     }
 
-    fn get_durable<K: AsRef<[u8]>>(
-        &self,
-        _table: TableKind,
-        _key: K,
-    ) -> Result<Option<DBPinnableSlice<'_>>> {
-        unreachable!("ReadTier::Persisted is not meant to be used in WBI");
-    }
-
     #[inline]
     fn put_cf(
         &mut self,
@@ -1316,16 +1351,6 @@ pub(crate) trait StorageAccess {
     fn cleared_value_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut;
 
     fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice<'_>>>;
-
-    /// Forces a read from persistent storage, bypassing memtables and block cache.
-    ///
-    /// This means that that you might not get the latest value, but the value that was persisted
-    /// (flushed) at the time of the call.
-    fn get_durable<K: AsRef<[u8]>>(
-        &self,
-        table: TableKind,
-        key: K,
-    ) -> Result<Option<DBPinnableSlice<'_>>>;
 
     fn put_cf(
         &mut self,
@@ -1429,35 +1454,6 @@ pub(crate) trait StorageAccess {
             })
             .transpose()
             .map_err(|err| StorageError::Generic(err.into()))
-    }
-
-    /// Forces a read from persistent storage, bypassing memtables and block cache.
-    /// This means that that you might not get the latest value, but the value that was
-    /// persisted (flushed) at the time of the call.
-    #[inline]
-    fn get_durable_value<K, V>(&mut self, key: K) -> Result<Option<V>>
-    where
-        K: EncodeTableKey,
-        V: PartitionStoreProtobufValue,
-        <<V as PartitionStoreProtobufValue>::ProtobufType as TryInto<V>>::Error:
-            Into<anyhow::Error>,
-    {
-        let mut buf = self.cleared_key_buffer_mut(key.serialized_length());
-        key.serialize_to(&mut buf);
-        let buf = buf.split();
-
-        match self.get_durable(K::TABLE, &buf) {
-            Ok(value) => {
-                let slice = value.as_ref().map(|v| v.as_ref());
-
-                if let Some(mut slice) = slice {
-                    Ok(Some(V::decode(&mut slice)?))
-                } else {
-                    Ok(None)
-                }
-            }
-            Err(err) => Err(err),
-        }
     }
 
     #[inline]
