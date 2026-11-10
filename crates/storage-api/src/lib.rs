@@ -26,6 +26,15 @@ pub enum StorageError {
     DataIntegrityError,
     #[error("operational error that can be caused during a graceful shutdown")]
     OperationalError,
+    /// Preparation or submission rejected work before it was accepted.
+    #[error("storage admission is closed")]
+    AdmissionClosed,
+    /// An accepted scan was interrupted because its resource started closing.
+    #[error("scan interrupted because its storage scope closed")]
+    ScanInterrupted,
+    /// Accepted work ended without a result; this does not imply shutdown.
+    #[error("storage task terminated without delivering its result")]
+    TaskFailed,
     #[error("snapshot export failed: {0}")]
     SnapshotExport(anyhow::Error),
     #[error("precondition failed: {0}")]
@@ -73,6 +82,7 @@ pub mod lock_table;
 pub mod outbox_table;
 pub mod promise_table;
 pub mod protobuf_types;
+pub mod scan;
 pub mod service_status_table;
 pub mod state_table;
 pub mod timer_table;

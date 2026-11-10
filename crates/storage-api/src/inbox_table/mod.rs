@@ -102,16 +102,6 @@ pub trait ReadInboxTable {
     ) -> impl Future<Output = Result<bool>> + Send;
 }
 
-pub trait ScanInboxTable {
-    fn for_each_inbox<
-        F: FnMut(SequenceNumberInboxEntry) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
-    >(
-        &self,
-        range: KeyRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
-}
-
 pub trait WriteInboxTable {
     fn put_inbox_entry(
         &mut self,

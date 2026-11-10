@@ -94,21 +94,6 @@ pub enum ScanJournalTableRange {
     InvocationId(RangeInclusive<InvocationId>),
 }
 
-pub trait ScanJournalTable {
-    fn for_each_journal<
-        F: FnMut(
-                (restate_types::identifiers::JournalEntryId, StoredRawEntry),
-            ) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
-    >(
-        &self,
-        range: ScanJournalTableRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
-}
-
 pub trait WriteJournalTable {
     /// Related completion ids to this RawEntry, used to build the internal index
     fn put_journal_entry(

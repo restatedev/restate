@@ -14,21 +14,22 @@ use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
 
-use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
+use restate_rocksdb::RocksDbReadPerfGuard;
+use restate_storage_api::Result;
 use restate_storage_api::inbox_table::{
-    InboxEntry, ReadInboxTable, ScanInboxTable, SequenceNumberInboxEntry, WriteInboxTable,
+    InboxEntry, ReadInboxTable, SequenceNumberInboxEntry, WriteInboxTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
-use restate_storage_api::{Result, StorageError};
+use restate_storage_api::scan::RowConsumer;
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::message::MessageIndex;
 use restate_types::sharding::KeyRange;
 
 use crate::TableKind::Inbox;
 use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
+use crate::scan::{ScanOp, ScanPlan};
 use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
-    TableScanIterationDecision, break_on_err,
+    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
 };
 
 define_table_key!(
@@ -106,30 +107,36 @@ impl ReadInboxTable for PartitionStore {
     }
 }
 
-impl ScanInboxTable for PartitionStore {
-    fn for_each_inbox<
-        F: FnMut(SequenceNumberInboxEntry) -> ControlFlow<()> + Send + Sync + 'static,
-    >(
-        &self,
-        range: KeyRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
-        self.iterator_for_each(
-            "df-inbox",
-            Priority::Low,
-            TableScan::ScanPartitionKeyRange::<InboxKey>(range),
-            move |(mut key, mut value)| {
-                let key = break_on_err(InboxKey::deserialize_from(&mut key))?;
-                let inbox_entry = break_on_err(InboxEntry::decode(&mut value))?;
+/// The inbox entries in a partition-key range, for data-fusion queries.
+pub struct InboxScan {
+    pub range: KeyRange,
+}
 
-                f(SequenceNumberInboxEntry::new(
-                    key.sequence_number,
-                    inbox_entry,
-                ))
-                .map_break(Ok)
-            },
-        )
-        .map_err(|_| StorageError::OperationalError)
+impl ScanOp for InboxScan {
+    type Item<'a> = SequenceNumberInboxEntry;
+    const NAME: &'static str = "df-inbox";
+
+    fn plan(&self) -> ScanPlan {
+        ScanPlan::range(TableScan::ScanPartitionKeyRange::<InboxKey>(self.range))
+    }
+
+    async fn visit<C>(
+        &self,
+        mut key: &[u8],
+        mut value: &[u8],
+        consumer: &mut C,
+    ) -> Result<ControlFlow<()>>
+    where
+        C: for<'a> RowConsumer<Item<'a> = SequenceNumberInboxEntry>,
+    {
+        let key = InboxKey::deserialize_from(&mut key)?;
+        let inbox_entry = InboxEntry::decode(&mut value)?;
+        consumer
+            .consume(SequenceNumberInboxEntry::new(
+                key.sequence_number,
+                inbox_entry,
+            ))
+            .await
     }
 }
 

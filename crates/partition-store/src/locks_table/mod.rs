@@ -8,13 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::ControlFlow;
+
 use anyhow::Context;
 use bilrost::{Message, OwnedMessage};
 use bytes::{Buf, BufMut};
 
-use restate_rocksdb::Priority;
 use restate_storage_api::StorageError;
-use restate_storage_api::lock_table::{LoadLocks, LockState, ScanLocksTable, WriteLockTable};
+use restate_storage_api::lock_table::{LoadLocks, LockState, WriteLockTable};
+use restate_storage_api::scan::RowConsumer;
 use restate_types::identifiers::{PartitionKey, WithPartitionKey};
 use restate_types::sharding::KeyRange;
 use restate_types::{CanonicalLockId, LockName, Scope};
@@ -25,9 +27,8 @@ use crate::keys::{
     OptionalScope, define_table_key,
 };
 use crate::scan::TableScan;
-use crate::{
-    PartitionDb, PartitionStore, PartitionStoreTransaction, Result, StorageAccess, break_on_err,
-};
+use crate::scan::{ScanOp, ScanPlan};
+use crate::{PartitionDb, PartitionStoreTransaction, Result, StorageAccess};
 
 // 'lo' | PKEY | CANONICAL_LOCK_ID
 // CanonicalLockId is serialized as follows:
@@ -166,33 +167,33 @@ impl WriteLockTable for PartitionStoreTransaction<'_> {
     }
 }
 
-// Data fusion queries
-impl ScanLocksTable for PartitionStore {
-    fn for_each_lock<
-        F: FnMut((PartitionKey, Option<Scope>, LockName, LockState)) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
-    >(
+/// The locks in a partition-key range, for data-fusion queries.
+pub struct LocksScan {
+    pub range: KeyRange,
+}
+
+impl ScanOp for LocksScan {
+    type Item<'a> = (PartitionKey, Option<Scope>, LockName, LockState);
+    const NAME: &'static str = "df-locks";
+
+    fn plan(&self) -> ScanPlan {
+        ScanPlan::range(TableScan::ScanPartitionKeyRange::<LockKey>(self.range))
+    }
+
+    async fn visit<C>(
         &self,
-        range: KeyRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
-        self.iterator_for_each(
-            "df-locks",
-            Priority::Low,
-            TableScan::ScanPartitionKeyRange::<LockKey>(range),
-            move |(mut key, mut value)| {
-                let lock_key = break_on_err(LockKey::deserialize_from(&mut key))?;
-                let lock_state = break_on_err(
-                    LockState::decode(&mut value).map_err(StorageError::BilrostDecode),
-                )?;
-
-                let (partition_key, opt_scope, lock_name) = lock_key.split();
-
-                f((partition_key, opt_scope, lock_name, lock_state)).map_break(Ok)
-            },
-        )
-        .map_err(|_| StorageError::OperationalError)
+        mut key: &[u8],
+        mut value: &[u8],
+        consumer: &mut C,
+    ) -> Result<ControlFlow<()>>
+    where
+        C: for<'a> RowConsumer<Item<'a> = (PartitionKey, Option<Scope>, LockName, LockState)>,
+    {
+        let lock_key = LockKey::deserialize_from(&mut key)?;
+        let lock_state = LockState::decode(&mut value).map_err(StorageError::BilrostDecode)?;
+        let (partition_key, opt_scope, lock_name) = lock_key.split();
+        consumer
+            .consume((partition_key, opt_scope, lock_name, lock_state))
+            .await
     }
 }
