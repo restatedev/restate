@@ -22,7 +22,8 @@ position at which the partition turned them on.
 The `partition_state` table shows them in the columns `byte_offsets_base_lsn`, `log_byte_offset`
 and `partition_store_byte_offset`, which are NULL while a partition doesn't track byte offsets.
 Partition snapshots record them, as of the snapshot's applied LSN, in the same fields of their
-`metadata.json`. A snapshot's `log_byte_offset` can be compared with a replica's when their
+`metadata.json`, and the snapshot repository's `latest.json` records `byte_offsets_base_lsn` and
+`log_byte_offset` for its latest snapshot and for each one it retains. A snapshot's `log_byte_offset` can be compared with a replica's when their
 `byte_offsets_base_lsn` is the same, for example to estimate how much of the log lies between
 the snapshot and the replica.
 

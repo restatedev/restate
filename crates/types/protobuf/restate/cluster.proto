@@ -116,6 +116,11 @@ message PartitionProcessorStatus {
   optional restate.common.Lsn byte_offsets_base_lsn = 20;
   optional uint64 log_byte_offset = 21;
   optional uint64 partition_store_byte_offset = 22;
+
+  // The log byte offset of the snapshot at last_archived_log_lsn, if it recorded
+  // one, and the LSN it counts from.
+  optional uint64 last_archived_log_byte_offset = 23;
+  optional restate.common.Lsn last_archived_byte_offsets_base_lsn = 24;
 }
 
 message ReplicationProperty { string replication_property = 1; }

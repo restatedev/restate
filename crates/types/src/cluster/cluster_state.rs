@@ -235,6 +235,18 @@ pub struct PartitionProcessorStatus {
     /// Since v1.8.2
     #[bilrost(22)]
     pub partition_store_byte_offset: Option<u64>,
+    /// The log byte offset of the snapshot at [`Self::last_archived_log_lsn`], if it recorded
+    /// one. A replica's log byte offset minus this one, when both count from the same base LSN,
+    /// tells how much of the log lies between the snapshot and the replica.
+    ///
+    /// Since v1.8.2
+    #[bilrost(23)]
+    pub last_archived_log_byte_offset: Option<u64>,
+    /// The LSN that [`Self::last_archived_log_byte_offset`] counts from.
+    ///
+    /// Since v1.8.2
+    #[bilrost(24)]
+    pub last_archived_byte_offsets_base_lsn: Option<Lsn>,
 }
 
 impl PartitionProcessorStatus {
@@ -303,6 +315,8 @@ impl Default for PartitionProcessorStatus {
             byte_offsets_base_lsn: None,
             log_byte_offset: None,
             partition_store_byte_offset: None,
+            last_archived_log_byte_offset: None,
+            last_archived_byte_offsets_base_lsn: None,
         }
     }
 }
