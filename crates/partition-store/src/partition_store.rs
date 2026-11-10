@@ -614,6 +614,11 @@ impl PartitionStore {
             .map_err(|e| StorageError::SnapshotExport(e.into()))?;
 
         let compatibility = self.read_snapshot_compatibility();
+        let position = self
+            .get_fsm_position()
+            .await
+            .map_err(|e| StorageError::SnapshotExport(e.into()))?
+            .filter(FsmPosition::has_byte_offsets);
         // The export holds the capture until RocksDB is done, even if we stop waiting.
         //
         // It runs on the lifecycle pool, next to creating and importing partition stores, rather
@@ -652,6 +657,9 @@ impl PartitionStore {
             min_applied_lsn: applied_lsn,
             key_range: self.db.partition().key_range,
             compatibility,
+            byte_offsets_base_lsn: position.map(|p| p.byte_offsets_base_lsn),
+            log_byte_offset: position.map(|p| p.log_byte_offset),
+            partition_store_byte_offset: position.map(|p| p.partition_store_byte_offset),
         })
     }
 

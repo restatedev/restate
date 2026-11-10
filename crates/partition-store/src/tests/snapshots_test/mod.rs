@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
-use restate_storage_api::fsm_table::{ReadFsmTable, WriteFsmTable};
+use restate_storage_api::fsm_table::{FsmPosition, ReadFsmTable, WriteFsmTable};
 use restate_test_util::tempdir;
 use restate_types::config::Configuration;
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
@@ -26,7 +26,7 @@ use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{GenerationalNodeId, SemanticRestateVersion};
 
-use crate::fsm_table::put_storage_features_json;
+use crate::fsm_table::{put_fsm_position, put_storage_features_json};
 use crate::migrations::MigrationError;
 use crate::snapshots::{
     LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotDir, SnapshotFormatVersion,
@@ -68,9 +68,24 @@ pub(crate) async fn run_tests(
         min_applied_lsn: snapshot.min_applied_lsn,
         db_comparator_name: snapshot.db_comparator_name.clone(),
         compatibility: snapshot.compatibility.clone(),
+        byte_offsets_base_lsn: snapshot.byte_offsets_base_lsn,
+        log_byte_offset: snapshot.log_byte_offset,
+        partition_store_byte_offset: snapshot.partition_store_byte_offset,
         files: snapshot.files.clone(),
     };
     assert!(snapshot.compatibility.is_some());
+    assert_eq!(
+        (
+            snapshot.byte_offsets_base_lsn,
+            snapshot.log_byte_offset,
+            snapshot.partition_store_byte_offset
+        ),
+        (
+            Some(POSITION.byte_offsets_base_lsn),
+            Some(POSITION.log_byte_offset),
+            Some(POSITION.partition_store_byte_offset)
+        )
+    );
     let metadata_json = serde_json::to_string_pretty(&snapshot_meta).unwrap();
 
     drop(partition_store);
@@ -86,6 +101,7 @@ pub(crate) async fn run_tests(
     let snapshot_meta: PartitionSnapshotMetadata = serde_json::from_str(&metadata_json).unwrap();
     assert_eq!(snapshot_meta.compatibility, snapshot.compatibility);
     assert_eq!(snapshot_meta.node_id, Some(GenerationalNodeId::new(1, 1)));
+    assert_eq!(snapshot_meta.log_byte_offset, snapshot.log_byte_offset);
 
     let snapshot = LocalPartitionSnapshot {
         base_dir: SnapshotDir::new(snapshots_dir.path().into()),
@@ -95,6 +111,9 @@ pub(crate) async fn run_tests(
         files: snapshot_meta.files.clone(),
         key_range,
         compatibility: snapshot_meta.compatibility.clone(),
+        byte_offsets_base_lsn: snapshot_meta.byte_offsets_base_lsn,
+        log_byte_offset: snapshot_meta.log_byte_offset,
+        partition_store_byte_offset: snapshot_meta.partition_store_byte_offset,
     };
 
     let mut new_partition_store = manager
@@ -108,9 +127,18 @@ pub(crate) async fn run_tests(
     verify_restored_data(&mut new_partition_store).await;
 }
 
+/// The position of the test data.
+const POSITION: FsmPosition = FsmPosition {
+    applied_lsn: Lsn::new(100),
+    byte_offsets_base_lsn: Lsn::new(50),
+    log_byte_offset: 1000,
+    partition_store_byte_offset: 2000,
+};
+
 async fn insert_test_data(partition: &mut PartitionStore) {
     let mut txn = partition.transaction();
     txn.put_applied_lsn(Lsn::new(100)).unwrap();
+    put_fsm_position(&mut txn, &POSITION).unwrap();
     txn.commit().await.expect("commit succeeds");
 }
 
@@ -119,6 +147,7 @@ async fn verify_restored_data(partition: &mut PartitionStore) {
         Lsn::new(100),
         partition.get_applied_lsn().await.unwrap().unwrap()
     );
+    assert_eq!(partition.get_fsm_position().await.unwrap(), Some(POSITION));
 }
 
 /// While a fence holds, a transaction buffers writes but commits none of them, and refuses a
