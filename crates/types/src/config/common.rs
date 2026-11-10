@@ -1158,8 +1158,8 @@ experimental! {
     ///
     /// When enabled, partitions track how far they have applied their log and written their
     /// partition store in bytes, next to their applied LSN. A partition turns them on when it
-    /// next elects a leader with this option enabled, or a leader running v1.9.0 or newer
-    /// (including development and release-candidate builds), regardless of this option.
+    /// next elects a leader with this option enabled. Leaders running v1.9.0 or newer turn them
+    /// on regardless of this option, once every worker node in the cluster runs v1.9.0 or newer.
     ///
     /// Only enable once all nodes run v1.8.2 or newer. Once a partition has enabled it, it stays
     /// enabled even if this option is removed.
