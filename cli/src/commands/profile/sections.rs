@@ -48,9 +48,12 @@ pub(crate) fn list_profiles(doc: &DocumentMut) -> Vec<String> {
         .collect()
 }
 
-/// `default` and `global` are the config file's shared sections, not profiles.
+/// `default` and `global` are the config file's shared sections, not profiles; names starting
+/// with `__` are kept for the CLI's own (e.g. the profile of the `RESTATE_*` variables).
 pub(crate) fn is_reserved(name: &str) -> bool {
-    name.eq_ignore_ascii_case("global") || name.eq_ignore_ascii_case("default")
+    name.eq_ignore_ascii_case("global")
+        || name.eq_ignore_ascii_case("default")
+        || name.starts_with("__")
 }
 
 pub(crate) fn is_local(name: &str) -> bool {
@@ -61,6 +64,8 @@ pub(crate) fn is_local(name: &str) -> bool {
 pub(crate) fn check_name(name: &str) -> Result<()> {
     let reason = if name.trim().is_empty() {
         "it is empty"
+    } else if name.starts_with("__") {
+        "names starting with `__` are reserved for the CLI"
     } else if is_reserved(name) {
         "it is reserved for the config file's shared settings"
     } else if is_local(name) {
@@ -281,6 +286,11 @@ mod tests {
         for bad in ["global", "Default", "local", " "] {
             assert!(check_name(bad).is_err(), "{bad} should be rejected");
         }
+    }
+
+    #[test]
+    fn check_name_rejects_the_reserved_prefix() {
+        assert!(check_name("__env_vars__").is_err());
     }
 
     #[test]

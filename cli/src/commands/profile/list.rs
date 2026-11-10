@@ -38,7 +38,9 @@ pub async fn run_list(State(env): State<CliEnv>, _opts: &List) -> Result<()> {
     let mut rows = Vec::with_capacity(names.len());
     for name in names {
         let profile = Profile::new(&name);
-        let config = CliEnv::profile_config(&env.config_file, &profile)?;
+        let Some(config) = CliEnv::profile_config(&env.config_file, &profile)? else {
+            continue;
+        };
         let current =
             profile == env.profile && !matches!(env.profile_source, ProfileSource::Variables);
         let (user, account, environment) = cloud_columns(&config);
