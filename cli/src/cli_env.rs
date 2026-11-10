@@ -174,7 +174,6 @@ impl CliEnv {
 
         // The chain: the first level present wins outright, nothing layers. What it shadows
         // is reported in `warnings`, not dropped silently.
-        let adhoc = adhoc_config(os_env)?;
         let adhoc_vars = || {
             ADHOC_VARS
                 .iter()
@@ -197,14 +196,15 @@ impl CliEnv {
             // 1. command line argument
             let config = Self::profile_config(&config_file, profile)?
                 .ok_or_else(|| missing_profile(&config_file, profile, "-p/--profile"))?;
-            if adhoc.is_some() {
+            // The variables aren't used, so they aren't parsed either: only named.
+            let ignored = adhoc_vars();
+            if !ignored.is_empty() {
                 warnings.push(format!(
-                    "Ignoring {}: -p/--profile selects profile \"{profile}\"",
-                    adhoc_vars()
+                    "Ignoring {ignored}: -p/--profile selects profile \"{profile}\""
                 ));
             }
             (profile.clone(), ProfileSource::Argument, config)
-        } else if let Some(config) = adhoc {
+        } else if let Some(config) = adhoc_config(os_env)? {
             // 2. the RESTATE_* variables, a server of their own
             // Not for `local`: the variables stand in for it.
             let shadowed = match &profile_var {
@@ -733,6 +733,13 @@ mod tests {
             cli_env.warnings,
             vec!["Ignoring $RESTATE_AUTH_TOKEN: -p/--profile selects profile \"staging\""]
         );
+    }
+
+    #[test]
+    fn the_profile_flag_doesnt_parse_the_variables_it_ignores() {
+        let (_home, mut os_env) = home_with(STAGING);
+        os_env.insert(ADMIN_URL_ENV, "not a url".into());
+        assert!(CliEnv::load_from_env(&os_env, &with_profile("staging")).is_ok());
     }
 
     #[test]
