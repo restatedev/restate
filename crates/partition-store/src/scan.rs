@@ -8,16 +8,231 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::ControlFlow;
+
 use bytes::{Bytes, BytesMut};
 use rocksdb::ReadOptions;
 
+use restate_core::io::IoExecutor;
+use restate_rocksdb::reads::IteratorVisitor;
+use restate_rocksdb::{IterAction, LeasePolicy};
+use restate_storage_api::scan::{RowConsumer, ScanClosePolicy, ScanOutcome};
+use restate_storage_api::{Result, StorageError};
 use restate_types::sharding::KeyRange;
 
+use crate::keys::EncodeTableKey;
 use crate::keys::{EncodeTableKeyPrefix, KeyEncode, KeyKind};
 use crate::scan::TableScan::{Prefix, RangeInclusive, ScanPartitionKeyRange};
 use crate::{
-    ScanMode, configure_prefix_iterator_opts, configure_range_iterator_opts, convert_to_upper_bound,
+    PartitionStore, ScanMode, configure_prefix_iterator_opts, configure_range_iterator_opts,
+    convert_to_upper_bound,
 };
+
+/// One read of a scan, as a value: a key range or a set of keys, and how to
+/// decode its entries. Tables define these; run them, alone or chained, with
+/// [`PartitionStore::scan`].
+pub trait ScanOp: Send + Sync + 'static {
+    /// What the consumer gets for each row.
+    type Item<'a>: Send;
+    /// Labels the read's metrics.
+    const NAME: &'static str;
+
+    /// What to read.
+    fn plan(&self) -> ScanPlan;
+
+    /// Decodes the entry at `key` and hands it to `consumer`. Rows may borrow
+    /// the key, the value, or what's decoded from them.
+    fn visit<C>(
+        &self,
+        key: &[u8],
+        value: &[u8],
+        consumer: &mut C,
+    ) -> impl Future<Output = Result<ControlFlow<()>>>
+    where
+        C: for<'a> RowConsumer<Item<'a> = Self::Item<'a>>;
+}
+
+/// What a [`ScanOp`] reads.
+pub enum ScanPlan {
+    /// A key range.
+    Range(PhysicalScan<Bytes>),
+    /// A set of keys, looked up with batched multi-gets instead of a scan.
+    Keys(KeySet),
+}
+
+/// Fixed-length keys of one kind, in key order, packed back to back, and how
+/// many to look up per multi-get.
+pub struct KeySet {
+    pub(crate) key_kind: KeyKind,
+    pub(crate) key_len: usize,
+    pub(crate) batch_size: usize,
+    pub(crate) keys: Bytes,
+}
+
+impl ScanPlan {
+    /// A plan to read `scan`.
+    #[allow(dead_code)]
+    pub(crate) fn range<K: EncodeTableKeyPrefix>(scan: TableScan<K>) -> Self {
+        Self::Range(scan.into())
+    }
+
+    /// A plan to look up `keys`, `batch_size` at a time. They must be in key
+    /// order and all have the fixed length `key_len`.
+    // The table scans in the next commit use this.
+    #[allow(dead_code)]
+    pub(crate) fn keys<K: EncodeTableKey>(
+        key_len: usize,
+        batch_size: usize,
+        keys: impl ExactSizeIterator<Item = K>,
+    ) -> Self {
+        let mut buf = BytesMut::with_capacity(keys.len() * key_len);
+        for key in keys {
+            key.serialize_to(&mut buf);
+        }
+        debug_assert_eq!(
+            buf.len() % key_len.max(1),
+            0,
+            "keys must have length {key_len}"
+        );
+        debug_assert!(
+            buf.chunks_exact(key_len.max(1)).is_sorted(),
+            "keys must be in key order"
+        );
+        Self::Keys(KeySet {
+            key_kind: K::KEY_KIND,
+            key_len,
+            batch_size,
+            keys: buf.freeze(),
+        })
+    }
+}
+
+/// Something [`PartitionStore::scan`] can run: a single [`ScanOp`], or several
+/// chained one after the other ([`Chain`], or a `Vec` of ops).
+pub trait ScanSequence: Send + Sync + 'static {
+    /// What the consumer gets for each row.
+    type Item<'a>: Send;
+
+    /// Runs the scan on `executor`, handing its rows to `consumer`, with
+    /// `close_policy` deciding what closing the partition does to it.
+    fn run<'s, C>(
+        self,
+        store: &'s PartitionStore,
+        executor: &'s (impl IoExecutor + Sync),
+        close_policy: ScanClosePolicy,
+        consumer: C,
+    ) -> impl Future<Output = Result<ScanOutcome<C>>> + Send + 's
+    where
+        C: for<'a> RowConsumer<Item<'a> = Self::Item<'a>>;
+
+    /// Runs this scan, then hands the consumer to `next`, unless this scan
+    /// stopped it.
+    fn chain<N>(self, next: N) -> Chain<Self, N>
+    where
+        Self: Sized,
+        N: for<'a> ScanSequence<Item<'a> = Self::Item<'a>>,
+    {
+        Chain(self, next)
+    }
+}
+
+impl<O: ScanOp> ScanSequence for O {
+    type Item<'a> = O::Item<'a>;
+
+    fn run<'s, C>(
+        self,
+        store: &'s PartitionStore,
+        executor: &'s (impl IoExecutor + Sync),
+        close_policy: ScanClosePolicy,
+        consumer: C,
+    ) -> impl Future<Output = Result<ScanOutcome<C>>> + Send + 's
+    where
+        C: for<'a> RowConsumer<Item<'a> = Self::Item<'a>>,
+    {
+        store.run_scan_op(executor, self, close_policy, consumer)
+    }
+}
+
+/// Runs `A`, then hands the consumer to `B`, unless `A` stopped it.
+pub struct Chain<A, B>(pub A, pub B);
+
+impl<A, B> ScanSequence for Chain<A, B>
+where
+    A: ScanSequence,
+    B: for<'a> ScanSequence<Item<'a> = A::Item<'a>>,
+{
+    type Item<'a> = A::Item<'a>;
+
+    fn run<'s, C>(
+        self,
+        store: &'s PartitionStore,
+        executor: &'s (impl IoExecutor + Sync),
+        close_policy: ScanClosePolicy,
+        consumer: C,
+    ) -> impl Future<Output = Result<ScanOutcome<C>>> + Send + 's
+    where
+        C: for<'a> RowConsumer<Item<'a> = Self::Item<'a>>,
+    {
+        let Chain(first, second) = self;
+        async move {
+            match first.run(store, executor, close_policy, consumer).await? {
+                ScanOutcome::Exhausted(consumer) => {
+                    second.run(store, executor, close_policy, consumer).await
+                }
+                stopped @ ScanOutcome::Stopped(_) => Ok(stopped),
+            }
+        }
+    }
+}
+
+/// Runs the scan if there is one. Lets a scan leave out a read with nothing to
+/// read, e.g. a legacy table that was migrated away.
+impl<S: ScanSequence> ScanSequence for Option<S> {
+    type Item<'a> = S::Item<'a>;
+
+    async fn run<'s, C>(
+        self,
+        store: &'s PartitionStore,
+        executor: &'s (impl IoExecutor + Sync),
+        close_policy: ScanClosePolicy,
+        consumer: C,
+    ) -> Result<ScanOutcome<C>>
+    where
+        C: for<'a> RowConsumer<Item<'a> = Self::Item<'a>>,
+    {
+        match self {
+            Some(scan) => scan.run(store, executor, close_policy, consumer).await,
+            None => Ok(ScanOutcome::Exhausted(consumer)),
+        }
+    }
+}
+
+/// Runs the ops one after the other, handing the consumer along.
+impl<O: ScanOp> ScanSequence for Vec<O> {
+    type Item<'a> = O::Item<'a>;
+
+    async fn run<'s, C>(
+        self,
+        store: &'s PartitionStore,
+        executor: &'s (impl IoExecutor + Sync),
+        close_policy: ScanClosePolicy,
+        mut consumer: C,
+    ) -> Result<ScanOutcome<C>>
+    where
+        C: for<'a> RowConsumer<Item<'a> = Self::Item<'a>>,
+    {
+        for op in self {
+            match store
+                .run_scan_op(executor, op, close_policy, consumer)
+                .await?
+            {
+                ScanOutcome::Exhausted(c) => consumer = c,
+                stopped @ ScanOutcome::Stopped(_) => return Ok(stopped),
+            }
+        }
+        Ok(ScanOutcome::Exhausted(consumer))
+    }
+}
 
 #[derive(Debug)]
 pub enum TableScan<K> {
@@ -146,6 +361,35 @@ impl<K: EncodeTableKeyPrefix> From<TableScan<K>> for PhysicalScan<Bytes> {
     fn from(scan: TableScan<K>) -> Self {
         let mut arena = BytesMut::new();
         scan.encode(&mut arena)
+    }
+}
+
+/// The lease policy that implements a scan's close policy.
+pub(crate) fn lease_policy(close_policy: ScanClosePolicy) -> LeasePolicy {
+    match close_policy {
+        ScanClosePolicy::CancelOnClose => LeasePolicy::StopOnSeal,
+        ScanClosePolicy::FinishBeforeClose => LeasePolicy::WholeOperation,
+    }
+}
+
+/// Decodes the physical rows of `op` for its typed row consumer.
+pub(crate) struct DecodingVisitor<O, C> {
+    pub op: O,
+    pub consumer: C,
+}
+
+impl<O, C> IteratorVisitor for DecodingVisitor<O, C>
+where
+    O: ScanOp,
+    C: for<'a> RowConsumer<Item<'a> = O::Item<'a>>,
+{
+    type Error = StorageError;
+
+    async fn visit(&mut self, key: &[u8], value: &[u8]) -> Result<IterAction> {
+        Ok(match self.op.visit(key, value, &mut self.consumer).await? {
+            ControlFlow::Continue(()) => IterAction::Next,
+            ControlFlow::Break(()) => IterAction::Stop,
+        })
     }
 }
 

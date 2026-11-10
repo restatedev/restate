@@ -927,8 +927,11 @@ impl Worker {
     }
 }
 
-// Lets the pool run its tasks before the worker loop continues.
-pub(crate) async fn yield_now() {
+/// Lets a storage pool's other tasks run before the calling task continues.
+/// Long-running work that may never suspend otherwise should call it now and
+/// then: it also gives a [`LeasePolicy::StopOnSeal`] operation the chance to
+/// notice that its gate was sealed.
+pub async fn yield_now() {
     let mut yielded = false;
     std::future::poll_fn(|cx| {
         if std::mem::replace(&mut yielded, true) {

@@ -39,6 +39,7 @@ mod locks_table_test;
 mod outbox_table_test;
 mod promise_table_test;
 mod read_snapshot_test;
+mod scan_test;
 mod snapshots_test;
 mod state_table_test;
 mod timer_table_test;

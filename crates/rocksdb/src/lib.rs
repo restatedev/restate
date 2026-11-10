@@ -50,7 +50,7 @@ use restate_util_lifecycle::Scope;
 // re-exports
 pub use self::background::{
     Async, GlobalExecutor, Guarded, LeasePolicy, Mapped, MappedOk, OpContext, OpFn, Priority,
-    ReadPerf, Sealable, SinglePoolExecutor, StorageOp, StorageTaskKind, SyncOpFn,
+    ReadPerf, Sealable, SinglePoolExecutor, StorageOp, StorageTaskKind, SyncOpFn, yield_now,
 };
 pub use self::cf_handles::CfHandles;
 pub use self::db_env::DbEnv;
@@ -450,7 +450,7 @@ impl RocksDb {
                         write.run(name)
                     })?
                     .await
-                    .map_err(|_| RocksError::Shutdown(ShutdownError))?
+                    .map_err(RocksError::from)?
                     .map_err(|e| e.into());
             }
             IoMode::OnlyIfNonBlocking => {
@@ -509,7 +509,7 @@ impl RocksDb {
                         write.run(name)
                     })?
                     .await
-                    .map_err(|_| RocksError::Shutdown(ShutdownError))?
+                    .map_err(RocksError::from)?
                     .map_err(|e| e.into())
             }
             Err(e) => {

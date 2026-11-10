@@ -34,7 +34,7 @@ use strum::EnumCount;
 use tracing::error;
 
 use restate_core::io::IoExecutor;
-use restate_rocksdb::{CfName, Priority, RocksDbReadPerfGuard, StorageTaskKind};
+use restate_rocksdb::{CfName, LeasePolicy, Priority, RocksDbReadPerfGuard, StorageTaskKind};
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::filters::{ScanEntryIdFilter, ScanMetaFilter};
 use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef};
@@ -643,7 +643,8 @@ where
         let read = rocksdb.prepare_read(
             "df-vqueue-meta",
             StorageTaskKind::MultiGet,
-            move |raw_db, cfs| -> Result<()> {
+            LeasePolicy::WholeOperation,
+            async move |raw_db, cfs| -> Result<()> {
                 let cf = cfs.get(<MetaKey as EncodeTableKey>::KEY_KIND);
 
                 let batch_capacity = ids.len().min(VQUEUE_META_MULTI_GET_BATCH_SIZE);
@@ -708,6 +709,7 @@ where
             .spawn(read)
             .map_err(|_| StorageError::OperationalError)?
             .await
+            .map_err(|_| StorageError::OperationalError)?
             .map_err(|_| StorageError::OperationalError)?
     }
 }
@@ -785,7 +787,8 @@ where
         let read = rocksdb.prepare_read(
             "df-vqueue-entry-status",
             StorageTaskKind::MultiGet,
-            move |raw_db, cfs| -> Result<()> {
+            LeasePolicy::WholeOperation,
+            async move |raw_db, cfs| -> Result<()> {
                 let cf = cfs.get(<EntryStatusKey as EncodeTableKey>::KEY_KIND);
 
                 let batch_capacity = ids.len().min(ENTRY_STATUS_MULTI_GET_BATCH_SIZE);
@@ -852,6 +855,7 @@ where
             .spawn(read)
             .map_err(|_| StorageError::OperationalError)?
             .await
+            .map_err(|_| StorageError::OperationalError)?
             .map_err(|_| StorageError::OperationalError)?
     }
 }
