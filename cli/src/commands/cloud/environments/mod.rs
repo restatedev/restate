@@ -17,9 +17,29 @@ use crate::cli_env::CliEnv;
 #[derive(Run, Subcommand, Clone)]
 #[clap(visible_alias = "env", alias = "environment")]
 pub enum Environments {
+    /// Deprecated: run `restate cloud login`, it imports all your Cloud environments as profiles
+    #[command(hide = true)]
+    Configure(DeprecatedConfigure),
     /// Deprecated: use `restate cloud tunnel`
     #[command(hide = true)]
     Tunnel(DeprecatedTunnel),
+}
+
+/// Deprecated: run `restate cloud login`, it imports all your Cloud environments as profiles
+#[derive(Run, Parser, Collect, Clone)]
+#[cling(run = "run_configure")]
+pub struct DeprecatedConfigure {
+    /// Accepted so that existing invocations still parse, and ignored
+    #[arg(hide = true)]
+    _environment: Option<String>,
+}
+
+async fn run_configure() -> Result<()> {
+    restate_cli_util::c_warn!(
+        "`restate cloud env configure` no longer does anything: run `restate cloud login` again, \
+         it imports all your Cloud environments as profiles"
+    );
+    Ok(())
 }
 
 /// Deprecated: use `restate cloud tunnel`
