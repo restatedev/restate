@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::pin::pin;
@@ -73,8 +74,8 @@ fn spec(path: &Path) -> DbSpec {
 /// away, on the dropping thread.
 fn standalone(path: &Path) -> anyhow::Result<Arc<RocksDb>> {
     let executor = GlobalExecutor::new(
-        crate::SinglePoolExecutor::new("test-high", 1),
-        crate::SinglePoolExecutor::new("test-low", 1),
+        crate::SinglePoolExecutor::new("test-high", NonZeroUsize::MIN),
+        crate::SinglePoolExecutor::new("test-low", NonZeroUsize::MIN),
     );
     let native = RocksAccess::open_db(spec(path), DbEnv::default())?;
     Ok(Arc::new(RocksDb::new(native, executor)))

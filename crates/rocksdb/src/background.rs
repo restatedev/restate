@@ -8,10 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
+use std::task::Poll;
 use std::time::Instant;
 
+use futures::FutureExt;
+use futures::executor::{LocalPool, LocalSpawner};
+use futures::task::{LocalFutureObj, LocalSpawn};
 use metrics::{Gauge, gauge, histogram};
+use tracing::Instrument;
 
 use restate_core::io::{AdmissionClosed, Gate, IoExecutor, IoOp, IoTask, TrackedTask};
 
@@ -573,24 +580,43 @@ pub struct SinglePoolExecutor(Arc<SinglePoolExecutorInner>);
 
 struct SinglePoolExecutorInner {
     name: &'static str,
-    pool: threadpool::ThreadPool,
+    // Every worker takes tasks from this queue (see `Worker::run`).
+    queue: async_channel::Sender<QueuedTask>,
+    num_threads: NonZeroUsize,
 }
 
 impl SinglePoolExecutor {
     /// Starts a pool of `num_threads` threads. `name` names the threads, and
     /// labels the metrics of the tasks that run on them.
-    pub fn new(name: &'static str, num_threads: usize) -> Self {
-        let pool = threadpool::Builder::new()
-            .thread_name(name.to_owned())
-            .num_threads(num_threads)
-            .build();
-
-        Self(Arc::new(SinglePoolExecutorInner { name, pool }))
+    pub fn new(name: &'static str, num_threads: NonZeroUsize) -> Self {
+        let (queue, tasks) = async_channel::unbounded();
+        for _ in 0..num_threads.get() {
+            Worker::start(name, tasks.clone());
+        }
+        Self(Arc::new(SinglePoolExecutorInner {
+            name,
+            queue,
+            num_threads,
+        }))
     }
 
-    #[cfg(any(test, feature = "test-util"))]
+    /// The number of threads, and so of tasks that can run at once.
     pub fn max_count(&self) -> usize {
-        self.0.pool.max_count()
+        self.0.num_threads.get()
+    }
+
+    // `task` builds the future on the worker that runs it, so the future need not
+    // be `Send`.
+    fn spawn<F: Future<Output = ()> + 'static>(&self, task: impl FnOnce() -> F + Send + 'static) {
+        self.0
+            .queue
+            .try_send(Box::new(move || {
+                // Unlike tokio, `LocalPool` doesn't contain a task's panic, which would
+                // otherwise end the worker. The panic was already reported by the hook.
+                let task = AssertUnwindSafe(task()).catch_unwind().map(drop);
+                LocalFutureObj::new(Box::new(task))
+            }))
+            .expect("storage workers outlive the pool's handles");
     }
 }
 
@@ -607,23 +633,89 @@ impl IoExecutor for SinglePoolExecutor {
         // task runs, is skipped, or is dropped from the queue.
         let task = TrackedTask::new(task, in_flight);
         let span = tracing::Span::current();
-        self.0.pool.execute(move || {
+        self.spawn(move || async move {
             // A task that is no longer wanted is dropped without being measured:
             // it didn't run.
             if !task.is_wanted() {
                 return;
             }
             // Run inside the submitter's span, which tells where the work came from.
-            span.in_scope(|| {
+            async move {
                 histogram!(STORAGE_BG_TASK_WAIT_DURATION, &labels).record(submitted_at.elapsed());
-                let _span = tracing::debug_span!("storage-task", operation).entered();
-                let started_at = Instant::now();
-                // Each worker runs one task at a time, to completion.
-                futures::executor::block_on(task.run());
-                histogram!(STORAGE_BG_TASK_RUN_DURATION, &labels).record(started_at.elapsed());
-            });
+                async move {
+                    let started_at = Instant::now();
+                    task.run().await;
+                    histogram!(STORAGE_BG_TASK_RUN_DURATION, &labels).record(started_at.elapsed());
+                }
+                .instrument(tracing::debug_span!("storage-task", operation))
+                .await;
+            }
+            .instrument(span)
+            .await;
         });
         Ok(())
+    }
+}
+
+type QueuedTask = Box<dyn FnOnce() -> LocalFutureObj<'static, ()> + Send>;
+
+struct Worker {
+    spawner: LocalSpawner,
+    queue: async_channel::Receiver<QueuedTask>,
+}
+
+impl Worker {
+    // Runs tasks on a thread's own `LocalPool`, so they need not be `Send`. The
+    // thread exits once all senders are dropped and the queued tasks are done.
+    //
+    // The worker deliberately doesn't run a tokio runtime. Most tasks are blocking
+    // work that may call tokio's `blocking_*` methods (or drop values that do),
+    // which panic on a thread driving a runtime. In turn, tasks can't use tokio's
+    // timers, IO or `tokio::spawn`.
+    fn start(name: &'static str, queue: async_channel::Receiver<QueuedTask>) {
+        std::thread::Builder::new()
+            .name(name.to_owned())
+            .spawn(move || {
+                let mut pool = LocalPool::new();
+                let worker = Self {
+                    spawner: pool.spawner(),
+                    queue,
+                };
+                pool.run_until(worker.run());
+                // Finish the tasks that are still running.
+                pool.run();
+            })
+            .expect("storage worker thread starts");
+    }
+
+    async fn run(self) {
+        while let Ok(task) = self.queue.recv().await {
+            self.spawn(task);
+            // Takes one task at a time, and the next only after this one has
+            // finished or is suspended. A worker blocked in a task leaves the
+            // queue to the others instead of holding tasks back behind it.
+            Self::yield_now().await;
+        }
+    }
+
+    fn spawn(&self, task: QueuedTask) {
+        self.spawner
+            .spawn_local_obj(task())
+            .expect("the pool outlives its worker loop");
+    }
+
+    // Lets the pool run its tasks before the worker loop continues.
+    async fn yield_now() {
+        let mut yielded = false;
+        std::future::poll_fn(|cx| {
+            if std::mem::replace(&mut yielded, true) {
+                Poll::Ready(())
+            } else {
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        })
+        .await
     }
 }
 
@@ -660,8 +752,8 @@ impl GlobalExecutor {
     /// Creates the two pools with the configured numbers of threads.
     pub fn from_options(opts: &restate_types::config::CommonOptions) -> Self {
         Self::new(
-            SinglePoolExecutor::new("rs:io-hi", opts.storage_high_priority_bg_threads().into()),
-            SinglePoolExecutor::new("rs:io-lo", opts.storage_low_priority_bg_threads().into()),
+            SinglePoolExecutor::new("rs:io-hi", opts.storage_high_priority_bg_threads()),
+            SinglePoolExecutor::new("rs:io-lo", opts.storage_low_priority_bg_threads()),
         )
     }
 
@@ -783,8 +875,8 @@ mod tests {
     #[tokio::test]
     async fn global_executor_routes_work_to_its_pools_and_outlives_owner_admission() {
         let backend = GlobalExecutor::new(
-            SinglePoolExecutor::new("test-high", 1),
-            SinglePoolExecutor::new("test-low", 1),
+            SinglePoolExecutor::new("test-high", NonZeroUsize::MIN),
+            SinglePoolExecutor::new("test-low", NonZeroUsize::MIN),
         );
         let gate = Arc::new(Gate::default());
         let high_pri = TrackedExecutor::new(backend.high_pri(), &gate);

@@ -39,6 +39,7 @@ impl RocksDb {
 #[cfg(test)]
 mod tests {
     use std::future::Future;
+    use std::num::NonZeroUsize;
     use std::pin::pin;
     use std::sync::Arc;
     use std::task::{Context, Waker};
@@ -85,8 +86,8 @@ mod tests {
         .add_cf_pattern(CfPrefixPattern::ANY, Configurator)
         .build()?;
         let executor = GlobalExecutor::new(
-            crate::SinglePoolExecutor::new("test-high", 1),
-            crate::SinglePoolExecutor::new("test-low", 1),
+            crate::SinglePoolExecutor::new("test-high", NonZeroUsize::MIN),
+            crate::SinglePoolExecutor::new("test-low", NonZeroUsize::MIN),
         );
         let db = Arc::new(RocksDb::new(
             RocksAccess::open_db(spec, DbEnv::default())?,
