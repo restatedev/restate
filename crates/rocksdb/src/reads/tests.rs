@@ -31,10 +31,10 @@ use super::{ColumnFamilies, PinnedBatch, ReadIterator, ReadSnapshot, ScopedReads
 use crate::configuration::{
     CfConfigurator, DbConfigurator, create_default_cf_options, create_default_db_options,
 };
-use crate::reads::{IterationError, IterationOutcome, LeasePolicy};
+use crate::reads::IterationOutcome;
 use crate::{
     CfHandles, CfName, CfPrefixPattern, DbEnv, DbName, DbSpec, DbSpecBuilder, GlobalExecutor,
-    IterAction, RocksAccess, RocksDb, RocksDbManager, RocksError, StorageTaskKind,
+    IterAction, LeasePolicy, RocksAccess, RocksDb, RocksDbManager, RocksError, StorageTaskKind,
 };
 
 const DEADLINE: Duration = Duration::from_secs(10);
@@ -650,7 +650,6 @@ async fn prepared_iteration() -> anyhow::Result<()> {
     let iteration = iterator
         .prepare_iteration(
             &gate,
-            LeasePolicy::WholeIteration,
             Some(IterAction::Seek(bytes::Bytes::from_static(&[0]))),
             async move |key: &[u8], value: &[u8]| -> Result<IterAction, RocksError> {
                 match tx
@@ -739,7 +738,6 @@ async fn prepared_iteration_ends_early_on_panic_cancellation_or_seal() -> anyhow
         .owned_iterator(Cf::Data, ReadOptions::default())
         .prepare_iteration(
             &gate,
-            LeasePolicy::StopOnSeal,
             Some(IterAction::SeekToFirst),
             async |key: &[u8], _value: &[u8]| -> Result<IterAction, RocksError> {
                 assert_ne!(key, [5], "callback panic");
@@ -762,7 +760,6 @@ async fn prepared_iteration_ends_early_on_panic_cancellation_or_seal() -> anyhow
         .owned_iterator(Cf::Data, ReadOptions::default())
         .prepare_iteration(
             &iteration_gate,
-            LeasePolicy::WholeIteration,
             Some(IterAction::SeekToFirst),
             send_keys(tx),
         );
@@ -776,18 +773,14 @@ async fn prepared_iteration_ends_early_on_panic_cancellation_or_seal() -> anyhow
     }
     assert_eq!(received, 10);
 
-    // Sealing the gate while the callback waits for room ends the iteration
-    // once the callback is done, with `ScopeClosed`. Waiting holds no
-    // lease, so the gate drains meanwhile.
+    // With `StopOnSeal`, sealing the gate while the callback waits for room
+    // ends the iteration right away, with `AdmissionClosed`, without waiting
+    // for the callback. The gate drains once the iteration is dropped.
     let (tx, mut rx) = tokio::sync::mpsc::channel(10);
     let iteration = scope
         .owned_iterator(Cf::Data, ReadOptions::default())
-        .prepare_iteration(
-            &gate,
-            LeasePolicy::StopOnSeal,
-            Some(IterAction::SeekToFirst),
-            send_keys(tx),
-        );
+        .prepare_iteration(&gate, Some(IterAction::SeekToFirst), send_keys(tx))
+        .with_lease_policy(LeasePolicy::StopOnSeal);
     let driver = executor.spawn(iteration)?;
     wait_until_full(&rx).await;
     gate.seal();
@@ -795,16 +788,16 @@ async fn prepared_iteration_ends_early_on_panic_cancellation_or_seal() -> anyhow
     assert_eq!(rx.recv().await, Some(vec![0]));
     assert_matches!(
         timeout(DEADLINE, driver).await?.map(|r| r.map(drop)),
-        Ok(Err(IterationError::ScopeClosed(AdmissionClosed)))
+        Ok(Err(AdmissionClosed))
     );
 
-    // The item the callback was waiting to send still arrives, and nothing
-    // after it.
+    // The callback's pending send was dropped: only the items sent before
+    // the seal arrive.
     let mut received = 1;
     while rx.recv().await.is_some() {
         received += 1;
     }
-    assert_eq!(received, 11);
+    assert_eq!(received, 10);
 
     Ok(())
 }

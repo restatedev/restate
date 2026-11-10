@@ -49,8 +49,8 @@ use restate_util_lifecycle::Scope;
 
 // re-exports
 pub use self::background::{
-    Async, GlobalExecutor, Guarded, Mapped, MappedOk, OpContext, OpFn, Priority, ReadPerf,
-    SinglePoolExecutor, StorageOp, StorageTaskKind, SyncOpFn,
+    Async, GlobalExecutor, Guarded, LeasePolicy, Mapped, MappedOk, OpContext, OpFn, Priority,
+    ReadPerf, Sealable, SinglePoolExecutor, StorageOp, StorageTaskKind, SyncOpFn,
 };
 pub use self::cf_handles::CfHandles;
 pub use self::db_env::DbEnv;
@@ -607,14 +607,16 @@ impl RocksDb {
     /// each item to `visitor` (see [`ReadIterator::prepare_iteration`](reads::ReadIterator::prepare_iteration)).
     /// Submit it to one of the database's pools, e.g. `executor().low_pri()`.
     /// `options` sets the iterator's first move and what sealing `gate` does
-    /// (see [`reads::LeasePolicy`]), and `name` labels its read perf metrics.
+    /// (see [`LeasePolicy`]), and `name` labels its read perf metrics.
     ///
     /// # Errors
     /// Fails with [`AdmissionClosed`] if `gate` is sealed. The iterator is
     /// created under a lease, so it's never created once the gate is sealed.
-    /// Submission can separately return [`AdmissionClosed`] if the gate or pool
-    /// closes before it accepts the operation. After acceptance, the operation
-    /// returns [`reads::IterationError::ScopeClosed`] if a read slice is rejected,
+    /// Submission can separately return [`AdmissionClosed`] if the pool, or with
+    /// [`LeasePolicy::WholeOperation`] the gate, closes before it accepts the
+    /// operation. After acceptance, the operation
+    /// returns `Err(AdmissionClosed)` if [`LeasePolicy::StopOnSeal`] stopped it.
+    /// Otherwise it returns the iteration's result:
     /// [`reads::IterationError::RocksDb`] for a read error, or
     /// [`reads::IterationError::Visitor`] for a visitor error. The executor can
     /// also return [`IoTaskError`](restate_core::io::IoTaskError) if accepted work
@@ -632,7 +634,10 @@ impl RocksDb {
         name: &'static str,
         mut read_options: rocksdb::ReadOptions,
         visitor: V,
-    ) -> Result<StorageOp<'g, OwnedReadIterator<Scope<C>>, ReadPerf<Iteration<V>>>, AdmissionClosed>
+    ) -> Result<
+        StorageOp<'g, OwnedReadIterator<Scope<C>>, ReadPerf<Sealable<Iteration<V>>>>,
+        AdmissionClosed,
+    >
     where
         C: ColumnFamilies,
         V: IteratorVisitor,
@@ -641,19 +646,15 @@ impl RocksDb {
             gate.is_inside(scope.gate()),
             "the gate isn't inside the scope"
         );
-        // Covers creating the iterator. The operation takes its own lease once
-        // it's submitted.
+        // Covers creating the iterator. The operation takes its own lease when
+        // it's submitted, or with `StopOnSeal` when it starts.
         let _admission = gate.try_acquire().ok_or(AdmissionClosed)?;
         // The iteration runs on the storage pool, where blocking IO is fine.
         read_options.set_read_tier(rocksdb::ReadTier::All);
         Ok(scope
             .owned_iterator(cf, read_options)
-            .prepare_iteration(
-                gate,
-                options.lease_policy,
-                Some(options.initial_action),
-                visitor,
-            )
+            .prepare_iteration(gate, Some(options.initial_action), visitor)
+            .with_lease_policy(options.lease_policy)
             .with_read_perf(name))
     }
 
