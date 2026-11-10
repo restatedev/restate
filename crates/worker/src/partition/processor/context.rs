@@ -14,8 +14,9 @@ use metrics::gauge;
 use tokio::sync::watch;
 use tracing::info;
 
-use restate_partition_store::PartitionStore;
-use restate_storage_api::fsm_table::WriteFsmTable;
+use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
+use restate_storage_api::StorageError;
+use restate_storage_api::fsm_table::FsmPosition;
 use restate_types::cluster::cluster_state::PartitionProcessorStatus;
 use restate_types::identifiers::LeaderEpoch;
 use restate_types::logs::{LogId, Lsn};
@@ -176,12 +177,15 @@ impl ProcessorRawContext {
         };
     }
 
-    pub fn update_last_applied_lsn<S: WriteFsmTable>(
+    /// Advances the applied LSN to `lsn`, the last LSN of the record or gap the processor has
+    /// applied or skipped, of `record_bytes` as the log stores it.
+    pub fn update_last_applied_lsn(
         &mut self,
-        txn: &mut S,
+        txn: &mut PartitionStoreTransaction<'_>,
         lsn: Lsn,
+        record_bytes: u64,
     ) -> Result<(), ProcessorError> {
-        self.fsm_cache.set_last_applied_lsn(txn, lsn);
+        self.fsm_cache.set_last_applied_lsn(txn, lsn, record_bytes);
         if self.status.update_last_applied_lsn(lsn) {
             info!(
                 "Partition {} caught up in {}!",
@@ -194,6 +198,20 @@ impl ProcessorRawContext {
 
     pub fn subscribe_to_last_applied_lsn(&self) -> watch::Receiver<Lsn> {
         self.fsm_cache.subscribe_to_last_applied_lsn()
+    }
+
+    /// The partition's position as loaded at start, for the processor's transaction.
+    pub fn fsm_position(&self) -> FsmPosition {
+        self.fsm_cache.fsm_position()
+    }
+
+    /// Turns byte offsets on at the record at `lsn`, which applies the feature.
+    pub fn start_byte_offsets(
+        &mut self,
+        txn: &mut PartitionStoreTransaction<'_>,
+        lsn: Lsn,
+    ) -> Result<(), StorageError> {
+        txn.start_byte_offsets(lsn)
     }
 }
 

@@ -1154,6 +1154,20 @@ experimental! {
     /// Since v1.8.1
     preflight_signal_recording,
 
+    /// # Track the byte offsets of partitions
+    ///
+    /// When enabled, partitions track how far they have applied their log in bytes, next to
+    /// their applied LSN. A partition turns them on when one of its leaders that has this option
+    /// is next elected.
+    ///
+    /// Only enable once all nodes run v1.8.2 or newer. Once a partition has enabled it, it stays
+    /// enabled even if this option is removed.
+    ///
+    /// Once enabled, you **cannot** roll back to a Restate-server version older than v1.8.2.
+    ///
+    /// Since v1.8.2
+    byte_offsets,
+
     /// # Remove orphaned active VQueue markers on startup
     ///
     /// Escape hatch for partitions that fail to start because an active vqueue has no

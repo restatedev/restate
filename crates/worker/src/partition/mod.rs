@@ -67,7 +67,7 @@ use restate_tracing::warn_ratelimited;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::LeaderEpoch;
-use restate_types::logs::{self, Lsn, RecordDecodeError, SequenceNumber};
+use restate_types::logs::{self, Lsn, Record, RecordDecodeError, SequenceNumber};
 use restate_types::net::RpcRequest;
 use restate_types::net::ingest::{
     self, DedupSequenceNrQueryRequest, DedupSequenceNrQueryResponse, ReceivedIngestRequest,
@@ -587,6 +587,7 @@ where
 
         let mut cloned_partition_store = self.partition_store.clone();
         let mut txn = cloned_partition_store.transaction();
+        txn.set_fsm_position(self.ctx.fsm_position());
         let partition_id = self.ctx.partition_id().into();
 
         // Migrations and local storage features have been enabled prior to this point.
@@ -672,6 +673,26 @@ where
                     let mut next_entry = Some(first);
                     while let Some(entry) = next_entry.take() {
                         count += 1;
+                        // The log byte offset counts every record that reaches the processor,
+                        // also the ones it skips as duplicates, so that it only depends on the log.
+                        let record_bytes = match entry.as_record().map(Record::encoded_body_size) {
+                            Some(Some(size)) => size as u64,
+                            Some(None) => {
+                                // Appenders encode every record before appending it, so every
+                                // replica knows its size, also when it reads the record from its
+                                // node's record cache. One without would count differently.
+                                debug_assert!(false, "a record read from the log has no size");
+                                warn_ratelimited!(
+                                    10,
+                                    Duration::from_mins(1),
+                                    partition_id = u32::from(self.ctx.partition_id()),
+                                    "A record read from the log has no known size; the log byte \
+                                     offset doesn't count it",
+                                );
+                                0
+                            }
+                            None => 0,
+                        };
                         match self.apply_log_entry(
                             entry,
                             &mut txn,
@@ -681,14 +702,14 @@ where
                         .await? {
                             NextStep::AdvanceLastAppliedLsn { lsn, ref dedup, scope } => {
                                 self.ctx.dedup_mut().store_dedup_information(&mut txn, dedup)?;
-                                self.ctx.update_last_applied_lsn(&mut txn, lsn)?;
+                                self.ctx.update_last_applied_lsn(&mut txn, lsn, record_bytes)?;
                                 if matches!(scope, CommandScope::PartitionScoped) {
                                     // Update the status to ensure changes are observable
                                     self.refresh_status(&mut durable_lsn_watch)?;
                                 }
                             },
                             NextStep::SkipUntil(lsn) => {
-                                self.ctx.update_last_applied_lsn(&mut txn, lsn)?;
+                                self.ctx.update_last_applied_lsn(&mut txn, lsn, record_bytes)?;
                             }
                         }
 

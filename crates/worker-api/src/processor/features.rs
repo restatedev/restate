@@ -65,6 +65,13 @@ pub trait PartitionFeatures {
     fn is_preflight_signal_recording_enabled(&self) -> bool {
         self.has_feature(PartitionFeatureChange::EnablePreflightSignalRecording)
     }
+
+    /// Whether the partition tracks how far it has applied its log in bytes.
+    ///
+    /// *Since v1.8.2*
+    fn is_byte_offsets_enabled(&self) -> bool {
+        self.has_feature(PartitionFeatureChange::EnableByteOffsets)
+    }
 }
 
 impl PartitionFeatures for PersistedFeatures {
@@ -84,6 +91,7 @@ impl PartitionFeatures for PersistedFeatures {
             PartitionFeatureChange::EnablePreflightSignalRecording => {
                 self.preflight_signal_recording
             }
+            PartitionFeatureChange::EnableByteOffsets => self.byte_offsets,
         }
     }
 

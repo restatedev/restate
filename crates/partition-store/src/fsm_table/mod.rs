@@ -8,15 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use tracing::warn;
+
 use restate_limiter::RuleBook;
 use restate_storage_api::fsm_table::{
-    CachedEpochMetadata, PartitionDurability, ReadFsmTable, SequenceNumber, WriteFsmTable,
+    CachedEpochMetadata, FsmPosition, PartitionDurability, ReadFsmTable, SequenceNumber,
+    WriteFsmTable,
 };
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use restate_storage_api::{Result, StorageError};
 use restate_types::SemanticRestateVersion;
 use restate_types::identifiers::PartitionId;
-use restate_types::logs::Lsn;
+use restate_types::logs::{Lsn, SequenceNumber as _};
 use restate_types::message::MessageIndex;
 use restate_types::partitions::StorageVersion;
 use restate_types::partitions::features::PersistedFeatures;
@@ -70,6 +73,8 @@ pub(crate) mod fsm_variable {
     pub(crate) const INBOX_SEQ_NUMBER: u64 = 0;
     pub(crate) const OUTBOX_SEQ_NUMBER: u64 = 1;
 
+    /// The partition's applied LSN while it doesn't track byte offsets. The commit that turns
+    /// byte offsets on deletes it; from then on, [`FSM_POSITION`] holds the applied LSN instead.
     pub(crate) const APPLIED_LSN: u64 = 2;
     pub(crate) const RESTATE_VERSION_BARRIER: u64 = 3;
     pub(crate) const PARTITION_DURABILITY: u64 = 4;
@@ -122,6 +127,15 @@ pub(crate) mod fsm_variable {
     ///
     /// *Since v1.7.9*
     pub(crate) const STORAGE_FEATURES: u64 = 12;
+
+    /// The partition's [`FsmPosition`](restate_storage_api::fsm_table::FsmPosition): its applied
+    /// LSN, and how far it has applied its log in bytes since the record that turned byte offsets
+    /// on. Written with every commit while the partition tracks byte offsets, in place of
+    /// [`APPLIED_LSN`], which the commit that turns them on deletes. If both are present, the
+    /// position takes precedence. The byte offsets wrap at 2^64.
+    ///
+    /// *Since v1.8.2*
+    pub(crate) const FSM_POSITION: u64 = 13;
 }
 
 fn get<T: PartitionStoreProtobufValue, S: StorageAccess>(
@@ -133,18 +147,6 @@ where
     <<T as PartitionStoreProtobufValue>::ProtobufType as TryInto<T>>::Error: Into<anyhow::Error>,
 {
     storage.get_value_proto(create_key(partition_id, state_id))
-}
-
-/// Forces a read from persistent storage, bypassing memtables and block cache.
-fn get_durable<T: PartitionStoreProtobufValue, S: StorageAccess>(
-    storage: &mut S,
-    partition_id: PartitionId,
-    state_id: u64,
-) -> Result<Option<T>>
-where
-    <<T as PartitionStoreProtobufValue>::ProtobufType as TryInto<T>>::Error: Into<anyhow::Error>,
-{
-    storage.get_durable_value(create_key(partition_id, state_id))
 }
 
 fn put<S: StorageAccess>(
@@ -161,12 +163,78 @@ fn put<S: StorageAccess>(
 }
 
 pub fn get_locally_durable_lsn(partition_store: &mut PartitionStore) -> Result<Option<Lsn>> {
-    get_durable::<SequenceNumber, _>(
-        partition_store,
-        partition_store.partition_id(),
-        fsm_variable::APPLIED_LSN,
-    )
-    .map(|opt| opt.map(|seq_number| Lsn::from(u64::from(seq_number))))
+    read_applied_lsn(partition_store.partition_db(), rocksdb::ReadTier::Persisted)
+}
+
+/// The partition's applied LSN as [`resolve_applied_lsn`] picks it, with [`FSM_POSITION`] and
+/// [`APPLIED_LSN`] read at the same point in time, so that a commit or flush between two reads
+/// can't make them look different.
+///
+/// [`FSM_POSITION`]: fsm_variable::FSM_POSITION
+/// [`APPLIED_LSN`]: fsm_variable::APPLIED_LSN
+fn read_applied_lsn(db: &PartitionDb, read_tier: rocksdb::ReadTier) -> Result<Option<Lsn>> {
+    let partition_id = db.partition().id();
+    let cf = db.cf_handle();
+    let keys = [fsm_variable::FSM_POSITION, fsm_variable::APPLIED_LSN]
+        .map(|state_id| create_key(partition_id, state_id).to_bytes());
+    let mut read_opts = rocksdb::ReadOptions::default();
+    read_opts.set_read_tier(read_tier);
+    // a multi-get reads all keys from one view of the column family, also of the persisted tier
+    let [position, applied_lsn]: [_; 2] = db
+        .rocksdb()
+        .inner()
+        .as_raw_db()
+        .multi_get_cf_opt(keys.iter().map(|key| (cf, key)), &read_opts)
+        .try_into()
+        .expect("a value per key");
+    let decode = |value: std::result::Result<Option<Vec<u8>>, rocksdb::Error>| {
+        value.map_err(|err| StorageError::Generic(err.into()))
+    };
+    let position = decode(position)?
+        .map(|value| StorageCodec::decode::<FsmPosition, _>(&mut value.as_slice()))
+        .transpose()
+        .map_err(|err| StorageError::Conversion(err.into()))?;
+    let applied_lsn = decode(applied_lsn)?
+        .map(|value| {
+            StorageCodec::decode::<
+                ProtobufStorageWrapper<
+                    <SequenceNumber as PartitionStoreProtobufValue>::ProtobufType,
+                >,
+                _,
+            >(&mut value.as_slice())
+        })
+        .transpose()
+        .map_err(|err| StorageError::Conversion(err.into()))?
+        .map(|wrapper| SequenceNumber::from(wrapper.0));
+    Ok(resolve_applied_lsn(partition_id, position, applied_lsn))
+}
+
+/// The applied LSN of the partition's [`FsmPosition`] if it has one, else its [`APPLIED_LSN`].
+/// The commit that writes the first position deletes [`APPLIED_LSN`], and the processor doesn't
+/// write it after that, so both are only present if something wrote the applied LSN on its own.
+///
+/// [`APPLIED_LSN`]: fsm_variable::APPLIED_LSN
+fn resolve_applied_lsn(
+    partition_id: PartitionId,
+    position: Option<FsmPosition>,
+    applied_lsn: Option<SequenceNumber>,
+) -> Option<Lsn> {
+    let applied_lsn = applied_lsn.map(|seq_number| Lsn::from(u64::from(seq_number)));
+    let Some(position) = position else {
+        return applied_lsn;
+    };
+    if let Some(applied_lsn) = applied_lsn
+        && applied_lsn != position.applied_lsn
+    {
+        warn!(
+            %partition_id,
+            %applied_lsn,
+            fsm_position_applied_lsn = %position.applied_lsn,
+            "The partition's applied LSN differs from the one in its FSM position; using the FSM position's",
+        );
+    }
+    // Before the first record is applied, the position has no applied LSN either.
+    Some(position.applied_lsn).filter(|lsn| *lsn != Lsn::INVALID)
 }
 
 pub(crate) fn get_storage_version_from_partition_db(db: &PartitionDb) -> Result<StorageVersion> {
@@ -427,8 +495,11 @@ impl ReadFsmTable for PartitionDb {
     }
 
     async fn get_applied_lsn(&mut self) -> Result<Option<Lsn>> {
-        get_proto_from_partition_db::<SequenceNumber>(self, fsm_variable::APPLIED_LSN)
-            .map(|opt| opt.map(|seq_number| Lsn::from(u64::from(seq_number))))
+        read_applied_lsn(self, rocksdb::ReadTier::All)
+    }
+
+    async fn get_fsm_position(&mut self) -> Result<Option<FsmPosition>> {
+        get_storage_codec_from_partition_db(self, fsm_variable::FSM_POSITION)
     }
 
     async fn get_min_restate_version(&mut self) -> Result<SemanticRestateVersion> {
@@ -473,8 +544,12 @@ impl ReadFsmTable for PartitionStore {
     }
 
     async fn get_applied_lsn(&mut self) -> Result<Option<Lsn>> {
-        get::<SequenceNumber, _>(self, self.partition_id(), fsm_variable::APPLIED_LSN)
-            .map(|opt| opt.map(|seq_number| Lsn::from(u64::from(seq_number))))
+        read_applied_lsn(self.partition_db(), rocksdb::ReadTier::All)
+    }
+
+    async fn get_fsm_position(&mut self) -> Result<Option<FsmPosition>> {
+        let key = create_key(self.partition_id(), fsm_variable::FSM_POSITION);
+        self.get_value_storage_codec(key)
     }
 
     async fn get_min_restate_version(&mut self) -> Result<SemanticRestateVersion> {
@@ -518,6 +593,14 @@ impl ReadFsmTable for PartitionStore {
 
 impl WriteFsmTable for PartitionStoreTransaction<'_> {
     fn put_applied_lsn(&mut self, lsn: Lsn) -> Result<()> {
+        // While the partition tracks byte offsets, only its position holds the applied LSN.
+        if self
+            .fsm_position()
+            .is_some_and(|position| position.has_byte_offsets())
+        {
+            self.mark_fsm_position_pending();
+            return Ok(());
+        }
         put(
             self,
             self.partition_id(),
@@ -581,4 +664,29 @@ impl WriteFsmTable for PartitionStoreTransaction<'_> {
         let key = create_key(self.partition_id(), fsm_variable::STATE_MACHINE_FEATURES);
         self.put_kv_storage_codec(key, features)
     }
+}
+
+/// Persists the partition's position. Only the transaction that maintains it writes it, so that
+/// its applied LSN is always the one persisted with it.
+pub(crate) fn put_fsm_position(
+    txn: &mut PartitionStoreTransaction<'_>,
+    position: &FsmPosition,
+) -> Result<()> {
+    let key = create_key(txn.partition_id(), fsm_variable::FSM_POSITION);
+    txn.put_kv_storage_codec(key, position)
+}
+
+/// The applied LSN persisted on its own, whether or not the partition has a position.
+#[cfg(test)]
+pub(crate) fn get_applied_lsn_on_its_own(db: &PartitionDb) -> Result<Option<Lsn>> {
+    Ok(
+        get_proto_from_partition_db::<SequenceNumber>(db, fsm_variable::APPLIED_LSN)?
+            .map(|seq_number| Lsn::from(u64::from(seq_number))),
+    )
+}
+
+/// Deletes the applied LSN persisted on its own, once the partition's position holds it.
+pub(crate) fn delete_applied_lsn(txn: &mut PartitionStoreTransaction<'_>) -> Result<()> {
+    let key = create_key(txn.partition_id(), fsm_variable::APPLIED_LSN);
+    txn.delete_key(&key)
 }
