@@ -34,8 +34,9 @@ use crate::{
 ///
 /// The browser decides who you log in as. Back here, every account and environment that
 /// user can reach becomes a profile named `<email>/<account>/<environment>` (existing ones
-/// are refreshed under their current name, none is removed), and one is selected: the current profile when it is that user's, the only one, or the one
-/// you pick. Logging in as another user adds their profiles alongside.
+/// are refreshed under their current name, none is removed), and one is selected: the
+/// current profile when it is that user's, the only one, or the one you pick. Logging in as
+/// another user adds their profiles alongside.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_login")]
 #[command(after_help = after_help!(
