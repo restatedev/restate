@@ -450,7 +450,7 @@ impl RocksDb {
                         write.run(name)
                     })?
                     .await
-                    .map_err(|_| RocksError::Shutdown(ShutdownError))?
+                    .map_err(RocksError::from)?
                     .map_err(|e| e.into());
             }
             IoMode::OnlyIfNonBlocking => {
@@ -509,7 +509,7 @@ impl RocksDb {
                         write.run(name)
                     })?
                     .await
-                    .map_err(|_| RocksError::Shutdown(ShutdownError))?
+                    .map_err(RocksError::from)?
                     .map_err(|e| e.into())
             }
             Err(e) => {

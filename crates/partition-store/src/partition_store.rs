@@ -33,9 +33,13 @@ use tracing::{Level, instrument, trace, warn};
 
 use restate_core::io::{AdmissionClosed, Gate, IoExecutor};
 use restate_futures_util::overdue::OverdueLoggingExt;
-use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksDbManager, RocksError};
+use restate_rocksdb::reads::{IterationError, IterationOptions, IterationOutcome, IteratorVisitor};
+use restate_rocksdb::{
+    IoMode, IterAction, Priority, RocksDb, RocksDbManager, RocksError, StorageTaskKind,
+};
 use restate_storage_api::fsm_table::ReadFsmTable;
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
+use restate_storage_api::scan::{RowConsumer, ScanClosePolicy, ScanOutcome};
 use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
 use restate_types::SemanticRestateVersion;
 use restate_types::config::{Configuration, StorageOptions};
@@ -63,8 +67,9 @@ use crate::fsm_table::{
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
 use crate::migrations::MigrationError;
 use crate::partition_db::PartitionDb;
-use crate::scan::PhysicalScan;
-use crate::scan::TableScan;
+use crate::scan::{
+    DecodingVisitor, KeySet, PhysicalScan, ScanOp, ScanPlan, ScanSequence, TableScan,
+};
 use crate::snapshots::{CaptureGuard, LocalPartitionSnapshot, SnapshotCompatibility, export_dir};
 use crate::{configure_prefix_iterator_opts, configure_range_iterator_opts};
 
@@ -521,6 +526,170 @@ impl PartitionStore {
             on_iter,
         )?;
         Ok(())
+    }
+
+    /// Runs `scan` on `executor`, handing its rows to `consumer`, with
+    /// `close_policy` deciding what closing the partition does to it. Returns the
+    /// consumer in a [`ScanOutcome`] distinguishing exhaustion from a requested
+    /// stop. See [`ScanSequence`] for how scans chain.
+    ///
+    /// # Errors
+    /// [`StorageError::AdmissionClosed`] if the partition or executor rejects the
+    /// work, [`StorageError::ScanInterrupted`] if an accepted `CancelOnClose` scan's
+    /// partition starts closing, or [`StorageError::TaskFailed`] if accepted work
+    /// ends without a result. Read failures return [`StorageError::Generic`];
+    /// decoding and consumer errors are propagated unchanged. See
+    /// [`restate_storage_api::scan`] for cleanup semantics.
+    pub fn scan<'s, S, C>(
+        &'s self,
+        executor: &'s (impl IoExecutor + Sync),
+        scan: S,
+        close_policy: ScanClosePolicy,
+        consumer: C,
+    ) -> impl Future<Output = Result<ScanOutcome<C>>> + Send + 's
+    where
+        S: ScanSequence,
+        C: for<'a> RowConsumer<Item<'a> = S::Item<'a>>,
+    {
+        scan.run(self, executor, close_policy, consumer)
+    }
+
+    // Runs a single scan op on `executor`.
+    pub(crate) async fn run_scan_op<O, C>(
+        &self,
+        executor: &(impl IoExecutor + Sync),
+        op: O,
+        close_policy: ScanClosePolicy,
+        consumer: C,
+    ) -> Result<ScanOutcome<C>>
+    where
+        O: ScanOp,
+        C: for<'a> RowConsumer<Item<'a> = O::Item<'a>>,
+    {
+        let range = match op.plan() {
+            ScanPlan::Range(range) => range,
+            ScanPlan::Keys(keys) => {
+                return self
+                    .multi_get(executor, op, keys, close_policy, consumer)
+                    .await;
+            }
+        };
+        let mut opts = ReadOptions::default();
+        opts.set_async_io(true);
+        let outcome = self
+            .run_iteration(
+                O::NAME,
+                executor,
+                opts,
+                range,
+                close_policy,
+                DecodingVisitor { op, consumer },
+            )
+            .map_err(|_| StorageError::AdmissionClosed)?
+            .await?;
+        Ok(outcome.map(|visitor| visitor.consumer))
+    }
+
+    // Looks up the packed `keys` of `op` with batched multi-gets on `executor`.
+    async fn multi_get<O, C>(
+        &self,
+        executor: &impl IoExecutor,
+        op: O,
+        KeySet {
+            key_kind,
+            key_len,
+            batch_size,
+            keys,
+        }: KeySet,
+        close_policy: ScanClosePolicy,
+        mut consumer: C,
+    ) -> Result<ScanOutcome<C>>
+    where
+        O: ScanOp,
+        C: for<'a> RowConsumer<Item<'a> = O::Item<'a>>,
+    {
+        let read = self.db.prepare_read(
+            O::NAME,
+            StorageTaskKind::MultiGet,
+            crate::scan::lease_policy(close_policy),
+            async move |raw_db, cfs| -> Result<ScanOutcome<C>> {
+                let cf = cfs.get(key_kind);
+                let mut opts = ReadOptions::default();
+                // Future proofing to make use of parallel L0 reads and async IO if
+                // RocksDB is built with COROUTINES=1 and io_uring. Does nothing otherwise.
+                opts.set_async_io(true);
+                opts.set_optimize_multiget_for_io(true);
+
+                for batch in keys.chunks(batch_size * key_len) {
+                    let results = raw_db.batched_multi_get_cf_opt(
+                        cf,
+                        batch.chunks_exact(key_len),
+                        true,
+                        &opts,
+                    );
+                    for (key, result) in batch.chunks_exact(key_len).zip(results) {
+                        let Some(value) =
+                            result.map_err(|err| StorageError::Generic(err.into()))?
+                        else {
+                            continue;
+                        };
+                        if op.visit(key, &value, &mut consumer).await?.is_break() {
+                            return Ok(ScanOutcome::Stopped(consumer));
+                        }
+                    }
+                }
+                Ok(ScanOutcome::Exhausted(consumer))
+            },
+        );
+        let result = executor
+            .spawn_cancellable(read)
+            .map_err(|_| StorageError::AdmissionClosed)?;
+        result
+            .await
+            .map_err(|_| StorageError::TaskFailed)?
+            .map_err(|AdmissionClosed| StorageError::ScanInterrupted)?
+    }
+
+    /// Returns the visitor together with the iteration completion reason.
+    fn run_iteration<V: IteratorVisitor<Error = StorageError>>(
+        &self,
+        name: &'static str,
+        executor: &impl IoExecutor,
+        mut opts: ReadOptions,
+        scan: PhysicalScan<Bytes>,
+        close_policy: ScanClosePolicy,
+        visitor: V,
+    ) -> Result<impl Future<Output = Result<ScanOutcome<V>>> + Send + 'static, AdmissionClosed>
+    {
+        scan.configure(&mut opts);
+        let key_kind = scan.key_kind();
+        let iteration = RocksDb::prepare_iteration(
+            self.db.physical_scope(),
+            self.db.gate(),
+            IterationOptions {
+                lease_policy: crate::scan::lease_policy(close_policy),
+                initial_action: IterAction::Seek(scan.into_start()),
+            },
+            key_kind,
+            name,
+            opts,
+            visitor,
+        )?;
+        let result = executor.spawn_cancellable(iteration)?;
+        Ok(async move {
+            let outcome = result
+                .await
+                .map_err(|_| StorageError::TaskFailed)?
+                .map_err(|AdmissionClosed| StorageError::ScanInterrupted)?
+                .map_err(|error| match error {
+                    IterationError::Visitor(error) => error,
+                    IterationError::RocksDb(error) => StorageError::Generic(error.into()),
+                })?;
+            Ok(match outcome {
+                IterationOutcome::Exhausted(visitor) => ScanOutcome::Exhausted(visitor),
+                IterationOutcome::Stopped(visitor) => ScanOutcome::Stopped(visitor),
+            })
+        })
     }
 
     pub fn transaction(&mut self) -> PartitionStoreTransaction<'_> {

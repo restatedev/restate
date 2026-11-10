@@ -16,7 +16,7 @@ use futures::{FutureExt, Stream};
 use rocksdb::ReadOptions;
 
 use restate_core::io::IoExecutor;
-use restate_rocksdb::{Priority, RocksDbReadPerfGuard, StorageTaskKind};
+use restate_rocksdb::{LeasePolicy, Priority, RocksDbReadPerfGuard, StorageTaskKind};
 use restate_storage_api::invocation_status_table::{
     InvocationLite, InvocationStatus, InvocationStatusDiscriminants, ReadInvocationStatusTable,
     ScanInvocationStatusTable, ScanInvocationStatusTableRange, WriteInvocationStatusTable,
@@ -85,7 +85,8 @@ where
         let read = rocksdb.prepare_read(
             "df-for-each-invocation-status",
             StorageTaskKind::MultiGet,
-            move |raw_db, cfs| -> Result<()> {
+            LeasePolicy::WholeOperation,
+            async move |raw_db, cfs| -> Result<()> {
                 let cf = cfs.get(<InvocationStatusKey as EncodeTableKey>::KEY_KIND);
 
                 let batch_capacity = ids.len().min(INVOCATION_STATUS_MULTI_GET_BATCH_SIZE);
@@ -186,6 +187,7 @@ where
             .spawn(read)
             .map_err(|_| StorageError::OperationalError)?
             .await
+            .map_err(|_| StorageError::OperationalError)?
             .map_err(|_| StorageError::OperationalError)?
     }
 }
