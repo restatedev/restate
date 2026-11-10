@@ -2,6 +2,34 @@
 
 ## Breaking Change
 
+### What breaks, and what to do
+1. **Cloud profiles written by older CLIs need a login.** Cloud commands on them fail with "written
+   by an older CLI" until you run `restate cloud login` once. The login adopts those profiles and
+   keeps their names; they become the profiles of the user who logs in (the first one, if several
+   users on the machine can reach the same environment).
+2. **`restate cloud login` needs a terminal and a browser.** It refuses to run non-interactively, so
+   CI that relied on a stored Cloud profile must describe the server with `RESTATE_ADMIN_URL` and
+   `RESTATE_AUTH_TOKEN` instead.
+3. **`.env` files are no longer loaded**, by `restate` nor by `restatectl`. Export the variables
+   instead, or add the server with `restate profile add`. `restate` prints one line on stderr when
+   `./.env` has `RESTATE_*` variables; nothing is printed for other variables in it, such as
+   `RUST_LOG` or the color settings.
+4. **The `RESTATE_*` variables no longer override single settings of the selected profile.** When
+   any of `RESTATE_ADMIN_URL`, `RESTATE_INGRESS_URL`, `RESTATE_AUTH_TOKEN` or `RESTATE_HOST` is set,
+   they describe the whole server: a missing URL defaults to localhost, and the config file isn't
+   consulted. `RESTATE_AUTH_TOKEN` alone now targets `localhost`, not the selected Cloud environment;
+   set `RESTATE_ADMIN_URL` together with it.
+5. **A profile that doesn't exist is an error.** `-p <name>` or `RESTATE_PROFILE` naming no profile of
+   the config file fails right away (exit code 4) and lists the profiles there are. A current profile
+   that was removed from the config file falls back to `local`, with a warning.
+6. **`restate cloud env configure` is removed.** It fails (exit code 2) and points at
+   `restate cloud login`, which imports all your Cloud environments as profiles, then
+   `restate profile use` to pick one.
+7. **`restate whoami --json` changed shape.** The `environment_file` and `loaded_dotenv` fields are
+   gone, the `environment` object is now `profile`, and the `cloud` object has `user`, `account` and
+   `environment` (`{id, name}`) instead of bare ids. `restate profile list --json` has the same three
+   columns.
+
 ### What Changed
 The `restate` CLI talks to a *profile*: a section of its config file naming a server. A profile is
 either a Restate Cloud environment, recorded with the user and account that reach it, or a
@@ -20,8 +48,9 @@ Cloud profiles come from `restate cloud login` and only from there. The browser 
 in as; back in the terminal the CLI imports every environment that user can reach, one profile each,
 named `<email>/<account>/<environment>`, and selects one (the current profile when it is that user's,
 the only one, or the one you pick). Logging in again as the same user refreshes the token and the
-profiles: new environments appear, ones you can no longer reach disappear, renamed profiles keep their
-name. Logging in as another user adds their profiles next to the existing ones, each user with their
+profiles: new environments appear and renamed profiles keep their name. A login never removes a
+profile, not even one of an environment you can no longer reach; use `restate profile remove` for
+that. Logging in as another user adds their profiles next to the existing ones, each user with their
 own token. `--no-select` imports without changing the current profile.
 
 How the CLI decides which profile a command uses, first match wins:
@@ -32,6 +61,9 @@ How the CLI decides which profile a command uses, first match wins:
 4. the profile selected with `restate profile use` (or `profile add`, `cloud login`)
 5. `local`, a server on this machine
 
+When a level wins over another one that is also set, such as `-p` while `RESTATE_*` variables are
+set, or those variables while a profile other than `local` is selected, a line on stderr says what
+is ignored.
 `restate whoami` shows which one applied, and for a Cloud profile the user, account and environment.
 `restate config view` prints tokens as `<redacted>`.
 
@@ -43,31 +75,16 @@ shared by every Cloud environment, so working across accounts or users meant log
 the config file is the only place profiles live, a login brings everything that user can reach, and
 nothing in the current directory changes the target.
 
-### Impact on Users
+### Deprecations
+These keep working for now, and print a deprecation line on stderr:
+
 - **"Environment" means a Restate Cloud environment; the CLI's entries are profiles.**
-  `-e/--environment` and `RESTATE_ENVIRONMENT` keep working as `-p/--profile` and `RESTATE_PROFILE`
-  for now, with a deprecation line on stderr.
-- **Run `restate cloud login` once after upgrading.** Cloud profiles written by older versions
-  have no user, so Cloud commands on them fail with "written by an older CLI" until you log in.
-  The login stores your token under your user, imports your environments as profiles, and adopts
-  those older profiles (keeping their name) when they belong to the user who logs in.
-- **`.env` files are no longer loaded.** The CLI used to load a `.env` from the current directory or
-  its parents. Export the variables instead, or add the server with `restate profile add`. When a
-  `./.env` with `RESTATE_*` variables is found, one line on stderr says it isn't loaded. This also
-  applies to `restatectl`, which only read `RUST_LOG` and color settings from it.
-- **The `RESTATE_*` variables no longer override single settings of the selected profile.** When any
-  of `RESTATE_ADMIN_URL`, `RESTATE_INGRESS_URL`, `RESTATE_AUTH_TOKEN` or `RESTATE_HOST` is set, they
-  describe the whole server: a missing URL defaults to localhost, and the config file isn't
-  consulted. In particular `RESTATE_AUTH_TOKEN` alone now targets `localhost`, not the selected Cloud
-  environment with that token; set `RESTATE_ADMIN_URL` as well, as CI setups already do.
-- **`restate cloud env configure` is removed**: it fails with a hint to run `restate cloud login`
-  again, which imports all your Cloud environments as profiles, then `restate profile use` to pick
-  one. `restate profile add` doesn't add Cloud environments either: log in instead. `restate config
-  list-environments` and `restate config use-environment` keep working but are hidden and print a
-  deprecation line pointing at `restate profile list` / `restate profile use`.
-- **The current profile moves into the config file**, as `profile` under `[global]`. The old
-  `environment` file next to it is still read when the key is absent and deleted on the next write.
-- `restate whoami --json` no longer has the `environment_file` and `loaded_dotenv` fields; its
-  `environment` object is now `profile`, and the `cloud` object has `user`, `account` and
-  `environment` (`{id, name}`) instead of bare ids. `restate profile list --json` has the same three
-  columns.
+  `-e/--environment` and `RESTATE_ENVIRONMENT` work as `-p/--profile` and `RESTATE_PROFILE`.
+- `restate config list-environments` and `restate config use-environment` are hidden; use
+  `restate profile list` and `restate profile use`.
+
+### Other Changes
+- `restate profile add` doesn't add Cloud environments: log in instead.
+- The current profile moves into the config file, as `profile` under `[global]`. The old
+  `environment` file next to it is still read when the key is absent, and deleted on the next write.
+- Profile names starting with `__` are reserved for the CLI.
