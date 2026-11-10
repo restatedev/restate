@@ -25,6 +25,11 @@ when the node was just being restarted, such as during a rolling upgrade.
 - If all of a partition's replicas are on down nodes (for example, with a replication factor of 1),
   Restate moves the partition right away instead of waiting.
 - Moving replicas off nodes that you drain or disable is not delayed.
+- Known limitation: a node that keeps crashing and restarting gets a new grace period every time
+  it comes back. If it stays up long enough to be seen as alive between crashes, its replicas are
+  never moved, and its partitions keep running with fewer replicas. Drain or disable such a node to
+  move its replicas off. Before this change, every crash and restart of such a node moved
+  replicas between nodes.
 
 ### Migration Guidance
 
