@@ -12,6 +12,7 @@ use anyhow::Result;
 use cling::prelude::*;
 
 use crate::cli_env::CliEnv;
+use crate::error::RestateCliError;
 
 /// Deprecated: use `restate cloud tunnel`
 #[derive(Run, Subcommand, Clone)]
@@ -35,11 +36,13 @@ pub struct DeprecatedConfigure {
 }
 
 async fn run_configure() -> Result<()> {
-    restate_cli_util::c_warn!(
-        "`restate cloud env configure` no longer does anything: run `restate cloud login` again, \
-         it imports all your Cloud environments as profiles"
-    );
-    Ok(())
+    Err(RestateCliError::bad_input(
+        "`restate cloud env configure` was removed: `restate cloud login` imports all your Cloud \
+         environments as profiles",
+    )
+    .with_unformatted_next_step("restate cloud login", "import Cloud profiles")
+    .with_next_step("restate profile use", "select one of them")
+    .into())
 }
 
 /// Deprecated: use `restate cloud tunnel`

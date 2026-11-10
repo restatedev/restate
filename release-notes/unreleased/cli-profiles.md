@@ -60,9 +60,9 @@ nothing in the current directory changes the target.
   describe the whole server: a missing URL defaults to localhost, and the config file isn't
   consulted. In particular `RESTATE_AUTH_TOKEN` alone now targets `localhost`, not the selected Cloud
   environment with that token; set `RESTATE_ADMIN_URL` as well, as CI setups already do.
-- **`restate cloud env configure` no longer does anything**: it prints a line asking you to run
-  `restate cloud login` again, which imports all your Cloud environments as profiles. `restate
-  profile add` doesn't add Cloud environments either: log in instead. `restate config
+- **`restate cloud env configure` is removed**: it fails with a hint to run `restate cloud login`
+  again, which imports all your Cloud environments as profiles, then `restate profile use` to pick
+  one. `restate profile add` doesn't add Cloud environments either: log in instead. `restate config
   list-environments` and `restate config use-environment` keep working but are hidden and print a
   deprecation line pointing at `restate profile list` / `restate profile use`.
 - **The current profile moves into the config file**, as `profile` under `[global]`. The old
