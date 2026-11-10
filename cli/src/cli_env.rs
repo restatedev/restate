@@ -23,6 +23,7 @@ use restate_cli_util::OsEnv;
 use restate_types::net::address::{AdminPort, AdvertisedAddress, HttpIngressPort};
 
 use crate::app::GlobalOpts;
+use crate::commands::cloud::{CloudConfig, Credentials};
 
 pub const CONFIG_FILENAME: &str = "config.toml";
 
@@ -58,8 +59,7 @@ pub struct CliConfig {
     pub admin_base_url: Option<AdvertisedAddress<AdminPort>>,
     pub bearer_token: Option<String>,
 
-    #[cfg(feature = "cloud")]
-    pub cloud: crate::commands::cloud::CloudConfig,
+    pub cloud: CloudConfig,
 }
 
 pub const LOCAL_PROFILE: Profile = Profile::const_new("local");
@@ -73,8 +73,7 @@ impl CliConfig {
             admin_base_url: Some(AdvertisedAddress::default()),
             bearer_token: None,
 
-            #[cfg(feature = "cloud")]
-            cloud: crate::commands::cloud::CloudConfig::default(),
+            cloud: CloudConfig::default(),
         }
     }
 }
@@ -84,7 +83,6 @@ impl CliConfig {
 pub enum EnvironmentType {
     #[default]
     Default,
-    #[cfg(feature = "cloud")]
     Cloud,
 }
 
@@ -272,7 +270,6 @@ impl CliEnv {
     pub fn bearer_token(&self) -> Result<Option<&str>> {
         match self.config.environment_type {
             EnvironmentType::Default => Ok(self.config.bearer_token.as_deref()),
-            #[cfg(feature = "cloud")]
             EnvironmentType::Cloud => {
                 // a bearer token in the profile wins over the Cloud credentials
                 if let Some(bearer_token) = &self.config.bearer_token {
@@ -286,8 +283,7 @@ impl CliEnv {
     /// The Restate Cloud credentials of the profile's user, and who that is (email, else
     /// user id): valid or not. A Cloud profile without a user was written by an older CLI
     /// and needs a login first.
-    #[cfg(feature = "cloud")]
-    pub fn cloud_credentials(&self) -> Result<(String, &crate::commands::cloud::Credentials)> {
+    pub fn cloud_credentials(&self) -> Result<(String, &Credentials)> {
         use crate::error::{ErrorKind, RestateCliError};
 
         let cloud = &self.config.cloud;
@@ -319,7 +315,6 @@ impl CliEnv {
     }
 
     /// A valid Restate Cloud access token for the profile's user.
-    #[cfg(feature = "cloud")]
     pub fn cloud_access_token(&self) -> Result<&str> {
         let (who, credentials) = self.cloud_credentials()?;
         credentials.access_token().map_err(|_| {
@@ -430,8 +425,7 @@ fn adhoc_config(os_env: &OsEnv) -> Result<Option<CliConfig>> {
         admin_base_url,
         ingress_base_url,
         bearer_token,
-        #[cfg(feature = "cloud")]
-        cloud: crate::commands::cloud::CloudConfig::default(),
+        cloud: CloudConfig::default(),
     }))
 }
 
@@ -635,7 +629,6 @@ mod tests {
         assert_eq!(cli_env.profile_source.to_string(), "$RESTATE_PROFILE");
     }
 
-    #[cfg(feature = "cloud")]
     #[test]
     fn cloud_credentials_come_from_the_profiles_user() {
         use base64::Engine;

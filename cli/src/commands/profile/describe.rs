@@ -75,7 +75,6 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
     let url = |url: Option<String>| Field::with_display(&url, url.as_deref().unwrap_or("(NONE)"));
     let credential = match (&config.bearer_token, &config.environment_type) {
         (Some(_), _) => "bearer_token",
-        #[cfg(feature = "cloud")]
         (None, EnvironmentType::Cloud) => "cloud_login",
         (None, EnvironmentType::Default) => "none",
     };
@@ -93,7 +92,6 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
                 "type",
                 Field::new(match config.environment_type {
                     EnvironmentType::Default => "self_hosted",
-                    #[cfg(feature = "cloud")]
                     EnvironmentType::Cloud => "cloud",
                 }),
             ),

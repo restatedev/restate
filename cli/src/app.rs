@@ -234,7 +234,6 @@ pub enum Command {
     ))]
     Config(config::Config),
 
-    #[cfg(feature = "cloud")]
     #[clap(subcommand)]
     /// Manage Restate Cloud
     Cloud(cloud::Cloud),

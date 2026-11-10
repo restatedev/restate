@@ -156,7 +156,6 @@ pub struct Register {
 
     /// Name of the Restate Cloud tunnel (`restate cloud tunnel --name`) to reach
     /// the endpoint through
-    #[cfg(feature = "cloud")]
     #[clap(long = "tunnel-name", alias = "deployment-name", value_name = "NAME")]
     tunnel_name: Option<String>,
 
@@ -363,7 +362,6 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     });
 
     let deployment = match &discover_opts.deployment {
-        #[cfg(feature = "cloud")]
         DeploymentEndpoint::Uri(uri) if discover_opts.tunnel_name.is_some() => {
             let tunnel_name = discover_opts.tunnel_name.as_ref().unwrap();
             let (environment_id, proxy_base_url) = cloud_environment(&env).await?;
@@ -374,7 +372,6 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
                 uri,
             )?)
         }
-        #[cfg(feature = "cloud")]
         DeploymentEndpoint::Connect(name) => {
             if discover_opts.tunnel_name.is_some() {
                 return Err(RestateCliError::bad_input(
@@ -385,20 +382,12 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
             let (environment_id, proxy_base_url) = cloud_environment(&env).await?;
             DeploymentEndpoint::Uri(connect_uri(&proxy_base_url, &environment_id, name)?)
         }
-        #[cfg(not(feature = "cloud"))]
-        DeploymentEndpoint::Connect(_) => {
-            return Err(RestateCliError::bad_input(
-                "connect:// endpoints need a CLI built with Restate Cloud support",
-            )
-            .into());
-        }
         DeploymentEndpoint::Uri(uri) if uri.scheme_str() == Some("tunnel") => {
             return Err(RestateCliError::bad_input(
                 "tunnel:// URLs are no longer supported; instead use the destination URL and --tunnel-name",
             )
             .into());
         }
-        #[cfg(feature = "cloud")]
         _ if discover_opts.tunnel_name.is_some() => {
             return Err(RestateCliError::bad_input(
                 "--tunnel-name is only valid for HTTP endpoints",
@@ -436,7 +425,6 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
 
 /// The current Cloud environment's id and proxy base URL, for connected services and
 /// tunneled endpoints.
-#[cfg(feature = "cloud")]
 async fn cloud_environment(env: &CliEnv) -> Result<(String, url::Url)> {
     use crate::clients::cloud::{CloudClient, CloudClientInterface};
 
@@ -469,7 +457,6 @@ async fn cloud_environment(env: &CliEnv) -> Result<(String, url::Url)> {
 /// `<proxy base URL>:9080/<environment id without env_>/<name>/http/in-process/9080/`:
 /// the URL of a service connected to the environment with the SDK's `connect()`. The port
 /// is always 9080, whatever `proxy_base_url` says.
-#[cfg(feature = "cloud")]
 fn connect_uri(proxy_base_url: &url::Url, environment_id: &str, name: &str) -> Result<Uri> {
     let (scheme, host) = proxy_scheme_and_host(proxy_base_url)?;
     Ok(Uri::builder()
@@ -483,7 +470,6 @@ fn connect_uri(proxy_base_url: &url::Url, environment_id: &str, name: &str) -> R
 }
 
 /// The URL of `destination` behind the `restate cloud tunnel` named `tunnel_name`.
-#[cfg(feature = "cloud")]
 fn tunnel_uri(
     proxy_base_url: &url::Url,
     environment_id: &str,
@@ -520,7 +506,6 @@ fn tunnel_uri(
         .build()?)
 }
 
-#[cfg(feature = "cloud")]
 fn proxy_scheme_and_host(proxy_base_url: &url::Url) -> Result<(&str, &str)> {
     let host = proxy_base_url
         .host_str()
@@ -528,7 +513,6 @@ fn proxy_scheme_and_host(proxy_base_url: &url::Url) -> Result<(&str, &str)> {
     Ok((proxy_base_url.scheme(), host))
 }
 
-#[cfg(feature = "cloud")]
 fn bare_environment_id(environment_id: &str) -> Result<&str> {
     environment_id
         .strip_prefix("env_")
@@ -1001,7 +985,6 @@ mod tests {
         register: Register,
     }
 
-    #[cfg(feature = "cloud")]
     #[test]
     fn connect_endpoints_build_the_cloud_proxy_url() {
         // Shared contract: `<proxyBaseUrl>:9080/<environment id without env_>/<name>/http/in-process/9080/`.

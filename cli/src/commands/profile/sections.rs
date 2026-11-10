@@ -12,9 +12,7 @@
 //! `restate profile use` and `restate cloud login` write them.
 
 use anyhow::Result;
-#[cfg(feature = "cloud")]
-use toml_edit::Item;
-use toml_edit::{DocumentMut, table, value};
+use toml_edit::{DocumentMut, Item, table, value};
 
 use restate_types::net::address::{AdminPort, AdvertisedAddress, HttpIngressPort};
 
@@ -28,7 +26,6 @@ pub(crate) enum ProfileSpec<'a> {
         ingress_base_url: Option<&'a AdvertisedAddress<HttpIngressPort>>,
         bearer_token: Option<&'a str>,
     },
-    #[cfg(feature = "cloud")]
     Cloud {
         user_id: &'a str,
         environment: &'a CloudEnvironment,
@@ -37,7 +34,6 @@ pub(crate) enum ProfileSpec<'a> {
 
 /// A Restate Cloud environment as a profile stores it: the account it belongs to and the
 /// details from `DescribeEnvironment`.
-#[cfg(feature = "cloud")]
 pub(crate) struct CloudEnvironment {
     pub account_id: String,
     pub account_name: String,
@@ -93,7 +89,6 @@ pub(crate) fn write_section(doc: &mut DocumentMut, name: &str, spec: &ProfileSpe
                 profile["bearer_token"] = value(*bearer_token);
             }
         }
-        #[cfg(feature = "cloud")]
         ProfileSpec::Cloud {
             user_id,
             environment,
@@ -114,7 +109,6 @@ pub(crate) fn select_profile(env: &CliEnv, name: &str) -> Result<bool> {
 }
 
 /// Set the URLs and the `cloud` table of a Cloud profile, keeping anything else in it.
-#[cfg(feature = "cloud")]
 fn write_cloud_fields(profile: &mut Item, user_id: &str, environment: &CloudEnvironment) {
     profile["admin_base_url"] = value(&environment.environment.admin_base_url);
     profile["ingress_base_url"] = value(&environment.environment.ingress_base_url);
@@ -126,14 +120,12 @@ fn write_cloud_fields(profile: &mut Item, user_id: &str, environment: &CloudEnvi
     cloud["environment_name"] = value(&environment.environment.name);
 }
 
-#[cfg(feature = "cloud")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Change {
     Added,
     Updated,
 }
 
-#[cfg(feature = "cloud")]
 impl Change {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -145,14 +137,12 @@ impl Change {
 
 /// What [`sync_cloud_profiles`] did, as profile names: `profiles` has one entry per
 /// environment given, in the same order.
-#[cfg(feature = "cloud")]
 #[derive(Default, Debug, PartialEq, Eq)]
 pub(crate) struct SyncReport {
     pub profiles: Vec<(String, Change)>,
     pub removed: Vec<String>,
 }
 
-#[cfg(feature = "cloud")]
 impl SyncReport {
     /// The profiles of the user after the sync.
     pub fn kept(&self) -> impl Iterator<Item = &str> {
@@ -168,7 +158,6 @@ impl SyncReport {
 /// environments they can no longer reach are removed, clearing the saved selection when
 /// it pointed at one. Profiles written before credentials were kept per user, which name
 /// the environment but no user, are adopted. The config file isn't written.
-#[cfg(feature = "cloud")]
 pub(crate) fn sync_cloud_profiles(
     doc: &mut DocumentMut,
     user_id: &str,
@@ -236,7 +225,6 @@ pub(crate) fn sync_cloud_profiles(
 }
 
 /// The `cloud.user_id` of a section, if it's a Cloud profile with one.
-#[cfg(feature = "cloud")]
 fn cloud_user_of(section: &Item) -> Option<&str> {
     section
         .get("cloud")
@@ -245,7 +233,6 @@ fn cloud_user_of(section: &Item) -> Option<&str> {
 }
 
 /// Whether a section is the Cloud environment `environment_id` of account `account_id`.
-#[cfg(feature = "cloud")]
 fn is_cloud_environment(section: &Item, account_id: &str, environment_id: &str) -> bool {
     let field = |key: &str| {
         section
@@ -296,7 +283,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "cloud")]
     #[test]
     fn sync_adds_refreshes_adopts_and_removes_the_users_profiles() {
         use crate::clients::cloud::types::DescribeEnvironmentResponse;

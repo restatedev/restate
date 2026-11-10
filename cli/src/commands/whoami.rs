@@ -150,7 +150,6 @@ pub async fn run(State(env): State<CliEnv>) -> Result<()> {
     // Cloud.
     match env.config.environment_type {
         EnvironmentType::Default => {}
-        #[cfg(feature = "cloud")]
         EnvironmentType::Cloud => {
             // Named things show their name, with the id in JSON; older profiles only have ids.
             let named = |id: Option<&str>, name: Option<&str>| match (id, name) {
