@@ -77,11 +77,14 @@ second (`-n <seconds>` changes the interval):
   LSNs, the replica set, the sequencer, and charts of its apply rate and lag, or its append rate,
   over the time the dashboard has been running. The overview charts the cluster's appends per
   second. A log shows its chain of segments, each in the color of the node that sequences it,
-  with trimmed records shaded, its partition's newest snapshot, and where each reader is on it;
-  and how long each reader has been in its state. On servers that report it (v1.8.2 and newer),
-  it also shows who each reader is, such as the partition's leader or a follower, and how many
-  bytes per second it reads, and a partition's details chart the bytes per second its leader
-  reads. The partitions and logs views start with their spread over the nodes.
+  with trimmed records shaded, its partition's archived snapshot (the oldest one it retains), and
+  where each reader is on it; and how long each reader has been in its state. On servers that
+  report it (v1.8.2 and newer), it also shows who each reader is, such as the partition's leader
+  or a follower, and how many bytes per second it reads, and a partition's details chart the
+  bytes per second its leader reads. When a log's partition tracks byte offsets (see
+  `experimental-enable-byte-offsets`) and its nodes report the archived snapshot's (v1.8.2 and
+  newer), the log's details also tell how many bytes of log lie between that snapshot and the
+  tail. The partitions and logs views start with their spread over the nodes.
 - `s` sorts the partitions, logs or nodes by their next column (for example health, lag,
   leader or epoch for partitions; state, segments or retained records for logs; status, leaders
   or uptime for nodes), `S` reverses the order. The sorted column's header is highlighted, with

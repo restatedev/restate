@@ -42,8 +42,8 @@ use super::widgets::{
 use crate::connection::ConnectionInfo;
 use crate::observe::{
     ClusterView, Finding, LocatedAddress, LogPlacement, LogView, NodeView, PartitionHealth,
-    PartitionPlacement, PartitionView, ReaderPhase, ReaderView, SequencerState, Severity, Subject,
-    analyze, short_duration,
+    PartitionPlacement, PartitionView, ReaderPhase, ReaderView, SequencerState, Severity,
+    SnapshotBytes, SnapshotToTail, Subject, analyze, short_duration,
 };
 use crate::render::{Verdict, compress_ids, group_findings, snapshot_taken};
 
@@ -1587,6 +1587,10 @@ impl App {
         text.field(label("trim point"), num(log.trim_point));
         text.field(label("retained"), num(log.retained));
         text.field(
+            label("snapshot"),
+            snapshot_to_tail(view.snapshot_to_tail(log)),
+        );
+        text.field(
             label("sequencer"),
             log.sequencer
                 .map_or_else(|| Span::raw("-"), generational_span),
@@ -2121,6 +2125,34 @@ enum Shown {
     Value,
 }
 
+/// The snapshot's LSN, and how many bytes of log lie between it and the tail when known, or at
+/// least lie when the tail isn't.
+fn snapshot_to_tail(snapshot: Option<SnapshotToTail>) -> Vec<Span<'static>> {
+    let Some(SnapshotToTail {
+        snapshot_lsn,
+        bytes,
+    }) = snapshot
+    else {
+        return vec![Span::raw("-")];
+    };
+    let mut spans = vec![Span::raw(snapshot_lsn.to_string())];
+    if let Some(SnapshotBytes { bytes, unapplied }) = bytes {
+        spans.push(Span::styled("  · ", theme::muted()));
+        if unapplied.is_none() {
+            spans.push(Span::styled("at least ", theme::muted()));
+        }
+        spans.push(Span::raw(ByteCount::from(bytes).to_string()));
+        spans.push(Span::styled(" to the tail", theme::muted()));
+        if let Some(unapplied) = unapplied.filter(|u| *u > 0) {
+            spans.push(Span::styled(
+                format!(" (+{unapplied} records)"),
+                theme::muted(),
+            ));
+        }
+    }
+    spans
+}
+
 /// `1234` → `1.2 KiB/s`
 fn human_bytes_rate(rate: u64) -> String {
     format!("{}/s", ByteCount::from(rate))
@@ -2244,7 +2276,11 @@ mod tests {
                     assert!(screen.contains("CRITICAL"), "{screen}");
                     match tab {
                         Tab::Partitions => assert!(screen.contains("unavailable")),
-                        Tab::Logs => assert!(screen.contains("down")),
+                        Tab::Logs => {
+                            assert!(screen.contains("down"));
+                            // without snapshots, the log's details say so, without bytes
+                            assert!(!screen.contains("to the tail"), "{screen}");
+                        }
                         Tab::Nodes => assert!(screen.contains("dead")),
                         _ => {}
                     }
@@ -2556,6 +2592,12 @@ mod tests {
         assert!(screen.contains("N1    leader"), "{screen}");
         assert!(screen.contains("N13   follower"), "{screen}");
         assert!(screen.contains(&per_second), "{screen}");
+        // and how much of the log lies between the partition's snapshot and the tail
+        let since_snapshot = ByteCount::from(120 * 120_000_u64);
+        assert!(
+            screen.contains(&format!("{since_snapshot} to the tail")),
+            "{screen}"
+        );
         app.tab = Tab::Partitions;
         app.selected_partition = Some(0);
         terminal.draw(|frame| app.draw(frame)).unwrap();

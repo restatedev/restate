@@ -396,6 +396,83 @@ fn replicas_read_their_own_stream() {
     assert_eq!(read_pointer(2), Some(40));
 }
 
+/// A log tells how much of it lies between its partition's archived snapshot and its tail: the
+/// bytes from the snapshot's log byte offset to that of the replica furthest along, if both count
+/// from the same base LSN, and the records that replica hasn't applied yet.
+#[test]
+fn bytes_between_the_snapshot_and_the_tail() {
+    let mut view = large_cluster();
+    let log_of_partition_0 = |view: &ClusterView| {
+        view.logs
+            .iter()
+            .position(|l| l.partition_id == Some(0))
+            .unwrap()
+    };
+    let snapshot_to_tail =
+        |view: &ClusterView| view.snapshot_to_tail(&view.logs[log_of_partition_0(view)]);
+    let p = &view.partitions[0];
+    let snapshot_lsn = p.leader_replica().unwrap().archived_lsn.unwrap();
+    let applied = p
+        .replicas
+        .iter()
+        .filter_map(|r| r.applied_lsn)
+        .max()
+        .unwrap();
+    let log = log_of_partition_0(&view);
+    let tail = view.logs[log].tail_lsn.unwrap();
+    // 120 bytes for each of the 120,000 records after the snapshot
+    let to_tail = |unapplied| {
+        Some(SnapshotToTail {
+            snapshot_lsn,
+            bytes: Some(SnapshotBytes {
+                bytes: 120 * 120_000,
+                unapplied,
+            }),
+        })
+    };
+    assert_eq!(snapshot_to_tail(&view), to_tail(Some(tail - applied - 1)));
+    // Without the tail, only the bytes up to the replica furthest along are known.
+    view.logs[log].tail_lsn = None;
+    assert_eq!(snapshot_to_tail(&view), to_tail(None));
+    // Of the replicas that report the same snapshot, the one with its byte offset tells, wherever
+    // it is among them: older servers don't report it.
+    let replicas = &mut view.partitions[0].replicas;
+    for r in replicas.iter_mut() {
+        r.archived_lsn = Some(snapshot_lsn);
+    }
+    replicas.sort_by_key(|r| r.archived_log_byte_offset.is_none());
+    assert_eq!(snapshot_to_tail(&view), to_tail(None));
+
+    // Replicas that count from another base LSN, e.g. after a snapshot from before byte offsets
+    // turned on, can't be compared with the snapshot: only its LSN is known.
+    for r in &mut view.partitions[0].replicas {
+        r.byte_offsets_base_lsn = Some(3);
+    }
+    let expected = Some(SnapshotToTail {
+        snapshot_lsn,
+        bytes: None,
+    });
+    assert_eq!(snapshot_to_tail(&view), expected);
+    // Nor can a replica behind the snapshot's offset, as offsets may differ between replicas.
+    for r in &mut view.partitions[0].replicas {
+        r.byte_offsets_base_lsn = Some(2);
+        if r.archived_log_byte_offset.is_some() {
+            r.archived_log_byte_offset = Some(applied * 120 + 1);
+        }
+    }
+    assert_eq!(snapshot_to_tail(&view), expected);
+    // Neither without the snapshot's byte offset, from servers that don't report it.
+    for r in &mut view.partitions[0].replicas {
+        r.archived_log_byte_offset = None;
+    }
+    assert_eq!(snapshot_to_tail(&view), expected);
+    // And without a snapshot, there's nothing to tell.
+    for r in &mut view.partitions[0].replicas {
+        r.archived_lsn = None;
+    }
+    assert_eq!(snapshot_to_tail(&view), None);
+}
+
 /// Findings need evidence. With the cluster state: N3, dead, is the only metadata member, so the
 /// metadata quorum is lost though no server answered; log 0's writable nodes are both in one
 /// zone, too few for its replication across two; N1 and N2 both lead partition 0 in its newest
@@ -800,6 +877,11 @@ pub(crate) fn large_cluster_snapshot() -> Snapshot {
                 last_applied_schema_version: Some(common::Version { value: 17 }),
                 enabled_features: vec!["journal_v2".to_owned(), "vqueues".to_owned()],
                 updated_at: Some(std::time::SystemTime::now().into()),
+                // 120 bytes per record, also in the snapshot the leader reports
+                byte_offsets_base_lsn: Some(common::Lsn { value: 2 }),
+                log_byte_offset: Some(applied * 120),
+                last_archived_log_byte_offset: leads.then_some((leader_applied - 120_000) * 120),
+                last_archived_byte_offsets_base_lsn: leads.then_some(common::Lsn { value: 2 }),
                 ..Default::default()
             };
             processors.entry(node).or_default().push((p, status));
