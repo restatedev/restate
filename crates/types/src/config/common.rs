@@ -1157,8 +1157,9 @@ experimental! {
     /// # Track the byte offsets of partitions
     ///
     /// When enabled, partitions track how far they have applied their log and written their
-    /// partition store in bytes, next to their applied LSN. A partition turns them on when one of
-    /// its leaders that has this option is next elected.
+    /// partition store in bytes, next to their applied LSN. A partition turns them on when it
+    /// next elects a leader with this option enabled, or a leader running v1.9.0 or newer
+    /// (including development and release-candidate builds), regardless of this option.
     ///
     /// Only enable once all nodes run v1.8.2 or newer. Once a partition has enabled it, it stays
     /// enabled even if this option is removed.
