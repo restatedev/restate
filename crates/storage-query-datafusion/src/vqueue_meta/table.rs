@@ -9,12 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::ops::ControlFlow;
 use std::sync::Arc;
 
+use restate_core::io::IoExecutor;
+use restate_partition_store::vqueue_table::VQueueMetaScan;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::ScanVQueueMetaTable;
+use restate_storage_api::scan::{RowConsumer, ScanOutcome};
 use restate_storage_api::vqueue_table::filters::ScanMetaFilter;
 use restate_storage_api::vqueue_table::metadata::VQueueMetaRef;
 use restate_types::vqueues::VQueueId;
@@ -72,18 +72,19 @@ impl ScanLocalPartition for VQueuesMetaScanner {
     type ConversionError = std::convert::Infallible;
     type Filter = VQueueMetaFilter;
 
-    fn for_each_row<
-        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
-        partition_store: &PartitionStore,
+    fn for_each_row<'s, F: for<'a> RowConsumer<Item<'a> = Self::Item<'a>>>(
+        partition_store: &'s PartitionStore,
+        executor: &'s (impl IoExecutor + Sync),
         filter: VQueueMetaFilter,
-        mut f: F,
-    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        partition_store
-            .for_each_vqueue_meta(filter.into(), move |item| f(item).map_break(Result::unwrap))
+        f: F,
+    ) -> impl Future<Output = restate_storage_api::Result<ScanOutcome<F>>> + Send {
+        partition_store.scan(
+            executor,
+            VQueueMetaScan {
+                filter: filter.into(),
+            },
+            f,
+        )
     }
 
     fn append_row<'a>(

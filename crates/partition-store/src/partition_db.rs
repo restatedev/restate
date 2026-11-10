@@ -27,8 +27,8 @@ use restate_core::io::{AdmissionClosed, Gate, IdleTracker, IoExecutor, IoOp};
 use restate_rocksdb::configuration::{CfConfigurator, DbConfigurator};
 use restate_rocksdb::reads::ColumnFamilies;
 use restate_rocksdb::{
-    CfHandles, DbName, Guarded, RawRocksDb, RocksAccess, RocksDb, RocksDbManager,
-    RocksDbReadPerfGuard, RocksError, SinglePoolExecutor, StorageOp, StorageTaskKind,
+    CfHandles, DbName, LeasePolicy, RawRocksDb, RocksAccess, RocksDb, RocksDbManager, RocksError,
+    SinglePoolExecutor, StorageOp, StorageTaskKind,
 };
 use restate_storage_api::StorageError;
 use restate_types::config::Configuration;
@@ -95,11 +95,6 @@ pub struct PartitionDb(Session);
 /// One opening of a partition: a scope whose payload is the scope of its
 /// physical partition. See [`PartitionDb`].
 type Session = Scope<Scope<PhysicalPartition>>;
-
-/// A read of a partition prepared with [`PartitionDb::prepare_read`]: an
-/// operation on the partition's physical scope, `F`, measured by the perf guard
-/// that `G` creates.
-pub(crate) type PreparedRead<'a, F, G> = StorageOp<'a, &'a Scope<PhysicalPartition>, Guarded<F, G>>;
 
 /// A partition's column families, and the state that lives as long as they do.
 /// See [`PartitionDb`] for how it relates to the partition's sessions.
@@ -336,37 +331,38 @@ impl PartitionDb {
 
     /// Prepares a read of the partition's column families, as part of the
     /// partition's session, to submit to a pool of your choice. `op` gets the
-    /// database and the column families.
+    /// database and the column families, and may await between its RocksDB
+    /// calls, e.g. to hand rows to an async callback.
     ///
     /// The read counts in the session's gate, so closing the partition waits
     /// for it once it has been submitted. The partition's physical scope is the
-    /// read's context: it is cloned only if the read moves to a background
-    /// thread, and the clone keeps the column families alive until the read is
-    /// done. `name` labels the read's perf metrics.
+    /// read's context: it is cloned only if the read is admitted, and the clone
+    /// keeps the column families alive until the read is done. `name` labels
+    /// the read's perf metrics, which cover its polls but not its waits.
+    /// `lease_policy` decides what closing the partition does to a submitted
+    /// read; the read returns [`AdmissionClosed`] if it stopped it.
     pub(crate) fn prepare_read<R, OP>(
         &self,
         name: &'static str,
         kind: StorageTaskKind,
+        lease_policy: LeasePolicy,
         op: OP,
-    ) -> PreparedRead<
-        '_,
-        impl FnOnce(&Scope<PhysicalPartition>) -> R + Send + 'static + use<R, OP>,
-        impl FnOnce() -> RocksDbReadPerfGuard + Send + 'static + use<R, OP>,
-    >
+    ) -> impl IoOp<Output = Result<R, AdmissionClosed>> + use<'_, R, OP>
     where
-        OP: FnOnce(&RawRocksDb, &CfHandles<KeyKind>) -> R + Send + 'static,
+        OP: AsyncFnOnce(&RawRocksDb, &CfHandles<KeyKind>) -> R + Send + 'static,
         R: Send + 'static,
     {
-        StorageOp::with_context(
+        StorageOp::with_context_async(
             self.physical_scope(),
             self.gate(),
             kind,
-            move |physical: &Scope<PhysicalPartition>| {
+            async move |physical: &Scope<PhysicalPartition>| {
                 let cfs = &physical.payload().cfs;
-                op(cfs.database().inner().as_raw_db(), cfs)
+                op(cfs.database().inner().as_raw_db(), cfs).await
             },
         )
-        .with_guard(move || RocksDbReadPerfGuard::new(name))
+        .with_read_perf(name)
+        .with_lease_policy(lease_policy)
     }
 
     /// The last (locally) known archived LSN for this partition
