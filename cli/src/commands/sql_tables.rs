@@ -14,6 +14,26 @@ pub struct SqlColumnDoc { pub name: &'static str, pub ty: &'static str, pub desc
 pub struct SqlTableDoc { pub name: &'static str, pub description: &'static str, pub columns: &'static [SqlColumnDoc] }
 
 pub static SQL_TABLES: &[SqlTableDoc] = &[
+    SqlTableDoc { name: "sys_blob", description: "Blobs stored by each partition, such as invocation outputs. Use the kind-specific tables (e.g. `sys_blob_output`) to read the decoded payload.", columns: &[
+        SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Internal column that is used for partitioning the blobs. Can be ignored." },
+        SqlColumnDoc { name: "id", ty: "Utf8", description: "Blob ID, formatted as `blob_1...`. Matches `sys_invocation_status.completion_blob_id`." },
+        SqlColumnDoc { name: "created_at", ty: "TimestampMillisecond", description: "Timestamp indicating when the blob was created. Derived from the blob ID." },
+        SqlColumnDoc { name: "kind", ty: "Utf8", description: "The kind of the blob. Either `output`, `state` or `generic`." },
+        SqlColumnDoc { name: "ref_count", ty: "UInt32", description: "Number of references to this blob. A blob with `ref_count = 0` is marked for deletion and has no payload." },
+        SqlColumnDoc { name: "payload_length", ty: "UInt64", description: "Length of the blob payload in bytes." },
+    ] },
+    SqlTableDoc { name: "sys_blob_output", description: "Invocation outputs stored by each partition, with the payload decoded. One row per blob with `kind = 'output'` in `sys_blob`.", columns: &[
+        SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Internal column that is used for partitioning the blobs. Can be ignored." },
+        SqlColumnDoc { name: "id", ty: "Utf8", description: "Blob ID, formatted as `blob_1...`. Matches `sys_invocation_status.completion_blob_id`." },
+        SqlColumnDoc { name: "created_at", ty: "TimestampMillisecond", description: "Timestamp indicating when the blob was created. Derived from the blob ID." },
+        SqlColumnDoc { name: "ref_count", ty: "UInt32", description: "Number of references to this blob. A blob with `ref_count = 0` is marked for deletion and has no payload." },
+        SqlColumnDoc { name: "payload_length", ty: "UInt64", description: "Length of the blob payload in bytes." },
+        SqlColumnDoc { name: "result", ty: "Utf8", description: "Either `success` or `failure`. NULL if the blob has no payload." },
+        SqlColumnDoc { name: "output", ty: "Binary", description: "A binary, uninterpreted representation of the invocation output. NULL if `result = 'failure'`. You can use the more specific column `output_utf8` if the output is a string." },
+        SqlColumnDoc { name: "output_utf8", ty: "Utf8", description: "Only contains meaningful values when the handler returns its output as `utf8`. This is the case for handlers that serialize their output using JSON (the SDK default)." },
+        SqlColumnDoc { name: "failure_code", ty: "UInt32", description: "If `result = 'failure'`, this contains the error code." },
+        SqlColumnDoc { name: "failure_json", ty: "Utf8", description: "If `result = 'failure'`, this contains the error serialized as a JSON string." },
+    ] },
     SqlTableDoc { name: "sys_deployment", description: "Registered deployments. A deployment is a version of your service(s) code that Restate calls.", columns: &[
         SqlColumnDoc { name: "id", ty: "Utf8", description: "The ID of the service deployment." },
         SqlColumnDoc { name: "ty", ty: "Utf8", description: "The type of the endpoint. Either `http` or `lambda`." },
@@ -272,9 +292,11 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
         SqlColumnDoc { name: "last_failure_related_command_type", ty: "Utf8", description: "The type of the command that caused the failure, if any. You can check all the available command types in [`entries.rs`](https://github.com/restatedev/restate/blob/main/crates/types/src/journal_v2/command.rs)." },
         SqlColumnDoc { name: "last_awaiting_on_future_json", ty: "Utf8", description: "Last known future the SDK was awaiting on, if `in_flight = true`." },
         SqlColumnDoc { name: "status", ty: "Utf8", description: "Either `pending` or `scheduled` or `ready` or `running` or `paused` or `backing-off` or `suspended` or `completed`." },
-        SqlColumnDoc { name: "completion_result", ty: "Utf8", description: "If `status = 'completed'`, this contains either `success` or `failure`" },
+        SqlColumnDoc { name: "completion_result", ty: "Utf8", description: "If `status = 'completed'`, this contains either `success`, `failure`, or `killed``" },
         SqlColumnDoc { name: "completion_failure", ty: "Utf8", description: "If `status = 'completed' AND completion_result = 'failure'`, this contains the error cause" },
+        SqlColumnDoc { name: "completion_failure_code", ty: "UInt32", description: "If `status = 'completed' AND completion_result = 'failure'`, this contains the error code" },
+        SqlColumnDoc { name: "completion_blob_id", ty: "Utf8", description: "If `status = 'completed'`, the id of the blob holding the invocation output, formatted as `blob_1...`. NULL if the output is inlined or not stored. Since v1.8.1." },
     ] },
 ];
 
-pub static SQL_TABLES_HELP: &str = "Queryable introspection tables:\n  sys_deployment, sys_inbox, sys_journal, sys_journal_events, sys_locks, sys_promise, sys_rules, sys_scheduler, sys_service, state, sys_user_limits, sys_vqueue_entry_status, sys_vqueue_meta, sys_vqueues, sys_invocation\n\nRun `restate sql describe <table>` for a table's columns.";
+pub static SQL_TABLES_HELP: &str = "Queryable introspection tables:\n  sys_blob, sys_blob_output, sys_deployment, sys_inbox, sys_journal, sys_journal_events, sys_locks, sys_promise, sys_rules, sys_scheduler, sys_service, state, sys_user_limits, sys_vqueue_entry_status, sys_vqueue_meta, sys_vqueues, sys_invocation\n\nRun `restate sql describe <table>` for a table's columns.";

@@ -74,6 +74,9 @@ pub(crate) enum InvokerError {
     #[error("cannot decode entry: {0}")]
     #[code(restate_errors::RT0012)]
     RawEntryV2(#[from] journal_v2::raw::RawEntryError),
+    #[error("cannot replay journal entry: {0}. This indicates a bug or a storage corruption.")]
+    #[code(unknown)]
+    NotAProtocolCommand(#[from] restate_service_protocol_v4::message_codec::NotAProtocolCommand),
     #[error(
         "Unexpected end of invocation stream, after EndMessage or ErrorMessage or SuspensionMessage no other bytes should be received"
     )]

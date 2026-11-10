@@ -102,6 +102,7 @@ impl EntryType {
                 CommandType::AttachInvocation => "Command/AttachInvocation",
                 CommandType::GetInvocationOutput => "Command/GetInvocationOutput",
                 CommandType::CompleteAwakeable => "Command/CompleteAwakeable",
+                CommandType::EndMarker => "Command/EndMarker",
             },
             EntryType::Notification(notif_type) => match notif_type {
                 NotificationType::Completion(completion_type) => match completion_type {

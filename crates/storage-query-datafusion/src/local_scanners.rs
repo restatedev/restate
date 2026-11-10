@@ -13,6 +13,8 @@ use std::sync::Arc;
 use restate_partition_store::PartitionStoreManager;
 use restate_worker_api::PartitionQueryAccess;
 
+use crate::blob::output::schema::SysBlobOutputTable;
+use crate::blob::schema::SysBlobTable;
 use crate::inbox::schema::SysInboxTable;
 use crate::invocation_state::schema::SysInvocationStateTable;
 use crate::invocation_status::schema::SysInvocationStatusTable;
@@ -68,6 +70,12 @@ pub fn register_partition_scanners(
     ));
     remote_scanner_manager.register_partition_scanner::<SysPromiseTable>(Arc::new(
         SysPromiseTable::create_local_scanner(Arc::clone(&partition_store_manager)),
+    ));
+    remote_scanner_manager.register_partition_scanner::<SysBlobTable>(Arc::new(
+        SysBlobTable::create_local_scanner(Arc::clone(&partition_store_manager)),
+    ));
+    remote_scanner_manager.register_partition_scanner::<SysBlobOutputTable>(Arc::new(
+        SysBlobOutputTable::create_local_scanner(Arc::clone(&partition_store_manager)),
     ));
     remote_scanner_manager.register_partition_scanner::<SysVqueueMetaTable>(Arc::new(
         SysVqueueMetaTable::create_local_scanner(Arc::clone(&partition_store_manager)),

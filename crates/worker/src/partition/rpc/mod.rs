@@ -23,6 +23,7 @@ mod resume_invocation;
 
 use std::sync::Arc;
 
+use restate_storage_api::blob_table::ReadBlobTable;
 use restate_storage_api::invocation_status_table::ReadInvocationStatusTable;
 use restate_storage_api::journal_table as journal_table_v1;
 use restate_storage_api::journal_table_v2::ReadJournalTable;
@@ -177,7 +178,10 @@ impl<'a, TSchemas, TStorage> RpcHandler<PartitionProcessorRpcRequest>
     for RpcContext<'a, TSchemas, TStorage>
 where
     TSchemas: DeploymentResolver,
-    TStorage: ReadInvocationStatusTable + ReadJournalTable + journal_table_v1::ReadJournalTable,
+    TStorage: ReadInvocationStatusTable
+        + ReadJournalTable
+        + journal_table_v1::ReadJournalTable
+        + ReadBlobTable,
 {
     async fn handle(
         self,
