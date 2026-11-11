@@ -68,7 +68,7 @@ pub(crate) struct SequencerAppender<T> {
     sequencer_shared_state: Arc<SequencerSharedState>,
     networking: Networking<T>,
     first_offset: LogletOffset,
-    // Prepared by the sequencer and shared by every replica and retry wave.
+    // Prepared once before fan-out and shared by every replica and retry wave.
     prepared_payloads: PreparedPayloads,
     payload_size: u32,
     checker: NodeSetChecker<NodeAttributes>,

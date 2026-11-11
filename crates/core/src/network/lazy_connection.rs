@@ -300,7 +300,7 @@ impl OutgoingOp {
                 msg_type,
                 sort_code,
             } => {
-                let payload = message.encode_to_bytes(protocol_version)?;
+                let payload = message.encode_payload(protocol_version)?;
                 Ok(EgressMessage::RpcCall {
                     payload,
                     reply_sender,
@@ -468,5 +468,103 @@ impl<T: NetworkSender> ConnectionTask<T> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+    use futures::{FutureExt, StreamExt};
+
+    use restate_types::logs::{Keys, LogletId, LogletOffset, Record, SequenceNumber};
+    use restate_types::net::log_server::{
+        LogServerRequestHeader, PreparedPayloads, PreparedStore, StoreFlags, Stored,
+    };
+    use restate_types::storage::PolyBytes;
+    use restate_types::time::NanosSinceEpoch;
+
+    use crate::network::io::EgressStream;
+    use crate::network::protobuf::network::{datagram, message};
+    use crate::{self as restate_core, TestCoreEnv};
+
+    use super::*;
+
+    #[restate_core::test]
+    async fn prepared_rpc_egress_preserves_deferral_backpressure_and_cancellation() {
+        let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let request = PreparedStore {
+            header: LogServerRequestHeader::new(LogletId::new_unchecked(1), LogletOffset::INVALID),
+            timeout_at: None,
+            flags: StoreFlags::empty(),
+            first_offset: LogletOffset::OLDEST,
+            sequencer: GenerationalNodeId::new(1, 1),
+            known_archived: LogletOffset::INVALID,
+            payloads: PreparedPayloads::new(Arc::from([Record::from_parts(
+                NanosSinceEpoch::new(42),
+                Keys::None,
+                PolyBytes::Bytes(Bytes::from(vec![7; 8192])),
+            )])),
+        };
+        let lazy = |request: PreparedStore, version| {
+            let (reply_sender, reply) = ReplyRx::<Stored>::new();
+            let op = OutgoingOp::CallRpc {
+                reply_sender,
+                message: Box::new(request),
+                service_tag: <PreparedStore as RpcRequest>::Service::TAG,
+                msg_type: PreparedStore::TYPE,
+                sort_code: Some(1),
+            };
+            (op.into_egress_message(version), reply)
+        };
+        for version in [
+            ProtocolVersion::Unknown,
+            ProtocolVersion::V3,
+            ProtocolVersion::V6,
+        ] {
+            let eager = EgressMessage::make_rpc_message(request.clone(), Some(1), version)
+                .map(|(message, _reply)| message);
+            let (lazy, _reply) = lazy(request.clone(), version);
+            for result in [eager, lazy] {
+                if version == ProtocolVersion::Unknown {
+                    assert!(result.is_err());
+                } else {
+                    let EgressMessage::RpcCall { payload, .. } = result.unwrap() else {
+                        panic!("expected RPC")
+                    };
+                    assert!(payload.try_into_bytes().is_err());
+                }
+            }
+        }
+        let (sender, mut stream, shared) = EgressStream::with_capacity(1);
+        let (cancelled, reply) =
+            EgressMessage::make_rpc_message(request.clone(), None, ProtocolVersion::V6).unwrap();
+        drop(reply);
+        assert!(sender.send(cancelled).await.is_ok());
+        assert!(sender.try_reserve().is_err());
+        assert!(stream.next().now_or_never().is_none());
+        assert_eq!(sender.capacity(), 1);
+
+        let (message, reply) = lazy(request.clone(), ProtocolVersion::V6);
+        assert!(sender.send(message.unwrap()).await.is_ok());
+        let outgoing = stream.next().await.unwrap();
+        let mut encoded = Vec::with_capacity(outgoing.encoded_len());
+        outgoing.encode_into(&mut encoded);
+        let message = outgoing.into_message();
+        let Some(message::Body::Datagram(datagram)) = message.body else {
+            panic!("expected datagram")
+        };
+        let Some(datagram::Datagram::RpcCall(call)) = datagram.datagram else {
+            panic!("expected RPC")
+        };
+        assert_eq!(call.id, 1, "cancelled calls must not allocate an RPC id");
+        assert_eq!(
+            call.payload,
+            request.encode_to_bytes(ProtocolVersion::V6).unwrap()
+        );
+        drop(shared);
+        assert!(stream.next().await.is_none());
+        assert!(sender.is_closed());
+        drop(stream);
+        assert!(reply.await.is_err());
     }
 }
