@@ -26,8 +26,6 @@ use crate::net::codec::{WireDecode, WireEncode, encode_as_bilrost};
 use crate::net::{ProtocolVersion, define_service};
 use crate::time::MillisSinceEpoch;
 
-pub use compat::Payloads as CompatibilityPayloads;
-
 pub struct LogServerDataService;
 define_service! {
     @service = LogServerDataService,
@@ -386,17 +384,10 @@ impl WireEncode for Store {
     ) -> Result<bytes::Bytes, super::codec::EncodeError> {
         match protocol_version {
             ProtocolVersion::Unknown => Err(crate::net::codec::EncodeError::IncompatibleVersion {
-                type_tag: stringify!($message),
-                min_required: ProtocolVersion::V2,
+                type_tag: stringify!(Store),
+                min_required: ProtocolVersion::V3,
                 actual: protocol_version,
             }),
-            ProtocolVersion::V2 => {
-                // note: cloning the store message is cheap, but not free.
-                // hopefully this code path will be short lived until all
-                // nodes has been upgraded to protocol-version: V3
-                let msg: compat::Store = self.clone().into();
-                Ok(encode_as_bilrost(&msg))
-            }
             ProtocolVersion::V3 | ProtocolVersion::V4 | ProtocolVersion::V6 => {
                 Ok(encode_as_bilrost(self))
             }
@@ -416,14 +407,9 @@ impl WireDecode for Store {
     {
         match protocol_version {
             ProtocolVersion::Unknown => Err(anyhow::anyhow!(
-                "Store requires at least protocol version V2, got {:?}",
+                "Store requires at least protocol version V3, got {:?}",
                 protocol_version
             )),
-            ProtocolVersion::V2 => {
-                let msg: compat::Store =
-                    crate::net::codec::decode_as_bilrost(buf, protocol_version)?;
-                Ok(msg.into())
-            }
             ProtocolVersion::V3 | ProtocolVersion::V4 | ProtocolVersion::V6 => {
                 crate::net::codec::decode_as_bilrost(buf, protocol_version)
             }
@@ -940,115 +926,6 @@ impl Digest {
     pub fn with_status(mut self, status: Status) -> Self {
         self.header.status = status;
         self
-    }
-}
-
-mod compat {
-    use std::sync::Arc;
-
-    use restate_clock::time::MillisSinceEpoch;
-    use restate_encoding::{ArcedSlice, NetSerde};
-
-    use crate::{
-        GenerationalNodeId,
-        logs::{LogletOffset, Record},
-        net::log_server::{LogServerRequestHeader, StoreFlags},
-    };
-
-    /// A backward compatible Payloads that uses PolyBytes encoding directly.
-    /// Unlike the newer [`super::Payloads`] which uses custom encoding to generate
-    /// a [`Bytes`] compatible wire encoding
-    ///
-    /// Used only with wire-protocol V2.
-    #[derive(
-        bilrost::Message,
-        derive_more::Into,
-        derive_more::From,
-        derive_more::Deref,
-        Debug,
-        Clone,
-        Default,
-        NetSerde,
-    )]
-    pub struct Payloads(#[bilrost(encoding(ArcedSlice<unpacked>))] Arc<[Record]>);
-
-    impl From<super::Payloads> for Payloads {
-        fn from(value: super::Payloads) -> Self {
-            Self(value.0)
-        }
-    }
-
-    impl From<Payloads> for super::Payloads {
-        fn from(value: Payloads) -> Self {
-            Self(value.0)
-        }
-    }
-
-    /// Store one or more records on a log-server
-    #[derive(Debug, Clone, bilrost::Message, NetSerde)]
-    pub struct Store {
-        #[bilrost(1)]
-        pub header: LogServerRequestHeader,
-        #[bilrost(2)]
-        pub timeout_at: Option<MillisSinceEpoch>,
-        #[bilrost(3)]
-        pub flags: StoreFlags,
-        #[bilrost(4)]
-        pub first_offset: LogletOffset,
-        #[bilrost(5)]
-        pub sequencer: GenerationalNodeId,
-        #[bilrost(6)]
-        pub known_archived: LogletOffset,
-        #[bilrost(7)]
-        pub payloads: Payloads,
-    }
-
-    impl From<super::Store> for Store {
-        fn from(value: super::Store) -> Self {
-            let super::Store {
-                header,
-                timeout_at,
-                flags,
-                first_offset,
-                sequencer,
-                known_archived,
-                payloads,
-            } = value;
-
-            Self {
-                header,
-                timeout_at,
-                flags,
-                first_offset,
-                sequencer,
-                known_archived,
-                payloads: payloads.into(),
-            }
-        }
-    }
-
-    impl From<Store> for super::Store {
-        fn from(value: Store) -> Self {
-            let Store {
-                header,
-                timeout_at,
-                flags,
-                first_offset,
-                sequencer,
-                known_archived,
-                payloads,
-            } = value;
-
-            Self {
-                header,
-                timeout_at,
-                flags,
-                first_offset,
-                sequencer,
-                known_archived,
-                payloads: payloads.into(),
-            }
-        }
     }
 }
 

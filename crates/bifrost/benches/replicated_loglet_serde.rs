@@ -34,7 +34,7 @@ use restate_types::logs::{LogId, LogletId, LogletOffset, Record, SequenceNumber}
 use restate_types::net::codec::{WireDecode, WireEncode};
 use restate_types::net::log_server::{LogServerRequestHeader, Store, StoreFlags};
 use restate_types::net::replicated_loglet::{Append, CommonRequestHeader};
-use restate_types::net::{RpcRequest, Service};
+use restate_types::net::{CURRENT_PROTOCOL_VERSION, RpcRequest, Service};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{GenerationalNodeId, RestateVersion};
 use restate_wal_protocol::{Command, Destination, Envelope};
@@ -159,7 +159,7 @@ fn serialize_store_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> {
     let body = Body::Datagram(Datagram {
         datagram: Some(
             restate_core::network::protobuf::network::RpcCall {
-                payload: store_message.encode_to_bytes(restate_types::net::ProtocolVersion::V2)?,
+                payload: store_message.encode_to_bytes(CURRENT_PROTOCOL_VERSION)?,
                 id: 88,
                 service: <Store as RpcRequest>::Service::TAG.into(),
                 msg_type: Store::TYPE.into(),
@@ -192,7 +192,7 @@ fn serialize_append_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> 
     let body = Body::Datagram(Datagram {
         datagram: Some(
             restate_core::network::protobuf::network::RpcCall {
-                payload: append_message.encode_to_bytes(restate_types::net::ProtocolVersion::V2)?,
+                payload: append_message.encode_to_bytes(CURRENT_PROTOCOL_VERSION)?,
                 id: 88,
                 service: <Append as RpcRequest>::Service::TAG.into(),
                 msg_type: Append::TYPE.into(),
@@ -213,14 +213,6 @@ fn serialize_append_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> 
 }
 
 fn deserialize_append_message(serialized_message: Bytes) -> anyhow::Result<Append> {
-    // let protocol_version = restate_types::net::ProtocolVersion::V1;
-    // let msg = Message::decode(serialized_message)?;
-    // let body = msg.body.unwrap();
-    // we ignore non-deserializable messages (serde errors, or control signals in drain)
-    // let msg_body = body.try_as_binary_body(restate_types::net::ProtocolVersion::V1)?;
-    // Ok(Append::decode(msg_body.payload, protocol_version))
-    //
-    // disabled during fabric v2 refactoring, feel free to implement it if you need this bench
     let message = Message::decode(serialized_message)?;
 
     let Body::Datagram(Datagram {
@@ -230,10 +222,7 @@ fn deserialize_append_message(serialized_message: Bytes) -> anyhow::Result<Appen
         bail!("expecting a Datagram(RpcCall)");
     };
 
-    Ok(Append::decode(
-        rpc_call.payload,
-        restate_types::net::ProtocolVersion::V2,
-    ))
+    Ok(Append::decode(rpc_call.payload, CURRENT_PROTOCOL_VERSION))
 }
 
 fn replicated_loglet_append_invoke_cmd_serde(c: &mut Criterion) {

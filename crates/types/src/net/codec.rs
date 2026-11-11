@@ -18,7 +18,7 @@ use bytes::Bytes;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::protobuf::common::ProtocolVersion;
+use crate::net::{MIN_SUPPORTED_PROTOCOL_VERSION, ProtocolVersion};
 
 #[derive(thiserror::Error, Debug)]
 pub enum EncodeError {
@@ -102,8 +102,8 @@ pub fn decode_as_flexbuffers<T: DeserializeOwned>(
     protocol_version: ProtocolVersion,
 ) -> Result<T, anyhow::Error> {
     assert!(
-        protocol_version >= ProtocolVersion::V2,
-        "unknown protocol version should never be set"
+        protocol_version >= MIN_SUPPORTED_PROTOCOL_VERSION,
+        "unsupported network protocol version"
     );
 
     let len = buf.remaining();
@@ -132,8 +132,8 @@ pub fn decode_as_bilrost<T: OwnedMessage>(
     protocol_version: ProtocolVersion,
 ) -> Result<T, anyhow::Error> {
     assert!(
-        protocol_version >= ProtocolVersion::V2,
-        "bilrost encoding is supported from protocol version v2"
+        protocol_version >= MIN_SUPPORTED_PROTOCOL_VERSION,
+        "unsupported network protocol version"
     );
 
     T::decode(buf).context("failed decoding (bilrost) network message")
@@ -153,7 +153,7 @@ mod tests {
     }
 
     fn decode(mut buf: impl Buf) -> Message {
-        let message = decode_as_flexbuffers(&mut buf, ProtocolVersion::V2).unwrap();
+        let message = decode_as_flexbuffers(&mut buf, MIN_SUPPORTED_PROTOCOL_VERSION).unwrap();
         assert!(!buf.has_remaining(), "decoding consumes the message");
         message
     }

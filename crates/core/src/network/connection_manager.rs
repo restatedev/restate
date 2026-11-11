@@ -711,35 +711,35 @@ mod tests {
     async fn bad_handshake() -> Result<()> {
         let test_setup = TestCoreEnv::create_with_single_node(1, 1).await;
         let metadata = test_setup.metadata;
-        let (tx, rx) = mpsc::channel(1);
-        let my_node_id = metadata.my_node_id();
+        // Unknown and retired V2-only peers must fail before establishing a connection.
+        for version in [ProtocolVersion::Unknown as i32, 2] {
+            let (tx, rx) = mpsc::channel(1);
+            let my_node_id = metadata.my_node_id();
+            let hello = Hello {
+                min_protocol_version: version,
+                max_protocol_version: version,
+                my_node_id: Some(my_node_id.into()),
+                cluster_name: metadata.nodes_config_ref().cluster_name().to_owned(),
+                cluster_fingerprint: metadata
+                    .nodes_config_ref()
+                    .cluster_fingerprint()
+                    .map_or(0, |f| f.to_u64()),
+                direction: ConnectionDirection::Bidirectional.into(),
+                swimlane: Swimlane::default().into(),
+            };
+            let hello = Message::new(Header::default(), hello);
+            tx.send(hello).await.expect("Channel accept hello message");
 
-        // unsupported protocol version
-        let hello = Hello {
-            min_protocol_version: ProtocolVersion::Unknown.into(),
-            max_protocol_version: ProtocolVersion::Unknown.into(),
-            my_node_id: Some(my_node_id.into()),
-            cluster_name: metadata.nodes_config_ref().cluster_name().to_owned(),
-            cluster_fingerprint: metadata
-                .nodes_config_ref()
-                .cluster_fingerprint()
-                .map_or(0, |f| f.to_u64()),
-            direction: ConnectionDirection::Bidirectional.into(),
-            swimlane: Swimlane::default().into(),
-        };
-        let hello = Message::new(Header::default(), hello);
-        tx.send(hello).await.expect("Channel accept hello message");
-
-        let connections = ConnectionManager::default();
-        let incoming = ReceiverStream::new(rx);
-        let resp = connections.accept_incoming_connection(incoming).await;
-        assert!(resp.is_err());
-        assert!(matches!(
-            resp,
-            Err(AcceptError::Handshake(
-                HandshakeError::UnsupportedVersion(proto_version)
-            )) if proto_version == ProtocolVersion::Unknown as i32
-        ));
+            let connections = ConnectionManager::default();
+            let incoming = ReceiverStream::new(rx);
+            let resp = connections.accept_incoming_connection(incoming).await;
+            assert!(matches!(
+                resp,
+                Err(AcceptError::Handshake(
+                    HandshakeError::UnsupportedVersion(proto_version)
+                )) if proto_version == version
+            ));
+        }
 
         // cluster name mismatch
         let (tx, rx) = mpsc::channel(1);
