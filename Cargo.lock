@@ -3910,9 +3910,9 @@ dependencies = [
 
 [[package]]
 name = "gardal"
-version = "0.0.1-alpha.9"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aee8cfaab5bff357684bf9396842bdc2985f9fc25ce9a56ec1bce7ccb8c6318b"
+checksum = "c163717d8341c7727d807d35331c88357ddb8a1c70bea59024f876228bac3057"
 dependencies = [
  "futures",
  "likely_stable",
