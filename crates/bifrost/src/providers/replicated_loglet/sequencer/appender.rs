@@ -31,8 +31,10 @@ use restate_types::{
     Merge, PlainNodeId,
     config::Configuration,
     live::Live,
-    logs::{LogletOffset, Record, SequenceNumber, TailState},
-    net::log_server::{LogServerRequestHeader, Status, Store, StoreFlags, Stored},
+    logs::{LogletOffset, SequenceNumber, TailState},
+    net::log_server::{
+        LogServerRequestHeader, PreparedPayloads, PreparedStore, Status, StoreFlags, Stored,
+    },
     replication::{DecoratedNodeSet, NodeSet, NodeSetChecker},
     time::MillisSinceEpoch,
 };
@@ -66,7 +68,8 @@ pub(crate) struct SequencerAppender<T> {
     sequencer_shared_state: Arc<SequencerSharedState>,
     networking: Networking<T>,
     first_offset: LogletOffset,
-    records: Arc<[Record]>,
+    // Prepared once before fan-out and shared by every replica and retry wave.
+    prepared_payloads: PreparedPayloads,
     payload_size: u32,
     checker: NodeSetChecker<NodeAttributes>,
     nodeset_status: DecoratedNodeSet<PerNodeStatus>,
@@ -86,7 +89,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
         sequencer_shared_state: Arc<SequencerSharedState>,
         networking: Networking<T>,
         first_offset: LogletOffset,
-        records: Arc<[Record]>,
+        prepared_payloads: PreparedPayloads,
         permit: OwnedSemaphorePermit,
         commit_resolver: LogletCommitResolver,
     ) -> Self {
@@ -103,7 +106,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
             DecoratedNodeSet::from(sequencer_shared_state.selector.nodeset().clone());
 
         let mut payload_size: u32 = 0;
-        for record in records.iter() {
+        for record in prepared_payloads.records() {
             // it's safe to cast since a record would be never be larger than 4GiB.
             let record_size = record.estimated_encode_size() as u32;
             sequencer_shared_state.stats.record_size(record_size);
@@ -114,7 +117,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
             sequencer_shared_state,
             networking,
             first_offset,
-            records,
+            prepared_payloads,
             payload_size,
             checker,
             nodeset_status,
@@ -133,8 +136,8 @@ impl<T: TransportConnect> SequencerAppender<T> {
             log_id=%self.sequencer_shared_state.loglet_id().log_id(),
             loglet_id=%self.sequencer_shared_state.loglet_id(),
             first_offset=%self.first_offset,
-            to_offset=%self.records.last_offset(self.first_offset).unwrap(),
-            length=%self.records.len(),
+            to_offset=%self.prepared_payloads.records().last_offset(self.first_offset).unwrap(),
+            length=%self.prepared_payloads.records().len(),
         )
     )]
     pub async fn run(mut self, cancellation_token: CancellationToken) {
@@ -202,8 +205,8 @@ impl<T: TransportConnect> SequencerAppender<T> {
                             log_id = %self.sequencer_shared_state.loglet_id().log_id(),
                             loglet_id = %self.sequencer_shared_state.loglet_id(),
                             first_offset = %self.first_offset,
-                            to_offset = %self.records.last_offset(self.first_offset).unwrap(),
-                            length = %self.records.len(),
+                            to_offset = %self.prepared_payloads.records().last_offset(self.first_offset).unwrap(),
+                            length = %self.prepared_payloads.records().len(),
                             size = %ByteCount::from(self.payload_size),
                             "Append wave failed, retrying with a new wave after {}. Status is {}", delay.friendly(), self.nodeset_status
                         );
@@ -236,11 +239,11 @@ impl<T: TransportConnect> SequencerAppender<T> {
 
                 self.sequencer_shared_state
                     .stats
-                    .increment_committed(self.records.len() as u64);
+                    .increment_committed(self.prepared_payloads.records().len() as u64);
 
-                self.sequencer_shared_state
-                    .stats
-                    .increment_bytes_committed(self.records.estimated_encode_size() as u64);
+                self.sequencer_shared_state.stats.increment_bytes_committed(
+                    self.prepared_payloads.records().estimated_encode_size() as u64,
+                );
 
                 self.sequencer_shared_state
                     .stats
@@ -346,7 +349,11 @@ impl<T: TransportConnect> SequencerAppender<T> {
         };
 
         trace!(graylist = %self.graylist, %spread, wave = %self.current_wave, nodeset_status = %self.nodeset_status, "Sending append wave");
-        let last_offset = self.records.last_offset(self.first_offset).unwrap();
+        let last_offset = self
+            .prepared_payloads
+            .records()
+            .last_offset(self.first_offset)
+            .unwrap();
 
         // track the in flight server ids
         let mut pending_servers: NodeSet = spread
@@ -380,7 +387,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                         sequencer_shared_state: self.sequencer_shared_state.clone(),
                         networking: self.networking.clone(),
                         first_offset: self.first_offset,
-                        records: self.records.clone(),
+                        prepared_payloads: self.prepared_payloads.clone(),
                         store_timeout,
                     };
                     async move { (node_id, store_task.run().await) }.in_current_tc()
@@ -659,7 +666,7 @@ struct LogServerStoreTask<T> {
     sequencer_shared_state: Arc<SequencerSharedState>,
     networking: Networking<T>,
     first_offset: LogletOffset,
-    records: Arc<[Record]>,
+    prepared_payloads: PreparedPayloads,
     store_timeout: Duration,
 }
 
@@ -689,7 +696,7 @@ impl<T: TransportConnect> LogServerStoreTask<T> {
         fields(
             loglet_id = %self.sequencer_shared_state.loglet_id(),
             first_offset=%self.first_offset,
-            last_offset = %self.records.last_offset(self.first_offset).unwrap(),
+            last_offset = %self.prepared_payloads.records().last_offset(self.first_offset).unwrap(),
             peer=%self.node_id,
         )
     )]
@@ -786,7 +793,7 @@ impl<T: TransportConnect> LogServerStoreTask<T> {
     async fn try_send(&self) -> Result<Stored, RpcError> {
         let timeout_at = MillisSinceEpoch::after(self.store_timeout);
         let loglet_id = *self.sequencer_shared_state.loglet_id();
-        let store = Store {
+        let store = PreparedStore {
             header: LogServerRequestHeader::new(
                 loglet_id,
                 self.sequencer_shared_state
@@ -796,7 +803,7 @@ impl<T: TransportConnect> LogServerStoreTask<T> {
             first_offset: self.first_offset,
             flags: StoreFlags::empty(),
             known_archived: LogletOffset::INVALID,
-            payloads: Arc::clone(&self.records).into(),
+            payloads: self.prepared_payloads.clone(),
             sequencer: *self.sequencer_shared_state.sequencer(),
             timeout_at: Some(timeout_at),
         };

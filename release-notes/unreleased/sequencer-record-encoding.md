@@ -1,0 +1,8 @@
+# Reduced CPU work during replicated log writes
+
+## Improvement
+
+Replicated log writes reuse serialization work across replicas and retries,
+reducing CPU work and temporary memory allocations on the sequencer.
+Supported peers remain wire-compatible; no configuration changes or migration
+steps are required.

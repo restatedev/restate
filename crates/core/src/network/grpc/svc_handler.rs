@@ -17,11 +17,9 @@ use tracing::warn;
 use restate_types::config::NetworkingOptions;
 use restate_types::net::connect_opts::GrpcConnectionOptions;
 
-use crate::network::ConnectionManager;
-use crate::network::protobuf::core_node_svc::core_node_svc_server::{
-    CoreNodeSvc, CoreNodeSvcServer,
-};
+use super::server::core_node_svc_server::{CoreNodeSvc, CoreNodeSvcServer};
 use crate::network::protobuf::network::Message;
+use crate::network::{ConnectionManager, OutgoingMessage};
 
 pub struct CoreNodeSvcHandler {
     connections: ConnectionManager,
@@ -53,7 +51,7 @@ impl CoreNodeSvcHandler {
 
 #[async_trait::async_trait]
 impl CoreNodeSvc for CoreNodeSvcHandler {
-    type CreateConnectionStream = BoxStream<'static, Result<Message, Status>>;
+    type CreateConnectionStream = BoxStream<'static, Result<OutgoingMessage, Status>>;
 
     // Status codes returned in different scenarios:
     // - DeadlineExceeded: No hello received within deadline

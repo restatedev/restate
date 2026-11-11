@@ -22,14 +22,14 @@ use restate_types::logs::metadata::ProviderKind;
 use restate_types::logs::{LogletOffset, SequenceNumber, TailOffsetWatch};
 use restate_types::net::RpcRequest;
 use restate_types::net::replicated_loglet::{
-    Append, Appended, CommonRequestHeader, CommonResponseHeader, GetSequencerState,
+    Append, Appended, CommonRequestHeader, CommonResponseHeader, GetSequencerState, PreparedAppend,
     SequencerDataService, SequencerMetaService, SequencerState, SequencerStatus,
 };
 
 use super::error::ReplicatedLogletError;
 use super::loglet::{FindTailFlags, ReplicatedLoglet};
 use super::provider::ReplicatedLogletProvider;
-use crate::loglet::{AppendError, Loglet, LogletCommit, OperationError};
+use crate::loglet::{AppendError, LogletCommit, OperationError};
 
 macro_rules! return_error_status {
     ($reciprocal:expr, $status:expr, $tail:expr) => {{
@@ -75,7 +75,7 @@ impl<T: TransportConnect> Handler for SequencerDataRpcHandler<T> {
     /// handle rpc request
     async fn on_rpc(&mut self, message: Incoming<RawSvcRpc<Self::Service>>) {
         if message.msg_type() == Append::TYPE {
-            let request = message.into_typed::<Append>();
+            let request = message.into_typed::<PreparedAppend>();
             self.handle_append(request).await;
         }
     }
@@ -83,7 +83,7 @@ impl<T: TransportConnect> Handler for SequencerDataRpcHandler<T> {
 
 impl<T: TransportConnect> SequencerDataRpcHandler<T> {
     /// Infallible handle_append method
-    async fn handle_append(&mut self, incoming: Incoming<Rpc<Append>>) {
+    async fn handle_append(&mut self, incoming: Incoming<Rpc<PreparedAppend>>) {
         let peer_logs_version = incoming.metadata_version().get(MetadataKind::Logs);
         let (reciprocal, append) = incoming.split();
 
@@ -100,7 +100,7 @@ impl<T: TransportConnect> SequencerDataRpcHandler<T> {
 
         let global_tail = loglet.known_global_tail();
 
-        let loglet_commit = match loglet.enqueue_batch(append.payloads.into()).await {
+        let loglet_commit = match loglet.enqueue_prepared_batch(append.payloads).await {
             Ok(loglet_commit) => loglet_commit,
             Err(err) => {
                 return_error_status!(reciprocal, SequencerStatus::from(err), global_tail);
