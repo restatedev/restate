@@ -15,8 +15,9 @@
 //! Operands are `(bucket, big-endian i64)` records; they may repeat buckets, appear
 //! in any order, and cancel. An empty operand is a valid no-op.
 //!
-//! Bucket tags use the raw stage/status discriminants. Their bytes and canonical
-//! bucket order must stay stable independently of key ordering.
+//! Bucket tags use the raw stage/status discriminants, not the name-ordered rank
+//! codecs used in ordered keys. Their bytes and canonical bucket order must stay
+//! stable independently of key ordering.
 
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -101,6 +102,11 @@ impl StageStatus {
 /// - `COUNT`, accumulator array sizes, and derived tag decoding grow automatically.
 ///   Keep the bucket mapping and persisted-byte tests passing, and update the
 ///   examples here when the number of buckets changes.
+///
+/// Also update the enum's `as_str` match and its separate ordered-key codec
+/// (`StageRankCodec` or `StatusCodec`), including decoding and rank tests. Assign
+/// a free rank in name order without changing existing ranks; these ranks are
+/// independent of the raw tags and dense slots used here.
 ///
 /// ## Compatibility when `COUNT` grows
 ///
