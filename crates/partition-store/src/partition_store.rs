@@ -511,6 +511,14 @@ impl PartitionStore {
         scan: PhysicalScan<Bytes>,
         on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
     ) -> Result<(), AdmissionClosed> {
+        if matches!(priority, Priority::Low)
+            && !Configuration::pinned()
+                .worker
+                .storage
+                .rocksdb_enable_low_priority_cache_fill
+        {
+            opts.fill_cache(false);
+        }
         scan.configure(&mut opts);
         RocksDb::run_background_iterator(
             self.db.physical_scope(),

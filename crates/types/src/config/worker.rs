@@ -867,6 +867,22 @@ pub struct StorageOptions {
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub always_commit_in_background: bool,
 
+    /// # Enable block-cache filling for low-priority scans
+    ///
+    /// Allows low-priority partition-store iterators, including query scans, to populate the
+    /// RocksDB block cache. Enabled by default. Disable this to evaluate scans that avoid
+    /// populating the cache. Cached blocks can still be read when this is disabled.
+    /// Explicit per-scan cache bypasses take precedence when this is enabled.
+    ///
+    /// Changes apply to newly started iterators.
+    ///
+    /// [Supports configuration hot-reloading]
+    ///
+    /// Since v1.8.2
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(default = "restate_serde_util::default::bool::<true>")]
+    pub rocksdb_enable_low_priority_cache_fill: bool,
+
     /// # Enable L6 filters
     ///
     /// Build Ribbon filters for L6 SST files to avoid unnecessary reads for missing keys.
@@ -1173,6 +1189,7 @@ impl Default for StorageOptions {
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.49,
             always_commit_in_background: false,
+            rocksdb_enable_low_priority_cache_fill: true,
             rocksdb_enable_l6_filters: false,
             rocksdb_disable_whole_key_filtering: false,
             rocksdb_disable_compact_on_deletion: false,
@@ -1487,6 +1504,30 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    #[test]
+    fn low_priority_cache_fill_defaults_on_and_preserves_explicit_settings() {
+        let options = StorageOptions::default();
+        assert!(options.rocksdb_enable_low_priority_cache_fill);
+
+        let key = "rocksdb-enable-low-priority-cache-fill";
+        let mut value = serde_json::to_value(options).unwrap();
+        value.as_object_mut().unwrap().remove(key);
+        let options: StorageOptions = serde_json::from_value(value.clone()).unwrap();
+        assert!(options.rocksdb_enable_low_priority_cache_fill);
+
+        for enabled in [false, true] {
+            value[key] = enabled.into();
+            let options: StorageOptions = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(options.rocksdb_enable_low_priority_cache_fill, enabled);
+
+            // An omitted false would deserialize as true and silently undo the opt-out.
+            let serialized = serde_json::to_value(options).unwrap();
+            assert_eq!(serialized[key], enabled);
+            let options: StorageOptions = serde_json::from_value(serialized).unwrap();
+            assert_eq!(options.rocksdb_enable_low_priority_cache_fill, enabled);
+        }
+    }
 
     #[test]
     fn scheduler_is_enabled_by_default_and_can_be_disabled() {
