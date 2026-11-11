@@ -25,7 +25,7 @@ use restate_util_time::DurationExt;
 
 use crate::metric_definitions::{
     USAGE_STATE_SIZE_ACCOUNTING_QUERY_DURATION_SECONDS, USAGE_STATE_STORAGE_BYTE_SECONDS,
-    USAGE_STATE_STORAGE_BYTES, describe_metrics,
+    USAGE_STATE_STORAGE_BYTES,
 };
 
 pub(crate) const STORAGE_QUERY: &str =
@@ -49,8 +49,6 @@ impl StorageAccountingTask {
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {
-        describe_metrics();
-
         let effective_interval = self.update_interval.add_jitter(0.1);
         let start_at = tokio::time::Instant::now() + effective_interval;
         let mut update_interval = tokio::time::interval_at(start_at, effective_interval);

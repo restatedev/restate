@@ -25,15 +25,15 @@ use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{Bifrost, Error as BiforstError};
 use restate_core::network::{RpcError, RpcReplyError};
 use restate_core::protobuf::cluster_ctrl_svc::{
-    ClusterStateRequest, ClusterStateResponse, CreatePartitionSnapshotRequest,
-    CreatePartitionSnapshotResponse, DescribeLogRequest, DescribeLogResponse,
-    DropPartitionStoreRequest, DropPartitionStoreResponse, FindTailRequest, FindTailResponse,
-    GetClusterConfigurationRequest, GetClusterConfigurationResponse, ListLogsRequest,
-    ListLogsResponse, MigrateMetadataRequest, MigrateMetadataResponse, QueryRequest, QueryResponse,
-    QueryWarning, SealAndExtendChainRequest, SealAndExtendChainResponse, SealChainRequest,
-    SealChainResponse, SealedSegment, SetClusterConfigurationRequest,
-    SetClusterConfigurationResponse, SyncEpochMetadataRequest, SyncEpochMetadataResponse,
-    TailState, TrimLogRequest,
+    CheckClusterSafetyRequest, CheckClusterSafetyResponse, ClusterStateRequest,
+    ClusterStateResponse, CreatePartitionSnapshotRequest, CreatePartitionSnapshotResponse,
+    DescribeLogRequest, DescribeLogResponse, DropPartitionStoreRequest, DropPartitionStoreResponse,
+    FailureDomain, FindTailRequest, FindTailResponse, GetClusterConfigurationRequest,
+    GetClusterConfigurationResponse, ListLogsRequest, ListLogsResponse, MigrateMetadataRequest,
+    MigrateMetadataResponse, QueryRequest, QueryResponse, QueryWarning, SealAndExtendChainRequest,
+    SealAndExtendChainResponse, SealChainRequest, SealChainResponse, SealedSegment,
+    SetClusterConfigurationRequest, SetClusterConfigurationResponse, SyncEpochMetadataRequest,
+    SyncEpochMetadataResponse, TailState, TrimLogRequest,
     cluster_ctrl_svc_server::{ClusterCtrlSvc, ClusterCtrlSvcServer},
 };
 use restate_core::{Metadata, MetadataWriter};
@@ -61,6 +61,7 @@ use restate_types::{NodeId, PlainNodeId, Version, Versioned};
 use crate::query_utils::WriteRecordBatchStream;
 
 use super::ClusterControllerHandle;
+use super::safety_checker;
 use super::service::{ChainExtension, DropPartitionStoreRequestError};
 
 pub(crate) struct ClusterCtrlSvcHandler {
@@ -666,6 +667,60 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             .map_err(|err| Status::internal(err.to_string()))?;
 
         Ok(Response::new(SyncEpochMetadataResponse {}))
+    }
+
+    async fn check_cluster_safety(
+        &self,
+        request: Request<CheckClusterSafetyRequest>,
+    ) -> Result<Response<CheckClusterSafetyResponse>, Status> {
+        let assume_dead: Vec<PlainNodeId> = request
+            .into_inner()
+            .assume_dead_nodes
+            .into_iter()
+            .map(PlainNodeId::from)
+            .collect();
+
+        if let Some(node_id) = assume_dead.iter().find(|node_id| {
+            Metadata::with_current(|m| m.nodes_config_ref().find_node_by_id(**node_id).is_err())
+        }) {
+            return Err(Status::invalid_argument(format!(
+                "Node {node_id} is not part of the cluster"
+            )));
+        }
+
+        let report = self
+            .controller_handle
+            .check_cluster_safety(assume_dead)
+            .await
+            .map_err(|_| Status::aborted("Node is shutting down"))?
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(CheckClusterSafetyResponse {
+            write_unavailable_logs: convert_all(report.write_unavailable_logs),
+            read_unavailable_logs: convert_all(report.read_unavailable_logs),
+            write_at_risk_logs: convert_all(report.write_at_risk_logs),
+            read_at_risk_logs: convert_all(report.read_at_risk_logs),
+            log_write_critical_domains: convert_all(report.log_write_critical_domains),
+            log_read_critical_domains: convert_all(report.log_read_critical_domains),
+            unchecked_logs: convert_all(report.unchecked_logs),
+            unavailable_partitions: convert_all(report.unavailable_partitions),
+            at_risk_partitions: convert_all(report.at_risk_partitions),
+            partition_critical_domains: convert_all(report.partition_critical_domains),
+            unchecked_partitions: convert_all(report.unchecked_partitions),
+        }))
+    }
+}
+
+fn convert_all<T: Into<U>, U>(items: impl IntoIterator<Item = T>) -> Vec<U> {
+    items.into_iter().map(Into::into).collect()
+}
+
+impl From<safety_checker::FailureDomain> for FailureDomain {
+    fn from(domain: safety_checker::FailureDomain) -> Self {
+        Self {
+            scope: domain.scope.to_string().to_lowercase(),
+            name: domain.name,
+        }
     }
 }
 
