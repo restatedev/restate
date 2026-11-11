@@ -8965,17 +8965,23 @@ dependencies = [
 name = "restate-storage-query-api"
 version = "1.8.2-dev"
 dependencies = [
+ "anyhow",
  "async-trait",
  "bytes",
  "datafusion",
  "datafusion-physical-expr-common",
+ "enum-map",
  "futures",
  "gardal",
  "http",
+ "paste",
  "restate-clock",
  "restate-platform",
+ "restate-storage-api",
+ "restate-types",
  "restate-util-string",
  "restate-workspace-hack",
+ "strum",
  "thiserror 2.0.20",
  "tracing",
 ]

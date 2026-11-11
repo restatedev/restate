@@ -8,12 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Shared query interfaces.
+//! Shared query interfaces and selection analysis.
 
 mod diagnostics;
 mod engine;
 pub mod errors;
+pub mod scan;
+pub mod schema;
+pub mod selection;
+pub mod tables;
 mod writer;
+
+pub use scan::Table;
+pub use schema::{
+    LogicalSchema, PreparedRead, RowBuilder, RowSink, SchemaBinding, SelectionSchema,
+    ShardingScheme,
+};
+
+#[cfg(feature = "test-util")]
+pub mod test_util;
 
 use std::any::Any;
 

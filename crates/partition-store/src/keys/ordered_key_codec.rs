@@ -839,6 +839,7 @@ mod tests {
 
         for (kind, byte) in by_name.into_iter().zip([10, 20]) {
             assert_eq!(kind.to_string(), kind.as_str());
+            assert_eq!(kind.as_str().parse::<EntryKind>().unwrap(), kind);
             let mut bytes = Vec::new();
             EntryKindCodec::encode_field(&kind, &mut bytes);
             assert_eq!(bytes, [byte]);

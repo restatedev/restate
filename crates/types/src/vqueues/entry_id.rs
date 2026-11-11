@@ -8,10 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::str::FromStr;
+
 use crate::identifiers::{
     BaseEntryId, InvocationId, InvocationUuid, PartitionKey, StateMutationId,
 };
 
+use super::ParseError;
+
+/// The length of the remainder bytes of an entry id.
 const REMAINDER_LEN: usize = 16;
 
 #[derive(
@@ -58,6 +63,22 @@ impl EntryKind {
             Self::Unknown => "unknown",
             Self::Invocation => "invocation",
             Self::StateMutation => "state-mutation",
+        }
+    }
+}
+
+impl FromStr for EntryKind {
+    type Err = ParseError;
+
+    /// Parses the display names `"invocation"` and `"state-mutation"`.
+    ///
+    /// Rejects `"unknown"`: [`EntryKind::Unknown`] is a decoding sentinel, not a
+    /// usable entry kind.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "invocation" => Ok(Self::Invocation),
+            "state-mutation" => Ok(Self::StateMutation),
+            _ => Err(ParseError::UnknownEntryKindString),
         }
     }
 }

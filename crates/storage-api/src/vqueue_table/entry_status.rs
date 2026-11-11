@@ -14,6 +14,8 @@ use restate_types::vqueues::{CanonicalEntryId, EntryId, EntryKind, Seq, VQueueId
 use super::stats::EntryStatistics;
 use super::{EntryKey, EntryMetadata, EntryMetadataRef, Stage};
 
+/// Processing status. Native ordering follows the stored discriminants; it is
+/// neither a lifecycle progression nor the ordering of the SQL display names.
 #[derive(
     Debug,
     strum::Display,
@@ -24,6 +26,8 @@ use super::{EntryKey, EntryMetadata, EntryMetadataRef, Stage};
     Copy,
     Eq,
     PartialEq,
+    Ord,
+    PartialOrd,
     bilrost::Enumeration,
 )]
 #[repr(u8)]
