@@ -10,6 +10,7 @@
 
 //! Shared query interfaces.
 
+mod diagnostics;
 mod engine;
 pub mod errors;
 mod writer;
@@ -19,9 +20,13 @@ use std::any::Any;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::logical_expr::Expr;
+pub use datafusion_physical_expr_common::metrics;
 
 use restate_util_string::ReString;
 
+pub use diagnostics::{
+    QueryDiagnostics, QueryMetadata, QueryOperatorStats, QueryStats, QueryStatus,
+};
 pub use engine::{
     NodeWarning, NodeWarnings, QueryEngine, QueryEngineVersion, QueryOptions, QueryResult,
     QuerySession, SessionOptions, SessionTable,

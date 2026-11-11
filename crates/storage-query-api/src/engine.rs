@@ -14,11 +14,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use datafusion::common::TableReference;
 use datafusion::execution::SendableRecordBatchStream;
+use http::HeaderMap;
 
 use restate_platform::sync::Mutex;
 use restate_util_string::ReString;
 
 use crate::QueryEngineTable;
+use crate::diagnostics::{QueryDiagnostics, QueryMetadata};
 use crate::errors::{QueryExecutionError, SessionError};
 
 #[derive(Debug, Clone)]
@@ -30,6 +32,9 @@ pub struct SessionOptions {
     pub apply_rate_limit: bool,
     /// Allows SQL statements such as `SET` in this session. Defaults to `false`.
     pub allow_statements: bool,
+    /// Request headers selected by the transport's diagnostic-context allow-list.
+    /// Diagnostic context only; never used for authorization or admission.
+    pub headers: HeaderMap,
     /// Schemas to expose from the shared inventory. Defaults to `public`.
     /// Only registered tables are included. Ignored when `tables` is supplied.
     /// An empty list exposes no application tables.
@@ -52,6 +57,7 @@ impl Default for SessionOptions {
             engine_version: None,
             apply_rate_limit: true,
             allow_statements: false,
+            headers: HeaderMap::new(),
             schemas: vec![ReString::from_static("public")],
             default_schema: None,
             tables: None,
@@ -175,10 +181,14 @@ impl QueryEngine {
 
 #[async_trait]
 pub trait QuerySession: Send + Sync {
+    /// Server-generated identity, available even if query planning fails.
+    fn session_id(&self) -> &str;
+
     /// Executes in a caller-owned session, applying SQL restrictions.
     ///
     /// Use a session from [`QueryEngine::create_session`] to retain settings across executions or attach
     /// request metadata before planning. The returned stream can outlive the session handle.
+    /// Each execution allocates a distinct timestamp, exposed in [`QueryMetadata::query_ts`].
     async fn execute(
         &self,
         query: &str,
@@ -186,11 +196,12 @@ pub trait QuerySession: Send + Sync {
     ) -> Result<QueryResult, QueryExecutionError>;
 }
 
-/// Result of a SQL query execution, containing the record batch stream
-/// and any per-node warning collectors from fan-out execution plans.
+/// Streaming results and query-scoped information. Clone the diagnostics handle
+/// before moving the stream to observe execution independently of its consumer.
 pub struct QueryResult {
     pub stream: SendableRecordBatchStream,
-    pub node_warnings: Vec<NodeWarnings>,
+    pub metadata: QueryMetadata,
+    pub diagnostics: Arc<dyn QueryDiagnostics>,
 }
 
 /// A warning collected from a node that failed during query execution.

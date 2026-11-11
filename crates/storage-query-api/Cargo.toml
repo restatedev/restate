@@ -14,14 +14,17 @@ test-util = []
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-clock = { workspace = true }
 restate-platform = { workspace = true }
 restate-util-string = { workspace = true }
 
 async-trait = { workspace = true }
 bytes = { workspace = true }
 datafusion = { workspace = true }
+datafusion-physical-expr-common = { workspace = true }
 futures = { workspace = true }
 gardal = { workspace = true }
+http = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
