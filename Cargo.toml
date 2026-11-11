@@ -171,7 +171,7 @@ etcd-client = { version = "0.20.0" }
 flexbuffers = { version = "25.12.19" }
 futures = "0.3.31"
 futures-util = "0.3.31"
-gardal = { version = "0.0.1-alpha.9" }
+gardal = { version = "0.1.0" }
 generic-array = { version = "1.4.1" }
 google-cloud-auth = { version = "1.16", features = ["idtoken"] }
 googletest = { version = "0.10", features = ["anyhow"] }

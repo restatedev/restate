@@ -10,7 +10,6 @@
 
 use std::num::NonZeroU32;
 use std::task::Poll;
-use std::time::Duration;
 
 use hashbrown::HashMap;
 use tokio_util::time::{DelayQueue, delay_queue};
@@ -241,7 +240,6 @@ impl InvokerThrottlingLimiter {
 
             let now = SchedulerClock.now_millis();
             let reservation = if let Some(retry_after) = retry_after {
-                let retry_after: Duration = retry_after.into();
                 let timer_key = self.delayed_reservations.insert(vqueue, retry_after);
                 Reservation {
                     estimated_retry_at: now + retry_after,
