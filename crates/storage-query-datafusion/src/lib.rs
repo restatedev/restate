@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 pub mod context;
+mod diagnostics;
 mod environment;
 pub mod local_scanners;
 pub use catalog::{
