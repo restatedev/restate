@@ -336,16 +336,23 @@ fn verify_snapshot_state(
         retained_snapshots.len()
     );
 
-    // Check pending deletions is empty
-    let empty_vec = vec![];
-    let pending_deletions = latest_json["pending_deletions"]
-        .as_array()
-        .unwrap_or(&empty_vec);
-    assert!(
-        pending_deletions.is_empty(),
-        "Pending deletions should be empty after cleanup, found: {:?}",
-        pending_deletions
-    );
+    // Evicted snapshots' files are deleted: only retained snapshot directories hold files. The
+    // local object store leaves the emptied directories behind.
+    let retained_paths: HashSet<&str> = retained_snapshots
+        .iter()
+        .map(|s| s["path"].as_str().unwrap())
+        .collect();
+    for entry in std::fs::read_dir(partition_dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with("lsn_") && !retained_paths.contains(name.as_str()) {
+            let leftover: Vec<_> = std::fs::read_dir(entry.path())?.collect();
+            assert!(
+                leftover.is_empty(),
+                "Evicted snapshot {name} still has files: {leftover:?}"
+            );
+        }
+    }
 
     // Collect retained snapshot IDs
     let retained_ids: HashSet<String> = retained_snapshots
@@ -372,7 +379,7 @@ fn verify_snapshot_state(
         if let Some(file_keys) = metadata["file_keys"].as_object() {
             for sst_key in file_keys.values() {
                 if let Some(key) = sst_key.as_str() {
-                    // Extract just the filename from "ssts/N1_000001.sst"
+                    // Extract just the filename from "ssts/{hash}.sst"
                     if let Some(filename) = key.split('/').next_back() {
                         referenced_ssts.insert(filename.to_string());
                     }

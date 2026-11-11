@@ -42,6 +42,7 @@ The snapshot metadata file (`metadata.json`) now includes a `file_keys` field th
 - **Enabling incremental**: Safe to enable at any time; existing full snapshots continue to work
 - **Mixed modes**: The repository supports both full and incremental snapshots coexisting
 - **Downgrades become unsafe**: see below
+- **New `check-interval` option**: `worker.snapshots.check-interval` sets how often snapshot triggers are checked. The default, `1s`, keeps the current behavior; setting it also removes the 30 to 60 second delay before the first check after startup.
 
 ### Downgrade Caveat
 

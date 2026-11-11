@@ -1414,7 +1414,7 @@ pub struct SnapshotsOptions {
     /// How frequently to check snapshot trigger conditions. Lower values will result in snapshots
     /// kicked off sooner, once preconditions are met. Jitter will be added to configured value.
     ///
-    /// Default: `30s`
+    /// Default: `1s`
     ///
     /// Since v1.8.2
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1479,7 +1479,7 @@ impl SnapshotsOptions {
     pub fn check_interval(&self) -> Duration {
         self.check_interval
             .map(|d| d.into())
-            .unwrap_or_else(|| Duration::from_secs(30))
+            .unwrap_or_else(|| Duration::from_secs(1))
     }
 
     pub fn automatic_snapshot_concurrency_limit(&self) -> u32 {
