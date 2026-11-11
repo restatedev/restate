@@ -22,6 +22,7 @@ use futures::{StreamExt, stream};
 use googletest::matcher::{Matcher, MatcherResult};
 use serde_json::Value;
 
+use restate_clock::MockClock;
 use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
@@ -333,7 +334,10 @@ impl MockQueryEngine {
         );
         register_partition_scanners(Arc::clone(&manager), &remote_scanner_manager);
         register_live_scanners(Arc::new(status), &remote_scanner_manager);
-        let env = DataFusionEnv::from_options(options).unwrap();
+        let env = DataFusionEnv::from_options(options)
+            .unwrap()
+            .with_mock_clock(MockClock::new())
+            .unwrap();
         env.register_tables(catalog(remote_scanner_manager.clone(), partitions.clone()))
             .await
             .unwrap();
