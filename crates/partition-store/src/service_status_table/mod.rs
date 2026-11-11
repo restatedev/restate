@@ -8,6 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+//! Service-status storage with legacy, non-mem-comparable keys.
+//!
+//! [`ServiceStatusKey`] is **not ordered across all logical fields**: `service_name`
+//! and `service_key` use length-prefixed encodings. Exact identity lookups are valid,
+//! but bytewise key order does not preserve logical service-name/key order.
+//! See the [key encoding families](crate::keys#two-encoding-families).
+
 use bytestring::ByteString;
 
 use restate_rocksdb::RocksDbReadPerfGuard;

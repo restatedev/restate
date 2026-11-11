@@ -113,6 +113,10 @@ pub struct PhysicalPartition {
     durable_lsn: watch::Sender<Lsn>,
     archived_lsn: watch::Sender<Option<Lsn>>,
     notifications: Arc<DurableLsnSenders>,
+    /// The registry instances maintained on entry writes, as reconciled when the
+    /// partition was opened. Shared by every session and clone, so no handle keeps
+    /// a stale set.
+    active_set: parking_lot::RwLock<Option<Arc<crate::registry::ActiveSet>>>,
     // Looked up once, when the partition is first opened, and shared by every
     // session. Last, because it holds the keep-alive of the database.
     cfs: CfHandles<KeyKind>,
@@ -156,6 +160,7 @@ impl PartitionDb {
                 durable_lsn: watch::Sender::new(Lsn::INVALID),
                 archived_lsn,
                 notifications: database.notifications,
+                active_set: Default::default(),
                 cfs,
             },
         );
@@ -178,6 +183,22 @@ impl PartitionDb {
 
     pub fn partition(&self) -> &Arc<Partition> {
         &self.physical().meta
+    }
+
+    /// The installed active set; see [`Self::install_active_set`].
+    pub(crate) fn active_set(&self) -> Option<Arc<crate::registry::ActiveSet>> {
+        self.physical().active_set.read().clone()
+    }
+
+    /// Installs the active set for every session and handle of this partition.
+    pub(crate) fn install_active_set(&self, active_set: Arc<crate::registry::ActiveSet>) {
+        *self.physical().active_set.write() = Some(active_set);
+    }
+
+    /// Puts back an active set read with [`Self::active_set`].
+    #[cfg(test)]
+    pub(crate) fn restore_active_set(&self, active_set: Option<Arc<crate::registry::ActiveSet>>) {
+        *self.physical().active_set.write() = active_set;
     }
 
     pub fn rocksdb(&self) -> &Arc<RocksDb> {

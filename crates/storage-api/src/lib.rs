@@ -13,6 +13,8 @@ use std::future::Future;
 use restate_memory::{NonZeroByteCount, OutOfMemory, OutOfMemoryKind};
 use restate_types::partitions::UnknownStorageVersion;
 
+pub use table::PrimaryKey;
+
 /// Storage error
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
@@ -75,6 +77,7 @@ pub mod promise_table;
 pub mod protobuf_types;
 pub mod service_status_table;
 pub mod state_table;
+mod table;
 pub mod timer_table;
 pub mod vqueue_table;
 

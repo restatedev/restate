@@ -14,6 +14,8 @@ use restate_types::vqueues::{CanonicalEntryId, EntryId, EntryKind, Seq, VQueueId
 use super::stats::EntryStatistics;
 use super::{EntryKey, EntryMetadata, EntryMetadataRef, Stage};
 
+/// Processing status. Native ordering follows the stored discriminants; it is
+/// neither a lifecycle progression nor the ordering of the SQL display names.
 #[derive(
     Debug,
     strum::Display,
@@ -24,6 +26,8 @@ use super::{EntryKey, EntryMetadata, EntryMetadataRef, Stage};
     Copy,
     Eq,
     PartialEq,
+    Ord,
+    PartialOrd,
     bilrost::Enumeration,
 )]
 #[repr(u8)]
@@ -59,6 +63,23 @@ pub enum Status {
     Failed = 8,
     #[bilrost(9)]
     Succeeded = 9,
+}
+
+impl Status {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Status::Unknown => "unknown",
+            Status::New => "new",
+            Status::Scheduled => "scheduled",
+            Status::Started => "started",
+            Status::BackingOff => "backing-off",
+            Status::Yielded => "yielded",
+            Status::Killed => "killed",
+            Status::Cancelled => "cancelled",
+            Status::Failed => "failed",
+            Status::Succeeded => "succeeded",
+        }
+    }
 }
 
 /// Borrowing version of [`RawStatusHeader`].

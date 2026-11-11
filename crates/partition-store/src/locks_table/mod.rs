@@ -8,9 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+//! Lock storage with a legacy, non-mem-comparable scope encoding.
+//!
+//! [`LockKey`] is **not ordered across all logical fields**: the optional scope
+//! uses legacy presence tags and a length-prefixed name. Within a fixed scope,
+//! the raw `service/key` lock-name suffix supports byte-prefix scans, but it must
+//! remain the final field because it is not self-delimiting or prefix-free.
+//! See the [key encoding families](crate::keys#two-encoding-families).
+
+mod binding;
+
 use anyhow::Context;
 use bilrost::{Message, OwnedMessage};
-use bytes::{Buf, BufMut};
+use bytes::BufMut;
 
 use restate_rocksdb::Priority;
 use restate_storage_api::StorageError;
@@ -39,6 +49,8 @@ use crate::{
 // by service/owner name.
 //
 // What's not possible is a prefix scan by partial scope name, but partial lock-name is supported.
+pub use binding::{LocksBinding, LocksTable};
+
 define_table_key!(
     Locks,
     KeyKind::Lock,
@@ -64,11 +76,12 @@ impl KeyEncode for LockName {
 
 impl KeyDecode for LockName {
     fn decode(source: &mut &[u8]) -> crate::Result<Self> {
-        let string_data = source.take(source.remaining());
+        // The lock name is the final key field: consume the rest of the key.
+        let string_data = std::mem::take(source);
         // SAFETY:
         // We are always decoding keys that we have serialized by this type, therefore
         // they are valid utf-8 strings.
-        let raw = unsafe { std::str::from_utf8_unchecked(string_data.chunk()) };
+        let raw = unsafe { std::str::from_utf8_unchecked(string_data) };
         // make the lock name a shared string (arc or inlined if small)
         LockName::parse_unchecked(raw).map_err(|e| StorageError::Generic(e.into()))
     }
