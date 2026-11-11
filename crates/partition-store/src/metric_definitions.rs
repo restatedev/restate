@@ -157,6 +157,6 @@ pub(crate) fn describe_metrics() {
     describe_counter!(
         SNAPSHOT_ORPHAN_FILES_DELETED,
         Unit::Count,
-        "Number of orphaned files deleted during cleanup"
+        "Number of orphaned shared SST files and snapshot directories deleted during cleanup"
     );
 }

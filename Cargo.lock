@@ -8627,7 +8627,6 @@ dependencies = [
  "bilrost",
  "bytes",
  "bytestring",
- "chrono",
  "codederror",
  "criterion",
  "derive_more",
