@@ -103,18 +103,6 @@ pub trait InvocationReader {
     /// Create a read transaction to read information about invocations from the underlying storage.
     fn transaction(&mut self) -> Self::Transaction<'_>;
 
-    /// Non-transactional point read of a single journal entry by index.
-    ///
-    /// Used during the bidi-stream phase (after the replay transaction is dropped)
-    /// to read notification/completion data on-demand when a signal-only notification arrives.
-    /// Non-transactional reads are appropriate here because entries are immutable once written.
-    fn read_journal_entry(
-        &mut self,
-        invocation_id: &InvocationId,
-        entry_index: EntryIndex,
-        journal_kind: JournalKind,
-    ) -> impl Future<Output = Result<Option<JournalEntry>, Self::Error>> + Send;
-
     /// Budget-gated point read of a single journal entry.
     ///
     /// Delegates to the storage-api `get_journal_entry_budgeted` trait method
@@ -147,12 +135,6 @@ pub trait InvocationReader {
 ///
 /// Important: Implementations must ensure that all read methods return consistent results.
 pub trait InvocationReaderTransaction {
-    type JournalStream<'a>: Stream<Item = Result<JournalEntry, Self::Error>> + Unpin + Send
-    where
-        Self: 'a;
-    type StateStream<'a>: Stream<Item = Result<(Bytes, Bytes), Self::Error>> + Send
-    where
-        Self: 'a;
     type LocalMemoryPooledJournalStream<'a>: Stream<Item = Result<(JournalEntry, LocalMemoryLease), Self::Error>>
         + Unpin
         + Send
@@ -172,24 +154,6 @@ pub trait InvocationReaderTransaction {
         &mut self,
         invocation_id: &InvocationId,
     ) -> impl Future<Output = Result<Option<JournalMetadata>, Self::Error>> + Send;
-
-    /// Read the journal stream for replay.
-    ///
-    /// The returned journal **MUST** not return events.
-    /// This method returns a lazy stream that reads entries on-demand from storage.
-    fn read_journal(
-        &self,
-        invocation_id: &InvocationId,
-        length: EntryIndex,
-        journal_kind: JournalKind,
-    ) -> Result<Self::JournalStream<'_>, Self::Error>;
-
-    /// Read the state for the given service id.
-    /// Returns a stream of state entries that can be collected by the caller.
-    fn read_state(
-        &self,
-        service_id: &ServiceId,
-    ) -> Result<EagerState<Self::StateStream<'_>>, Self::Error>;
 
     /// Budget-gated journal replay stream.
     ///
@@ -222,7 +186,7 @@ pub trait InvocationReaderTransaction {
     ) -> Result<EagerState<Self::LocalMemoryPooledStateStream<'a>>, Self::Error>;
 }
 
-/// Container for the state returned by [`InvocationReaderTransaction::read_state`].
+/// Container for the state returned by [`InvocationReaderTransaction::read_state_budgeted`].
 /// Contains a stream of state entries and a flag indicating if the state is partial.
 pub struct EagerState<S> {
     stream: S,

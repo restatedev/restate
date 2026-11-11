@@ -13,7 +13,7 @@ use std::pin::Pin;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::future::Either;
-use futures::{Stream, StreamExt, TryStreamExt};
+use futures::{Stream, StreamExt};
 
 use restate_memory::{
     LocalMemoryLease, LocalMemoryPool, NonZeroByteCount, OutOfMemory, OutOfMemoryKind,
@@ -95,38 +95,6 @@ where
         }
     }
 
-    async fn read_journal_entry(
-        &mut self,
-        invocation_id: &InvocationId,
-        entry_index: restate_types::identifiers::EntryIndex,
-        journal_kind: JournalKind,
-    ) -> Result<Option<JournalEntry>, InvokerStorageReaderError> {
-        if journal_kind == JournalKind::V2 {
-            let entry = journal_table_v2::ReadJournalTable::get_journal_entry(
-                &mut self.0,
-                *invocation_id,
-                entry_index,
-            )
-            .await?;
-            Ok(entry.map(JournalEntry::JournalV2))
-        } else {
-            let entry = journal_table_v1::ReadJournalTable::get_journal_entry(
-                &mut self.0,
-                invocation_id,
-                entry_index,
-            )
-            .await?;
-            Ok(entry.map(|je| match je {
-                journal_table_v1::JournalEntry::Entry(entry) => {
-                    JournalEntry::JournalV1(entry.erase_enrichment())
-                }
-                journal_table_v1::JournalEntry::Completion(result) => {
-                    JournalEntry::JournalV1Completion(result)
-                }
-            }))
-        }
-    }
-
     async fn read_journal_entry_budgeted(
         &mut self,
         invocation_id: &InvocationId,
@@ -194,14 +162,6 @@ impl<Storage> InvocationReaderTransaction for InvokerStorageReaderTransaction<'_
 where
     Storage: restate_storage_api::Storage + 'static,
 {
-    type JournalStream<'a>
-        = Pin<Box<dyn Stream<Item = Result<JournalEntry, Self::Error>> + Send + 'a>>
-    where
-        Self: 'a;
-    type StateStream<'a>
-        = Pin<Box<dyn Stream<Item = Result<(Bytes, Bytes), Self::Error>> + Send + 'a>>
-    where
-        Self: 'a;
     type LocalMemoryPooledJournalStream<'a>
         = Pin<
         Box<dyn Stream<Item = Result<(JournalEntry, LocalMemoryLease), Self::Error>> + Send + 'a>,
@@ -255,50 +215,6 @@ where
         } else {
             Ok(None)
         }
-    }
-
-    fn read_journal(
-        &self,
-        invocation_id: &InvocationId,
-        length: restate_types::identifiers::EntryIndex,
-        journal_kind: JournalKind,
-    ) -> Result<Self::JournalStream<'_>, Self::Error> {
-        if journal_kind == JournalKind::V2 {
-            let journal_entries =
-                journal_table_v2::ReadJournalTable::get_journal(&self.txn, *invocation_id, length)?;
-            Ok(Box::pin(journal_entries.map(|result| {
-                result
-                    .map(|(_, entry)| JournalEntry::JournalV2(entry))
-                    .map_err(InvokerStorageReaderError::Storage)
-            })))
-        } else {
-            // todo remove once we no longer support journal v1: https://github.com/restatedev/restate/issues/3184
-            let journal_entries =
-                journal_table_v1::ReadJournalTable::get_journal(&self.txn, invocation_id, length)?;
-            Ok(Box::pin(journal_entries.map(|result| {
-                result
-                    .map(|(_, journal_entry)| match journal_entry {
-                        journal_table_v1::JournalEntry::Entry(entry) => {
-                            JournalEntry::JournalV1(entry.erase_enrichment())
-                        }
-                        journal_table_v1::JournalEntry::Completion(_) => {
-                            panic!("should only read entries when reading the journal")
-                        }
-                    })
-                    .map_err(InvokerStorageReaderError::Storage)
-            })))
-        }
-    }
-
-    fn read_state(
-        &self,
-        service_id: &ServiceId,
-    ) -> Result<EagerState<Self::StateStream<'_>>, Self::Error> {
-        let stream = self
-            .txn
-            .get_all_user_states_for_service(service_id)?
-            .map_err(InvokerStorageReaderError::Storage);
-        Ok(EagerState::new_complete(Box::pin(stream)))
     }
 
     fn read_journal_budgeted<'a>(
