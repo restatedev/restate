@@ -51,6 +51,12 @@ service ClusterCtrlSvc {
   // partitions. An empty list means all known partitions.
   rpc SyncEpochMetadata(SyncEpochMetadataRequest)
       returns (SyncEpochMetadataResponse);
+
+  // Checks whether all logs and partitions are available given the nodes that
+  // are alive, optionally assuming that additional nodes are dead. Only the
+  // cluster controller leader answers this request.
+  rpc CheckClusterSafety(CheckClusterSafetyRequest)
+      returns (CheckClusterSafetyResponse);
 }
 
 message SetClusterConfigurationResponse {}
@@ -262,3 +268,51 @@ message SyncEpochMetadataRequest {
 }
 
 message SyncEpochMetadataResponse {}
+
+message CheckClusterSafetyRequest {
+  // Nodes to consider dead in addition to the nodes that are not alive. Use
+  // this to check whether it is safe to take these nodes down.
+  repeated uint32 assume_dead_nodes = 1;
+}
+
+message CheckClusterSafetyResponse {
+  // Logs that cannot accept writes, neither on their tail segment nor after a
+  // reconfiguration.
+  repeated uint32 write_unavailable_logs = 1;
+  // Logs with at least one segment whose records cannot be reliably read.
+  repeated uint32 read_unavailable_logs = 2;
+  // Write-available logs that lose write availability if a single failure
+  // domain fails. Domains are at the greatest scope of each log's replication
+  // property, e.g. zones for `{zone: 2}`.
+  repeated uint32 write_at_risk_logs = 3;
+  // Read-available logs that lose read availability if a single failure domain
+  // fails.
+  repeated uint32 read_at_risk_logs = 4;
+  // Failure domains whose loss alone takes at least one log out of write
+  // availability.
+  repeated FailureDomain log_write_critical_domains = 5;
+  // Failure domains whose loss alone takes at least one log out of read
+  // availability.
+  repeated FailureDomain log_read_critical_domains = 6;
+  // Logs that cannot be evaluated because they use non-replicated loglets.
+  repeated uint32 unchecked_logs = 7;
+  // Partitions without an alive replica that the cluster controller cannot
+  // move to other nodes, e.g. because their placement is frozen.
+  repeated uint32 unavailable_partitions = 8;
+  // Available partitions that lose availability if a single failure domain
+  // fails. Domains are at the greatest scope of the partition replication.
+  repeated uint32 at_risk_partitions = 9;
+  // Failure domains whose loss alone takes at least one partition out of
+  // availability.
+  repeated FailureDomain partition_critical_domains = 10;
+  // Partitions whose placement is not yet known to the cluster controller.
+  repeated uint32 unchecked_partitions = 11;
+}
+
+message FailureDomain {
+  // One of `node`, `zone`, or `region`
+  string scope = 1;
+  // The node id for the node scope, otherwise the location, e.g.
+  // `region1.zone1`
+  string name = 2;
+}

@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod check_safety;
 pub mod disable_node_checker;
 pub mod list_nodes;
 mod remove_nodes;
@@ -39,6 +40,9 @@ pub enum Nodes {
     SetStorageState(storage_state::SetOpts),
     /// Sets the state of a worker
     SetWorkerState(worker_state::SetOpts),
+    /// Checks whether all logs and partitions are available and can tolerate losing a failure
+    /// domain. Use --assume-dead to check whether it is safe to stop nodes.
+    CheckSafety(check_safety::CheckSafetyOpts),
 }
 
 /// Updates the state in the [`NodeConfig`] specified by `state_mut` to the target state
