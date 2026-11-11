@@ -35,7 +35,7 @@ use url::Url;
 use restate_clock::WallClock;
 use restate_core::Metadata;
 use restate_memory::ByteCount;
-use restate_metadata_server::MetadataStoreClient;
+use restate_metadata_store::MetadataStoreClient;
 use restate_object_store_util::create_object_store_client;
 use restate_types::GenerationalNodeId;
 use restate_types::config::SnapshotsOptions;
@@ -105,6 +105,10 @@ pub struct SnapshotRepository {
 
 /// S3 and GCS reject multipart uploads with more parts than this.
 const MULTIPART_UPLOAD_MAX_PARTS: u64 = 10_000;
+
+/// How long `acquire_lease` waits for a lease held by this same node before reporting it as held.
+const SAME_NODE_LEASE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+const SAME_NODE_LEASE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// Maximum number of concurrent downloads when getting snapshots from the repository.
 const DOWNLOAD_CONCURRENCY_LIMIT: usize = 8;
@@ -521,7 +525,20 @@ impl SnapshotRepository {
             .lease_provider
             .as_ref()
             .ok_or(LeaseError::Unavailable)?;
-        let guard = provider.acquire(partition_id).await?;
+        // A lease held by this node usually belongs to the previous snapshot's cleanup task, which
+        // releases it shortly. Wait for that briefly rather than failing back-to-back requests.
+        let my_node_id = Metadata::with_current(|m| m.my_node_id());
+        let deadline = tokio::time::Instant::now() + SAME_NODE_LEASE_WAIT;
+        let guard = loop {
+            match provider.acquire(partition_id).await {
+                Err(LeaseError::Held { holder, .. })
+                    if holder == my_node_id && tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(SAME_NODE_LEASE_POLL_INTERVAL).await;
+                }
+                result => break result?,
+            }
+        };
         let guard = Arc::new(guard);
         guard.start_renewal_task()?;
         Ok(guard)
@@ -589,22 +606,38 @@ impl SnapshotRepository {
         metrics::histogram!(SNAPSHOT_UPLOAD_DURATION).record(start.elapsed());
 
         match put_result {
-            Ok(status) => {
+            Ok(PutOutcome::Published(status)) => {
                 metrics::counter!(SNAPSHOT_UPLOAD_SUCCESS).increment(1);
                 Ok(status)
             }
+            Ok(PutOutcome::Superseded { latest, discarded }) => {
+                // Not a failure: the repository already holds a snapshot at least this new, which
+                // is what the caller asked for. Report it so the caller sees the newest snapshot.
+                metrics::counter!(SNAPSHOT_UPLOAD_SUCCESS).increment(1);
+                self.discard_uploaded_files(
+                    discarded.snapshot_complete_path,
+                    discarded.uploaded_files,
+                )
+                .await;
+                Ok(latest)
+            }
             Err(put_error) => {
                 metrics::counter!(SNAPSHOT_UPLOAD_FAILED).increment(1);
-                for filename in put_error.uploaded_files {
-                    let path = put_error.full_snapshot_path.clone().join(filename);
-
-                    // We disregard errors at this point; the snapshot repository pruning mechanism
-                    // should catch these eventually.
-                    if let Err(err) = self.object_store.delete(&path).await {
-                        info!(%err, "Failed to delete file from partially uploaded snapshot");
-                    }
-                }
+                self.discard_uploaded_files(put_error.full_snapshot_path, put_error.uploaded_files)
+                    .await;
                 Err(put_error.error)
+            }
+        }
+    }
+
+    /// Deletes the files of a snapshot that will not be published. Errors are only logged; the
+    /// orphan sweep catches anything left behind.
+    async fn discard_uploaded_files(&self, snapshot_path: ObjectPath, uploaded_files: Vec<String>) {
+        for filename in uploaded_files {
+            // Recorded names keep RocksDB's leading slash, which `join` would escape.
+            let path = snapshot_path.clone().join(strip_leading_slash(&filename));
+            if let Err(err) = self.object_store.delete(&path).await {
+                info!(%err, "Failed to delete file from unpublished snapshot");
             }
         }
     }
@@ -615,7 +648,7 @@ impl SnapshotRepository {
         snapshot: &PartitionSnapshotMetadata,
         local_snapshot_path: &Path,
         lease_guard: Arc<SnapshotLeaseGuard>,
-    ) -> Result<PartitionSnapshotStatus, PutSnapshotError> {
+    ) -> Result<PutOutcome, PutSnapshotError> {
         let snapshot_prefix = self.base_prefix(snapshot);
         debug!(
             "Uploading snapshot from {:?} to {}",
@@ -633,9 +666,17 @@ impl SnapshotRepository {
             .await
             .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
 
-        let (new_latest, evicted_snapshots) = self
-            .build_latest_v2(snapshot, maybe_stored.as_ref().map(|(l, _)| l))
-            .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
+        let Some((new_latest, evicted_snapshots)) =
+            self.build_latest_v2(snapshot, maybe_stored.as_ref().map(|(l, _)| l))
+        else {
+            let (stored, _) = maybe_stored.expect("only a stored snapshot can supersede");
+            let latest = PartitionSnapshotStatus::try_from(&stored)
+                .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
+            return Ok(PutOutcome::Superseded {
+                latest,
+                discarded: progress,
+            });
+        };
 
         let latest_payload = PutPayload::from(
             serde_json::to_string_pretty(&new_latest)
@@ -645,8 +686,8 @@ impl SnapshotRepository {
         // Uploads can outlive a lease duration, so re-check immediately before publishing rather
         // than trusting the lease we held when the upload started. This narrows, but cannot close,
         // the window: the lease may still lapse between here and the CAS landing. A late writer
-        // that loses the race to a newer snapshot is turned away by the LSN check in
-        // build_latest_v2 or, if it checked first, by the conditional put.
+        // that loses the race to a newer snapshot is turned away as superseded by build_latest_v2
+        // or, if it checked first, by the conditional put.
         if !lease_guard.is_valid() {
             return Err(PutSnapshotError::from(
                 anyhow::anyhow!(
@@ -679,6 +720,7 @@ impl SnapshotRepository {
         }
 
         PartitionSnapshotStatus::try_from(&new_latest)
+            .map(PutOutcome::Published)
             .map_err(|e| PutSnapshotError::from(e, progress.clone()))
     }
 
@@ -734,20 +776,20 @@ impl SnapshotRepository {
     /// Returns `(LatestSnapshot, Vec<SnapshotReference>)` where the second element contains
     /// snapshots that no longer need to be retained following the metadata update.
     /// If cleanup fails, these snapshots will be orphaned until cleaned up by the sweeper.
+    ///
+    /// Returns `None` if the snapshot is superseded: it is not newer than every snapshot already
+    /// in `current`, so publishing it would move the pointer backwards.
     fn build_latest_v2(
         &self,
         snapshot: &PartitionSnapshotMetadata,
         current: Option<&LatestSnapshot>,
-    ) -> anyhow::Result<(LatestSnapshot, Vec<SnapshotReference>)> {
+    ) -> Option<(LatestSnapshot, Vec<SnapshotReference>)> {
         let new_snapshot_ref = SnapshotReference::from_metadata(snapshot);
 
         let mut retained_snapshots = current
             .map(|l| l.effective_retained_snapshots())
             .unwrap_or_default();
 
-        // A snapshot that is not newer than every published snapshot is abandoned rather than
-        // published: the pointer fields below must never move backwards. This can only happen when
-        // a writer that lost its lease mid-upload reaches the pointer CAS after a newer snapshot.
         // The retained list is checked too, because an older release could leave the top-level
         // pointer behind the newest retained snapshot.
         if let Some(current) = current {
@@ -755,20 +797,25 @@ impl SnapshotRepository {
                 .iter()
                 .map(|s| s.min_applied_lsn)
                 .fold(current.min_applied_lsn, Lsn::max);
-            if snapshot.min_applied_lsn <= newest_lsn {
+            if snapshot.min_applied_lsn == newest_lsn {
+                // An idle partition: nothing was applied since the latest snapshot.
+                debug!(
+                    snapshot_lsn = %snapshot.min_applied_lsn,
+                    "A snapshot at this LSN is already published; not publishing a duplicate"
+                );
+                return None;
+            }
+            if snapshot.min_applied_lsn < newest_lsn {
+                // Only a writer that lost its lease mid-upload can get here.
                 warn!(
                     snapshot_id = %snapshot.snapshot_id,
                     snapshot_lsn = %snapshot.min_applied_lsn,
                     latest_snapshot_id = %current.snapshot_id,
                     newest_lsn = %newest_lsn,
-                    "Abandoning snapshot: its LSN is not newer than the newest published snapshot; \
+                    "Abandoning snapshot: a newer snapshot was published meanwhile; \
                      leaving the latest snapshot pointer unchanged"
                 );
-                anyhow::bail!(
-                    "snapshot at LSN {} is not newer than the newest published snapshot at LSN {}; abandoning",
-                    snapshot.min_applied_lsn,
-                    newest_lsn
-                );
+                return None;
             }
         }
 
@@ -798,7 +845,7 @@ impl SnapshotRepository {
             retained_snapshots,
         };
 
-        Ok((latest, evicted_snapshots))
+        Some((latest, evicted_snapshots))
     }
 
     fn conditional_put_options(&self, version: Option<UpdateVersion>) -> PutOptions {
@@ -1289,6 +1336,16 @@ impl SnapshotUploadProgress {
     fn push(&mut self, filename: String) {
         self.uploaded_files.push(filename);
     }
+}
+
+enum PutOutcome {
+    Published(PartitionSnapshotStatus),
+    /// The repository already holds a snapshot at least as new; this one was not published and
+    /// its uploaded files are to be discarded.
+    Superseded {
+        latest: PartitionSnapshotStatus,
+        discarded: SnapshotUploadProgress,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1810,7 +1867,7 @@ mod tests {
             .get(&partition_prefix.clone().join("latest.json"))
             .await?;
         let latest: LatestSnapshot = serde_json::from_slice(&latest.bytes().await?)?;
-        let (expected_latest, _) = repository.build_latest_v2(&snapshot1, None)?;
+        let (expected_latest, _) = repository.build_latest_v2(&snapshot1, None).unwrap();
         assert_eq!(expected_latest, latest);
 
         let snapshot_source = tempdir()?;
@@ -1840,11 +1897,12 @@ mod tests {
             .get(&partition_prefix.clone().join("latest.json"))
             .await?;
         let latest: LatestSnapshot = serde_json::from_slice(&latest.bytes().await?)?;
-        let (expected_latest2, _) = repository.build_latest_v2(&snapshot2, None)?;
+        let (expected_latest2, _) = repository.build_latest_v2(&snapshot2, None).unwrap();
         assert_eq!(expected_latest2, latest);
 
-        // Publishing a lower-LSN snapshot after a higher one is abandoned and leaves latest.json
-        // byte-for-byte unchanged.
+        // Publishing a lower-LSN snapshot after a higher one is abandoned: latest.json stays
+        // byte-for-byte unchanged, the stale snapshot's files are deleted, and the caller gets the
+        // newer published snapshot back.
         let latest_before = object_store
             .get(&partition_prefix.clone().join("latest.json"))
             .await?
@@ -1858,15 +1916,21 @@ mod tests {
             data.len(),
         );
         stale.min_applied_lsn = snapshot1.min_applied_lsn;
+        let status = repository
+            .put(
+                &stale,
+                SnapshotDir::new(stale_source.path().to_path_buf()),
+                Arc::new(SnapshotLeaseGuard::noop()),
+            )
+            .await?;
+        assert_eq!(status.latest_snapshot_id, snapshot2.snapshot_id);
         assert!(
-            repository
-                .put(
-                    &stale,
-                    SnapshotDir::new(stale_source.path().to_path_buf()),
-                    Arc::new(SnapshotLeaseGuard::noop()),
-                )
-                .await
-                .is_err()
+            object_store
+                .list(Some(&repository.base_prefix(&stale)))
+                .try_next()
+                .await?
+                .is_none(),
+            "a superseded snapshot's files are deleted"
         );
         let latest_after = object_store
             .get(&partition_prefix.clone().join("latest.json"))
@@ -1952,10 +2016,10 @@ mod tests {
         for lsn in [50, 100] {
             let mut late = mock_snapshot_metadata("/data.sst".to_owned(), "/".to_owned(), 0);
             late.min_applied_lsn = Lsn::new(lsn);
-            let err = repository
-                .build_latest_v2(&late, Some(&current))
-                .expect_err("a snapshot that is not newer than latest must be abandoned");
-            assert!(err.to_string().contains("not newer"), "{err}");
+            assert!(
+                repository.build_latest_v2(&late, Some(&current)).is_none(),
+                "a snapshot that is not newer than latest must be abandoned"
+            );
         }
 
         // A latest.json whose top-level pointer already regressed behind its retained list (as an
@@ -1970,13 +2034,17 @@ mod tests {
         regressed.retained_snapshots = vec![newest, regressed_head];
         let mut late = mock_snapshot_metadata("/data.sst".to_owned(), "/".to_owned(), 0);
         late.min_applied_lsn = Lsn::new(90);
-        assert!(repository.build_latest_v2(&late, Some(&regressed)).is_err());
+        assert!(
+            repository
+                .build_latest_v2(&late, Some(&regressed))
+                .is_none()
+        );
 
         // The ordinary case - a genuinely newer snapshot - takes the head position and the
         // top-level pointer fields.
         let mut newer = mock_snapshot_metadata("/data.sst".to_owned(), "/".to_owned(), 0);
         newer.min_applied_lsn = Lsn::new(150);
-        let (latest, evicted) = repository.build_latest_v2(&newer, Some(&current))?;
+        let (latest, evicted) = repository.build_latest_v2(&newer, Some(&current)).unwrap();
         assert_eq!(latest.snapshot_id, newer.snapshot_id);
         assert_eq!(latest.min_applied_lsn, Lsn::new(150));
         assert_eq!(
@@ -1988,6 +2056,27 @@ mod tests {
             vec![Lsn::new(150), Lsn::new(100)]
         );
         assert!(evicted.is_empty());
+
+        Ok(())
+    }
+
+    /// Back-to-back snapshots on one node: the second waits for the lease the first one's
+    /// cleanup still holds instead of failing with `Held`.
+    #[restate_core::test]
+    async fn acquire_lease_waits_for_lease_held_by_same_node() -> anyhow::Result<()> {
+        let env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let mut repository = mock_repository(1);
+        repository.lease_provider = Some(super::LeaseProvider::Real(
+            super::SnapshotLeaseManager::new(env.metadata_store_client.clone()),
+        ));
+
+        let first = repository.acquire_lease(PartitionId::MIN).await?;
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            drop(first);
+        });
+        let second = repository.acquire_lease(PartitionId::MIN).await?;
+        assert!(second.is_valid());
 
         Ok(())
     }
