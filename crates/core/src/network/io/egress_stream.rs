@@ -21,7 +21,7 @@ use tracing::trace;
 use restate_types::Versioned;
 use restate_types::live::Live;
 use restate_types::logs::metadata::Logs;
-use restate_types::net::codec::EncodeError;
+use restate_types::net::codec::{EncodeError, EncodedPayload};
 use restate_types::net::{ProtocolVersion, RpcRequest, Service, ServiceTag, UnaryMessage};
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
@@ -35,7 +35,7 @@ use crate::network::protobuf::network::{self, Datagram};
 use crate::network::protobuf::network::{
     Header, Message, message, message::Body, message::ConnectionControl,
 };
-use crate::network::{ReplyRx, RpcReplyTx};
+use crate::network::{OutgoingMessage, ReplyRx, RpcReplyTx};
 
 /// A handle to drop the egress stream remotely, or to be notified if the egress stream has been
 /// terminated via other means.
@@ -91,7 +91,7 @@ pub enum EgressMessage {
     RpcCall {
         service_tag: ServiceTag,
         msg_type: &'static str,
-        payload: Bytes,
+        payload: EncodedPayload,
         reply_sender: RpcReplyTx,
         sort_code: Option<u64>,
         version: ProtocolVersion,
@@ -112,7 +112,7 @@ impl EgressMessage {
         protocol_version: ProtocolVersion,
     ) -> Result<(EgressMessage, ReplyRx<M::Response>), EncodeError> {
         let (reply_sender, reply_token) = ReplyRx::new();
-        let payload = message.encode_to_bytes(protocol_version)?;
+        let payload = message.encode_payload(protocol_version)?;
         Ok((
             EgressMessage::RpcCall {
                 payload,
@@ -136,7 +136,7 @@ impl EgressMessage {
         header: Header,
     ) -> Result<(EgressMessage, ReplyRx<M::Response>), EncodeError> {
         let (reply_sender, reply_token) = ReplyRx::new();
-        let payload = message.encode_to_bytes(protocol_version)?;
+        let payload = message.encode_payload(protocol_version)?;
         Ok((
             EgressMessage::RpcCall {
                 payload,
@@ -206,9 +206,9 @@ enum State {
 
 enum Decision {
     /// Ready to send the message
-    Ready(Message),
+    Ready(OutgoingMessage),
     /// Sending a message indicating starting the drain
-    StartDrain(Message),
+    StartDrain(OutgoingMessage),
     /// Sending a drained message
     SendDrainedMessage,
     /// message skipped, move to next
@@ -325,7 +325,7 @@ impl EgressStream {
             .into();
     }
 
-    fn make_drained_message(&mut self, signal: message::Signal) -> Message {
+    fn make_drained_message(&mut self, signal: message::Signal) -> OutgoingMessage {
         let mut header = Header::default();
         let control = ConnectionControl {
             signal: signal.into(),
@@ -336,6 +336,7 @@ impl EgressStream {
             header: Some(header),
             body: Some(control.into()),
         }
+        .into()
     }
 
     fn handle_message(
@@ -345,7 +346,7 @@ impl EgressStream {
     ) -> Decision {
         match entry {
             #[cfg(feature = "test-util")]
-            Poll::Ready(Some(EgressMessage::RawMessage(msg))) => Decision::Ready(msg),
+            Poll::Ready(Some(EgressMessage::RawMessage(msg))) => Decision::Ready(msg.into()),
             Poll::Ready(Some(EgressMessage::Message(body))) => {
                 let mut header = Header::default();
                 self.fill_header(&mut header);
@@ -353,7 +354,7 @@ impl EgressStream {
                     header: Some(header),
                     body: Some(body),
                 };
-                Decision::Ready(msg)
+                Decision::Ready(msg.into())
             }
             Poll::Ready(Some(EgressMessage::UnaryMessage(body))) => {
                 let mut header = Header::default();
@@ -362,7 +363,7 @@ impl EgressStream {
                     header: Some(header),
                     body: Some(body),
                 };
-                Decision::Ready(msg)
+                Decision::Ready(msg.into())
             }
             Poll::Ready(Some(EgressMessage::Unary {
                 payload,
@@ -394,7 +395,7 @@ impl EgressStream {
                     body: Some(body.into()),
                 };
                 notifier.notify();
-                Decision::Ready(msg)
+                Decision::Ready(msg.into())
             }
             Poll::Ready(Some(EgressMessage::RpcCall {
                 payload,
@@ -425,22 +426,17 @@ impl EgressStream {
                 );
                 // V2+
                 self.reply_tracker.register_rpc(msg_id, reply_sender);
-                let body = Datagram {
-                    datagram: Some(
-                        network::RpcCall {
-                            payload,
-                            id: msg_id,
-                            service: service_tag as i32,
-                            msg_type: msg_type.to_owned(),
-                            sort_code,
-                        }
-                        .into(),
-                    ),
-                };
-                let msg = Message {
-                    header: Some(header),
-                    body: Some(body.into()),
-                };
+                let msg = OutgoingMessage::rpc_call(
+                    Some(header),
+                    network::RpcCall {
+                        id: msg_id,
+                        service: service_tag as i32,
+                        msg_type: msg_type.to_owned(),
+                        sort_code,
+                        payload: Bytes::new(),
+                    },
+                    payload,
+                );
                 Decision::Ready(msg)
             }
             Poll::Ready(Some(EgressMessage::Close(reason)))
@@ -455,7 +451,7 @@ impl EgressStream {
                     header: Some(header),
                     body: Some(reason.into()),
                 };
-                Decision::StartDrain(msg)
+                Decision::StartDrain(msg.into())
             }
             // we are already draining, don't send another reason
             Poll::Ready(Some(EgressMessage::Close(_))) => Decision::Continue,
@@ -467,7 +463,7 @@ impl EgressStream {
 }
 
 impl Stream for EgressStream {
-    type Item = Message;
+    type Item = OutgoingMessage;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if let State::Closed = self.state {

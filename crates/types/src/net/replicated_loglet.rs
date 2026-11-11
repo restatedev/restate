@@ -16,6 +16,7 @@ use super::ServiceTag;
 use crate::logs::metadata::SegmentIndex;
 use crate::logs::{LogId, LogletId, LogletOffset, SequenceNumber, TailState};
 use crate::net::codec::{WireDecode, WireEncode, encode_as_bilrost};
+use crate::net::log_server::PreparedPayloads;
 use crate::net::{ProtocolVersion, bilrost_wire_codec, define_rpc, define_service};
 
 pub struct SequencerDataService;
@@ -182,6 +183,67 @@ impl WireDecode for Append {
             }
         }
     }
+}
+
+/// Receive-side Append retaining the nested batch encoding for replication.
+/// Metadata is decoded normally; records are validated from the retained bytes.
+#[derive(Debug, Clone)]
+pub struct PreparedAppend {
+    pub header: CommonRequestHeader,
+    pub payloads: PreparedPayloads,
+}
+
+#[derive(bilrost::Message)]
+struct EncodedAppend {
+    #[bilrost(1)]
+    header: CommonRequestHeader,
+    // A nested message and Bytes have the same length-delimited wire encoding.
+    #[bilrost(2)]
+    payloads: bytes::Bytes,
+}
+
+impl WireDecode for PreparedAppend {
+    type Error = anyhow::Error;
+
+    fn try_decode(mut buf: impl bytes::Buf, version: ProtocolVersion) -> Result<Self, Self::Error> {
+        anyhow::ensure!(
+            version.is_supported(),
+            "unsupported Append protocol version {version:?}"
+        );
+        // Keep copy_to_bytes on the original buffer, including in debug builds
+        // (OwnedMessage::decode otherwise inserts a copying Counted wrapper).
+        let encoded: EncodedAppend =
+            bilrost::OwnedMessage::decode_capped(bilrost::encoding::Capped::new(&mut buf))?;
+        Ok(Self {
+            header: encoded.header,
+            payloads: PreparedPayloads::decode(encoded.payloads)?,
+        })
+    }
+}
+
+impl WireEncode for PreparedAppend {
+    fn encode_to_bytes(
+        &self,
+        version: ProtocolVersion,
+    ) -> Result<bytes::Bytes, crate::net::codec::EncodeError> {
+        if !version.is_supported() {
+            return Err(crate::net::codec::EncodeError::IncompatibleVersion {
+                type_tag: stringify!(Append),
+                min_required: ProtocolVersion::V3,
+                actual: version,
+            });
+        }
+        Ok(encode_as_bilrost(&EncodedAppend {
+            header: self.header.clone(),
+            payloads: self.payloads.encoded().clone(),
+        }))
+    }
+}
+
+impl super::RpcRequest for PreparedAppend {
+    const TYPE: &str = <Append as super::RpcRequest>::TYPE;
+    type Service = SequencerDataService;
+    type Response = Appended;
 }
 
 #[derive(Debug, Clone, bilrost::Message)]
