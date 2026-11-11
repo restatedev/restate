@@ -11,5 +11,4 @@
 mod schema;
 mod table;
 
-pub use schema::BifrostReadStreamsBuilder;
-pub(crate) use table::register_self;
+pub use schema::{BifrostReadStreamsBuilder, BifrostReadStreamsTable};

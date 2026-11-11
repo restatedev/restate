@@ -15,6 +15,7 @@ use codederror::CodedError;
 
 use restate_admin::StorageAccountingTask;
 use restate_admin::cluster_controller;
+use restate_admin::cluster_controller::cluster_state_refresher::ClusterStateRefresher;
 use restate_admin::schema_registry_integration::{MetadataService, TelemetryClient};
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
@@ -25,16 +26,10 @@ use restate_core::partitions::PartitionRouting;
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_ingestion_client::IngestionClient;
 use restate_limiter::rule_book::RuleBookObserver;
-use restate_partition_store::PartitionStoreManager;
 use restate_service_client::{AssumeRoleCacheMode, HttpClient, ServiceClient};
 use restate_service_protocol_v4::discovery::ServiceDiscovery;
 use restate_service_protocol_v4::serdes::SerdesClient;
-use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
-use restate_storage_query_datafusion::empty_invoker_status_handle::EmptyInvokerStatusHandle;
-use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
-use restate_storage_query_datafusion::remote_query_scanner_manager::{
-    RemoteScannerManager, create_partition_locator,
-};
+use restate_storage_query_api::QueryEngine;
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
@@ -60,9 +55,6 @@ pub enum AdminRoleBuildError {
     #[error("failed building the service client: {0}")]
     #[code(unknown)]
     ServiceClient(#[from] restate_service_client::BuildError),
-    #[error("failed creating the datafusion query context: {0}")]
-    #[code(unknown)]
-    QueryDataFusion(#[from] restate_storage_query_datafusion::BuildError),
 }
 
 pub struct AdminRole<T> {
@@ -89,12 +81,12 @@ impl<T: TransportConnect> AdminRole<T> {
         partition_table: Live<PartitionTable>,
         replica_set_states: PartitionReplicaSetStates,
         networking: Networking<T>,
-        metadata: Metadata,
+        _metadata: Metadata,
         metadata_writer: MetadataWriter,
-        partition_store_manager: Arc<PartitionStoreManager>,
         server_builder: &mut NetworkServerBuilder,
         address_book: &mut AddressBook,
-        local_query_context: Option<QueryContext>,
+        query_engine: Arc<QueryEngine>,
+        cluster_state_refresher: Option<ClusterStateRefresher<T>>,
         local_rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
     ) -> Result<Self, AdminRoleBuildError> {
         health_status.update(AdminStatus::StartingUp);
@@ -117,29 +109,6 @@ impl<T: TransportConnect> AdminRole<T> {
             ))
         };
 
-        let query_context = if let Some(query_context) = local_query_context {
-            query_context
-        } else {
-            let remote_scanner_manager = RemoteScannerManager::new(
-                create_remote_scanner_service(networking.clone()),
-                create_partition_locator(partition_routing.clone(), metadata.clone()),
-                metadata.clone(),
-            );
-
-            // need to create a remote query context since we are not co-located with a worker role
-            QueryContext::with_user_tables(
-                &config.admin.query_engine,
-                SelectPartitionsFromMetadata,
-                partition_store_manager,
-                Option::<EmptyInvokerStatusHandle>::None,
-                metadata.updateable_schema(),
-                remote_scanner_manager,
-                metadata_writer.raw_metadata_store_client().clone(),
-                None,
-            )
-            .await?
-        };
-
         let listeners = address_book.take_listeners::<AdminPort>();
         let mut admin = AdminService::new(
             listeners,
@@ -153,34 +122,31 @@ impl<T: TransportConnect> AdminRole<T> {
             serdes_client,
             service_discovery,
             telemetry_http_client,
-        )
-        .with_query_context(query_context.clone());
+            Arc::clone(&query_engine),
+        );
 
         if let Some(observer) = local_rule_book_observer {
             admin = admin.with_rule_book_observer(observer);
         }
 
-        let controller = if config.admin.is_cluster_controller_enabled() {
-            Some(
-                cluster_controller::Service::create(
-                    updateable_config.clone(),
-                    health_status,
-                    replica_set_states,
-                    bifrost,
-                    networking,
-                    server_builder,
-                    metadata_writer,
-                )
-                .await?,
+        let controller = cluster_state_refresher.map(|refresher| {
+            cluster_controller::Service::create(
+                updateable_config.clone(),
+                health_status,
+                replica_set_states,
+                bifrost,
+                networking,
+                server_builder,
+                metadata_writer,
+                refresher,
+                Arc::clone(&query_engine),
             )
-        } else {
-            None
-        };
+        });
 
         let storage_accounting_task = config
             .admin
             .storage_accounting_update_interval
-            .map(|interval| StorageAccountingTask::new(query_context, interval.into()));
+            .map(|interval| StorageAccountingTask::new(query_engine, interval.into()));
 
         Ok(AdminRole {
             updateable_config,

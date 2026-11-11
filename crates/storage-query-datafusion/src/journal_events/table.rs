@@ -11,6 +11,8 @@
 use std::fmt::Debug;
 use std::sync::Arc;
 
+use datafusion::catalog::TableProvider;
+
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::journal_events::{
@@ -18,36 +20,37 @@ use restate_storage_api::journal_events::{
 };
 use restate_types::identifiers::InvocationId;
 
-use crate::context::{QueryContext, SelectPartitions};
+use crate::context::SelectPartitions;
 use crate::filter::FirstMatchingPartitionKeyExtractor;
 use crate::filter::InvocationIdFilter;
 use crate::journal_events::row::append_journal_event_row;
-use crate::journal_events::schema::{SysJournalEventsBuilder, sys_journal_events_sort_order};
+use crate::journal_events::schema::{
+    SysJournalEventsBuilder, SysJournalEventsTable, sys_journal_events_sort_order,
+};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
-const NAME: &str = "sys_journal_events";
+impl SysJournalEventsTable {
+    pub(crate) fn create_provider(
+        partition_selector: impl SelectPartitions,
+        remote_scanner_manager: &RemoteScannerManager,
+    ) -> Arc<dyn TableProvider> {
+        let journal_events_table = PartitionedTableProvider::new(
+            partition_selector,
+            SysJournalEventsBuilder::schema(),
+            sys_journal_events_sort_order(),
+            remote_scanner_manager.create_distributed_scanner::<Self>(),
+            FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id"),
+        );
+        Arc::new(journal_events_table)
+    }
 
-pub(crate) fn register_self(
-    ctx: &QueryContext,
-    partition_selector: impl SelectPartitions,
-    partition_store_manager: Arc<PartitionStoreManager>,
-    remote_scanner_manager: &RemoteScannerManager,
-) -> datafusion::common::Result<()> {
-    let local_scanner = Arc::new(LocalPartitionsScanner::new(
-        partition_store_manager,
-        JournalEventsScanner,
-    )) as Arc<dyn ScanPartition>;
-
-    let journal_events_table = PartitionedTableProvider::new(
-        partition_selector,
-        SysJournalEventsBuilder::schema(),
-        sys_journal_events_sort_order(),
-        remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
-        FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id"),
-    );
-    ctx.register_partitioned_table(NAME, Arc::new(journal_events_table))
+    pub(crate) fn create_local_scanner(
+        partition_store_manager: Arc<PartitionStoreManager>,
+    ) -> impl ScanPartition {
+        LocalPartitionsScanner::<JournalEventsScanner>::new(partition_store_manager)
+    }
 }
 
 #[derive(Debug, Clone)]
