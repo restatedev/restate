@@ -23,7 +23,7 @@ use restate_types::nodes_config::NodesConfiguration;
 
 use crate::cluster_controller::service::Service;
 use crate::cluster_controller::service::scheduler::Scheduler;
-use crate::cluster_controller::service::scheduler_task::SchedulerTask;
+use crate::cluster_controller::service::scheduler_task::{SafetyCheckRequest, SchedulerTask};
 
 pub enum ClusterControllerState {
     Follower,
@@ -86,6 +86,7 @@ impl ClusterControllerState {
 pub struct Leader {
     scheduler_task: TaskId,
     sync_epoch_metadata_tx: mpsc::Sender<Vec<PartitionId>>,
+    safety_check_tx: mpsc::Sender<SafetyCheckRequest>,
 }
 
 impl Leader {
@@ -97,6 +98,7 @@ impl Leader {
         );
 
         let (sync_epoch_metadata_tx, sync_epoch_metadata_rx) = mpsc::channel(1);
+        let (safety_check_tx, safety_check_rx) = mpsc::channel(8);
 
         // We spawn the scheduler task as a child task to make use of the built-in error handling of
         // managed tasks. Otherwise, we would have to monitor for failed tasks ourselves.
@@ -109,6 +111,7 @@ impl Leader {
                 service.replica_set_states.clone(),
                 service.metadata_writer.raw_metadata_store_client().clone(),
                 sync_epoch_metadata_rx,
+                safety_check_rx,
             )
             .run(),
         )
@@ -117,11 +120,16 @@ impl Leader {
         Self {
             scheduler_task,
             sync_epoch_metadata_tx,
+            safety_check_tx,
         }
     }
 
     pub fn sync_epoch_metadata_tx(&self) -> &mpsc::Sender<Vec<PartitionId>> {
         &self.sync_epoch_metadata_tx
+    }
+
+    pub fn safety_check_tx(&self) -> &mpsc::Sender<SafetyCheckRequest> {
+        &self.safety_check_tx
     }
 
     /// Stops the leader tasks to make sure that no other leader activity is running.
