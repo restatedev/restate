@@ -39,15 +39,6 @@ impl InvocationReader for EmptyStorageReader {
         EmptyStorageReaderTransaction
     }
 
-    async fn read_journal_entry(
-        &mut self,
-        _invocation_id: &InvocationId,
-        _entry_index: EntryIndex,
-        _journal_kind: JournalKind,
-    ) -> Result<Option<JournalEntry>, Infallible> {
-        Ok(None)
-    }
-
     async fn read_journal_entry_budgeted(
         &mut self,
         _invocation_id: &InvocationId,
@@ -71,8 +62,6 @@ impl InvocationReader for EmptyStorageReader {
 pub struct EmptyStorageReaderTransaction;
 
 impl InvocationReaderTransaction for EmptyStorageReaderTransaction {
-    type JournalStream<'a> = futures::stream::Empty<Result<JournalEntry, Self::Error>>;
-    type StateStream<'a> = futures::stream::Empty<Result<(Bytes, Bytes), Self::Error>>;
     type LocalMemoryPooledJournalStream<'a> =
         futures::stream::Empty<Result<(JournalEntry, LocalMemoryLease), Self::Error>>;
     type LocalMemoryPooledStateStream<'a> = IgnorePinnableMemoryStream<
@@ -92,22 +81,6 @@ impl InvocationReaderTransaction for EmptyStorageReaderTransaction {
             0,
             JournalKind::V2,
         )))
-    }
-
-    fn read_journal(
-        &self,
-        _invocation_id: &InvocationId,
-        _length: EntryIndex,
-        _journal_kind: JournalKind,
-    ) -> Result<Self::JournalStream<'_>, Self::Error> {
-        Ok(futures::stream::empty())
-    }
-
-    fn read_state(
-        &self,
-        _service_id: &ServiceId,
-    ) -> Result<EagerState<Self::StateStream<'_>>, Self::Error> {
-        Ok(EagerState::new_complete(futures::stream::empty()))
     }
 
     fn read_journal_budgeted<'a>(
