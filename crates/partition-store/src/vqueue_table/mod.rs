@@ -16,6 +16,8 @@ mod key_codec;
 mod metadata;
 mod reader;
 mod running_reader;
+#[cfg(test)]
+mod tracking_tests;
 
 use std::collections::BTreeSet;
 use std::pin::Pin;
@@ -40,7 +42,7 @@ use restate_storage_api::vqueue_table::filters::{ScanEntryIdFilter, ScanMetaFilt
 use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef};
 use restate_storage_api::vqueue_table::{
     EntryChange, EntryContext, EntryKey, EntryStateRef, EntryStatusHeader, EntryValue,
-    ReadVQueueTable, ScanVQueueTable, Stage, VQueueDisposition, WriteVQueueTable,
+    ReadVQueueTable, ScanVQueueTable, Stage, StoredEntryRef, VQueueDisposition, WriteVQueueTable,
 };
 use restate_storage_api::vqueue_table::{
     RawStatusHeader, RawStatusHeaderRef, ScanVQueueEntries, ScanVQueueEntryStatusTable,
@@ -371,11 +373,11 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
     fn update_vqueue_entry_status(
         &mut self,
         context: &EntryContext<'_>,
-        before: EntryStateRef<'_>,
+        before: StoredEntryRef<'_>,
         after: EntryStateRef<'_>,
     ) {
         assert_eq!(
-            before.entry_key.entry_id(),
+            before.state().entry_key.entry_id(),
             after.entry_key.entry_id(),
             "entry identity cannot change"
         );
@@ -385,7 +387,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
     fn delete_vqueue_entry_status(
         &mut self,
         context: &EntryContext<'_>,
-        before: EntryStateRef<'_>,
+        before: StoredEntryRef<'_>,
     ) {
         self.apply_entry_change(context, &EntryChange::Delete { before });
     }
@@ -437,13 +439,20 @@ impl PartitionStoreTransaction<'_> {
     fn apply_entry_change(&mut self, context: &EntryContext<'_>, change: &EntryChange<'_>) {
         let state = match change {
             EntryChange::Insert { after } | EntryChange::Update { after, .. } => after,
-            EntryChange::Delete { before } => before,
+            EntryChange::Delete { before } => before.state(),
         };
         let id = state.base_entry_id(context);
         let mut key_buffer = [0u8; EntryStatusKey::serialized_length_fixed()];
         EntryStatusKeyRef::builder()
             .id(&id)
             .serialize_to(&mut key_buffer.as_mut());
+        #[cfg(any(test, feature = "test-util"))]
+        if let Some(before) = change.stored_before() {
+            assert!(
+                self.is_current_tracking(key_buffer, before.tracked()),
+                "the before-image must carry the entry's current stored tracking IDs"
+            );
+        }
 
         if let Some(after) = change.after() {
             let header = RawStatusHeaderRef {
@@ -455,6 +464,11 @@ impl PartitionStoreTransaction<'_> {
                 metadata: after.metadata.into(),
                 stats: after.stats.clone(),
                 status: after.status,
+                // An update keeps the stored tracking until the registry maintains
+                // instances; an insertion starts untracked.
+                tracked: change
+                    .stored_before()
+                    .map_or(&[][..], |before| before.tracked().as_bytes()),
             };
             let header_len = header.encoded_len();
             let value_buf = self.cleared_value_buffer_mut(
@@ -468,6 +482,27 @@ impl PartitionStoreTransaction<'_> {
             // The status key is overwritten on transitions, so SingleDelete is invalid.
             self.raw_delete_cf(KeyKind::VQueueEntryStatus, key_buffer);
         }
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl PartitionStoreTransaction<'_> {
+    /// Whether a before-image carries the tracking IDs stored for its entry,
+    /// including earlier writes in this transaction. A stale before-image would
+    /// lose or invent tracking. Tests only: production adds no read per write.
+    pub(super) fn is_current_tracking(
+        &self,
+        key: [u8; EntryStatusKey::serialized_length_fixed()],
+        tracked: restate_storage_api::vqueue_table::TrackedIds<'_>,
+    ) -> bool {
+        let stored = self
+            .get(TableKind::VQueue, key)
+            .expect("entry status is readable")
+            .map(|value| RawStatusHeader::decode_stored(value.as_ref()).expect("valid header"));
+        stored
+            .as_ref()
+            .map_or(&[][..], |header| header.tracked.as_slice())
+            == tracked.as_bytes()
     }
 }
 
@@ -499,7 +534,7 @@ impl<'txn> ReadVQueueTable for PartitionStoreTransaction<'txn> {
             return Ok(None);
         };
 
-        let header = RawStatusHeader::decode_length_delimited(&mut raw_value.as_ref())?;
+        let header = RawStatusHeader::decode_stored(raw_value.as_ref())?;
 
         Ok(Some(entry_status_header_from_raw(id, header)))
     }
@@ -749,10 +784,7 @@ impl ScanVQueueEntryStatusTable for PartitionStore {
                 move |(mut key, mut value)| {
                     let status_key = break_on_err(EntryStatusKey::deserialize_from(&mut key))?;
                     let (id,) = status_key.split();
-                    let header = break_on_err(
-                        RawStatusHeaderRef::decode_borrowed_length_delimited(&mut value)
-                            .map_err(StorageError::BilrostDecode),
-                    )?;
+                    let header = break_on_err(RawStatusHeaderRef::decode_stored(&mut value))?;
 
                     f(&id, &header).map_break(Ok)
                 },
@@ -828,9 +860,7 @@ where
                         };
 
                         let mut value = value.as_ref();
-                        let header =
-                            RawStatusHeaderRef::decode_borrowed_length_delimited(&mut value)
-                                .map_err(StorageError::BilrostDecode)?;
+                        let header = RawStatusHeaderRef::decode_stored(&mut value)?;
 
                         if f(id, &header).is_break() {
                             return Ok(());

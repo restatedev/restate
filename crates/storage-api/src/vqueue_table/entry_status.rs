@@ -71,6 +71,9 @@ pub struct RawStatusHeaderRef<'a> {
     pub stats: EntryStatistics,
     #[bilrost(tag(8))]
     pub status: Status,
+    /// See [`TrackedIds`]. Omitted when empty.
+    #[bilrost(tag(9), encoding(plainbytes))]
+    pub tracked: &'a [u8],
 }
 
 #[derive(Debug, Clone, bilrost::Message)]
@@ -93,6 +96,77 @@ pub struct RawStatusHeader {
     pub stats: EntryStatistics,
     #[bilrost(tag(8))]
     pub status: Status,
+    /// See [`TrackedIds`]. Omitted when empty.
+    #[bilrost(tag(9), encoding(plainbytes))]
+    pub tracked: Vec<u8>,
+}
+
+impl<'a> RawStatusHeaderRef<'a> {
+    /// Decodes a stored, length-delimited header, rejecting malformed tracking IDs.
+    pub fn decode_stored(value: &mut &'a [u8]) -> crate::Result<Self> {
+        let header = <Self as bilrost::BorrowedMessage>::decode_borrowed_length_delimited(value)?;
+        TrackedIds::from_bytes(header.tracked).validate()?;
+        Ok(header)
+    }
+}
+
+impl RawStatusHeader {
+    /// Decodes a stored, length-delimited header, rejecting malformed tracking IDs.
+    pub fn decode_stored(mut value: &[u8]) -> crate::Result<Self> {
+        let header = <Self as bilrost::OwnedMessage>::decode_length_delimited(&mut value)?;
+        TrackedIds::from_bytes(&header.tracked).validate()?;
+        Ok(header)
+    }
+}
+
+/// Physical IDs of the index and statistic instances that already reflect an
+/// entry status while they are still being built, as the partition store's
+/// registry assigns them. An instance that is complete (Ready) reflects every
+/// entry and is not listed. Only the partition store writes this list.
+///
+/// Stored as sorted, distinct big-endian `u32`s. For example, an entry written
+/// while instances 64 and 70 were being built stores `[0, 0, 0, 64, 0, 0, 0, 70]`;
+/// once both are complete, its next write stores nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TrackedIds<'a>(&'a [u8]);
+
+impl<'a> TrackedIds<'a> {
+    pub const EMPTY: Self = Self(&[]);
+
+    /// Wraps stored bytes; [`Self::ids`] validates them.
+    pub const fn from_bytes(bytes: &'a [u8]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &'a [u8] {
+        self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn validate(&self) -> crate::Result<()> {
+        self.ids()
+            .map(|_| ())
+            .ok_or(crate::StorageError::DataIntegrityError)
+    }
+
+    /// Whether `id` is listed. Expects validated bytes (see [`Self::ids`]).
+    pub fn contains(&self, id: u32) -> bool {
+        let (chunks, _) = self.0.as_chunks::<4>();
+        chunks
+            .binary_search_by_key(&id, |chunk| u32::from_be_bytes(*chunk))
+            .is_ok()
+    }
+
+    /// The IDs in increasing order, or `None` if the bytes are not a sorted list
+    /// of distinct big-endian `u32`s.
+    pub fn ids(&self) -> Option<impl Iterator<Item = u32> + 'a> {
+        let (chunks, rest) = self.0.as_chunks::<4>();
+        let ids = chunks.iter().map(|chunk| u32::from_be_bytes(*chunk));
+        (rest.is_empty() && ids.clone().is_sorted_by(|a, b| a < b)).then_some(ids)
+    }
 }
 
 /// Owned vqueue entry status header.
@@ -104,6 +178,7 @@ pub struct OwnedEntryStatusHeader {
     metadata: EntryMetadata,
     status: Status,
     stats: EntryStatistics,
+    tracked: Vec<u8>,
 }
 
 impl OwnedEntryStatusHeader {
@@ -122,7 +197,14 @@ impl OwnedEntryStatusHeader {
             metadata,
             status,
             stats,
+            tracked: Vec::new(),
         }
+    }
+
+    /// The stored [`TrackedIds`] bytes.
+    pub fn with_tracked(mut self, tracked: Vec<u8>) -> Self {
+        self.tracked = tracked;
+        self
     }
 }
 
@@ -192,6 +274,11 @@ impl EntryStatusHeader for OwnedEntryStatusHeader {
     fn status(&self) -> Status {
         self.status
     }
+
+    #[inline]
+    fn tracked(&self) -> TrackedIds<'_> {
+        TrackedIds::from_bytes(&self.tracked)
+    }
 }
 
 mod bilrost_encoding {
@@ -245,6 +332,9 @@ pub trait EntryStatusHeader: std::fmt::Debug {
     fn stats(&self) -> &EntryStatistics;
     fn canonical_entry_id(&self) -> CanonicalEntryId;
     fn display_entry_id(&self) -> impl std::fmt::Display + '_;
+    /// The tracking IDs stored with this header. A header that was not read from
+    /// storage has none.
+    fn tracked(&self) -> TrackedIds<'_>;
     /// Returns new if this entry has not started yet.
     fn has_started(&self) -> bool {
         self.stats().num_attempts > 0
@@ -281,6 +371,53 @@ mod tests {
     use bilrost::{Message, OwnedMessage};
 
     use super::*;
+
+    #[test]
+    fn tracked_ids_are_optional_sorted_and_round_trip() {
+        let header = |tracked: Vec<u8>| RawStatusHeader {
+            qid: VQueueId::custom(7, "q"),
+            stage: Stage::Inbox,
+            has_lock: false,
+            next_run_at: RoughTimestamp::new(10),
+            seq: Seq::new(1),
+            metadata: EntryMetadata::default(),
+            stats: EntryStatistics::new(
+                restate_clock::UniqueTimestamp::try_from_unix_millis(
+                    restate_clock::time::MillisSinceEpoch::new(1_744_010_000_000),
+                )
+                .unwrap(),
+                RoughTimestamp::new(10),
+            ),
+            status: Status::New,
+            tracked,
+        };
+        let untracked = header(vec![]).encode_to_vec();
+        let tracked = header(vec![0, 0, 0, 64, 0, 1, 0, 70]).encode_to_vec();
+        assert_eq!(
+            tracked.len(),
+            untracked.len() + 10,
+            "an_empty_list_is_omitted_and_ids_take_four_bytes_each"
+        );
+        let decoded = RawStatusHeader::decode(tracked.as_slice()).unwrap();
+        assert_eq!(
+            TrackedIds::from_bytes(&decoded.tracked)
+                .ids()
+                .unwrap()
+                .collect::<Vec<_>>(),
+            [64, 65_606]
+        );
+        for malformed in [
+            &[0, 0, 0, 64, 0][..],
+            &[0, 0, 0, 70, 0, 0, 0, 64],
+            &[0, 0, 0, 64, 0, 0, 0, 64],
+        ] {
+            assert!(
+                TrackedIds::from_bytes(malformed).ids().is_none(),
+                "{malformed:?}"
+            );
+        }
+        assert_eq!(TrackedIds::EMPTY.ids().unwrap().count(), 0);
+    }
 
     #[test]
     fn fixed_encoding_round_trips_status() {
