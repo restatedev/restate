@@ -133,6 +133,7 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         SerdesClient::new(service_client.clone()),
         ServiceDiscovery::new(RetryPolicy::default(), service_client),
         None,
+        std::sync::Arc::new(restate_storage_query_api::QueryEngine::default()),
     );
 
     TaskCenter::spawn(

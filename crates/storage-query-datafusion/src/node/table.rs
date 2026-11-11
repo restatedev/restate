@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::catalog::TableProvider;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
@@ -21,26 +22,26 @@ use restate_core::Metadata;
 use restate_types::cluster_state::ClusterState;
 use restate_types::nodes_config::NodesConfiguration;
 
-use crate::context::QueryContext;
 use crate::table_providers::{GenericTableProvider, Scan};
 use crate::table_util::Builder;
 
 use super::row::append_node_row;
-use super::schema::NodeBuilder;
+use super::schema::{NodeBuilder, NodeTable};
 
-pub fn register_self(
-    ctx: &QueryContext,
-    metadata: Metadata,
-    cluster_state: ClusterState,
-) -> datafusion::common::Result<()> {
-    let nodes_table = GenericTableProvider::new(
-        NodeBuilder::schema(),
-        Arc::new(NodesScanner {
-            metadata,
-            cluster_state,
-        }),
-    );
-    ctx.register_non_partitioned_table("nodes", Arc::new(nodes_table))
+impl NodeTable {
+    pub(crate) fn create_provider(
+        metadata: Metadata,
+        cluster_state: ClusterState,
+    ) -> Arc<dyn TableProvider> {
+        let nodes_table = GenericTableProvider::new(
+            NodeBuilder::schema(),
+            Arc::new(NodesScanner {
+                metadata,
+                cluster_state,
+            }),
+        );
+        Arc::new(nodes_table)
+    }
 }
 
 #[derive(Clone, derive_more::Debug)]

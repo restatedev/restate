@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use bytes::{Bytes, BytesMut};
@@ -38,8 +39,10 @@ use restate_core::protobuf::cluster_ctrl_svc::{
 };
 use restate_core::{Metadata, MetadataWriter};
 use restate_metadata_store::WriteError;
-use restate_storage_query_datafusion::context::{QueryContext, QueryError};
-use restate_storage_query_datafusion::node_fan_out::NodeWarnings;
+use restate_storage_query_api::errors::{QueryExecutionError, SessionError};
+use restate_storage_query_api::{
+    NodeWarnings, QueryEngine, QueryOptions, SessionOptions, WriteRecordBatchStream,
+};
 use restate_types::config::{MetadataClientKind, MetadataClientOptions, NetworkingOptions};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::{Logs, SegmentIndex};
@@ -58,8 +61,6 @@ use restate_types::schema::Schema;
 use restate_types::storage::{StorageCodec, StorageEncode};
 use restate_types::{NodeId, PlainNodeId, Version, Versioned};
 
-use crate::query_utils::WriteRecordBatchStream;
-
 use super::ClusterControllerHandle;
 use super::service::{ChainExtension, DropPartitionStoreRequestError};
 
@@ -67,7 +68,7 @@ pub(crate) struct ClusterCtrlSvcHandler {
     controller_handle: ClusterControllerHandle,
     bifrost: Bifrost,
     metadata_writer: MetadataWriter,
-    query_context: QueryContext,
+    cluster_query_engine: Arc<QueryEngine>,
     _replica_set_states: PartitionReplicaSetStates,
 }
 
@@ -76,14 +77,14 @@ impl ClusterCtrlSvcHandler {
         controller_handle: ClusterControllerHandle,
         bifrost: Bifrost,
         metadata_writer: MetadataWriter,
-        query_context: QueryContext,
+        cluster_query_engine: Arc<QueryEngine>,
         replica_set_states: PartitionReplicaSetStates,
     ) -> Self {
         Self {
             controller_handle,
             bifrost,
             metadata_writer,
-            query_context,
+            cluster_query_engine,
             _replica_set_states: replica_set_states,
         }
     }
@@ -515,11 +516,28 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         request: Request<QueryRequest>,
     ) -> std::result::Result<Response<Self::QueryStream>, tonic::Status> {
         let request = request.into_inner();
-        let query_result = self
-            .query_context
-            .execute(&request.query)
+        let session = match self.cluster_query_engine.create_session(SessionOptions {
+            apply_rate_limit: false,
+            schemas: vec!["cluster".into()],
+            default_schema: Some("cluster".into()),
+            ..Default::default()
+        }) {
+            Ok(session) => session,
+            Err(e @ (SessionError::EngineDisabled | SessionError::VersionUnavailable(_))) => {
+                return Err(Status::unimplemented(e.to_string()));
+            }
+            Err(e @ SessionError::RateLimited(_)) => {
+                return Err(Status::resource_exhausted(e.to_string()));
+            }
+            Err(e @ SessionError::DataFusion(_)) => {
+                return Err(Status::internal(e.to_string()));
+            }
+        };
+
+        let query_result = session
+            .execute(&request.query, QueryOptions {})
             .await
-            .map_err(datafusion_query_error_to_status)?;
+            .map_err(query_error_to_status)?;
 
         let node_warnings = query_result.node_warnings;
 
@@ -527,13 +545,13 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             query_result.stream,
             request.query,
         )
-        .map_err(datafusion_error_to_status)?
+        .map_err(df_error_to_status)?
         .map(|item| {
             item.map(|encoded| QueryResponse {
                 encoded,
                 ..Default::default()
             })
-            .map_err(datafusion_error_to_status)
+            .map_err(df_error_to_status)
         });
 
         // Wrap the data stream to attach per-node warnings to the final
@@ -773,21 +791,25 @@ fn drain_node_warnings(node_warnings: &[NodeWarnings]) -> Vec<QueryWarning> {
     let mut out = Vec::new();
     for nw in node_warnings {
         out.extend(nw.lock().drain(..).map(|w| QueryWarning {
-            node_id: w.node_id,
-            message: w.message,
+            node_id: w.node_id.to_string(),
+            message: w.message.to_string(),
         }));
     }
     out
 }
 
-fn datafusion_query_error_to_status(err: QueryError) -> Status {
+fn query_error_to_status(err: QueryExecutionError) -> Status {
     match err {
-        QueryError::DataFusion(e) => datafusion_error_to_status(e),
-        err @ QueryError::RateLimited(_) => Status::resource_exhausted(err.to_string()),
+        QueryExecutionError::DataFusion(
+            DataFusionError::SQL(..)
+            | DataFusionError::Execution(..)
+            | DataFusionError::SchemaError(..),
+        ) => Status::invalid_argument(err.to_string()),
+        _ => Status::internal(err.to_string()),
     }
 }
 
-fn datafusion_error_to_status(err: DataFusionError) -> Status {
+fn df_error_to_status(err: DataFusionError) -> Status {
     match err {
         DataFusionError::SQL(..)
         | DataFusionError::Execution(..)

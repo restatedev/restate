@@ -12,6 +12,8 @@ use std::fmt::Debug;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
+use datafusion::catalog::TableProvider;
+
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::ScanVQueueMetaTable;
@@ -19,48 +21,49 @@ use restate_storage_api::vqueue_table::filters::ScanMetaFilter;
 use restate_storage_api::vqueue_table::metadata::VQueueMetaRef;
 use restate_types::vqueues::VQueueId;
 
-use crate::context::{QueryContext, SelectPartitions};
+use crate::context::SelectPartitions;
 use crate::filter::{FirstMatchingPartitionKeyExtractor, VQueueMetaFilter};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::statistics::{RowEstimate, TableStatisticsBuilder};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 use crate::vqueue_meta::row::append_vqueues_meta_row;
-use crate::vqueue_meta::schema::{SysVqueueMetaBuilder, sys_vqueue_meta_sort_order};
+use crate::vqueue_meta::schema::{
+    SysVqueueMetaBuilder, SysVqueueMetaTable, sys_vqueue_meta_sort_order,
+};
 
-const NAME: &str = "sys_vqueue_meta";
+impl SysVqueueMetaTable {
+    pub(crate) fn create_provider(
+        partition_selector: impl SelectPartitions,
+        remote_scanner_manager: &RemoteScannerManager,
+    ) -> Arc<dyn TableProvider> {
+        let schema = SysVqueueMetaBuilder::schema();
 
-pub(crate) fn register_self(
-    ctx: &QueryContext,
-    partition_selector: impl SelectPartitions,
-    partition_store_manager: Arc<PartitionStoreManager>,
-    remote_scanner_manager: &RemoteScannerManager,
-) -> datafusion::common::Result<()> {
-    let local_scanner = Arc::new(LocalPartitionsScanner::new(
-        partition_store_manager,
-        VQueuesMetaScanner,
-    )) as Arc<dyn ScanPartition>;
+        // There are far fewer vqueues than vqueue entries, so this table is small.
+        let statistics = TableStatisticsBuilder::new(schema.clone())
+            .with_num_rows_estimate(RowEstimate::Small)
+            .with_partition_key()
+            .with_primary_key("id");
 
-    let schema = SysVqueueMetaBuilder::schema();
+        let vqueue_meta_table = PartitionedTableProvider::new(
+            partition_selector,
+            schema,
+            sys_vqueue_meta_sort_order(),
+            remote_scanner_manager.create_distributed_scanner::<Self>(),
+            FirstMatchingPartitionKeyExtractor::default()
+                .with_scope("scope")
+                .with_grouped_partitioned_resource_id::<VQueueId>("id"),
+        )
+        .with_statistics(statistics.build());
 
-    // There are far fewer vqueues than vqueue entries, so this table is small.
-    let statistics = TableStatisticsBuilder::new(schema.clone())
-        .with_num_rows_estimate(RowEstimate::Small)
-        .with_partition_key()
-        .with_primary_key("id");
+        Arc::new(vqueue_meta_table)
+    }
 
-    let vqueue_meta_table = PartitionedTableProvider::new(
-        partition_selector,
-        schema,
-        sys_vqueue_meta_sort_order(),
-        remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
-        FirstMatchingPartitionKeyExtractor::default()
-            .with_scope("scope")
-            .with_grouped_partitioned_resource_id::<VQueueId>("id"),
-    )
-    .with_statistics(statistics.build());
-
-    ctx.register_partitioned_table(NAME, Arc::new(vqueue_meta_table))
+    pub(crate) fn create_local_scanner(
+        partition_store_manager: Arc<PartitionStoreManager>,
+    ) -> impl ScanPartition {
+        LocalPartitionsScanner::<VQueuesMetaScanner>::new(partition_store_manager)
+    }
 }
 
 #[derive(Debug, Clone)]

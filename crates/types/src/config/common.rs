@@ -892,7 +892,8 @@ pub struct CommonOptions {
     /// # Disable the config table
     ///
     /// Disables the `config` SQL table, which exposes the node's running
-    /// configuration via SQL queries.
+    /// configuration via SQL queries. Evaluated when a query session is created;
+    /// existing sessions retain their original table visibility.
     ///
     /// Since v1.7.1
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
