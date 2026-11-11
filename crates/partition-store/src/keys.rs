@@ -91,6 +91,11 @@ pub enum KeyKind {
     // # Locks
     // locks for scoped and unscoped virtual objects and workflows
     Lock,
+
+    /// Stats and partition-level aggregates
+    Stats,
+    /// Statistics of registered instances, keyed by their `u32` physical ID.
+    RegisteredStats,
 }
 
 impl KeyKind {
@@ -154,6 +159,11 @@ impl KeyKind {
             KeyKind::VQueueSuspendedStage => b"qS",
             KeyKind::VQueuePausedStage => b"qP",
             KeyKind::VQueueFinishedStage => b"qF",
+
+            // zS prefix for partition-level counters and statistics. Those statistics
+            // will need to be reconstructed on partition split.
+            KeyKind::Stats => b"zS",
+            KeyKind::RegisteredStats => b"zR",
         }
     }
 
@@ -197,6 +207,8 @@ impl KeyKind {
             b"qS" => Some(KeyKind::VQueueSuspendedStage),
             b"qP" => Some(KeyKind::VQueuePausedStage),
             b"qF" => Some(KeyKind::VQueueFinishedStage),
+            b"zS" => Some(KeyKind::Stats),
+            b"zR" => Some(KeyKind::RegisteredStats),
             _ => None,
         }
     }
@@ -235,6 +247,10 @@ impl KeyKind {
 
         match kind {
             KeyKind::VQueueMeta => vqueue_meta_merge::full_merge(key, existing_val, operands),
+            KeyKind::Stats => crate::stats::full_merge(key, existing_val, operands),
+            KeyKind::RegisteredStats => {
+                crate::stats::full_merge_registered(key, existing_val, operands)
+            }
             _ => None,
         }
     }
@@ -242,13 +258,25 @@ impl KeyKind {
     // Rocksdb merge operator function (partial merge)
     #[inline]
     pub fn partial_merge(
-        _key: &[u8],
+        key: &[u8],
         _unused: Option<&[u8]>,
-        _operands: &MergeOperands,
+        operands: &MergeOperands,
     ) -> Option<Vec<u8>> {
-        // Currently, we have no partial merge operator for any key. Change this
-        // if/when this is needed.
-        None
+        let mut kind_buf = key;
+        let kind = match KeyKind::deserialize(&mut kind_buf) {
+            Ok(kind) => kind,
+            Err(e) => {
+                error!("Cannot apply merge operator; {e}");
+                return None;
+            }
+        };
+
+        trace!(?kind, "partial merge {} operands", operands.len());
+        match kind {
+            KeyKind::Stats => crate::stats::partial_merge(key, operands),
+            KeyKind::RegisteredStats => crate::stats::partial_merge_registered(key, operands),
+            _ => None,
+        }
     }
 }
 

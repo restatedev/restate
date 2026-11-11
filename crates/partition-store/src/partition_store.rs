@@ -72,7 +72,8 @@ use crate::{configure_prefix_iterator_opts, configure_range_iterator_opts};
 
 pub type DB = rocksdb::DB;
 
-// Key kind and partition key are 10 bytes (KeyKind(2) + PartitionKey/Id(8))
+// Key kind and partition key are 10 bytes (KeyKind(2) + PartitionKey/Id(8)).
+// Statistics use a table-specific 8-byte suffix.
 pub(crate) const DB_PREFIX_LENGTH: usize =
     KeyKind::SERIALIZED_LENGTH + std::mem::size_of::<PartitionKey>();
 
@@ -186,6 +187,7 @@ pub enum TableKind {
     Promise,
     VQueue,
     Locks,
+    Stats,
 }
 
 impl TableKind {
@@ -220,6 +222,7 @@ impl TableKind {
                 KeyKind::VQueueInput,
             ],
             Self::Locks => &[KeyKind::Lock],
+            Self::Stats => &[KeyKind::Stats, KeyKind::RegisteredStats],
         }
     }
 
