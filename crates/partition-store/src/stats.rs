@@ -8,38 +8,113 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Physical encodings and merge operations for partition-scoped statistics.
+//! Partition-scoped statistics, kept as registered instances under
+//! [`KeyKind::RegisteredStats`].
 //!
-//! A key consists of a ten-byte [`StatKeyPrefix`] followed by the statistic's
-//! payload. The prefix identifies the physical partition, statistic, and
-//! aggregation kind; it does not contain a service's partition key. Registered
-//! statistics use [`RegisteredStatKeyPrefix`] followed by the aggregation kind.
-//! Key payloads are interpreted by their owning statistic definitions.
+//! A key consists of an eleven-byte header, the instance's
+//! [`RegisteredStatKeyPrefix`] and the statistic's [`StatKind`], followed by the
+//! statistic's payload. The header identifies the physical partition and the
+//! registry's physical ID of the instance; it does not contain a service's
+//! partition key. Ordered payloads use the same schema-selected field codecs as
+//! other ordered keys. Reads resolve the Ready instance of the statistic's
+//! definition, and fail when there is none.
 //!
 //! Stored values and pending merge operands have separate codecs. Full merges
 //! apply signed deltas to unsigned counters; partial merges combine deltas
 //! without needing a stored value. The persisted [`StatKind`] selects those
-//! codecs even when the statistic's raw identifier is unknown to this binary.
+//! codecs without consulting the registry.
 //!
 //! Zero-valued aggregates are equivalent to absent keys. Readers must omit them
 //! using [`aggregated::Aggregate::should_filter`]; compaction can reclaim their
 //! stored representations later. Neither path may treat a pending operand as a
 //! stored value.
+//!
+//! Keys under [`KeyKind::Stats`] use the legacy [`StatKeyPrefix`] with static
+//! [`StatId`]s. Opening a partition deletes them; until then they still merge and
+//! compact.
 
 pub mod aggregated;
 mod codec;
+mod macros;
 
 // Re-exports
-pub use codec::{RegisteredStatKeyPrefix, StatKeyPrefix, StatMergeValueCodec, StatValueCodec};
+pub use codec::{
+    DecodeStatKey, EncodeStatKey, HEADER_LENGTH, RegisteredStatKeyHeader, RegisteredStatKeyPrefix,
+    StatKeyPrefix, StatMergeValueCodec, StatValueCodec,
+};
 
+use bytes::BufMut;
 use rocksdb::MergeOperands;
 use tracing::error;
+use zerocopy::IntoBytes;
 
 use crate::keys::KeyKind;
+use crate::keys::header::InstanceScope;
 
 use self::aggregated::Aggregate;
 
 const KEY_KIND: KeyKind = KeyKind::Stats;
+
+/// The static identifiers of the statistics that predate the registry, in legacy
+/// [`StatKeyPrefix`] keys.
+///
+/// The numeric tags are persisted as big-endian u16 values. Never renumber or reuse
+/// an existing tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display, strum::FromRepr)]
+#[allow(clippy::enum_variant_names)]
+#[repr(u8)]
+pub enum StatId {
+    /// Current stage/status counts by service, handler, and entry kind.
+    ServiceStats = 1,
+    /// Current stage/status counts by pinned deployment and service.
+    DeploymentStats = 2,
+    /// Current stage/status counts by virtual-object and entry dimensions.
+    VirtualObjectStats = 3,
+}
+
+impl StatId {
+    /// Returns the identifier's persisted representation.
+    pub const fn as_u16(self) -> u16 {
+        self as u16
+    }
+}
+
+/// The registered definition, key payload, and stored value of a statistic.
+///
+/// `define_aggregated_stat!` derives the kind and value from one
+/// aggregation implementation so its writes and merges agree on the format.
+pub trait Stat {
+    /// The name of the registry definition whose instances hold this statistic.
+    const DEFINITION: &'static str;
+    const STAT_KIND: StatKind;
+
+    type OwnedKey: DecodeStatKey<Self>;
+    type Value: StatValueCodec;
+
+    /// Appends a complete key of instance `scope`, including its header, without
+    /// clearing `scratch`.
+    fn encode_key<K, B: BufMut>(scope: InstanceScope, key: K, scratch: &mut B)
+    where
+        K: EncodeStatKey<Self>,
+    {
+        encode_header::<Self, _>(scope, scratch);
+        key.encode(scratch);
+    }
+
+    /// The complete encoded length, including the header.
+    fn encoded_key_len<K>(key: &K) -> usize
+    where
+        K: EncodeStatKey<Self>,
+    {
+        HEADER_LENGTH + key.serialized_length()
+    }
+}
+
+/// Appends the header of statistic `S`'s keys in instance `scope`.
+pub(crate) fn encode_header<S: Stat + ?Sized, B: BufMut>(scope: InstanceScope, buffer: &mut B) {
+    buffer.put_slice(RegisteredStatKeyPrefix::new(scope.partition, scope.id).as_bytes());
+    buffer.put_u8(S::STAT_KIND as u8);
+}
 
 /// The aggregation algorithm and value encoding used by a statistic.
 /// These discriminants are persisted in keys and must remain stable.

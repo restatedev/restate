@@ -59,15 +59,18 @@ use crate::fsm_table::put_storage_version;
 use crate::fsm_table::seal_partition;
 use crate::fsm_table::{
     PartitionStateMachineKey, get_locally_durable_lsn, get_min_restate_version_from_partition_db,
-    get_state_machine_features_from_partition_db, get_storage_features_from_partition_db,
-    get_storage_version_from_partition_db, is_jc_orphan_cleanup_done, put_jc_orphan_cleanup_done,
+    get_registry_from_partition_db, get_state_machine_features_from_partition_db,
+    get_storage_features_from_partition_db, get_storage_version_from_partition_db,
+    is_jc_orphan_cleanup_done, put_jc_orphan_cleanup_done,
 };
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
 use crate::migrations::MigrationError;
 use crate::partition_db::PartitionDb;
+use crate::registry::ActiveSet;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
 use crate::snapshots::{CaptureGuard, LocalPartitionSnapshot, SnapshotCompatibility, export_dir};
+use crate::stats::aggregated::AggregatedStatsMut;
 use crate::{configure_prefix_iterator_opts, configure_range_iterator_opts};
 
 pub type DB = rocksdb::DB;
@@ -187,6 +190,7 @@ pub enum TableKind {
     Promise,
     VQueue,
     Locks,
+    SecondaryIndex,
     Stats,
 }
 
@@ -222,6 +226,7 @@ impl TableKind {
                 KeyKind::VQueueInput,
             ],
             Self::Locks => &[KeyKind::Lock],
+            Self::SecondaryIndex => &[KeyKind::SecondaryIndex],
             Self::Stats => &[KeyKind::Stats, KeyKind::RegisteredStats],
         }
     }
@@ -318,8 +323,52 @@ impl PartitionStore {
         })
     }
 
+    /// The instances maintained on entry writes. Opening the partition reconciles
+    /// the registry and installs this set before the processor writes. A store
+    /// used without that (tools and tests) loads it from disk on first use; a
+    /// registry that fails to load there is logged and maintains nothing.
+    pub(crate) fn active_set(&self) -> Arc<ActiveSet> {
+        if let Some(active_set) = self.db.active_set() {
+            return active_set;
+        }
+        let registry = get_registry_from_partition_db(self.partition_db())
+            .inspect_err(|err| {
+                warn!(
+                    partition_id = %self.partition_id(),
+                    "Failed to load the index and statistics registry: {err}"
+                )
+            })
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let walks = crate::fsm_table::get_walks_from_partition_db(self.partition_db())
+            .inspect_err(|err| {
+                warn!(
+                    partition_id = %self.partition_id(),
+                    "Failed to load the walks: {err}"
+                )
+            })
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let active_set = Arc::new(ActiveSet::new(
+            &registry,
+            &walks,
+            crate::registry::DEFINITIONS,
+        ));
+        self.db.install_active_set(Arc::clone(&active_set));
+        active_set
+    }
+
+    /// Installs an active set for every handle of this partition, as opening does
+    /// after reconciling the registry. Tests install instances of test definitions.
+    #[cfg(test)]
+    pub(crate) fn set_active_set(&mut self, active_set: ActiveSet) {
+        self.db.install_active_set(Arc::new(active_set));
+    }
+
     /// Overwrites the memoized storage features after their finalization batch commits.
-    fn set_storage_features(&mut self, features: StorageFeatures) {
+    pub(crate) fn set_storage_features(&mut self, features: StorageFeatures) {
         self.storage_features.take();
         let _ = self.storage_features.set(features);
     }
@@ -339,6 +388,28 @@ impl PartitionStore {
 
     pub fn partition_key_range(&self) -> KeyRange {
         self.db.partition().key_range
+    }
+
+    /// Capture an owned query snapshot. The processor calls this in its loop,
+    /// after readiness checks. Completion resolves after the final capability and
+    /// queued/running storage operation releases its snapshot ownership.
+    pub fn query_read(
+        &self,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<(
+        crate::ReadSnapshot,
+        tokio_util::sync::WaitForCancellationFutureOwned,
+    )> {
+        let completed = CancellationToken::new();
+        Ok((
+            crate::ReadSnapshot::new(
+                self.db.clone(),
+                self.storage_features(),
+                cancel,
+                completed.clone(),
+            )?,
+            completed.cancelled_owned(),
+        ))
     }
 
     #[inline]
@@ -418,7 +489,7 @@ impl PartitionStore {
     #[allow(clippy::type_complexity)]
     fn iterator_step_for_each(
         tx: oneshot::Sender<StorageError>,
-        mut f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
+        mut f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>, IterAction> + Send + 'static,
     ) -> impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send {
         let mut tx = Some(tx);
         move |item| {
@@ -430,13 +501,13 @@ impl PartitionStore {
             match item {
                 // apply the caller's function
                 Ok((key, value)) => match f((key, value)) {
-                    ControlFlow::Continue(()) => match &mut tx {
+                    ControlFlow::Continue(action) => match &mut tx {
                         Some(tx_inner) if tx_inner.is_closed() => {
                             tx = None;
                             IterAction::Stop
                         }
                         // the channel is not closed yet, keep iterating
-                        Some(_) => IterAction::Next,
+                        Some(_) => action,
                         None => panic!("Iterator continued after IterAction::Stop"),
                     },
                     ControlFlow::Break(Ok(())) => {
@@ -491,10 +562,37 @@ impl PartitionStore {
         priority: Priority,
         opts: ReadOptions,
         scan: PhysicalScan<Bytes>,
-        f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
+        mut f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
+    ) -> Result<impl Future<Output = Result<()>>, AdmissionClosed> {
+        self.iterator_controlled_physical(name, priority, opts, scan, move |item| {
+            f(item).map_continue(|()| IterAction::Next)
+        })
+    }
+
+    /// Runs a physical scan with callback-directed navigation. Seeks must advance
+    /// and stay inside the original bounds; errors and cancellation use the same
+    /// path as ordinary for-each scans.
+    pub(crate) fn iterator_controlled_physical(
+        &self,
+        name: &'static str,
+        priority: Priority,
+        opts: ReadOptions,
+        scan: PhysicalScan<Bytes>,
+        mut f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>, IterAction> + Send + 'static,
     ) -> Result<impl Future<Output = Result<()>>, AdmissionClosed> {
         let (tx, rx) = oneshot::channel();
-        let on_iter = Self::iterator_step_for_each(tx, f);
+        let bounds = scan.clone();
+        let on_iter = Self::iterator_step_for_each(tx, move |(key, value)| {
+            let action = f((key, value));
+            if let ControlFlow::Continue(IterAction::Seek(target)) = &action
+                && (target.as_ref() <= key || !bounds.contains_key(target))
+            {
+                return ControlFlow::Break(Err(StorageError::Generic(anyhow::anyhow!(
+                    "scan seek must advance and remain within its bounds"
+                ))));
+            }
+            action
+        });
         self.run_iterator_internal(name, priority, opts, scan, on_iter)?;
 
         Ok(async {
@@ -563,6 +661,7 @@ impl PartitionStore {
         // If PartitionStore.storage_features() was never called before,
         // this will fetch the value and cache it.
         let storage_features = self.storage_features();
+        let active_set = self.active_set();
         let settings = TransactionSettings::from(&Configuration::pinned().worker.storage);
 
         PartitionStoreTransaction {
@@ -574,6 +673,7 @@ impl PartitionStore {
             value_buffer: &mut self.value_buffer,
             meta: self.db.partition(),
             storage_features,
+            active_set,
             snapshot,
             settings,
             commit_fence: None,
@@ -764,6 +864,10 @@ impl PartitionStore {
             });
         }
 
+        // An unsupported or invalid registry fails the open before any migration
+        // below mutates the store.
+        self.validate_registry(storage_features.enabled())?;
+
         // A store without an applied LSN is empty because normal state changes and the applied LSN
         // are committed in the same partition-store transaction.
         let is_store_empty = self.get_applied_lsn().await?.is_none();
@@ -778,16 +882,22 @@ impl PartitionStore {
             ));
         }
 
+        // Registered instances replace the legacy status gauges. Delete them once
+        // every compatibility check above passed, before any family can be
+        // activated below.
+        self.remove_legacy_status_gauges(&mut storage_features)
+            .await?;
+
         // Changes might be empty, but storage_features can still be dirty due to the automatic
         // convergence that happens based on storage-version or if the store is empty.
-        let features_to_enable =
+        let feature_changes =
             storage_features.automatic_changes(config, current_restate_version, is_store_empty);
 
         // Do we need to perform migrations or data movement for these features?
-        for feature in features_to_enable {
-            // Enable each feature independently
-            feature
-                .enable(
+        for change in feature_changes {
+            // Apply each feature's change independently.
+            change
+                .apply(
                     self,
                     current_restate_version,
                     &mut current_min_restate_version,
@@ -798,6 +908,7 @@ impl PartitionStore {
                     &mut storage_features,
                 )
                 .await?;
+            self.set_storage_features(*storage_features.enabled());
         }
 
         if storage_features.is_dirty() {
@@ -805,6 +916,21 @@ impl PartitionStore {
             storage_features.mark_persisted();
         }
         self.set_storage_features(*storage_features.enabled());
+
+        // Before the processor starts writing: retire, reset and register registry
+        // instances, fence the store, and install the instances maintained on writes.
+        self.reconcile_registry(
+            crate::registry::DEFINITIONS,
+            &crate::registry::Requests::from_config(crate::registry::FAMILIES, config),
+            crate::registry::FenceState {
+                features: &mut storage_features,
+                current_version: current_restate_version,
+                min_restate_version: &mut current_min_restate_version,
+            },
+            crate::registry::COMPLETENESS_CHUNK,
+            &cancel,
+        )
+        .await?;
 
         // Keep StorageVersion aligned for older binaries that used it as the sole signal for these
         // migrations. The combined variant is accurate only when both features are enabled; a
@@ -978,6 +1104,7 @@ pub struct PartitionStoreTransaction<'a> {
     key_buffer: &'a mut BytesMut,
     value_buffer: &'a mut BytesMut,
     storage_features: StorageFeatures,
+    active_set: Arc<ActiveSet>,
     snapshot: Option<SnapshotWithThreadMode<'a, rocksdb::DB>>,
     settings: TransactionSettings,
     /// Resolves once the [`CommitFence`] holding back commits is dropped.
@@ -1204,9 +1331,51 @@ impl<'a> PartitionStoreTransaction<'a> {
         self.storage_features
     }
 
+    pub(crate) fn active_set(&self) -> Arc<ActiveSet> {
+        Arc::clone(&self.active_set)
+    }
+
+    /// Replaces the instances maintained on writes, once a commit changed them.
+    pub(crate) fn set_active_set(&mut self, active_set: Arc<ActiveSet>) {
+        self.active_set = active_set;
+    }
+
+    /// Marks the buffered writes, so that [`Self::rollback_to_save_point`] can drop
+    /// the ones that follow. Save points nest, and a commit or [`Self::clear`]
+    /// drops them.
+    pub(crate) fn set_save_point(&mut self) {
+        self.write_batch_with_index
+            .as_mut()
+            .expect("transaction valid")
+            .set_save_point();
+    }
+
+    /// Drops the writes buffered since the latest save point, and that save point.
+    pub(crate) fn rollback_to_save_point(&mut self) -> Result<()> {
+        self.write_batch_with_index
+            .as_mut()
+            .expect("transaction valid")
+            .rollback_to_save_point()
+            .map_err(|err| StorageError::Generic(err.into()))
+    }
+
+    /// Whether no write is buffered.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.write_batch_with_index
+            .as_ref()
+            .is_none_or(|batch| batch.is_empty())
+    }
+
     #[inline]
     pub(crate) fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) -> Result<()> {
         assert_partition_key_or_err(self.meta.key_range, partition_key)
+    }
+}
+
+impl<'a> PartitionStoreTransaction<'a> {
+    /// Merges into the statistic keys of instance `id`.
+    pub(crate) fn aggregated_stats<'b>(&'b mut self, id: u32) -> AggregatedStatsMut<'b, 'a> {
+        AggregatedStatsMut::new(self, id)
     }
 }
 

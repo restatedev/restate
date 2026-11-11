@@ -8,17 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::{Buf, BufMut};
+use std::marker::PhantomData;
+
+use bytes::{Buf, BufMut, Bytes};
 use zerocopy::{IntoBytes, TryFromBytes, big_endian};
 
 use restate_storage_api::StorageError;
 use restate_types::sharding::PartitionId;
 
-use crate::keys::{EncodeTableKeyPrefix, KeyKind};
+use crate::keys::header::{HeaderBounds, InstanceScope, KeyHeader};
+use crate::keys::{EncodeTableKeyPrefix, KeyDecoder, KeyKind};
+use crate::registry::RegistrationKind;
+use crate::table::ReadMetadata;
 
-use super::{KEY_KIND, StatKind};
+use super::{KEY_KIND, Stat, StatId, StatKind};
 
-/// Fixed prefix shared by every key for one statistic in one physical partition.
+/// Legacy fixed prefix shared by every key for one statistic in one physical
+/// partition, with the static [`StatId`](super::StatId) that predates the registry.
 ///
 /// The persisted layout is exactly ten bytes:
 /// `key kind (2) | partition padding (2) | partition id (2) | statistic id (2) | kind (1) | reserved (1)`.
@@ -51,12 +57,39 @@ pub struct StatKeyPrefix {
 static_assertions::const_assert_eq!(size_of::<StatKeyPrefix>(), crate::DB_PREFIX_LENGTH);
 static_assertions::assert_eq_align!(StatKeyPrefix, u8);
 
+/// The header of a registered statistic's keys: its instance identity and the
+/// statistic's aggregation kind.
+pub const HEADER_LENGTH: usize = RegisteredStatKeyPrefix::SERIALIZED_LENGTH + 1;
+
+/// Typed ownership metadata for the keys of statistic `S`. A read resolves the
+/// Ready instance of `S`'s definition and fails with `NotReady` when there is none.
+pub struct RegisteredStatKeyHeader<S>(PhantomData<fn() -> S>);
+
+impl<S: Stat + 'static> KeyHeader for RegisteredStatKeyHeader<S> {
+    type Scope = InstanceScope;
+
+    const KEY_KIND: KeyKind = KeyKind::RegisteredStats;
+    const LENGTH: usize = HEADER_LENGTH;
+
+    fn scope(metadata: &ReadMetadata<'_>) -> crate::Result<InstanceScope> {
+        Ok(InstanceScope {
+            partition: metadata.partition.partition_id,
+            id: metadata.ready_instance(S::DEFINITION, RegistrationKind::Statistic)?,
+        })
+    }
+
+    fn bounds(scope: InstanceScope) -> Option<HeaderBounds> {
+        let mut header = Vec::with_capacity(HEADER_LENGTH);
+        super::encode_header::<S, _>(scope, &mut header);
+        Some(HeaderBounds::prefix(Self::KEY_KIND, Bytes::from(header)))
+    }
+}
+
 impl StatKeyPrefix {
     /// Length of the persisted prefix.
     pub const SERIALIZED_LENGTH: usize = size_of::<Self>();
 
-    /// Constructs the raw prefix
-    #[cfg(test)]
+    /// Constructs a raw legacy prefix.
     pub fn new(partition_id: PartitionId, id: u16, stat_kind: StatKind) -> Self {
         Self {
             key_kind: *KEY_KIND.as_bytes(),
@@ -82,6 +115,12 @@ impl StatKeyPrefix {
         self.id.get()
     }
 
+    /// Returns the typed statistic identifier when it is known to this binary.
+    pub fn stat_id(&self) -> Option<StatId> {
+        let id = u8::try_from(self.stat_id_raw()).ok()?;
+        StatId::from_repr(id)
+    }
+
     pub fn stat_kind(&self) -> StatKind {
         self.stat_kind
     }
@@ -89,23 +128,8 @@ impl StatKeyPrefix {
     /// Validates the key kind, zero padding, and aggregation kind, returning the
     /// prefix and unvalidated payload. Unknown statistic IDs and reserved bytes
     /// are preserved; the caller chooses the appropriate payload decoder.
-    pub fn decode_prefix(key: &[u8]) -> crate::Result<(&Self, &[u8])> {
-        let Ok((prefix, payload)) = Self::try_ref_from_prefix(key) else {
-            return Err(StorageError::Conversion(anyhow::anyhow!(
-                "failed to decode aggregated statistic key prefix"
-            )));
-        };
-        if prefix.key_kind() != Some(KEY_KIND) {
-            return Err(StorageError::Conversion(anyhow::anyhow!(
-                "invalid aggregated statistic key prefix"
-            )));
-        }
-        if prefix.padding != big_endian::U16::ZERO {
-            return Err(StorageError::Conversion(anyhow::anyhow!(
-                "invalid aggregated statistic key partition padding"
-            )));
-        }
-        Ok((prefix, payload))
+    pub fn decode_prefix(key: &[u8]) -> crate::Result<(&Self, KeyDecoder<'_, StatKeyPrefix, 1>)> {
+        KeyDecoder::new_stat(key).decode_prefix()
     }
 }
 
@@ -173,6 +197,30 @@ impl RegisteredStatKeyPrefix {
     }
 }
 
+/// Encodes the payload of a key for statistic `C`, without its [`StatKeyPrefix`].
+/// Use [`Stat::encode_key`] to append a complete key.
+pub trait EncodeStatKey<C: Stat + ?Sized> {
+    fn encode<B: BufMut>(&self, bytes: &mut B);
+    fn serialized_length(&self) -> usize;
+}
+
+impl<T: EncodeStatKey<C>, C: Stat> EncodeStatKey<C> for &T {
+    fn encode<B: BufMut>(&self, scratch: &mut B) {
+        T::encode(*self, scratch)
+    }
+
+    fn serialized_length(&self) -> usize {
+        T::serialized_length(*self)
+    }
+}
+
+/// Decodes a key payload after its fixed prefix has been checked and removed.
+pub trait DecodeStatKey<C: Stat + ?Sized> {
+    fn decode(bytes: &mut &[u8]) -> crate::Result<Self>
+    where
+        Self: Sized;
+}
+
 /// Encoding of a materialized statistic value, distinct from a pending merge operand.
 pub trait StatValueCodec {
     fn serialized_len(&self) -> usize;
@@ -189,6 +237,73 @@ pub trait StatMergeValueCodec {
     fn deserialize_from(bytes: &[u8]) -> crate::Result<Self>
     where
         Self: Sized;
+}
+
+impl<'a> KeyDecoder<'a, StatKeyPrefix, 0> {
+    /// Decoder starting point for all aggregated statistic keys.
+    pub fn new_stat(remaining: &'a [u8]) -> Self {
+        Self {
+            remaining,
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    pub fn decode_prefix(
+        &self,
+    ) -> Result<(&'a StatKeyPrefix, KeyDecoder<'a, StatKeyPrefix, 1>), StorageError> {
+        let Ok((prefix, payload)) = StatKeyPrefix::try_ref_from_prefix(self.remaining) else {
+            return Err(StorageError::Conversion(anyhow::anyhow!(
+                "failed to decode aggregated statistic key prefix"
+            )));
+        };
+        if prefix.key_kind() != Some(KEY_KIND) {
+            return Err(StorageError::Conversion(anyhow::anyhow!(
+                "invalid aggregated statistic key prefix"
+            )));
+        }
+        if prefix.padding != big_endian::U16::ZERO {
+            return Err(StorageError::Conversion(anyhow::anyhow!(
+                "invalid aggregated statistic key partition padding"
+            )));
+        }
+
+        Ok((
+            prefix,
+            KeyDecoder {
+                remaining: payload,
+                _marker: std::marker::PhantomData,
+            },
+        ))
+    }
+}
+
+impl<'a, C> KeyDecoder<'a, C, 0> {
+    pub fn try_full_decode<S>(mut self) -> Result<C, StorageError>
+    where
+        C: DecodeStatKey<S>,
+        S: Stat,
+    {
+        let decoded = C::decode(&mut self.remaining)?;
+        if !self.remaining.is_empty() {
+            return Err(StorageError::DataIntegrityError);
+        }
+        Ok(decoded)
+    }
+}
+
+impl<'a> KeyDecoder<'a, StatKeyPrefix, 1> {
+    /// Selects a typed payload decoder. The caller must first check that the
+    /// prefix identifies `S`; this conversion does not validate its ID or kind.
+    pub fn into_decoder<S, C>(self) -> KeyDecoder<'a, C, 0>
+    where
+        C: DecodeStatKey<S>,
+        S: Stat,
+    {
+        KeyDecoder {
+            remaining: self.remaining,
+            _marker: std::marker::PhantomData,
+        }
+    }
 }
 
 impl EncodeTableKeyPrefix for StatKeyPrefix {
@@ -283,11 +398,24 @@ mod tests {
         assert_eq!(decoded.partition_id(), PartitionId::from(8));
         assert_eq!(decoded.stat_id_raw(), 12);
         assert_eq!(decoded.stat_kind(), StatKind::StageStatusBucketedGauge);
-        assert_eq!(payload, b"payload");
+        assert_eq!(payload.remaining, b"payload");
+
+        for (id, expected) in [
+            (1_u16, Some(StatId::ServiceStats)),
+            (2, Some(StatId::DeploymentStats)),
+            (3, Some(StatId::VirtualObjectStats)),
+            (257, None), // Must not truncate to ServiceStats's tag.
+        ] {
+            key[6..8].copy_from_slice(&id.to_be_bytes());
+            let decoded = StatKeyPrefix::decode_prefix(&key).unwrap().0;
+            assert_eq!(decoded.stat_id_raw(), id);
+            assert_eq!(decoded.stat_id(), expected);
+        }
 
         key[6..8].copy_from_slice(&1023_u16.to_be_bytes());
         let decoded = StatKeyPrefix::decode_prefix(&key).unwrap().0;
         assert_eq!(decoded.stat_id_raw(), 1023);
+        assert_eq!(decoded.stat_id(), None);
 
         key[9] = 1;
         assert!(StatKeyPrefix::decode_prefix(&key).is_ok());

@@ -16,8 +16,10 @@ mod faults;
 mod features;
 pub mod fsm_table;
 pub mod inbox_table;
+pub mod index;
 pub mod invocation_status_table;
 pub mod journal_events;
+pub mod journal_scan;
 pub mod journal_table;
 pub mod journal_table_v2;
 pub mod keys;
@@ -31,14 +33,18 @@ mod partition_db;
 mod partition_store;
 mod partition_store_manager;
 pub mod promise_table;
+pub mod query_read;
 mod read_snapshot;
+pub mod registry;
 pub mod scan;
 pub mod service_status_table;
 pub mod snapshots;
 pub mod state_table;
 pub mod stats;
+pub mod table;
 pub mod timer_table;
 pub mod vqueue_table;
+pub mod walk;
 
 #[cfg(test)]
 mod tests;
@@ -49,6 +55,7 @@ pub use migrations::{MigrationError, migrate_to_locks_table};
 pub use partition_db::{DroppedPartitionStore, PartitionDb};
 pub use partition_store::*;
 pub use partition_store_manager::*;
+pub use query_read::ReadSnapshot;
 pub use read_snapshot::{PartitionReadSnapshot, PartitionSnapshotReader, PartitionSnapshotScan};
 // re-export
 pub use restate_rocksdb::Priority;

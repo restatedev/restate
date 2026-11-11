@@ -8654,6 +8654,7 @@ dependencies = [
  "restate-rocksdb",
  "restate-service-protocol-v4",
  "restate-storage-api",
+ "restate-storage-query-api",
  "restate-test-util",
  "restate-types",
  "restate-util-bytecount",
@@ -8943,6 +8944,7 @@ dependencies = [
  "bytes",
  "bytestring",
  "derive_more",
+ "enum-map",
  "futures",
  "opentelemetry",
  "prost",
@@ -8959,6 +8961,7 @@ dependencies = [
  "serde_with",
  "strum",
  "thiserror 2.0.20",
+ "zerocopy",
 ]
 
 [[package]]

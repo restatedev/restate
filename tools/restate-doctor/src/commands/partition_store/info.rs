@@ -468,6 +468,7 @@ fn key_kind_abbrev(kind: restate_partition_store::keys::KeyKind) -> &'static str
         KeyKind::Lock => "Locks",
         KeyKind::Stats => "AggStats",
         KeyKind::RegisteredStats => "RegStats",
+        KeyKind::SecondaryIndex => "Index",
     }
 }
 

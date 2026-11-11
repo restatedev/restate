@@ -67,7 +67,7 @@ pub trait FieldCodec {
 /// canonical and equality-preserving: values are equal exactly when their complete
 /// encodings are. No order is promised, so a key selection prepares only finite
 /// (equality or IN) predicates for such a field and requires it to be the last
-/// declared field.
+/// declared field; see `OrderedKeyField::terminal`.
 pub trait TerminalFieldCodec: FieldCodec {}
 
 /// Certifies a codec for fields of a byte-ordered composite key.
@@ -82,7 +82,7 @@ pub trait TerminalFieldCodec: FieldCodec {}
 /// order established by distinct values of an earlier field.
 ///
 /// Every field of an ordered composite key must satisfy this contract, including
-/// fields not referenced by a selection. Mixing in a legacy `KeyEncode`
+/// fields not referenced by a selection. Mixing in a legacy [`super::KeyEncode`]
 /// representation does not preserve the guarantee merely because the same Rust
 /// value type also has an ordered codec.
 ///

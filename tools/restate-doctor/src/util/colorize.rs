@@ -19,7 +19,7 @@ use std::fmt::Write;
 use crossterm::style::{Color, Stylize};
 
 use restate_cli_util::CliContext;
-use restate_partition_store::keys::KeyKind;
+use restate_partition_store::keys::{IndexKeyPrefix, KeyKind};
 use restate_partition_store::stats::StatKeyPrefix;
 
 use super::HEX_CHARS;
@@ -30,7 +30,7 @@ use super::HEX_CHARS;
 pub enum KeySegment {
     /// KeyKind prefix (2 bytes) - always first
     Kind,
-    /// Partition key or partition id (8 bytes normally, 2 bytes for aggregate statistics)
+    /// Partition key or physical partition id
     Partition,
     /// Fixed-size fields like InvocationUuid (16 bytes), u32, u64
     FixedField,
@@ -92,6 +92,11 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
 
     if key_kind == KeyKind::RegisteredStats {
         build_registered_stats_segments(key, &mut segments);
+        return segments;
+    }
+
+    if key_kind == KeyKind::SecondaryIndex {
+        build_secondary_index_segments(key, &mut segments);
         return segments;
     }
 
@@ -503,12 +508,41 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
                 }
             }
         }
-        KeyKind::Stats | KeyKind::RegisteredStats => {
+        KeyKind::Stats | KeyKind::RegisteredStats | KeyKind::SecondaryIndex => {
             unreachable!("handled before the standard partition header")
         }
     }
 
     segments
+}
+
+fn build_secondary_index_segments(key: &[u8], segments: &mut Vec<Segment>) {
+    let fields = [
+        (KeySegment::FixedField, 2, "partition_padding"),
+        (KeySegment::Partition, 2, "partition"),
+        (KeySegment::FixedField, 4, "index_id"),
+    ];
+    let mut start = KeyKind::SERIALIZED_LENGTH;
+    for (kind, len, label) in fields {
+        if start >= key.len() {
+            return;
+        }
+        segments.push(Segment {
+            kind,
+            start,
+            len: len.min(key.len() - start),
+            label,
+        });
+        start += len;
+    }
+    if key.len() > IndexKeyPrefix::SERIALIZED_LENGTH {
+        segments.push(Segment {
+            kind: KeySegment::VariableField,
+            start: IndexKeyPrefix::SERIALIZED_LENGTH,
+            len: key.len() - IndexKeyPrefix::SERIALIZED_LENGTH,
+            label: "index_key",
+        });
+    }
 }
 
 fn build_registered_stats_segments(key: &[u8], segments: &mut Vec<Segment>) {
@@ -785,5 +819,30 @@ mod tests {
                 ("stat_key", 10, 7),
             ]
         );
+    }
+
+    #[test]
+    fn build_segments_for_secondary_index_key() {
+        let key: &[u8] = b"xI\x00\x00\x00\x07\x00\x00\x00\x01payload";
+        let segments = build_segments(key);
+        let fields: Vec<_> = segments
+            .iter()
+            .map(|segment| (segment.label, segment.start, segment.len))
+            .collect();
+        assert_eq!(
+            fields,
+            vec![
+                ("kind", 0, 2),
+                ("partition_padding", 2, 2),
+                ("partition", 4, 2),
+                ("index_id", 6, 4),
+                ("index_key", 10, 7),
+            ]
+        );
+        for len in 0..key.len() {
+            for segment in build_segments(&key[..len]) {
+                assert!(segment.start + segment.len <= len);
+            }
+        }
     }
 }
