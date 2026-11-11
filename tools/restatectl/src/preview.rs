@@ -45,8 +45,9 @@ const BY_FLAG: u8 = 2;
 
 #[derive(Args, Collect, Clone, Default)]
 pub struct PreviewOpts {
-    /// Turn on the features in preview: the new output of `status`, `partitions list` and `logs
-    /// list`, their live dashboard, and saving the status to a file. They may still change
+    /// Turn on the features in preview: the new output of `status`, `partitions list`, `logs
+    /// list` and `nodes check-safety`, their live dashboard, and saving the status to a file.
+    /// They may still change
     #[arg(
         long,
         global = true,

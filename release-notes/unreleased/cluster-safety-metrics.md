@@ -1,4 +1,4 @@
-# Cluster availability metrics
+# Cluster availability metrics and `restatectl nodes check-safety`
 
 ## New Feature
 
@@ -21,6 +21,19 @@ metrics:
 | `restate_cluster_safety_unchecked_logs` | Logs that can't be checked because they don't use the replicated loglet |
 | `restate_cluster_safety_unchecked_partitions` | Partitions whose placement or leader isn't known yet |
 | `restate_cluster_safety_last_check_timestamp_seconds` | Unix timestamp of the last completed check |
+
+To check whether it's safe to stop nodes, run:
+
+```sh
+restatectl nodes check-safety --assume-dead N1,N2
+```
+
+It lists the logs and partitions that would be unavailable or at risk, and the
+failure domains that the cluster can't afford to lose. Without
+`--assume-dead`, it checks the current state of the cluster. It exits with an
+error when logs or partitions would be unavailable. With `--preview`, it shows a
+verdict (safe, at risk or unsafe), each failure domain with the state of its
+nodes and what losing it would make unavailable, and supports `--json`.
 
 ### Impact on Users
 
