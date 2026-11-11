@@ -585,7 +585,7 @@ impl SnapshotRepository {
         let _inflight = InflightGuard::new(metrics::gauge!(SNAPSHOT_UPLOAD_INFLIGHT));
         let start = tokio::time::Instant::now();
         let put_result = self
-            .put_snapshot_inner(snapshot, local_snapshot.path(), lease_guard)
+            .put_snapshot_inner(snapshot, local_snapshot.path(), Arc::clone(&lease_guard))
             .await;
 
         // We own the local snapshot directory; remove it asynchronously (it may hold large SST
@@ -604,30 +604,36 @@ impl SnapshotRepository {
                 // Not a failure: the repository already holds a snapshot at least this new, which
                 // is what the caller asked for. Report it so the caller sees the newest snapshot.
                 metrics::counter!(SNAPSHOT_UPLOAD_SUCCESS).increment(1);
-                self.discard_uploaded_files(
-                    discarded.snapshot_complete_path,
-                    discarded.uploaded_files,
-                )
-                .await;
+                self.discard_uploaded_files(discarded, &lease_guard).await;
                 Ok(latest)
             }
             Err(put_error) => {
                 metrics::counter!(SNAPSHOT_UPLOAD_FAILED).increment(1);
-                self.discard_uploaded_files(put_error.full_snapshot_path, put_error.uploaded_files)
+                self.discard_uploaded_files(put_error.progress, &lease_guard)
                     .await;
                 Err(put_error.error)
             }
         }
     }
 
-    /// Deletes the files of a snapshot that will not be published. Errors are only logged; the
+    /// Deletes the objects of a snapshot that will not be published. Errors are only logged; the
     /// orphan sweep catches anything left behind.
-    async fn discard_uploaded_files(&self, snapshot_path: ObjectPath, uploaded_files: Vec<String>) {
-        for filename in uploaded_files {
-            // Recorded names keep RocksDB's leading slash, which `join` would escape.
-            let path = snapshot_path.clone().join(strip_leading_slash(&filename));
-            if let Err(err) = self.object_store.delete(&path).await {
-                info!(%err, "Failed to delete file from unpublished snapshot");
+    ///
+    /// Shared SSTs this upload created are deleted only while the lease is still valid. Without
+    /// it, another node may already have published a snapshot that deduplicated against them.
+    async fn discard_uploaded_files(
+        &self,
+        progress: SnapshotUploadProgress,
+        lease_guard: &SnapshotLeaseGuard,
+    ) {
+        let shared = if lease_guard.is_valid() {
+            progress.created_shared_ssts
+        } else {
+            vec![]
+        };
+        for path in progress.own_objects.iter().chain(&shared) {
+            if let Err(err) = self.object_store.delete(path).await {
+                info!(%err, %path, "Failed to delete object of unpublished snapshot");
             }
         }
     }
@@ -656,10 +662,14 @@ impl SnapshotRepository {
             let local_path = local_snapshot_path.join(filename);
             total_size += file.size;
 
-            let (repository_key, relative_key, must_upload) = match self.snapshot_type {
+            // `creates_shared` marks a shared SST that did not exist before this upload. Only those
+            // may be deleted if the snapshot is not published: any other shared key may be in use.
+            let (repository_key, relative_key, must_upload, creates_shared) = match self
+                .snapshot_type
+            {
                 SnapshotType::Full => {
                     let key = self.snapshot_file_path(snapshot, filename);
-                    (key, None, true)
+                    (key, None, true, false)
                 }
                 SnapshotType::Incremental => {
                     // content-addressed SSTs live in shared ../ssts/ prefix
@@ -676,7 +686,9 @@ impl SnapshotRepository {
                     // astronomically unlikely on random RocksDB content). We still verify the
                     // stored object's size matches, which catches truncated/partial uploads
                     // from a prior crashed put.
-                    let must_upload = match self.object_store.head(&sst_key).await {
+                    let head = self.object_store.head(&sst_key).await;
+                    let creates_shared = matches!(head, Err(object_store::Error::NotFound { .. }));
+                    let must_upload = match head {
                         Ok(meta) if meta.size as usize != file.size => {
                             warn!(
                                 sst = %filename,
@@ -710,7 +722,7 @@ impl SnapshotRepository {
                     };
 
                     let relative_key = format!("ssts/{sst_name}");
-                    (sst_key, Some(relative_key), must_upload)
+                    (sst_key, Some(relative_key), must_upload, creates_shared)
                 }
             };
 
@@ -725,7 +737,11 @@ impl SnapshotRepository {
 
                 files_uploaded += 1;
                 uploaded_size += file.size;
-                progress.push(file.name.clone());
+                if relative_key.is_none() {
+                    progress.own_objects.push(repository_key);
+                } else if creates_shared {
+                    progress.created_shared_ssts.push(repository_key);
+                }
             }
 
             if let Some(key) = relative_key {
@@ -734,9 +750,7 @@ impl SnapshotRepository {
         }
 
         if matches!(self.snapshot_type, SnapshotType::Incremental) {
-            use crate::metric_definitions::{
-                SNAPSHOT_UPLOAD_BYTES, SNAPSHOT_UPLOAD_BYTES_DEDUPLICATED,
-            };
+            use crate::metric_definitions::SNAPSHOT_UPLOAD_BYTES_DEDUPLICATED;
 
             let bytes_saved = total_size - uploaded_size;
             let dedup_rate = if total_size > 0 {
@@ -745,7 +759,6 @@ impl SnapshotRepository {
                 0.0
             };
 
-            metrics::counter!(SNAPSHOT_UPLOAD_BYTES).increment(uploaded_size as u64);
             metrics::counter!(SNAPSHOT_UPLOAD_BYTES_DEDUPLICATED).increment(bytes_saved as u64);
 
             info!(
@@ -889,7 +902,7 @@ impl SnapshotRepository {
             .put(&metadata_key, metadata_json_payload)
             .await
             .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
-        progress.push("/metadata.json".to_owned());
+        progress.own_objects.push(metadata_key.clone());
 
         debug!(
             key = %metadata_key,
@@ -1331,39 +1344,15 @@ impl SnapshotRepository {
         for file in &mut snapshot_metadata.files {
             let filename = strip_leading_slash(&file.name);
             let expected_size = file.size;
-            let key = if let Some(relative_key) = snapshot_metadata.file_keys.get(&file.name) {
-                // Incremental snapshot: parse the relative key and build the object key.
-                // Expected format is exactly two segments: "ssts/{hash}.sst".
-                let parts: Vec<&str> = relative_key.split('/').collect();
-                if parts.len() == 2 {
-                    self.prefix
-                        .clone()
-                        .join(partition_id.to_string())
-                        .join(parts[0])
-                        .join(parts[1])
-                } else {
-                    // Unexpected key shape - join as opaque path and warn. Future writers
-                    // that produce a different layout would need a corresponding download
-                    // path; getting here indicates either metadata corruption or a partial
-                    // upgrade from a future version of the snapshot format.
-                    warn!(
-                        sst = %file.name,
-                        relative_key = %relative_key,
-                        "Unexpected file_keys entry shape; treating as opaque path"
-                    );
-                    self.prefix
-                        .clone()
-                        .join(partition_id.to_string())
-                        .join(relative_key.as_str())
-                }
-            } else {
-                // Full/legacy snapshot: use snapshot-specific path
-                self.prefix
-                    .clone()
-                    .join(partition_id.to_string())
-                    .join(snapshot_ref.path.as_str())
-                    .join(filename)
-            };
+            let key = self.resolve_file_path(
+                partition_id,
+                snapshot_metadata
+                    .file_keys
+                    .get(&file.name)
+                    .map(String::as_str),
+                &snapshot_ref.path,
+                filename,
+            );
             let local_path = snapshot_dir.path().join(filename);
             let concurrency_limiter = Arc::clone(&concurrency_limiter);
             let object_store = Arc::clone(&self.object_store);
@@ -1662,22 +1651,23 @@ fn strip_leading_slash(name: &str) -> &str {
     name.trim_start_matches('/')
 }
 
+/// Objects written by a snapshot upload, for deleting them if the snapshot is not published.
 #[derive(Clone, Debug)]
 struct SnapshotUploadProgress {
     pub snapshot_complete_path: ObjectPath,
-    pub uploaded_files: Vec<String>,
+    /// Objects under the snapshot's own prefix; nothing else references them.
+    pub own_objects: Vec<ObjectPath>,
+    /// Shared content-addressed SSTs that this upload created.
+    pub created_shared_ssts: Vec<ObjectPath>,
 }
 
 impl SnapshotUploadProgress {
     fn with_snapshot_path(snapshot_complete_path: ObjectPath) -> Self {
         SnapshotUploadProgress {
             snapshot_complete_path,
-            uploaded_files: vec![],
+            own_objects: vec![],
+            created_shared_ssts: vec![],
         }
-    }
-
-    fn push(&mut self, filename: String) {
-        self.uploaded_files.push(filename);
     }
 }
 
@@ -1692,10 +1682,9 @@ enum PutOutcome {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("failed to upload snapshot to {full_snapshot_path}: {error}")]
+#[error("failed to upload snapshot to {}: {error}", progress.snapshot_complete_path)]
 struct PutSnapshotError {
-    pub full_snapshot_path: ObjectPath,
-    pub uploaded_files: Vec<String>,
+    pub progress: SnapshotUploadProgress,
     pub error: anyhow::Error,
 }
 
@@ -1706,8 +1695,7 @@ impl PutSnapshotError {
     {
         PutSnapshotError {
             error: error.into(),
-            full_snapshot_path: progress.snapshot_complete_path,
-            uploaded_files: progress.uploaded_files,
+            progress,
         }
     }
 }
