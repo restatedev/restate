@@ -611,7 +611,11 @@ impl StartedNode {
             !matches!(self.status, StartedNodeStatus::Running { .. }),
             "Node should not be in status running after killing it."
         );
-        *self = self.node.take().expect("to be present").start().await?;
+        let mut node = self.node.take().expect("to be present");
+        // The previous process's log pump closes its searcher when its output ends, which would
+        // end every `lines()` stream on the restarted node at once. Give the new process its own.
+        node.searcher = Searcher::default();
+        *self = node.start().await?;
         Ok(())
     }
 

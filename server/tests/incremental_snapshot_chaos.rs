@@ -324,6 +324,9 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
     let num_nodes = cluster.nodes.len();
     let mut invocation_counter = 0u64;
     let mut iteration = 0u64;
+    // Corruptions that the restarted node had to recover from, and fallback restores seen.
+    let mut exercised_corruptions = 0usize;
+    let mut fallback_restores = 0usize;
     let mut success_rx = success_rx.clone();
 
     while chaos_start.elapsed() < chaos_duration {
@@ -380,6 +383,7 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
             })
             .await;
 
+        let mut corrupted = false;
         if let Ok(response) = snapshot_result {
             info!(
                 "Snapshot created for partition {} at LSN {}",
@@ -390,6 +394,7 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
             if iteration >= 2 && iteration.is_multiple_of(2) {
                 match corrupt_latest_snapshot(snapshots_dir.path(), partition_id) {
                     Ok(true) => {
+                        corrupted = true;
                         info!(
                             "Corrupted latest snapshot for partition {}, fallback should be used",
                             partition_id
@@ -408,7 +413,25 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
             }
         }
 
-        let node_to_restart = (iteration as usize) % num_nodes;
+        // After a corruption, restart a node that hosts the corrupted partition, so that its
+        // restore has to fall back past the corrupted snapshot.
+        let mut node_to_restart = (iteration as usize) % num_nodes;
+        if corrupted {
+            match nodes_hosting_partition(&mut client, partition_id).await {
+                Ok(hosts) => {
+                    if let Some(idx) = cluster.nodes.iter().position(|n| {
+                        n.config()
+                            .common
+                            .force_node_id
+                            .is_some_and(|id| hosts.contains(&u32::from(id)))
+                    }) {
+                        node_to_restart = idx;
+                        exercised_corruptions += 1;
+                    }
+                }
+                Err(e) => info!("Could not find nodes hosting partition {partition_id}: {e}"),
+            }
+        }
         let node_name;
         let db_dir;
         {
@@ -431,27 +454,46 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
             }
         }
 
-        // Set up watcher for snapshot restore log message (needs fresh borrow after restart)
-        let mut snapshot_restore_watcher = cluster.nodes[node_to_restart].lines(
+        // Watch the restarted node's restore log lines. The stream is drained continuously so
+        // the node's log pump is never blocked on it.
+        let mut restore_lines = std::pin::pin!(cluster.nodes[node_to_restart].lines(
             "(Found partition snapshot, restoring it|Restored from fallback snapshot)".parse()?,
-        );
+        ));
+        let mut restores = RestoreLog::default();
 
-        if let Err(e) = cluster
-            .wait_check_healthy(HealthCheck::Worker, Duration::from_secs(30))
-            .await
-        {
+        let health = cluster.wait_check_healthy(HealthCheck::Worker, Duration::from_secs(30));
+        let mut health = std::pin::pin!(health);
+        let health_result = loop {
+            tokio::select! {
+                result = &mut health => break result,
+                Some(line) = restore_lines.next() => restores.record(&line),
+            }
+        };
+        if let Err(e) = health_result {
             fail!("Failed to wait for cluster health: {e}")?;
         }
 
-        let restore_result =
-            tokio::time::timeout(Duration::from_secs(5), snapshot_restore_watcher.next()).await;
-        if restore_result.is_err() {
+        // Keep reading until restores have gone quiet: up to 30s for the first one (restores are
+        // slow on a loaded machine), then 1s after the last line, as each partition logs its own.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let wait_until = if restores.restored {
+                tokio::time::Instant::now() + Duration::from_secs(1)
+            } else {
+                deadline
+            };
+            match tokio::time::timeout_at(wait_until, restore_lines.next()).await {
+                Ok(Some(line)) => restores.record(&line),
+                _ => break,
+            }
+        }
+        if !restores.restored {
             fail!(
                 "Node '{}' did not restore any partition from snapshot after data wipe",
                 node_name
             )?;
         }
-        drop(snapshot_restore_watcher);
+        fallback_restores += restores.fallbacks;
         info!("Node '{}' restored from snapshot", node_name);
 
         success_rx.mark_unchanged();
@@ -488,6 +530,15 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
         )
         .await?;
         info!("Partition {} converged", partition_id);
+    }
+
+    info!("Corruptions exercised: {exercised_corruptions}, fallback restores: {fallback_restores}");
+    if exercised_corruptions > 0 {
+        assert!(
+            fallback_restores > 0,
+            "{exercised_corruptions} corrupted snapshot(s) were restored past, but no restore fell \
+             back to an older snapshot"
+        );
     }
 
     let total_ops = *success_rx.borrow();
@@ -625,4 +676,39 @@ async fn applied_lsn_converged(
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     Ok(())
+}
+
+async fn nodes_hosting_partition(
+    client: &mut ClusterCtrlSvcClient<Channel>,
+    partition_id: u32,
+) -> anyhow::Result<Vec<u32>> {
+    let cluster_state = client
+        .get_cluster_state(ClusterStateRequest {})
+        .await?
+        .into_inner()
+        .cluster_state
+        .ok_or_else(|| anyhow!("no cluster state"))?;
+    Ok(cluster_state
+        .nodes
+        .into_iter()
+        .filter(|(_, n)| {
+            matches!(&n.state, Some(State::Alive(s)) if s.partitions.contains_key(&partition_id))
+        })
+        .map(|(id, _)| id)
+        .collect())
+}
+
+#[derive(Default)]
+struct RestoreLog {
+    restored: bool,
+    fallbacks: usize,
+}
+
+impl RestoreLog {
+    fn record(&mut self, line: &str) {
+        self.restored = true;
+        if line.contains("Restored from fallback snapshot") {
+            self.fallbacks += 1;
+        }
+    }
 }
