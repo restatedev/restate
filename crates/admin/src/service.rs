@@ -38,6 +38,7 @@ use restate_types::schema::registry::SchemaRegistry;
 use restate_util_time::DurationExt;
 use restate_wal_protocol::v2::{Envelope, Raw};
 
+use crate::metric_definitions::describe_metrics;
 use crate::rest_api::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
 use crate::schema_registry_integration::{MetadataService, TelemetryClient};
 use crate::{rest_api, state};
@@ -72,6 +73,8 @@ where
         service_discovery: ServiceDiscovery,
         telemetry_http_client: Option<HttpClient>,
     ) -> Self {
+        describe_metrics();
+
         let metadata_client = metadata_writer.raw_metadata_store_client().clone();
         Self {
             listeners,
