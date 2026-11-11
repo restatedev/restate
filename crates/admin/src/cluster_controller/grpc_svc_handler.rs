@@ -25,9 +25,10 @@ use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{Bifrost, Error as BiforstError};
 use restate_core::network::{RpcError, RpcReplyError};
 use restate_core::protobuf::cluster_ctrl_svc::{
-    ClusterStateRequest, ClusterStateResponse, CreatePartitionSnapshotRequest,
-    CreatePartitionSnapshotResponse, DescribeLogRequest, DescribeLogResponse,
-    DropPartitionStoreRequest, DropPartitionStoreResponse, FindTailRequest, FindTailResponse,
+    CheckClusterSafetyRequest, CheckClusterSafetyResponse, ClusterStateRequest,
+    ClusterStateResponse, CreatePartitionSnapshotRequest, CreatePartitionSnapshotResponse,
+    DescribeLogRequest, DescribeLogResponse, DomainImpact, DropPartitionStoreRequest,
+    DropPartitionStoreResponse, FailureDomain, FindTailRequest, FindTailResponse,
     GetClusterConfigurationRequest, GetClusterConfigurationResponse, ListLogsRequest,
     ListLogsResponse, MigrateMetadataRequest, MigrateMetadataResponse, QueryRequest, QueryResponse,
     QueryWarning, SealAndExtendChainRequest, SealAndExtendChainResponse, SealChainRequest,
@@ -42,6 +43,7 @@ use restate_storage_query_datafusion::context::{QueryContext, QueryError};
 use restate_storage_query_datafusion::node_fan_out::NodeWarnings;
 use restate_types::config::{MetadataClientKind, MetadataClientOptions, NetworkingOptions};
 use restate_types::identifiers::PartitionId;
+use restate_types::locality::LocationScope;
 use restate_types::logs::metadata::{Logs, SegmentIndex};
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::metadata::{GlobalMetadata, Precondition};
@@ -61,6 +63,7 @@ use restate_types::{NodeId, PlainNodeId, Version, Versioned};
 use crate::query_utils::WriteRecordBatchStream;
 
 use super::ClusterControllerHandle;
+use super::safety_checker;
 use super::service::{ChainExtension, DropPartitionStoreRequestError};
 
 pub(crate) struct ClusterCtrlSvcHandler {
@@ -666,6 +669,75 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             .map_err(|err| Status::internal(err.to_string()))?;
 
         Ok(Response::new(SyncEpochMetadataResponse {}))
+    }
+
+    async fn check_cluster_safety(
+        &self,
+        request: Request<CheckClusterSafetyRequest>,
+    ) -> Result<Response<CheckClusterSafetyResponse>, Status> {
+        let assume_dead: Vec<PlainNodeId> = request
+            .into_inner()
+            .assume_dead_nodes
+            .into_iter()
+            .map(PlainNodeId::from)
+            .collect();
+
+        if let Some(node_id) = assume_dead.iter().find(|node_id| {
+            Metadata::with_current(|m| m.nodes_config_ref().find_node_by_id(**node_id).is_err())
+        }) {
+            return Err(Status::invalid_argument(format!(
+                "Node {node_id} is not part of the cluster"
+            )));
+        }
+
+        let report = self
+            .controller_handle
+            .check_cluster_safety(assume_dead)
+            .await
+            .map_err(|_| Status::aborted("Node is shutting down"))?
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(CheckClusterSafetyResponse {
+            write_unavailable_logs: convert_all(report.write_unavailable_logs),
+            read_unavailable_logs: convert_all(report.read_unavailable_logs),
+            write_at_risk_logs: convert_all(report.write_at_risk_logs),
+            read_at_risk_logs: convert_all(report.read_at_risk_logs),
+            unchecked_logs: convert_all(report.unchecked_logs),
+            unavailable_partitions: convert_all(report.unavailable_partitions),
+            at_risk_partitions: convert_all(report.at_risk_partitions),
+            unchecked_partitions: convert_all(report.unchecked_partitions),
+            domain_impacts: report
+                .domain_impacts
+                .into_iter()
+                .map(|(domain, impact)| DomainImpact {
+                    domain: Some(domain.into()),
+                    write_unavailable_logs: convert_all(impact.write_unavailable_logs),
+                    read_unavailable_logs: convert_all(impact.read_unavailable_logs),
+                    unavailable_partitions: convert_all(impact.unavailable_partitions),
+                })
+                .collect(),
+            scope: report.scope.map(scope_name),
+            dead_nodes: convert_all(report.dead_nodes),
+            num_logs: report.num_logs as u32,
+            num_partitions: report.num_partitions as u32,
+        }))
+    }
+}
+
+fn convert_all<T: Into<U>, U>(items: impl IntoIterator<Item = T>) -> Vec<U> {
+    items.into_iter().map(Into::into).collect()
+}
+
+fn scope_name(scope: LocationScope) -> String {
+    scope.to_string().to_lowercase()
+}
+
+impl From<safety_checker::FailureDomain> for FailureDomain {
+    fn from(domain: safety_checker::FailureDomain) -> Self {
+        Self {
+            scope: scope_name(domain.scope),
+            name: domain.name,
+        }
     }
 }
 

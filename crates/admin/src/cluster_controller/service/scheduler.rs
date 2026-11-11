@@ -48,6 +48,8 @@ use restate_types::replication::balanced_spread_selector::{
 use restate_types::replication::{NodeSet, ReplicationProperty};
 use restate_types::{NodeId, PlainNodeId, Version, Versioned};
 
+use crate::cluster_controller::safety_checker::PartitionPlacement;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("failed writing to metadata store: {0}")]
@@ -331,6 +333,25 @@ impl<T: TransportConnect> Scheduler<T> {
             let mut batch = self.replica_set_states.membership_update_batch();
             Self::note_observed_membership_update(partition_id, occupied_entry.get(), &mut batch);
         }
+    }
+
+    /// The placement of the partition as last known to the scheduler, `None` if it hasn't been
+    /// loaded yet or if its leadership is frozen and the scheduler doesn't know its leader.
+    pub fn partition_placement(&self, partition_id: PartitionId) -> Option<PartitionPlacement> {
+        let state = self.partitions.get(&partition_id)?;
+        let frozen_leader = match (&state.leadership_policy.freeze, state.target_leader) {
+            (None, _) => None,
+            (Some(_), Some(leader)) => Some(leader),
+            // no leader gets selected while frozen, so we can't tell which node leads it
+            (Some(_), None) => return None,
+        };
+        Some(PartitionPlacement::new(
+            partition_id,
+            &state.current,
+            state.next.as_ref(),
+            state.placement_policy.is_frozen(),
+            frozen_leader,
+        ))
     }
 
     fn note_observed_membership_update(
