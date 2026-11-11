@@ -22,7 +22,7 @@ use ulid::Ulid;
 use restate_clock::{Clock, WallClock};
 use restate_core::task_center::TaskHandle;
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind};
-use restate_metadata_server::{MetadataStoreClient, ReadError, WriteError};
+use restate_metadata_store::{MetadataStoreClient, ReadError, WriteError};
 use restate_types::Version;
 use restate_types::config::Configuration;
 use restate_types::identifiers::PartitionId;
