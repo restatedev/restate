@@ -12,7 +12,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use bytestring::ByteString;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -27,6 +26,7 @@ use restate_types::Version;
 use restate_types::config::Configuration;
 use restate_types::identifiers::PartitionId;
 use restate_types::metadata::Precondition;
+use restate_types::metadata_store::keys::snapshot_lease_key;
 use restate_types::retries::RetryPolicy;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{GenerationalNodeId, Versioned, flexbuffers_storage_encode_decode};
@@ -100,10 +100,6 @@ impl LeaseError {
     }
 }
 
-fn lease_key(partition_id: PartitionId) -> ByteString {
-    ByteString::from(format!("snapshot_lease_{}", partition_id))
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SnapshotLeaseValue {
     pub holder: GenerationalNodeId,
@@ -113,11 +109,11 @@ pub struct SnapshotLeaseValue {
 }
 
 impl SnapshotLeaseValue {
-    fn new(holder: GenerationalNodeId, clock: &impl Clock) -> Self {
+    fn new(holder: GenerationalNodeId, lease_id: Ulid, clock: &impl Clock) -> Self {
         let expires_at = clock.recent() + LEASE_DURATION;
         Self {
             holder,
-            lease_id: Ulid::generate(),
+            lease_id,
             expires_at,
             version: Version::MIN,
         }
@@ -374,8 +370,7 @@ mod inner {
                 return Err(LeaseError::Expired);
             }
 
-            let key = lease_key(self.partition_id);
-            let current_version = *self.version.lock();
+            let key = snapshot_lease_key(self.partition_id);
 
             let stored: Option<SnapshotLeaseValue> =
                 self.metadata_store_client.get(key.clone()).await?;
@@ -391,6 +386,9 @@ mod inner {
                 );
                 return Err(LeaseError::Expired);
             }
+            // The stored version, not our cached one: an earlier write of ours may have been
+            // committed even though it returned an error.
+            let current_version = stored_lease.version;
 
             let new_expiration = self.clock.recent().add(LEASE_DURATION);
             let renewed_lease = SnapshotLeaseValue {
@@ -486,7 +484,17 @@ mod inner {
 
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
                 handle.spawn(async move {
-                    let key = lease_key(partition_id);
+                    let key = snapshot_lease_key(partition_id);
+                    // Prefer the stored version: a renewal of ours may have been committed even
+                    // though it returned an error. Leave a lease that is no longer ours alone.
+                    let version = match client.get::<SnapshotLeaseValue>(key.clone()).await {
+                        Ok(Some(stored)) if stored.lease_id == lease_id => stored.version,
+                        Ok(_) => {
+                            debug!(%partition_id, %lease_id, "Lease already released or taken over");
+                            return;
+                        }
+                        Err(_) => version,
+                    };
                     let expired = SnapshotLeaseValue::expired(holder, lease_id, version);
 
                     match client
@@ -635,8 +643,14 @@ impl<C: Clock + Clone + Send + Sync + 'static> SnapshotLeaseManager<C> {
             .network_error_retry_policy
             .clone();
 
+        // One lease id across retries, so that a retry recognises a write of ours that was
+        // committed even though it returned an error.
+        let lease_id = Ulid::generate();
         retry_policy
-            .retry_if(|| self.try_acquire(partition_id), LeaseError::retryable)
+            .retry_if(
+                || self.try_acquire(partition_id, lease_id),
+                LeaseError::retryable,
+            )
             .await
     }
 
@@ -644,13 +658,14 @@ impl<C: Clock + Clone + Send + Sync + 'static> SnapshotLeaseManager<C> {
     async fn try_acquire(
         &self,
         partition_id: PartitionId,
+        lease_id: Ulid,
     ) -> Result<SnapshotLeaseGuard<C>, LeaseError> {
         let my_node_id = self
             .node_id
             .unwrap_or_else(|| Metadata::with_current(|m| m.my_node_id()));
-        let key = lease_key(partition_id);
+        let key = snapshot_lease_key(partition_id);
 
-        let new_lease = SnapshotLeaseValue::new(my_node_id, &self.clock);
+        let new_lease = SnapshotLeaseValue::new(my_node_id, lease_id, &self.clock);
         let new_lease_id = new_lease.lease_id;
 
         let existing: Option<SnapshotLeaseValue> =
@@ -672,6 +687,19 @@ impl<C: Clock + Clone + Send + Sync + 'static> SnapshotLeaseManager<C> {
                         lease_to_write,
                         self.metadata_store_client.clone(),
                         written_version,
+                        self.clock.clone(),
+                    ),
+                ))
+            }
+            Some(existing_lease) if existing_lease.lease_id == lease_id => {
+                debug!(lease_id = %new_lease_id, "Acquired snapshot lease (earlier attempt)");
+                let version = existing_lease.version;
+                Ok(SnapshotLeaseGuard::Lease(
+                    inner::MetadataBackedLeaseGuard::new(
+                        partition_id,
+                        existing_lease,
+                        self.metadata_store_client.clone(),
+                        version,
                         self.clock.clone(),
                     ),
                 ))
@@ -869,6 +897,58 @@ mod tests {
             guard.operation_deadline(),
             initial_deadline + Duration::from_mins(2)
         );
+    }
+
+    /// A metadata write can be committed even though it returned an error. The lease holder
+    /// still recognises the stored lease as its own when it acquires, renews and releases.
+    #[restate_core::test]
+    async fn lease_survives_writes_committed_after_an_error() {
+        let env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let clock = MockClock::new();
+        let client = env.metadata_store_client.clone();
+        let n1 = GenerationalNodeId::new(1, 1);
+        let manager = SnapshotLeaseManager::new_with_clock(client.clone(), n1, clock.clone());
+        let key = snapshot_lease_key(PartitionId::MIN);
+
+        // An acquire attempt whose put was committed: the retry gets the lease.
+        let lease_id = Ulid::generate();
+        let committed = SnapshotLeaseValue::new(n1, lease_id, &clock);
+        client
+            .put(key.clone(), &committed, Precondition::DoesNotExist)
+            .await
+            .unwrap();
+        let guard = manager
+            .try_acquire(PartitionId::MIN, lease_id)
+            .await
+            .expect("a retry recognises its own lease");
+
+        // A renewal whose put was committed: the next renewal still succeeds.
+        let mut renewed = committed.clone();
+        renewed.expires_at = clock.recent() + LEASE_DURATION + Duration::from_mins(1);
+        renewed.version = committed.version.next();
+        client
+            .put(
+                key.clone(),
+                &renewed,
+                Precondition::MatchesVersion(committed.version),
+            )
+            .await
+            .unwrap();
+        clock.advance(Duration::from_mins(2));
+        guard.test_renew().await.expect("renewal should succeed");
+
+        // Dropping the guard releases the lease.
+        drop(guard);
+        let mut released = false;
+        for _ in 0..10 {
+            let stored: SnapshotLeaseValue = client.get(key.clone()).await.unwrap().unwrap();
+            if stored.is_expired(&clock) {
+                released = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(released, "lease should be released on drop");
     }
 
     #[restate_core::test]

@@ -527,6 +527,11 @@ impl SnapshotRepository {
             .ok_or(LeaseError::Unavailable)?;
         // A lease held by this node usually belongs to the previous snapshot's cleanup task, which
         // releases it shortly. Wait for that briefly rather than failing back-to-back requests.
+        //
+        // This compares generations on purpose. A lease left by an earlier generation of this node,
+        // e.g. one that crashed before releasing it, is not taken over: that process may still be
+        // running and deleting objects. Snapshots of the partition then wait until the lease
+        // expires, at most `LEASE_DURATION` after its last renewal.
         let my_node_id = Metadata::with_current(|m| m.my_node_id());
         let deadline = tokio::time::Instant::now() + SAME_NODE_LEASE_WAIT;
         let guard = loop {

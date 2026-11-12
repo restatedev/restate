@@ -69,7 +69,11 @@ impl SnapshotPartitionTask {
                     );
                 })
                 .inspect_err(|err| {
-                    warn!("Create snapshot failed: {}", err);
+                    if matches!(err.kind, SnapshotErrorKind::SnapshotInProgress) {
+                        debug!("Create snapshot skipped: {}", err);
+                    } else {
+                        warn!("Create snapshot failed: {}", err);
+                    }
                 })
                 .map(|status| (partition_id, status))
         } else {
@@ -88,14 +92,21 @@ impl SnapshotPartitionTask {
             .acquire_lease(self.partition_id)
             .await
             .map_err(|e| {
-                let kind = if matches!(e, LeaseError::Unavailable) {
-                    warn!(
-                        "Create snapshot unavailable due to read-only repository; \
-                        this indicates an internal misconfiguration bug"
-                    );
-                    SnapshotErrorKind::RepositoryNotConfigured
-                } else {
-                    SnapshotErrorKind::RepositoryIo(anyhow::Error::new(e))
+                let kind = match e {
+                    LeaseError::Unavailable => {
+                        warn!(
+                            "Create snapshot unavailable due to read-only repository; \
+                            this indicates an internal misconfiguration bug"
+                        );
+                        SnapshotErrorKind::RepositoryNotConfigured
+                    }
+                    // Another node, e.g. the previous leader, is still snapshotting this
+                    // partition, or its lease has not expired yet.
+                    LeaseError::Held { .. } => {
+                        debug!("Snapshot lease held elsewhere: {e}");
+                        SnapshotErrorKind::SnapshotInProgress
+                    }
+                    e => SnapshotErrorKind::RepositoryIo(anyhow::Error::new(e)),
                 };
                 SnapshotError {
                     partition_id: self.partition_id,
