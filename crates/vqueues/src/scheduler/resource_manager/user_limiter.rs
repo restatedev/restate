@@ -169,7 +169,7 @@ use restate_limiter::{
     Level, Limit, LimitKey, Pattern, RuleHandle, RulePattern, Rules, StructuredLimits,
 };
 use restate_types::Scope;
-use restate_types::identifiers::PartitionKey;
+use restate_types::identifiers::WithPartitionKey;
 use restate_util_string::{ReString, RestrictedValue};
 use restate_worker_api::UserLimitCounterEntry;
 use restate_worker_api::resources::{RuleUpdate, UserLimits};
@@ -322,13 +322,14 @@ impl UserLimiter {
     /// [`UserLimitCounterEntry`] per non-empty node, tagging each with the
     /// rule currently governing it (if any) and its waiter depth.
     ///
-    /// The emitted rows are what the `sys_user_limits` DataFusion table
-    /// surfaces; callers stamp the `partition_key` from the owning partition
-    /// before handing the rows back.
-    pub fn scan_counters(&self, partition_key: PartitionKey) -> Vec<UserLimitCounterEntry> {
+    /// The emitted rows are what the `sys_user_limits` table surfaces. Each row
+    /// carries its scope's partition key: every entry of a scope lives in the
+    /// partition that owns that key, and so do the scope's counters.
+    pub fn scan_counters(&self) -> Vec<UserLimitCounterEntry> {
         let mut out = Vec::new();
         for (scope, scope_node) in &self.state.scopes {
             let scope_name = scope.as_str().to_owned();
+            let partition_key = scope.partition_key();
 
             // Scope-level row
             let scope_limits = self.rules.lookup(scope.as_str(), &LimitKey::None);
