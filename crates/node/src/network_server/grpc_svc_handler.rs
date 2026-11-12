@@ -38,14 +38,13 @@ use restate_types::config::{Configuration, NetworkingOptions};
 use restate_types::errors::{ConversionError, MaybeRetryableError};
 use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration};
 use restate_types::metadata::VersionedValue;
-use restate_types::nodes_config::ClusterFeature;
 use restate_types::protobuf::cluster::ClusterConfiguration as ProtoClusterConfiguration;
 use restate_types::protobuf::common::DatabaseKind;
 use restate_types::replication::ReplicationProperty;
 use restate_types::rocksdb::ManualCompactionOptions;
 use restate_types::storage::StorageCodec;
 
-use crate::{ClusterConfiguration, provision_cluster_metadata};
+use crate::{ClusterConfiguration, provision_cluster_metadata, provisioning_features};
 
 pub struct NodeCtlSvcHandler {
     metadata_writer: MetadataWriter,
@@ -170,7 +169,7 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         let dry_run = request.dry_run;
         let disabled = cluster_features_from_proto(&request.disabled_features)
             .map_err(|err| Status::invalid_argument(err.to_string()))?;
-        let features = ClusterFeature::default_features() - disabled;
+        let features = provisioning_features(&config) - disabled;
         let cluster_configuration = Self::resolve_cluster_configuration(&config, request)
             .map_err(|err| Status::invalid_argument(err.to_string()))?;
 

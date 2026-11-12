@@ -34,6 +34,15 @@ service NodeCtlSvc {
 enum ClusterFeature {
   ClusterFeature_UNKNOWN = 0;
   CONTROLLED_IDEMPOTENT_SHARDING = 1;
+  // Spreads each unscoped service's partition-key buckets evenly over the
+  // partition-key space, instead of hashing each bucket on its own. With an
+  // equally sized partition table, every partition then owns the same number
+  // of buckets (+/- 1). This affects idempotent invocations (under
+  // CONTROLLED_IDEMPOTENT_SHARDING) and the ingestion API. It is fixed for the
+  // whole cluster at provisioning time and cannot be changed later. Not yet a
+  // default feature: it is only enabled when the provisioning node sets
+  // `experimental-enable-evenly-spaced-service-buckets`.
+  EVENLY_SPACED_SERVICE_BUCKETS = 2;
 } 
 
 message ProvisionClusterRequest {

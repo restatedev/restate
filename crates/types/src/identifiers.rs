@@ -238,14 +238,20 @@ fn deterministic_partition_key(
 ///
 /// NOTE: This same constant is also used by unscoped idempotent services, where its value is
 /// effectively immutable: changing it would re-shard idempotent invocations onto different
-/// partitions and break deduplication. If you ever need to tune the scatter width for
+/// partitions and break deduplication. The same applies to the bucket-to-key mapping in
+/// [`unscoped_service_partition_key`]. If you ever need to tune the scatter width for
 /// non-idempotent services only, split this into two separate constants first.
 ///
 /// Note: If this value ever changes, please keep it as a power of two so that the compiler can
 /// optimize it to a single AND instruction instead of a real mul+shift operation.
 pub const UNSCOPED_SERVICE_PARTITION_KEY_FANOUT: u64 = 512;
 
+/// Distance between two consecutive bucket keys of a service when the buckets are evenly spaced
+/// over the partition key space (`2^64 / FANOUT`).
+const UNSCOPED_SERVICE_BUCKET_STRIDE: u64 = u64::MAX / UNSCOPED_SERVICE_PARTITION_KEY_FANOUT + 1;
+
 static CONTROLLED_IDEMPOTENT_SHARDING: AtomicBool = AtomicBool::new(false);
+static EVENLY_SPACED_SERVICE_BUCKETS: AtomicBool = AtomicBool::new(false);
 
 #[inline(always)]
 fn is_controlled_idempotent_sharding_enabled() -> bool {
@@ -256,31 +262,56 @@ pub fn enable_controlled_idempotent_sharding() {
     CONTROLLED_IDEMPOTENT_SHARDING.store(true, Ordering::Relaxed)
 }
 
+#[inline(always)]
+fn is_evenly_spaced_service_buckets_enabled() -> bool {
+    EVENLY_SPACED_SERVICE_BUCKETS.load(Ordering::Relaxed)
+}
+
+pub fn enable_evenly_spaced_service_buckets() {
+    EVENLY_SPACED_SERVICE_BUCKETS.store(true, Ordering::Relaxed)
+}
+
 /// Computes one of the deterministic partition keys assigned to an unscoped service.
 ///
-/// The key set for a service name is generated as:
-/// - `key(bucket) = H((seed, "unscoped_partition_key_fanout", bucket))`
+/// Which mapping is used is fixed per cluster at provisioning time (see
+/// `ClusterFeature::EvenlySpacedServiceBuckets`) and must never change afterwards, since that
+/// would re-shard idempotent invocations onto different partitions:
+/// - evenly spaced: `key(bucket) = H((seed, "unscoped/service/offset")) + bucket * 2^64 / FANOUT`.
+///   The service's keys are spread evenly over the partition key space, so every partition of
+///   an equally sized partition table owns the same number of buckets (+/- 1).
+/// - hashed (legacy): `key(bucket) = H((seed, "unscoped/service", bucket))`. Each bucket key is
+///   placed independently, which leaves partitions with noticeably uneven bucket counts.
 ///
-/// This keeps bucket-to-key mapping deterministic per service while preserving uniform hash
-/// distribution over the full `PartitionKey` space. The random selection happens at bucket level,
-/// not at raw key level.
-///
-/// Examples for a given service `S`:
-/// - bucket `0` selects `H((S, "unscoped/service", 0))`
-/// - bucket `1` selects `H((S, "unscoped/service", 1))`
-/// - bucket `7` selects `H((S, "unscoped/service", 7))`
+/// The random selection happens at bucket level, not at raw key level.
 #[inline]
 pub fn unscoped_service_partition_key(seed: impl Hash, bucket: u64) -> PartitionKey {
     debug_assert!(bucket < UNSCOPED_SERVICE_PARTITION_KEY_FANOUT);
 
+    if is_evenly_spaced_service_buckets_enabled() {
+        evenly_spaced_service_bucket_key(seed, bucket)
+    } else {
+        hashed_service_bucket_key(seed, bucket)
+    }
+}
+
+#[inline]
+fn evenly_spaced_service_bucket_key(seed: impl Hash, bucket: u64) -> PartitionKey {
+    partitioner::HashPartitioner::compute_partition_key((seed, "unscoped/service/offset"))
+        .wrapping_add(bucket * UNSCOPED_SERVICE_BUCKET_STRIDE)
+}
+
+#[inline]
+fn hashed_service_bucket_key(seed: impl Hash, bucket: u64) -> PartitionKey {
     partitioner::HashPartitioner::compute_partition_key((seed, "unscoped/service", bucket))
 }
 
 #[inline]
 fn random_unscoped_service_partition_key(service_name: &str) -> PartitionKey {
     // Selects uniformly in [0, FAN_OUT) and maps into the service-specific key set.
+    // Nothing depends on where a non-idempotent invocation lands, so the evenly spaced mapping
+    // is used regardless of `ClusterFeature::EvenlySpacedServiceBuckets`.
     let bucket = rand::rng().random_range(0..UNSCOPED_SERVICE_PARTITION_KEY_FANOUT);
-    unscoped_service_partition_key(service_name, bucket)
+    evenly_spaced_service_bucket_key(service_name, bucket)
 }
 
 fn unscoped_idempotent_service_partition_key(
@@ -1615,7 +1646,7 @@ mod mocks {
 mod tests {
     use super::*;
 
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     use crate::invocation::VirtualObjectHandlerType;
     use rand::distr::{Alphanumeric, SampleString};
@@ -1746,7 +1777,7 @@ mod tests {
     fn unscoped_service_invocations_use_consistent_bounded_partition_key_set() {
         fn service_partition_key_set(service_name: &ByteString) -> HashSet<PartitionKey> {
             (0..UNSCOPED_SERVICE_PARTITION_KEY_FANOUT)
-                .map(|bucket| unscoped_service_partition_key(service_name, bucket))
+                .map(|bucket| evenly_spaced_service_bucket_key(service_name, bucket))
                 .collect()
         }
 
@@ -1790,6 +1821,41 @@ mod tests {
             UNSCOPED_SERVICE_PARTITION_KEY_FANOUT as usize
         );
         assert_ne!(service_a_keys, service_b_keys);
+    }
+
+    #[test]
+    fn evenly_spaced_service_buckets_are_balanced_across_partitions() {
+        use crate::Version;
+        use crate::partition_table::{FindPartition, PartitionTable};
+
+        let table = PartitionTable::with_equally_sized_partitions(Version::MIN, 48);
+        let mut buckets_per_partition = HashMap::new();
+        for key in (0..UNSCOPED_SERVICE_PARTITION_KEY_FANOUT)
+            .map(|bucket| evenly_spaced_service_bucket_key("ServiceA", bucket))
+        {
+            *buckets_per_partition
+                .entry(table.find_partition_id(key).unwrap())
+                .or_insert(0) += 1;
+        }
+        assert_eq!(buckets_per_partition.len(), 48);
+        // evenly distributed (512 / 48 = 10.666) so
+        // expecting count to be in [10..11]
+        assert!(
+            buckets_per_partition
+                .values()
+                .all(|c| (10..=11).contains(c))
+        );
+
+        // Both mappings are persisted implicitly in the partition keys of idempotent
+        // invocations and must never change.
+        assert_eq!(
+            evenly_spaced_service_bucket_key("MyService", 7),
+            10444299664803143966
+        );
+        assert_eq!(
+            hashed_service_bucket_key("MyService", 7),
+            3506217243409608934
+        );
     }
 
     #[test]

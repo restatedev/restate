@@ -176,6 +176,25 @@ pub enum ClusterFeature {
     /// time and cannot be toggled afterward.
     #[cfg_attr(feature = "clap", clap(skip))]
     ControlledIdempotentSharding,
+    /// Spaces the partition-key buckets of each unscoped service evenly over the
+    /// partition-key space instead of hashing every bucket independently.
+    ///
+    /// Each unscoped service owns a fixed set of partition-key buckets, used for idempotent
+    /// invocations under [`ClusterFeature::ControlledIdempotentSharding`] and for the
+    /// ingestion API. (All other non-idempotent invocations always use evenly spaced buckets, since
+    /// nothing depends on which partition they land on.) When disabled, every bucket is hashed to an
+    /// independent partition key, which leaves some partitions with noticeably more buckets
+    /// than others. When enabled, the buckets are evenly spaced, so every partition of an
+    /// equally sized partition table owns the same number of buckets (+/- 1).
+    ///
+    /// Like [`ClusterFeature::ControlledIdempotentSharding`], this is a one-way, cluster-wide
+    /// decision fixed at provisioning time: switching would re-shard idempotent invocations
+    /// onto different partitions and break deduplication.
+    ///
+    /// Not part of [`ClusterFeature::default_features`] yet: it is only enabled when the
+    /// provisioning node sets `experimental-enable-evenly-spaced-service-buckets`.
+    #[cfg_attr(feature = "clap", clap(skip))]
+    EvenlySpacedServiceBuckets,
 }
 
 impl ClusterFeature {

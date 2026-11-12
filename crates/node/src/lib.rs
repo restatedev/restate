@@ -614,7 +614,7 @@ impl Node {
                             &metadata_writer,
                             &config,
                             &cluster_configuration,
-                            ClusterFeature::default_features(),
+                            provisioning_features(&config),
                         )
                         .await;
 
@@ -657,14 +657,16 @@ impl Node {
             .context("Giving up trying to initialize the node. Make sure that it can reach the metadata store and don't forget to provision the cluster on a fresh start")?
             .context("Failed initializing the node")?;
 
-        if metadata
-            .nodes_config_ref()
-            .features()
-            .contains(ClusterFeature::ControlledIdempotentSharding)
-        {
+        let cluster_features = metadata.nodes_config_ref().features();
+        if cluster_features.contains(ClusterFeature::ControlledIdempotentSharding) {
             restate_types::identifiers::enable_controlled_idempotent_sharding();
         } else {
             debug!("Feature `controlled-idempotent-sharding` is disabled");
+        }
+        if cluster_features.contains(ClusterFeature::EvenlySpacedServiceBuckets) {
+            restate_types::identifiers::enable_evenly_spaced_service_buckets();
+        } else {
+            debug!("Feature `evenly-spaced-service-buckets` is disabled");
         }
 
         self.failure_detector
@@ -847,6 +849,19 @@ impl ClusterConfiguration {
             bifrost_provider: ProviderConfiguration::from_configuration(configuration),
         }
     }
+}
+
+/// Cluster features to enable when this node provisions the cluster.
+fn provisioning_features(config: &Configuration) -> EnumSet<ClusterFeature> {
+    let mut features = ClusterFeature::default_features();
+    if config
+        .common
+        .experimental
+        .is_evenly_spaced_service_buckets_enabled()
+    {
+        features |= ClusterFeature::EvenlySpacedServiceBuckets;
+    }
+    features
 }
 
 /// Provision the cluster metadata. Returns `true` if the cluster was newly provisioned. Returns

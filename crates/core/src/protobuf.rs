@@ -151,6 +151,7 @@ pub mod node_ctl_svc {
             match value {
                 ClusterFeature::Unknown => Self::Unknown,
                 ClusterFeature::ControlledIdempotentSharding => Self::ControlledIdempotentSharding,
+                ClusterFeature::EvenlySpacedServiceBuckets => Self::EvenlySpacedServiceBuckets,
             }
         }
     }
@@ -161,6 +162,9 @@ pub mod node_ctl_svc {
                 nodes_config::ClusterFeature::Unknown => Self::Unknown,
                 nodes_config::ClusterFeature::ControlledIdempotentSharding => {
                     Self::ControlledIdempotentSharding
+                }
+                nodes_config::ClusterFeature::EvenlySpacedServiceBuckets => {
+                    Self::EvenlySpacedServiceBuckets
                 }
             }
         }
@@ -192,9 +196,13 @@ pub mod node_ctl_svc {
 
         #[test]
         fn cluster_features_from_proto_round_trips_known_features() {
-            let raw = [ClusterFeature::ControlledIdempotentSharding as i32];
+            let raw = [
+                ClusterFeature::ControlledIdempotentSharding as i32,
+                ClusterFeature::EvenlySpacedServiceBuckets as i32,
+            ];
             let parsed = cluster_features_from_proto(&raw).expect("known feature accepted");
             assert!(parsed.contains(nodes_config::ClusterFeature::ControlledIdempotentSharding));
+            assert!(parsed.contains(nodes_config::ClusterFeature::EvenlySpacedServiceBuckets));
 
             assert!(cluster_features_from_proto(&[ClusterFeature::Unknown as i32]).is_err());
             assert!(cluster_features_from_proto(&[i32::MAX]).is_err());

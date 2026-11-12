@@ -1170,6 +1170,24 @@ experimental! {
     /// Since v1.8.2
     byte_offsets,
 
+    /// # Evenly spaced partition-key buckets for unscoped services
+    ///
+    /// When enabled while the cluster is provisioned, idempotent invocations of unscoped
+    /// services and ingestion API invocations are spread evenly across partitions. The setting only
+    /// takes effect at provisioning time: enabling or disabling it on an already provisioned
+    /// cluster has no effect.
+    ///
+    /// A cluster provisioned with this option **cannot** be rolled back to a Restate-server
+    /// version older than v1.8.2.
+    ///
+    /// This will be the default for newly provisioned clusters from v1.9.0.
+    ///
+    /// TODO(v1.9): Add `ClusterFeature::EvenlySpacedServiceBuckets` to
+    /// `ClusterFeature::default_features()` and remove this option.
+    ///
+    /// Since v1.8.2
+    evenly_spaced_service_buckets,
+
     /// # Remove orphaned active VQueue markers on startup
     ///
     /// Escape hatch for partitions that fail to start because an active vqueue has no
