@@ -138,7 +138,9 @@ where
     task_pool
         .build_task()
         .name(name)
-        .spawn(future.in_current_tc())
+        // Box before adding task-local scopes so spawning moves a pointer rather
+        // than repeatedly moving the large invocation future through the wrappers.
+        .spawn(Box::pin(future).in_current_tc())
         .expect("to spawn invocation task")
 }
 
