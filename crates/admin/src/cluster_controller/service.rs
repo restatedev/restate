@@ -62,7 +62,9 @@ use restate_types::{GenerationalNodeId, NodeId, PlainNodeId, Version};
 
 use crate::cluster_controller::cluster_state_refresher::ClusterStateRefresher;
 use crate::cluster_controller::grpc_svc_handler::ClusterCtrlSvcHandler;
+use crate::cluster_controller::safety_checker::SafetyReport;
 use crate::cluster_controller::service::cluster_controller_state::ClusterControllerState;
+use crate::cluster_controller::service::scheduler_task::SafetyCheckRequest;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -222,6 +224,7 @@ enum ClusterControllerCommand {
         partition_ids: Vec<PartitionId>,
         response_tx: oneshot::Sender<anyhow::Result<()>>,
     },
+    CheckClusterSafety(SafetyCheckRequest),
 }
 
 pub struct ClusterControllerHandle {
@@ -395,6 +398,25 @@ impl ClusterControllerHandle {
                 partition_ids,
                 response_tx,
             })
+            .await;
+
+        response_rx.await.map_err(|_| ShutdownError)
+    }
+
+    pub async fn check_cluster_safety(
+        &self,
+        assume_dead: Vec<PlainNodeId>,
+    ) -> Result<anyhow::Result<SafetyReport>, ShutdownError> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        let _ = self
+            .tx
+            .send(ClusterControllerCommand::CheckClusterSafety(
+                SafetyCheckRequest {
+                    assume_dead,
+                    response_tx,
+                },
+            ))
             .await;
 
         response_rx.await.map_err(|_| ShutdownError)
@@ -706,6 +728,21 @@ impl<T: TransportConnect> Service<T> {
                 }
                 ClusterControllerState::Follower => {
                     let _ = response_tx.send(Err(anyhow!("Not the cluster controller leader")));
+                }
+            },
+            ClusterControllerCommand::CheckClusterSafety(request) => match state {
+                ClusterControllerState::Leader(leader) => {
+                    if let Err(err) = leader.safety_check_tx().try_send(request) {
+                        let _ = err
+                            .into_inner()
+                            .response_tx
+                            .send(Err(anyhow!("Scheduler task is busy or not running")));
+                    }
+                }
+                ClusterControllerState::Follower => {
+                    let _ = request
+                        .response_tx
+                        .send(Err(anyhow!("Not the cluster controller leader")));
                 }
             },
         }
