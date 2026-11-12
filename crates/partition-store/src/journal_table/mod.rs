@@ -159,7 +159,7 @@ async fn get_journal_entry_budgeted<S: StorageRead>(
         // RocksDbPerfGuard is !Send and must not live across .await.
         let deficit = {
             let _x = RocksDbReadPerfGuard::new("get-journal-entry-budgeted");
-            let Some(pinned) = storage.get(Journal, &buf)? else {
+            let Some(pinned) = storage.get(KeyKind::Journal, &buf)? else {
                 return Ok(None);
             };
 
