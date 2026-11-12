@@ -1350,7 +1350,7 @@ impl CompactionFilter for KeyKindCompactionFilter {
         KeyKind::compaction_filter(level, key, value)
     }
     fn name(&self) -> &std::ffi::CStr {
-        c"CompactionFilter"
+        c"PartitionCompactionFilter"
     }
 }
 
@@ -1366,6 +1366,6 @@ impl CompactionFilterFactory for KeyKindCompactionFilterFactory {
     }
 
     fn name(&self) -> &std::ffi::CStr {
-        c"CompactionFilterFactor"
+        c"PartitionCompactionFilterFactory"
     }
 }

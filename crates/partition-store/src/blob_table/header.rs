@@ -8,10 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::cmp::Ordering;
-
-use anyhow::{Context, anyhow};
+use anyhow::anyhow;
 use bytes::BufMut;
+use tracing::warn;
 use zerocopy::{IntoBytes, TryFromBytes};
 
 use restate_storage_api::{Result, StorageError, blob_table::Header};
@@ -151,97 +150,67 @@ impl Header for BlobHeader<'_> {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, Eq, PartialEq, bilrost::Oneof, bilrost::Message)]
-enum Action {
-    #[default]
-    #[bilrost(empty)]
-    Unknown,
-    #[bilrost(tag(1))]
-    Increment { count: u16 },
-    #[bilrost(tag(2))]
-    Decrement { count: u16 },
-}
-
-#[derive(Debug, Default, Clone, Eq, PartialEq, bilrost::Message)]
+/// A ref count update that summarizes any sequence of increments and decrements.
+///
+/// The sequence is seen as a walk starting at 0: `delta` is where the walk ends and `floor`
+/// (always <= 0) is its lowest point. Applied to a ref count `x > 0`, the count passes through
+/// zero iff `x + floor <= 0`, in which case the blob becomes a tombstone that is never updated
+/// again. Composing updates preserves this, so the merge result does not depend on how RocksDB
+/// groups operands into full and partial merges.
+///
+/// The one exception is clamping the stored ref count at `u16::MAX`, which requires more than
+/// `u16::MAX` live references.
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq, bilrost::Message)]
 pub(super) struct HeaderUpdate {
     #[bilrost(tag(1))]
-    actions: Vec<Action>,
+    delta: i64,
+    #[bilrost(tag(2))]
+    floor: i64,
 }
 
 impl HeaderUpdate {
     pub fn increment(count: u16) -> Self {
         Self {
-            actions: vec![Action::Increment { count }],
+            delta: count.into(),
+            floor: 0,
         }
     }
 
     pub fn decrement(count: u16) -> Self {
+        let delta = -i64::from(count);
         Self {
-            actions: vec![Action::Decrement { count }],
+            delta,
+            floor: delta,
         }
     }
 
-    fn apply(&self, value: &mut BlobHeader<'_>) {
-        for action in &self.actions {
-            match action {
-                Action::Unknown => {}
-                Action::Increment { count } => {
-                    value.ref_count = value.ref_count.saturating_add(*count)
-                }
-                Action::Decrement { count } => {
-                    value.ref_count = value.ref_count.saturating_sub(*count)
-                }
-            }
+    /// Composes `self` followed by `next`.
+    fn merge(self, next: &HeaderUpdate) -> Self {
+        Self {
+            delta: self.delta.saturating_add(next.delta),
+            floor: self.floor.min(self.delta.saturating_add(next.floor)),
         }
     }
 
-    fn merge(mut self, update: &HeaderUpdate) -> anyhow::Result<Self> {
-        let mut increments = 0u16;
-        let mut decrements = 0u16;
-
-        for action in self.actions.iter().chain(&update.actions) {
-            match action {
-                Action::Unknown => {}
-                Action::Increment { count } => {
-                    increments = increments
-                        .checked_add(*count)
-                        .context("merge will cause overflow")?
-                }
-                Action::Decrement { count } => {
-                    decrements = decrements
-                        .checked_add(*count)
-                        .context("merge will cause overflow")?
-                }
-            }
-
-            match increments.cmp(&decrements) {
-                Ordering::Greater => {
-                    increments -= decrements;
-                    decrements = 0;
-                }
-                Ordering::Less => {
-                    decrements -= increments;
-                    increments = 0;
-                }
-                Ordering::Equal => {
-                    increments = 0;
-                    decrements = 0;
-                }
-            }
+    fn apply(&self, header: &mut BlobHeader<'_>) {
+        let ref_count = i64::from(header.ref_count);
+        if ref_count == 0 {
+            // tombstone, never updated again
+            return;
+        }
+        if ref_count.saturating_add(self.floor) <= 0 {
+            header.ref_count = 0;
+            return;
         }
 
-        let mut actions = std::mem::take(&mut self.actions);
-        actions.clear();
-
-        if increments > 0 {
-            actions.push(Action::Increment { count: increments });
+        let ref_count = ref_count.saturating_add(self.delta);
+        if ref_count > i64::from(u16::MAX) {
+            warn!(
+                "blob ref count {ref_count} exceeds the maximum, clamping to {}",
+                u16::MAX
+            );
         }
-        if decrements > 0 {
-            actions.push(Action::Decrement { count: decrements });
-        }
-        let merged = HeaderUpdate { actions };
-
-        Ok(merged)
+        header.ref_count = ref_count.clamp(1, u16::MAX.into()) as u16;
     }
 }
 
@@ -249,6 +218,7 @@ pub mod merge {
     use anyhow::Context;
     use bilrost::{Message, OwnedMessage};
     use bytes::{BufMut, BytesMut};
+    use restate_types::blob::BlobKind;
     use rocksdb::{CompactionDecision, MergeOperands};
     use tracing::warn;
 
@@ -257,6 +227,8 @@ pub mod merge {
         keys::DecodeTableKey,
     };
 
+    /// Errors (and thus RocksDB merge failures) are only possible on corrupted values or
+    /// operands. A missing base value or any sequence of updates always merges successfully.
     pub fn full_merge(
         mut key: &[u8],
         existing_val: Option<&[u8]>,
@@ -276,8 +248,14 @@ pub mod merge {
         existing_val: Option<&[u8]>,
         operands: impl IntoIterator<Item = &'a [u8]>,
     ) -> anyhow::Result<Option<Vec<u8>>> {
-        let existing_val =
-            existing_val.context("Failed to merge blob updates with a non-existent value")?;
+        let Some(existing_val) = existing_val else {
+            // Avoid returning None here if we hit a non existing record to
+            // avoid rocksdb going into read-only mode.
+            let empty_header = BlobHeader::new(BlobKind::Generic, 0);
+            let mut buf = BytesMut::with_capacity(empty_header.encoded_len());
+            empty_header.encode(&mut buf);
+            return Ok(Some(buf.to_vec()));
+        };
 
         let (mut header, payload) =
             BlobHeader::decode(existing_val).context("Failed to decode blob header")?;
@@ -297,7 +275,7 @@ pub mod merge {
                 .replace_from(operand)
                 .context("Failed to decode blob update operand")?;
 
-            merged = merged.merge(&update)?;
+            merged = merged.merge(&update);
         }
 
         merged.apply(&mut header);
@@ -326,7 +304,9 @@ pub mod merge {
         }
     }
 
-    fn partial_merge_inner(operands: &MergeOperands) -> anyhow::Result<Option<Vec<u8>>> {
+    pub(super) fn partial_merge_inner<'a>(
+        operands: impl IntoIterator<Item = &'a [u8]>,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
         let mut merged = HeaderUpdate::default();
         let mut update = HeaderUpdate::default();
         for operand in operands {
@@ -334,7 +314,7 @@ pub mod merge {
                 .replace_from(operand)
                 .context("Failed to decode blob update operand")?;
 
-            merged = merged.merge(&update)?;
+            merged = merged.merge(&update);
         }
 
         Ok(Some(merged.encode_to_vec()))
@@ -359,130 +339,109 @@ pub mod merge {
 
 #[cfg(test)]
 mod tests {
+    use bilrost::Message;
+
     use super::*;
 
-    fn merge_all(updates: impl IntoIterator<Item = HeaderUpdate>) -> anyhow::Result<HeaderUpdate> {
+    fn merge_all(updates: impl IntoIterator<Item = HeaderUpdate>) -> HeaderUpdate {
         updates
             .into_iter()
-            .try_fold(HeaderUpdate::default(), |merged, update| {
+            .fold(HeaderUpdate::default(), |merged, update| {
                 merged.merge(&update)
             })
     }
 
-    #[test]
-    fn merge_nets_out_actions() {
-        // merging into an empty update keeps the single action
-        assert_eq!(
-            merge_all([HeaderUpdate::increment(3)]).unwrap(),
-            HeaderUpdate::increment(3)
-        );
-        assert_eq!(
-            merge_all([HeaderUpdate::decrement(3)]).unwrap(),
-            HeaderUpdate::decrement(3)
-        );
+    fn blob_value(ref_count: u16) -> Vec<u8> {
+        let mut value = Vec::new();
+        BlobHeader::new(BlobKind::Output, ref_count).encode(&mut value);
+        value.extend_from_slice(b"payload");
+        value
+    }
 
-        // same-direction actions are summed
-        assert_eq!(
-            merge_all([HeaderUpdate::increment(1), HeaderUpdate::increment(2)]).unwrap(),
-            HeaderUpdate::increment(3)
-        );
-        assert_eq!(
-            merge_all([HeaderUpdate::decrement(1), HeaderUpdate::decrement(2)]).unwrap(),
-            HeaderUpdate::decrement(3)
-        );
-
-        // opposite actions net out to a single action, or none at all
-        assert_eq!(
-            merge_all([HeaderUpdate::increment(5), HeaderUpdate::decrement(2)]).unwrap(),
-            HeaderUpdate::increment(3)
-        );
-        assert_eq!(
-            merge_all([HeaderUpdate::increment(2), HeaderUpdate::decrement(5)]).unwrap(),
-            HeaderUpdate::decrement(3)
-        );
-        assert_eq!(
-            merge_all([HeaderUpdate::increment(4), HeaderUpdate::decrement(4)]).unwrap(),
-            HeaderUpdate::default()
-        );
-        assert_eq!(
-            merge_all([
-                HeaderUpdate::decrement(1),
-                HeaderUpdate::increment(3),
-                HeaderUpdate::decrement(1),
-                HeaderUpdate::increment(1),
-            ])
-            .unwrap(),
-            HeaderUpdate::increment(2)
-        );
-
-        // unknown actions are ignored
-        let unknown = HeaderUpdate {
-            actions: vec![Action::Unknown],
-        };
-        assert_eq!(
-            merge_all([unknown, HeaderUpdate::increment(1)]).unwrap(),
-            HeaderUpdate::increment(1)
-        );
-
-        // a self-contained update with multiple actions is also normalized
-        let mixed = HeaderUpdate {
-            actions: vec![
-                Action::Increment { count: 2 },
-                Action::Decrement { count: 7 },
-            ],
-        };
-        assert_eq!(
-            HeaderUpdate::default().merge(&mixed).unwrap(),
-            HeaderUpdate::decrement(5)
-        );
+    fn ref_count(value: &[u8]) -> u16 {
+        BlobHeader::decode(value).unwrap().0.ref_count()
     }
 
     #[test]
-    fn merge_overflow_and_apply() {
-        // netting keeps accumulators small, so opposite actions never overflow
-        assert_eq!(
-            merge_all([
-                HeaderUpdate::increment(u16::MAX),
-                HeaderUpdate::decrement(u16::MAX),
-                HeaderUpdate::increment(u16::MAX),
-            ])
-            .unwrap(),
-            HeaderUpdate::increment(u16::MAX)
-        );
+    fn merge_composes_updates() {
+        let (inc, dec) = (HeaderUpdate::increment, HeaderUpdate::decrement);
 
-        // same-direction overflow is rejected
-        assert!(
-            merge_all([
-                HeaderUpdate::increment(u16::MAX),
-                HeaderUpdate::increment(1)
-            ])
-            .is_err()
+        // same-direction updates are summed, opposite ones net out
+        assert_eq!(merge_all([inc(1), inc(2)]), inc(3));
+        assert_eq!(merge_all([dec(1), dec(2)]), dec(3));
+        assert_eq!(merge_all([inc(5), dec(2)]), inc(3));
+        assert_eq!(merge_all([inc(2), dec(5)]), dec(3));
+        // but passing through a lower point is remembered
+        assert_eq!(
+            merge_all([dec(1), inc(1)]),
+            HeaderUpdate {
+                delta: 0,
+                floor: -1
+            }
         );
-        assert!(
-            merge_all([
-                HeaderUpdate::decrement(u16::MAX),
-                HeaderUpdate::decrement(1)
-            ])
-            .is_err()
+        // accumulating many updates never fails
+        assert_eq!(
+            merge_all([inc(u16::MAX); 10]).delta,
+            10 * i64::from(u16::MAX)
         );
 
         // merged update applied to a header
         let mut header = BlobHeader::new(BlobKind::Output, 2);
-        merge_all([HeaderUpdate::increment(3), HeaderUpdate::decrement(1)])
-            .unwrap()
-            .apply(&mut header);
+        merge_all([inc(3), dec(1)]).apply(&mut header);
         assert_eq!(header.ref_count(), 4);
-
-        merge_all([HeaderUpdate::decrement(10)])
-            .unwrap()
-            .apply(&mut header);
+        inc(u16::MAX).apply(&mut header);
+        assert_eq!(header.ref_count(), u16::MAX);
+        dec(u16::MAX).apply(&mut header);
+        assert_eq!(header.ref_count(), 0);
+        // a tombstone is never revived
+        inc(1).apply(&mut header);
         assert_eq!(header.ref_count(), 0);
     }
 
     #[test]
-    fn full_merge_keeps_unknown_fields() {
-        use bilrost::Message;
+    fn merge_is_independent_of_grouping() {
+        let (inc, dec) = (HeaderUpdate::increment, HeaderUpdate::decrement);
+        let cases: [(u16, &[HeaderUpdate], u16); 4] = [
+            (1, &[dec(1), inc(1)], 0),
+            (2, &[dec(1), inc(1)], 2),
+            (3, &[dec(2), inc(5), dec(4)], 2),
+            (2, &[dec(2), inc(5), dec(4)], 0),
+        ];
 
+        for (base, ops, expected) in cases {
+            let ops: Vec<_> = ops.iter().map(Message::encode_to_vec).collect();
+
+            // full merges of `chunk` operands each, from one at a time to all at once
+            for chunk in 1..=ops.len() {
+                let mut value = blob_value(base);
+                for chunk in ops.chunks(chunk) {
+                    value = merge::full_merge_inner(Some(&value), chunk.iter().map(Vec::as_slice))
+                        .unwrap()
+                        .unwrap();
+                }
+                assert_eq!(ref_count(&value), expected, "base {base}, chunk {chunk}");
+            }
+
+            // all operands combined by a partial merge first
+            let combined = merge::partial_merge_inner(ops.iter().map(Vec::as_slice))
+                .unwrap()
+                .unwrap();
+            let value = merge::full_merge_inner(Some(&blob_value(base)), [combined.as_slice()])
+                .unwrap()
+                .unwrap();
+            assert_eq!(ref_count(&value), expected, "base {base}, partial merge");
+        }
+
+        // a missing base value (already collected) merges into a tombstone
+        let inc = inc(1).encode_to_vec();
+        let value = merge::full_merge_inner(None, [inc.as_slice()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(ref_count(&value), 0);
+    }
+
+    #[test]
+    fn full_merge_keeps_unknown_fields() {
         let extension = [0xDE, 0xAD, 0xBE, 0xEF];
         let mut value = vec![BlobHeader::VERSION, 0x80, 3 + extension.len() as u8];
         value.push(BlobKind::Output as u8);

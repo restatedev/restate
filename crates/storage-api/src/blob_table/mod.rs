@@ -29,7 +29,10 @@ pub trait ReadBlobTable {
 pub trait WriteBlobTable {
     fn put_blob<B: BlobEncode>(&mut self, blob_id: BlobId, blob: Blob<B>) -> Result<()>;
 
+    /// Once a blob's ref count reaches 0 it is marked for deletion and later
+    /// ref count updates on it are no-ops.
     fn increment_ref_count(&mut self, blob_id: BlobId, count: u16);
+    /// Reaching a ref count of 0 marks the blob for deletion; it is never revived.
     fn decrement_ref_count(&mut self, blob_id: BlobId, count: u16);
 }
 
