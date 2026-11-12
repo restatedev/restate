@@ -28,7 +28,12 @@ use super::{ColumnFamilies, OwnedReadIterator, OwnedReader, ReadIterator, ReadSo
 /// its own lease from the gate, like other background reads.
 ///
 /// Only [`Scope`]s implement this trait.
-pub trait ScopedReads: ReadSource {
+// Readers take the source's column family type from the sealed trait. Making it
+// equal to `Cf` lets code that is generic over `ScopedReads` pass a `Self::Cf`
+// to a reader's lookups.
+pub trait ScopedReads:
+    ReadSource + super::sealed::Sealed<CfKey = <Self as ScopedReads>::Cf>
+{
     /// Chooses which of the scope's column families to read. See
     /// [`ColumnFamilies::Cf`].
     type Cf: Copy;
