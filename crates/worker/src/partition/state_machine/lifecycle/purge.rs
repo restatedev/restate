@@ -24,7 +24,7 @@ use restate_storage_api::promise_table::WritePromiseTable;
 use restate_storage_api::state_table::WriteStateTable;
 use restate_storage_api::timer_table::WriteTimerTable;
 use restate_storage_api::vqueue_table::{
-    EntryContext, EntryStateRef, EntryStatusHeader, ReadVQueueTable, Stage, WriteVQueueTable,
+    EntryContext, EntryStatusHeader, ReadVQueueTable, Stage, StoredEntryRef, WriteVQueueTable,
 };
 use restate_types::identifiers::{BaseEntryId, InvocationId, InvocationUuid};
 use restate_types::invocation::client::PurgeInvocationResponse;
@@ -122,7 +122,7 @@ where
                             qid: vqueue_id,
                             target: &invocation_target.entry_target_ref(),
                         },
-                        EntryStateRef::from_header(&header),
+                        StoredEntryRef::from_header(&header),
                     );
                 }
 

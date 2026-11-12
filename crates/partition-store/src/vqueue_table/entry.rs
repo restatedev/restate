@@ -68,6 +68,7 @@ pub(super) fn entry_status_header_from_raw(
         header.stats,
         header.status,
     )
+    .with_touched_by(header.touched_by)
 }
 
 #[cfg(test)]

@@ -18,8 +18,8 @@ use restate_storage_api::lock_table::LoadLocks;
 use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
 use restate_storage_api::vqueue_table::stats::WaitStats;
 use restate_storage_api::vqueue_table::{
-    EntryContext, EntryMetadata, EntryStateRef, EntryStatusHeader, ReadVQueueTable,
-    ScanVQueueTable, Stage, Status, WriteVQueueTable,
+    EntryContext, EntryMetadata, EntryStatusHeader, ReadVQueueTable, ScanVQueueTable, Stage,
+    Status, StoredEntryRef, WriteVQueueTable,
 };
 use restate_types::partition_table::Partition;
 use restate_types::sharding::{KeyRange, PartitionId};
@@ -253,7 +253,7 @@ async fn finishing_preserves_cleanup_events_and_queue_metrics() {
                     qid: &qid,
                     target: &target,
                 },
-                EntryStateRef::from_header(&finished),
+                StoredEntryRef::from_header(&finished),
             );
             assert_eq!(cache.get(handle).unwrap().meta().stats().num_finished(), 0);
             assert_eq!(events.len(), 1);

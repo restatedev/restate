@@ -13,6 +13,7 @@ use restate_types::vqueues::{CanonicalEntryId, EntryId, EntryKind, Seq, VQueueId
 
 use super::stats::EntryStatistics;
 use super::{EntryKey, EntryMetadata, EntryMetadataRef, Stage};
+use crate::migration_job::MigrationJobIds;
 
 #[derive(Debug, strum::Display, Clone, Copy, Eq, PartialEq, bilrost::Enumeration)]
 #[strum(serialize_all = "kebab-case")]
@@ -71,6 +72,12 @@ pub struct RawStatusHeaderRef<'a> {
     pub stats: EntryStatistics,
     #[bilrost(tag(8))]
     pub status: Status,
+    /// Which unfinished migration jobs, such as index or statistic builds, already
+    /// reflect this entry, so that a later write knows whether to replace its old
+    /// contribution or only add the new one. See [`MigrationJobIds`]. Only the
+    /// partition store writes it; omitted when empty.
+    #[bilrost(tag(9), encoding(plainbytes))]
+    pub touched_by: &'a [u8],
 }
 
 #[derive(Debug, Clone, bilrost::Message)]
@@ -93,6 +100,30 @@ pub struct RawStatusHeader {
     pub stats: EntryStatistics,
     #[bilrost(tag(8))]
     pub status: Status,
+    /// Which unfinished migration jobs, such as index or statistic builds, already
+    /// reflect this entry, so that a later write knows whether to replace its old
+    /// contribution or only add the new one. See [`MigrationJobIds`]. Only the
+    /// partition store writes it; omitted when empty.
+    #[bilrost(tag(9), encoding(plainbytes))]
+    pub touched_by: Vec<u8>,
+}
+
+impl<'a> RawStatusHeaderRef<'a> {
+    /// Decodes a stored, length-delimited header, rejecting malformed tokens.
+    pub fn decode_stored(value: &mut &'a [u8]) -> crate::Result<Self> {
+        let header = <Self as bilrost::BorrowedMessage>::decode_borrowed_length_delimited(value)?;
+        MigrationJobIds::from_bytes(header.touched_by).validate()?;
+        Ok(header)
+    }
+}
+
+impl RawStatusHeader {
+    /// Decodes a stored, length-delimited header, rejecting malformed tokens.
+    pub fn decode_stored(mut value: &[u8]) -> crate::Result<Self> {
+        let header = <Self as bilrost::OwnedMessage>::decode_length_delimited(&mut value)?;
+        MigrationJobIds::from_bytes(&header.touched_by).validate()?;
+        Ok(header)
+    }
 }
 
 /// Owned vqueue entry status header.
@@ -104,6 +135,7 @@ pub struct OwnedEntryStatusHeader {
     metadata: EntryMetadata,
     status: Status,
     stats: EntryStatistics,
+    touched_by: Vec<u8>,
 }
 
 impl OwnedEntryStatusHeader {
@@ -122,7 +154,15 @@ impl OwnedEntryStatusHeader {
             metadata,
             status,
             stats,
+            touched_by: Vec::new(),
         }
+    }
+
+    /// Attaches the stored [`MigrationJobIds`] bytes to this header so they travel
+    /// with its logical state when it is used as a before-image.
+    pub fn with_touched_by(mut self, touched_by: Vec<u8>) -> Self {
+        self.touched_by = touched_by;
+        self
     }
 }
 
@@ -192,6 +232,11 @@ impl EntryStatusHeader for OwnedEntryStatusHeader {
     fn status(&self) -> Status {
         self.status
     }
+
+    #[inline]
+    fn touched_by(&self) -> MigrationJobIds<'_> {
+        MigrationJobIds::from_bytes(&self.touched_by)
+    }
 }
 
 mod bilrost_encoding {
@@ -245,6 +290,12 @@ pub trait EntryStatusHeader: std::fmt::Debug {
     fn stats(&self) -> &EntryStatistics;
     fn canonical_entry_id(&self) -> CanonicalEntryId;
     fn display_entry_id(&self) -> impl std::fmt::Display + '_;
+    /// Which unfinished migration jobs already reflect this entry, as stored with
+    /// the header; see [`MigrationJobIds`] for what that means and why it exists.
+    /// May include stale tokens of finished jobs until the entry is next written.
+    /// A header built in memory has none unless stored tokens are attached with
+    /// [`OwnedEntryStatusHeader::with_touched_by`].
+    fn touched_by(&self) -> MigrationJobIds<'_>;
     /// Returns new if this entry has not started yet.
     fn has_started(&self) -> bool {
         self.stats().num_attempts > 0
@@ -281,6 +332,42 @@ mod tests {
     use bilrost::{Message, OwnedMessage};
 
     use super::*;
+
+    #[test]
+    fn tokens_are_omitted_when_empty_and_round_trip() {
+        let header = |touched_by: Vec<u8>| RawStatusHeader {
+            qid: VQueueId::custom(7, "q"),
+            stage: Stage::Inbox,
+            has_lock: false,
+            next_run_at: RoughTimestamp::new(10),
+            seq: Seq::new(1),
+            metadata: EntryMetadata::default(),
+            stats: EntryStatistics::new(
+                restate_clock::UniqueTimestamp::try_from_unix_millis(
+                    restate_clock::time::MillisSinceEpoch::new(1_744_010_000_000),
+                )
+                .unwrap(),
+                RoughTimestamp::new(10),
+            ),
+            status: Status::New,
+            touched_by,
+        };
+        let untouched = header(vec![]).encode_to_vec();
+        let touched_by = header(vec![0, 0, 0, 64, 0, 1, 0, 70]).encode_to_vec();
+        assert_eq!(
+            touched_by.len(),
+            untouched.len() + 10,
+            "an_empty_list_is_omitted_and_ids_take_four_bytes_each"
+        );
+        let decoded = RawStatusHeader::decode(touched_by.as_slice()).unwrap();
+        assert_eq!(
+            MigrationJobIds::from_bytes(&decoded.touched_by)
+                .ids()
+                .unwrap()
+                .collect::<Vec<_>>(),
+            [64, 65_606]
+        );
+    }
 
     #[test]
     fn fixed_encoding_round_trips_status() {

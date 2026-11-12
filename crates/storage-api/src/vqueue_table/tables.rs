@@ -15,7 +15,9 @@ use restate_types::vqueues::{CanonicalEntryId, Seq, VQueueId};
 use super::RawStatusHeaderRef;
 use super::filters::{ScanEntryIdFilter, ScanMetaFilter};
 use super::metadata::{VQueueMeta, VQueueMetaRef};
-use super::{EntryContext, EntryId, EntryKey, EntryStateRef, EntryStatusHeader, EntryValue};
+use super::{
+    EntryContext, EntryId, EntryKey, EntryStateRef, EntryStatusHeader, EntryValue, StoredEntryRef,
+};
 use crate::Result;
 
 /// Stages in the inbox/vqueue
@@ -176,14 +178,18 @@ pub trait WriteVQueueTable {
     fn update_vqueue_entry_status(
         &mut self,
         context: &EntryContext<'_>,
-        before: EntryStateRef<'_>,
+        before: StoredEntryRef<'_>,
         after: EntryStateRef<'_>,
     );
 
     /// Deletes an existing status by base identity, without checking its sequence.
     /// `before` must describe the actual previous state, including earlier writes in
     /// this transaction. This operation does not read or compare against storage.
-    fn delete_vqueue_entry_status(&mut self, context: &EntryContext<'_>, before: EntryStateRef<'_>);
+    fn delete_vqueue_entry_status(
+        &mut self,
+        context: &EntryContext<'_>,
+        before: StoredEntryRef<'_>,
+    );
 
     /// Stores a vqueue entry input payload
     fn put_vqueue_input_payload<E>(
