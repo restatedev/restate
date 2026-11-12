@@ -676,19 +676,19 @@ impl SnapshotRepository {
     /// Deletes the objects of a snapshot that will not be published. Errors are only logged; the
     /// orphan sweep catches anything left behind.
     ///
-    /// Shared SSTs this upload created are deleted only while the lease is still valid. Without
-    /// it, another node may already have published a snapshot that deduplicated against them.
+    /// Shared SSTs this upload created go last, and only while the lease is still valid, checked
+    /// before each delete: deletes may be retried for a while, and once the lease lapses another
+    /// node may publish a snapshot that deduplicated against them.
     async fn discard_uploaded_files(
         &self,
         progress: SnapshotUploadProgress,
         lease_guard: &SnapshotLeaseGuard,
     ) {
-        let shared = if lease_guard.is_valid() {
-            progress.created_shared_ssts
-        } else {
-            vec![]
-        };
-        for path in progress.own_objects.iter().chain(&shared) {
+        let shared = progress
+            .created_shared_ssts
+            .iter()
+            .take_while(|_| lease_guard.is_valid());
+        for path in progress.own_objects.iter().chain(shared) {
             if let Err(err) = self.object_store.delete(path).await {
                 info!(%err, %path, "Failed to delete object of unpublished snapshot");
             }
@@ -1678,25 +1678,12 @@ impl SnapshotRepository {
         filename: &str,
     ) -> ObjectPath {
         if let Some(key) = relative_key {
-            // Incremental snapshot: SST is in shared ssts/ directory.
-            // Format: "ssts/{hash}.sst" (two segments). Any other shape is treated as opaque
-            // and joined as-is for forward compatibility, but the upload path only produces
-            // the two-segment form.
-            let parts: Vec<&str> = key.split('/').collect();
-            if parts.len() == 2 {
-                self.prefix
-                    .clone()
-                    .join(partition_id.to_string())
-                    .join(parts[0])
-                    .join(parts[1])
-            } else {
-                warn!(
-                    %filename,
-                    relative_key = %key,
-                    "Unexpected file_keys entry shape; treating as opaque path"
-                );
-                self.prefix.clone().join(partition_id.to_string()).join(key)
-            }
+            // Incremental snapshot: the key is relative to the partition prefix, e.g.
+            // "ssts/{hash}.sst". `join` escapes '/', so append it segment by segment.
+            key.split('/').fold(
+                self.prefix.clone().join(partition_id.to_string()),
+                |path, segment| path.join(segment),
+            )
         } else {
             // Legacy full snapshot: SST is in snapshot-specific directory
             self.prefix
