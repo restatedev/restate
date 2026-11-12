@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
 use std::ops::ControlFlow;
 
 use bilrost::Message;
@@ -49,7 +50,7 @@ impl BlobKey {
 
 impl FixedLengthTableKey<{ BlobKey::serialized_length_fixed() }> for BlobKey {}
 
-const BLOB_MULTI_GET_BATCH_SIZE: usize = 25;
+const BLOB_MULTI_GET_BATCH_SIZE: NonZeroUsize = NonZeroUsize::new(25).unwrap();
 
 fn get_blob<S: StorageAccess, D: BlobDecoder>(
     storage: &mut S,

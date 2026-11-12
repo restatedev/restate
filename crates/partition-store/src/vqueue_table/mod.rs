@@ -17,6 +17,7 @@ mod metadata;
 mod reader;
 mod running_reader;
 
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 
 pub use entry::{EntryStatusKey, EntryStatusKeyRef};
@@ -625,7 +626,7 @@ impl ScanVQueueMetaTable for PartitionStore {
 }
 
 /// Maximum number of vqueue-metadata keys passed to one RocksDB multi-get call.
-const VQUEUE_META_MULTI_GET_BATCH_SIZE: usize = 500;
+const VQUEUE_META_MULTI_GET_BATCH_SIZE: NonZeroUsize = NonZeroUsize::new(500).unwrap();
 
 impl ScanVQueueEntryStatusTable for PartitionStore {
     fn for_each_vqueue_entry_status<F>(
@@ -692,7 +693,7 @@ impl ScanVQueueEntryStatusTable for PartitionStore {
 }
 
 /// Maximum number of entry-status keys passed to one RocksDB multi-get call.
-const ENTRY_STATUS_MULTI_GET_BATCH_SIZE: usize = 500;
+const ENTRY_STATUS_MULTI_GET_BATCH_SIZE: NonZeroUsize = NonZeroUsize::new(500).unwrap();
 
 /// Default scan order when no stages are explicitly requested. Skips
 /// `Stage::Unknown` which has no on-disk representation.

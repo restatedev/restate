@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::BTreeSet;
+use std::num::NonZeroUsize;
 use std::ops::ControlFlow;
 use std::ops::RangeBounds;
 use std::path::Path;
@@ -478,7 +479,7 @@ impl PartitionStore {
     pub(crate) fn multi_get_for_each<I, K, const N: usize>(
         &self,
         name: &'static str,
-        batch_size: usize,
+        batch_size: NonZeroUsize,
         ids: BTreeSet<I>,
         to_key: impl Fn(&I) -> K + Send + 'static,
         mut f: impl FnMut(&I, &[u8]) -> ControlFlow<Result<()>> + Send + 'static,
@@ -491,6 +492,7 @@ impl PartitionStore {
         async move {
             let read = db.prepare_read(name, StorageTaskKind::MultiGet, move |raw_db, cfs| {
                 let cf = cfs.get(K::KEY_KIND);
+                let batch_size = batch_size.get();
 
                 let batch_capacity = ids.len().min(batch_size);
                 let mut batch_ids = Vec::with_capacity(batch_capacity);

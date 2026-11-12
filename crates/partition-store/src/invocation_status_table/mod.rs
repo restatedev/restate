@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
 use std::ops::ControlFlow;
 
 use futures::{FutureExt, Stream};
@@ -55,7 +56,7 @@ impl FixedLengthTableKey<{ InvocationStatusKey::serialized_length_fixed() }>
 /// This one is set to a low value due to the possibility of loading a large value from rocksdb
 /// when the invocation holds a large output payload. This is an unfortunate side effect of storing
 /// the output payload into invocation-status!
-const INVOCATION_STATUS_MULTI_GET_BATCH_SIZE: usize = 25;
+const INVOCATION_STATUS_MULTI_GET_BATCH_SIZE: NonZeroUsize = NonZeroUsize::new(25).unwrap();
 
 #[inline]
 fn create_invocation_status_key(invocation_id: &InvocationId) -> InvocationStatusKey {
