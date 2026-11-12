@@ -8,15 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::BTreeSet;
+use std::num::NonZeroUsize;
 use std::ops::ControlFlow;
 
-use bytes::BytesMut;
 use futures::{FutureExt, Stream};
-use rocksdb::ReadOptions;
 
-use restate_core::io::IoExecutor;
-use restate_rocksdb::{Priority, RocksDbReadPerfGuard, StorageTaskKind};
+use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
 use restate_storage_api::invocation_status_table::{
     InvocationLite, InvocationStatus, InvocationStatusDiscriminants, ReadInvocationStatusTable,
     ScanInvocationStatusTable, ScanInvocationStatusTableRange, WriteInvocationStatusTable,
@@ -26,9 +23,10 @@ use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
 use restate_types::sharding::KeyRange;
+use restate_types::storage::{StorageCodecKind, StorageDecodeError};
 use restate_util_string::format_restring;
 
-use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
+use crate::keys::{DecodeTableKey, FixedLengthTableKey, KeyKind, define_table_key};
 use crate::scan::TableScan;
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind, break_on_err};
 
@@ -49,11 +47,16 @@ impl InvocationStatusKey {
     }
 }
 
+impl FixedLengthTableKey<{ InvocationStatusKey::serialized_length_fixed() }>
+    for InvocationStatusKey
+{
+}
+
 /// Maximum number of invocation-status keys passed to one RocksDB multi-get call.
 /// This one is set to a low value due to the possibility of loading a large value from rocksdb
 /// when the invocation holds a large output payload. This is an unfortunate side effect of storing
 /// the output payload into invocation-status!
-const INVOCATION_STATUS_MULTI_GET_BATCH_SIZE: usize = 25;
+const INVOCATION_STATUS_MULTI_GET_BATCH_SIZE: NonZeroUsize = NonZeroUsize::new(25).unwrap();
 
 #[inline]
 fn create_invocation_status_key(invocation_id: &InvocationId) -> InvocationStatusKey {
@@ -63,131 +66,31 @@ fn create_invocation_status_key(invocation_id: &InvocationId) -> InvocationStatu
     }
 }
 
-fn multi_get_invocation_status_lazy<E, F>(
-    store: &PartitionStore,
-    ids: BTreeSet<InvocationId>,
-    mut f: F,
-) -> impl Future<Output = Result<()>> + Send
-where
-    E: Into<anyhow::Error> + 'static,
-    F: for<'a> FnMut(
-            (InvocationId, &'a InvocationStatusV2Lazy<'a>),
-        ) -> ControlFlow<std::result::Result<(), E>>
-        + Send
-        + Sync
-        + 'static,
-{
-    const KEY_LEN: usize = InvocationStatusKey::serialized_length_fixed();
-
-    let rocksdb = store.partition_db().clone();
-
-    async move {
-        let read = rocksdb.prepare_read(
-            "df-for-each-invocation-status",
-            StorageTaskKind::MultiGet,
-            move |raw_db, cfs| -> Result<()> {
-                let cf = cfs.get(<InvocationStatusKey as EncodeTableKey>::KEY_KIND);
-
-                let batch_capacity = ids.len().min(INVOCATION_STATUS_MULTI_GET_BATCH_SIZE);
-                let mut key_buf = BytesMut::with_capacity(batch_capacity * KEY_LEN);
-                let mut batch_ids = Vec::with_capacity(batch_capacity);
-
-                let mut readopts = ReadOptions::default();
-                // future proofing to make use of parallel L0 reads and async-io
-                // if/when we build rocksdb with COROUTINES=1 and IO-URING support.
-                // by default, this will not do anything.
-                readopts.set_async_io(true);
-                readopts.set_optimize_multiget_for_io(true);
-
-                let mut ids = ids.into_iter();
-                loop {
-                    key_buf.clear();
-                    batch_ids.clear();
-
-                    for id in ids.by_ref().take(INVOCATION_STATUS_MULTI_GET_BATCH_SIZE) {
-                        EncodeTableKey::serialize_to(
-                            &create_invocation_status_key(&id),
-                            &mut key_buf,
-                        );
-                        batch_ids.push(id);
-                    }
-
-                    if batch_ids.is_empty() {
-                        break;
-                    }
-
-                    let (keys, remainder) = key_buf.as_chunks::<KEY_LEN>();
-                    debug_assert!(
-                        remainder.is_empty(),
-                        "Each serialized InvocationStatusKey should have KEY_LEN"
-                    );
-
-                    let results = raw_db.batched_multi_get_cf_opt(cf, keys, true, &readopts);
-
-                    for (id, result) in batch_ids.iter().zip(results) {
-                        let Some(value) = result.map_err(|e| StorageError::Generic(e.into()))?
-                        else {
-                            continue;
-                        };
-                        let mut value = value.as_ref();
-
-                        if value.len() < std::mem::size_of::<u8>() {
-                            return Err(StorageError::Conversion(
-                                restate_types::storage::StorageDecodeError::ReadingCodec(
-                                    format_restring!(
-                                        "remaining bytes in buf '{}' < version bytes '{}'",
-                                        value.len(),
-                                        std::mem::size_of::<u8>()
-                                    ),
-                                )
-                                .into(),
-                            ));
-                        }
-
-                        let codec = restate_types::storage::StorageCodecKind::try_from(
-                            bytes::Buf::get_u8(&mut value),
-                        )
-                        .map_err(|e| StorageError::Conversion(e.into()))?;
-                        let restate_types::storage::StorageCodecKind::Protobuf = codec else {
-                            return Err(StorageError::Conversion(
-                                restate_types::storage::StorageDecodeError::UnsupportedCodecKind(
-                                    codec,
-                                )
-                                .into(),
-                            ));
-                        };
-
-                        let mut inv_status_v2_lazy = InvocationStatusV2Lazy::default();
-                        inv_status_v2_lazy
-                            .merge(value)
-                            .map_err(|e| StorageError::Conversion(e.into()))?;
-
-                        match f((*id, &inv_status_v2_lazy)) {
-                            ControlFlow::Continue(()) => {}
-                            ControlFlow::Break(Ok(())) => return Ok(()),
-                            ControlFlow::Break(Err(e)) => {
-                                return Err(StorageError::Conversion(e.into()));
-                            }
-                        }
-                    }
-
-                    if batch_ids.len() < INVOCATION_STATUS_MULTI_GET_BATCH_SIZE {
-                        break;
-                    }
-                }
-
-                Ok(())
-            },
-        );
-        rocksdb
-            .rocksdb()
-            .executor()
-            .low_pri()
-            .spawn(read)
-            .map_err(|_| StorageError::OperationalError)?
-            .await
-            .map_err(|_| StorageError::OperationalError)?
+fn decode_invocation_status_lazy(mut value: &[u8]) -> Result<InvocationStatusV2Lazy<'_>> {
+    if value.is_empty() {
+        return Err(StorageError::Conversion(
+            StorageDecodeError::ReadingCodec(format_restring!(
+                "remaining bytes in buf '{}' < version bytes '{}'",
+                value.len(),
+                std::mem::size_of::<u8>()
+            ))
+            .into(),
+        ));
     }
+
+    let codec = StorageCodecKind::try_from(bytes::Buf::get_u8(&mut value))
+        .map_err(|e| StorageError::Conversion(e.into()))?;
+    let StorageCodecKind::Protobuf = codec else {
+        return Err(StorageError::Conversion(
+            StorageDecodeError::UnsupportedCodecKind(codec).into(),
+        ));
+    };
+
+    let mut inv_status_v2_lazy = InvocationStatusV2Lazy::default();
+    inv_status_v2_lazy
+        .merge(value)
+        .map_err(|e| StorageError::Conversion(e.into()))?;
+    Ok(inv_status_v2_lazy)
 }
 
 fn put_invocation_status<S: StorageAccess>(
@@ -279,7 +182,18 @@ impl ScanInvocationStatusTable for PartitionStore {
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send> {
         if let ScanInvocationStatusTableRange::InvocationIdSet(ids) = range {
-            return Ok(multi_get_invocation_status_lazy(self, ids, f).boxed());
+            let fut = self.multi_get_for_each(
+                "df-for-each-invocation-status",
+                INVOCATION_STATUS_MULTI_GET_BATCH_SIZE,
+                ids,
+                create_invocation_status_key,
+                move |id, value| {
+                    let status = break_on_err(decode_invocation_status_lazy(value))?;
+                    f((*id, &status))
+                        .map_break(|result| result.map_err(|e| StorageError::Conversion(e.into())))
+                },
+            );
+            return Ok(fut.boxed());
         }
 
         let scan = match range {
@@ -301,46 +215,23 @@ impl ScanInvocationStatusTable for PartitionStore {
         };
 
         let new_status_keys = self
-            .iterator_for_each(
-                "df-for-each-invocation-status",
-                Priority::Low,
-                scan,
-                {
-                    move |(mut key, mut value)| {
-                        let status_key =
-                            break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
+            .iterator_for_each("df-for-each-invocation-status", Priority::Low, scan, {
+                move |(mut key, value)| {
+                    let status_key = break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
+                    let inv_status_v2_lazy = break_on_err(decode_invocation_status_lazy(value))?;
 
-                        if value.len() < std::mem::size_of::<u8>() {
-                            return ControlFlow::Break(Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::ReadingCodec(format_restring!(
-                                "remaining bytes in buf '{}' < version bytes '{}'",
-                                value.len(),
-                                std::mem::size_of::<u8>()
-                            )).into())));
-                        }
+                    let (partition_key, invocation_uuid) = status_key.split();
 
-                        // read version
-                        let codec = break_on_err(restate_types::storage::StorageCodecKind::try_from(bytes::Buf::get_u8(&mut value)).map_err(|e|StorageError::Conversion(e.into())))?;
+                    let result = f((
+                        InvocationId::from_parts(partition_key, invocation_uuid),
+                        &inv_status_v2_lazy,
+                    ));
 
-                        let restate_types::storage::StorageCodecKind::Protobuf = codec else {
-                            return ControlFlow::Break(Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::UnsupportedCodecKind(codec).into())));
-                        };
-
-                        let mut inv_status_v2_lazy = restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy::default();
-                        break_on_err(inv_status_v2_lazy.merge(value).map_err(|e| StorageError::Conversion(e.into())))?;
-
-                        let (partition_key, invocation_uuid) = status_key.split();
-
-                        let result = f((
-                            InvocationId::from_parts(partition_key, invocation_uuid),
-                            &inv_status_v2_lazy,
-                        ));
-
-                        result.map_break(|result| {
-                            result.map_err(|err| StorageError::Conversion(err.into()))
-                        })
-                    }
-                },
-            )
+                    result.map_break(|result| {
+                        result.map_err(|err| StorageError::Conversion(err.into()))
+                    })
+                }
+            })
             .map_err(|_| StorageError::OperationalError)?;
 
         Ok(new_status_keys.boxed())
@@ -373,42 +264,20 @@ impl ScanInvocationStatusTable for PartitionStore {
         };
 
         let new_status_keys = self
-            .iterator_filter_map(
-                "df-filter-map-invocation-status",
-                Priority::Low,
-                scan,
-                {
-                    move |(mut key, mut value)| {
-                        let status_key = InvocationStatusKey::deserialize_from(&mut key)?;
+            .iterator_filter_map("df-filter-map-invocation-status", Priority::Low, scan, {
+                move |(mut key, value)| {
+                    let status_key = InvocationStatusKey::deserialize_from(&mut key)?;
+                    let inv_status_v2_lazy = decode_invocation_status_lazy(value)?;
 
-                        if value.len() < std::mem::size_of::<u8>() {
-                            return Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::ReadingCodec(format_restring!(
-                                "remaining bytes in buf '{}' < version bytes '{}'",
-                                value.len(),
-                                std::mem::size_of::<u8>()
-                            )).into()));
-                        }
+                    let (partition_key, invocation_uuid) = status_key.split();
 
-                        // read version
-                        let codec = restate_types::storage::StorageCodecKind::try_from(bytes::Buf::get_u8(&mut value)).map_err(|e|StorageError::Conversion(e.into()))?;
-
-                        let restate_types::storage::StorageCodecKind::Protobuf = codec else {
-                            return Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::UnsupportedCodecKind(codec).into()));
-                        };
-
-                        let mut inv_status_v2_lazy = restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy::default();
-                        inv_status_v2_lazy.merge(value).map_err(|e| StorageError::Conversion(e.into()))?;
-
-                        let (partition_key, invocation_uuid) = status_key.split();
-
-                        f((
-                            InvocationId::from_parts(partition_key, invocation_uuid),
-                            &inv_status_v2_lazy,
-                        ))
-                        .map_err(|err| StorageError::Conversion(err.into()))
-                    }
-                },
-            )
+                    f((
+                        InvocationId::from_parts(partition_key, invocation_uuid),
+                        &inv_status_v2_lazy,
+                    ))
+                    .map_err(|err| StorageError::Conversion(err.into()))
+                }
+            })
             .map_err(|_| StorageError::OperationalError)?;
 
         Ok(new_status_keys)

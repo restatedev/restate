@@ -16,6 +16,7 @@ use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use restate_clock::UniqueTimestamp;
 use restate_clock::time::MillisSinceEpoch;
 use restate_limiter::LimitKey;
+use restate_partition_store::keys::FixedLengthTableKey;
 use restate_partition_store::vqueue_table::{MetaKey, vqueue_meta_merge};
 use restate_storage_api::vqueue_table::Stage;
 use restate_storage_api::vqueue_table::metadata::{

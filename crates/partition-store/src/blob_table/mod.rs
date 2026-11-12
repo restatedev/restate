@@ -8,16 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::BTreeSet;
+use std::num::NonZeroUsize;
 use std::ops::ControlFlow;
 
 use bilrost::Message;
-use bytes::{BufMut, BytesMut};
+use bytes::BytesMut;
 use futures::FutureExt;
-use rocksdb::ReadOptions;
 
-use restate_core::io::IoExecutor;
-use restate_rocksdb::{Priority, RocksDbReadPerfGuard, StorageTaskKind};
+use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
 use restate_storage_api::blob_table::{
     Blob, BlobDecoder, BlobEncode, BlobEntry, Header, ReadBlobTable, ScanBlobTable,
     ScanBlobTableRange, WriteBlobTable,
@@ -31,7 +29,7 @@ use restate_types::vqueues::Seq;
 
 use crate::TableKind;
 use crate::error::break_on_err;
-use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
+use crate::keys::{DecodeTableKey, FixedLengthTableKey, KeyKind, define_table_key};
 use crate::scan::TableScan;
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
 
@@ -48,16 +46,11 @@ impl BlobKey {
     pub const fn serialized_length_fixed() -> usize {
         KeyKind::SERIALIZED_LENGTH + BlobId::RAW_BYTES_LEN
     }
-
-    #[inline]
-    pub fn to_bytes(&self) -> [u8; Self::serialized_length_fixed()] {
-        let mut buf = [0u8; Self::serialized_length_fixed()];
-        self.serialize_to(&mut buf.as_mut());
-        buf
-    }
 }
 
-const BLOB_MULTI_GET_BATCH_SIZE: usize = 25;
+impl FixedLengthTableKey<{ BlobKey::serialized_length_fixed() }> for BlobKey {}
+
+const BLOB_MULTI_GET_BATCH_SIZE: NonZeroUsize = NonZeroUsize::new(25).unwrap();
 
 fn get_blob<S: StorageAccess, D: BlobDecoder>(
     storage: &mut S,
@@ -91,85 +84,6 @@ fn decode_blob_entry(id: BlobId, value: &[u8]) -> Result<BlobEntry<'_>> {
     })
 }
 
-fn multi_get_blob<F>(
-    store: &PartitionStore,
-    ids: BTreeSet<BlobId>,
-    mut f: F,
-) -> impl Future<Output = Result<()>> + Send
-where
-    F: for<'a> FnMut(BlobEntry<'a>) -> ControlFlow<()> + Send + Sync + 'static,
-{
-    const KEY_LEN: usize = BlobKey::serialized_length_fixed();
-
-    let rocksdb = store.partition_db().clone();
-
-    async move {
-        let read = rocksdb.prepare_read(
-            "df-blob",
-            StorageTaskKind::MultiGet,
-            move |raw_db, cfs| -> Result<()> {
-                let cf = cfs.get(KeyKind::Blob);
-
-                let batch_capacity = ids.len().min(BLOB_MULTI_GET_BATCH_SIZE);
-                let mut key_buf = BytesMut::with_capacity(batch_capacity * KEY_LEN);
-                let mut batch_ids = Vec::with_capacity(batch_capacity);
-
-                let mut readopts = ReadOptions::default();
-                readopts.set_async_io(true);
-                readopts.set_optimize_multiget_for_io(true);
-
-                let mut ids = ids.into_iter();
-                loop {
-                    key_buf.clear();
-                    batch_ids.clear();
-
-                    for id in ids.by_ref().take(BLOB_MULTI_GET_BATCH_SIZE) {
-                        key_buf.put_slice(&BlobKey { blob_id: id }.to_bytes());
-                        batch_ids.push(id);
-                    }
-
-                    if batch_ids.is_empty() {
-                        break;
-                    }
-
-                    let (keys, remainder) = key_buf.as_chunks::<KEY_LEN>();
-                    debug_assert!(
-                        remainder.is_empty(),
-                        "Each serialized BlobKey should have KEY_LEN"
-                    );
-
-                    let results = raw_db.batched_multi_get_cf_opt(cf, keys, true, &readopts);
-
-                    for (id, result) in batch_ids.iter().zip(results) {
-                        let Some(value) = result.map_err(|e| StorageError::Generic(e.into()))?
-                        else {
-                            continue;
-                        };
-
-                        if f(decode_blob_entry(*id, &value)?).is_break() {
-                            return Ok(());
-                        }
-                    }
-
-                    if batch_ids.len() < BLOB_MULTI_GET_BATCH_SIZE {
-                        break;
-                    }
-                }
-
-                Ok(())
-            },
-        );
-        rocksdb
-            .rocksdb()
-            .executor()
-            .low_pri()
-            .spawn(read)
-            .map_err(|_| StorageError::OperationalError)?
-            .await
-            .map_err(|_| StorageError::OperationalError)?
-    }
-}
-
 impl ScanBlobTable for PartitionStore {
     fn for_each_blob<F: for<'a> FnMut(BlobEntry<'a>) -> ControlFlow<()> + Send + Sync + 'static>(
         &self,
@@ -178,7 +92,14 @@ impl ScanBlobTable for PartitionStore {
     ) -> Result<impl Future<Output = Result<()>> + Send> {
         let created_at = match range {
             ScanBlobTableRange::BlobIdSet(ids) => {
-                return Ok(multi_get_blob(self, ids, f).boxed());
+                let fut = self.multi_get_for_each(
+                    "df-blob",
+                    BLOB_MULTI_GET_BATCH_SIZE,
+                    ids,
+                    |id| BlobKey { blob_id: *id },
+                    move |id, value| f(break_on_err(decode_blob_entry(*id, value))?).map_break(Ok),
+                );
+                return Ok(fut.boxed());
             }
             ScanBlobTableRange::CreatedAt(created_at) => created_at,
         };
