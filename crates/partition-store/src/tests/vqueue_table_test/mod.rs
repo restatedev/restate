@@ -34,7 +34,7 @@ use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
 use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
 use restate_storage_api::vqueue_table::{
     EntryContext, EntryKey, EntryMetadata, EntryStateRef, EntryStatusHeader, EntryValue, Options,
-    ReadVQueueTable, Stage, Status, VQueueCursor, VQueueRunningCursor, VQueueStore,
+    ReadVQueueTable, Stage, Status, StoredEntryRef, VQueueCursor, VQueueRunningCursor, VQueueStore,
     WriteVQueueTable, stats::EntryStatistics,
 };
 use restate_storage_api::vqueue_table::{
@@ -731,7 +731,7 @@ async fn entry_lifecycle_preserves_identity_and_transactional_state(rocksdb: &mu
         stats: &finished_stats,
         ..initial
     };
-    txn.update_vqueue_entry_status(&context, EntryStateRef::from_header(&before), finished);
+    txn.update_vqueue_entry_status(&context, StoredEntryRef::from_header(&before), finished);
     let before_delete = txn.get_vqueue_entry_status(&id).await.unwrap().unwrap();
     assert_eq!(before_delete.entry_key(), &finished_key);
     assert_eq!(before_delete.stage(), Stage::Finished);
@@ -740,7 +740,7 @@ async fn entry_lifecycle_preserves_identity_and_transactional_state(rocksdb: &mu
         before_delete.stats().transitioned_at,
         finished_stats.transitioned_at
     );
-    txn.delete_vqueue_entry_status(&context, EntryStateRef::from_header(&before_delete));
+    txn.delete_vqueue_entry_status(&context, StoredEntryRef::from_header(&before_delete));
     assert!(txn.get_vqueue_entry_status(&id).await.unwrap().is_none());
     txn.commit().await.unwrap();
     drop(txn);

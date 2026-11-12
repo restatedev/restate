@@ -40,7 +40,7 @@ use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
 use restate_storage_api::vqueue_table::stats::{EntryStatistics, WaitStats};
 use restate_storage_api::vqueue_table::{
     EntryContext, EntryKey, EntryMetadata, EntryStateRef, EntryStatusHeader, EntryValue,
-    ReadVQueueTable, Stage, Status, VQueueDisposition, WriteVQueueTable, metadata,
+    ReadVQueueTable, Stage, Status, StoredEntryRef, VQueueDisposition, WriteVQueueTable, metadata,
 };
 use restate_storage_api::{StorageError, lock_table};
 use restate_types::ServiceName;
@@ -446,7 +446,7 @@ where
                 qid: vqueue_id,
                 target,
             },
-            EntryStateRef::from_header(header),
+            StoredEntryRef::from_header(header),
             EntryStateRef::from_value(Stage::Running, &modified_key, &value),
         );
 
@@ -521,7 +521,7 @@ where
                 qid: vqueue_id,
                 target,
             },
-            EntryStateRef::from_header(header),
+            StoredEntryRef::from_header(header),
             EntryStateRef {
                 stage: Stage::Inbox,
                 status: header.status(),
@@ -630,7 +630,7 @@ where
                 qid: vqueue_id,
                 target,
             },
-            EntryStateRef::from_header(header),
+            StoredEntryRef::from_header(header),
             EntryStateRef {
                 entry_key: &modified_key,
                 metadata: &metadata,
@@ -763,7 +763,7 @@ where
                 qid: vqueue_id,
                 target,
             },
-            EntryStateRef::from_header(header),
+            StoredEntryRef::from_header(header),
             EntryStateRef::from_value(next_stage, header.entry_key(), &value),
         );
 
@@ -863,7 +863,7 @@ where
                 qid: vqueue_id,
                 target,
             },
-            EntryStateRef::from_header(header),
+            StoredEntryRef::from_header(header),
             EntryStateRef {
                 stage: Stage::Inbox,
                 status,
@@ -968,7 +968,7 @@ where
                 .put_vqueue_inbox(vqueue_id, Stage::Finished, &modified_key, &value);
             self.storage.update_vqueue_entry_status(
                 &context,
-                EntryStateRef::from_header(header),
+                StoredEntryRef::from_header(header),
                 EntryStateRef::from_value(Stage::Finished, &modified_key, &value),
             );
         }
@@ -998,7 +998,7 @@ where
 
         if delete_after.is_zero() {
             // Delete immediately!
-            self.remove_entry(at, &context, EntryStateRef::from_header(header));
+            self.remove_entry(at, &context, StoredEntryRef::from_header(header));
         }
     }
 
@@ -1009,16 +1009,16 @@ where
         mut self,
         at: UniqueTimestamp,
         context: &EntryContext<'_>,
-        before: EntryStateRef<'_>,
+        before: StoredEntryRef<'_>,
     ) {
-        assert_eq!(before.stage, Stage::Finished);
+        assert_eq!(before.state().stage, Stage::Finished);
         assert_eq!(
             context.qid,
             self.cache.get(self.handle).unwrap().vqueue_id()
         );
         // delete the inbox entry
         self.storage
-            .delete_vqueue_inbox(context.qid, Stage::Finished, before.entry_key);
+            .delete_vqueue_inbox(context.qid, Stage::Finished, before.state().entry_key);
         self.remove_entry(at, context, before);
     }
 
@@ -1031,10 +1031,11 @@ where
         &mut self,
         at: UniqueTimestamp,
         context: &EntryContext<'_>,
-        before: EntryStateRef<'_>,
+        before: StoredEntryRef<'_>,
     ) {
         let vqueue_id = context.qid;
         let id = before
+            .state()
             .entry_key
             .to_canonical_entry_id(vqueue_id.partition_key());
 
@@ -1137,7 +1138,7 @@ where
             qid: vqueue_id,
             target,
         };
-        self.remove_entry(at, &context, EntryStateRef::from_header(header));
+        self.remove_entry(at, &context, StoredEntryRef::from_header(header));
     }
 
     /// Marks this vqueue as paused
@@ -1200,7 +1201,7 @@ where
                 qid: header.vqueue_id(),
                 target,
             },
-            EntryStateRef::from_header(header),
+            StoredEntryRef::from_header(header),
             EntryStateRef {
                 metadata,
                 ..EntryStateRef::from_header(header)

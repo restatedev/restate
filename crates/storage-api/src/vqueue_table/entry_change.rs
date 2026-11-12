@@ -12,7 +12,9 @@ use restate_types::identifiers::BaseEntryId;
 use restate_types::vqueues::{EntryTargetRef, VQueueId};
 
 use super::stats::EntryStatistics;
-use super::{EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, Stage, Status};
+use super::{
+    EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, MigrationJobIds, Stage, Status,
+};
 
 /// Queue and target shared by both sides of an entry mutation.
 ///
@@ -62,6 +64,35 @@ impl<'a> EntryStateRef<'a> {
     }
 }
 
+/// The before-image of an update or deletion: a stored entry status together
+/// with the tokens stored with it.
+///
+/// Built only from a header, so the stored tokens travel with the logical
+/// state. It does not prove that the header is current: callers read it after
+/// any earlier write to the entry in the same transaction.
+#[derive(Debug, Clone, Copy)]
+pub struct StoredEntryRef<'a> {
+    state: EntryStateRef<'a>,
+    touched_by: MigrationJobIds<'a>,
+}
+
+impl<'a> StoredEntryRef<'a> {
+    pub fn from_header(header: &'a impl EntryStatusHeader) -> Self {
+        Self {
+            state: EntryStateRef::from_header(header),
+            touched_by: header.touched_by(),
+        }
+    }
+
+    pub fn state(&self) -> &EntryStateRef<'a> {
+        &self.state
+    }
+
+    pub fn touched_by(&self) -> MigrationJobIds<'a> {
+        self.touched_by
+    }
+}
+
 /// One source mutation. Before-images must include earlier writes in the same
 /// transaction; absence is represented only by insertion or deletion.
 #[derive(Debug)]
@@ -70,16 +101,21 @@ pub enum EntryChange<'a> {
         after: EntryStateRef<'a>,
     },
     Update {
-        before: EntryStateRef<'a>,
+        before: StoredEntryRef<'a>,
         after: EntryStateRef<'a>,
     },
     Delete {
-        before: EntryStateRef<'a>,
+        before: StoredEntryRef<'a>,
     },
 }
 
 impl<'a> EntryChange<'a> {
     pub fn before(&self) -> Option<&EntryStateRef<'a>> {
+        self.stored_before().map(StoredEntryRef::state)
+    }
+
+    /// The before-image with its stored tokens; `None` for insertions.
+    pub fn stored_before(&self) -> Option<&StoredEntryRef<'a>> {
         match self {
             Self::Insert { .. } => None,
             Self::Update { before, .. } | Self::Delete { before } => Some(before),
