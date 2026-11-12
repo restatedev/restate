@@ -201,8 +201,10 @@ where
             self.invocation_task.invocation_target.key(),
         );
 
-        // Initialize the response stream state
-        let http_stream_rx = ResponseStream::new(self.invocation_task.client.call(request));
+        // Release connection-setup storage when headers arrive instead of retaining
+        // space for the large response future throughout body streaming.
+        let http_stream_rx =
+            ResponseStream::new(Box::pin(self.invocation_task.client.call(request)));
 
         let mut decoder_stream = std::pin::pin!(
             DecoderStream::new(
