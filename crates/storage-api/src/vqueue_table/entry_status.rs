@@ -62,6 +62,23 @@ pub enum Status {
     Succeeded = 9,
 }
 
+impl Status {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Status::Unknown => "unknown",
+            Status::New => "new",
+            Status::Scheduled => "scheduled",
+            Status::Started => "started",
+            Status::BackingOff => "backing-off",
+            Status::Yielded => "yielded",
+            Status::Killed => "killed",
+            Status::Cancelled => "cancelled",
+            Status::Failed => "failed",
+            Status::Succeeded => "succeeded",
+        }
+    }
+}
+
 /// Borrowing version of [`RawStatusHeader`].
 ///
 /// NOTE: keep in-sync with [`RawStatusHeader`]

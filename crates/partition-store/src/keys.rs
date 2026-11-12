@@ -8,9 +8,113 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+//! # Keys in the partition store
+//!
+//! Every key starts with a two-byte [`KeyKind`] that names the table the key
+//! belongs to, so one column family can hold many tables. Most tables then put
+//! the partition key and their own fields after it; this is the common table-key
+//! layout:
+//!
+//! ```text
+//! | kind (2) | partition key (8) | field | field | … |
+//! ```
+//!
+//! Some tables use a layout of their own. Statistics, for example, start with a
+//! compact header that carries the partition ID rather than a partition key
+//! (`stats::AggregateKeyPrefix`). The key kind always comes first.
+//!
+//! RocksDB sorts keys by their bytes, so how each field is encoded decides the
+//! order a scan sees and which lookups are possible. There are two ways to encode
+//! fields here, and this module holds both.
+//!
+//! ## 1. Table keys: `define_table_key!`
+//!
+//! Most tables declare their key with [`define_table_key!`]. It generates the key
+//! struct, a builder for prefixes, and the [`EncodeTableKey`], [`DecodeTableKey`]
+//! and [`EncodeTableKeyPrefix`] implementations. Each field keeps the encoding the
+//! table has always used, through the crate-private [`KeyEncode`] and
+//! [`KeyDecode`] traits: integers as big-endian, strings as a varint length
+//! followed by the bytes. These keys support point lookups and scans of a prefix
+//! of leading fields. They are **not ordered across all fields**: a
+//! length-prefixed string sorts `"b"` before `"aa"`, because the lengths `1` and
+//! `2` are compared first. Never change an existing table key's encoding; the
+//! bytes are on disk.
+//!
+//! ## 2. Field codecs: `FieldCodec` and friends
+//!
+//! A **field codec** is a type that says exactly how one field is laid out and
+//! what that layout promises. An ordered codec makes byte comparison of its
+//! encodings follow the order the codec defines, so concatenating such fields
+//! produces an **ordered**, also called **mem-comparable**, key. A planner
+//! translates a query's supported predicates into that order before choosing
+//! scan bounds. The codecs live in [`codecs`]; writers that build keys and
+//! planners that choose scan bounds share them.
+//!
+//! For example, encoding `(stage, service_name, transitioned_at descending,
+//! entry_id)` with `StageRankCodec`, `ServiceNameCodec`,
+//! `ReverseUniqueTimestampCodec` and `CanonicalEntryIdCodec` yields keys that a
+//! forward scan, with the first two fields fixed, visits newest first.
+//!
+//! What a codec promises is graded by three traits:
+//!
+//! | Trait | Promise | Use it for |
+//! | --- | --- | --- |
+//! | [`FieldCodec`] | a byte layout with lengths, boundaries and decoding; no ordering | every codec |
+//! | [`OrderedFieldCodec`] | additionally canonical (one encoding per value), prefix-free (no encoding is the start of another) and ordered bytewise in a codec-defined order | any field of an ordered key; a planner translates logical predicates into the codec's order before deriving scan bounds |
+//! | [`TerminalFieldCodec`] | canonical and equality-preserving; consumes the rest of the key and need not be prefix-free; no ordering | the last field only, such as a raw lock name, where only equality and membership predicates apply |
+//!
+//! Descending order is a codec, not a flag: `ReverseU64Codec` and
+//! `ReverseUniqueTimestampCodec` sort largest first. `Option<C>` is a codec too:
+//! a one-byte tag, with `None` sorting first.
+//!
+//! ### Legacy codecs
+//!
+//! [`codecs::DelimitedBytesCodec`], [`codecs::OptionalScopeCodec`] and
+//! [`codecs::LockNameCodec`] describe the bytes that existing table keys already
+//! write, so that scan planning can work over them *without changing the format*.
+//! The first two are prefix-free and canonical, but not in logical order, so over
+//! them a selection can turn equality and membership into key lookups, while
+//! ranges and string prefixes stay as filters applied after the scan.
+//! `LockNameCodec` is different: a raw lock name is not prefix-free (`Cart/a`
+//! starts `Cart/ab`), so it is a terminal codec that consumes the rest of the
+//! key and supports equality and membership only.
+//!
+//! ## Which to reach for
+//!
+//! | You want to… | Use |
+//! | --- | --- |
+//! | add a table with point lookups and prefix scans | [`define_table_key!`] |
+//! | read or write a table key, or a scan prefix | [`EncodeTableKey`], [`DecodeTableKey`], [`EncodeTableKeyPrefix`]; [`FixedLengthTableKey::to_bytes`] for keys of fixed size |
+//! | encode a field of an ordered key | a [`codecs`] type implementing [`OrderedFieldCodec`] |
+//! | decode fields one at a time without copying | [`FieldDecoder`], which borrows one field and decodes it on demand |
+//! | plan scans over an existing table's keys | the legacy codecs |
+//! | add a new codec | implement [`FieldCodec`]; add [`OrderedFieldCodec`] only if the ordering contract holds; keep enum codes stable and leave gaps for future variants |
+
 // Allow deprecated KeyKind variants - needed because derive macros (EnumIter, VariantArray)
 // generate code that references all variants including deprecated ones.
 #![allow(deprecated)]
+
+mod codec;
+mod fields;
+mod legacy_codec;
+mod ordered_key_codec;
+
+// Re-exports
+pub use codec::{
+    EncodedOption, FieldCodec, FieldDecoder, IntoFieldRef, OrderedFieldCodec, TerminalFieldCodec,
+};
+
+/// Physical representations selected explicitly by ordered-key schemas.
+pub mod codecs {
+    pub use super::fields::{ServiceNameCodec, StringCodec, U8Codec, U32Codec, U64Codec};
+    pub use super::legacy_codec::{DelimitedBytesCodec, LockNameCodec, OptionalScopeCodec};
+    pub use super::ordered_key_codec::{
+        CanonicalEntryIdCodec, EntryIdCodec, EntryKindCodec, InvocationUuidCodec,
+        RestateEpochMillisCodec, ReverseBoolCodec, ReverseU64Codec, ReverseUniqueTimestampCodec,
+        RoughTimestampCodec, SeqCodec, StageRankCodec, StatusCodec, VQueueIdCodec,
+        VQueueIdSuffixCodec,
+    };
+}
 
 use std::mem;
 
