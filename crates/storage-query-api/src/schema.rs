@@ -27,7 +27,7 @@
 //!
 //! [`define_schema!`](crate::define_schema) generates all of this from one column
 //! list, so a table is declared once. Physical tables have their own contract; a
-//! *schema binding* connects their records to a logical schema when reading.
+//! [`SchemaBinding`] connects their records to a logical schema when reading.
 //!
 //! For example, a selection on the `kind` column of a declared `Entries` schema
 //! compares against `EntryKind` values, while its SQL view shows the kind as a
@@ -45,10 +45,13 @@ use crate::selection::{BranchOutcome, ValuePredicateBuilder, analyze_branches, s
 
 use self::sharding::{Candidates, Sharding, ShardingColumn};
 
+mod binding;
 pub mod index;
 mod macros;
 pub mod rows;
 pub mod sharding;
+
+pub use binding::{PreparedRead, RecordProgress, RowSink, SchemaBinding};
 
 #[cfg(test)]
 mod tests;
@@ -64,7 +67,7 @@ mod row_tests;
 /// This contract describes values and their selection semantics, independently of
 /// storage, row materialization, and Arrow representation. [`LogicalSchema`] adds
 /// typed targeting, a row family, and its query adapter. Physical tables have their own contract;
-/// a schema binding connects their records to a logical schema when reading.
+/// [`SchemaBinding`] connects their records to a logical schema when reading.
 pub trait SelectionSchema {
     /// Logical column identities, independent of physical key positions.
     type Column: enum_map::Enum + Copy + Eq + 'static;
@@ -171,7 +174,7 @@ pub enum ShardingScheme {
 /// Query-facing sharding and row representation, independent of physical tables.
 ///
 /// A schema owns its row family and Arrow builder. It does not identify a physical
-/// source or require one to exist: a schema binding supplies that association
+/// source or require one to exist: a [`SchemaBinding`] supplies that association
 /// for a source read. The GAT allows borrowed rows without forcing stored records
 /// to use that representation. `NAME` is the stable logical identity, independent
 /// of any session-local SQL alias.
