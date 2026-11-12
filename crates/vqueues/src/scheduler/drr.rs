@@ -24,7 +24,6 @@ use restate_limiter::RuleUpdate;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::EntryKey;
 use restate_storage_api::vqueue_table::VQueueStore;
-use restate_types::identifiers::PartitionKey;
 use restate_types::vqueues::VQueueId;
 use restate_types::{LockName, Scope};
 use restate_worker_api::UserLimitCounterEntry;
@@ -446,13 +445,9 @@ impl<S: VQueueStore> DRRScheduler<S> {
     }
 
     /// Snapshot of every user-limit counter currently tracked by this scheduler's
-    /// resource manager. Stamped with the owning partition's key.
-    pub fn scan_user_limit_counters(
-        &self,
-        partition_key: PartitionKey,
-    ) -> Vec<UserLimitCounterEntry> {
-        self.resource_manager
-            .scan_user_limit_counters(partition_key)
+    /// resource manager, each stamped with its scope's partition key.
+    pub fn scan_user_limit_counters(&self) -> Vec<UserLimitCounterEntry> {
+        self.resource_manager.scan_user_limit_counters()
     }
 
     fn wake_up(&self) {
