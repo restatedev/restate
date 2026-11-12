@@ -296,6 +296,17 @@ pub trait EncodeTableKey {
     fn serialized_length(&self) -> usize;
 }
 
+/// Table keys whose encoding is always exactly `N` bytes long.
+pub trait FixedLengthTableKey<const N: usize>: EncodeTableKey {
+    #[inline]
+    fn to_bytes(&self) -> [u8; N] {
+        debug_assert_eq!(self.serialized_length(), N);
+        let mut buf = [0u8; N];
+        self.serialize_to(&mut buf.as_mut());
+        buf
+    }
+}
+
 /// Types that can be decoded to an owned table key.
 pub trait DecodeTableKey: Sized + std::fmt::Debug + Send + 'static {
     fn deserialize_from(bytes: &mut &[u8]) -> crate::Result<Self>;

@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::BTreeSet;
 use std::ops::ControlFlow;
 use std::ops::RangeBounds;
 use std::path::Path;
@@ -33,7 +34,9 @@ use tracing::{Level, instrument, trace, warn};
 
 use restate_core::io::{AdmissionClosed, Gate, IoExecutor};
 use restate_futures_util::overdue::OverdueLoggingExt;
-use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksDbManager, RocksError};
+use restate_rocksdb::{
+    IoMode, IterAction, Priority, RocksDb, RocksDbManager, RocksError, StorageTaskKind,
+};
 use restate_storage_api::fsm_table::{FsmPosition, ReadFsmTable};
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
@@ -62,7 +65,7 @@ use crate::fsm_table::{
     get_state_machine_features_from_partition_db, get_storage_features_from_partition_db,
     get_storage_version_from_partition_db, is_jc_orphan_cleanup_done, put_jc_orphan_cleanup_done,
 };
-use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
+use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, FixedLengthTableKey, KeyKind};
 use crate::migrations::MigrationError;
 use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
@@ -466,6 +469,71 @@ impl PartitionStore {
         let mut opts = ReadOptions::default();
         opts.set_async_io(true);
         self.iterator_for_each_physical(name, priority, opts, scan.into(), f)
+    }
+
+    /// Looks up the keys of `ids` with batched multi-gets of up to `batch_size` keys on the
+    /// low-priority storage pool, and calls `f` in `ids` order for each id that has a value.
+    ///
+    /// `ids` must be ordered like their encoded keys, since the multi-get assumes sorted input.
+    pub(crate) fn multi_get_for_each<I, K, const N: usize>(
+        &self,
+        name: &'static str,
+        batch_size: usize,
+        ids: BTreeSet<I>,
+        to_key: impl Fn(&I) -> K + Send + 'static,
+        mut f: impl FnMut(&I, &[u8]) -> ControlFlow<Result<()>> + Send + 'static,
+    ) -> impl Future<Output = Result<()>> + Send
+    where
+        I: Send + 'static,
+        K: FixedLengthTableKey<N>,
+    {
+        let db = self.db.clone();
+        async move {
+            let read = db.prepare_read(name, StorageTaskKind::MultiGet, move |raw_db, cfs| {
+                let cf = cfs.get(K::KEY_KIND);
+
+                let batch_capacity = ids.len().min(batch_size);
+                let mut batch_ids = Vec::with_capacity(batch_capacity);
+                let mut keys = Vec::with_capacity(batch_capacity);
+
+                let mut readopts = ReadOptions::default();
+                // future proofing to make use of parallel L0 reads and async-io
+                // if/when we build rocksdb with COROUTINES=1 and IO-URING support.
+                // by default, this will not do anything.
+                readopts.set_async_io(true);
+                readopts.set_optimize_multiget_for_io(true);
+
+                let mut ids = ids.into_iter().peekable();
+                while ids.peek().is_some() {
+                    batch_ids.clear();
+                    keys.clear();
+                    for id in ids.by_ref().take(batch_size) {
+                        keys.push(to_key(&id).to_bytes());
+                        batch_ids.push(id);
+                    }
+
+                    let results = raw_db.batched_multi_get_cf_opt(cf, &keys, true, &readopts);
+
+                    for (id, result) in batch_ids.iter().zip(results) {
+                        let Some(value) = result.map_err(|e| StorageError::Generic(e.into()))?
+                        else {
+                            continue;
+                        };
+                        if let ControlFlow::Break(result) = f(id, &value) {
+                            return result;
+                        }
+                    }
+                }
+                Ok(())
+            });
+            db.rocksdb()
+                .executor()
+                .low_pri()
+                .spawn(read)
+                .map_err(|_| StorageError::OperationalError)?
+                .await
+                .map_err(|_| StorageError::OperationalError)?
+        }
     }
 
     pub fn iterator_filter_map<K: EncodeTableKeyPrefix, O: Send + 'static>(
