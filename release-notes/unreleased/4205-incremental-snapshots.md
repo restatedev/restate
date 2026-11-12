@@ -4,7 +4,7 @@
 
 ### What Changed
 
-Restate now supports incremental snapshots, which use content-addressed SST file naming to deduplicate data across snapshots. When enabled, SST files are uploaded to a shared `ssts/` directory using their content hash (xxh3-128) as the filename. Files with identical content are automatically skipped during upload.
+Restate now supports incremental snapshots, which store each SST file once in a shared `ssts/` directory, under a key derived from the file's RocksDB identity and checksums rather than from its whole contents. Files that did not change since an earlier snapshot map to the same key and are not uploaded again.
 
 New configuration options:
 
@@ -28,10 +28,10 @@ Incremental snapshots provide significant cost savings for deployments with freq
 
 When `experimental-snapshot-type = "incremental"` is enabled, the object store layout changes:
 
-| Mode        | SST file location                                            |
-| ----------- | ------------------------------------------------------------ |
-| Full        | `<partition_id>/<lsn>_<snapshot_id>/<filename>.sst`          |
-| Incremental | `<partition_id>/ssts/<content_hash>.sst` (content-addressed) |
+| Mode        | SST file location                                             |
+| ----------- | ------------------------------------------------------------- |
+| Full        | `<partition_id>/<lsn>_<snapshot_id>/<filename>.sst`           |
+| Incremental | `<partition_id>/ssts/<sst_key>.sst` (shared across snapshots) |
 
 The snapshot metadata file (`metadata.json`) now includes a `file_keys` field that maps original filenames to their repository keys, enabling the repository to locate files during restore.
 

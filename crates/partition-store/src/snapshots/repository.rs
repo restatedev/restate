@@ -47,6 +47,7 @@ use restate_types::time::MillisSinceEpoch;
 #[cfg(any(test, feature = "test-util"))]
 use super::leases::NoOpLeaseManager;
 use super::leases::{LeaseError, SnapshotLeaseGuard, SnapshotLeaseManager};
+use super::sst_fingerprint::sst_fingerprint;
 use super::{
     LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotCompatibility, SnapshotDir,
     SnapshotFormatVersion,
@@ -75,40 +76,6 @@ impl LeaseProvider {
     }
 }
 
-/// XXH3-128 content hash for SST files. Produces a 128-bit digest (32 hex characters).
-///
-/// XXH3 is a non-cryptographic hash. We rely on a 128-bit digest's collision space being
-/// large enough that random RocksDB SSTs do not collide in practice; the input is trusted
-/// data produced by this process (not attacker-controlled), so chosen-prefix collision
-/// resistance is not required. If snapshot inputs ever become reachable from untrusted
-/// sources, this hash must be replaced with a cryptographic one.
-#[derive(Clone, Copy)]
-struct ContentHash(u128);
-
-impl std::fmt::Display for ContentHash {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:032x}", self.0)
-    }
-}
-
-async fn compute_content_hash(path: &Path) -> io::Result<ContentHash> {
-    use xxhash_rust::xxh3::Xxh3;
-
-    let mut file = tokio::fs::File::open(path).await?;
-    let mut hasher = Xxh3::new();
-    let mut buf = vec![0u8; 256 * 1024]; // 256KB chunks
-
-    loop {
-        let len = file.read(&mut buf).await?;
-        if len == 0 {
-            break;
-        }
-        hasher.update(&buf[..len]);
-    }
-
-    Ok(ContentHash(hasher.digest128()))
-}
-
 /// Provides read and write access to the long-term partition snapshot storage destination.
 ///
 /// The repository wraps access to an object store "bucket" that contains snapshot metadata and data
@@ -124,11 +91,13 @@ async fn compute_content_hash(path: &Path) -> io::Result<ContentHash> {
 /// - `[<prefix>/]<partition_id>/latest.json` - latest snapshot metadata for the partition
 /// - `[<prefix>/]<partition_id>/{lsn}_{snapshot_id}/metadata.json` - snapshot descriptor
 /// - `[<prefix>/]<partition_id>/{lsn}_{snapshot_id}/*.sst` - data files for full snapshots
-/// - `[<prefix>/]<partition_id>/ssts/{hash}.sst` - shared SST files for incremental snapshots
+/// - `[<prefix>/]<partition_id>/ssts/{fingerprint}.sst` - shared SST files for incremental
+///   snapshots
 ///
-/// Incremental snapshots use content-addressed SST naming where `{hash}` is the xxh3-128 hash
-/// of the file contents. This enables deduplication across snapshots since files with identical
-/// content will have the same key regardless of which snapshot created them.
+/// Incremental snapshots store each SST under a key derived from its fingerprint (see
+/// [`super::sst_fingerprint`]), a hash of the file's size and RocksDB table identity rather than
+/// of the whole file. An SST keeps its key in every snapshot that contains it, including after a
+/// restore on another node, so each SST is uploaded once.
 #[derive(Clone)]
 pub struct SnapshotRepository {
     object_store: Arc<dyn ObjectStore>,
@@ -695,10 +664,9 @@ impl SnapshotRepository {
         }
     }
 
-    /// If snapshot type is incremental, we will skip existing existing SST objects in the store
-    /// based on their content hash. Returns a LiveFile SST name to object key mapping, if SSTs are
-    /// uploaded to a path different from their original name (i.e. when part of content-addressed
-    /// incremental snapshots).
+    /// If snapshot type is incremental, we will skip existing SST objects in the store based on
+    /// their fingerprint. Returns a LiveFile SST name to object key mapping, if SSTs are uploaded
+    /// to a path different from their original name (i.e. when part of incremental snapshots).
     async fn upload_snapshot_with_dedup(
         &self,
         snapshot: &PartitionSnapshotMetadata,
@@ -729,30 +697,29 @@ impl SnapshotRepository {
                     (key, None, true, false)
                 }
                 SnapshotType::Incremental => {
-                    // content-addressed SSTs live in shared ../ssts/ prefix
-                    // key format: {hash}.sst - content-addressed, existence implies identical content
-                    let content_hash = compute_content_hash(&local_path).await?;
-                    let sst_name = format!("{content_hash}.sst");
+                    // shared SSTs live in the shared ../ssts/ prefix
+                    // key format: {fingerprint}.sst - the same SST file maps to the same key
+                    let fingerprint = sst_fingerprint(&local_path).await?;
+                    let sst_name = format!("{fingerprint}.sst");
                     let sst_key = self
                         .partition_snapshots_prefix(snapshot.partition_id)
                         .join("ssts")
                         .join(sst_name.as_str());
 
-                    // Content-addressed dedup: if an object already exists at this key, we
-                    // trust that its content matches the local file (xxh3-128 collisions are
-                    // astronomically unlikely on random RocksDB content). We still verify the
-                    // stored object's size matches, which catches truncated/partial uploads
-                    // from a prior crashed put.
+                    // Fingerprint dedup: if an object already exists at this key, it was uploaded
+                    // from this same SST file, so we skip the upload. We still verify the stored
+                    // object's size matches, which catches truncated/partial uploads from a prior
+                    // crashed put.
                     let head = self.object_store.head(&sst_key).await;
                     let creates_shared = matches!(head, Err(object_store::Error::NotFound { .. }));
                     let must_upload = match head {
                         Ok(meta) if meta.size as usize != file.size => {
                             warn!(
                                 sst = %filename,
-                                hash = %content_hash,
+                                fingerprint = %fingerprint,
                                 expected_size = file.size,
                                 actual_size = meta.size,
-                                "Existing object at content-addressed key has unexpected size; \
+                                "Existing object at fingerprint key has unexpected size; \
                                 re-uploading to overwrite the corrupt object"
                             );
                             true
@@ -760,9 +727,9 @@ impl SnapshotRepository {
                         Ok(_) => {
                             debug!(
                                 sst = %filename,
-                                hash = %content_hash,
+                                fingerprint = %fingerprint,
                                 size = file.size,
-                                "SST already exists in repository (content-addressed), skipping"
+                                "SST already exists in repository (same fingerprint), skipping"
                             );
                             files_skipped += 1;
                             false
@@ -1668,7 +1635,7 @@ impl SnapshotRepository {
     /// Resolves a file reference to its full object path.
     ///
     /// Handles two storage formats:
-    /// - Incremental snapshots: `relative_key` contains "ssts/{hash}.sst" (content-addressed)
+    /// - Incremental snapshots: `relative_key` contains "ssts/{fingerprint}.sst"
     /// - Legacy full snapshots: file is stored at `{snapshot_path}/{filename}`
     fn resolve_file_path(
         &self,
@@ -1679,7 +1646,7 @@ impl SnapshotRepository {
     ) -> ObjectPath {
         if let Some(key) = relative_key {
             // Incremental snapshot: the key is relative to the partition prefix, e.g.
-            // "ssts/{hash}.sst". `join` escapes '/', so append it segment by segment.
+            // "ssts/{fingerprint}.sst". `join` escapes '/', so append it segment by segment.
             key.split('/').fold(
                 self.prefix.clone().join(partition_id.to_string()),
                 |path, segment| path.join(segment),
@@ -1777,7 +1744,7 @@ struct SnapshotUploadProgress {
     pub snapshot_complete_path: ObjectPath,
     /// Objects under the snapshot's own prefix; nothing else references them.
     pub own_objects: Vec<ObjectPath>,
-    /// Shared content-addressed SSTs that this upload created.
+    /// Shared SSTs in the `ssts/` prefix that this upload created.
     pub created_shared_ssts: Vec<ObjectPath>,
 }
 
@@ -1822,8 +1789,8 @@ impl PutSnapshotError {
 
 // The object_store `put_multipart` method does not currently support PutMode, so we cannot pass
 // a CAS condition here. Full snapshots write to per-snapshot-id paths, so collisions are not
-// expected. Incremental snapshots write SSTs to content-addressed keys, where a concurrent writer
-// of the same key writes identical bytes.
+// expected. Incremental snapshots write SSTs to keys derived from their fingerprint, where a
+// concurrent writer of the same key writes identical bytes.
 async fn put_snapshot_object(
     file_path: &Path,
     key: &ObjectPath,

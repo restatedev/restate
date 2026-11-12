@@ -12,6 +12,7 @@ mod leases;
 mod metadata;
 mod repository;
 mod snapshot_task;
+mod sst_fingerprint;
 
 use std::ffi::OsString;
 use std::io;
