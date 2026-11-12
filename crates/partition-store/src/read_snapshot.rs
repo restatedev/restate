@@ -16,7 +16,6 @@ use restate_core::io::AdmissionClosed;
 use restate_rocksdb::reads::{ReadIterator, ReadSnapshot, Reader};
 use restate_types::partitions::Partition;
 
-use crate::keys::KeyKind;
 use crate::partition_db::{PartitionDb, PhysicalPartition};
 use crate::scan::PhysicalScan;
 
@@ -80,16 +79,16 @@ impl PartitionReadSnapshot {
         self.inner.scope().payload().partition()
     }
 
-    /// A reader for point lookups in the column family that holds keys of
-    /// `key_kind`. See [`ReadSnapshot::reader`].
-    pub fn reader(&self, key_kind: KeyKind) -> PartitionSnapshotReader<'_> {
-        self.inner.reader(key_kind)
+    /// A reader for point lookups. Each lookup takes the [`KeyKind`](crate::keys::KeyKind) of its key,
+    /// which chooses the column family it reads. See [`ReadSnapshot::reader`].
+    pub fn reader(&self) -> PartitionSnapshotReader<'_> {
+        self.inner.reader()
     }
 
     /// Like [`Self::reader`], but the reader holds its own clone of the snapshot.
     /// See [`ReadSnapshot::owned_reader`].
-    pub fn owned_reader(&self, key_kind: KeyKind) -> PartitionSnapshotReader<'static> {
-        self.inner.owned_reader(key_kind)
+    pub fn owned_reader(&self) -> PartitionSnapshotReader<'static> {
+        self.inner.owned_reader()
     }
 
     /// An iterator over the keys that `scan` describes, positioned at its first key.
