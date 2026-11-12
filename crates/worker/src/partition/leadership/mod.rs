@@ -680,7 +680,7 @@ where
             let (invoker_tx, invoker_rx) = mpsc::channel(config.worker.internal_queue_length());
             let invoker_rx = ReceiverStream::new(invoker_rx);
 
-            let invoker: InvokerService<InvokerStorageReader<PartitionStore>, Schema> =
+            let invoker: InvokerService<InvokerStorageReader, Schema> =
                 InvokerService::from_options(
                     processor.partition_id(),
                     processor.key_range(),

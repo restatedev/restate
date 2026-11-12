@@ -19,10 +19,11 @@ use restate_memory::{
     LocalMemoryLease, LocalMemoryPool, NonZeroByteCount, OutOfMemory, OutOfMemoryKind,
     PinnableMapErr, PinnableMemoryStream,
 };
+use restate_partition_store::{PartitionStore, PartitionStoreSnapshot};
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_storage_api::state_table::ReadStateTable;
 use restate_storage_api::{
-    BudgetedReadError, IsolationLevel, journal_table as journal_table_v1, journal_table_v2,
+    BudgetedReadError, StorageError, journal_table as journal_table_v1, journal_table_v2,
 };
 use restate_types::identifiers::{InvocationId, ServiceId};
 use restate_types::schema::invocation_target::StatePreloadPolicy;
@@ -65,34 +66,25 @@ impl From<BudgetedReadError> for InvokerStorageReaderError {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct InvokerStorageReader<Storage>(Storage);
+pub(crate) struct InvokerStorageReader(PartitionStore);
 
-impl<Storage> InvokerStorageReader<Storage> {
-    pub(crate) fn new(storage: Storage) -> Self {
+impl InvokerStorageReader {
+    pub(crate) fn new(storage: PartitionStore) -> Self {
         InvokerStorageReader(storage)
     }
 }
 
-impl<Storage> InvocationReader for InvokerStorageReader<Storage>
-where
-    Storage: restate_storage_api::Storage
-        + journal_table_v1::ReadJournalTable
-        + journal_table_v2::ReadJournalTable
-        + ReadStateTable
-        + Send
-        + 'static,
-{
-    type Transaction<'a> = InvokerStorageReaderTransaction<'a, Storage>;
+impl InvocationReader for InvokerStorageReader {
+    type Transaction<'a> = InvokerStorageReaderTransaction<'a>;
     type Error = InvokerStorageReaderError;
 
-    fn transaction(&mut self) -> Self::Transaction<'_> {
-        InvokerStorageReaderTransaction {
-            txn: self
-                .0
-                // we must use repeatable reads to avoid reading inconsistent values in the presence
-                // of concurrent writes
-                .transaction_with_isolation(IsolationLevel::RepeatableReads),
-        }
+    fn transaction(&mut self) -> Result<Self::Transaction<'_>, Self::Error> {
+        // A snapshot gives consistent reads in the presence of concurrent writes.
+        let snapshot = self
+            .0
+            .snapshot()
+            .map_err(|_| InvokerStorageReaderError::Storage(StorageError::OperationalError))?;
+        Ok(InvokerStorageReaderTransaction { snapshot })
     }
 
     async fn read_journal_entry_budgeted(
@@ -151,17 +143,11 @@ where
     }
 }
 
-pub(crate) struct InvokerStorageReaderTransaction<'a, Storage>
-where
-    Storage: restate_storage_api::Storage + 'static,
-{
-    txn: Storage::TransactionType<'a>,
+pub(crate) struct InvokerStorageReaderTransaction<'a> {
+    snapshot: PartitionStoreSnapshot<'a>,
 }
 
-impl<Storage> InvocationReaderTransaction for InvokerStorageReaderTransaction<'_, Storage>
-where
-    Storage: restate_storage_api::Storage + 'static,
-{
+impl InvocationReaderTransaction for InvokerStorageReaderTransaction<'_> {
     type LocalMemoryPooledJournalStream<'a>
         = Pin<
         Box<dyn Stream<Item = Result<(JournalEntry, LocalMemoryLease), Self::Error>> + Send + 'a>,
@@ -184,7 +170,7 @@ where
         &mut self,
         invocation_id: &InvocationId,
     ) -> Result<Option<JournalMetadata>, Self::Error> {
-        let invocation_status = self.txn.get_invocation_status(invocation_id).await?;
+        let invocation_status = self.snapshot.get_invocation_status(invocation_id).await?;
 
         let random_seed = invocation_status
             .get_random_seed()
@@ -193,7 +179,7 @@ where
         if let InvocationStatus::Invoked(invoked_status) = invocation_status {
             // Check if using journal v2 by seeing if v2 has any entries
             let journal_v2_entry = journal_table_v2::ReadJournalTable::get_journal_entry(
-                &mut self.txn,
+                &mut self.snapshot,
                 *invocation_id,
                 0, // Just check first entry to determine version
             )
@@ -226,7 +212,7 @@ where
     ) -> Result<Self::LocalMemoryPooledJournalStream<'a>, Self::Error> {
         if journal_kind == JournalKind::V2 {
             let stream = journal_table_v2::ReadJournalTable::get_journal_budgeted(
-                &self.txn,
+                &self.snapshot,
                 *invocation_id,
                 length,
                 budget,
@@ -238,7 +224,7 @@ where
             })))
         } else {
             let stream = journal_table_v1::ReadJournalTable::get_journal_budgeted(
-                &self.txn,
+                &self.snapshot,
                 invocation_id,
                 length,
                 budget,
@@ -270,16 +256,20 @@ where
         let (stream, partial) = match eager_state_config {
             // Preload the full state.
             StatePreloadPolicy::All => {
-                let stream = self.txn.get_all_user_states_budgeted(service_id, budget)?;
+                let stream = self
+                    .snapshot
+                    .get_all_user_states_budgeted(service_id, budget)?;
                 let stream = PinnableMapErr::new(stream, InvokerStorageReaderError::from);
                 (Either::Left(stream), false)
             }
             // Lazy default: preload only the whitelisted keys via exact point reads and serve
             // everything else on demand, so the result is partial.
             StatePreloadPolicy::Partial(eager_keys) => {
-                let stream =
-                    self.txn
-                        .get_user_states_budgeted(service_id, eager_keys.as_ref(), budget)?;
+                let stream = self.snapshot.get_user_states_budgeted(
+                    service_id,
+                    eager_keys.as_ref(),
+                    budget,
+                )?;
                 let stream = PinnableMapErr::new(stream, InvokerStorageReaderError::from);
                 (Either::Right(stream), true)
             }
