@@ -114,23 +114,25 @@ pub struct HttpOptions {
     ///
     /// A retired connection stays open until its longest in-flight request
     /// completes, so a max age close to how long requests stay open leaves
-    /// many connections open to the deployment at once. Only set this if your
-    /// deployment sits behind an L4 load balancer whose backends change over
-    /// time; otherwise leave it unset. When you set it, choose a value of at
+    /// many connections open to the deployment at once. Choose a value of at
     /// least 10x the longest time a single request to your deployment usually
     /// stays open, that is how long handlers run before they complete or
     /// suspend (not the end-to-end invocation duration, which can include
-    /// suspensions). If unsure, 15 to 30 minutes is a safe starting point.
+    /// suspensions). Raise it if your requests commonly stay open for longer
+    /// than ~30 seconds.
     ///
-    /// The minimum supported is 30 seconds, to avoid excessive connection
-    /// churn. Any value below this is raised to 30 seconds automatically.
-    /// Unset means connections live until they are idle or closed by the peer.
+    /// Set to `0` to disable age-based retirement, so connections live until
+    /// they are idle or closed by the peer. Consider this if your deployment
+    /// is not behind an L4 load balancer whose backends change over time.
+    ///
+    /// The minimum supported non-zero value is 30 seconds, to avoid excessive
+    /// connection churn. Any non-zero value below this is raised to 30 seconds
+    /// automatically.
     ///
     /// Since: v1.8.2
     ///
-    /// Default: unset (unlimited)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    http2_max_connection_age: Option<FriendlyDuration>,
+    /// Default: 5 minutes
+    http2_max_connection_age: FriendlyDuration,
 
     /// # HTTP/2 Max Connection Age Jitter
     ///
@@ -139,7 +141,7 @@ pub struct HttpOptions {
     /// per connection when it is created, so connections opened at the same
     /// time do not all retire at once.
     ///
-    /// Only meaningful when `http2-max-connection-age` is set.
+    /// Only meaningful when `http2-max-connection-age` is non-zero.
     ///
     /// Since: v1.8.2
     ///
@@ -204,7 +206,7 @@ impl Default for HttpOptions {
             http2_initial_max_send_streams: None,
             http2_streams_per_connection_limit: NonZeroUsize::new(128).unwrap(),
             http2_idle_connection_timeout: FriendlyDuration::from_secs(300),
-            http2_max_connection_age: None,
+            http2_max_connection_age: FriendlyDuration::from_secs(300),
             http2_max_connection_age_jitter: 0.1,
             http2_initial_stream_window_size: NonZeroByteCount::new(
                 NonZeroUsize::new(2 * 1024 * 1024).unwrap(),
@@ -238,10 +240,13 @@ impl HttpOptions {
     }
 
     /// Configured max connection age, raised to at least 30 seconds. `None`
-    /// when unset (no age-based eviction).
+    /// when set to `0` (no age-based eviction).
     pub fn http2_max_connection_age(&self) -> Option<std::time::Duration> {
-        self.http2_max_connection_age
-            .map(|age| age.to_std().max(MIN_HTTP2_MAX_CONNECTION_AGE))
+        (!self.http2_max_connection_age.is_zero()).then(|| {
+            self.http2_max_connection_age
+                .to_std()
+                .max(MIN_HTTP2_MAX_CONNECTION_AGE)
+        })
     }
 
     pub fn data_frame_budget(&self) -> usize {

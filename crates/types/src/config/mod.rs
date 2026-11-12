@@ -968,7 +968,7 @@ mod tests {
     }
 
     #[test]
-    fn http2_max_connection_age_is_raised_to_minimum() {
+    fn http2_max_connection_age_resolution() {
         let parse = |age: Option<&str>| {
             let config = Configuration::default();
             let mut json = serde_json::to_value(&config).unwrap();
@@ -985,8 +985,10 @@ mod tests {
         };
 
         let min = std::time::Duration::from_secs(30);
-        // Unset: no age-based eviction.
-        assert_eq!(parse(None), None);
+        // Unset: defaults to 5 minutes.
+        assert_eq!(parse(None), Some(std::time::Duration::from_secs(300)));
+        // Zero: no age-based eviction.
+        assert_eq!(parse(Some("0")), None);
         // Below the minimum: raised to 30 seconds.
         assert_eq!(parse(Some("1s")), Some(min));
         assert_eq!(parse(Some("29s")), Some(min));
