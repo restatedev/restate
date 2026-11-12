@@ -15,6 +15,10 @@
 //!   view and sharding. [`define_schema!`] generates a schema from one column list.
 //! - [`selection`] states which rows of a schema a read must return, as typed
 //!   conditions on its columns, and derives candidate domains from SQL predicates.
+//! - [`scan`] is the physical side: a table's records and prepared read requests,
+//!   as storage defines them, read on the caller's thread. A [`SchemaBinding`]
+//!   connects a physical table to a logical schema, so a selection can be prepared
+//!   and records become rows.
 //! - [`tables`] holds the declarations of the SQL catalog's tables.
 //!
 //! Physical key layouts, encodings and scan bounds stay in storage crates.
@@ -22,12 +26,17 @@
 mod diagnostics;
 mod engine;
 pub mod errors;
+pub mod scan;
 pub mod schema;
 pub mod selection;
 pub mod tables;
 mod writer;
 
-pub use schema::{LogicalSchema, RowBuilder, SelectionSchema, ShardingScheme};
+pub use scan::Table;
+pub use schema::{
+    LogicalSchema, PreparedRead, RowBuilder, RowSink, SchemaBinding, SelectionSchema,
+    ShardingScheme,
+};
 
 use std::any::Any;
 
