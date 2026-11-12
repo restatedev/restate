@@ -940,13 +940,17 @@ impl StorageRead for PartitionStore {
     }
 
     #[inline]
-    fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice<'_>>> {
-        let table = self.table_handle(table);
+    fn get<K: AsRef<[u8]>>(
+        &self,
+        key_kind: KeyKind,
+        key: K,
+    ) -> Result<Option<DBPinnableSlice<'_>>> {
+        let cf = self.cf_for_key_kind(key_kind);
         self.db
             .rocksdb()
             .inner()
             .as_raw_db()
-            .get_pinned_cf(table, key)
+            .get_pinned_cf(cf, key)
             .map_err(|error| StorageError::Generic(error.into()))
     }
 
@@ -1209,11 +1213,6 @@ impl<'a> PartitionStoreTransaction<'a> {
             .single_delete_cf(self.data_cf_handle, key);
     }
 
-    pub(crate) fn cf_handle(&self, _table_kind: TableKind) -> &'a Arc<BoundColumnFamily<'a>> {
-        // Right now, everything is in one cf, return a reference and save CPU.
-        self.data_cf_handle
-    }
-
     pub(crate) fn cf_for_key_kind(&self, _key_kind: KeyKind) -> &'a Arc<BoundColumnFamily<'a>> {
         // Right now, everything is in one cf, return a reference and save CPU.
         self.data_cf_handle
@@ -1437,14 +1436,18 @@ impl StorageRead for PartitionStoreTransaction<'_> {
     }
 
     #[inline]
-    fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice<'_>>> {
-        let table = self.cf_handle(table);
+    fn get<K: AsRef<[u8]>>(
+        &self,
+        key_kind: KeyKind,
+        key: K,
+    ) -> Result<Option<DBPinnableSlice<'_>>> {
+        let cf = self.cf_for_key_kind(key_kind);
         self.write_batch_with_index
             .as_ref()
             .expect("transaction valid")
             .get_pinned_from_batch_and_db_cf(
                 self.rocksdb.inner().as_raw_db(),
-                table,
+                cf,
                 key,
                 &self.read_options(),
             )
@@ -1656,7 +1659,9 @@ pub(crate) trait StorageRead {
         }
     }
 
-    fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice<'_>>>;
+    /// Reads the value of `key`, whose kind is `key_kind`, without copying it.
+    fn get<K: AsRef<[u8]>>(&self, key_kind: KeyKind, key: K)
+    -> Result<Option<DBPinnableSlice<'_>>>;
 
     fn cleared_key_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut;
 
@@ -1687,7 +1692,7 @@ pub(crate) trait StorageRead {
         key.serialize_to(&mut buf);
         let buf = buf.split();
 
-        self.get(K::TABLE, &buf)?
+        self.get(K::KEY_KIND, &buf)?
             .map(|value| {
                 let mut slice = value.as_ref();
                 StorageCodec::decode(&mut slice)
@@ -1706,7 +1711,7 @@ pub(crate) trait StorageRead {
         key.serialize_to(&mut buf);
         let buf = buf.split();
 
-        match self.get(K::TABLE, &buf) {
+        match self.get(K::KEY_KIND, &buf) {
             Ok(value) => {
                 let slice = value.as_ref().map(|v| v.as_ref());
                 f(&buf, slice)
