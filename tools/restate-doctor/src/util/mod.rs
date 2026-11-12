@@ -10,6 +10,7 @@
 
 pub mod colorize;
 pub mod colorize_id;
+pub mod decode_key;
 pub mod decode_value;
 pub mod rocksdb;
 

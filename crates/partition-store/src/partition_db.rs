@@ -13,8 +13,6 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rocksdb::compaction_filter::CompactionFilter;
-use rocksdb::compaction_filter_factory::CompactionFilterFactory;
 use rocksdb::table_properties::TablePropertiesExt;
 use rocksdb::{
     AsColumnFamilyRef, BoundColumnFamily, DBRawIteratorWithThreadMode, ExportImportFilesMetaData,
@@ -41,6 +39,7 @@ use restate_util_lifecycle::{KeepAlive, Scope, ScopePayload};
 use restate_util_string::ToReString;
 use restate_util_time::DurationExt;
 
+use crate::compaction_filter::PartitionCompactionFactory;
 use crate::durable_lsn_tracking::{
     AppliedLsnCollectorFactory, DurableLsnEventListener, DurableLsnSenders,
 };
@@ -1265,7 +1264,6 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
             KeyKind::full_merge,
             KeyKind::partial_merge,
         );
-        cf_options.set_compaction_filter_factory(KeyKindCompactionFilterFactory);
         cf_options.set_max_successive_merges(config.rocksdb_max_successive_merges as usize);
 
         cf_options.set_disable_auto_compactions(config.rocksdb.rocksdb_disable_auto_compactions());
@@ -1286,6 +1284,7 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
 
         // Keys shorter than the cap are their own prefix, so every key is in the extractor's domain.
         cf_options.set_capped_prefix_extractor(crate::PREFIX_EXTRACTOR_LENGTH);
+        cf_options.set_compaction_filter_factory(PartitionCompactionFactory);
         cf_options.set_memtable_prefix_bloom_ratio(0.2);
         cf_options.set_memtable_whole_key_filtering(whole_key_filtering);
 
@@ -1340,32 +1339,5 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         cf_options.set_hard_pending_compaction_bytes_limit(2 * 1024 * 1024 * 1024 * 1024);
 
         cf_options
-    }
-}
-
-struct KeyKindCompactionFilter;
-
-impl CompactionFilter for KeyKindCompactionFilter {
-    fn filter(&mut self, level: u32, key: &[u8], value: &[u8]) -> rocksdb::CompactionDecision {
-        KeyKind::compaction_filter(level, key, value)
-    }
-    fn name(&self) -> &std::ffi::CStr {
-        c"PartitionCompactionFilter"
-    }
-}
-
-struct KeyKindCompactionFilterFactory;
-
-impl CompactionFilterFactory for KeyKindCompactionFilterFactory {
-    type Filter = KeyKindCompactionFilter;
-    fn create(
-        &mut self,
-        _context: rocksdb::compaction_filter_factory::CompactionFilterContext,
-    ) -> Self::Filter {
-        KeyKindCompactionFilter
-    }
-
-    fn name(&self) -> &std::ffi::CStr {
-        c"PartitionCompactionFilterFactory"
     }
 }

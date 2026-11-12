@@ -17,6 +17,7 @@
 use std::fmt::Write;
 
 use crossterm::style::{Color, Stylize};
+
 use restate_cli_util::CliContext;
 use restate_partition_store::keys::KeyKind;
 
@@ -28,7 +29,7 @@ use super::HEX_CHARS;
 pub enum KeySegment {
     /// KeyKind prefix (2 bytes) - always first
     Kind,
-    /// Partition key or partition id (8 bytes) - always second
+    /// Partition key or partition id (8 bytes normally, 2 bytes for aggregate statistics)
     Partition,
     /// Fixed-size fields like InvocationUuid (16 bytes), u32, u64
     FixedField,
@@ -104,6 +105,15 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
             });
             pos += len;
         }
+        return segments;
+    }
+
+    if key_kind == KeyKind::Stats {
+        build_stats_segments(key, &mut segments);
+        return segments;
+    }
+    #[allow(deprecated)]
+    if key_kind == KeyKind::LegacyStats {
         return segments;
     }
 
@@ -517,9 +527,43 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
                 }
             }
         }
+        #[allow(deprecated)]
+        KeyKind::Stats | KeyKind::LegacyStats => {
+            unreachable!("handled before the standard partition header")
+        }
     }
 
     segments
+}
+
+fn build_stats_segments(key: &[u8], segments: &mut Vec<Segment>) {
+    let fields = [
+        (KeySegment::FixedField, 2, "partition_padding"),
+        (KeySegment::Partition, 2, "partition"),
+        (KeySegment::FixedField, 4, "index_id"),
+        (KeySegment::FixedField, 1, "stat_kind"),
+    ];
+    let mut start = KeyKind::SERIALIZED_LENGTH;
+    for (kind, len, label) in fields {
+        if start >= key.len() {
+            return;
+        }
+        segments.push(Segment {
+            kind,
+            start,
+            len: len.min(key.len() - start),
+            label,
+        });
+        start += len;
+    }
+    if key.len() > start {
+        segments.push(Segment {
+            kind: KeySegment::VariableField,
+            start,
+            len: key.len() - start,
+            label: "stat_key",
+        });
+    }
 }
 
 /// Parse varint-prefixed variable-length fields.
@@ -594,7 +638,7 @@ fn decode_varint(data: &[u8]) -> Option<(usize, usize)> {
 /// Each segment of the key is colored differently to help visualize
 /// the key structure:
 /// - Cyan: KeyKind prefix (2 bytes)
-/// - Yellow: Partition key/id (8 bytes)
+/// - Yellow: Partition key/id
 /// - Green: Fixed-size fields (uuids, indices, etc.)
 /// - Magenta: Variable-length field data
 /// - Grey: Length prefixes for variable fields
@@ -737,5 +781,27 @@ mod tests {
 
         let last = segments.last().unwrap();
         assert_eq!(last.start + last.len, key.len());
+    }
+
+    #[test]
+    fn build_segments_for_stat_key() {
+        let key: &[u8] = b"zR\x00\x00\x00\x07\x00\x01\x11\x70\x03payload";
+
+        let segments = build_segments(key);
+        let fields: Vec<(&str, usize, usize)> = segments
+            .iter()
+            .map(|segment| (segment.label, segment.start, segment.len))
+            .collect();
+        assert_eq!(
+            fields,
+            vec![
+                ("kind", 0, 2),
+                ("partition_padding", 2, 2),
+                ("partition", 4, 2),
+                ("index_id", 6, 4),
+                ("stat_kind", 10, 1),
+                ("stat_key", 11, 7),
+            ]
+        );
     }
 }
