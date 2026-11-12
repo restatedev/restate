@@ -33,6 +33,7 @@ use tracing::{Level, instrument, trace, warn};
 
 use restate_core::io::{AdmissionClosed, Gate, IoExecutor};
 use restate_futures_util::overdue::OverdueLoggingExt;
+use restate_rocksdb::reads::ReadIterator;
 use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksDbManager, RocksError};
 use restate_storage_api::fsm_table::{FsmPosition, ReadFsmTable};
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
@@ -49,6 +50,7 @@ use restate_types::storage::StorageDecode;
 use restate_types::storage::StorageEncode;
 use restate_util_string::ReString;
 
+use crate::PartitionStoreSnapshot;
 use crate::features::{LoadedStorageFeatures, StorageFeatures};
 use crate::fsm_table::delete_applied_lsn;
 use crate::fsm_table::get_partition_seal;
@@ -338,6 +340,21 @@ impl PartitionStore {
 
     pub fn partition_key_range(&self) -> KeyRange {
         self.db.partition().key_range
+    }
+
+    /// Takes a read snapshot of the partition's tables. See [`PartitionStoreSnapshot`].
+    ///
+    /// Fails once the partition is closing or closed.
+    pub fn snapshot(&mut self) -> std::result::Result<PartitionStoreSnapshot<'_>, AdmissionClosed> {
+        let storage_features = self.storage_features();
+        let key_range = self.partition_key_range();
+        let snapshot = self.db.read_snapshot()?;
+        Ok(PartitionStoreSnapshot::new(
+            snapshot,
+            &mut self.key_buffer,
+            storage_features,
+            key_range,
+        ))
     }
 
     #[inline]
@@ -1223,7 +1240,7 @@ fn write_batch_put_size(cf_id: u32, key_len: usize, value_len: usize) -> usize {
     1 + cf_id_len + varint32_len(key_len) + key_len + varint32_len(value_len) + value_len
 }
 
-fn assert_partition_key_or_err(
+pub(crate) fn assert_partition_key_or_err(
     partition_key_range: KeyRange,
     partition_key: &impl WithPartitionKey,
 ) -> Result<()> {
@@ -1493,7 +1510,8 @@ pub(crate) trait StorageAccess: StorageRead {
     }
 }
 
-/// A cursor over the entries of a scan.
+/// A cursor over the entries of a scan, implemented for both RocksDB's raw iterators and
+/// snapshot scans.
 pub(crate) trait StorageIterator {
     /// The key and value at the current position. Returns `Ok(None)` once the iterator has moved
     /// past the last entry, or the error that stopped it.
@@ -1519,6 +1537,18 @@ impl<D: rocksdb::DBAccess> StorageIterator for DBRawIteratorWithThreadMode<'_, D
     #[inline]
     fn next(&mut self) {
         DBRawIteratorWithThreadMode::next(self)
+    }
+}
+
+impl<H> StorageIterator for ReadIterator<'_, H> {
+    #[inline]
+    fn item(&self) -> Result<Option<(&[u8], &[u8])>> {
+        ReadIterator::item(self).map_err(|err| StorageError::Generic(err.into()))
+    }
+
+    #[inline]
+    fn next(&mut self) {
+        ReadIterator::next(self)
     }
 }
 

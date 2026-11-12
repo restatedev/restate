@@ -35,8 +35,8 @@ impl InvocationReader for EmptyStorageReader {
     type Transaction<'a> = EmptyStorageReaderTransaction;
     type Error = Infallible;
 
-    fn transaction(&mut self) -> Self::Transaction<'_> {
-        EmptyStorageReaderTransaction
+    fn transaction(&mut self) -> Result<Self::Transaction<'_>, Self::Error> {
+        Ok(EmptyStorageReaderTransaction)
     }
 
     async fn read_journal_entry_budgeted(

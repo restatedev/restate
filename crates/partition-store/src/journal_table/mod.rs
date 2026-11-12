@@ -25,8 +25,8 @@ use restate_types::identifiers::{
 use crate::TableKind::Journal;
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
 use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, StorageIterator, StorageRead,
-    TableScan, break_on_err,
+    PartitionStore, PartitionStoreSnapshot, PartitionStoreTransaction, StorageAccess,
+    StorageIterator, StorageRead, TableScan, break_on_err,
 };
 
 define_table_key!(
@@ -323,6 +323,60 @@ impl ScanJournalTable for PartitionStore {
 }
 
 impl ReadJournalTable for PartitionStoreTransaction<'_> {
+    async fn get_journal_entry(
+        &mut self,
+        invocation_id: &InvocationId,
+        journal_index: u32,
+    ) -> Result<Option<JournalEntry>> {
+        self.assert_partition_key(invocation_id)?;
+        let _x = RocksDbReadPerfGuard::new("get-journal-entry");
+        get_journal_entry(self, invocation_id, journal_index)
+    }
+
+    async fn get_journal_entry_budgeted(
+        &mut self,
+        invocation_id: &InvocationId,
+        journal_index: u32,
+        budget: &mut LocalMemoryPool,
+    ) -> std::result::Result<Option<(JournalEntry, LocalMemoryLease)>, BudgetedReadError> {
+        self.assert_partition_key(invocation_id)?;
+        get_journal_entry_budgeted(self, invocation_id, journal_index, budget).await
+    }
+
+    fn get_journal<'a>(
+        &'a self,
+        invocation_id: &InvocationId,
+        journal_length: EntryIndex,
+    ) -> Result<impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send + 'a> {
+        self.assert_partition_key(invocation_id)?;
+        Ok(stream::iter(get_journal(
+            self,
+            invocation_id,
+            journal_length,
+        )?))
+    }
+
+    fn get_journal_budgeted<'a>(
+        &'a self,
+        invocation_id: &InvocationId,
+        journal_length: EntryIndex,
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<
+        impl Stream<
+            Item = std::result::Result<
+                (EntryIndex, JournalEntry, LocalMemoryLease),
+                BudgetedReadError,
+            >,
+        > + Send
+        + 'a,
+    > {
+        self.assert_partition_key(invocation_id)?;
+        let iter = get_journal(self, invocation_id, journal_length)?;
+        Ok(budgeted_journal_stream(iter, budget))
+    }
+}
+
+impl ReadJournalTable for PartitionStoreSnapshot<'_> {
     async fn get_journal_entry(
         &mut self,
         invocation_id: &InvocationId,

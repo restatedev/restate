@@ -30,6 +30,7 @@ mod owned_iter;
 mod partition_db;
 mod partition_store;
 mod partition_store_manager;
+mod partition_store_snapshot;
 pub mod promise_table;
 mod read_snapshot;
 pub mod scan;
@@ -48,6 +49,7 @@ pub use migrations::{MigrationError, migrate_to_locks_table};
 pub use partition_db::{DroppedPartitionStore, PartitionDb};
 pub use partition_store::*;
 pub use partition_store_manager::*;
+pub use partition_store_snapshot::PartitionStoreSnapshot;
 pub use read_snapshot::{PartitionReadSnapshot, PartitionSnapshotReader, PartitionSnapshotScan};
 // re-export
 pub use restate_rocksdb::Priority;
