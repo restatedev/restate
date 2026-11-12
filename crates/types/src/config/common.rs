@@ -1173,7 +1173,7 @@ experimental! {
     /// # Evenly spaced partition-key buckets for unscoped services
     ///
     /// When enabled while the cluster is provisioned, idempotent invocations of unscoped
-    /// services and Kafka subscriptions are spread evenly across partitions. The setting only
+    /// services and ingestion API invocations are spread evenly across partitions. The setting only
     /// takes effect at provisioning time: enabling or disabling it on an already provisioned
     /// cluster has no effect.
     ///

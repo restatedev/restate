@@ -180,8 +180,8 @@ pub enum ClusterFeature {
     /// partition-key space instead of hashing every bucket independently.
     ///
     /// Each unscoped service owns a fixed set of partition-key buckets, used for idempotent
-    /// invocations under [`ClusterFeature::ControlledIdempotentSharding`] and for Kafka
-    /// ingestion. (All other non-idempotent invocations always use evenly spaced buckets, since
+    /// invocations under [`ClusterFeature::ControlledIdempotentSharding`] and for the
+    /// ingestion API. (All other non-idempotent invocations always use evenly spaced buckets, since
     /// nothing depends on which partition they land on.) When disabled, every bucket is hashed to an
     /// independent partition key, which leaves some partitions with noticeably more buckets
     /// than others. When enabled, the buckets are evenly spaced, so every partition of an
