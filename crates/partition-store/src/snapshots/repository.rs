@@ -572,12 +572,12 @@ impl SnapshotRepository {
             upload_part_size: snapshots_options.upload_part_size(),
             upload_single_put_threshold: snapshots_options.upload_single_put_threshold(),
             snapshot_type: snapshots_options.experimental_snapshot_type,
-            orphan_cleanup: snapshots_options
-                .experimental_orphan_cleanup
-                .unwrap_or(matches!(
-                    snapshots_options.experimental_snapshot_type,
-                    restate_types::config::SnapshotType::Incremental
-                )),
+            // The sweep is the only collector of leftovers in the shared `ssts/` prefix, so it runs
+            // whenever snapshots are incremental. Full snapshots discard failed uploads inline.
+            orphan_cleanup: matches!(
+                snapshots_options.experimental_snapshot_type,
+                restate_types::config::SnapshotType::Incremental
+            ),
             last_orphan_scan: Default::default(),
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: snapshots_options.enable_cleanup,

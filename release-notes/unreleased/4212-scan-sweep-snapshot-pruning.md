@@ -10,10 +10,8 @@ The sweep runs at most once a day per partition, after a successful snapshot. It
 
 ### Impact on Users
 
-- **Incremental snapshots**: the sweep is on by default when `experimental-snapshot-type` is `incremental`.
-- **Full snapshots**: the sweep is off by default. Turn it on with `worker.snapshots.experimental-orphan-cleanup = true`. Expect it to delete snapshot directories older than 24 hours left over from earlier failed or interrupted uploads.
+- **When it runs**: the sweep runs whenever `experimental-snapshot-type` is `incremental`, and never for full snapshots, which delete the files of a failed upload right away. There is no separate option for it.
 - **Cost**: about one LIST request per partition per day, plus one more LIST for each orphaned snapshot directory it removes, and delete requests for orphaned files (up to 1,000 files per request on stores with bulk deletes, such as S3).
-- **Turning it off**: set `worker.snapshots.experimental-orphan-cleanup = false`.
 - **Retention**: the sweep keeps everything referenced by the snapshots retained under `num-retained`.
 - **Abandoned multipart uploads** are not visible to the sweep. Configure a lifecycle rule on the bucket to abort incomplete multipart uploads.
 - **Metrics**:

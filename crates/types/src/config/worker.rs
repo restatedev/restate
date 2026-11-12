@@ -1419,19 +1419,6 @@ pub struct SnapshotsOptions {
     /// Since v1.8.2
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_interval: Option<FriendlyDuration>,
-
-    /// # Orphan cleanup
-    ///
-    /// Prune orphaned SST files and snapshot directories that no retained snapshot references.
-    /// Orphans can accumulate from crashes, failed uploads, or interrupted cleanups. The sweep runs
-    /// at most once a day per partition, after a successful snapshot, and only deletes objects
-    /// older than 24 hours. Each sweep lists the partition's snapshot prefix.
-    ///
-    /// Default: `true` when `experimental-snapshot-type` is `incremental`, `false` otherwise
-    ///
-    /// Since v1.8.2
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub experimental_orphan_cleanup: Option<bool>,
 }
 
 fn default_num_retained() -> NonZero<u8> {
@@ -1472,7 +1459,6 @@ impl Default for SnapshotsOptions {
             enable_cleanup: true,
             experimental_snapshot_type: SnapshotType::default(),
             check_interval: None,
-            experimental_orphan_cleanup: None,
         }
     }
 }
