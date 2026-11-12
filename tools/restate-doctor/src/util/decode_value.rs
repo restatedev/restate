@@ -22,6 +22,8 @@ use restate_partition_store::PartitionSeal;
 use restate_partition_store::blob_table::{BlobHeader, BlobKey};
 use restate_partition_store::fsm_table::PartitionStateMachineKey;
 use restate_partition_store::keys::{DecodeTableKey, KeyKind};
+use restate_partition_store::stats::aggregated::{StageCounts, StageStatusCounts};
+use restate_partition_store::stats::{AggregateKeyPrefix, StatKind, StatValueCodec};
 use restate_partition_store::vqueue_table::{EntryStatusKey, InputPayloadKey};
 use restate_storage_api::blob_table::Header;
 use restate_storage_api::deduplication_table::DedupSequenceNumber;
@@ -162,6 +164,13 @@ impl DecodedValue {
 /// - VQueue tables use bilrost encoding (no codec discriminant)
 /// - FSM table uses different types based on the state_id in the key
 pub fn decode_value(key_kind: KeyKind, key: &[u8], value: &[u8]) -> DecodedValue {
+    if key_kind == KeyKind::Stats {
+        return match AggregateKeyPrefix::decode(key) {
+            Ok((_, kind, _)) => decode_stat_value(kind, value),
+            Err(err) => DecodedValue::error(None, value.len(), err.to_string()),
+        };
+    }
+
     if value.is_empty() {
         return DecodedValue::empty();
     }
@@ -218,6 +227,50 @@ pub fn decode_value(key_kind: KeyKind, key: &[u8], value: &[u8]) -> DecodedValue
 
         // FSM table - decode based on state_id from key
         KeyKind::Fsm => decode_fsm_value(key, value),
+        KeyKind::Stats => unreachable!("handled before empty-value decoding"),
+        #[allow(deprecated)]
+        KeyKind::LegacyStats => DecodedValue::decoded(
+            None,
+            value.len(),
+            format!("retired statistics value, {} bytes", value.len()),
+        ),
+    }
+}
+
+fn decode_stat_value(kind: StatKind, value: &[u8]) -> DecodedValue {
+    match kind {
+        StatKind::AggregatedGauge => match <u64 as StatValueCodec>::deserialize_from(value) {
+            Ok(value) => DecodedValue::decoded(None, size_of::<u64>(), format!("Gauge({value})")),
+            Err(_) => DecodedValue::error(
+                None,
+                value.len(),
+                format!("expected {} bytes for a gauge value", size_of::<u64>()),
+            ),
+        },
+        StatKind::StageBucketedGauge => match StageCounts::deserialize_from(value) {
+            Ok(value) => DecodedValue::decoded(
+                None,
+                value.serialized_len(),
+                format!("StageCounts({:?})", value.iter().collect::<Vec<_>>()),
+            ),
+            Err(_) => DecodedValue::error(
+                None,
+                value.len(),
+                "invalid stage-bucketed gauge value".to_owned(),
+            ),
+        },
+        StatKind::StageStatusBucketedGauge => match StageStatusCounts::deserialize_from(value) {
+            Ok(value) => DecodedValue::decoded(
+                None,
+                value.serialized_len(),
+                format!("StageStatusCounts({:?})", value.iter().collect::<Vec<_>>()),
+            ),
+            Err(_) => DecodedValue::error(
+                None,
+                value.len(),
+                "invalid stage/status-bucketed gauge value".to_owned(),
+            ),
+        },
     }
 }
 

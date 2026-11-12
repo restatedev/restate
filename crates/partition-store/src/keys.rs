@@ -12,6 +12,28 @@
 // generate code that references all variants including deprecated ones.
 #![allow(deprecated)]
 
+mod codec;
+mod fields;
+mod legacy_codec;
+mod ordered_key_codec;
+
+// Re-exports
+pub use codec::{
+    EncodedOption, FieldCodec, FieldDecoder, IntoFieldRef, OrderedFieldCodec, TerminalFieldCodec,
+};
+
+/// Physical representations selected explicitly by ordered-key schemas.
+pub mod codecs {
+    pub use super::fields::{ServiceNameCodec, StringCodec, U8Codec, U32Codec, U64Codec};
+    pub use super::legacy_codec::{DelimitedBytesCodec, LockNameCodec, OptionalScopeCodec};
+    pub use super::ordered_key_codec::{
+        CanonicalEntryIdCodec, EntryIdCodec, EntryKindCodec, InvocationUuidCodec,
+        RestateEpochMillisCodec, ReverseBoolCodec, ReverseU64Codec, ReverseUniqueTimestampCodec,
+        RoughTimestampCodec, SeqCodec, StageRankCodec, StatusCodec, VQueueIdCodec,
+        VQueueIdSuffixCodec,
+    };
+}
+
 use std::mem;
 
 use anyhow::anyhow;
@@ -96,6 +118,15 @@ pub enum KeyKind {
     // stores large values (e.g. invocation outputs) separated from
     // the records referencing them
     Blob,
+
+    /// Partition-level statistics: aggregate indexes keyed by the index registry's
+    /// `u32` index ID (see `crate::stats`).
+    Stats,
+    /// Retired. A pre-release build kept statistics under this kind with a
+    /// different layout; a store that still has such keys deletes them at open.
+    /// Nothing decodes or writes them, and the bytes are never reused.
+    #[deprecated(note = "statistics of a pre-release build; deleted at open, never read")]
+    LegacyStats,
 }
 
 impl KeyKind {
@@ -160,6 +191,10 @@ impl KeyKind {
             KeyKind::VQueuePausedStage => b"qP",
             KeyKind::VQueueFinishedStage => b"qF",
             KeyKind::Blob => b"bl",
+
+            // Partition-level statistics; they are rebuilt on partition split.
+            KeyKind::Stats => b"zR",
+            KeyKind::LegacyStats => b"zS",
         }
     }
 
@@ -204,6 +239,8 @@ impl KeyKind {
             b"qS" => Some(KeyKind::VQueueSuspendedStage),
             b"qP" => Some(KeyKind::VQueuePausedStage),
             b"qF" => Some(KeyKind::VQueueFinishedStage),
+            b"zR" => Some(KeyKind::Stats),
+            b"zS" => Some(KeyKind::LegacyStats),
             _ => None,
         }
     }
@@ -243,6 +280,10 @@ impl KeyKind {
         match kind {
             KeyKind::VQueueMeta => vqueue_meta_merge::full_merge(key, existing_val, operands),
             KeyKind::Blob => blob_table::merge::full_merge(key, existing_val, operands),
+            KeyKind::Stats => crate::stats::full_merge(key, existing_val, operands),
+            // Retired keys are deleted at open; until then, keep whatever is stored
+            // rather than failing the merge, which would fail the compaction.
+            KeyKind::LegacyStats => Some(existing_val.unwrap_or_default().to_vec()),
             _ => None,
         }
     }
@@ -261,10 +302,11 @@ impl KeyKind {
                 return None;
             }
         };
-        trace!(?kind, "partial merge");
+        trace!(?kind, "partial merge {} operands", operands.len());
 
         match kind {
             KeyKind::Blob => blob_table::merge::partial_merge(key, operands),
+            KeyKind::Stats => crate::stats::partial_merge(key, operands),
             _ => None,
         }
     }
