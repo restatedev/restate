@@ -32,8 +32,8 @@ use crate::TableKind::State;
 use crate::features::StorageFeatures;
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, OptionalScope, define_table_key};
 use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, StorageIterator, StorageRead,
-    TableScan, TableScanIterationDecision, break_on_err,
+    PartitionStore, PartitionStoreSnapshot, PartitionStoreTransaction, StorageAccess,
+    StorageIterator, StorageRead, TableScan, TableScanIterationDecision, break_on_err,
 };
 
 define_table_key!(
@@ -414,6 +414,63 @@ impl ScanStateTable for PartitionStore {
 }
 
 impl ReadStateTable for PartitionStoreTransaction<'_> {
+    async fn get_user_state(
+        &mut self,
+        service_id: &ServiceId,
+        state_key: &Bytes,
+    ) -> Result<Option<Bytes>> {
+        self.assert_partition_key(service_id)?;
+        get_user_state(self, self.storage_features(), service_id, state_key)
+    }
+
+    fn get_all_user_states_for_service<'a>(
+        &'a self,
+        service_id: &ServiceId,
+    ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send + 'a> {
+        self.assert_partition_key(service_id)?;
+        Ok(stream::iter(get_all_user_states_for_service(
+            self,
+            self.storage_features(),
+            service_id,
+        )?))
+    }
+
+    fn get_all_user_states_budgeted<'a>(
+        &'a self,
+        service_id: &ServiceId,
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<
+        impl PinnableMemoryStream<
+            Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>,
+        > + Send
+        + 'a,
+    > {
+        self.assert_partition_key(service_id)?;
+        let iter = get_all_user_states_for_service(self, self.storage_features(), service_id)?;
+        Ok(BudgetedStateStream::new(iter, budget))
+    }
+
+    fn get_user_states_budgeted<'a>(
+        &'a mut self,
+        service_id: &ServiceId,
+        keys: &[ByteString],
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<
+        impl PinnableMemoryStream<
+            Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>,
+        > + Send
+        + 'a,
+    > {
+        self.assert_partition_key(service_id)?;
+        let features = self.storage_features();
+        Ok(BudgetedStateStream::new(
+            PointReadStateSource::new(self, features, service_id, keys),
+            budget,
+        ))
+    }
+}
+
+impl ReadStateTable for PartitionStoreSnapshot<'_> {
     async fn get_user_state(
         &mut self,
         service_id: &ServiceId,
