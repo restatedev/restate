@@ -8655,6 +8655,7 @@ dependencies = [
  "restate-rocksdb",
  "restate-service-protocol-v4",
  "restate-storage-api",
+ "restate-storage-query-api",
  "restate-test-util",
  "restate-types",
  "restate-util-bytecount",
