@@ -12,6 +12,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
 use std::fmt;
+use std::time::{Duration, Instant};
 
 use ahash::HashMap;
 use futures::StreamExt;
@@ -24,6 +25,7 @@ use restate_metadata_store::{
 };
 use restate_types::cluster::cluster_state::LegacyClusterState;
 use restate_types::cluster_state::ClusterState;
+use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
@@ -45,6 +47,8 @@ use restate_types::replication::balanced_spread_selector::{
 use restate_types::replication::{NodeSet, ReplicationProperty};
 use restate_types::{NodeId, PlainNodeId, Version, Versioned};
 
+use super::stall_tracker::StallTracker;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("failed writing to metadata store: {0}")]
@@ -62,6 +66,9 @@ pub enum Error {
 #[derive(Debug, Clone)]
 struct PartitionState {
     target_leader: Option<PlainNodeId>,
+    /// Set if the leadership policy changed, so that the next leader selection picks the
+    /// preferred replica instead of sticking with the current leader.
+    rebalance_leader: bool,
     /// Policy controlling leader election for this partition.
     leadership_policy: LeadershipPolicy,
     /// Policy controlling automatic placement for this partition.
@@ -79,6 +86,7 @@ impl PartitionState {
     ) -> Self {
         Self {
             target_leader: None,
+            rebalance_leader: false,
             leadership_policy,
             placement_policy,
             current,
@@ -95,7 +103,10 @@ impl PartitionState {
         leadership_policy: LeadershipPolicy,
         placement_policy: PlacementPolicy,
     ) -> bool {
-        self.leadership_policy = leadership_policy;
+        if self.leadership_policy != leadership_policy {
+            self.leadership_policy = leadership_policy;
+            self.rebalance_leader = true;
+        }
         self.placement_policy = placement_policy;
 
         // If the provided current configuration is not valid, then this means that the epoch
@@ -218,6 +229,69 @@ pub struct Scheduler<T> {
     partitions: HashMap<PartitionId, PartitionState>,
     replica_set_states: PartitionReplicaSetStates,
     cluster_state: ClusterState,
+    stall_tracker: StallTracker,
+    last_leader_rebalance: Instant,
+}
+
+/// How a replica ranks as a leader candidate. Fields are ordered by importance; higher is better.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct LeaderScore {
+    /// The partition processor is reporting progress.
+    healthy: bool,
+    caught_up: bool,
+    affinity: bool,
+}
+
+impl LeaderScore {
+    /// Affinity is a preference only and no reason to take leadership away from a leader.
+    fn ignoring_affinity(self) -> Self {
+        Self {
+            affinity: false,
+            ..self
+        }
+    }
+}
+
+/// Chooses the leader among the given candidates.
+///
+/// The current leader keeps its leadership unless another candidate is healthier or further
+/// along. This avoids moving leadership back and forth when replicas recover. If `rebalance` is
+/// set, or if the current leader needs to be replaced, the best candidate wins. Among equally
+/// good candidates, the first one is chosen.
+fn choose_leader(
+    current: Option<PlainNodeId>,
+    candidates: impl Iterator<Item = (PlainNodeId, LeaderScore)>,
+    rebalance: bool,
+) -> Option<PlainNodeId> {
+    let mut preferred: Option<(PlainNodeId, LeaderScore)> = None;
+    let mut current_score = None;
+    for (node_id, score) in candidates {
+        if current == Some(node_id) {
+            current_score = Some(score);
+        }
+        if preferred.is_none_or(|(_, best)| score > best) {
+            preferred = Some((node_id, score));
+        }
+    }
+    let (preferred, best) = preferred?;
+
+    if !rebalance
+        && let Some(current_score) = current_score
+        && current_score.ignoring_affinity() >= best.ignoring_affinity()
+    {
+        return current;
+    }
+
+    Some(preferred)
+}
+
+/// Parameters of a leader selection round.
+#[derive(Debug, Clone, Copy)]
+struct LeaderSelection {
+    /// `None` if stall detection is disabled.
+    stall_threshold: Option<Duration>,
+    /// Move leaders to their preferred replicas.
+    rebalance: bool,
 }
 
 /// The scheduler is responsible for assigning partition processors to nodes and to electing
@@ -236,6 +310,8 @@ impl<T: TransportConnect> Scheduler<T> {
             partitions: HashMap::default(),
             replica_set_states,
             cluster_state: TaskCenter::with_current(|h| h.cluster_state().clone()),
+            stall_tracker: StallTracker::default(),
+            last_leader_rebalance: Instant::now(),
         }
     }
 
@@ -306,6 +382,9 @@ impl<T: TransportConnect> Scheduler<T> {
                 .await?;
         }
 
+        self.stall_tracker.observe(legacy_cluster_state);
+        let selection = self.next_leader_selection();
+
         // prioritise leadership changes over partition reconfiguration
         // when a pp leader shuts down, the time until we instruct a new leader is partition unavailability.
         // instructing a new leader when we already have the metadata requires no new metadata operations and can be done nearly instantly
@@ -316,6 +395,7 @@ impl<T: TransportConnect> Scheduler<T> {
             legacy_cluster_state,
             nodes_config,
             partition_table,
+            selection,
         );
         self.instruct_nodes(legacy_cluster_state)?;
 
@@ -324,6 +404,7 @@ impl<T: TransportConnect> Scheduler<T> {
             legacy_cluster_state,
             nodes_config,
             partition_table,
+            selection,
         )
         .await?;
         // we may have chosen new leaders, so we instruct again
@@ -386,12 +467,29 @@ impl<T: TransportConnect> Scheduler<T> {
         Ok(())
     }
 
+    /// Decides how leaders are selected in this round. Leaders are rebalanced once per
+    /// rebalance interval.
+    fn next_leader_selection(&mut self) -> LeaderSelection {
+        let config = Configuration::pinned();
+        let rebalance_interval: Duration = config.admin.partition_leader_rebalance_interval.into();
+        let rebalance = self.last_leader_rebalance.elapsed() >= rebalance_interval;
+        if rebalance {
+            self.last_leader_rebalance = Instant::now();
+        }
+
+        LeaderSelection {
+            stall_threshold: config.admin.partition_leader_stall_threshold(),
+            rebalance,
+        }
+    }
+
     fn ensure_valid_leaders(
         &mut self,
         cluster_state: &ClusterState,
         legacy_cluster_state: &LegacyClusterState,
         nodes_config: &NodesConfiguration,
         partition_table: &PartitionTable,
+        selection: LeaderSelection,
     ) {
         for partition_id in partition_table.iter_ids() {
             // select the leader based on the observed cluster state
@@ -400,6 +498,7 @@ impl<T: TransportConnect> Scheduler<T> {
                 cluster_state,
                 legacy_cluster_state,
                 nodes_config,
+                selection,
             );
         }
     }
@@ -410,6 +509,7 @@ impl<T: TransportConnect> Scheduler<T> {
         legacy_cluster_state: &LegacyClusterState,
         nodes_config: &NodesConfiguration,
         partition_table: &PartitionTable,
+        selection: LeaderSelection,
     ) -> Result<(), Error> {
         let mut transitions = PartitionConfigurationTransitions::default();
         let result = self
@@ -418,6 +518,7 @@ impl<T: TransportConnect> Scheduler<T> {
                 legacy_cluster_state,
                 nodes_config,
                 partition_table,
+                selection,
                 &mut transitions,
             )
             .await;
@@ -435,6 +536,7 @@ impl<T: TransportConnect> Scheduler<T> {
         legacy_cluster_state: &LegacyClusterState,
         nodes_config: &NodesConfiguration,
         partition_table: &PartitionTable,
+        selection: LeaderSelection,
         transitions: &mut PartitionConfigurationTransitions,
     ) -> Result<(), Error> {
         let mut membership_updates = self.replica_set_states.membership_update_batch();
@@ -568,6 +670,7 @@ impl<T: TransportConnect> Scheduler<T> {
                 cluster_state,
                 legacy_cluster_state,
                 nodes_config,
+                selection,
             );
         }
 
@@ -910,11 +1013,10 @@ impl<T: TransportConnect> Scheduler<T> {
 
     /// Selects a leader based on the leadership policy, observed cluster state and replica set.
     ///
-    /// Scores each alive replica in a single pass. Higher score wins:
-    /// - 3: matches affinity + caught up
-    /// - 2: caught up (no affinity match)
-    /// - 1: matches affinity + alive (not caught up)
-    /// - 0: alive only (baseline)
+    /// Only alive replicas are considered. They are ranked by, in order of importance: whether
+    /// their partition processor is reporting progress, whether it is caught up, and whether
+    /// the node matches the leader affinity. See [`choose_leader`] for how the leader is chosen
+    /// from the ranked replicas.
     ///
     /// If `freeze` is set, the current target leader is kept unchanged.
     fn select_leader(
@@ -923,6 +1025,7 @@ impl<T: TransportConnect> Scheduler<T> {
         cluster_state: &ClusterState,
         legacy_cluster_state: &LegacyClusterState,
         nodes_config: &NodesConfiguration,
+        selection: LeaderSelection,
     ) {
         let Some(partition) = self.partitions.get_mut(partition_id) else {
             return;
@@ -934,33 +1037,51 @@ impl<T: TransportConnect> Scheduler<T> {
         }
 
         let affinity = partition.leadership_policy.affinity.as_ref();
+        let stall_tracker = &self.stall_tracker;
+        let is_stalled = |node_id: PlainNodeId| {
+            selection.stall_threshold.is_some_and(|threshold| {
+                stall_tracker.is_stalled(*partition_id, node_id, threshold)
+            })
+        };
 
-        let best = partition
+        let candidates = partition
             .current
             .replica_set()
             .iter()
             .copied()
             .filter(|node_id| cluster_state.is_alive(NodeId::from(*node_id)))
-            .max_by_key(|node_id| {
-                let has_affinity =
-                    affinity.is_some_and(|a| matches_affinity(*node_id, a, nodes_config));
-                let is_caught_up =
-                    legacy_cluster_state.is_partition_processor_active(partition_id, node_id);
-                match (has_affinity, is_caught_up) {
-                    (true, true) => 3u8,
-                    (false, true) => 2,
-                    (true, false) => 1,
-                    (false, false) => 0,
-                }
+            .map(|node_id| {
+                let score = LeaderScore {
+                    healthy: !is_stalled(node_id),
+                    caught_up: legacy_cluster_state
+                        .is_partition_processor_active(partition_id, &node_id),
+                    affinity: affinity.is_some_and(|a| matches_affinity(node_id, a, nodes_config)),
+                };
+                (node_id, score)
             });
+
+        let rebalance = selection.rebalance || partition.rebalance_leader;
+        let best = choose_leader(partition.target_leader, candidates, rebalance);
+        partition.rebalance_leader = false;
 
         if let Some(best) = best
             && partition.target_leader != Some(best)
         {
-            debug!(
-                "Selecting node {} as partition processor leader for partition {partition_id}",
-                best
-            );
+            match partition.target_leader {
+                Some(previous)
+                    if cluster_state.is_alive(NodeId::from(previous)) && is_stalled(previous) =>
+                {
+                    info!(
+                        "Moving leadership of partition {partition_id} from node {previous} to node {best} \
+                        because the partition processor on node {previous} stopped reporting progress"
+                    );
+                }
+                _ => {
+                    debug!(
+                        "Selecting node {best} as partition processor leader for partition {partition_id}"
+                    );
+                }
+            }
             partition.target_leader = Some(best);
         }
 
@@ -1277,5 +1398,67 @@ mod tests {
         );
         assert!(completed.configuration.next.is_none());
         assert_eq!(completed.configuration.placement_policy, policy);
+    }
+
+    #[test]
+    fn leader_is_sticky_until_stalled_or_rebalanced() {
+        let [n1, n2, n3] = [1, 2, 3].map(PlainNodeId::from);
+        let score = |healthy, caught_up, affinity| LeaderScore {
+            healthy,
+            caught_up,
+            affinity,
+        };
+        let good = score(true, true, false);
+        let choose = |current, candidates: &[(PlainNodeId, LeaderScore)], rebalance| {
+            choose_leader(current, candidates.iter().copied(), rebalance)
+        };
+
+        let all_good = [(n1, good), (n2, good), (n3, good)];
+        // without a leader, the first of the equally good candidates is preferred
+        assert_eq!(choose(None, &all_good, false), Some(n1));
+        // a good leader keeps its leadership until the next rebalance
+        assert_eq!(choose(Some(n3), &all_good, false), Some(n3));
+        assert_eq!(choose(Some(n3), &all_good, true), Some(n1));
+        // affinity alone does not move leadership, a rebalance does
+        let with_affinity = [(n1, good), (n2, score(true, true, true)), (n3, good)];
+        assert_eq!(choose(Some(n1), &with_affinity, false), Some(n1));
+        assert_eq!(choose(Some(n1), &with_affinity, true), Some(n2));
+
+        // a stalled leader is replaced by a healthy replica, even if it isn't caught up yet
+        let stalled = score(false, true, true);
+        assert_eq!(
+            choose(Some(n3), &[(n1, good), (n2, good), (n3, stalled)], false),
+            Some(n1)
+        );
+        assert_eq!(
+            choose(
+                Some(n3),
+                &[(n1, score(true, false, false)), (n3, stalled)],
+                false
+            ),
+            Some(n1)
+        );
+        // rebalancing never moves leadership to a stalled replica
+        assert_eq!(
+            choose(Some(n3), &[(n1, stalled), (n2, good), (n3, good)], true),
+            Some(n2)
+        );
+        // nothing to gain from moving leadership if all replicas are stalled
+        assert_eq!(
+            choose(Some(n1), &[(n1, stalled), (n2, stalled)], false),
+            Some(n1)
+        );
+        // a leader that is no longer a candidate (e.g. dead) is replaced, even by a worse one
+        assert_eq!(choose(Some(n1), &[(n2, stalled)], false), Some(n2));
+        // a caught up replica replaces a leader that is not caught up
+        assert_eq!(
+            choose(
+                Some(n1),
+                &[(n1, score(true, false, false)), (n2, good)],
+                false
+            ),
+            Some(n2)
+        );
+        assert_eq!(choose(Some(n1), &[], false), None);
     }
 }

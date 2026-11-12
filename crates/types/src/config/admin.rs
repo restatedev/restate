@@ -10,13 +10,14 @@
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use http::HeaderName;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tokio::sync::Semaphore;
 
-use restate_util_time::NonZeroFriendlyDuration;
+use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 
 use super::{CommonOptions, ListenerOptions, QueryEngineOptions};
 use crate::net::address::{AdminPort, AdvertisedAddress, BindAddress};
@@ -65,6 +66,26 @@ pub struct AdminOptions {
     /// Controls the interval at which cluster controller polls nodes of the cluster.
     pub heartbeat_interval: NonZeroFriendlyDuration,
 
+    /// # Partition leader stall threshold
+    ///
+    /// If a partition processor stops reporting progress for longer than this threshold, the
+    /// cluster controller considers it stalled and moves leadership to a healthy replica of
+    /// the same partition, if there is one.
+    ///
+    /// `0` disables stall detection.
+    ///
+    /// Since v1.8.2
+    partition_leader_stall_threshold: FriendlyDuration,
+
+    /// # Partition leader rebalance interval
+    ///
+    /// Interval at which the cluster controller moves partition leaders back to their preferred
+    /// replicas. Between two rebalances, a leader keeps its leadership for as long as it is
+    /// healthy, even if a preferred replica becomes available again.
+    ///
+    /// Since v1.8.2
+    pub partition_leader_rebalance_interval: NonZeroFriendlyDuration,
+
     /// Disable serving the Restate Web UI on the admin port. Default is `false`.
     pub disable_web_ui: bool,
 
@@ -105,6 +126,11 @@ impl AdminOptions {
         )
     }
 
+    /// Returns `None` if stall detection is disabled.
+    pub fn partition_leader_stall_threshold(&self) -> Option<Duration> {
+        self.partition_leader_stall_threshold.to_non_zero_std()
+    }
+
     pub fn is_cluster_controller_enabled(&self) -> bool {
         #[cfg(not(any(test, feature = "test-util")))]
         return true;
@@ -129,6 +155,8 @@ impl Default for AdminOptions {
             concurrent_api_requests_limit: None,
             query_engine: Default::default(),
             heartbeat_interval: NonZeroFriendlyDuration::from_millis_unchecked(1500),
+            partition_leader_stall_threshold: FriendlyDuration::from_secs(10),
+            partition_leader_rebalance_interval: NonZeroFriendlyDuration::from_secs_unchecked(300),
             #[cfg(any(test, feature = "test-util"))]
             disable_cluster_controller: false,
             disable_web_ui: false,
