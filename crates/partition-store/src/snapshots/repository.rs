@@ -703,17 +703,29 @@ impl SnapshotRepository {
         }
 
         let conditions = self.conditional_put_options(maybe_stored.map(|(_, v)| v));
-        let put_result = self
+        match self
             .object_store
             .put_opts(&latest_path, latest_payload, conditions)
             .await
-            .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
-
-        debug!(
-            key = ?latest_path,
-            etag = %put_result.e_tag.unwrap_or_default(),
-            "Successfully updated latest snapshot pointer",
-        );
+        {
+            Ok(put_result) => debug!(
+                key = ?latest_path,
+                etag = %put_result.e_tag.unwrap_or_default(),
+                "Successfully updated latest snapshot pointer",
+            ),
+            Err(err) => {
+                let stored = self
+                    .resolve_failed_pointer_update(snapshot, &latest_path, err, progress.clone())
+                    .await?;
+                // A newer snapshot was published on top of ours; it owns eviction from here, and
+                // whatever ours would have evicted is left to the orphan sweep.
+                if stored.snapshot_id != snapshot.snapshot_id {
+                    return PartitionSnapshotStatus::try_from(&stored)
+                        .map(PutOutcome::Published)
+                        .map_err(|e| PutSnapshotError::from(e, progress));
+                }
+            }
+        }
 
         #[cfg(not(any(test, feature = "test-util")))]
         let enable_cleanup = true;
@@ -727,6 +739,57 @@ impl SnapshotRepository {
         PartitionSnapshotStatus::try_from(&new_latest)
             .map(PutOutcome::Published)
             .map_err(|e| PutSnapshotError::from(e, progress.clone()))
+    }
+
+    /// The conditional write of `latest.json` can land even though it returns an error, e.g. on a
+    /// timeout, or when a retry finds the write it already made. Re-reads the pointer before
+    /// anything is discarded, and returns it if it lists this snapshot: the snapshot is then
+    /// published and its files must stay. Otherwise returns the write's error, with the files to
+    /// discard only when the pointer is known not to reference them; if the pointer can't be
+    /// read, the files are kept for the orphan sweep.
+    async fn resolve_failed_pointer_update(
+        &self,
+        snapshot: &PartitionSnapshotMetadata,
+        latest_path: &ObjectPath,
+        error: object_store::Error,
+        progress: SnapshotUploadProgress,
+    ) -> Result<LatestSnapshot, PutSnapshotError> {
+        let stored = match self
+            .get_latest_snapshot_metadata_for_update(latest_path)
+            .await
+        {
+            Ok(stored) => stored.map(|(latest, _)| latest),
+            Err(read_err) => {
+                warn!(
+                    %error,
+                    %read_err,
+                    "Snapshot pointer update failed and the pointer can't be re-read; \
+                    keeping the uploaded files"
+                );
+                return Err(PutSnapshotError::from(
+                    error,
+                    SnapshotUploadProgress::with_snapshot_path(progress.snapshot_complete_path),
+                ));
+            }
+        };
+
+        match stored {
+            Some(latest)
+                if latest.snapshot_id == snapshot.snapshot_id
+                    || latest
+                        .retained_snapshots
+                        .iter()
+                        .any(|retained| retained.snapshot_id == snapshot.snapshot_id) =>
+            {
+                info!(
+                    %error,
+                    snapshot_id = %snapshot.snapshot_id,
+                    "Snapshot pointer update returned an error, but the pointer lists this snapshot"
+                );
+                Ok(latest)
+            }
+            _ => Err(PutSnapshotError::from(error, progress)),
+        }
     }
 
     async fn upload_snapshot(
@@ -1524,7 +1587,7 @@ mod compatibility_tests;
 mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
     use std::time::{Duration, SystemTime};
 
     use ahash::HashSet;
@@ -1566,14 +1629,20 @@ mod tests {
         PartitionSnapshotMetadata, SnapshotCompatibility, SnapshotDir, SnapshotFormatVersion,
     };
 
-    /// Wraps an in-memory store, counting single puts and multipart uploads and their parts.
+    /// Wraps an in-memory store, counting single puts and multipart uploads and their parts. Can
+    /// fail writes of `latest.json`: with [`FAIL_POINTER_AFTER_WRITE`] the write lands and then
+    /// returns an error, with [`FAIL_POINTER_WITHOUT_WRITE`] it doesn't land.
     #[derive(Debug, Default)]
     struct CountingStore {
         inner: InMemory,
         puts: Arc<AtomicUsize>,
         multiparts: Arc<AtomicUsize>,
         parts: Arc<AtomicUsize>,
+        fail_pointer: AtomicU8,
     }
+
+    const FAIL_POINTER_AFTER_WRITE: u8 = 1;
+    const FAIL_POINTER_WITHOUT_WRITE: u8 = 2;
 
     impl std::fmt::Display for CountingStore {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1609,7 +1678,23 @@ mod tests {
             opts: PutOptions,
         ) -> object_store::Result<object_store::PutResult> {
             self.puts.fetch_add(1, Ordering::Relaxed);
-            self.inner.put_opts(location, payload, opts).await
+            let fail = location
+                .as_ref()
+                .ends_with("latest.json")
+                .then(|| self.fail_pointer.load(Ordering::Relaxed))
+                .filter(|mode| *mode != 0);
+            let timeout = || object_store::Error::Generic {
+                store: "CountingStore",
+                source: "timed out".into(),
+            };
+            match fail {
+                Some(FAIL_POINTER_AFTER_WRITE) => {
+                    self.inner.put_opts(location, payload, opts).await?;
+                    Err(timeout())
+                }
+                Some(_) => Err(timeout()),
+                None => self.inner.put_opts(location, payload, opts).await,
+            }
         }
 
         async fn put_multipart_opts(
@@ -2083,6 +2168,59 @@ mod tests {
         let second = repository.acquire_lease(PartitionId::MIN).await?;
         assert!(second.is_valid());
 
+        Ok(())
+    }
+
+    /// A `latest.json` write can land and still return an error. The snapshot is then published,
+    /// so its files must stay; when the write did not land, they are discarded.
+    #[restate_core::test]
+    async fn failed_pointer_write_discards_files_only_if_unpublished() -> anyhow::Result<()> {
+        let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let store = Arc::new(CountingStore::default());
+        let repository = SnapshotRepository {
+            object_store: store.clone(),
+            ..mock_repository(2)
+        };
+
+        for (lsn, mode, published) in [
+            (100, FAIL_POINTER_AFTER_WRITE, true),
+            (200, FAIL_POINTER_WITHOUT_WRITE, false),
+        ] {
+            let source_dir = tempdir()?.keep();
+            tokio::fs::write(source_dir.join("data.sst"), b"snapshot-data").await?;
+            let mut snapshot = mock_snapshot_metadata(
+                "/data.sst".to_owned(),
+                source_dir.to_string_lossy().to_string(),
+                13,
+            );
+            snapshot.min_applied_lsn = Lsn::new(lsn);
+
+            store.fail_pointer.store(mode, Ordering::Relaxed);
+            let result = repository
+                .put(
+                    &snapshot,
+                    SnapshotDir::new(source_dir),
+                    Arc::new(SnapshotLeaseGuard::noop()),
+                )
+                .await;
+
+            let prefix = repository.base_prefix(&snapshot);
+            let files_kept = repository
+                .object_store
+                .head(&prefix.clone().join("data.sst"))
+                .await
+                .is_ok()
+                && repository
+                    .object_store
+                    .head(&prefix.join("metadata.json"))
+                    .await
+                    .is_ok();
+            assert_eq!(result.is_ok(), published, "put result for LSN {lsn}");
+            assert_eq!(files_kept, published, "files of the snapshot at LSN {lsn}");
+            if published {
+                assert_eq!(result?.latest_snapshot_id, snapshot.snapshot_id);
+            }
+        }
         Ok(())
     }
 
