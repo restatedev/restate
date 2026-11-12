@@ -12,6 +12,28 @@
 // generate code that references all variants including deprecated ones.
 #![allow(deprecated)]
 
+mod codec;
+mod fields;
+mod legacy_codec;
+mod ordered_key_codec;
+
+// Re-exports
+pub use codec::{
+    EncodedOption, FieldCodec, FieldDecoder, IntoFieldRef, OrderedFieldCodec, TerminalFieldCodec,
+};
+
+/// Physical representations selected explicitly by ordered-key schemas.
+pub mod codecs {
+    pub use super::fields::{ServiceNameCodec, StringCodec, U8Codec, U32Codec, U64Codec};
+    pub use super::legacy_codec::{DelimitedBytesCodec, LockNameCodec, OptionalScopeCodec};
+    pub use super::ordered_key_codec::{
+        CanonicalEntryIdCodec, EntryIdCodec, EntryKindCodec, InvocationUuidCodec,
+        RestateEpochMillisCodec, ReverseBoolCodec, ReverseU64Codec, ReverseUniqueTimestampCodec,
+        RoughTimestampCodec, SeqCodec, StageRankCodec, StatusCodec, VQueueIdCodec,
+        VQueueIdSuffixCodec,
+    };
+}
+
 use std::mem;
 
 use anyhow::anyhow;
