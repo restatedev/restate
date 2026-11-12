@@ -14,18 +14,70 @@
 //! Partial merges operate only on deltas and must remain interchangeable with
 //! the original operands when RocksDB later performs a full merge.
 
+pub(crate) mod backfill;
+
+mod binding;
 mod bucketed_gauge;
+mod deployment_stats;
 mod gauge;
+mod service_stats;
+mod virtual_object_stats;
+
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_util;
+
+#[cfg(test)]
+mod logical_scan_tests;
+
+/// Completes the status gauges of `store` at open.
+#[cfg(test)]
+pub(crate) async fn complete_gauges(store: &mut crate::PartitionStore) {
+    let mut config = restate_types::config::Configuration::default();
+    config.common.experimental.set_complete_status_gauges(true);
+    config.worker.storage.enable_eager_migrations_on_startup = true;
+    store
+        .verify_and_run_migrations(Default::default(), &config)
+        .await
+        .unwrap();
+}
+
+/// The Ready index of statistic `S` in `store`.
+#[cfg(test)]
+pub(crate) fn ready_index_scope<S: Stat>(store: &crate::PartitionStore) -> IndexScope {
+    IndexScope {
+        partition: store.partition_id(),
+        index: store
+            .maintained_indexes()
+            .ready_index(S::DEFINITION, crate::registry::IndexKind::Aggregate)
+            .unwrap(),
+    }
+}
 
 // Re-exports
+pub use binding::GaugeMaterializer;
 pub use bucketed_gauge::{
     BucketedGauge, StageCounts, StageGauge, StageStatus, StageStatusCounts, StageStatusGauge,
 };
+
+pub use deployment_stats::{DeploymentStats, DeploymentStatsBinding, DeploymentStatsKey};
 pub use gauge::{Gauge, GaugeOp};
+pub use service_stats::{ServiceStats, ServiceStatsBinding, ServiceStatsKey};
+pub use virtual_object_stats::{
+    VirtualObjectStats, VirtualObjectStatsBinding, VirtualObjectStatsKey,
+};
 
 use tracing::error;
 
-use super::{StatKind, StatMergeValueCodec, StatValueCodec};
+use crate::keys::KeyKind;
+use crate::keys::header::IndexScope;
+use crate::{PartitionStoreTransaction, StorageRead};
+
+use super::{EncodeStatKey, Stat, StatKind, StatMergeValueCodec, StatValueCodec};
+
+/// A statistic updated through an aggregation implementation.
+pub trait AggregatedStat: Stat {
+    type Aggregation: Aggregate<Output = Self::Value>;
+}
 
 /// The persisted kind, value types, and merge behavior of an aggregation implementation.
 pub trait Aggregate {
@@ -56,6 +108,62 @@ pub trait Aggregate {
 
     /// Whether a decoded stored value should be omitted from query results.
     fn should_filter(value: &Self::Output) -> bool;
+}
+
+/// Merges into the keys of one registered index.
+pub(crate) struct AggregatedStatsMut<'a, 'b> {
+    storage: &'a mut PartitionStoreTransaction<'b>,
+    id: u32,
+}
+
+impl<'a, 'b> AggregatedStatsMut<'a, 'b> {
+    pub fn new(storage: &'a mut PartitionStoreTransaction<'b>, id: u32) -> Self {
+        Self { storage, id }
+    }
+
+    pub fn increment_stage_status<S, K>(&mut self, key: K, bucket: StageStatus)
+    where
+        S: AggregatedStat<Aggregation = StageStatusGauge>,
+        K: EncodeStatKey<S>,
+    {
+        self.merge::<S, _>(key, StageStatusGauge::increment(bucket));
+    }
+
+    pub fn decrement_stage_status<S, K>(&mut self, key: K, bucket: StageStatus)
+    where
+        S: AggregatedStat<Aggregation = StageStatusGauge>,
+        K: EncodeStatKey<S>,
+    {
+        self.merge::<S, _>(key, StageStatusGauge::decrement(bucket));
+    }
+
+    pub fn transition_stage_status<S, K>(
+        &mut self,
+        key: K,
+        old_bucket: StageStatus,
+        new_bucket: StageStatus,
+    ) where
+        S: AggregatedStat<Aggregation = StageStatusGauge>,
+        K: EncodeStatKey<S>,
+    {
+        self.merge::<S, _>(key, StageStatusGauge::transition(old_bucket, new_bucket));
+    }
+
+    fn merge<S: AggregatedStat, K: EncodeStatKey<S>>(&mut self, key: K, operand: impl AsRef<[u8]>) {
+        let key = {
+            let scope = IndexScope {
+                partition: self.storage.partition_id(),
+                index: self.id,
+            };
+            let key_buf = self
+                .storage
+                .cleared_key_buffer_mut(S::encoded_key_len(&key));
+            S::encode_key(scope, key, key_buf);
+            key_buf.split()
+        };
+
+        self.storage.raw_merge_cf(KeyKind::Stats, key, operand);
+    }
 }
 
 pub(super) fn partial_merge<'a>(

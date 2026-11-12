@@ -8,6 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+//! Promise storage with legacy, non-mem-comparable keys.
+//!
+//! Both [`PromiseKey`] and [`ScopedPromiseKey`] are **not ordered across all logical
+//! fields**: service names, service keys, and promise keys are length-prefixed;
+//! scoped keys also use the legacy optional-scope codec. Exact service-prefix scans
+//! remain valid, but promise names do not iterate in logical string order.
+//! See the [key encoding families](crate::keys#two-encoding-families).
+
+mod binding;
+
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -31,6 +41,8 @@ use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind,
     TableScanIterationDecision, break_on_err,
 };
+
+pub use binding::{PromiseBinding, PromiseTable, ScopedPromiseBinding, ScopedPromiseTable};
 
 define_table_key!(
     TableKind::Promise,

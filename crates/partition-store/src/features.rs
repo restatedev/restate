@@ -8,10 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod aggregated_status_stats;
+mod indexes_v1;
+mod query_registry;
 mod scoped_promise_migration;
 mod scoped_state_migration;
 mod state_promise_migration_combined;
 mod vqueue_meta_cleanup;
+
+#[cfg(test)]
+pub(crate) use aggregated_status_stats::legacy_status_gauge_key;
 
 use std::collections::BTreeMap;
 
@@ -89,6 +95,30 @@ storage_features! {
     ///
     /// *Since v1.7.10*
     pub VqueueMetadataCleanupV1,
+
+    /// Retired: marked a store whose status gauges were kept under static
+    /// statistic IDs. Registered instances replace them; opening a store deletes
+    /// the legacy gauges and this marker, and nothing enables it again.
+    ///
+    /// Since v1.8.2
+    pub TrackStatusGauges,
+
+    /// Maintains the busy-vqueue index in the same transaction as vqueue writes.
+    /// Queues written before the feature was enabled are not backfilled, so the
+    /// index can be incomplete. The entry indexes are registered instead
+    /// (`crate::vqueue_table::ENTRY_INDEXES`); keys under their static IDs from
+    /// before the registry are not read.
+    ///
+    /// Since v1.8.2
+    pub IndexesV1,
+
+    /// The store holds the index and statistics registry (`crate::registry`): the
+    /// tracking IDs in entry-status headers and the keys of registered instances.
+    /// Persisted together with the first registration, never automatically, and
+    /// kept afterwards, so that binaries without the registry cannot open the store.
+    ///
+    /// Since v1.8.2
+    pub QueryRegistry,
 }
 
 trait StorageFeature: Sized + 'static {
@@ -99,6 +129,17 @@ trait StorageFeature: Sized + 'static {
         _current_version: &SemanticRestateVersion,
         is_store_empty: bool,
     ) -> bool;
+
+    /// Disabling takes precedence over enabling. Features are one-way unless
+    /// they explicitly opt into disabling.
+    fn should_disable(
+        _config: &Configuration,
+        _current_version: &SemanticRestateVersion,
+        _is_store_empty: bool,
+    ) -> bool {
+        false
+    }
+
     fn is_enabled(features: &StorageFeatures) -> bool;
     fn set_enabled(features: &mut StorageFeatures);
 
@@ -116,6 +157,67 @@ trait StorageFeature: Sized + 'static {
         config: &Configuration,
         finalization: &mut WriteBatch,
     ) -> Result<(), MigrationError>;
+
+    /// Stages cleanup operations and the disabled in-memory state. The caller
+    /// commits `finalization` with the feature's removal from the ledger, flushes,
+    /// and only then publishes `features`.
+    ///
+    /// Called even on empty stores or when the feature is already disabled, to
+    /// allow cleaning up interrupted enable attempts. Must be idempotent.
+    async fn disable(
+        _storage: &mut PartitionStore,
+        _cancel: &CancellationToken,
+        _config: &Configuration,
+        _finalization: &mut WriteBatch,
+        _features: &mut StorageFeatures,
+    ) -> Result<(), MigrationError> {
+        Err(StorageError::Generic(anyhow::anyhow!(
+            "storage feature '{}' does not support disabling",
+            Self::persisted_name()
+        ))
+        .into())
+    }
+}
+
+/// A startup action selected by the feature's policy. Disabling takes precedence and
+/// can run even without a persisted marker, to clean up an interrupted enable attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StorageFeatureChange {
+    Enable(KnownStorageFeature),
+    Disable(KnownStorageFeature),
+}
+
+impl StorageFeatureChange {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn apply(
+        self,
+        storage: &mut PartitionStore,
+        current_version: &SemanticRestateVersion,
+        min_restate_version: &mut SemanticRestateVersion,
+        storage_version: &mut StorageVersion,
+        is_store_empty: bool,
+        cancel: &CancellationToken,
+        config: &Configuration,
+        features: &mut LoadedStorageFeatures,
+    ) -> Result<(), MigrationError> {
+        match self {
+            Self::Enable(feature) => {
+                feature
+                    .enable(
+                        storage,
+                        current_version,
+                        min_restate_version,
+                        storage_version,
+                        is_store_empty,
+                        cancel,
+                        config,
+                        features,
+                    )
+                    .await
+            }
+            Self::Disable(feature) => feature.disable(storage, cancel, config, features).await,
+        }
+    }
 }
 
 /// Loaded feature state used while planning and applying storage migrations.
@@ -198,6 +300,52 @@ impl LoadedStorageFeatures {
         &self.enabled
     }
 
+    /// Adds the registry fence to `batch` unless it is already enabled: its ledger
+    /// entry and, when higher, the minimum Restate version. The registry state the
+    /// fence protects must be written in the same batch. Call `mark_persisted`
+    /// once the batch commits. Returns whether anything was added.
+    pub(crate) fn append_registry_fence(
+        &mut self,
+        current_version: &SemanticRestateVersion,
+        current_min_restate_version: &mut SemanticRestateVersion,
+        cf_handle: &std::sync::Arc<rocksdb::BoundColumnFamily<'_>>,
+        batch: &mut WriteBatch,
+        partition_id: restate_types::identifiers::PartitionId,
+    ) -> Result<bool, StorageError> {
+        if !self.set_enabled::<QueryRegistryFeature>(Some(current_version)) {
+            return Ok(false);
+        }
+        append_storage_features_to_wb(cf_handle, batch, partition_id, self.ledger())?;
+        let min = QueryRegistryFeature::min_required_version();
+        if min.is_newer_than(current_min_restate_version) {
+            append_min_restate_version_to_wb(cf_handle, batch, partition_id, min.clone())?;
+            *current_min_restate_version = min.clone();
+        }
+        Ok(true)
+    }
+
+    /// Drops the retired status-gauge marker, adding the ledger without it to
+    /// `batch`. Call `mark_persisted` once the batch commits. Returns whether the
+    /// marker was present.
+    pub(crate) fn append_legacy_status_gauges_removal(
+        &mut self,
+        cf_handle: &std::sync::Arc<rocksdb::BoundColumnFamily<'_>>,
+        batch: &mut WriteBatch,
+        partition_id: restate_types::identifiers::PartitionId,
+    ) -> Result<bool, StorageError> {
+        if self
+            .persisted
+            .features
+            .remove(TrackStatusGaugesFeature::persisted_name())
+            .is_none()
+        {
+            return Ok(false);
+        }
+        self.enabled.is_track_status_gauges = false;
+        append_storage_features_to_wb(cf_handle, batch, partition_id, &self.persisted)?;
+        Ok(true)
+    }
+
     pub(crate) fn ledger(&self) -> &PersistedEnabledFeatures {
         &self.persisted
     }
@@ -215,15 +363,23 @@ impl LoadedStorageFeatures {
         config: &Configuration,
         current_version: &SemanticRestateVersion,
         is_store_empty: bool,
-    ) -> Vec<KnownStorageFeature> {
+    ) -> Vec<StorageFeatureChange> {
         KnownStorageFeature::VARIANTS
             .iter()
-            .filter(|feature| !feature.is_enabled(self.enabled()))
             .filter(|feature| {
                 current_version.is_equal_or_newer_than(feature.min_required_version())
-                    && feature.should_enable(config, current_version, is_store_empty)
             })
-            .copied()
+            .filter_map(|&feature| {
+                if feature.should_disable(config, current_version, is_store_empty) {
+                    Some(StorageFeatureChange::Disable(feature))
+                } else if !feature.is_enabled(self.enabled())
+                    && feature.should_enable(config, current_version, is_store_empty)
+                {
+                    Some(StorageFeatureChange::Enable(feature))
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 }
@@ -422,6 +578,65 @@ async fn enable_helper<F: StorageFeature>(
     Ok(())
 }
 
+async fn disable_helper<F: StorageFeature>(
+    storage: &mut PartitionStore,
+    cancel: &CancellationToken,
+    config: &Configuration,
+    features: &mut LoadedStorageFeatures,
+) -> Result<(), MigrationError> {
+    if cancel.is_cancelled() {
+        return Err(MigrationError::MigrationCancelled);
+    }
+
+    let start = Instant::now();
+    let mut finalization = WriteBatch::default();
+    let mut enabled = *features.enabled();
+    F::disable(storage, cancel, config, &mut finalization, &mut enabled).await?;
+    if cancel.is_cancelled() {
+        return Err(MigrationError::MigrationCancelled);
+    }
+
+    let db = storage.partition_db();
+    let mut persisted = features.persisted.clone();
+    persisted.features.remove(F::persisted_name());
+    append_storage_features_to_wb(
+        db.cf_handle(),
+        &mut finalization,
+        storage.partition_id(),
+        &persisted,
+    )?;
+
+    // The cleanup and marker removal must become durable together before the
+    // disabled state is published. Keep the minimum storage/server versions.
+    let mut options = rocksdb::WriteOptions::default();
+    options.disable_wal(true);
+    db.rocksdb()
+        .write_batch(
+            "storage-feature-disable-finalization",
+            Priority::High,
+            IoMode::Default,
+            options,
+            finalization,
+        )
+        .await
+        .context("failed to commit storage feature disable finalization")
+        .map_err(StorageError::Generic)?;
+    db.flush_memtables(true)
+        .await
+        .context("failed to flush disabled storage feature")
+        .map_err(StorageError::Generic)?;
+
+    features.enabled = enabled;
+    features.persisted = persisted;
+    features.mark_persisted();
+    info!(
+        "partition-store storage feature '{}' has been disabled in {}",
+        F::persisted_name(),
+        start.elapsed().friendly()
+    );
+    Ok(())
+}
+
 /// Defines a local storage (PartitionStore) feature from a list of feature names.
 macro_rules! storage_features {
     (
@@ -527,6 +742,24 @@ macro_rules! storage_features {
                     }
                 }
 
+                fn should_disable(
+                    self,
+                    config: &Configuration,
+                    current_version: &SemanticRestateVersion,
+                    is_store_empty: bool,
+                ) -> bool {
+                    match self {
+                        $(
+                            Self::[<$feature:camel>] =>
+                                <[<$feature:camel Feature>] as StorageFeature>::should_disable(
+                                    config,
+                                    current_version,
+                                    is_store_empty,
+                                ),
+                        )*
+                    }
+                }
+
                 /// Mutates [`StorageFeatures`] to reflect the enablement of this feature
                 fn mark_as_enabled(self, features: &mut StorageFeatures) {
                     match self {
@@ -577,6 +810,25 @@ macro_rules! storage_features {
                         )*
                     }
                 }
+
+                async fn disable(
+                    self,
+                    storage: &mut PartitionStore,
+                    cancel: &CancellationToken,
+                    config: &Configuration,
+                    features: &mut LoadedStorageFeatures,
+                ) -> Result<(), MigrationError> {
+                    match self {
+                        $(
+                            Self::[<$feature:camel>] => disable_helper::<[<$feature:camel Feature>]>(
+                                storage,
+                                cancel,
+                                config,
+                                features,
+                            ).await,
+                        )*
+                    }
+                }
             }
 
             impl std::fmt::Display for KnownStorageFeature {
@@ -598,6 +850,7 @@ use storage_features;
 
 #[cfg(test)]
 mod tests {
+    use super::StorageFeatureChange::{Disable, Enable};
     use super::*;
 
     #[test]
@@ -670,20 +923,146 @@ mod tests {
         let current_version = SemanticRestateVersion::new(2, 0, 0);
         let features =
             LoadedStorageFeatures::load(None, StorageVersion::V1_5, &current_version).unwrap();
-        let config = Configuration::default();
+        let mut config = Configuration::default();
 
         assert_eq!(
             features.automatic_changes(&config, &current_version, false),
-            [KnownStorageFeature::VqueueMetadataCleanupV1]
+            [Enable(KnownStorageFeature::VqueueMetadataCleanupV1),]
         );
         assert_eq!(
             features.automatic_changes(&config, &current_version, true),
             [
-                KnownStorageFeature::MigratedToScopedPromiseAndStateTables,
-                KnownStorageFeature::MigratedToScopedStateTable,
-                KnownStorageFeature::MigratedToScopedPromiseTable,
-                KnownStorageFeature::VqueueMetadataCleanupV1,
+                Enable(KnownStorageFeature::MigratedToScopedPromiseAndStateTables),
+                Enable(KnownStorageFeature::MigratedToScopedStateTable),
+                Enable(KnownStorageFeature::MigratedToScopedPromiseTable),
+                Enable(KnownStorageFeature::VqueueMetadataCleanupV1),
             ]
         );
+
+        // The status-gauge options control registered instances, not the
+        // retired legacy feature.
+        config.common.experimental.set_complete_status_gauges(true);
+        config.common.experimental.set_status_gauges_reset(true);
+        for empty in [false, true] {
+            assert!(
+                !features
+                    .automatic_changes(&config, &current_version, empty)
+                    .iter()
+                    .any(|change| matches!(
+                        change,
+                        Enable(KnownStorageFeature::TrackStatusGauges)
+                            | Disable(KnownStorageFeature::TrackStatusGauges)
+                    ))
+            );
+        }
+    }
+
+    #[test]
+    fn retired_status_gauge_markers_load_but_never_change_automatically() {
+        let version = SemanticRestateVersion::new(1, 8, 3);
+        let mut features =
+            LoadedStorageFeatures::load(None, StorageVersion::V1_5, &version).unwrap();
+        features.set_enabled::<TrackStatusGaugesFeature>(Some(&version));
+        let persisted =
+            serde_json::from_value(serde_json::to_value(features.ledger()).unwrap()).unwrap();
+        let reloaded =
+            LoadedStorageFeatures::load(Some(persisted), StorageVersion::V1_5, &version).unwrap();
+        // Opening detects the marker, and deletes it with the legacy gauges.
+        assert!(reloaded.enabled().is_track_status_gauges);
+        let mut config = Configuration::default();
+        config.common.experimental.set_track_status_gauges(true);
+        for (features, empty) in [(&features, true), (&reloaded, false)] {
+            assert!(
+                !features
+                    .automatic_changes(&config, &version, empty)
+                    .iter()
+                    .any(|change| matches!(
+                        change,
+                        Enable(KnownStorageFeature::TrackStatusGauges)
+                            | Disable(KnownStorageFeature::TrackStatusGauges)
+                    ))
+            );
+        }
+    }
+
+    #[test]
+    fn indexes_v1_activation_respects_versions_and_opt_in() {
+        let mut config = Configuration::default();
+        for (version, opt_in, expected) in [
+            ("1.8.1", true, false),
+            ("1.8.2-dev", false, false),
+            ("1.8.2-dev", true, true),
+            ("1.8.2", true, true),
+            ("1.9.0", true, true),
+        ] {
+            let version = SemanticRestateVersion::parse(version).unwrap();
+            config.common.experimental.set_indexes_v1(opt_in);
+            let features =
+                LoadedStorageFeatures::load(None, StorageVersion::V1_5, &version).unwrap();
+            assert_eq!(
+                features
+                    .automatic_changes(&config, &version, false)
+                    .contains(&Enable(KnownStorageFeature::IndexesV1)),
+                expected,
+                "version={version}, opt_in={opt_in}",
+            );
+        }
+    }
+
+    #[test]
+    fn query_storage_floors_accept_release_candidates_and_preserve_higher_barriers() {
+        let candidate = SemanticRestateVersion::parse("1.8.2-dev").unwrap();
+        for feature in [
+            KnownStorageFeature::TrackStatusGauges,
+            KnownStorageFeature::IndexesV1,
+            KnownStorageFeature::QueryRegistry,
+        ] {
+            assert_eq!(feature.min_required_version(), &candidate);
+        }
+
+        let mut features =
+            LoadedStorageFeatures::load(None, StorageVersion::None, &candidate).unwrap();
+        features.set_enabled::<TrackStatusGaugesFeature>(Some(&candidate));
+        features.set_enabled::<IndexesV1Feature>(Some(&candidate));
+        features.set_enabled::<QueryRegistryFeature>(Some(&candidate));
+        let persisted = features.ledger().clone();
+        assert!(
+            LoadedStorageFeatures::load(
+                Some(persisted.clone()),
+                StorageVersion::None,
+                &SemanticRestateVersion::new(1, 8, 1),
+            )
+            .is_err()
+        );
+        for version in [&candidate, &SemanticRestateVersion::new(1, 8, 2)] {
+            LoadedStorageFeatures::load(Some(persisted.clone()), StorageVersion::None, version)
+                .unwrap();
+        }
+
+        // Historical prototype stores keep their recorded floor and metadata.
+        let mut encoded = serde_json::to_value(persisted).unwrap();
+        encoded["features"]["query-registry"]["min_required_version"] = "1.8.3-dev".into();
+        encoded["features"]["query-registry"]["enabled_by_version"] = "1.8.3-dev".into();
+        encoded["features"]["query-registry"]["future-metadata"] =
+            serde_json::json!({ "value": 1 });
+        let higher: PersistedEnabledFeatures = serde_json::from_value(encoded).unwrap();
+        for version in [&candidate, &SemanticRestateVersion::new(1, 8, 2)] {
+            let error =
+                LoadedStorageFeatures::load(Some(higher.clone()), StorageVersion::None, version)
+                    .unwrap_err();
+            assert_eq!(
+                error.required_min_version,
+                SemanticRestateVersion::parse("1.8.3-dev").unwrap()
+            );
+            assert_eq!(error.features, ["query-registry"]);
+        }
+        let mut reloaded = LoadedStorageFeatures::load(
+            Some(higher.clone()),
+            StorageVersion::None,
+            &SemanticRestateVersion::new(1, 9, 0),
+        )
+        .unwrap();
+        assert!(!reloaded.set_enabled::<QueryRegistryFeature>(Some(&candidate)));
+        assert_eq!(reloaded.ledger(), &higher);
     }
 }

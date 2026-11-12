@@ -1210,6 +1210,75 @@ experimental! {
     ///
     /// Since v1.8.2
     protocol_v8,
+
+    /// # Status Gauges For VQueue Entries
+    ///
+    /// Maintains current stage/status counts for VQueue entries by service,
+    /// deployment, and virtual object. Counts include invocations and state
+    /// mutations, retaining completed entries until deletion. Each partition starts
+    /// counting the entries written from then on; entries that existed before are
+    /// only counted once `experimental-enable-complete-status-gauges` completes the
+    /// gauges. Until then, queries of the statistics tables fail on that partition.
+    ///
+    /// Maintenance persists across restarts even if this flag is removed, unless
+    /// status gauges are explicitly reset. Statistics-table visibility is controlled
+    /// separately on the query coordinator.
+    ///
+    /// Since v1.8.2
+    track_status_gauges,
+
+    /// # Complete status gauges
+    ///
+    /// Implies `experimental-enable-track-status-gauges`, and also requests counting
+    /// the entries that existed before the gauges were maintained. Enable
+    /// `worker.storage.enable-eager-migrations-on-startup` to run this pass before
+    /// each partition starts; otherwise the pass waits. This can increase startup
+    /// time; an interrupted pass resumes where it stopped. Once complete, the
+    /// partition answers statistics queries. Removing this flag later does not
+    /// undo completion.
+    ///
+    /// Since v1.8.2
+    complete_status_gauges,
+
+    /// # Reset status gauges
+    ///
+    /// Deletes the local service, deployment, and virtual-object status gauges and
+    /// stops maintaining them when each partition starts. While enabled, this takes
+    /// precedence over the other status-gauge options, and statistics queries fail
+    /// on the partition. Statistics-table visibility is controlled independently
+    /// on the query coordinator.
+    ///
+    /// To rebuild the counts from retained VQueue entries, turn this option off,
+    /// enable `experimental-enable-complete-status-gauges` and
+    /// `worker.storage.enable-eager-migrations-on-startup`, and restart the nodes.
+    /// Invocation and VQueue entry data are preserved during reset.
+    ///
+    /// Since v1.8.2
+    status_gauges_reset,
+
+    /// # [WIP] Secondary Indexes for vqueue entries
+    ///
+    /// Maintains the secondary indexes of VQueue entries for the entries written
+    /// from then on, and the busy-vqueue index. Entries that existed before are
+    /// only in the entry indexes once `experimental-enable-complete-indexes-v1`
+    /// completes them; until then, reads of the entry indexes fail on that
+    /// partition. Maintenance persists across restarts even if this flag is
+    /// removed.
+    ///
+    /// Since v1.8.2
+    indexes_v1,
+
+    /// # [WIP] Complete the secondary indexes for vqueue entries
+    ///
+    /// Maintains the entry indexes, as `experimental-enable-indexes-v1` does, and
+    /// also requests indexing the entries that existed before. It does not maintain
+    /// the busy-vqueue index. Enable `worker.storage.enable-eager-migrations-on-startup`
+    /// to run this pass before each partition starts; otherwise the pass waits.
+    /// This can increase startup time; an interrupted pass resumes where it
+    /// stopped. Removing this flag later does not undo completion.
+    ///
+    /// Since v1.8.2
+    complete_indexes_v1,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
