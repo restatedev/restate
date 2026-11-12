@@ -15,6 +15,8 @@ use super::stats::EntryStatistics;
 use super::{EntryKey, EntryMetadata, EntryMetadataRef, Stage};
 use crate::migration_job::MigrationJobIds;
 
+/// Processing status. Native ordering follows the stored discriminants; it is
+/// neither a lifecycle progression nor the ordering of the SQL display names.
 #[derive(
     Debug,
     strum::Display,
@@ -25,6 +27,8 @@ use crate::migration_job::MigrationJobIds;
     Copy,
     Eq,
     PartialEq,
+    Ord,
+    PartialOrd,
     bilrost::Enumeration,
 )]
 #[repr(u8)]

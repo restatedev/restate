@@ -8,12 +8,24 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Shared query interfaces.
+//! Shared query interfaces: the query engine contract, and the logical schemas
+//! and typed selections that query adapters and storage implementations share.
+//!
+//! - [`schema`] declares logical tables: their columns, native value types, SQL
+//!   view and sharding. [`define_schema!`] generates a schema from one column list.
+//! - [`selection`] states which rows of a schema a read must return, as typed
+//!   conditions on its columns, and derives candidate domains from SQL predicates.
+//!
+//! Physical key layouts, encodings and scan bounds stay in storage crates.
 
 mod diagnostics;
 mod engine;
 pub mod errors;
+pub mod schema;
+pub mod selection;
 mod writer;
+
+pub use schema::{LogicalSchema, RowBuilder, SelectionSchema, ShardingScheme};
 
 use std::any::Any;
 
