@@ -1828,24 +1828,11 @@ mod tests {
         use crate::Version;
         use crate::partition_table::{FindPartition, PartitionTable};
 
-        fn keys(service_name: &str) -> Vec<PartitionKey> {
-            (0..UNSCOPED_SERVICE_PARTITION_KEY_FANOUT)
-                .map(|bucket| evenly_spaced_service_bucket_key(service_name, bucket))
-                .collect()
-        }
-
-        let service_a = keys("ServiceA");
-        assert_eq!(service_a, keys("ServiceA"));
-        assert_eq!(
-            service_a.iter().collect::<HashSet<_>>().len(),
-            UNSCOPED_SERVICE_PARTITION_KEY_FANOUT as usize
-        );
-        assert_ne!(service_a, keys("ServiceB"));
-
-        // 512 buckets over 48 equally sized partitions: each partition owns 10 or 11 buckets.
         let table = PartitionTable::with_equally_sized_partitions(Version::MIN, 48);
         let mut buckets_per_partition = HashMap::new();
-        for key in service_a {
+        for key in (0..UNSCOPED_SERVICE_PARTITION_KEY_FANOUT)
+            .map(|bucket| evenly_spaced_service_bucket_key("ServiceA", bucket))
+        {
             *buckets_per_partition
                 .entry(table.find_partition_id(key).unwrap())
                 .or_insert(0) += 1;

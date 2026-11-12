@@ -190,13 +190,16 @@ pub enum ClusterFeature {
     /// Like [`ClusterFeature::ControlledIdempotentSharding`], this is a one-way, cluster-wide
     /// decision fixed at provisioning time: switching would re-shard idempotent invocations
     /// onto different partitions and break deduplication.
+    ///
+    /// Not part of [`ClusterFeature::default_features`] yet: it is only enabled when the
+    /// provisioning node sets `experimental-enable-evenly-spaced-service-buckets`.
     #[cfg_attr(feature = "clap", clap(skip))]
     EvenlySpacedServiceBuckets,
 }
 
 impl ClusterFeature {
     pub fn default_features() -> EnumSet<Self> {
-        enumset::enum_set!(Self::ControlledIdempotentSharding | Self::EvenlySpacedServiceBuckets)
+        enumset::enum_set!(Self::ControlledIdempotentSharding)
     }
 }
 

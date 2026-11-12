@@ -614,7 +614,7 @@ impl Node {
                             &metadata_writer,
                             &config,
                             &cluster_configuration,
-                            ClusterFeature::default_features(),
+                            provisioning_features(&config),
                         )
                         .await;
 
@@ -849,6 +849,19 @@ impl ClusterConfiguration {
             bifrost_provider: ProviderConfiguration::from_configuration(configuration),
         }
     }
+}
+
+/// Cluster features to enable when this node provisions the cluster.
+fn provisioning_features(config: &Configuration) -> EnumSet<ClusterFeature> {
+    let mut features = ClusterFeature::default_features();
+    if config
+        .common
+        .experimental
+        .is_evenly_spaced_service_buckets_enabled()
+    {
+        features |= ClusterFeature::EvenlySpacedServiceBuckets;
+    }
+    features
 }
 
 /// Provision the cluster metadata. Returns `true` if the cluster was newly provisioned. Returns
