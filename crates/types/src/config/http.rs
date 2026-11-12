@@ -112,12 +112,15 @@ pub struct HttpOptions {
     /// existed when they were opened and newly added backends receive no
     /// traffic until a new connection is made.
     ///
-    /// A retired connection stays open until its last in-flight invocation
-    /// completes. With long-running invocations, a short max age can
-    /// therefore pile up many open connections to the deployment, each
-    /// holding only a few long streams. It is recommended to leave this unset,
-    /// or to set it to a high value (e.g. tens of minutes) that is well above
-    /// the typical invocation duration.
+    /// A retired connection stays open until its longest in-flight request
+    /// completes, so a max age close to how long requests stay open leaves
+    /// many connections open to the deployment at once. Only set this if your
+    /// deployment sits behind an L4 load balancer whose backends change over
+    /// time; otherwise leave it unset. When you set it, choose a value of at
+    /// least 10x the longest time a single request to your deployment usually
+    /// stays open, that is how long handlers run before they complete or
+    /// suspend (not the end-to-end invocation duration, which can include
+    /// suspensions). If unsure, 15 to 30 minutes is a safe starting point.
     ///
     /// The minimum supported is 30 seconds, to avoid excessive connection
     /// churn. Any value below this is raised to 30 seconds automatically.
