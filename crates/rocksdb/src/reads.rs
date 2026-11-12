@@ -59,7 +59,7 @@
 //!
 //!     // Every read through a snapshot sees the table as it was at this moment.
 //!     let snapshot = ReadSnapshot::new(&table, table.gate())?;
-//!     let order = snapshot.reader(Cf::Rows).get(b"order-1")?;
+//!     let order = snapshot.reader().get(Cf::Rows, b"order-1")?;
 //!
 //!     let mut rows = snapshot.iterator(Cf::Rows, Default::default());
 //!     rows.seek(b"order-");
@@ -86,7 +86,7 @@
 //!     });
 //!
 //!     // Without a snapshot, a read sees the latest data.
-//!     let latest = table.reader(Cf::Index).get(b"by-date")?;
+//!     let latest = table.reader().get(Cf::Index, b"by-date")?;
 //!     Ok(())
 //! }
 //! ```
@@ -153,8 +153,8 @@
 //! fn pinned_value<C: ColumnFamilies>(scope: Scope<C>, cf: C::Cf) {
 //!     let value = {
 //!         let snapshot = ReadSnapshot::new(&scope, scope.gate()).unwrap();
-//!         let reader = snapshot.reader(cf);
-//!         reader.get_pinned(b"key").unwrap()
+//!         let reader = snapshot.reader();
+//!         reader.get_pinned(cf, b"key").unwrap()
 //!     };
 //!     drop(value);
 //! }
@@ -166,8 +166,8 @@
 //! fn batch<C: ColumnFamilies>(scope: Scope<C>, cf: C::Cf) {
 //!     let snapshot = ReadSnapshot::new(&scope, scope.gate()).unwrap();
 //!     let batch = {
-//!         let reader = snapshot.reader(cf);
-//!         reader.multi_get_pinned([b"key"], false).unwrap()
+//!         let reader = snapshot.reader();
+//!         reader.multi_get_pinned(cf, [b"key"], false).unwrap()
 //!     };
 //!     drop(batch);
 //! }
@@ -220,8 +220,8 @@
 //!     snapshot: &ReadSnapshot<C>,
 //!     cf: C::Cf,
 //! ) -> Vec<u8> {
-//!     let reader = snapshot.owned_reader(cf);
-//!     let value = reader.get_pinned(b"key").unwrap().unwrap();
+//!     let reader = snapshot.owned_reader();
+//!     let value = reader.get_pinned(cf, b"key").unwrap().unwrap();
 //!     drop(reader);
 //!     value.to_vec()
 //! }
@@ -233,8 +233,8 @@
 //!     snapshot: &ReadSnapshot<C>,
 //!     cf: C::Cf,
 //! ) -> Vec<u8> {
-//!     let reader = snapshot.owned_reader(cf);
-//!     let batch = reader.multi_get_pinned([b"key"], false).unwrap().into_owned();
+//!     let reader = snapshot.owned_reader();
+//!     let batch = reader.multi_get_pinned(cf, [b"key"], false).unwrap().into_owned();
 //!     let value = batch.get(0).unwrap().unwrap();
 //!     drop(batch);
 //!     value.to_vec()
