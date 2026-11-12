@@ -443,7 +443,11 @@ where
         // phase (after the transaction is dropped).
         let reader_for_bidi = invocation_reader.clone();
 
-        let mut txn = invocation_reader.transaction();
+        let mut txn = shortcircuit!(
+            invocation_reader
+                .transaction()
+                .map_err(InvokerError::from_journal_reader)
+        );
 
         // Read journal metadata from storage
         let journal_metadata = shortcircuit!(
