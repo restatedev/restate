@@ -15,7 +15,8 @@ use rocksdb::{BoundColumnFamily, DBPinnableBatch, DBPinnableSlice, ReadOptions, 
 use super::{ReadSource, Source, TOKEN};
 use crate::{RawRocksDb, RocksError};
 
-/// Point lookups on one column family, through a snapshot or of the latest data.
+/// Point lookups, through a snapshot or of the latest data. Each lookup chooses
+/// the column family it reads.
 ///
 /// `H` is what the reader reads through: a [`ReadSnapshot`](super::ReadSnapshot)
 /// or a [`Scope`](restate_util_lifecycle::Scope). The reader either borrows it,
@@ -29,10 +30,9 @@ pub struct Reader<'a, H> {
     // These options may point to our snapshot, so they must never leave this
     // type. They are dropped before `source`.
     options: ReadOptions,
-    // The database and the column family to read, looked up once, when the reader
-    // was created. Both point into the source.
+    // The database to read, looked up once, when the reader was created. It points
+    // into the source.
     db: &'a RawRocksDb,
-    cf: &'a Arc<BoundColumnFamily<'a>>,
     source: Source<'a, H>,
 }
 
@@ -41,15 +41,12 @@ pub struct Reader<'a, H> {
 pub type OwnedReader<H> = Reader<'static, H>;
 
 impl<'a, H: ReadSource> Reader<'a, H> {
-    // A reader of `source`'s column family `cf`. The database, the column family,
-    // and the options all come from `source` itself, so they point into it and
-    // nowhere else, which `into_owned` relies on.
-    pub(super) fn new(source: &'a H, cf: H::CfKey) -> Self {
-        let handles = source.handles(TOKEN);
+    // A reader of `source`. The database and the options both come from `source`
+    // itself, so they point into it and nowhere else, which `into_owned` relies on.
+    pub(super) fn new(source: &'a H) -> Self {
         Self {
             options: source.reader_options(TOKEN),
-            db: handles.database().inner().as_raw_db(),
-            cf: handles.get(cf),
+            db: source.handles(TOKEN).database().inner().as_raw_db(),
             source: Source::Borrowed(source),
         }
     }
@@ -81,32 +78,20 @@ impl<'a, H: ReadSource> Reader<'a, H> {
         let Self {
             options,
             db,
-            cf,
             source,
         } = self;
         let source = source.into_owned();
-        // SAFETY: `new` takes `db` and `cf` from the source's `CfHandles`. `cf`
-        // points to an `Arc` stored there, not to a copy, and `db` points into the
-        // `RocksDb` that the handles keep open. Both live in shared, heap-allocated
-        // state: the scope's node, and the `RocksDb` behind its `Arc`. Neither is
-        // replaced (see the safety contract of `ColumnFamilies`) or moved while
-        // that state is alive. `source` is a clone of the same scope or snapshot,
-        // so it keeps that same state alive for as long as the owned reader exists.
-        // The fields are private, and the methods only return values that borrow
-        // the reader, so nothing uses `db` or `cf` once the reader is gone.
-        let (db, cf) = unsafe {
-            (
-                std::mem::transmute::<&'a RawRocksDb, &'static RawRocksDb>(db),
-                std::mem::transmute::<
-                    &'a Arc<BoundColumnFamily<'a>>,
-                    &'static Arc<BoundColumnFamily<'static>>,
-                >(cf),
-            )
-        };
+        // SAFETY: `new` takes `db` from the source's `CfHandles`, and it points into
+        // the `RocksDb` that the handles keep open. That `RocksDb` lives behind an
+        // `Arc` in shared, heap-allocated state, so it isn't moved while that state
+        // is alive. `source` is a clone of the same scope or snapshot, so it keeps
+        // that same state alive for as long as the owned reader exists. The fields
+        // are private, and the methods only return values that borrow the reader,
+        // so nothing uses `db` once the reader is gone.
+        let db = unsafe { std::mem::transmute::<&'a RawRocksDb, &'static RawRocksDb>(db) };
         Reader {
             options,
             db,
-            cf,
             source: Source::Owned(source),
         }
     }
@@ -115,19 +100,31 @@ impl<'a, H: ReadSource> Reader<'a, H> {
 // Every method here returns values that borrow `self`, never values that live for
 // `'a`. For an owned reader, `'a` is `'static`, so a value living for `'a` could
 // outlive the snapshot or scope that keeps the database open.
-impl<H> Reader<'_, H> {
-    /// Reads the value of `key`, copied into a new vector.
-    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, RocksError> {
-        Ok(self.db.get_cf_opt(self.cf, key, &self.options)?)
+impl<H: ReadSource> Reader<'_, H> {
+    // The column family `cf` of the source. It points into the source, which the
+    // reader keeps alive.
+    fn cf(&self, cf: H::CfKey) -> &Arc<BoundColumnFamily<'_>> {
+        self.source.get().handles(TOKEN).get(cf)
     }
 
-    /// Reads the value of `key` without copying it. The returned value points
-    /// into RocksDB's memory and keeps that memory in place until it is dropped.
-    pub fn get_pinned(&self, key: &[u8]) -> Result<Option<DBPinnableSlice<'_>>, RocksError> {
-        Ok(self.db.get_pinned_cf_opt(self.cf, key, &self.options)?)
+    /// Reads the value of `key` in column family `cf`, copied into a new vector.
+    pub fn get(&self, cf: H::CfKey, key: &[u8]) -> Result<Option<Vec<u8>>, RocksError> {
+        Ok(self.db.get_cf_opt(self.cf(cf), key, &self.options)?)
     }
 
-    /// Reads the values of all `keys` in one batched call, without copying them.
+    /// Reads the value of `key` in column family `cf` without copying it. The
+    /// returned value points into RocksDB's memory and keeps that memory in place
+    /// until it is dropped.
+    pub fn get_pinned(
+        &self,
+        cf: H::CfKey,
+        key: &[u8],
+    ) -> Result<Option<DBPinnableSlice<'_>>, RocksError> {
+        Ok(self.db.get_pinned_cf_opt(self.cf(cf), key, &self.options)?)
+    }
+
+    /// Reads the values of all `keys` in column family `cf` in one batched call,
+    /// without copying them.
     ///
     /// The results are in the same order as `keys`. Set `sorted_input` only if
     /// `keys` are already sorted in the column family's key order, so that
@@ -141,6 +138,7 @@ impl<H> Reader<'_, H> {
     /// one that can outlive the reader.
     pub fn multi_get_pinned<K, I>(
         &self,
+        cf: H::CfKey,
         keys: I,
         sorted_input: bool,
     ) -> Result<PinnedBatch<'_, H>, RocksError>
@@ -150,7 +148,7 @@ impl<H> Reader<'_, H> {
     {
         Ok(PinnedBatch {
             batch: self.db.batched_multi_get_pinned_batch_cf_opt(
-                self.cf,
+                self.cf(cf),
                 keys,
                 sorted_input,
                 &self.options,

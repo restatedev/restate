@@ -110,18 +110,18 @@ impl<C: ColumnFamilies> ReadSnapshot<C> {
         &self.inner.scope
     }
 
-    /// A reader for point lookups on one column family, through this snapshot.
-    /// See [`Reader`] for its settings.
-    pub fn reader(&self, cf: C::Cf) -> Reader<'_, Self> {
-        Reader::new(self, cf)
+    /// A reader for point lookups through this snapshot. Each lookup chooses the
+    /// column family it reads. See [`Reader`] for its settings.
+    pub fn reader(&self) -> Reader<'_, Self> {
+        Reader::new(self)
     }
 
     /// Like [`Self::reader`], but the reader holds its own clone of this snapshot.
     /// A cursor can keep it across pauses, move it between threads, and look up
     /// one batch after another with it. The same as calling
     /// [`Reader::into_owned`] on a borrowed reader.
-    pub fn owned_reader(&self, cf: C::Cf) -> OwnedReader<Self> {
-        self.reader(cf).into_owned()
+    pub fn owned_reader(&self) -> OwnedReader<Self> {
+        self.reader().into_owned()
     }
 
     /// An iterator over one column family that borrows this snapshot.

@@ -15,7 +15,7 @@
 //! Reads go through a scope whose payload holds the column families to read,
 //! in a [`CfHandles`]. The payload implements [`ColumnFamilies`] to hand them
 //! out, and chooses a key type ([`ColumnFamilies::Cf`]) that says which column
-//! family a reader or iterator reads:
+//! family a reader lookup or an iterator reads:
 //!
 //! ```no_run
 //! use std::sync::Arc;
@@ -59,7 +59,7 @@
 //!
 //!     // Every read through a snapshot sees the table as it was at this moment.
 //!     let snapshot = ReadSnapshot::new(&table, table.gate())?;
-//!     let order = snapshot.reader(Cf::Rows).get(b"order-1")?;
+//!     let order = snapshot.reader().get(Cf::Rows, b"order-1")?;
 //!
 //!     let mut rows = snapshot.iterator(Cf::Rows, Default::default());
 //!     rows.seek(b"order-");
@@ -86,7 +86,7 @@
 //!     });
 //!
 //!     // Without a snapshot, a read sees the latest data.
-//!     let latest = table.reader(Cf::Index).get(b"by-date")?;
+//!     let latest = table.reader().get(Cf::Index, b"by-date")?;
 //!     Ok(())
 //! }
 //! ```
@@ -100,8 +100,9 @@
 //! | Holds a lease                    | Yes, from the gate it was given          | No                                                                                    |
 //! | Closing that gate waits for it   | Yes                                      | No                                                                                    |
 //!
-//! Both read all of the scope's column families: each reader or iterator reads
-//! one of them. Both offer the same readers, iterators, and multi-get batches.
+//! Both read all of the scope's column families: each reader lookup, and each
+//! iterator, reads one of them. Both offer the same readers, iterators, and
+//! multi-get batches.
 //!
 //! Reads block the calling thread. This module doesn't schedule or cancel
 //! reads; that is up to the caller. Work that reads on a background executor
@@ -153,8 +154,8 @@
 //! fn pinned_value<C: ColumnFamilies>(scope: Scope<C>, cf: C::Cf) {
 //!     let value = {
 //!         let snapshot = ReadSnapshot::new(&scope, scope.gate()).unwrap();
-//!         let reader = snapshot.reader(cf);
-//!         reader.get_pinned(b"key").unwrap()
+//!         let reader = snapshot.reader();
+//!         reader.get_pinned(cf, b"key").unwrap()
 //!     };
 //!     drop(value);
 //! }
@@ -166,8 +167,8 @@
 //! fn batch<C: ColumnFamilies>(scope: Scope<C>, cf: C::Cf) {
 //!     let snapshot = ReadSnapshot::new(&scope, scope.gate()).unwrap();
 //!     let batch = {
-//!         let reader = snapshot.reader(cf);
-//!         reader.multi_get_pinned([b"key"], false).unwrap()
+//!         let reader = snapshot.reader();
+//!         reader.multi_get_pinned(cf, [b"key"], false).unwrap()
 //!     };
 //!     drop(batch);
 //! }
@@ -220,8 +221,8 @@
 //!     snapshot: &ReadSnapshot<C>,
 //!     cf: C::Cf,
 //! ) -> Vec<u8> {
-//!     let reader = snapshot.owned_reader(cf);
-//!     let value = reader.get_pinned(b"key").unwrap().unwrap();
+//!     let reader = snapshot.owned_reader();
+//!     let value = reader.get_pinned(cf, b"key").unwrap().unwrap();
 //!     drop(reader);
 //!     value.to_vec()
 //! }
@@ -233,8 +234,8 @@
 //!     snapshot: &ReadSnapshot<C>,
 //!     cf: C::Cf,
 //! ) -> Vec<u8> {
-//!     let reader = snapshot.owned_reader(cf);
-//!     let batch = reader.multi_get_pinned([b"key"], false).unwrap().into_owned();
+//!     let reader = snapshot.owned_reader();
+//!     let batch = reader.multi_get_pinned(cf, [b"key"], false).unwrap().into_owned();
 //!     let value = batch.get(0).unwrap().unwrap();
 //!     drop(batch);
 //!     value.to_vec()
@@ -292,17 +293,19 @@ pub use self::snapshot::ReadSnapshot;
 /// as long as `self` and are never replaced. Returning a field of `self` does
 /// that.
 pub unsafe trait ColumnFamilies: ScopePayload {
-    /// Chooses which of the column families a reader or iterator reads.
+    /// Chooses which of the column families a reader lookup or an iterator
+    /// reads.
     ///
     /// A snapshot always covers all of the column families. This type only says
-    /// which one a particular reader or iterator uses, because RocksDB reads from
+    /// which one a particular lookup or iterator uses, because RocksDB reads from
     /// one column family at a time.
     ///
     /// The implementer decides what the key means. A partition, for example,
     /// uses the key kind: each key kind is stored in exactly one column family,
     /// so the key kind tells the partition which column family holds those keys.
-    /// This doesn't limit a reader to keys of that kind. It can read any key in
-    /// that column family, which may also hold keys of other kinds.
+    /// This doesn't limit a lookup or an iterator to keys of that kind. It can
+    /// read any key in that column family, which may also hold keys of other
+    /// kinds.
     type Cf: Enum + Copy;
 
     /// The column families to read, and the database they belong to.

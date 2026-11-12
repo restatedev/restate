@@ -28,20 +28,25 @@ use super::{ColumnFamilies, OwnedReadIterator, OwnedReader, ReadIterator, ReadSo
 /// its own lease from the gate, like other background reads.
 ///
 /// Only [`Scope`]s implement this trait.
-pub trait ScopedReads: ReadSource {
+// Readers take the source's column family type from the sealed trait. Making it
+// equal to `Cf` lets code that is generic over `ScopedReads` pass a `Self::Cf`
+// to a reader's lookups.
+pub trait ScopedReads:
+    ReadSource + super::sealed::Sealed<CfKey = <Self as ScopedReads>::Cf>
+{
     /// Chooses which of the scope's column families to read. See
     /// [`ColumnFamilies::Cf`].
     type Cf: Copy;
 
-    /// A reader for point lookups on one column family. Each lookup sees the
-    /// latest data. See [`Reader`] for its settings.
-    fn reader(&self, cf: Self::Cf) -> Reader<'_, Self>;
+    /// A reader for point lookups. Each lookup chooses the column family it reads,
+    /// and sees the latest data. See [`Reader`] for its settings.
+    fn reader(&self) -> Reader<'_, Self>;
 
     /// Like [`Self::reader`], but the reader holds its own clone of the scope. A
     /// cursor can keep it across pauses, move it between threads, and look up one
     /// batch after another with it. The same as calling [`Reader::into_owned`] on
     /// a borrowed reader.
-    fn owned_reader(&self, cf: Self::Cf) -> OwnedReader<Self>;
+    fn owned_reader(&self) -> OwnedReader<Self>;
 
     /// An iterator over one column family that borrows the scope. It sees the
     /// database as it was when the iterator was created.
@@ -66,12 +71,12 @@ pub trait ScopedReads: ReadSource {
 impl<C: ColumnFamilies> ScopedReads for Scope<C> {
     type Cf = C::Cf;
 
-    fn reader(&self, cf: C::Cf) -> Reader<'_, Self> {
-        Reader::new(self, cf)
+    fn reader(&self) -> Reader<'_, Self> {
+        Reader::new(self)
     }
 
-    fn owned_reader(&self, cf: C::Cf) -> OwnedReader<Self> {
-        self.reader(cf).into_owned()
+    fn owned_reader(&self) -> OwnedReader<Self> {
+        self.reader().into_owned()
     }
 
     fn iterator(&self, cf: C::Cf, options: ReadOptions) -> ReadIterator<'_, Self> {
