@@ -84,6 +84,18 @@ define_stage_keys! {
     Stage::Finished => FinishedKey,
 }
 
+/// The kind of the keys of entries in `stage`.
+pub(super) fn stage_key_kind(stage: Stage) -> KeyKind {
+    match stage {
+        Stage::Unknown => unreachable!(),
+        Stage::Inbox => KeyKind::VQueueInboxStage,
+        Stage::Running => KeyKind::VQueueRunningStage,
+        Stage::Suspended => KeyKind::VQueueSuspendedStage,
+        Stage::Paused => KeyKind::VQueuePausedStage,
+        Stage::Finished => KeyKind::VQueueFinishedStage,
+    }
+}
+
 pub(super) fn encode_stage_key(
     stage: Stage,
     qid: &VQueueId,
@@ -92,24 +104,7 @@ pub(super) fn encode_stage_key(
     let mut key_buffer = [0u8; InboxKey::serialized_length_fixed()];
     {
         let mut buf = &mut key_buffer[..];
-        match stage {
-            Stage::Unknown => unreachable!(),
-            Stage::Inbox => {
-                KeyKind::VQueueInboxStage.serialize(&mut buf);
-            }
-            Stage::Running => {
-                KeyKind::VQueueRunningStage.serialize(&mut buf);
-            }
-            Stage::Suspended => {
-                KeyKind::VQueueSuspendedStage.serialize(&mut buf);
-            }
-            Stage::Paused => {
-                KeyKind::VQueuePausedStage.serialize(&mut buf);
-            }
-            Stage::Finished => {
-                KeyKind::VQueueFinishedStage.serialize(&mut buf);
-            }
-        }
+        stage_key_kind(stage).serialize(&mut buf);
         crate::keys::serialize(qid, &mut buf);
         crate::keys::serialize(entry_key, &mut buf);
     }
