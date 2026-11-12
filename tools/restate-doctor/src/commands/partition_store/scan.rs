@@ -13,10 +13,10 @@
 use anyhow::{Result, bail};
 use cling::prelude::*;
 use comfy_table::Table;
-use restate_partition_store::blob_table::BlobKey;
 use rocksdb::{IteratorMode, ReadOptions};
 use strum::VariantArray;
 
+use restate_partition_store::blob_table::BlobKey;
 use restate_partition_store::deduplication_table::DeduplicationKey;
 use restate_partition_store::fsm_table::PartitionStateMachineKey;
 use restate_partition_store::inbox_table::InboxKey;
@@ -43,6 +43,7 @@ use restate_util_bytecount::ByteCount;
 
 use crate::app::GlobalOpts;
 use crate::util::colorize::{color_legend, colorize_key_hex};
+use crate::util::decode_key::{decode_aggregated_stat_key, decode_registered_stat_key};
 use crate::util::decode_value::decode_value;
 use crate::util::hex_encode;
 use crate::util::rocksdb::{open_partition_store_db, resolve_partition_store_path};
@@ -446,6 +447,8 @@ fn decode_key(key: &[u8]) -> (String, Option<String>, Option<KeyKind>) {
         KeyKind::Blob => BlobKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
+        KeyKind::Stats => decode_aggregated_stat_key(key),
+        KeyKind::RegisteredStats => decode_registered_stat_key(key),
     };
 
     (kind_name, decoded, Some(key_kind))

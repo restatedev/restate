@@ -96,6 +96,11 @@ pub enum KeyKind {
     // stores large values (e.g. invocation outputs) separated from
     // the records referencing them
     Blob,
+
+    /// Stats and partition-level aggregates
+    Stats,
+    /// Statistics of registered instances, keyed by their `u32` physical ID.
+    RegisteredStats,
 }
 
 impl KeyKind {
@@ -160,6 +165,11 @@ impl KeyKind {
             KeyKind::VQueuePausedStage => b"qP",
             KeyKind::VQueueFinishedStage => b"qF",
             KeyKind::Blob => b"bl",
+
+            // zS prefix for partition-level counters and statistics. Those statistics
+            // will need to be reconstructed on partition split.
+            KeyKind::Stats => b"zS",
+            KeyKind::RegisteredStats => b"zR",
         }
     }
 
@@ -204,6 +214,8 @@ impl KeyKind {
             b"qS" => Some(KeyKind::VQueueSuspendedStage),
             b"qP" => Some(KeyKind::VQueuePausedStage),
             b"qF" => Some(KeyKind::VQueueFinishedStage),
+            b"zS" => Some(KeyKind::Stats),
+            b"zR" => Some(KeyKind::RegisteredStats),
             _ => None,
         }
     }
@@ -243,6 +255,10 @@ impl KeyKind {
         match kind {
             KeyKind::VQueueMeta => vqueue_meta_merge::full_merge(key, existing_val, operands),
             KeyKind::Blob => blob_table::merge::full_merge(key, existing_val, operands),
+            KeyKind::Stats => crate::stats::full_merge(key, existing_val, operands),
+            KeyKind::RegisteredStats => {
+                crate::stats::full_merge_registered(key, existing_val, operands)
+            }
             _ => None,
         }
     }
@@ -261,10 +277,12 @@ impl KeyKind {
                 return None;
             }
         };
-        trace!(?kind, "partial merge");
+        trace!(?kind, "partial merge {} operands", operands.len());
 
         match kind {
             KeyKind::Blob => blob_table::merge::partial_merge(key, operands),
+            KeyKind::Stats => crate::stats::partial_merge(key, operands),
+            KeyKind::RegisteredStats => crate::stats::partial_merge_registered(key, operands),
             _ => None,
         }
     }
