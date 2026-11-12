@@ -14,7 +14,7 @@ use std::sync::Arc;
 use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use anyhow::{Context, anyhow, bail};
 use bytes::BytesMut;
-use futures::TryStreamExt;
+use futures::{StreamExt, TryStreamExt};
 use metrics::Gauge;
 use object_store::path::Path as ObjectPath;
 use object_store::{
@@ -32,7 +32,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, Span, debug, info, instrument, warn};
 use url::Url;
 
-use restate_clock::WallClock;
+use restate_clock::{Clock, WallClock};
 use restate_core::Metadata;
 use restate_memory::ByteCount;
 use restate_metadata_store::MetadataStoreClient;
@@ -116,6 +116,9 @@ pub struct SnapshotRepository {
 
 /// S3 and GCS reject multipart uploads with more parts than this.
 const MULTIPART_UPLOAD_MAX_PARTS: u64 = 10_000;
+
+/// Maximum number of keys per delete request; S3 DeleteObjects accepts up to 1000.
+const DELETE_BATCH_SIZE: usize = 1000;
 
 /// How long `acquire_lease` waits for a lease held by this same node before reporting it as held.
 const SAME_NODE_LEASE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -646,23 +649,72 @@ impl SnapshotRepository {
     /// Deletes the objects of a snapshot that will not be published. Errors are only logged; the
     /// orphan sweep catches anything left behind.
     ///
-    /// Shared SSTs this upload created go last, and only while the lease is still valid, checked
-    /// before each delete: deletes may be retried for a while, and once the lease lapses another
-    /// node may publish a snapshot that deduplicated against them.
-    async fn discard_uploaded_files(
+    /// The snapshot's own objects are deleted unconditionally. Shared SSTs this upload created go
+    /// last, only after confirming the lease in the metadata store and never past the operation
+    /// deadline; whatever the lease refuses is left to the orphan sweep.
+    async fn discard_uploaded_files<C>(
         &self,
         progress: SnapshotUploadProgress,
-        lease_guard: &SnapshotLeaseGuard,
-    ) {
-        let shared = progress
-            .created_shared_ssts
-            .iter()
-            .take_while(|_| lease_guard.is_valid());
-        for path in progress.own_objects.iter().chain(shared) {
-            if let Err(err) = self.object_store.delete(path).await {
+        lease_guard: &SnapshotLeaseGuard<C>,
+    ) where
+        C: Clock + Clone + Send + Sync + 'static,
+    {
+        for path in progress.own_objects {
+            if let Err(err) = self.object_store.delete(&path).await {
                 info!(%err, %path, "Failed to delete object of unpublished snapshot");
             }
         }
+
+        self.delete_under_lease(progress.created_shared_ssts, lease_guard)
+            .await;
+    }
+
+    /// Deletes `paths` in batches of up to [`DELETE_BATCH_SIZE`], each through
+    /// [`SnapshotLeaseGuard::fenced`] using [`ObjectStore::delete_stream`]. Returns how many
+    /// objects were deleted and whether all of them are gone. NotFound counts as gone; a batch the
+    /// lease refuses, or any other error, means not all objects are gone.
+    async fn delete_under_lease<C>(
+        &self,
+        paths: Vec<ObjectPath>,
+        lease_guard: &SnapshotLeaseGuard<C>,
+    ) -> (usize, bool)
+    where
+        C: Clock + Clone + Send + Sync + 'static,
+    {
+        let mut deleted = 0;
+        let mut all_gone = true;
+
+        for batch in paths.chunks(DELETE_BATCH_SIZE) {
+            let batch = batch.to_vec();
+            let results = lease_guard
+                .fenced(async {
+                    self.object_store
+                        .delete_stream(futures::stream::iter(batch.into_iter().map(Ok)).boxed())
+                        .collect::<Vec<_>>()
+                        .await
+                })
+                .await;
+
+            let Some(results) = results else {
+                debug!(
+                    "Snapshot lease no longer permits deletes; leaving the rest to the orphan sweep"
+                );
+                return (deleted, false);
+            };
+
+            for result in results {
+                match result {
+                    Ok(_) => deleted += 1,
+                    Err(object_store::Error::NotFound { .. }) => {}
+                    Err(err) => {
+                        warn!(%err, "Failed to delete snapshot object");
+                        all_gone = false;
+                    }
+                }
+            }
+        }
+
+        (deleted, all_gone)
     }
 
     /// If snapshot type is incremental, we will skip existing SST objects in the store based on
@@ -1190,8 +1242,13 @@ impl SnapshotRepository {
 
             // Errors are logged inside delete_snapshot_files; if cleanup fails,
             // these snapshots become orphans to be cleaned by future scan-sweep.
-            self.delete_snapshot_files(partition_id, snapshot_ref, &referenced_sst_keys)
-                .await;
+            self.delete_snapshot_files(
+                partition_id,
+                snapshot_ref,
+                &referenced_sst_keys,
+                lease_guard,
+            )
+            .await;
         }
 
         Ok(())
@@ -1244,12 +1301,13 @@ impl SnapshotRepository {
     }
 
     /// Best-effort deletion of snapshot files. Errors are logged but not propagated.
-    #[instrument(level = "warn", skip(self), fields(%partition_id, snapshot_id = %snapshot_ref.snapshot_id))]
+    #[instrument(level = "warn", skip(self, lease_guard), fields(%partition_id, snapshot_id = %snapshot_ref.snapshot_id))]
     async fn delete_snapshot_files(
         &self,
         partition_id: PartitionId,
         snapshot_ref: &SnapshotReference,
         referenced_sst_keys: &HashSet<ObjectPath>,
+        lease_guard: &SnapshotLeaseGuard,
     ) {
         let metadata_path = self
             .prefix
@@ -1285,7 +1343,7 @@ impl SnapshotRepository {
             }
         };
 
-        let mut any_failed = false;
+        let mut unreferenced = Vec::new();
         for file in &metadata.files {
             let filename = strip_leading_slash(&file.name);
             let path = self.resolve_file_path(
@@ -1300,24 +1358,24 @@ impl SnapshotRepository {
                 continue;
             }
 
-            if let Err(err) = self.object_store.delete(&path).await
-                && !matches!(err, object_store::Error::NotFound { .. })
-            {
-                warn!(%path, %err, "Failed to delete snapshot object");
-                any_failed = true;
-            }
+            unreferenced.push(path);
         }
+
+        let (_, files_gone) = self.delete_under_lease(unreferenced, lease_guard).await;
+        let mut any_failed = !files_gone;
 
         // Only delete metadata.json after all SST deletions succeed.
         // This ensures retries can still identify which SSTs need to be deleted.
         // If we deleted metadata while SSTs remain, subsequent retries would see
         // NotFound for metadata.json and return Ok(()), leaving orphaned SSTs.
-        if !any_failed
-            && let Err(err) = self.object_store.delete(&metadata_path).await
-            && !matches!(err, object_store::Error::NotFound { .. })
-        {
-            warn!(%metadata_path, %err, "Failed to delete snapshot metadata");
-            any_failed = true;
+        if files_gone {
+            let (_, metadata_gone) = self
+                .delete_under_lease(vec![metadata_path.clone()], lease_guard)
+                .await;
+            if !metadata_gone {
+                warn!(%metadata_path, "Failed to delete snapshot metadata");
+                any_failed = true;
+            }
         }
 
         if any_failed {
@@ -1974,6 +2032,7 @@ mod tests {
     use url::Url;
 
     use restate_clock::time::MillisSinceEpoch;
+    use restate_clock::{Clock, MockClock};
     use restate_core::{Metadata, TestCoreEnv};
     use restate_object_store_util::create_object_store_client;
     use restate_test_util::tempdir;
@@ -1984,7 +2043,9 @@ mod tests {
     use restate_types::sharding::KeyRange;
     use restate_types::{GenerationalNodeId, SemanticRestateVersion};
 
+    use crate::snapshots::LEASE_DURATION;
     use crate::snapshots::SnapshotLeaseGuard;
+    use crate::snapshots::SnapshotLeaseManager;
     use crate::snapshots::repository::{LatestSnapshotVersion, SnapshotUploadProgress};
 
     use super::{
@@ -2587,6 +2648,92 @@ mod tests {
                 assert_eq!(result?.latest_snapshot_id, snapshot.snapshot_id);
             }
         }
+        Ok(())
+    }
+
+    /// Shared SSTs are deleted only while the store confirms the lease; a stale guard may still
+    /// delete the unpublished snapshot's own files but must leave shared SSTs for the orphan sweep.
+    #[restate_core::test]
+    async fn discard_uploaded_files_fences_shared_ssts() -> anyhow::Result<()> {
+        let env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let repository = mock_repository(1);
+        let partition = repository.partition_snapshots_prefix(PartitionId::MIN);
+        let store = repository.object_store.clone();
+
+        let n1_clock = MockClock::new();
+        let n2_clock = MockClock::with_timestamp(n1_clock.recent());
+        let guard = SnapshotLeaseManager::new_with_clock(
+            env.metadata_store_client.clone(),
+            GenerationalNodeId::new(1, 1),
+            n1_clock,
+        )
+        .acquire(PartitionId::MIN)
+        .await?;
+        let lease_lost = guard.lease_lost();
+
+        let own = partition.clone().join("lsn_1-snap_1").join("data.sst");
+        let shared = partition.clone().join("ssts").join("shared.sst");
+        store.put(&own, PutPayload::from_static(b"own")).await?;
+        store
+            .put(&shared, PutPayload::from_static(b"shared"))
+            .await?;
+
+        // Another node takes over once its clock passes the expiry; the first guard's local clock
+        // still considers its lease valid.
+        n2_clock.advance(LEASE_DURATION + Duration::from_millis(1000));
+        let _n2_guard = SnapshotLeaseManager::new_with_clock(
+            env.metadata_store_client.clone(),
+            GenerationalNodeId::new(2, 1),
+            n2_clock,
+        )
+        .acquire(PartitionId::MIN)
+        .await?;
+        assert!(guard.is_valid());
+
+        repository
+            .discard_uploaded_files(
+                SnapshotUploadProgress {
+                    snapshot_complete_path: partition
+                        .clone()
+                        .join("lsn_1-snap_1")
+                        .join("snapshot.json"),
+                    own_objects: vec![own.clone()],
+                    created_shared_ssts: vec![shared.clone()],
+                },
+                &guard,
+            )
+            .await;
+
+        assert!(store.head(&own).await.is_err(), "own objects are deleted");
+        assert!(
+            store.head(&shared).await.is_ok(),
+            "shared SST must survive a stale guard"
+        );
+        assert!(
+            lease_lost.is_cancelled(),
+            "a store mismatch fires lease_lost"
+        );
+
+        // A held lease may delete the shared SST.
+        let shared_held = partition.clone().join("ssts").join("held.sst");
+        store
+            .put(&shared_held, PutPayload::from_static(b"held"))
+            .await?;
+        repository
+            .discard_uploaded_files(
+                SnapshotUploadProgress {
+                    snapshot_complete_path: partition.join("lsn_2-snap_2").join("snapshot.json"),
+                    own_objects: vec![],
+                    created_shared_ssts: vec![shared_held.clone()],
+                },
+                &SnapshotLeaseGuard::noop(),
+            )
+            .await;
+        assert!(
+            store.head(&shared_held).await.is_err(),
+            "held lease deletes shared SSTs"
+        );
+
         Ok(())
     }
 
