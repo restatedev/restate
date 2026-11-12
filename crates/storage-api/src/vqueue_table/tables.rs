@@ -33,6 +33,7 @@ use crate::Result;
     strum::EnumCount,
     strum::FromRepr,
     strum::Display,
+    strum::VariantArray,
 )]
 #[repr(u8)]
 #[strum(serialize_all = "kebab-case")]

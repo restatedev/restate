@@ -96,6 +96,15 @@ pub enum KeyKind {
     // stores large values (e.g. invocation outputs) separated from
     // the records referencing them
     Blob,
+
+    /// Partition-level statistics: aggregate indexes keyed by the index registry's
+    /// `u32` index ID (see `crate::stats`).
+    Stats,
+    /// Retired. A pre-release build kept statistics under this kind with a
+    /// different layout. Nothing decodes or writes them, a later commit deletes
+    /// them when a store opens, and the bytes are never reused.
+    #[deprecated(note = "statistics of a pre-release build; deleted at open, never read")]
+    LegacyStats,
 }
 
 impl KeyKind {
@@ -160,6 +169,10 @@ impl KeyKind {
             KeyKind::VQueuePausedStage => b"qP",
             KeyKind::VQueueFinishedStage => b"qF",
             KeyKind::Blob => b"bl",
+
+            // Partition-level statistics; they are rebuilt on partition split.
+            KeyKind::Stats => b"zR",
+            KeyKind::LegacyStats => b"zS",
         }
     }
 
@@ -204,6 +217,8 @@ impl KeyKind {
             b"qS" => Some(KeyKind::VQueueSuspendedStage),
             b"qP" => Some(KeyKind::VQueuePausedStage),
             b"qF" => Some(KeyKind::VQueueFinishedStage),
+            b"zR" => Some(KeyKind::Stats),
+            b"zS" => Some(KeyKind::LegacyStats),
             _ => None,
         }
     }
@@ -243,6 +258,10 @@ impl KeyKind {
         match kind {
             KeyKind::VQueueMeta => vqueue_meta_merge::full_merge(key, existing_val, operands),
             KeyKind::Blob => blob_table::merge::full_merge(key, existing_val, operands),
+            KeyKind::Stats => crate::stats::full_merge(key, existing_val, operands),
+            // A later commit deletes retired keys at open. Until then, keep whatever
+            // is stored rather than failing the merge, which would fail the compaction.
+            KeyKind::LegacyStats => Some(existing_val.unwrap_or_default().to_vec()),
             _ => None,
         }
     }
@@ -261,10 +280,11 @@ impl KeyKind {
                 return None;
             }
         };
-        trace!(?kind, "partial merge");
+        trace!(?kind, "partial merge {} operands", operands.len());
 
         match kind {
             KeyKind::Blob => blob_table::merge::partial_merge(key, operands),
+            KeyKind::Stats => crate::stats::partial_merge(key, operands),
             _ => None,
         }
     }
@@ -282,6 +302,7 @@ impl KeyKind {
 
         match kind {
             KeyKind::Blob => blob_table::merge::compaction_filter(key, value),
+            KeyKind::Stats => crate::stats::compaction_filter(key, value),
             _ => CompactionDecision::Keep,
         }
     }
