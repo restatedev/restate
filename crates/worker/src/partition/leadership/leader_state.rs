@@ -258,10 +258,11 @@ impl LeaderState {
     }
 
     pub fn read_user_limit_counters(&self, keys: KeyRange) -> Vec<UserLimitCounterEntry> {
-        // Stamp counters with a key inside this partition's range so DataFusion's
-        // partition-aware scan accepts the row. Use the range start — counters are
-        // partition-scoped, not per-item, so any key in range is fine.
-        self.scheduler.scan_user_limit_counters(keys.start())
+        self.scheduler
+            .scan_user_limit_counters()
+            .into_iter()
+            .filter(|entry| keys.contains(&entry.partition_key))
+            .collect()
     }
 
     pub(super) fn network_events_tx(
