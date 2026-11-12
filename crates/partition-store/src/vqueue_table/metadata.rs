@@ -12,7 +12,7 @@ use restate_types::identifiers::PartitionKey;
 use restate_types::vqueues::VQueueId;
 
 use crate::TableKind::VQueue;
-use crate::keys::{EncodeTableKey, KeyKind, define_table_key};
+use crate::keys::{FixedLengthTableKey, KeyKind, define_table_key};
 
 // 'qm' | QID
 define_table_key!(
@@ -48,14 +48,9 @@ impl MetaKey {
     pub const fn serialized_length_fixed() -> usize {
         KeyKind::SERIALIZED_LENGTH + VQueueId::serialized_length_fixed()
     }
-
-    #[inline]
-    pub fn to_bytes(&self) -> [u8; Self::serialized_length_fixed()] {
-        let mut buf = [0u8; Self::serialized_length_fixed()];
-        self.serialize_to(&mut buf.as_mut());
-        buf
-    }
 }
+
+impl FixedLengthTableKey<{ MetaKey::serialized_length_fixed() }> for MetaKey {}
 
 impl From<&VQueueId> for MetaKey {
     #[inline]

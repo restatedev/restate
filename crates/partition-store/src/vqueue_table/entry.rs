@@ -14,7 +14,7 @@ use restate_types::identifiers::{BaseEntryId, InvocationId, PartitionKey};
 use restate_types::vqueues::EntryId;
 
 use crate::TableKind;
-use crate::keys::{KeyKind, define_table_key};
+use crate::keys::{FixedLengthTableKey, KeyKind, define_table_key};
 
 // `qs` | PKEY | ENTRY_ID
 define_table_key!(
@@ -32,6 +32,8 @@ impl EntryStatusKey {
             + EntryId::serialized_length_fixed()
     }
 }
+
+impl FixedLengthTableKey<{ EntryStatusKey::serialized_length_fixed() }> for EntryStatusKey {}
 
 impl From<BaseEntryId> for EntryStatusKey {
     #[inline]
@@ -66,6 +68,7 @@ pub(super) fn entry_status_header_from_raw(
         header.stats,
         header.status,
     )
+    .with_touched_by(header.touched_by)
 }
 
 #[cfg(test)]

@@ -20,9 +20,11 @@ use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 /// fragment their payload into many tiny DATA frames.
 const MIN_DATA_FRAME_BUDGET: usize = 25_600;
 
-/// Lower bound for `http2-max-connection-age`. Shorter ages make every
-/// connection re-handshake too often to be worth the rebalancing.
-const MIN_HTTP2_MAX_CONNECTION_AGE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// Lower bound for `http2-max-connection-age`. The age is counted from when the
+/// connection is created, before the handshake, so it must comfortably outlive
+/// the connect timeout to be reused at all instead of degrading into roughly
+/// one connection per request.
+const MIN_HTTP2_MAX_CONNECTION_AGE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// # HTTP client options
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
@@ -110,8 +112,18 @@ pub struct HttpOptions {
     /// existed when they were opened and newly added backends receive no
     /// traffic until a new connection is made.
     ///
-    /// The minimum supported is 10 minutes, to avoid excessive connection
-    /// churn. Any value below this is raised to 10 minutes automatically.
+    /// A retired connection stays open until its longest in-flight request
+    /// completes, so a max age close to how long requests stay open leaves
+    /// many connections open to the deployment at once. Only set this if your
+    /// deployment sits behind an L4 load balancer whose backends change over
+    /// time; otherwise leave it unset. When you set it, choose a value of at
+    /// least 10x the longest time a single request to your deployment usually
+    /// stays open, that is how long handlers run before they complete or
+    /// suspend (not the end-to-end invocation duration, which can include
+    /// suspensions). If unsure, 15 to 30 minutes is a safe starting point.
+    ///
+    /// The minimum supported is 30 seconds, to avoid excessive connection
+    /// churn. Any value below this is raised to 30 seconds automatically.
     /// Unset means connections live until they are idle or closed by the peer.
     ///
     /// Since: v1.8.2
@@ -225,7 +237,7 @@ impl HttpOptions {
             .clamp(16_384, 16_777_215)
     }
 
-    /// Configured max connection age, raised to at least 10 minutes. `None`
+    /// Configured max connection age, raised to at least 30 seconds. `None`
     /// when unset (no age-based eviction).
     pub fn http2_max_connection_age(&self) -> Option<std::time::Duration> {
         self.http2_max_connection_age

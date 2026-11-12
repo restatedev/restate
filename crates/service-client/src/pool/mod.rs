@@ -199,7 +199,7 @@ impl EvictionPolicy {
 
     /// Returns why `con` should leave the pool at `now`, or `None` to keep it.
     fn evict_reason<C>(&self, con: &Connection<C>, now: MillisSinceEpoch) -> Option<EvictReason> {
-        if con.retire_at().is_some_and(|retire_at| now >= retire_at) {
+        if con.is_aged(now) {
             return Some(EvictReason::Aged);
         }
 
@@ -230,6 +230,8 @@ impl EvictionPolicy {
 ///   complete (see below).
 ///   The next request opens a fresh connection, which lets an L4 load
 ///   balancer re-spread connections across the backends available now.
+///   [`AuthorityPool::poll_ready`] already skips aged connections as soon as
+///   their deadline passes, so this task only reclaims them from the pool.
 ///
 /// Authority pools whose connection list becomes empty are removed from the
 /// [`DashMap`].

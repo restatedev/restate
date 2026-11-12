@@ -71,6 +71,10 @@ pub struct RawStatusHeaderRef<'a> {
     pub stats: EntryStatistics,
     #[bilrost(tag(8))]
     pub status: Status,
+    /// Coverage tokens for index-build migration jobs that have applied this
+    /// entry's contribution. Encoded as [`MigrationJobIds`]; omitted when empty.
+    #[bilrost(tag(9), encoding(plainbytes))]
+    pub touched_by: &'a [u8],
 }
 
 #[derive(Debug, Clone, bilrost::Message)]
@@ -93,6 +97,80 @@ pub struct RawStatusHeader {
     pub stats: EntryStatistics,
     #[bilrost(tag(8))]
     pub status: Status,
+    /// Coverage tokens for index-build migration jobs that have applied this
+    /// entry's contribution. Encoded as [`MigrationJobIds`]; omitted when empty.
+    #[bilrost(tag(9), encoding(plainbytes))]
+    pub touched_by: Vec<u8>,
+}
+
+impl<'a> RawStatusHeaderRef<'a> {
+    /// Decodes a stored, length-delimited header, rejecting malformed tokens.
+    pub fn decode_stored(value: &mut &'a [u8]) -> crate::Result<Self> {
+        let header = <Self as bilrost::BorrowedMessage>::decode_borrowed_length_delimited(value)?;
+        MigrationJobIds::from_bytes(header.touched_by).validate()?;
+        Ok(header)
+    }
+}
+
+impl RawStatusHeader {
+    /// Decodes a stored, length-delimited header, rejecting malformed tokens.
+    pub fn decode_stored(mut value: &[u8]) -> crate::Result<Self> {
+        let header = <Self as bilrost::OwnedMessage>::decode_length_delimited(&mut value)?;
+        MigrationJobIds::from_bytes(&header.touched_by).validate()?;
+        Ok(header)
+    }
+}
+
+/// Coverage tokens for index-build migration jobs. For an unfinished build, a
+/// token records that its index reflects this entry's current state, including an
+/// empty contribution. The build job shares the index ID assigned by the partition
+/// store's registry. A Ready index reflects every entry without needing a token.
+/// Later writes discard tokens for completed or dropped builds; idle entries may
+/// retain those stale tokens. Only the partition store writes this list.
+///
+/// Stored as sorted, distinct big-endian `u32`s. For example, an entry written
+/// while indexes 64 and 70 were being built stores `[0, 0, 0, 64, 0, 0, 0, 70]`;
+/// once both are complete, its next write stores nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MigrationJobIds<'a>(&'a [u8]);
+
+impl<'a> MigrationJobIds<'a> {
+    pub const EMPTY: Self = Self(&[]);
+
+    /// Wraps stored bytes; [`Self::ids`] validates them.
+    pub const fn from_bytes(bytes: &'a [u8]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &'a [u8] {
+        self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn validate(&self) -> crate::Result<()> {
+        self.ids()
+            .map(|_| ())
+            .ok_or(crate::StorageError::DataIntegrityError)
+    }
+
+    /// Whether `id` is listed. Expects validated bytes (see [`Self::ids`]).
+    pub fn contains(&self, id: u32) -> bool {
+        let (chunks, _) = self.0.as_chunks::<4>();
+        chunks
+            .binary_search_by_key(&id, |chunk| u32::from_be_bytes(*chunk))
+            .is_ok()
+    }
+
+    /// The IDs in increasing order, or `None` if the bytes are not a sorted list
+    /// of distinct big-endian `u32`s.
+    pub fn ids(&self) -> Option<impl Iterator<Item = u32> + 'a> {
+        let (chunks, rest) = self.0.as_chunks::<4>();
+        let ids = chunks.iter().map(|chunk| u32::from_be_bytes(*chunk));
+        (rest.is_empty() && ids.clone().is_sorted_by(|a, b| a < b)).then_some(ids)
+    }
 }
 
 /// Owned vqueue entry status header.
@@ -104,6 +182,7 @@ pub struct OwnedEntryStatusHeader {
     metadata: EntryMetadata,
     status: Status,
     stats: EntryStatistics,
+    touched_by: Vec<u8>,
 }
 
 impl OwnedEntryStatusHeader {
@@ -122,7 +201,15 @@ impl OwnedEntryStatusHeader {
             metadata,
             status,
             stats,
+            touched_by: Vec::new(),
         }
+    }
+
+    /// Attaches the stored [`MigrationJobIds`] bytes to this header so they travel
+    /// with its logical state when it is used as a before-image.
+    pub fn with_touched_by(mut self, touched_by: Vec<u8>) -> Self {
+        self.touched_by = touched_by;
+        self
     }
 }
 
@@ -192,6 +279,11 @@ impl EntryStatusHeader for OwnedEntryStatusHeader {
     fn status(&self) -> Status {
         self.status
     }
+
+    #[inline]
+    fn touched_by(&self) -> MigrationJobIds<'_> {
+        MigrationJobIds::from_bytes(&self.touched_by)
+    }
 }
 
 mod bilrost_encoding {
@@ -245,6 +337,10 @@ pub trait EntryStatusHeader: std::fmt::Debug {
     fn stats(&self) -> &EntryStatistics;
     fn canonical_entry_id(&self) -> CanonicalEntryId;
     fn display_entry_id(&self) -> impl std::fmt::Display + '_;
+    /// The stored coverage tokens for index-build migration jobs, including any
+    /// stale tokens awaiting a later write (see [`MigrationJobIds`]). A newly
+    /// constructed header has none unless stored tokens are explicitly attached.
+    fn touched_by(&self) -> MigrationJobIds<'_>;
     /// Returns new if this entry has not started yet.
     fn has_started(&self) -> bool {
         self.stats().num_attempts > 0
@@ -281,6 +377,53 @@ mod tests {
     use bilrost::{Message, OwnedMessage};
 
     use super::*;
+
+    #[test]
+    fn tokens_are_optional_sorted_and_round_trip() {
+        let header = |touched_by: Vec<u8>| RawStatusHeader {
+            qid: VQueueId::custom(7, "q"),
+            stage: Stage::Inbox,
+            has_lock: false,
+            next_run_at: RoughTimestamp::new(10),
+            seq: Seq::new(1),
+            metadata: EntryMetadata::default(),
+            stats: EntryStatistics::new(
+                restate_clock::UniqueTimestamp::try_from_unix_millis(
+                    restate_clock::time::MillisSinceEpoch::new(1_744_010_000_000),
+                )
+                .unwrap(),
+                RoughTimestamp::new(10),
+            ),
+            status: Status::New,
+            touched_by,
+        };
+        let untouched = header(vec![]).encode_to_vec();
+        let touched_by = header(vec![0, 0, 0, 64, 0, 1, 0, 70]).encode_to_vec();
+        assert_eq!(
+            touched_by.len(),
+            untouched.len() + 10,
+            "an_empty_list_is_omitted_and_ids_take_four_bytes_each"
+        );
+        let decoded = RawStatusHeader::decode(touched_by.as_slice()).unwrap();
+        assert_eq!(
+            MigrationJobIds::from_bytes(&decoded.touched_by)
+                .ids()
+                .unwrap()
+                .collect::<Vec<_>>(),
+            [64, 65_606]
+        );
+        for malformed in [
+            &[0, 0, 0, 64, 0][..],
+            &[0, 0, 0, 70, 0, 0, 0, 64],
+            &[0, 0, 0, 64, 0, 0, 0, 64],
+        ] {
+            assert!(
+                MigrationJobIds::from_bytes(malformed).ids().is_none(),
+                "{malformed:?}"
+            );
+        }
+        assert_eq!(MigrationJobIds::EMPTY.ids().unwrap().count(), 0);
+    }
 
     #[test]
     fn fixed_encoding_round_trips_status() {

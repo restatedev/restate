@@ -984,14 +984,15 @@ mod tests {
                 .http2_max_connection_age()
         };
 
-        let min = std::time::Duration::from_secs(10 * 60);
+        let min = std::time::Duration::from_secs(30);
         // Unset: no age-based eviction.
         assert_eq!(parse(None), None);
-        // Below the minimum: raised to 10 minutes.
+        // Below the minimum: raised to 30 seconds.
         assert_eq!(parse(Some("1s")), Some(min));
-        assert_eq!(parse(Some("9m 59s")), Some(min));
+        assert_eq!(parse(Some("29s")), Some(min));
         // At or above the minimum: kept as configured.
-        assert_eq!(parse(Some("10m")), Some(min));
+        assert_eq!(parse(Some("30s")), Some(min));
+        assert_eq!(parse(Some("45s")), Some(std::time::Duration::from_secs(45)));
         assert_eq!(
             parse(Some("1h")),
             Some(std::time::Duration::from_secs(3600))
