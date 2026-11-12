@@ -112,6 +112,13 @@ pub struct HttpOptions {
     /// existed when they were opened and newly added backends receive no
     /// traffic until a new connection is made.
     ///
+    /// A retired connection stays open until its last in-flight invocation
+    /// completes. With long-running invocations, a short max age can
+    /// therefore pile up many open connections to the deployment, each
+    /// holding only a few long streams. It is recommended to leave this unset,
+    /// or to set it to a high value (e.g. tens of minutes) that is well above
+    /// the typical invocation duration.
+    ///
     /// The minimum supported is 30 seconds, to avoid excessive connection
     /// churn. Any value below this is raised to 30 seconds automatically.
     /// Unset means connections live until they are idle or closed by the peer.

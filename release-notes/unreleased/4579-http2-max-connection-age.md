@@ -24,13 +24,17 @@ spread over the pods that exist now.
 - The option is unset by default, so existing and new deployments behave exactly as before.
 - When set, values below 30 seconds are raised to 30 seconds, to avoid reconnecting too often.
 - In-flight invocations are never interrupted when a connection is retired.
+- A retired connection stays open until its last in-flight invocation finishes. If your invocations
+  run for a long time, a short max age can leave many connections open to your deployment at once.
+  We recommend leaving the option unset, or setting it well above your typical invocation duration
+  (for example tens of minutes).
 
 ### Migration Guidance
 None required. To turn it on, for example behind a Kubernetes `ClusterIP` service:
 
 ```toml
 [worker.invoker]
-http2-max-connection-age = "5m"
+http2-max-connection-age = "15m"
 # optional, default 0.1 (up to +10%)
 http2-max-connection-age-jitter = 0.1
 ```
