@@ -15,7 +15,7 @@
 //! Reads go through a scope whose payload holds the column families to read,
 //! in a [`CfHandles`]. The payload implements [`ColumnFamilies`] to hand them
 //! out, and chooses a key type ([`ColumnFamilies::Cf`]) that says which column
-//! family a reader or iterator reads:
+//! family a reader lookup or an iterator reads:
 //!
 //! ```no_run
 //! use std::sync::Arc;
@@ -100,8 +100,9 @@
 //! | Holds a lease                    | Yes, from the gate it was given          | No                                                                                    |
 //! | Closing that gate waits for it   | Yes                                      | No                                                                                    |
 //!
-//! Both read all of the scope's column families: each reader or iterator reads
-//! one of them. Both offer the same readers, iterators, and multi-get batches.
+//! Both read all of the scope's column families: each reader lookup, and each
+//! iterator, reads one of them. Both offer the same readers, iterators, and
+//! multi-get batches.
 //!
 //! Reads block the calling thread. This module doesn't schedule or cancel
 //! reads; that is up to the caller. Work that reads on a background executor
@@ -292,17 +293,19 @@ pub use self::snapshot::ReadSnapshot;
 /// as long as `self` and are never replaced. Returning a field of `self` does
 /// that.
 pub unsafe trait ColumnFamilies: ScopePayload {
-    /// Chooses which of the column families a reader or iterator reads.
+    /// Chooses which of the column families a reader lookup or an iterator
+    /// reads.
     ///
     /// A snapshot always covers all of the column families. This type only says
-    /// which one a particular reader or iterator uses, because RocksDB reads from
+    /// which one a particular lookup or iterator uses, because RocksDB reads from
     /// one column family at a time.
     ///
     /// The implementer decides what the key means. A partition, for example,
     /// uses the key kind: each key kind is stored in exactly one column family,
     /// so the key kind tells the partition which column family holds those keys.
-    /// This doesn't limit a reader to keys of that kind. It can read any key in
-    /// that column family, which may also hold keys of other kinds.
+    /// This doesn't limit a lookup or an iterator to keys of that kind. It can
+    /// read any key in that column family, which may also hold keys of other
+    /// kinds.
     type Cf: Enum + Copy;
 
     /// The column families to read, and the database they belong to.
