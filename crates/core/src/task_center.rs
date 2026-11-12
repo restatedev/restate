@@ -1271,49 +1271,49 @@ impl TaskCenterInner {
     }
 }
 
-/// This wrapper function runs in a newly-spawned task. It initializes the
-/// task-local variables and wraps the inner future.
-async fn wrapper<F>(inner: Arc<TaskCenterInner>, context: TaskContext, future: F)
+/// Capture task-local scopes before spawning, then finish outside those scopes.
+fn wrapper<F>(
+    inner: Arc<TaskCenterInner>,
+    context: TaskContext,
+    future: F,
+) -> impl Future<Output = ()>
 where
     F: Future<Output = anyhow::Result<()>> + 'static,
 {
     let id = context.id;
-    trace!(kind = ?context.kind, name = ?context.name, "Starting task {}", context.id);
-
-    let result = CURRENT_TASK_CENTER
-        .scope(
-            Handle::new(&inner),
-            OVERRIDES.scope(
-                OVERRIDES.try_with(Clone::clone).unwrap_or_default(),
-                TASK_CONTEXT.scope(
-                    context,
-                    // We use AssertUnwindSafe here so that the wrapped function
-                    // doesn't need to be UnwindSafe. We should not do anything after
-                    // unwinding that'd risk us being in unwind-unsafe behavior.
-                    AssertUnwindSafe(future).catch_unwind(),
-                ),
-            ),
-        )
-        .await;
-    inner.on_finish(id, result).await;
+    unmanaged_wrapper(
+        Arc::clone(&inner),
+        context,
+        // The wrapped future need not be UnwindSafe. Cleanup must not rely on
+        // its state after unwinding.
+        AssertUnwindSafe(future).catch_unwind(),
+    )
+    // Then stores the scoped future and cleanup future in successive states,
+    // rather than capturing the large input in another async wrapper.
+    .then(move |result| async move { inner.on_finish(id, result).await })
 }
 
-/// Like wrapper but doesn't call on_finish nor it catches panics
-async fn unmanaged_wrapper<F, T>(inner: Arc<TaskCenterInner>, context: TaskContext, future: F) -> T
+/// Like wrapper but doesn't call on_finish nor catch panics.
+/// Capture overrides at construction, before the future crosses a task boundary.
+/// Return the scopes directly: an async wrapper can reserve space for both F
+/// and the scoped future containing F in its coroutine layout.
+fn unmanaged_wrapper<F, T>(
+    inner: Arc<TaskCenterInner>,
+    context: TaskContext,
+    future: F,
+) -> impl Future<Output = T>
 where
     F: Future<Output = T> + 'static,
 {
     trace!(kind = ?context.kind, name = ?context.name, "Starting task {}", context.id);
 
-    CURRENT_TASK_CENTER
-        .scope(
-            Handle::new(&inner),
-            OVERRIDES.scope(
-                OVERRIDES.try_with(Clone::clone).unwrap_or_default(),
-                TASK_CONTEXT.scope(context, future),
-            ),
-        )
-        .await
+    CURRENT_TASK_CENTER.scope(
+        Handle::new(&inner),
+        OVERRIDES.scope(
+            OVERRIDES.try_with(Clone::clone).unwrap_or_default(),
+            TASK_CONTEXT.scope(context, future),
+        ),
+    )
 }
 
 /// Access to this node id. This is available in task-center tasks only!
@@ -1380,6 +1380,161 @@ mod tests {
 
     use super::*;
     use crate as restate_core;
+
+    #[tokio::test]
+    async fn managed_scopes_inherit_overrides_and_finish_all_outcomes() {
+        let tc = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()
+            .unwrap()
+            .into_handle();
+        let data = [0u8; 32 * 1024];
+        let input = async move {
+            std::future::pending::<()>().await;
+            std::hint::black_box(data);
+            Ok(())
+        };
+        let input_size = std::mem::size_of_val(&input);
+        let wrapped = wrapper(tc.inner.clone(), tc.inner.root_task_context.clone(), input);
+        // Allow fixed wrapper overhead, but not another inline copy of the input.
+        assert!(std::mem::size_of_val(&wrapped) < input_size + 4096);
+        drop(wrapped);
+
+        let metadata = crate::MetadataBuilder::default().to_metadata();
+        for outcome in 0..3 {
+            let (tx, rx) = oneshot::channel();
+            let id = tc.run_sync(|| {
+                OVERRIDES.sync_scope(
+                    GlobalOverrides {
+                        metadata: Some(metadata.clone()),
+                    },
+                    || {
+                        TaskCenter::spawn(TaskKind::Disposable, "managed-scope-test", async move {
+                            tokio::task::yield_now().await;
+                            assert!(TaskCenter::with_metadata(|_| ()).is_some());
+                            tx.send(current_task_id().unwrap()).unwrap();
+                            match outcome {
+                                0 => Ok(()),
+                                1 => Err(anyhow::anyhow!("expected managed error")),
+                                _ => panic!("expected managed panic"),
+                            }
+                        })
+                        .unwrap()
+                    },
+                )
+            });
+            assert_eq!(rx.await.unwrap(), id);
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while tc.inner.managed_tasks.lock().contains_key(&id) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(!tc.inner.shutdown_requested.load(Ordering::Acquire));
+            assert!(TaskCenter::try_current().is_none());
+            assert!(OVERRIDES.try_with(|_| ()).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn unmanaged_scopes_capture_restore_and_keep_future_inline_once() {
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+
+        struct Probe {
+            bytes: [u8; 32 * 1024],
+            id: TaskId,
+            dropped: Arc<AtomicBool>,
+        }
+        impl Future for Probe {
+            type Output = ();
+
+            fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
+                assert_eq!(current_task_id(), Some(self.id));
+                assert!(TaskCenter::with_metadata(|_| ()).is_some());
+                std::hint::black_box(&self.bytes);
+                Poll::Pending
+            }
+        }
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                assert_eq!(current_task_id(), Some(self.id));
+                assert!(TaskCenter::with_metadata(|_| ()).is_some());
+                self.dropped.store(true, Ordering::Relaxed);
+            }
+        }
+
+        let tc = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()
+            .unwrap()
+            .into_handle();
+        let metadata = crate::MetadataBuilder::default().to_metadata();
+        let mut context = tc.inner.root_task_context.clone();
+        context.id = TaskId::default();
+        let id = context.id;
+        let dropped = Arc::new(AtomicBool::new(false));
+        let wrapped = OVERRIDES.sync_scope(
+            GlobalOverrides {
+                metadata: Some(metadata.clone()),
+            },
+            || {
+                unmanaged_wrapper(
+                    tc.inner.clone(),
+                    context.clone(),
+                    Probe {
+                        bytes: [0; 32 * 1024],
+                        id,
+                        dropped: dropped.clone(),
+                    },
+                )
+            },
+        );
+        // A generous fixed overhead budget catches an extra inline copy of F,
+        // without depending on exact compiler or task-local layout sizes.
+        assert!(std::mem::size_of_val(&wrapped) < std::mem::size_of::<Probe>() + 1024);
+        let mut wrapped = Box::pin(wrapped);
+        tc.run_sync(|| {
+            let parent = current_task_id();
+            assert!(TaskCenter::with_metadata(|_| ()).is_none());
+            assert!(wrapped.as_mut().now_or_never().is_none());
+            assert_eq!(current_task_id(), parent);
+            assert!(TaskCenter::with_metadata(|_| ()).is_none());
+            drop(wrapped);
+            assert!(dropped.load(Ordering::Relaxed));
+            assert_eq!(current_task_id(), parent);
+            assert!(TaskCenter::with_metadata(|_| ()).is_none());
+        });
+        assert!(TaskCenter::try_current().is_none());
+        assert!(current_task_id().is_none());
+        assert!(OVERRIDES.try_with(|_| ()).is_err());
+
+        // Cross an actual Tokio task boundary: overrides must be captured before
+        // spawn, not looked up on the first poll in the new task.
+        let task = tc.run_sync(|| {
+            OVERRIDES.sync_scope(
+                GlobalOverrides {
+                    metadata: Some(metadata),
+                },
+                || {
+                    tokio::spawn(unmanaged_wrapper(tc.inner.clone(), context, async move {
+                        tokio::task::yield_now().await;
+                        assert_eq!(current_task_id(), Some(id));
+                        assert!(TaskCenter::with_metadata(|_| ()).is_some());
+                        panic!("unmanaged panic must propagate");
+                    }))
+                },
+            )
+        });
+        let panic = task.await.unwrap_err().into_panic();
+        assert_eq!(
+            panic.downcast_ref::<&str>(),
+            Some(&"unmanaged panic must propagate")
+        );
+        assert!(TaskCenter::try_current().is_none());
+        assert!(OVERRIDES.try_with(|_| ()).is_err());
+    }
 
     #[tokio::test(start_paused = true)]
     async fn finalizers_wait_for_existing_shutdown() -> Result<()> {
