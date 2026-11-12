@@ -253,6 +253,51 @@ impl<C: Clock + Clone + Send + Sync + 'static> SnapshotLeaseGuard<C> {
         }
     }
 
+    /// Run `op`, typically an object-store delete, only while this lease is provably held, and
+    /// never past the lease's operation deadline.
+    ///
+    /// Unlike [`Self::run_under_lease`], this first confirms with the metadata store that the
+    /// stored lease still carries this guard's `lease_id`. It fails closed (`None`) if the local
+    /// check fails, the store read errors, or the stored lease is missing or belongs to another
+    /// node; a confirmed mismatch or missing value also fires [`Self::lease_lost`]. The no-op
+    /// guard skips the store read.
+    ///
+    /// Another node can take over only at or after `expires_at`, at least [`LEASE_SAFETY_MARGIN`]
+    /// after the operation deadline that bounds `op`, and `op` is not started once that deadline
+    /// has passed. A request `op` issued before its cancellation therefore lands before a takeover
+    /// as long as clock skew plus the request's latency stay below the margin. Object stores offer
+    /// no fencing token for deletes, so this narrows the window to one request; it cannot close it.
+    pub async fn fenced<F, T>(&self, op: F) -> Option<T>
+    where
+        F: std::future::Future<Output = T>,
+    {
+        if !self.is_valid() {
+            return None;
+        }
+
+        match self {
+            Self::Lease(g) => {
+                if !g.confirm_lease().await {
+                    return None;
+                }
+            }
+            #[cfg(any(test, feature = "test-util"))]
+            Self::NoOp(_) => {}
+        }
+
+        // Check again in the poll that starts `op`: the task may have stalled since the checks
+        // above, and `run_under_lease` only bounds `op` once it runs.
+        self.run_under_lease(async {
+            if self.is_valid() {
+                Some(op.await)
+            } else {
+                None
+            }
+        })
+        .await
+        .flatten()
+    }
+
     /// Start a background task that renews the lease at a fixed renewal interval.
     /// The task holds a weak reference to the lease and stops when the guard is dropped.
     /// The guard ensures that at most one renewal task is spawned per guard. Subsequent calls
@@ -412,6 +457,51 @@ mod inner {
 
             debug!(partition_id = %self.partition_id, "Snapshot lease renewed");
             Ok(())
+        }
+
+        /// Reads the stored lease and returns `true` only if it still carries this guard's
+        /// `lease_id`. A confirmed mismatch or missing value marks the lease lost; a transient
+        /// read error fails closed without cancelling the token, since the lease may still be ours.
+        #[instrument(
+            level = "debug",
+            skip_all,
+            fields(partition_id = %self.partition_id, lease_id = %self.lease_id),
+        )]
+        pub(super) async fn confirm_lease(&self) -> bool {
+            match self
+                .metadata_store_client
+                .get::<SnapshotLeaseValue>(snapshot_lease_key(self.partition_id))
+                .await
+            {
+                Ok(Some(stored)) if stored.lease_id == self.lease_id => true,
+                Ok(Some(stored)) => {
+                    warn!(
+                        partition_id = %self.partition_id,
+                        expected_lease_id = %self.lease_id,
+                        actual_lease_id = %stored.lease_id,
+                        actual_holder = %stored.holder,
+                        "Lease was taken over by another node"
+                    );
+                    self.lease_lost.cancel();
+                    false
+                }
+                Ok(None) => {
+                    warn!(
+                        partition_id = %self.partition_id,
+                        "Snapshot lease is missing from the metadata store"
+                    );
+                    self.lease_lost.cancel();
+                    false
+                }
+                Err(err) => {
+                    warn!(
+                        partition_id = %self.partition_id,
+                        %err,
+                        "Failed to confirm snapshot lease"
+                    );
+                    false
+                }
+            }
         }
 
         pub(super) fn start_renewal_task(
@@ -767,7 +857,9 @@ impl NoOpLeaseManager {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use restate_clock::MockClock;
@@ -984,6 +1076,55 @@ mod tests {
         // original lease can no longer be renewed
         let result = guard.test_renew().await;
         assert!(matches!(result, Err(LeaseError::Expired)));
+    }
+
+    #[restate_core::test]
+    async fn fenced_runs_only_while_lease_is_held() {
+        let env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let n1_clock = MockClock::new();
+        let n2_clock = MockClock::with_timestamp(n1_clock.recent());
+        let n1 = GenerationalNodeId::new(1, 1);
+        let n2 = GenerationalNodeId::new(2, 1);
+
+        let guard =
+            SnapshotLeaseManager::new_with_clock(env.metadata_store_client.clone(), n1, n1_clock)
+                .acquire(PartitionId::MIN)
+                .await
+                .expect("acquire should succeed");
+
+        let ran = Cell::new(false);
+        let result = guard
+            .fenced(async {
+                ran.set(true);
+                42
+            })
+            .await;
+        assert_eq!(result, Some(42));
+        assert!(ran.get());
+
+        // n2's clock is past the expiry while n1's local clock still says valid.
+        n2_clock.advance(LEASE_DURATION + Duration::from_millis(1000));
+        let _n2_guard =
+            SnapshotLeaseManager::new_with_clock(env.metadata_store_client.clone(), n2, n2_clock)
+                .acquire(PartitionId::MIN)
+                .await
+                .expect("takeover should succeed");
+        assert!(guard.is_valid());
+
+        let lease_lost = guard.lease_lost();
+        let ran = Cell::new(false);
+        let result = guard
+            .fenced(async {
+                ran.set(true);
+                42
+            })
+            .await;
+        assert_eq!(result, None);
+        assert!(
+            !ran.get(),
+            "op must not run once the store shows a takeover"
+        );
+        assert!(lease_lost.is_cancelled());
     }
 
     #[restate_core::test]
@@ -1232,6 +1373,37 @@ mod tests {
             .await;
 
         assert_eq!(result, None, "Work should be aborted at deadline");
+    }
+
+    #[restate_core::test(start_paused = true)]
+    async fn fenced_aborts_at_operation_deadline() {
+        let env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let clock = TokioClock::new();
+        let manager = SnapshotLeaseManager::new_with_clock(
+            env.metadata_store_client.clone(),
+            GenerationalNodeId::new(1, 1),
+            clock,
+        );
+        let guard = manager
+            .acquire(PartitionId::MIN)
+            .await
+            .expect("acquire should succeed");
+
+        let completed = Arc::new(AtomicBool::new(false));
+        let completed_in_op = completed.clone();
+        let result = guard
+            .fenced(async move {
+                tokio::time::sleep(LEASE_DURATION).await;
+                completed_in_op.store(true, Ordering::SeqCst);
+                42
+            })
+            .await;
+
+        assert_eq!(result, None);
+        assert!(
+            !completed.load(Ordering::SeqCst),
+            "op must be cancelled at the deadline"
+        );
     }
 
     /// If the lease is lost mid-operation (renewal failure, takeover by another node, etc.),
