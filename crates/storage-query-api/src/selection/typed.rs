@@ -586,11 +586,12 @@ mod tests {
     use datafusion::physical_expr::planner::logical2physical;
     use datafusion::prelude::SessionContext;
 
-    use restate_storage_api::vqueue_table::Stage;
+    use restate_storage_api::vqueue_table::{Stage, Status};
     use restate_types::vqueues::EntryKind;
     use restate_util_string::ReString;
 
     use crate::selection::{Selection, compile};
+    use crate::tables::vqueue_entry_status::{VqueueEntryStatus, VqueueEntryStatusClause};
 
     use super::*;
 
@@ -914,6 +915,115 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn finite_enum_names_preserve_sql_truth_and_native_candidate_sets() {
+        use CandidateExpectation::{Conservative as C, Exact as E};
+        use VqueueEntryStatusClause as Clause;
+
+        const T: Option<bool> = Some(true);
+        const F: Option<bool> = Some(false);
+        const U: Option<bool> = None;
+        #[rustfmt::skip]
+        let stages = [
+            // SQL predicate                                          finished inbox paused running suspended unknown   clauses domains
+            ("stage < 'queued'",                                       [T, T, T, F, F, F], E, E),
+            ("'queued' > stage",                                       [T, T, T, F, F, F], E, E),
+            ("stage <= 'running'",                                     [T, T, T, T, F, F], E, E),
+            ("stage > 'queued'",                                       [F, F, F, T, T, T], E, E),
+            ("stage >= 'unknown'",                                     [F, F, F, F, F, T], E, E),
+            ("stage = 'unknown'",                                      [F, F, F, F, F, T], E, E),
+            ("stage = 'queued'",                                       [F, F, F, F, F, F], E, E),
+            ("stage != 'queued'",                                      [T, T, T, T, T, T], E, E),
+            ("stage = 'RUNNING'",                                      [F, F, F, F, F, F], E, E),
+            ("stage IN ('queued', 'running', 'running', NULL)",         [U, U, U, T, U, U], E, E),
+            ("stage NOT IN ('queued', 'running')",                     [T, T, T, F, T, T], E, E),
+            ("stage NOT IN ('queued', 'running', NULL)",               [U, U, U, F, U, U], E, E),
+            ("stage = 'queued' OR stage = 'running'",                   [F, F, F, T, F, F], E, E),
+            ("stage = 'queued' OR stage = 'running' OR NULL",           [U, U, U, T, U, U], E, E),
+            ("stage > 'running' AND stage < 'suspended'",               [F, F, F, F, F, F], E, E),
+            ("stage < NULL",                                           [U, U, U, U, U, U], E, E),
+            ("stage IS NULL",                                          [F, F, F, F, F, F], E, C),
+            ("stage LIKE 's%'",                                        [F, F, F, F, T, F], E, C),
+            ("starts_with(stage, 'in')",                               [F, T, F, F, F, F], E, C),
+            ("stage LIKE 'r_n%'",                                      [F, F, F, T, F, F], C, C),
+            ("stage ILIKE 'RUN%'",                                     [F, F, F, T, F, F], C, C),
+        ];
+        check_enum_cases::<VqueueEntryStatus, _, 6>(
+            VqueueEntryStatus::arrow_schema(),
+            "stage",
+            [
+                Stage::Finished,
+                Stage::Inbox,
+                Stage::Paused,
+                Stage::Running,
+                Stage::Suspended,
+                Stage::Unknown,
+            ],
+            [
+                Some("finished"),
+                Some("inbox"),
+                Some("paused"),
+                Some("running"),
+                Some("suspended"),
+                Some("unknown"),
+            ],
+            &stages,
+            |clause, value| match clause {
+                Clause::Stage(predicate) => matches_value(predicate, value),
+                _ => panic!("finite_prefixes_are_native_membership_clauses"),
+            },
+            |domains| &domains.stage,
+        );
+        #[rustfmt::skip]
+        let statuses = [
+            // SQL predicate                                          backing-off cancelled failed killed new scheduled started succeeded unknown yielded
+            ("status < 'queued'",                                     [T, T, T, T, T, F, F, F, F, F], E, E),
+            ("status >= 'started'",                                   [F, F, F, F, F, F, T, T, T, T], E, E),
+            ("status BETWEEN 'scheduled' AND 'succeeded'",             [F, F, F, F, F, T, T, T, F, F], E, E),
+            ("status = 'unknown'",                                    [F, F, F, F, F, F, F, F, T, F], E, E),
+            ("status != 'queued'",                                    [T, T, T, T, T, T, T, T, T, T], E, E),
+            ("status IN ('bogus', 'started', NULL)",                   [U, U, U, U, U, U, T, U, U, U], E, E),
+            ("status NOT IN ('new', 'started', 'unknown')",             [T, T, T, T, F, T, F, T, F, T], E, E),
+            ("status NOT IN ('bogus', NULL)",                          [U, U, U, U, U, U, U, U, U, U], E, E),
+            // This column deliberately does not declare prefix support.
+            ("status LIKE 's%'",                                       [F, F, F, F, F, T, T, T, F, F], C, C),
+        ];
+        check_enum_cases::<VqueueEntryStatus, _, 10>(
+            VqueueEntryStatus::arrow_schema(),
+            "status",
+            [
+                Status::BackingOff,
+                Status::Cancelled,
+                Status::Failed,
+                Status::Killed,
+                Status::New,
+                Status::Scheduled,
+                Status::Started,
+                Status::Succeeded,
+                Status::Unknown,
+                Status::Yielded,
+            ],
+            [
+                Some("backing-off"),
+                Some("cancelled"),
+                Some("failed"),
+                Some("killed"),
+                Some("new"),
+                Some("scheduled"),
+                Some("started"),
+                Some("succeeded"),
+                Some("unknown"),
+                Some("yielded"),
+            ],
+            &statuses,
+            |clause, value| match clause {
+                Clause::Status(predicate) => matches_value(predicate, value),
+                _ => panic!("status_predicates_keep_native_values"),
+            },
+            |domains| &domains.status,
+        );
     }
 
     #[test]
