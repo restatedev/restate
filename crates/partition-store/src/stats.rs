@@ -8,21 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Physical encodings and merge operations for partition-level statistics.
+//! Partition-scoped statistics, kept as registered indexes under
+//! [`KeyKind::Stats`](crate::keys::KeyKind::Stats).
 //!
-//! A statistic is an aggregate index: counters derived from a table, kept up to
-//! date by RocksDB merge operands rather than by read-modify-write. Its keys are
-//! `key kind (2) | partition padding (2) | partition id (2) | index id (4) |
-//! aggregation kind (1) | payload`: the ten-byte [`AggregateKeyPrefix`], which
-//! mirrors the secondary-index prefix with the registry's `u32` index ID, then
-//! the [`StatKind`] and a payload that the owning statistic definition
-//! interprets. The prefix never contains a service's partition key.
+//! A key consists of an eleven-byte header, the index's
+//! [`AggregateKeyPrefix`] and the statistic's [`StatKind`], followed by the
+//! statistic's payload. The header identifies the physical partition and the
+//! registry's index ID of the index; it does not contain a service's
+//! partition key. Ordered payloads use the same schema-selected field codecs as
+//! other ordered keys. Reads resolve the Ready index of the statistic's
+//! definition, and fail when there is none.
 //!
-//! Stored values and pending merge operands have separate codecs. A full merge
-//! applies signed deltas to unsigned counters; a partial merge combines deltas
-//! without needing the stored value. The persisted [`StatKind`] selects the
-//! codecs, so the merge operator and the compaction filter never consult the
-//! registry.
+//! Stored values and pending merge operands have separate codecs. Full merges
+//! apply signed deltas to unsigned counters; partial merges combine deltas
+//! without needing a stored value. The persisted [`StatKind`] selects those
+//! codecs without consulting the registry.
 //!
 //! Zero-valued aggregates are equivalent to absent keys. Readers must omit them
 //! using [`aggregated::Aggregate::should_filter`]; compaction can reclaim their
@@ -34,14 +34,59 @@
 
 pub mod aggregated;
 mod codec;
+mod macros;
 
 // Re-exports
-pub use codec::{AggregateKeyPrefix, StatMergeValueCodec, StatValueCodec};
+pub use codec::{
+    AggregateKeyHeader, AggregateKeyPrefix, DecodeStatKey, EncodeStatKey, HEADER_LENGTH,
+    StatMergeValueCodec, StatValueCodec,
+};
 
+use bytes::BufMut;
 use rocksdb::{CompactionDecision, MergeOperands};
 use tracing::{error, warn};
+use zerocopy::IntoBytes;
+
+use crate::keys::header::IndexScope;
 
 use self::aggregated::Aggregate;
+
+/// The registered definition, key payload, and stored value of a statistic.
+///
+/// `define_aggregated_stat!` derives the kind and value from one
+/// aggregation implementation so its writes and merges agree on the format.
+pub trait Stat {
+    /// The name of the registry definition whose indexes hold this statistic.
+    const DEFINITION: &'static str;
+    const STAT_KIND: StatKind;
+
+    type OwnedKey: DecodeStatKey<Self>;
+    type Value: StatValueCodec;
+
+    /// Appends a complete key of index `scope`, including its header, without
+    /// clearing `scratch`.
+    fn encode_key<K, B: BufMut>(scope: IndexScope, key: K, scratch: &mut B)
+    where
+        K: EncodeStatKey<Self>,
+    {
+        encode_header::<Self, _>(scope, scratch);
+        key.encode(scratch);
+    }
+
+    /// The complete encoded length, including the header.
+    fn encoded_key_len<K>(key: &K) -> usize
+    where
+        K: EncodeStatKey<Self>,
+    {
+        HEADER_LENGTH + key.serialized_length()
+    }
+}
+
+/// Appends the header of statistic `S`'s keys in index `scope`.
+pub(crate) fn encode_header<S: Stat + ?Sized, B: BufMut>(scope: IndexScope, buffer: &mut B) {
+    buffer.put_slice(AggregateKeyPrefix::new(scope.partition, scope.index).as_bytes());
+    buffer.put_u8(S::STAT_KIND as u8);
+}
 
 /// The aggregation algorithm and value encoding used by a statistic.
 /// These discriminants are persisted in keys and must remain stable.

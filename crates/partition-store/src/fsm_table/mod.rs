@@ -143,6 +143,23 @@ pub(crate) mod fsm_variable {
     ///
     /// *Since v1.8.2*
     pub(crate) const FSM_POSITION: u64 = 13;
+
+    /// The local registry of secondary and aggregate indexes (not
+    /// replicated): index IDs, lifecycle states and completeness cursors. See
+    /// [`crate::registry`].
+    ///
+    /// Persisted as bilrost.
+    ///
+    /// *Since v1.8.2*
+    pub(crate) const QUERY_REGISTRY: u64 = 14;
+
+    /// The local walks (not replicated): resumable passes over a source table
+    /// and their committed progress. See [`crate::walk`].
+    ///
+    /// Persisted as bilrost.
+    ///
+    /// *Since v1.8.2*
+    pub(crate) const WALKS: u64 = 15;
 }
 
 fn get<T: PartitionStoreProtobufValue, S: StorageAccess>(
@@ -290,6 +307,98 @@ pub(crate) fn get_storage_features_from_partition_db(
             serde_json::from_slice(&value).map_err(|err| StorageError::Conversion(err.into()))
         })
         .transpose()
+}
+
+/// The persisted registry, validated; `None` when nothing was ever registered.
+pub(crate) fn get_registry_from_partition_db(
+    db: &PartitionDb,
+) -> Result<Option<crate::registry::IndexRegistry>> {
+    let key = create_key(db.partition().id(), fsm_variable::QUERY_REGISTRY);
+    db.rocksdb()
+        .inner()
+        .as_raw_db()
+        .get_pinned_cf(db.cf_handle(), key.to_bytes())
+        .map_err(|err| StorageError::Generic(err.into()))?
+        .map(|value| {
+            crate::registry::IndexRegistry::decode(&value)
+                .map_err(|err| StorageError::Conversion(err.into()))
+        })
+        .transpose()
+}
+
+/// The key of the registry, for reads through a snapshot.
+pub(crate) fn registry_key(
+    partition_id: PartitionId,
+) -> [u8; PartitionStateMachineKey::serialized_length_fixed()] {
+    create_key(partition_id, fsm_variable::QUERY_REGISTRY).to_bytes()
+}
+
+/// Writes the registry through `storage`, to commit it with the transaction's effects.
+pub(crate) fn put_registry<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+    registry: &crate::registry::IndexRegistry,
+) -> Result<()> {
+    let key = PartitionStateMachineKey {
+        partition_id: partition_id.into(),
+        state_id: fsm_variable::QUERY_REGISTRY,
+    };
+    storage.put_kv_raw(key, registry.encode())
+}
+
+/// Adds the registry to `wb`, to commit it atomically with its effects.
+pub(crate) fn append_registry_to_wb(
+    cf_handle: &std::sync::Arc<rocksdb::BoundColumnFamily<'_>>,
+    wb: &mut rocksdb::WriteBatch,
+    partition_id: PartitionId,
+    registry: &crate::registry::IndexRegistry,
+) {
+    let key = create_key(partition_id, fsm_variable::QUERY_REGISTRY);
+    wb.put_cf(cf_handle, key.to_bytes(), registry.encode());
+}
+
+/// The key of the walks, for reads through a snapshot.
+pub(crate) fn walks_key(
+    partition_id: PartitionId,
+) -> [u8; PartitionStateMachineKey::serialized_length_fixed()] {
+    create_key(partition_id, fsm_variable::WALKS).to_bytes()
+}
+
+pub(crate) fn get_walks_from_partition_db(db: &PartitionDb) -> Result<Option<crate::walk::Walks>> {
+    let key = create_key(db.partition().id(), fsm_variable::WALKS);
+    db.rocksdb()
+        .inner()
+        .as_raw_db()
+        .get_pinned_cf(db.cf_handle(), key.to_bytes())
+        .map_err(|err| StorageError::Generic(err.into()))?
+        .map(|value| {
+            crate::walk::Walks::decode(&value).map_err(|err| StorageError::Conversion(err.into()))
+        })
+        .transpose()
+}
+
+/// Writes the walks through `storage`, to commit them with the transaction's effects.
+pub(crate) fn put_walks<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+    walks: &crate::walk::Walks,
+) -> Result<()> {
+    let key = PartitionStateMachineKey {
+        partition_id: partition_id.into(),
+        state_id: fsm_variable::WALKS,
+    };
+    storage.put_kv_raw(key, walks.encode())
+}
+
+/// Adds the walks to `wb`, to commit them atomically with their effects.
+pub(crate) fn append_walks_to_wb(
+    cf_handle: &std::sync::Arc<rocksdb::BoundColumnFamily<'_>>,
+    wb: &mut rocksdb::WriteBatch,
+    partition_id: PartitionId,
+    walks: &crate::walk::Walks,
+) {
+    let key = create_key(partition_id, fsm_variable::WALKS);
+    wb.put_cf(cf_handle, key.to_bytes(), walks.encode());
 }
 
 #[cfg(test)]
