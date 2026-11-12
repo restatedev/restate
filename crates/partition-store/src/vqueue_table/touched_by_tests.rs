@@ -45,7 +45,7 @@ fn store_tracked(tx: &mut PartitionStoreTransaction<'_>, id: BaseEntryId, touche
     let key = EntryStatusKey::from(id).serialize();
     let mut header = {
         let value = tx
-            .get(crate::TableKind::VQueue, &key)
+            .get(KeyKind::VQueueEntryStatus, &key)
             .unwrap()
             .expect("stored status");
         RawStatusHeader::decode_stored(value.as_ref()).unwrap()
