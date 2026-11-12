@@ -396,6 +396,11 @@ where
         self.rx.close();
 
         self.health_status.update(WorkerStatus::Unknown);
+        // These gauges are only refreshed by get_state(), which no longer runs once the command
+        // channel is closed. Reset them so that a node that is shutting down does not keep
+        // exporting its last leader count.
+        gauge!(NUM_ACTIVE_PARTITIONS).set(0);
+        gauge!(NUM_ACTIVE_PARTITION_LEADERS).set(0);
 
         for task in self.snapshot_export_tasks.iter() {
             task.cancel();
