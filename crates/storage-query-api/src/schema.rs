@@ -57,6 +57,9 @@ pub use binding::{PreparedRead, RecordProgress, RowSink, SchemaBinding};
 mod tests;
 
 #[cfg(test)]
+mod analysis_tests;
+
+#[cfg(test)]
 mod row_tests;
 
 /// Native columns, SQL bindings, and predicate analysis for a logical schema.

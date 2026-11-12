@@ -18,6 +18,7 @@
 //! - [`scan`] is the physical side: a table's records and prepared read requests,
 //!   as storage defines them. A [`SchemaBinding`] connects a physical table to a
 //!   logical schema, so a selection can be prepared and records become rows.
+//! - [`tables`] holds the declarations of the SQL catalog's tables.
 //!
 //! Physical key layouts, encodings and scan bounds stay in storage crates.
 
@@ -27,6 +28,7 @@ pub mod errors;
 pub mod scan;
 pub mod schema;
 pub mod selection;
+pub mod tables;
 mod writer;
 
 pub use scan::Table;
