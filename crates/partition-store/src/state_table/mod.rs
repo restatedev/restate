@@ -720,7 +720,8 @@ impl<S: StorageRead> BudgetedStateSource for PointReadStateSource<'_, S> {
                 &self.service_id,
                 state_key.as_bytes(),
             );
-            let value = match self.storage.get(State, &encoded) {
+            let key_kind = user_state_key_kind(self.storage_features, &self.service_id);
+            let value = match self.storage.get(key_kind, &encoded) {
                 Ok(Some(value)) => value,
                 Ok(None) => {
                     self.keys.next();
@@ -748,6 +749,15 @@ impl<S: StorageRead> BudgetedStateSource for PointReadStateSource<'_, S> {
             return TryProduce::Ready(Ok(entry));
         }
         TryProduce::Exhausted
+    }
+}
+
+/// The kind of the keys that [`encode_user_state_key`] builds.
+fn user_state_key_kind(storage_features: StorageFeatures, service_id: &ServiceId) -> KeyKind {
+    if use_scoped_state(storage_features, service_id) {
+        KeyKind::ScopedState
+    } else {
+        KeyKind::State
     }
 }
 

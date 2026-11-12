@@ -59,7 +59,7 @@ use crate::scan::TableScan;
 use crate::vqueue_table::input::InputPayloadKeyRef;
 use crate::{
     PartitionDb, PartitionStore, PartitionStoreTransaction, Result, StorageAccess, StorageRead,
-    TableKind, break_on_err,
+    break_on_err,
 };
 
 impl ScanVQueueTable for PartitionDb {
@@ -350,7 +350,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
     ) -> Result<Option<EntryValue>> {
         let key_buffer = inbox::encode_stage_key(stage, qid, key);
 
-        Ok(match self.get(TableKind::VQueue, key_buffer)? {
+        Ok(match self.get(inbox::stage_key_kind(stage), key_buffer)? {
             Some(raw_value) => Some(EntryValue::decode(&mut raw_value.as_ref())?),
             None => None,
         })
@@ -478,7 +478,7 @@ impl<'txn> ReadVQueueTable for PartitionStoreTransaction<'txn> {
         MetaKeyRef::builder()
             .qid(qid)
             .serialize_to(&mut key_buffer.as_mut());
-        let Some(raw_value) = self.get(TableKind::VQueue, key_buffer)? else {
+        let Some(raw_value) = self.get(<MetaKey as EncodeTableKey>::KEY_KIND, key_buffer)? else {
             return Ok(None);
         };
 
@@ -495,7 +495,8 @@ impl<'txn> ReadVQueueTable for PartitionStoreTransaction<'txn> {
             .id(id)
             .serialize_to(&mut key_buffer.as_mut());
 
-        let Some(raw_value) = self.get(TableKind::VQueue, key_buffer)? else {
+        let Some(raw_value) = self.get(<EntryStatusKey as EncodeTableKey>::KEY_KIND, key_buffer)?
+        else {
             return Ok(None);
         };
 
@@ -552,7 +553,9 @@ impl<'txn> ReadVQueueTable for PartitionStoreTransaction<'txn> {
             .id(id)
             .serialize_to(&mut key_buffer.as_mut());
 
-        let Some(raw_value) = self.get(TableKind::VQueue, key_buffer)? else {
+        let Some(raw_value) =
+            self.get(<InputPayloadKey as EncodeTableKey>::KEY_KIND, key_buffer)?
+        else {
             return Ok(None);
         };
 
