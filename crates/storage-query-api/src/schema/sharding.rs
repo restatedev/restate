@@ -381,3 +381,73 @@ impl Candidates for NodeCandidates {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use restate_types::identifiers::WithPartitionKey;
+    use restate_util_string::ReString;
+
+    use super::shard_key::{self, Input};
+    use super::{ShardKeyKind as K, ShardingColumn};
+    use crate::LogicalSchema;
+    use crate::selection::domain::Domain;
+    use crate::tables::bifrost_read_streams::{BifrostReadStreams, BifrostReadStreamsColumn};
+    use crate::tables::invocation_status::{InvocationStatus, InvocationStatusColumn};
+    use crate::tables::scheduler::{Scheduler, SchedulerColumn};
+    use crate::tables::stats::service_stats::ServiceStats;
+
+    #[test]
+    fn declarations_carry_derivations_nullability_and_scope_hashing() {
+        fn declared<C: Copy>(columns: &[ShardingColumn<C>]) -> Vec<(C, K, bool)> {
+            columns
+                .iter()
+                .map(|c| (c.column, c.kind, c.nullable))
+                .collect()
+        }
+        assert_eq!(
+            declared(InvocationStatus::SHARDING_COLUMNS),
+            [
+                (InvocationStatusColumn::PartitionKey, K::PartitionKey, false),
+                (InvocationStatusColumn::Id, K::InvocationId, false),
+                (InvocationStatusColumn::Scope, K::Scope, true),
+            ]
+        );
+        assert_eq!(
+            declared(Scheduler::SHARDING_COLUMNS),
+            [
+                (SchedulerColumn::PartitionKey, K::PartitionKey, false),
+                (SchedulerColumn::Id, K::VQueueId, false),
+                (SchedulerColumn::HeadEntryId, K::BaseEntryId, true),
+            ]
+        );
+        assert_eq!(
+            declared(BifrostReadStreams::SHARDING_COLUMNS),
+            [
+                (BifrostReadStreamsColumn::PlainNodeId, K::PlainNodeId, false),
+                (
+                    BifrostReadStreamsColumn::GenNodeId,
+                    K::GenerationalNodeId,
+                    false
+                ),
+            ]
+        );
+        assert!(ServiceStats::SHARDING_COLUMNS.is_empty());
+
+        // The scope derivation must agree with the native scope's partition key.
+        let scope = restate_types::Scope::try_non_interned("tenant-a").unwrap();
+        assert_eq!(
+            <ReString as Input<shard_key::Scope>>::shard_keys(&Domain::values([ReString::from(
+                "tenant-a"
+            )])),
+            Domain::values([scope.partition_key()])
+        );
+        // A NULL candidate determines no shard key.
+        assert!(
+            <Option<ReString> as Input<shard_key::Scope>>::shard_keys(&Domain::values([
+                None,
+                Some(ReString::from("tenant-a"))
+            ]))
+            .is_all()
+        );
+    }
+}
