@@ -144,8 +144,8 @@ const ORPHAN_SCAN_INTERVAL: Duration = Duration::from_hours(24);
 mod sweep_patterns {
     use super::*;
 
-    /// SST files from incremental snapshots: `ssts/{32-char-hex-xxh3-128}.sst`.
-    /// Hash length matches `ContentHash`'s `{:032x}` format - keep these in sync.
+    /// SST files from incremental snapshots: `ssts/{fingerprint}.sst`, 32 lowercase hex chars.
+    /// Matches `SstFingerprint`'s `{:032x}` format - keep these in sync.
     pub static SHARED_SST: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"^ssts/[0-9a-f]{32}\.sst$").unwrap());
 
@@ -2036,61 +2036,42 @@ impl SnapshotRepository {
         orphans: OrphanedPaths,
         lease_guard: &Arc<SnapshotLeaseGuard>,
     ) -> (usize, usize) {
-        let mut deleted_ssts = 0;
+        let (deleted_ssts, _) = self.delete_under_lease(orphans.ssts, lease_guard).await;
+
+        let partition_prefix = self.partition_snapshots_prefix(partition_id);
+        let partition_prefix_str = format!("{}/", partition_prefix.as_ref());
         let mut deleted_snapshots = 0;
-
-        for sst_path in orphans.ssts {
-            if !lease_guard.is_valid() {
-                debug!(%partition_id, "Lease expired during orphan cleanup, aborting");
-                break;
-            }
-
-            if let Err(err) = self.object_store.delete(&sst_path).await {
-                if !matches!(err, object_store::Error::NotFound { .. }) {
-                    warn!(%sst_path, %err, "Failed to delete orphaned SST");
-                }
-            } else {
-                debug!(%sst_path, "Deleted orphaned SST");
-                deleted_ssts += 1;
-            }
-        }
-
         for snapshot_prefix in orphans.snapshots {
             if !lease_guard.is_valid() {
                 debug!(%partition_id, "Lease expired during orphan cleanup, aborting");
                 break;
             }
 
-            let snapshot_path = self
-                .prefix
-                .clone()
-                .join(partition_id.to_string())
-                .join(snapshot_prefix.as_str());
-
-            let stream = self.object_store.list(Some(&snapshot_path));
-            futures::pin_mut!(stream);
-
-            let mut prefix_deleted = true;
-            loop {
-                match stream.try_next().await {
-                    Ok(Some(meta)) => {
-                        if let Err(err) = self.object_store.delete(&meta.location).await
-                            && !matches!(err, object_store::Error::NotFound { .. })
-                        {
-                            warn!(path = %meta.location, %err, "Failed to delete file in orphaned snapshot prefix");
-                            prefix_deleted = false;
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(err) => {
-                        warn!(%snapshot_prefix, %err, "Failed to list files in orphaned snapshot prefix");
-                        prefix_deleted = false;
-                        break;
-                    }
+            // Like the scan, leave objects that are not recognised snapshot files alone.
+            let snapshot_path = partition_prefix.clone().join(snapshot_prefix.as_str());
+            let files: Vec<ObjectPath> = match self
+                .object_store
+                .list(Some(&snapshot_path))
+                .map_ok(|meta| meta.location)
+                .try_filter(|location| {
+                    std::future::ready(
+                        location
+                            .as_ref()
+                            .strip_prefix(&partition_prefix_str)
+                            .is_some_and(sweep_patterns::is_snapshot_file),
+                    )
+                })
+                .try_collect()
+                .await
+            {
+                Ok(files) => files,
+                Err(err) => {
+                    warn!(%snapshot_prefix, %err, "Failed to list files in orphaned snapshot prefix");
+                    continue;
                 }
-            }
+            };
 
-            if prefix_deleted {
+            if let (_, true) = self.delete_under_lease(files, lease_guard).await {
                 debug!(%snapshot_prefix, "Deleted orphaned snapshot directory");
                 deleted_snapshots += 1;
             }
@@ -3886,7 +3867,7 @@ mod tests {
     fn sweep_eligible_patterns() {
         use super::sweep_patterns::*;
 
-        // Exactly 32 lowercase hex chars (xxh3-128 digest) is required.
+        // Exactly 32 lowercase hex chars (an SST fingerprint) is required.
         assert!(is_shared_sst("ssts/0123456789abcdef0123456789abcdef.sst"));
         assert!(is_shared_sst("ssts/fedcba9876543210fedcba9876543210.sst"));
 
@@ -4009,8 +3990,9 @@ mod tests {
         Ok(())
     }
 
-    /// The sweep deletes only unreferenced shared SSTs and unretained snapshot directories,
-    /// leaving retained snapshots, referenced SSTs and unrelated files untouched.
+    /// The sweep deletes only unreferenced shared SSTs and the snapshot files of unretained
+    /// snapshot directories, leaving retained snapshots, referenced SSTs and unrecognised files
+    /// untouched, including those inside an unretained snapshot directory.
     #[restate_core::test]
     async fn orphan_sweep_deletes_only_unreferenced_files() -> anyhow::Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
@@ -4042,6 +4024,7 @@ mod tests {
             .join("ssts")
             .join("fedcba9876543210fedcba9876543210.sst");
         let unrelated = partition.clone().join("notes.txt");
+        let unrecognised_in_orphan = partition.clone().join(unretained_dir).join("notes.txt");
 
         store
             .put(
@@ -4067,9 +4050,9 @@ mod tests {
         store
             .put(&orphaned_sst, PutPayload::from_static(b"orphaned"))
             .await?;
-        store
-            .put(&unrelated, PutPayload::from_static(b"notes"))
-            .await?;
+        for path in [&unrelated, &unrecognised_in_orphan] {
+            store.put(path, PutPayload::from_static(b"notes")).await?;
+        }
 
         // Ensure the objects are strictly older than the zero `min_age` threshold.
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -4115,6 +4098,7 @@ mod tests {
             partition.clone().join(retained_dir).join("000001.sst"),
             referenced_sst,
             unrelated,
+            unrecognised_in_orphan,
         ] {
             assert!(store.head(&kept).await.is_ok(), "{kept} should be kept");
         }
