@@ -31,7 +31,6 @@ use restate_storage_api::StorageError;
 use restate_storage_api::lock_table::LoadLocks;
 use restate_storage_api::vqueue_table::metadata::VQueueMeta;
 use restate_storage_api::vqueue_table::{EntryKey, EntryMetadata};
-use restate_types::identifiers::PartitionKey;
 use restate_types::vqueues::EntryKind;
 use restate_types::{LockName, Scope};
 use restate_util_string::ReString;
@@ -341,13 +340,9 @@ impl ResourceManager {
     }
 
     /// Snapshot of every user-limit counter currently tracked by this partition's
-    /// `UserLimiter`. The rows are stamped with the owning partition's key so that
-    /// DataFusion can route them into the right scan.
-    pub(super) fn scan_user_limit_counters(
-        &self,
-        partition_key: PartitionKey,
-    ) -> Vec<UserLimitCounterEntry> {
-        self.user_limiter.scan_counters(partition_key)
+    /// `UserLimiter`, each stamped with its scope's partition key.
+    pub(super) fn scan_user_limit_counters(&self) -> Vec<UserLimitCounterEntry> {
+        self.user_limiter.scan_counters()
     }
 
     /// Resolve a user-limit rule handle into its pattern string, or `None` if

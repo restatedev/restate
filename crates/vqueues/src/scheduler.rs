@@ -19,7 +19,6 @@ use restate_limiter::RuleUpdate;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::scheduler::{RunAction, SchedulerAction, YieldAction};
 use restate_storage_api::vqueue_table::{EntryKey, EntryMetadata, ScanVQueueTable, VQueueStore};
-use restate_types::identifiers::PartitionKey;
 use restate_types::vqueues::VQueueId;
 use restate_worker_api::resources::ReservedResources;
 use restate_worker_api::{SchedulingStatus, UserLimitCounterEntry, VQueueSchedulerStatus};
@@ -261,18 +260,13 @@ impl<S: VQueueStore> SchedulerService<S> {
     }
 
     /// Returns a snapshot of every user-limit counter currently tracked by this
-    /// partition's scheduler, stamped with `partition_key` for DataFusion routing.
+    /// partition's scheduler, each stamped with its scope's partition key.
     ///
     /// Returns an empty vec when the scheduler is disabled.
-    pub fn scan_user_limit_counters(
-        &self,
-        partition_key: PartitionKey,
-    ) -> Vec<UserLimitCounterEntry> {
+    pub fn scan_user_limit_counters(&self) -> Vec<UserLimitCounterEntry> {
         match self.state {
             State::Disabled => Vec::new(),
-            State::Active(ref drr_scheduler) => {
-                drr_scheduler.scan_user_limit_counters(partition_key)
-            }
+            State::Active(ref drr_scheduler) => drr_scheduler.scan_user_limit_counters(),
         }
     }
 }

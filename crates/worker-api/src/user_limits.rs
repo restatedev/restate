@@ -19,8 +19,8 @@ use restate_types::identifiers::PartitionKey;
 /// vqueues currently waiting behind it.
 #[derive(Debug, Clone)]
 pub struct UserLimitCounterEntry {
-    /// Partition that owns this counter. Used to route the row through
-    /// DataFusion's partition-aware scan.
+    /// The partition key of the counter's scope. Every entry of the scope lives
+    /// in the partition that owns this key, and so does the counter.
     pub partition_key: PartitionKey,
     /// Scope component of the counter (the first trie level).
     pub scope: String,
