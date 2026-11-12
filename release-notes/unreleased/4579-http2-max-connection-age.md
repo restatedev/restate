@@ -22,8 +22,37 @@ spread over the pods that exist now.
 
 ### Impact on Users
 - The option is unset by default, so existing and new deployments behave exactly as before.
-- When set, values below 10 minutes are raised to 10 minutes, to avoid reconnecting too often.
+- When set, values below 30 seconds are raised to 30 seconds, to avoid reconnecting too often.
 - In-flight invocations are never interrupted when a connection is retired.
+
+### When to Use It
+- **Not behind an L4 load balancer** (direct endpoints, an HTTP/2-aware L7 proxy, or a fixed set of
+  backends): leave the option unset. Replacing connections gains you nothing here and only adds
+  reconnects.
+- **Behind an L4 load balancer whose backends change** (for example a Kubernetes `ClusterIP` service
+  with autoscaling or rolling deployments): set it, so new pods start receiving invocations.
+
+### Choosing a Value
+A retired connection takes no new invocations, but it stays open until its longest in-flight
+request to your deployment finishes. While that happens, its replacement is already serving new
+invocations, so for a while both are open. What matters here is how long a single request to your
+deployment stays open, that is how long your handlers run before they complete or suspend. It is
+not the end-to-end duration of an invocation: an invocation that sleeps or waits on other calls
+suspends and releases its request, even if the invocation itself lasts hours or days.
+
+The longer your slowest requests stay open compared with the max age, the more connections are
+open to your deployment at once:
+
+| Max age compared with your slowest usual requests | Extra open connections (roughly) |
+|---------------------------------------------------|----------------------------------|
+| 10x longer                                        | about 10% more                   |
+| about the same                                    | about twice as many              |
+| much shorter                                      | grows with the gap               |
+
+We recommend choosing a max age of at least 10x the longest time a single request to your
+deployment usually stays open. If you are unsure, 15 to 30 minutes is a safe starting point for
+most workloads. A shorter max age spreads load onto new pods faster, at the cost of more open
+connections.
 
 ### Migration Guidance
 None required. To turn it on, for example behind a Kubernetes `ClusterIP` service:

@@ -27,6 +27,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tower::Service;
 use tracing::{debug, trace};
 
+use restate_types::time::MillisSinceEpoch;
+
 use crate::pool::PoolConfig;
 use crate::pool::conn::{ConnectionConfig, ConnectionConfigBuilder};
 use crate::pool::metric_definitions::CONNECTION_POOL_CONNECTION_UTILIZATION;
@@ -154,15 +156,18 @@ where
     ///   Return `Ready(Ok(()))` immediately; the next [`call`](Self::call)
     ///   will consume it.
     /// - **`PollCandidates { candidates }`** — poll each candidate. Closed
-    ///   candidates are evicted; the first to return `Ready(Ok)` wins and the
+    ///   and aged (past their `retire_at` deadline) candidates are dropped
+    ///   from the candidate list; the first to return `Ready(Ok)` wins and the
     ///   state transitions to `Ready`. Candidates that error are evicted; for
     ///   the ones that return `Pending` a waker has been registered with `cx`.
     ///   When the loop finishes without a winner, the surviving candidates
     ///   carry over into `ExpandCandidates` as `polled` so we can decide
     ///   whether to bring in more connections or expand.
     /// - **`ExpandCandidates { polled, unpolled }`** — walk the shared pool's
-    ///   connection list, accumulating live-stream totals and pushing any
-    ///   connection we haven't already seen onto `unpolled`. Then:
+    ///   connection list, skipping closed and aged connections, accumulating
+    ///   live-stream totals and pushing any connection we haven't already
+    ///   seen onto `unpolled`. Aged connections stay in the shared pool until
+    ///   the eviction task removes them. Then:
     ///   1. **Decide whether to expand.** The pool is allowed to grow when
     ///      there are no live connections at all (cold start), when every
     ///      live stream is currently in use (`total_available_streams == 0`),
@@ -210,6 +215,7 @@ where
     /// produces a candidate (waker registered via the new connection's
     /// `poll_ready`) or surfaces an error.
     pub fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+        let now = MillisSinceEpoch::now();
         loop {
             let state = self
                 .state
@@ -228,7 +234,7 @@ where
                     let mut i = 0;
                     while i < candidates.len() {
                         let candidate = &mut candidates[i];
-                        if candidate.is_retired() {
+                        if candidate.is_retired() || candidate.is_aged(now) {
                             candidates.swap_remove_back(i);
                             continue;
                         }
@@ -281,7 +287,7 @@ where
                     let mut total_connections = 0usize;
 
                     for candidate in &inner.connections {
-                        if candidate.is_retired() {
+                        if candidate.is_retired() || candidate.is_aged(now) {
                             continue;
                         }
 
@@ -446,6 +452,7 @@ where
 #[cfg(test)]
 mod test {
     use std::num::NonZeroU32;
+    use std::time::Duration;
 
     use bytes::Bytes;
     use http::Request;
@@ -627,6 +634,45 @@ mod test {
             selected, newer_id,
             "expected newer connection (id={newer_id}) to be selected, got id={selected} (older={older_id})",
         );
+    }
+
+    /// A connection past its max age is skipped as a candidate (the next
+    /// request opens a new connection) but stays in the shared pool for the
+    /// eviction task to reclaim, and its in-flight stream keeps working.
+    #[tokio::test]
+    async fn aged_connections_are_skipped() {
+        let mut pool = AuthorityPool::new(
+            TestConnector::new(10),
+            PoolConfig {
+                initial_max_send_streams: NonZeroU32::new(10).unwrap(),
+                max_connection_age: Some(Duration::from_millis(50)),
+                max_connection_age_jitter: 0.0,
+                ..Default::default()
+            },
+        );
+
+        let held = send_empty_request(&mut pool).await;
+        let aged_id = pool.shared.inner.read().connections[0].id();
+
+        // `retire_at` is wall-clock based, so paused tokio time would not help.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        futures::future::poll_fn(|cx| pool.poll_ready(cx))
+            .await
+            .unwrap();
+        let selected = match &pool.state {
+            Some(AuthorityPoolState::Ready(conn)) => conn.id(),
+            _ => panic!("expected Ready state after poll_ready"),
+        };
+        assert_ne!(selected, aged_id, "aged connection must not be selected");
+        assert_eq!(
+            pool.shared.inner.read().connections.len(),
+            2,
+            "aged connection is skipped, not removed"
+        );
+
+        // The stream opened before the deadline still completes.
+        held.collect().await.unwrap();
     }
 
     /// Concurrent requests with body echo work correctly through the pool.

@@ -260,6 +260,14 @@ impl<C> Connection<C> {
         self.shared.retire_at
     }
 
+    /// Returns `true` once the connection is past its [`retire_at`](Self::retire_at)
+    /// deadline. Aged connections take no new streams.
+    pub fn is_aged(&self, now: MillisSinceEpoch) -> bool {
+        self.shared
+            .retire_at
+            .is_some_and(|retire_at| now >= retire_at)
+    }
+
     pub fn last_used_at(&self) -> MillisSinceEpoch {
         self.shared.last_used_at.load(Ordering::Relaxed).into()
     }
