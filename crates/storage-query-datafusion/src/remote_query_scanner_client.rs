@@ -30,6 +30,7 @@ use restate_types::net::remote_query_scanner::{
     ScannerFailure, ScannerId,
 };
 use restate_types::sharding::KeyRange;
+use restate_util_string::ReString;
 
 use crate::{decode_record_batch, encode_expr, encode_schema};
 
@@ -154,7 +155,7 @@ pub fn remote_scan_as_datafusion_stream(
     scanner_id: ScannerId,
     partition_id: PartitionId,
     range: KeyRange,
-    table_name: String,
+    table_name: ReString,
     projection_schema: SchemaRef,
     predicate: Option<Arc<dyn PhysicalExpr>>,
     batch_size: usize,

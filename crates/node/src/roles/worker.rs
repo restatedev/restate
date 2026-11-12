@@ -19,14 +19,13 @@ use restate_core::network::TransportConnect;
 use restate_core::{MetadataWriter, TaskCenter, TaskKind};
 use restate_ingestion_client::IngestionClient;
 use restate_partition_store::PartitionStoreManager;
-use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_datafusion::remote_query_scanner_manager::RemoteScannerManager;
 use restate_types::health::HealthStatus;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_wal_protocol::v2::Envelope;
 use restate_wal_protocol::v2::Raw;
-use restate_worker::{RuleBookCacheHandle, Worker};
+use restate_worker::Worker;
 use restate_worker_api::ProcessorsManagerHandle;
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -57,34 +56,36 @@ where
         bifrost: Bifrost,
         ingestion_client: IngestionClient<T, Envelope<Raw>>,
         metadata_writer: MetadataWriter,
-        remote_scanner_manager: RemoteScannerManager,
+        remote_scanner_manager: &RemoteScannerManager,
     ) -> Result<Self, WorkerRoleBuildError> {
         let worker = Worker::create(
             health_status,
             replica_set_states,
-            partition_store_manager,
+            Arc::clone(&partition_store_manager),
             networking,
             bifrost,
             ingestion_client,
             router_builder,
             metadata_writer,
-            remote_scanner_manager,
         )
         .await?;
+
+        // Register local scanner capabilities that are only possible if we are running
+        // the worker role.
+        restate_storage_query_datafusion::local_scanners::register_partition_scanners(
+            Arc::clone(&partition_store_manager),
+            remote_scanner_manager,
+        );
+        restate_storage_query_datafusion::local_scanners::register_live_scanners(
+            worker.partition_processor_manager_handle().query_access(),
+            remote_scanner_manager,
+        );
 
         Ok(WorkerRole { worker })
     }
 
     pub fn partition_processor_manager_handle(&self) -> ProcessorsManagerHandle {
         self.worker.partition_processor_manager_handle()
-    }
-
-    pub fn storage_query_context(&self) -> &QueryContext {
-        self.worker.storage_query_context()
-    }
-
-    pub fn rule_book_cache_handle(&self) -> RuleBookCacheHandle {
-        self.worker.rule_book_cache_handle()
     }
 
     pub fn start(self) -> anyhow::Result<()> {

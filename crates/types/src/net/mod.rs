@@ -25,7 +25,7 @@ pub mod selection;
 pub use crate::protobuf::common::ProtocolVersion;
 pub use crate::protobuf::common::ServiceTag;
 
-pub const MIN_SUPPORTED_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V2;
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V3;
 pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V6;
 
 pub trait Service: Send + Unpin + 'static {
@@ -112,10 +112,10 @@ macro_rules! bilrost_wire_codec {
                 &self,
                 protocol_version: $crate::net::ProtocolVersion,
             ) -> Result<::bytes::Bytes, $crate::net::codec::EncodeError> {
-                if protocol_version < $crate::net::ProtocolVersion::V2 {
+                if protocol_version < $crate::net::MIN_SUPPORTED_PROTOCOL_VERSION {
                     Err($crate::net::codec::EncodeError::IncompatibleVersion {
                         type_tag: stringify!($message),
-                        min_required: $crate::net::ProtocolVersion::V2,
+                        min_required: $crate::net::MIN_SUPPORTED_PROTOCOL_VERSION,
                         actual: protocol_version,
                     })
                 } else {

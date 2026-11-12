@@ -13,11 +13,12 @@ package restate.common;
 
 enum ProtocolVersion {
   ProtocolVersion_UNKNOWN = 0;
-  reserved 1;
+  reserved 1, 2;
+  reserved "V2";
   // Released in v1.2. Support dropped in v1.5.0
   // V1 = 1;
-  // [Native RPC] Released in >= v1.3.3
-  V2 = 2;
+  // [Native RPC] Released in v1.3.3. Support dropped in v1.8.2.
+  // V2 = 2;
 
   // Release in v1.6. Support custom `Record`
   // encoding that uses Bytes instead of PolyBytes

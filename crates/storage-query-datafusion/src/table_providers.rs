@@ -34,6 +34,7 @@ use datafusion::physical_plan::{
 };
 use futures::stream::{self, Stream, StreamExt, TryStreamExt};
 
+pub use restate_storage_query_api::Scan;
 use restate_types::identifiers::PartitionId;
 use restate_types::partition_table::Partition;
 use restate_types::sharding::KeyRange;
@@ -486,18 +487,6 @@ where
             }
         }
     }
-}
-
-// Generic-based table provider that provides node-level or global data rather than
-// partition-keyed data.
-pub trait Scan: Debug + Send + Sync + 'static {
-    fn scan(
-        &self,
-        projection: SchemaRef,
-        filters: &[Expr],
-        batch_size: usize,
-        limit: Option<usize>,
-    ) -> SendableRecordBatchStream;
 }
 
 pub(crate) type ScannerRef = Arc<dyn Scan>;

@@ -121,3 +121,44 @@ where
 
     Ok((header, welcome))
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::network::protobuf::network::{ConnectionDirection, Swimlane};
+
+    use super::*;
+
+    #[test]
+    fn protocol_negotiation_requires_v3() {
+        let mut hello = Hello::new(
+            None,
+            "test-cluster".to_owned(),
+            None,
+            ConnectionDirection::Bidirectional,
+            Swimlane::default(),
+        );
+        assert_eq!(hello.min_protocol_version, 3);
+        assert_eq!(hello.max_protocol_version, CURRENT_PROTOCOL_VERSION as i32);
+        assert!(ProtocolVersion::try_from(2).is_err());
+
+        // Older peers may advertise a floor of V2 while also supporting V3+.
+        for (min, max, expected) in [
+            (2, 3, ProtocolVersion::V3),
+            (3, 3, ProtocolVersion::V3),
+            (2, 4, ProtocolVersion::V4),
+            (3, 6, ProtocolVersion::V6),
+            (3, i32::MAX, CURRENT_PROTOCOL_VERSION),
+        ] {
+            hello.min_protocol_version = min;
+            hello.max_protocol_version = max;
+            assert_eq!(negotiate_protocol_version(&hello).unwrap(), expected);
+        }
+
+        hello.min_protocol_version = 2;
+        hello.max_protocol_version = 2;
+        assert!(matches!(
+            negotiate_protocol_version(&hello),
+            Err(HandshakeError::UnsupportedVersion(2))
+        ));
+    }
+}

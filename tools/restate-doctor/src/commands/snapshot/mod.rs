@@ -41,8 +41,13 @@ use restate_object_store_util::create_object_store_client;
 use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::snapshots::SnapshotRepository;
 use restate_rocksdb::RocksDbManager;
-use restate_storage_query_datafusion::context::{PartitionTables, QueryContext, SelectPartitions};
+use restate_storage_query_api::SessionOptions;
+use restate_storage_query_datafusion::context::{DataFusionQueryEngine, SelectPartitions};
+use restate_storage_query_datafusion::local_scanners::{
+    register_live_scanners, register_partition_scanners,
+};
 use restate_storage_query_datafusion::remote_query_scanner_manager::RemoteScannerManager;
+use restate_storage_query_datafusion::{DataFusionEnv, UserTables};
 use restate_types::Version;
 use restate_types::clock::ClockUpkeep;
 use restate_types::config::{Configuration, ObjectStoreOptions, set_current_config};
@@ -54,6 +59,7 @@ use restate_types::net::metadata::MetadataContainer;
 use restate_types::nodes_config::{ClusterFingerprint, NodesConfiguration};
 use restate_types::partition_table::Partition;
 use restate_types::sharding::KeyRange;
+use restate_worker_api::OfflinePartitionQueryAccess;
 
 mod repl;
 mod server;
@@ -334,22 +340,37 @@ async fn run(
         partitions.push((partition_id, partition));
     }
 
-    let query_context = QueryContext::create(
-        &config.admin.query_engine,
-        PartitionTables::new(
-            LocalPartitions(Arc::new(partitions)),
-            manager,
-            RemoteScannerManager::local_only(restate_core::Metadata::current()),
-        ),
-    )
+    let remote_scanner_manager =
+        RemoteScannerManager::local_only(restate_core::Metadata::current());
+    register_partition_scanners(Arc::clone(&manager), &remote_scanner_manager);
+    register_live_scanners(
+        Arc::new(OfflinePartitionQueryAccess::new(
+            partitions
+                .iter()
+                .map(|(id, partition)| (*id, partition.key_range)),
+        )),
+        &remote_scanner_manager,
+    );
+
+    // TODO: Migrate snapshot tooling to v2 unconditionally in a separate commit.
+    let env = DataFusionEnv::from_options(&config.admin.query_engine)?;
+    env.register_tables(UserTables::new(
+        LocalPartitions(Arc::new(partitions)),
+        remote_scanner_manager,
+    ))
     .await
-    .context("failed to build the query context")?
-    .with_allow_statements();
+    .context("failed to register query tables")?;
+    let query_context =
+        DataFusionQueryEngine::from_env(env, config.admin.query_engine.rate_limiting.as_ref())
+            .create_session(SessionOptions {
+                allow_statements: true,
+                ..Default::default()
+            })?;
 
     match (&args.query, args.listen) {
-        (Some(query), _) => repl::run_query(&query_context, query).await,
+        (Some(query), _) => repl::run_query(query_context.as_ref(), query).await,
         (None, Some(addr)) => server::run_server(query_context, addr).await,
-        (None, None) => repl::run_repl(&query_context, &args.cache_dir).await,
+        (None, None) => repl::run_repl(query_context.as_ref(), &args.cache_dir).await,
     }
 }
 

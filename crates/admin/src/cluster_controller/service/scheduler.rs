@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::cmp::Ordering;
+use std::cmp::{Ordering, Reverse};
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
 use std::fmt;
@@ -1005,6 +1005,8 @@ impl<T: TransportConnect> Scheduler<T> {
     /// - 1: matches affinity + alive (not caught up)
     /// - 0: alive only (baseline)
     ///
+    /// Ties are broken by the replica set order: the first node with the highest score wins.
+    ///
     /// If `freeze` is set, the current target leader is kept unchanged.
     fn select_leader(
         &mut self,
@@ -1030,17 +1032,19 @@ impl<T: TransportConnect> Scheduler<T> {
             .iter()
             .copied()
             .filter(|node_id| cluster_state.is_alive(NodeId::from(*node_id)))
-            .max_by_key(|node_id| {
+            // min_by_key with Reverse picks the *first* node with the highest score (max_by_key
+            // would pick the last one), so that the replica set order determines the leader.
+            .min_by_key(|node_id| {
                 let has_affinity =
                     affinity.is_some_and(|a| matches_affinity(*node_id, a, nodes_config));
                 let is_caught_up =
                     legacy_cluster_state.is_partition_processor_active(partition_id, node_id);
-                match (has_affinity, is_caught_up) {
+                Reverse(match (has_affinity, is_caught_up) {
                     (true, true) => 3u8,
                     (false, true) => 2,
                     (true, false) => 1,
                     (false, false) => 0,
-                }
+                })
             });
 
         if let Some(best) = best
@@ -1368,6 +1372,90 @@ mod tests {
         );
         assert!(completed.configuration.next.is_none());
         assert_eq!(completed.configuration.placement_policy, policy);
+    }
+
+    #[restate_core::test]
+    async fn select_leader_picks_first_node_with_highest_score() {
+        use restate_core::TestCoreEnvBuilder;
+        use restate_types::cluster::cluster_state::{
+            AliveNode, NodeState as LegacyNodeState, PartitionProcessorStatus, ReplayStatus,
+        };
+        use restate_types::time::MillisSinceEpoch;
+
+        let builder = TestCoreEnvBuilder::with_incoming_only_connector();
+        let mut scheduler = Scheduler::new(
+            builder.metadata_writer.clone(),
+            builder.networking,
+            PartitionReplicaSetStates::default(),
+        );
+        let partition_id = PartitionId::MIN;
+        // replica set order deliberately differs from node id order
+        let nodes: Vec<_> = [3, 1, 2].into_iter().map(PlainNodeId::from).collect();
+        let current = PartitionConfiguration::new(
+            ReplicationProperty::new_unchecked(3),
+            nodes.iter().copied().collect(),
+            HashMap::default(),
+        );
+        scheduler.partitions.insert(
+            partition_id,
+            PartitionState::new(
+                current,
+                None,
+                LeadershipPolicy::default(),
+                PlacementPolicy::default(),
+            ),
+        );
+
+        let cluster_state = ClusterState::default();
+        let mut updater = cluster_state.clone().updater();
+        for node_id in &nodes {
+            updater.upsert_node_state(
+                GenerationalNodeId::new(u32::from(*node_id), 1),
+                NodeState::Alive,
+            );
+        }
+        let nodes_config = NodesConfiguration::new_for_testing();
+        let legacy_cluster_state = |caught_up: &[PlainNodeId]| {
+            let mut legacy = LegacyClusterState::empty();
+            for node_id in &nodes {
+                let replay_status = if caught_up.contains(node_id) {
+                    ReplayStatus::Active
+                } else {
+                    ReplayStatus::CatchingUp
+                };
+                let status = PartitionProcessorStatus {
+                    replay_status,
+                    ..Default::default()
+                };
+                legacy.nodes.insert(
+                    *node_id,
+                    LegacyNodeState::Alive(AliveNode {
+                        last_heartbeat_at: MillisSinceEpoch::now(),
+                        generational_node_id: GenerationalNodeId::new(u32::from(*node_id), 1),
+                        partitions: [(partition_id, status)].into_iter().collect(),
+                        uptime: Duration::ZERO,
+                    }),
+                );
+            }
+            legacy
+        };
+
+        let mut select = |caught_up: &[PlainNodeId]| {
+            scheduler.select_leader(
+                &partition_id,
+                &cluster_state,
+                &legacy_cluster_state(caught_up),
+                &nodes_config,
+            );
+            scheduler.partitions[&partition_id].target_leader
+        };
+
+        // all tied: first node in the replica set wins
+        assert_eq!(select(&nodes), Some(nodes[0]));
+        // only the last two are caught up: the first of them wins
+        assert_eq!(select(&nodes[1..]), Some(nodes[1]));
+        // nobody caught up: all tied again, first node wins
+        assert_eq!(select(&[]), Some(nodes[0]));
     }
 
     #[test]

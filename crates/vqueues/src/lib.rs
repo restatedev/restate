@@ -939,7 +939,7 @@ where
             },
         );
 
-        let modified_key = if header.has_lock()
+        let unlocked_key = if header.has_lock()
             && let Some(lock_name) = meta.meta().lock_name()
         {
             self.storage.release_lock(meta.meta().scope(), lock_name);
@@ -948,31 +948,30 @@ where
             *header.entry_key()
         };
 
-        let delete_at = at.to_unix_millis() + delete_after;
-        let modified_key = modified_key.set_run_at(Some(RoughTimestamp::from(delete_at)));
-
-        let stats = Self::mark_transition(at, header.stats());
-
-        let value = EntryValue {
-            stats,
-            metadata: header.metadata().clone(),
-            status: new_status,
-        };
-
-        // Move the entry to Finished stage
-        self.storage
-            .put_vqueue_inbox(vqueue_id, Stage::Finished, &modified_key, &value);
-
         let context = EntryContext {
             qid: vqueue_id,
             target,
         };
-        let after = EntryStateRef::from_value(Stage::Finished, &modified_key, &value);
-        self.storage.update_vqueue_entry_status(
-            &context,
-            EntryStateRef::from_header(header),
-            after,
-        );
+        // Without retention, the Finished row would be written and deleted in this same
+        // batch; the entry is removed directly from its stored state below instead.
+        if !delete_after.is_zero() {
+            let delete_at = at.to_unix_millis() + delete_after;
+            let modified_key = unlocked_key.set_run_at(Some(RoughTimestamp::from(delete_at)));
+            let value = EntryValue {
+                stats: Self::mark_transition(at, header.stats()),
+                metadata: header.metadata().clone(),
+                status: new_status,
+            };
+
+            // Move the entry to Finished stage
+            self.storage
+                .put_vqueue_inbox(vqueue_id, Stage::Finished, &modified_key, &value);
+            self.storage.update_vqueue_entry_status(
+                &context,
+                EntryStateRef::from_header(header),
+                EntryStateRef::from_value(Stage::Finished, &modified_key, &value),
+            );
+        }
 
         self.update_vqueue(&update);
 
@@ -999,7 +998,7 @@ where
 
         if delete_after.is_zero() {
             // Delete immediately!
-            self.delete(at, &context, after);
+            self.remove_entry(at, &context, EntryStateRef::from_header(header));
         }
     }
 
@@ -1013,10 +1012,31 @@ where
         before: EntryStateRef<'_>,
     ) {
         assert_eq!(before.stage, Stage::Finished);
+        assert_eq!(
+            context.qid,
+            self.cache.get(self.handle).unwrap().vqueue_id()
+        );
+        // delete the inbox entry
+        self.storage
+            .delete_vqueue_inbox(context.qid, Stage::Finished, before.entry_key);
+        self.remove_entry(at, context, before);
+    }
+
+    /// Removes a finished entry's status and input, and the vqueue's count of it.
+    ///
+    /// `before` must be the entry's actual stored state, including earlier writes in this
+    /// transaction: either Finished, or the state it finished from when it is deleted in
+    /// the same step. In the latter case no Finished row was written.
+    fn remove_entry(
+        &mut self,
+        at: UniqueTimestamp,
+        context: &EntryContext<'_>,
+        before: EntryStateRef<'_>,
+    ) {
         let vqueue_id = context.qid;
-        let entry_key = before.entry_key;
-        assert_eq!(vqueue_id, self.cache.get(self.handle).unwrap().vqueue_id());
-        let id = entry_key.to_canonical_entry_id(vqueue_id.partition_key());
+        let id = before
+            .entry_key
+            .to_canonical_entry_id(vqueue_id.partition_key());
 
         debug!(
             entry = %id,
@@ -1035,9 +1055,6 @@ where
         self.storage.delete_vqueue_entry_status(context, before);
         // delete the entry's input
         self.storage.delete_vqueue_input_payload(vqueue_id, &id);
-        // delete the inbox entry
-        self.storage
-            .delete_vqueue_inbox(vqueue_id, Stage::Finished, entry_key);
         self.update_vqueue(&update);
     }
 
@@ -1088,33 +1105,16 @@ where
             },
         );
 
-        let stats = Self::mark_transition(at, &stats);
-
         self.update_vqueue(&update);
+        assert!(!header.has_lock());
 
-        // Move the entry to Finished stage
-        // for future: Use this to set the deletion time.
-        let modified_key = header.entry_key().set_run_at(Some(RoughTimestamp::MAX));
-        assert!(!modified_key.has_lock());
-
-        let value = EntryValue {
-            stats,
-            metadata: header.metadata().clone(),
-            status,
-        };
-        self.storage
-            .put_vqueue_inbox(vqueue_id, Stage::Finished, &modified_key, &value);
-
-        // Update the entry state so we can track the new entry key and stage
-        let context = EntryContext {
-            qid: vqueue_id,
-            target,
-        };
-        let after = EntryStateRef::from_value(Stage::Finished, &modified_key, &value);
-        self.storage.update_vqueue_entry_status(
-            &context,
-            EntryStateRef::from_header(header),
-            after,
+        debug!(
+            entry = %header.display_entry_id(),
+            qid = %vqueue_id,
+            "{}->{}, status: {}->{status}",
+            Stage::Inbox,
+            Stage::Finished,
+            header.status(),
         );
 
         if let Some(collector) = self.action_collector.as_deref_mut() {
@@ -1127,13 +1127,17 @@ where
         }
 
         // -- DELETION --
-        // We currently fake the transition from finished -> deleted by emitting another transition
-        // immediately after moving to Stage::Finish. In future changes, this will be separated
-        // into separate step.
+        // The entry is deleted in the same step it finishes, so no Finished row is written:
+        // the vqueue accounting still moves it through Finished, while storage only removes
+        // it from its stored Inbox state. In future changes, deletion will be a separate step.
         //
         // The end result would be that a finished vqueue item would expire after some time
         // and be deleted from the vqueue (or moved to archival key-prefix).
-        self.delete(at, &context, after);
+        let context = EntryContext {
+            qid: vqueue_id,
+            target,
+        };
+        self.remove_entry(at, &context, EntryStateRef::from_header(header));
     }
 
     /// Marks this vqueue as paused

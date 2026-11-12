@@ -68,10 +68,9 @@ impl WireDecode for GetMetadataRequest {
 impl WireEncode for MetadataUpdate {
     fn encode_to_bytes(&self, protocol_version: ProtocolVersion) -> Result<Bytes, EncodeError> {
         match protocol_version {
-            ProtocolVersion::Unknown
-            | ProtocolVersion::V2
-            | ProtocolVersion::V3
-            | ProtocolVersion::V4 => Ok(Bytes::from(codec::encode_as_flexbuffers(self))),
+            ProtocolVersion::Unknown | ProtocolVersion::V3 | ProtocolVersion::V4 => {
+                Ok(Bytes::from(codec::encode_as_flexbuffers(self)))
+            }
             ProtocolVersion::V6 => Ok(wire::metadata_update_wire_encode(self, protocol_version)
                 .expect("encode to succeed")),
         }
@@ -88,10 +87,9 @@ impl WireDecode for MetadataUpdate {
         Self: Sized,
     {
         match protocol_version {
-            ProtocolVersion::Unknown
-            | ProtocolVersion::V2
-            | ProtocolVersion::V3
-            | ProtocolVersion::V4 => codec::decode_as_flexbuffers(buf, protocol_version),
+            ProtocolVersion::Unknown | ProtocolVersion::V3 | ProtocolVersion::V4 => {
+                codec::decode_as_flexbuffers(buf, protocol_version)
+            }
             ProtocolVersion::V6 => Ok(wire::metadata_update_wire_decode(buf, protocol_version)?),
         }
     }

@@ -541,6 +541,11 @@ impl Configuration {
             }
         }
 
+        self.worker
+            .snapshots
+            .validate_upload_sizes()
+            .map_err(InvalidConfigurationError::InvalidSnapshotUploadSizes)?;
+
         self.validate_advertised_addresses()
     }
 
@@ -715,6 +720,8 @@ pub enum InvalidConfigurationError {
         address: String,
         reason: String,
     },
+    #[error("invalid [worker.snapshots] setting: {0}")]
+    InvalidSnapshotUploadSizes(String),
     #[error("invalid {key}: {reason}")]
     AdvertisedAddressList { key: &'static str, reason: String },
 }

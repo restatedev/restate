@@ -36,7 +36,6 @@ define_rpc! {
     @response = Appended,
     @service = SequencerDataService,
 }
-// Note: Append has custom WireEncode/WireDecode implementations for V2 compatibility
 bilrost_wire_codec!(Appended);
 
 define_rpc! {
@@ -153,16 +152,9 @@ impl WireEncode for Append {
         match protocol_version {
             ProtocolVersion::Unknown => Err(crate::net::codec::EncodeError::IncompatibleVersion {
                 type_tag: stringify!(Append),
-                min_required: ProtocolVersion::V2,
+                min_required: ProtocolVersion::V3,
                 actual: protocol_version,
             }),
-            ProtocolVersion::V2 => {
-                // note: cloning the append message is cheap, but not free.
-                // hopefully this code path will be short lived until all
-                // nodes has been upgraded to protocol-version: V3
-                let msg: compat::Append = self.clone().into();
-                Ok(encode_as_bilrost(&msg))
-            }
             ProtocolVersion::V3 | ProtocolVersion::V4 | ProtocolVersion::V6 => {
                 Ok(encode_as_bilrost(self))
             }
@@ -182,14 +174,9 @@ impl WireDecode for Append {
     {
         match protocol_version {
             ProtocolVersion::Unknown => Err(anyhow::anyhow!(
-                "Append requires at least protocol version V2, got {:?}",
+                "Append requires at least protocol version V3, got {:?}",
                 protocol_version
             )),
-            ProtocolVersion::V2 => {
-                let msg: compat::Append =
-                    crate::net::codec::decode_as_bilrost(buf, protocol_version)?;
-                Ok(msg.into())
-            }
             ProtocolVersion::V3 | ProtocolVersion::V4 | ProtocolVersion::V6 => {
                 crate::net::codec::decode_as_bilrost(buf, protocol_version)
             }
@@ -254,37 +241,4 @@ pub struct GetSequencerState {
 pub struct SequencerState {
     #[bilrost(1)]
     pub header: CommonResponseHeader,
-}
-
-mod compat {
-    use crate::net::log_server::CompatibilityPayloads;
-
-    use super::CommonRequestHeader;
-
-    /// V2-compatible Append message that uses unpacked Payloads encoding
-    #[derive(Debug, Clone, bilrost::Message)]
-    pub struct Append {
-        #[bilrost(1)]
-        pub header: CommonRequestHeader,
-        #[bilrost(2)]
-        pub payloads: CompatibilityPayloads,
-    }
-
-    impl From<super::Append> for Append {
-        fn from(value: super::Append) -> Self {
-            Self {
-                header: value.header,
-                payloads: value.payloads.into(),
-            }
-        }
-    }
-
-    impl From<Append> for super::Append {
-        fn from(value: Append) -> Self {
-            Self {
-                header: value.header,
-                payloads: value.payloads.into(),
-            }
-        }
-    }
 }

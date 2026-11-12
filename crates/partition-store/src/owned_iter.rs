@@ -9,18 +9,18 @@
 // by the Apache License, Version 2.0.
 
 use bytes::{BufMut, Bytes, BytesMut};
-use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
+use restate_storage_api::Result;
 
-use restate_storage_api::{Result, StorageError};
+use crate::StorageIterator;
 
-pub struct OwnedIterator<'a, DB: DBAccess> {
-    iter: DBRawIteratorWithThreadMode<'a, DB>,
+pub struct OwnedIterator<I> {
+    iter: I,
     arena: BytesMut,
     done: bool,
 }
 
-impl<'a, DB: DBAccess> OwnedIterator<'a, DB> {
-    pub(crate) fn new(iter: DBRawIteratorWithThreadMode<'a, DB>) -> Self {
+impl<I: StorageIterator> OwnedIterator<I> {
+    pub(crate) fn new(iter: I) -> Self {
         Self {
             iter,
             arena: BytesMut::new(),
@@ -29,29 +29,35 @@ impl<'a, DB: DBAccess> OwnedIterator<'a, DB> {
     }
 }
 
-impl<DB: DBAccess> Iterator for OwnedIterator<'_, DB> {
+impl<I: StorageIterator> Iterator for OwnedIterator<I> {
     type Item = Result<(Bytes, Bytes)>;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         if self.done {
             None
-        } else if let Some((k, v)) = self.iter.item() {
-            self.arena.reserve(k.len() + v.len());
-            self.arena.put_slice(k);
-            let key = self.arena.split().freeze();
-            self.arena.put_slice(v);
-            let value = self.arena.split().freeze();
-            self.iter.next();
-            Some(Ok((key, value)))
         } else {
-            self.done = true;
-            self.iter
-                .status()
-                .err()
-                .map(|err| Err(StorageError::Generic(err.into())))
+            match self.iter.item() {
+                Ok(Some((k, v))) => {
+                    self.arena.reserve(k.len() + v.len());
+                    self.arena.put_slice(k);
+                    let key = self.arena.split().freeze();
+                    self.arena.put_slice(v);
+                    let value = self.arena.split().freeze();
+                    self.iter.next();
+                    Some(Ok((key, value)))
+                }
+                Ok(None) => {
+                    self.done = true;
+                    None
+                }
+                Err(err) => {
+                    self.done = true;
+                    Some(Err(err))
+                }
+            }
         }
     }
 }
 
-impl<DB: DBAccess> std::iter::FusedIterator for OwnedIterator<'_, DB> {}
+impl<I: StorageIterator> std::iter::FusedIterator for OwnedIterator<I> {}

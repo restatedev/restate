@@ -857,7 +857,11 @@ pub mod test_util {
 
     use super::*;
 
-    pub struct OneshotRxMock<O>(oneshot::Receiver<ReplyEnvelope>, PhantomData<O>);
+    pub struct OneshotRxMock<O>(
+        oneshot::Receiver<ReplyEnvelope>,
+        PhantomData<O>,
+        ProtocolVersion,
+    );
 
     impl<O: WireDecode> OneshotRxMock<O> {
         pub async fn recv(self) -> O {
@@ -867,7 +871,7 @@ pub mod test_util {
                     ..
                 }) = self.0.await
             );
-            O::decode(buf, ProtocolVersion::V2)
+            O::decode(buf, self.2)
         }
 
         pub fn assert_not_received(mut self) {
@@ -892,7 +896,7 @@ pub mod test_util {
                     },
                     _phantom: PhantomData,
                 },
-                OneshotRxMock(rx, PhantomData),
+                OneshotRxMock(rx, PhantomData, protocol_version),
             )
         }
     }

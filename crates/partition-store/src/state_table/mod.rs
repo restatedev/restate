@@ -16,7 +16,6 @@ use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
-use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 
 use restate_memory::{
     AvailabilityNotified, LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream,
@@ -33,8 +32,8 @@ use crate::TableKind::State;
 use crate::features::StorageFeatures;
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, OptionalScope, define_table_key};
 use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
-    TableScanIterationDecision, break_on_err,
+    PartitionStore, PartitionStoreTransaction, StorageAccess, StorageIterator, StorageRead,
+    TableScan, TableScanIterationDecision, break_on_err,
 };
 
 define_table_key!(
@@ -86,26 +85,19 @@ fn user_state_key_from_slice(mut key: &[u8]) -> Result<Bytes> {
 /// Lazy iterator over state entries. Exposes [`peek_item`](Self::peek_item)
 /// for zero-copy access to raw key/value slices and [`advance`](Self::advance)
 /// to move forward. Also implements [`Iterator`] for convenience.
-pub struct StateEntryIter<'a, DB: DBAccess> {
-    iter: DBRawIteratorWithThreadMode<'a, DB>,
+pub(crate) struct StateEntryIter<I> {
+    iter: I,
 }
 
-impl<'a, DB: DBAccess> StateEntryIter<'a, DB> {
-    fn new(iter: DBRawIteratorWithThreadMode<'a, DB>) -> Self {
+impl<I: StorageIterator> StateEntryIter<I> {
+    fn new(iter: I) -> Self {
         Self { iter }
     }
 
     /// Returns the raw `(key, value)` byte slices at the current iterator
     /// position without decoding or advancing. Returns `None` when exhausted.
     pub fn peek_item(&self) -> Option<Result<(&[u8], &[u8])>> {
-        match self.iter.item() {
-            Some((k, v)) => Some(Ok((k, v))),
-            None => self
-                .iter
-                .status()
-                .err()
-                .map(|err| Err(StorageError::Generic(err.into()))),
-        }
+        self.iter.item().transpose()
     }
 
     /// Advances the iterator to the next entry.
@@ -114,7 +106,7 @@ impl<'a, DB: DBAccess> StateEntryIter<'a, DB> {
     }
 }
 
-impl<DB: DBAccess> Iterator for StateEntryIter<'_, DB> {
+impl<I: StorageIterator> Iterator for StateEntryIter<I> {
     type Item = Result<(Bytes, Bytes)>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -237,7 +229,7 @@ fn delete_all_user_state<S: StorageAccess>(
     Ok(())
 }
 
-fn get_user_state<S: StorageAccess>(
+fn get_user_state<S: StorageRead>(
     storage: &mut S,
     storage_features: StorageFeatures,
     service_id: &ServiceId,
@@ -266,11 +258,11 @@ fn get_user_state<S: StorageAccess>(
     }
 }
 
-fn get_all_user_states_for_service<'a, S: StorageAccess>(
+fn get_all_user_states_for_service<'a, S: StorageRead>(
     storage: &'a S,
     storage_features: StorageFeatures,
     service_id: &ServiceId,
-) -> Result<StateEntryIter<'a, S::DBAccess<'a>>> {
+) -> Result<StateEntryIter<S::Iterator<'a>>> {
     let _x = RocksDbReadPerfGuard::new("get-all-user-state-iter-setup");
 
     if use_scoped_state(storage_features, service_id) {
@@ -572,7 +564,7 @@ trait BudgetedStateSource {
     ) -> TryProduce;
 }
 
-impl<DB: DBAccess> BudgetedStateSource for StateEntryIter<'_, DB> {
+impl<I: StorageIterator> BudgetedStateSource for StateEntryIter<I> {
     fn try_produce_next(
         &mut self,
         budget: &mut LocalMemoryPool,
@@ -715,7 +707,7 @@ impl<'a, S> PointReadStateSource<'a, S> {
     }
 }
 
-impl<S: StorageAccess> BudgetedStateSource for PointReadStateSource<'_, S> {
+impl<S: StorageRead> BudgetedStateSource for PointReadStateSource<'_, S> {
     fn try_produce_next(
         &mut self,
         budget: &mut LocalMemoryPool,

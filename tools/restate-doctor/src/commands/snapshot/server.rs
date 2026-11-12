@@ -36,10 +36,11 @@ use http::{HeaderMap, HeaderValue};
 use http_body::Frame;
 use http_body_util::StreamBody;
 use serde::{Deserialize, Serialize};
-use tracing::{Level, enabled, warn};
+use tracing::warn;
 
 use restate_cli_util::c_println;
-use restate_storage_query_datafusion::context::QueryContext;
+use restate_storage_query_api::errors::{QueryExecutionError, error_kind};
+use restate_storage_query_api::{QueryMetadata, QueryOptions, QuerySession};
 
 /// SQL query request body, matching the admin `/query` endpoint.
 #[derive(Debug, Deserialize)]
@@ -55,28 +56,20 @@ struct QueryErrorBody {
 }
 
 /// Errors that can occur when executing a query.
-struct QueryError(restate_storage_query_datafusion::context::QueryError);
-
-impl From<datafusion::error::DataFusionError> for QueryError {
-    fn from(err: datafusion::error::DataFusionError) -> Self {
-        Self(restate_storage_query_datafusion::context::QueryError::DataFusion(err))
-    }
+#[derive(Debug, thiserror::Error)]
+enum QueryError {
+    #[error(transparent)]
+    Query(#[from] QueryExecutionError),
+    #[error(transparent)]
+    DataFusion(#[from] DataFusionError),
 }
 
 impl IntoResponse for QueryError {
     fn into_response(self) -> Response {
-        let status_code = match &self.0 {
-            restate_storage_query_datafusion::context::QueryError::DataFusion(_) => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
-            restate_storage_query_datafusion::context::QueryError::RateLimited(_) => {
-                StatusCode::TOO_MANY_REQUESTS
-            }
-        };
         (
-            status_code,
+            StatusCode::INTERNAL_SERVER_ERROR,
             Json(QueryErrorBody {
-                message: self.0.to_string(),
+                message: self.to_string(),
             }),
         )
             .into_response()
@@ -84,10 +77,8 @@ impl IntoResponse for QueryError {
 }
 
 /// Builds the router, binds the listener, and serves the query API until shutdown.
-pub(crate) async fn run_server(ctx: QueryContext, addr: SocketAddr) -> anyhow::Result<()> {
-    let router = Router::new()
-        .route("/query", post(query))
-        .with_state(Arc::new(ctx));
+pub(crate) async fn run_server(ctx: Arc<dyn QuerySession>, addr: SocketAddr) -> anyhow::Result<()> {
+    let router = Router::new().route("/query", post(query)).with_state(ctx);
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -107,15 +98,15 @@ pub(crate) async fn run_server(ctx: QueryContext, addr: SocketAddr) -> anyhow::R
 /// JSON (`application/json`) or, by default, Arrow IPC stream
 /// (`application/vnd.apache.arrow.stream`).
 async fn query(
-    State(ctx): State<Arc<QueryContext>>,
+    State(ctx): State<Arc<dyn QuerySession>>,
     headers: HeaderMap,
     Json(payload): Json<QueryRequest>,
 ) -> Result<Response, QueryError> {
-    let query_result = ctx.execute(&payload.query).await.map_err(QueryError)?;
+    let query_result = ctx.execute(&payload.query, QueryOptions {}).await?;
 
     let (result_stream, content_type) = match headers.get(http::header::ACCEPT) {
         Some(v) if v == HeaderValue::from_static("application/json") => (
-            WriteRecordBatchStream::<JsonWriter>::new(query_result.stream, payload.query)?
+            WriteRecordBatchStream::<JsonWriter>::new(query_result.stream, query_result.metadata)?
                 .map_ok(Frame::data)
                 .left_stream(),
             "application/json",
@@ -123,7 +114,7 @@ async fn query(
         _ => (
             WriteRecordBatchStream::<StreamWriter<Vec<u8>>>::new(
                 query_result.stream,
-                payload.query,
+                query_result.metadata,
             )?
             .map_ok(Frame::data)
             .right_stream(),
@@ -185,19 +176,19 @@ struct WriteRecordBatchStream<W> {
     done: bool,
     record_batch_stream: SendableRecordBatchStream,
     stream_writer: W,
-    query: String,
+    metadata: QueryMetadata,
 }
 
 impl<W: RecordBatchWriter> WriteRecordBatchStream<W> {
     fn new(
         record_batch_stream: SendableRecordBatchStream,
-        query: String,
+        metadata: QueryMetadata,
     ) -> Result<Self, DataFusionError> {
         Ok(WriteRecordBatchStream {
             done: false,
             stream_writer: W::new(&record_batch_stream.schema())?,
             record_batch_stream,
-            query,
+            metadata,
         })
     }
 }
@@ -216,11 +207,11 @@ impl<W: RecordBatchWriter + Unpin> Stream for WriteRecordBatchStream<W> {
             match record_batch.and_then(|record_batch| self.stream_writer.write(&record_batch)) {
                 Ok(bytes) => Poll::Ready(Some(Ok(bytes))),
                 Err(err) => {
-                    if enabled!(Level::DEBUG) {
-                        warn!(query = %self.query, %err, "Query failed");
-                    } else {
-                        warn!(%err, "Query failed");
-                    }
+                    // Error text can contain literal values; preserve it only in the response.
+                    warn!(target: "query_engine", session = %self.metadata.session_id,
+                        query_ts = self.metadata.query_ts.as_u64(),
+                        query = %self.metadata.redacted_sql,
+                        error_kind = error_kind(&err), "Query failed");
 
                     self.done = true;
                     Poll::Ready(Some(Err(err)))
