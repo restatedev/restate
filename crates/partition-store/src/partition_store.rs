@@ -921,33 +921,19 @@ impl Storage for PartitionStore {
     }
 }
 
-impl StorageAccess for PartitionStore {
-    type DBAccess<'a>
-        = DB
+impl StorageRead for PartitionStore {
+    type Iterator<'a>
+        = DBRawIteratorWithThreadMode<'a, DB>
     where
         Self: 'a;
 
     fn iterator_from<K: EncodeTableKeyPrefix>(
         &self,
         scan: TableScan<K>,
-    ) -> Result<DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>>> {
+    ) -> Result<Self::Iterator<'_>> {
         let mut opts = ReadOptions::default();
         opts.set_async_io(true);
         self.db.scan(scan.into(), opts)
-    }
-
-    #[inline]
-    fn cleared_key_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut {
-        self.key_buffer.clear();
-        self.key_buffer.reserve(min_size);
-        &mut self.key_buffer
-    }
-
-    #[inline]
-    fn cleared_value_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut {
-        self.value_buffer.clear();
-        self.value_buffer.reserve(min_size);
-        &mut self.value_buffer
     }
 
     #[inline]
@@ -959,6 +945,22 @@ impl StorageAccess for PartitionStore {
             .as_raw_db()
             .get_pinned_cf(table, key)
             .map_err(|error| StorageError::Generic(error.into()))
+    }
+
+    #[inline]
+    fn cleared_key_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut {
+        self.key_buffer.clear();
+        self.key_buffer.reserve(min_size);
+        &mut self.key_buffer
+    }
+}
+
+impl StorageAccess for PartitionStore {
+    #[inline]
+    fn cleared_value_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut {
+        self.value_buffer.clear();
+        self.value_buffer.reserve(min_size);
+        &mut self.value_buffer
     }
 
     #[inline]
@@ -1393,16 +1395,16 @@ impl Transaction for PartitionStoreTransaction<'_> {
     }
 }
 
-impl StorageAccess for PartitionStoreTransaction<'_> {
-    type DBAccess<'b>
-        = DB
+impl StorageRead for PartitionStoreTransaction<'_> {
+    type Iterator<'b>
+        = DBRawIteratorWithThreadMode<'b, DB>
     where
         Self: 'b;
 
     fn iterator_from<K: EncodeTableKeyPrefix>(
         &self,
         scan: TableScan<K>,
-    ) -> Result<DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>>> {
+    ) -> Result<Self::Iterator<'_>> {
         let scan: PhysicalScan<Bytes> = scan.into();
         let (cf, start, opts) = match scan {
             PhysicalScan::Prefix(key_kind, prefix) => {
@@ -1432,20 +1434,6 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
     }
 
     #[inline]
-    fn cleared_key_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut {
-        self.key_buffer.clear();
-        self.key_buffer.reserve(min_size);
-        self.key_buffer
-    }
-
-    #[inline]
-    fn cleared_value_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut {
-        self.value_buffer.clear();
-        self.value_buffer.reserve(min_size);
-        self.value_buffer
-    }
-
-    #[inline]
     fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice<'_>>> {
         let table = self.cf_handle(table);
         self.write_batch_with_index
@@ -1458,6 +1446,22 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
                 &self.read_options(),
             )
             .map_err(|error| StorageError::Generic(error.into()))
+    }
+
+    #[inline]
+    fn cleared_key_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut {
+        self.key_buffer.clear();
+        self.key_buffer.reserve(min_size);
+        self.key_buffer
+    }
+}
+
+impl StorageAccess for PartitionStoreTransaction<'_> {
+    #[inline]
+    fn cleared_value_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut {
+        self.value_buffer.clear();
+        self.value_buffer.reserve(min_size);
+        self.value_buffer
     }
 
     #[inline]
@@ -1484,21 +1488,8 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
     }
 }
 
-pub(crate) trait StorageAccess {
-    type DBAccess<'a>: rocksdb::DBAccess
-    where
-        Self: 'a;
-
-    fn iterator_from<K: EncodeTableKeyPrefix>(
-        &self,
-        scan: TableScan<K>,
-    ) -> Result<DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>>>;
-
-    fn cleared_key_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut;
-
+pub(crate) trait StorageAccess: StorageRead {
     fn cleared_value_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut;
-
-    fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice<'_>>>;
 
     fn put_cf(
         &mut self,
@@ -1567,6 +1558,104 @@ pub(crate) trait StorageAccess {
 
         self.delete_cf(K::TABLE, buffer)
     }
+}
+
+/// A cursor over the entries of a scan.
+pub(crate) trait StorageIterator {
+    /// The key and value at the current position. Returns `Ok(None)` once the iterator has moved
+    /// past the last entry, or the error that stopped it.
+    #[allow(clippy::type_complexity)]
+    fn item(&self) -> Result<Option<(&[u8], &[u8])>>;
+
+    /// Moves to the next entry.
+    fn next(&mut self);
+}
+
+impl<D: rocksdb::DBAccess> StorageIterator for DBRawIteratorWithThreadMode<'_, D> {
+    #[inline]
+    fn item(&self) -> Result<Option<(&[u8], &[u8])>> {
+        match DBRawIteratorWithThreadMode::item(self) {
+            Some(entry) => Ok(Some(entry)),
+            None => self
+                .status()
+                .map(|()| None)
+                .map_err(|err| StorageError::Generic(err.into())),
+        }
+    }
+
+    #[inline]
+    fn next(&mut self) {
+        DBRawIteratorWithThreadMode::next(self)
+    }
+}
+
+/// Reads of a partition's tables: point lookups and scans.
+pub(crate) trait StorageRead {
+    type Iterator<'a>: StorageIterator + Send
+    where
+        Self: 'a;
+
+    fn iterator_from<K: EncodeTableKeyPrefix>(
+        &self,
+        scan: TableScan<K>,
+    ) -> Result<Self::Iterator<'_>>;
+
+    #[inline]
+    fn get_first_blocking<K, F, R>(&mut self, scan: TableScan<K>, f: F) -> Result<R>
+    where
+        K: EncodeTableKeyPrefix,
+        F: FnOnce(Option<(&[u8], &[u8])>) -> Result<R>,
+    {
+        let iterator = self.iterator_from(scan)?;
+        f(iterator.item()?)
+    }
+
+    #[inline]
+    fn for_each_key_value_in_place<K, F, R>(
+        &self,
+        scan: TableScan<K>,
+        mut op: F,
+    ) -> Result<Vec<Result<R>>>
+    where
+        K: EncodeTableKeyPrefix,
+        F: FnMut(&[u8], &[u8]) -> TableScanIterationDecision<R>,
+    {
+        let mut res = Vec::new(); // TODO: this should be passed in.
+
+        let mut iterator = self.iterator_from(scan)?;
+
+        loop {
+            let (k, v) = match iterator.item() {
+                Ok(Some(item)) => item,
+                Ok(None) => return Ok(res),
+                Err(err) => {
+                    // We stopped the iteration because of an iterator error
+                    res.push(Err(err));
+                    return Ok(res);
+                }
+            };
+            match op(k, v) {
+                TableScanIterationDecision::Emit(result) => {
+                    res.push(result);
+                    iterator.next();
+                }
+                TableScanIterationDecision::BreakWith(result) => {
+                    res.push(result);
+                    return Ok(res);
+                }
+                TableScanIterationDecision::Continue => {
+                    iterator.next();
+                }
+                TableScanIterationDecision::Break => {
+                    return Ok(res);
+                }
+            };
+        }
+    }
+
+    fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice<'_>>>;
+
+    fn cleared_key_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut;
 
     #[inline]
     fn get_value_proto<K, V>(&mut self, key: K) -> Result<Option<V>>
@@ -1605,22 +1694,6 @@ pub(crate) trait StorageAccess {
     }
 
     #[inline]
-    fn get_first_blocking<K, F, R>(&mut self, scan: TableScan<K>, f: F) -> Result<R>
-    where
-        K: EncodeTableKeyPrefix,
-        F: FnOnce(Option<(&[u8], &[u8])>) -> Result<R>,
-    {
-        let iterator = self.iterator_from(scan)?;
-        let item = iterator.item();
-        if item.is_none() {
-            iterator
-                .status()
-                .map_err(|err| StorageError::Generic(err.into()))?;
-        }
-        f(item)
-    }
-
-    #[inline]
     fn get_kv_raw<K, F, R>(&mut self, key: K, f: F) -> Result<R>
     where
         K: EncodeTableKey,
@@ -1638,48 +1711,6 @@ pub(crate) trait StorageAccess {
             Err(err) => Err(err),
         }
     }
-
-    #[inline]
-    fn for_each_key_value_in_place<K, F, R>(
-        &self,
-        scan: TableScan<K>,
-        mut op: F,
-    ) -> Result<Vec<Result<R>>>
-    where
-        K: EncodeTableKeyPrefix,
-        F: FnMut(&[u8], &[u8]) -> TableScanIterationDecision<R>,
-    {
-        let mut res = Vec::new(); // TODO: this should be passed in.
-
-        let mut iterator = self.iterator_from(scan)?;
-
-        while let Some((k, v)) = iterator.item() {
-            match op(k, v) {
-                TableScanIterationDecision::Emit(result) => {
-                    res.push(result);
-                    iterator.next();
-                }
-                TableScanIterationDecision::BreakWith(result) => {
-                    res.push(result);
-                    return Ok(res);
-                }
-                TableScanIterationDecision::Continue => {
-                    iterator.next();
-                    continue;
-                }
-                TableScanIterationDecision::Break => {
-                    return Ok(res);
-                }
-            };
-        }
-
-        // Check whether we stopped the iteration because of an iterator error
-        if let Some(err) = iterator.status().err() {
-            res.push(Err(StorageError::Generic(err.into())));
-        }
-
-        Ok(res)
-    }
 }
 
 #[cfg(test)]
@@ -1694,7 +1725,7 @@ mod tests {
     use restate_types::sharding::KeyRange;
 
     use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind};
-    use crate::partition_store::StorageAccess;
+    use crate::partition_store::{StorageAccess, StorageRead};
     use crate::{PartitionSeal, PartitionStoreManager, TableKind};
 
     impl EncodeTableKey for String {

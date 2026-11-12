@@ -26,7 +26,8 @@ use crate::keys::{
 };
 use crate::scan::TableScan;
 use crate::{
-    PartitionDb, PartitionStore, PartitionStoreTransaction, Result, StorageAccess, break_on_err,
+    PartitionDb, PartitionStore, PartitionStoreTransaction, Result, StorageAccess, StorageRead,
+    break_on_err,
 };
 
 // 'lo' | PKEY | CANONICAL_LOCK_ID
