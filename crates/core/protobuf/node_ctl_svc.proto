@@ -34,6 +34,7 @@ service NodeCtlSvc {
 enum ClusterFeature {
   ClusterFeature_UNKNOWN = 0;
   CONTROLLED_IDEMPOTENT_SHARDING = 1;
+  EVENLY_SPACED_SERVICE_BUCKETS = 2;
 } 
 
 message ProvisionClusterRequest {
