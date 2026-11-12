@@ -25,7 +25,7 @@ use url::Url;
 use restate_core::{Metadata, TestCoreEnv};
 use restate_memory::ByteCount;
 use restate_test_util::tempdir;
-use restate_types::config::SnapshotsOptions;
+use restate_types::config::{SnapshotType, SnapshotsOptions};
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::{LogId, Lsn};
 use restate_types::sharding::KeyRange;
@@ -485,6 +485,50 @@ async fn old_and_new_servers_alternate_publishing() -> anyhow::Result<()> {
     let old_latest: legacy::LatestSnapshot = serde_json::from_slice(&latest_json)?;
     assert_eq!(old_latest.snapshot_id, d.snapshot_id);
     assert_eq!(old_latest.retained_snapshots.len(), 4);
+    Ok(())
+}
+
+/// A server that only knows snapshot format V1 restores from full snapshots, and rejects the
+/// manifest of an incremental one up front rather than failing to find its shared SSTs.
+#[restate_core::test]
+async fn old_servers_reject_incremental_snapshots() -> anyhow::Result<()> {
+    let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+    let destination = tempdir()?;
+    let mut manifests = Vec::new();
+    for snapshot_type in [SnapshotType::Full, SnapshotType::Incremental] {
+        let opts = SnapshotsOptions {
+            destination: Some(Url::from_file_path(destination.path()).unwrap().to_string()),
+            experimental_snapshot_type: snapshot_type,
+            ..SnapshotsOptions::default()
+        };
+        let repository =
+            SnapshotRepository::new_from_config_with_stub_leases(&opts, tempdir()?.keep())
+                .await?
+                .unwrap();
+        let lsn = Lsn::new(1000 * (manifests.len() as u64 + 1));
+        let (snapshot, dir) = self::snapshot(lsn, b"data").await?;
+        repository
+            .put(
+                &snapshot,
+                SnapshotDir::new(dir),
+                Arc::new(SnapshotLeaseGuard::noop()),
+            )
+            .await?;
+        let path = repository.snapshot_file_path(&snapshot, "metadata.json");
+        manifests.push(read(&repository, &path).await?);
+    }
+    let [full, incremental] = manifests.try_into().unwrap();
+
+    let full: legacy::PartitionSnapshotMetadata = serde_json::from_slice(&full)?;
+    assert_eq!(full.files.len(), 1);
+
+    let incremental_manifest: PartitionSnapshotMetadata = serde_json::from_slice(&incremental)?;
+    assert_eq!(incremental_manifest.version, SnapshotFormatVersion::V2);
+    assert!(!incremental_manifest.file_keys.is_empty());
+    let err = serde_json::from_slice::<legacy::PartitionSnapshotMetadata>(&incremental)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unknown variant `V2`"), "{err}");
     Ok(())
 }
 
