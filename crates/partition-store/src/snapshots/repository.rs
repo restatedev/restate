@@ -37,6 +37,7 @@ use restate_core::Metadata;
 use restate_memory::ByteCount;
 use restate_metadata_store::MetadataStoreClient;
 use restate_object_store_util::create_object_store_client;
+use restate_rocksdb::RocksError;
 use restate_types::GenerationalNodeId;
 use restate_types::config::SnapshotsOptions;
 use restate_types::identifiers::{PartitionId, SnapshotId};
@@ -1871,6 +1872,25 @@ pub(crate) enum GetSnapshotError {
 impl GetSnapshotError {
     fn unavailable(err: impl Into<anyhow::Error>) -> Self {
         Self::Unavailable(err.into())
+    }
+
+    /// Classifies the failure to import a downloaded snapshot into RocksDB.
+    ///
+    /// RocksDB reports a corrupt SST -- a bad footer or magic number, a block checksum mismatch,
+    /// or corrupted keys -- as [`rocksdb::ErrorKind::Corruption`], which is the only import failure
+    /// that says the snapshot itself is unusable. RocksDB raises it while it prepares the import,
+    /// before it installs any of the snapshot's files, and drops the column family it created.
+    /// Every other failure (local I/O, no space, shutdown) would hit an older snapshot the same
+    /// way and still fails the restore.
+    pub(crate) fn from_import(error: RocksError) -> Self {
+        if matches!(&error, RocksError::Other(err) if err.kind() == rocksdb::ErrorKind::Corruption)
+        {
+            Self::Defective(
+                anyhow::Error::new(error).context("RocksDB rejected the snapshot's SST files"),
+            )
+        } else {
+            Self::unavailable(error)
+        }
     }
 
     /// The object store has already retried transient failures, so only a missing object says
