@@ -71,6 +71,7 @@ pub mod journal_events;
 pub mod journal_table;
 pub mod journal_table_v2;
 pub mod lock_table;
+pub mod migration_job;
 pub mod outbox_table;
 pub mod promise_table;
 pub mod protobuf_types;
