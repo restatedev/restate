@@ -65,8 +65,13 @@ const X_SERVERLESS_AUTHORIZATION: HeaderName =
 
 pub type ResponseBody = http_body_util::Either<http::ResponseBody, Full<Bytes>>;
 
+/// A cheaply cloned handle to shared service transports and request configuration.
 #[derive(Clone)]
 pub struct ServiceClient {
+    inner: Arc<ServiceClientInner>,
+}
+
+struct ServiceClientInner {
     http: HttpClient,
     lambda: LambdaClient,
     // this can be changed to re-read periodically if necessary
@@ -82,10 +87,12 @@ impl ServiceClient {
         additional_request_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Self {
         Self {
-            http,
-            lambda,
-            request_identity_key,
-            additional_request_headers,
+            inner: Arc::new(ServiceClientInner {
+                http,
+                lambda,
+                request_identity_key,
+                additional_request_headers,
+            }),
         }
     }
 
@@ -154,7 +161,7 @@ impl ServiceClient {
             Endpoint::Lambda(..) => None,
         };
 
-        let request_identity_key = self.request_identity_key.load();
+        let request_identity_key = self.inner.request_identity_key.load();
 
         let signer = if let Some(request_identity_key) = request_identity_key.as_deref() {
             Some(request_identity::v1::Signer::new(
@@ -178,14 +185,15 @@ impl ServiceClient {
         };
 
         parts.headers.extend(
-            self.additional_request_headers
+            self.inner
+                .additional_request_headers
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone())),
         );
 
         match parts.address {
             Endpoint::Http(uri, version, auth) => {
-                let http = self.http.clone();
+                let client = Arc::clone(&self.inner);
                 let method = parts.method.into();
                 let path_and_query =
                     http_path_and_query.expect("joined above for every HTTP endpoint");
@@ -227,7 +235,7 @@ impl ServiceClient {
                             })?;
                         headers.insert(X_SERVERLESS_AUTHORIZATION, bearer);
                     }
-                    let resp = http
+                    let resp = client.http
                         .send(uri.clone(), version, method, body, path_and_query, headers)
                         .await
                         .map_err(|source| {
@@ -238,7 +246,7 @@ impl ServiceClient {
                 .left_future()
             }
             Endpoint::Lambda(arn, assume_role_arn, compression) => {
-                let fut = self.lambda.invoke(
+                let fut = self.inner.lambda.invoke(
                     arn.clone(),
                     parts.method.into(),
                     assume_role_arn,
