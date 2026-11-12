@@ -30,7 +30,10 @@ use restate_util_string::format_restring;
 
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
 use crate::scan::TableScan;
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind, break_on_err};
+use crate::{
+    PartitionStore, PartitionStoreTransaction, StorageAccess, StorageIterator, StorageRead,
+    TableKind, break_on_err,
+};
 
 define_table_key!(
     TableKind::InvocationStatus,
@@ -201,7 +204,7 @@ fn put_invocation_status<S: StorageAccess>(
     }
 }
 
-fn get_invocation_status<S: StorageAccess>(
+fn get_invocation_status<S: StorageRead>(
     storage: &mut S,
     invocation_id: &InvocationId,
 ) -> Result<InvocationStatus> {
@@ -225,7 +228,7 @@ fn delete_invocation_status<S: StorageAccess>(
     storage.delete_key(&create_invocation_status_key(invocation_id))
 }
 
-fn any_non_completed_invocation_in_range<S: StorageAccess>(
+fn any_non_completed_invocation_in_range<S: StorageRead>(
     storage: &S,
     range: KeyRange,
 ) -> Result<bool> {
@@ -233,7 +236,7 @@ fn any_non_completed_invocation_in_range<S: StorageAccess>(
         InvocationStatusKey,
     >(range))?;
 
-    while let Some((_, mut value)) = iterator.item() {
+    while let Some((_, mut value)) = iterator.item()? {
         let lite = InvocationLite::decode(&mut value)?;
         if !matches!(lite.status, InvocationStatusDiscriminants::Completed)
             && !matches!(lite.status, InvocationStatusDiscriminants::Killed)
@@ -241,10 +244,6 @@ fn any_non_completed_invocation_in_range<S: StorageAccess>(
             return Ok(true);
         }
         iterator.next();
-    }
-
-    if let Some(err) = iterator.status().err() {
-        return Err(StorageError::Generic(err.into()));
     }
 
     Ok(false)

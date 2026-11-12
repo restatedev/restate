@@ -31,7 +31,7 @@ use crate::features::PersistedEnabledFeatures;
 use crate::keys::{EncodeTableKey, KeyKind, define_table_key};
 use crate::{
     PaddedPartitionId, PartitionDb, PartitionSeal, PartitionStore, PartitionStoreTransaction,
-    StorageAccess,
+    StorageAccess, StorageRead,
 };
 
 define_table_key!(

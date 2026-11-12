@@ -58,8 +58,8 @@ use crate::keys::{DecodeTableKey, EncodeTableKey, EncodeTableKeyPrefix, KeyDecod
 use crate::scan::TableScan;
 use crate::vqueue_table::input::InputPayloadKeyRef;
 use crate::{
-    PartitionDb, PartitionStore, PartitionStoreTransaction, Result, StorageAccess, TableKind,
-    break_on_err,
+    PartitionDb, PartitionStore, PartitionStoreTransaction, Result, StorageAccess, StorageRead,
+    TableKind, break_on_err,
 };
 
 impl ScanVQueueTable for PartitionDb {

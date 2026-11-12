@@ -13,7 +13,6 @@ use std::collections::HashMap;
 use anyhow::anyhow;
 use futures::Stream;
 use futures_util::stream;
-use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 
 use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
@@ -33,7 +32,10 @@ use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use crate::TableKind::Journal;
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
 use crate::owned_iter::OwnedIterator;
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, break_on_err};
+use crate::{
+    PartitionStore, PartitionStoreTransaction, StorageAccess, StorageIterator, StorageRead,
+    TableScan, break_on_err,
+};
 
 define_table_key!(
     Journal,
@@ -68,13 +70,13 @@ define_table_key!(
 /// Lazy iterator over journal V2 entries. Exposes [`peek_item`](Self::peek_item)
 /// for zero-copy access to raw key/value slices and [`advance`](Self::advance)
 /// to move forward. Also implements [`Iterator`] for convenience.
-pub struct JournalEntryIter<'a, DB: DBAccess> {
-    iter: DBRawIteratorWithThreadMode<'a, DB>,
+pub(crate) struct JournalEntryIter<I> {
+    iter: I,
     remaining: u32,
 }
 
-impl<'a, DB: DBAccess> JournalEntryIter<'a, DB> {
-    fn new(iter: DBRawIteratorWithThreadMode<'a, DB>, journal_length: EntryIndex) -> Self {
+impl<I: StorageIterator> JournalEntryIter<I> {
+    fn new(iter: I, journal_length: EntryIndex) -> Self {
         Self {
             iter,
             remaining: journal_length,
@@ -87,14 +89,7 @@ impl<'a, DB: DBAccess> JournalEntryIter<'a, DB> {
         if self.remaining == 0 {
             return None;
         }
-        match self.iter.item() {
-            Some((k, v)) => Some(Ok((k, v))),
-            None => self
-                .iter
-                .status()
-                .err()
-                .map(|err| Err(StorageError::Generic(err.into()))),
-        }
+        self.iter.item().transpose()
     }
 
     /// Advances the iterator to the next entry.
@@ -113,7 +108,7 @@ fn decode_journal_entry_v2(k: &[u8], v: &[u8]) -> Result<(EntryIndex, StoredRawE
     Ok((index, entry.0))
 }
 
-impl<DB: DBAccess> Iterator for JournalEntryIter<'_, DB> {
+impl<I: StorageIterator> Iterator for JournalEntryIter<I> {
     type Item = Result<(EntryIndex, StoredRawEntry)>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -173,7 +168,7 @@ fn put_journal_entry<S: StorageAccess>(
     )
 }
 
-fn get_journal_entry<S: StorageAccess>(
+fn get_journal_entry<S: StorageRead>(
     storage: &mut S,
     invocation_id: &InvocationId,
     journal_index: u32,
@@ -188,7 +183,7 @@ fn get_journal_entry<S: StorageAccess>(
 /// See the V1 counterpart in `journal_table/mod.rs` for the full design
 /// rationale. The only difference is the decode step: V2 entries go through
 /// `StoredEntry::decode` and are unwrapped to `StoredRawEntry`.
-async fn get_journal_entry_budgeted<S: StorageAccess>(
+async fn get_journal_entry_budgeted<S: StorageRead>(
     storage: &mut S,
     invocation_id: &InvocationId,
     journal_index: u32,
@@ -243,11 +238,11 @@ async fn get_journal_entry_budgeted<S: StorageAccess>(
     }
 }
 
-fn get_journal<'a, S: StorageAccess>(
+fn get_journal<'a, S: StorageRead>(
     storage: &'a S,
     invocation_id: &InvocationId,
     journal_length: EntryIndex,
-) -> Result<JournalEntryIter<'a, S::DBAccess<'a>>> {
+) -> Result<JournalEntryIter<S::Iterator<'a>>> {
     let _x = RocksDbReadPerfGuard::new("get-journal-iter-setup");
     let key = JournalKey::builder()
         .partition_key(invocation_id.partition_key())
@@ -451,7 +446,7 @@ fn has_journal_entry_zero<S: StorageAccess>(
     )
 }
 
-fn get_notifications_index<S: StorageAccess>(
+fn get_notifications_index<S: StorageRead>(
     storage: &mut S,
     invocation_id: InvocationId,
 ) -> Result<HashMap<NotificationId, NotificationEntryIndex>> {
@@ -474,7 +469,7 @@ fn get_notifications_index<S: StorageAccess>(
         .collect()
 }
 
-fn get_command_by_completion_id<S: StorageAccess>(
+fn get_command_by_completion_id<S: StorageRead>(
     storage: &mut S,
     invocation_id: InvocationId,
     completion_id: CompletionId,
@@ -511,7 +506,7 @@ fn get_command_by_completion_id<S: StorageAccess>(
     Ok(Some((entry.header, command)))
 }
 
-fn has_completion<S: StorageAccess>(
+fn has_completion<S: StorageRead>(
     storage: &mut S,
     invocation_id: InvocationId,
     completion_id: CompletionId,
@@ -745,8 +740,8 @@ impl ReadJournalTable for PartitionStoreTransaction<'_> {
 ///
 /// See the V1 counterpart in `journal_table/mod.rs` for the full design
 /// rationale — identical fast/slow path with `try_reserve` + `reserve`.
-fn budgeted_journal_v2_stream<'a, DB: DBAccess + Send>(
-    iter: JournalEntryIter<'a, DB>,
+fn budgeted_journal_v2_stream<'a, I: StorageIterator + Send + 'a>(
+    iter: JournalEntryIter<I>,
     budget: &'a mut LocalMemoryPool,
 ) -> impl Stream<
     Item = std::result::Result<(EntryIndex, StoredRawEntry, LocalMemoryLease), BudgetedReadError>,
