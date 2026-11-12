@@ -416,6 +416,7 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
         // After a corruption, restart a node that hosts the corrupted partition, so that its
         // restore has to fall back past the corrupted snapshot.
         let mut node_to_restart = (iteration as usize) % num_nodes;
+        let mut expect_fallback = false;
         if corrupted {
             match nodes_hosting_partition(&mut client, partition_id).await {
                 Ok(hosts) => {
@@ -427,6 +428,7 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
                     }) {
                         node_to_restart = idx;
                         exercised_corruptions += 1;
+                        expect_fallback = true;
                     }
                 }
                 Err(e) => info!("Could not find nodes hosting partition {partition_id}: {e}"),
@@ -456,7 +458,7 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
 
         // Watch the restarted node's restore log lines. The stream is drained continuously so
         // the node's log pump is never blocked on it.
-        let mut restore_lines = std::pin::pin!(cluster.nodes[node_to_restart].lines(
+        let mut restore_lines = Box::pin(cluster.nodes[node_to_restart].lines(
             "(Found partition snapshot, restoring it|Restored from fallback snapshot)".parse()?,
         ));
         let mut restores = RestoreLog::default();
@@ -475,9 +477,12 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
 
         // Keep reading until restores have gone quiet: up to 30s for the first one (restores are
         // slow on a loaded machine), then 1s after the last line, as each partition logs its own.
+        // After a corruption, wait the full 30s for the fallback line: the node also restores
+        // its other partitions, which can log first. Health checks don't wait for restores.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
-            let wait_until = if restores.restored {
+            let waiting_for_fallback = expect_fallback && restores.fallbacks == 0;
+            let wait_until = if restores.restored && !waiting_for_fallback {
                 tokio::time::Instant::now() + Duration::from_secs(1)
             } else {
                 deadline
@@ -487,6 +492,8 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
                 _ => break,
             }
         }
+        // Stop watching: an unread stream would block the node's log pump while we wait below.
+        drop(restore_lines);
         if !restores.restored {
             fail!(
                 "Node '{}' did not restore any partition from snapshot after data wipe",
