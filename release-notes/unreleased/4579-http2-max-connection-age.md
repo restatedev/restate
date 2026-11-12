@@ -22,7 +22,7 @@ spread over the pods that exist now.
 
 ### Impact on Users
 - The option is unset by default, so existing and new deployments behave exactly as before.
-- When set, values below 10 minutes are raised to 10 minutes, to avoid reconnecting too often.
+- When set, values below 30 seconds are raised to 30 seconds, to avoid reconnecting too often.
 - In-flight invocations are never interrupted when a connection is retired.
 
 ### Migration Guidance
@@ -30,7 +30,7 @@ None required. To turn it on, for example behind a Kubernetes `ClusterIP` servic
 
 ```toml
 [worker.invoker]
-http2-max-connection-age = "15m"
+http2-max-connection-age = "5m"
 # optional, default 0.1 (up to +10%)
 http2-max-connection-age-jitter = 0.1
 ```
