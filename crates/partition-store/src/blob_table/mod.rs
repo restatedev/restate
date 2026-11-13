@@ -156,16 +156,19 @@ impl ReadBlobTable for PartitionStoreTransaction<'_> {
 }
 
 impl WriteBlobTable for PartitionStoreTransaction<'_> {
-    fn put_blob<B: BlobEncode>(&mut self, blob_id: BlobId, blob: Blob<B>) -> Result<()> {
+    fn put_blob<B: BlobEncode>(&mut self, blob_id: BlobId, blob: Blob<B>) -> Result<u64> {
         let key = BlobKey { blob_id };
 
         let mut buf = BytesMut::new();
 
         BlobHeader::new(blob.kind(), blob.ref_count()).encode(&mut buf);
+        let header_len = buf.len();
 
         blob.inner().encode_blob(&mut buf)?;
+        let payload_len = (buf.len() - header_len) as u64;
 
-        self.put_kv_raw(key, &buf)
+        self.put_kv_raw(key, &buf)?;
+        Ok(payload_len)
     }
 
     fn decrement_ref_count(&mut self, blob_id: BlobId, count: u16) {
