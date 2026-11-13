@@ -38,6 +38,7 @@ use restate_storage_api::vqueue_table::{EntryChange, EntryContext, EntryStateRef
 use restate_types::config::Configuration;
 
 use crate::PartitionStoreTransaction;
+use crate::job::{DEFAULT_HISTORY_LIMIT, MigrationJobRecords};
 use crate::walk::Walks;
 
 use super::{IndexKind, IndexRegistry};
@@ -98,6 +99,10 @@ pub(crate) struct MaintainedIndexes {
     /// The committed records this set was built from.
     registry: IndexRegistry,
     walks: Walks,
+    /// The committed job records, which slices update, and how many finished
+    /// jobs their history keeps.
+    jobs: MigrationJobRecords,
+    history_limit: usize,
 }
 
 impl std::fmt::Debug for MaintainedIndexes {
@@ -121,13 +126,27 @@ impl MaintainedIndexes {
         known: &[&'static IndexDefinition],
     ) -> Self {
         Self::build(registry.clone(), walks.clone(), known)
+            .with_jobs(MigrationJobRecords::default(), DEFAULT_HISTORY_LIMIT)
     }
 
-    /// The set of the same definitions after a commit changed the registry or the
-    /// walks to `registry` and `walks`.
-    pub(crate) fn successor(&self, registry: IndexRegistry, walks: Walks) -> Self {
+    /// This set with the committed `jobs`, keeping at most `history_limit`
+    /// finished jobs.
+    pub(crate) fn with_jobs(mut self, jobs: MigrationJobRecords, history_limit: usize) -> Self {
+        self.jobs = jobs;
+        self.history_limit = history_limit;
+        self
+    }
+
+    /// The set of the same definitions after a commit changed the registry, the
+    /// walks or the jobs to `registry`, `walks` and `jobs`.
+    pub(crate) fn successor(
+        &self,
+        registry: IndexRegistry,
+        walks: Walks,
+        jobs: MigrationJobRecords,
+    ) -> Self {
         let known: Vec<_> = self.entries.iter().map(|entry| entry.definition).collect();
-        Self::build(registry, walks, &known)
+        Self::build(registry, walks, &known).with_jobs(jobs, self.history_limit)
     }
 
     fn build(registry: IndexRegistry, walks: Walks, known: &[&'static IndexDefinition]) -> Self {
@@ -160,6 +179,8 @@ impl MaintainedIndexes {
             maintaining,
             registry,
             walks,
+            jobs: MigrationJobRecords::default(),
+            history_limit: DEFAULT_HISTORY_LIMIT,
         }
     }
 
@@ -171,6 +192,16 @@ impl MaintainedIndexes {
     /// The committed walks.
     pub(crate) fn walks(&self) -> &Walks {
         &self.walks
+    }
+
+    /// The committed job records.
+    pub(crate) fn jobs(&self) -> &MigrationJobRecords {
+        &self.jobs
+    }
+
+    /// How many finished jobs the history keeps.
+    pub(crate) fn history_limit(&self) -> usize {
+        self.history_limit
     }
 
     /// The indexes walk `walk` backfills, or an error if a member's definition

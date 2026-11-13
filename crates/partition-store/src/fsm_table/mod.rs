@@ -162,6 +162,22 @@ pub(crate) mod fsm_variable {
     /// *Since v1.8.2*
     #[allow(dead_code)]
     pub(crate) const WALKS: u64 = 15;
+
+    /// The local unfinished migration jobs (not replicated): what each index
+    /// build did so far, for operators. See [`crate::job`].
+    ///
+    /// Persisted as bilrost.
+    ///
+    /// *Since v1.8.2*
+    pub(crate) const MIGRATION_JOBS: u64 = 16;
+
+    /// The local history of finished migration jobs (not replicated), in the
+    /// order they finished, trimmed to a configured number. See [`crate::job`].
+    ///
+    /// Persisted as bilrost.
+    ///
+    /// *Since v1.8.2*
+    pub(crate) const MIGRATION_JOB_HISTORY: u64 = 17;
 }
 
 fn get<T: PartitionStoreProtobufValue, S: StorageAccess>(
@@ -409,6 +425,59 @@ pub(crate) fn append_walks_to_wb(
 ) {
     let key = create_key(partition_id, fsm_variable::WALKS);
     wb.put_cf(cf_handle, key.to_bytes(), walks.encode());
+}
+
+/// The key of a job list (`fsm_variable::MIGRATION_JOBS` or
+/// `fsm_variable::MIGRATION_JOB_HISTORY`), for reads through a snapshot.
+pub(crate) fn migration_jobs_key(
+    partition_id: PartitionId,
+    state_id: u64,
+) -> [u8; PartitionStateMachineKey::serialized_length_fixed()] {
+    create_key(partition_id, state_id).to_bytes()
+}
+
+/// The persisted job list under `state_id`, `None` if there is none. A list this
+/// binary can't decode is returned as an error for the caller to report: job
+/// records are diagnostics, so they never fail an open.
+pub(crate) fn get_migration_jobs_from_partition_db(
+    db: &PartitionDb,
+    state_id: u64,
+) -> Result<Option<std::result::Result<crate::job::MigrationJobs, crate::job::MigrationJobError>>> {
+    let key = create_key(db.partition().id(), state_id);
+    Ok(db
+        .rocksdb()
+        .inner()
+        .as_raw_db()
+        .get_pinned_cf(db.cf_handle(), key.to_bytes())
+        .map_err(|err| StorageError::Generic(err.into()))?
+        .map(|value| crate::job::MigrationJobs::decode(&value)))
+}
+
+/// Writes the job list under `state_id` through `storage`, to commit it with the
+/// transaction's effects.
+pub(crate) fn put_migration_jobs<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+    state_id: u64,
+    jobs: &crate::job::MigrationJobs,
+) -> Result<()> {
+    let key = PartitionStateMachineKey {
+        partition_id: partition_id.into(),
+        state_id,
+    };
+    storage.put_kv_raw(key, jobs.encode())
+}
+
+/// Adds the job list under `state_id` to `wb`, to commit it atomically.
+pub(crate) fn append_migration_jobs_to_wb(
+    cf_handle: &std::sync::Arc<rocksdb::BoundColumnFamily<'_>>,
+    wb: &mut rocksdb::WriteBatch,
+    partition_id: PartitionId,
+    state_id: u64,
+    jobs: &crate::job::MigrationJobs,
+) {
+    let key = create_key(partition_id, state_id);
+    wb.put_cf(cf_handle, key.to_bytes(), jobs.encode());
 }
 
 #[cfg(test)]
