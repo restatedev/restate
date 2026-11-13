@@ -58,8 +58,12 @@ If these rules conflict with normal behavior, always follow the rules above.
 
 
 # Validation Before Committing Changes
-After making code changes, always run the following validation steps before committing or amending:
+Select checks appropriate to the change. Prefer affected packages during development; use full-workspace checks when warranted or in CI.
+Checks need not finish before a local commit or amend. Report which checks passed, failed, or remain pending, and avoid repeating successful checks unless subsequent changes invalidate them.
+Local commits and amendments may proceed while checks run, especially when requested by the user; clearly report pending or failed checks.
+Full-workspace validation belongs in CI or before merge and should not block preparing a commit for review.
 
+Full workspace validation, for reference:
 1. **Build check**: Run `cargo check` to ensure the code compiles without errors.
 2. **Run tests**: Run `cargo nextest run --all-features` to ensure all tests pass.
 3. **Format check** (if you modified Rust files): Run `cargo fmt --all -- --check` to verify formatting.
