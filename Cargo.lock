@@ -12372,7 +12372,6 @@ dependencies = [
  "restate-service-client",
  "restate-service-protocol-v4",
  "restate-storage-query-api",
- "restate-storage-query-datafusion",
  "restate-types",
  "restate-worker",
  "restate-workspace-hack",

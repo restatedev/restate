@@ -17,7 +17,9 @@ use crate::selection::domain::Domain;
 use crate::{ShardingScheme, define_schema};
 
 define_schema! {
-    /// User state of virtual objects and workflows.
+    /// State of Virtual Objects and Workflows.
+    ///
+    /// One row per state key of each Virtual Object or Workflow instance.
     state {
         name: "state",
         sharding: ShardingScheme::ByPartitionKey { is_leader_required: false },
@@ -27,28 +29,34 @@ define_schema! {
         shard_keys: |domains: StateDomains| partition_keys(Domain::all(), domains.scope, domains.service_key),
         row: for<'a> StateView<'a>, append: append_state,
         columns {
-            /// Internal routing key.
+            /// Internal column that is used for partitioning the services invocations. Can be ignored.
             partition_key: PartitionKey => DataType::UInt64,
-            /// Scope of the object, or NULL for unscoped state.
+            /// The scope of the Virtual Object instance, if scoped. NULL for unscoped entries.
+            /// Since v1.7.0
             #[starts_with]
             scope: Option<ReString> => DataType::LargeUtf8,
-            /// Service name.
+            /// The name of the invoked service.
             #[starts_with]
             service_name: ReString => DataType::LargeUtf8,
-            /// Virtual-object or workflow key.
+            /// The key of the Virtual Object.
             #[starts_with]
             service_key: ReString => DataType::LargeUtf8,
-            /// UTF-8 state key, or NULL for a legacy non-UTF-8 key.
+            /// The `utf8` state key.
             #[starts_with]
             key: Option<ReString> => DataType::LargeUtf8,
-            /// State-key byte length.
+            /// The byte length of the state key. If you are writing a query that only needs to know the length,
+            /// reading this field will be much more efficient than reading octet_length(key).
             key_length: u64 => DataType::UInt64,
-            /// UTF-8 state value, or NULL for non-UTF-8 data.
+            /// Only contains meaningful values when a service stores state as `utf8`. This is the case for
+            /// services that serialize state using JSON (default for Typescript SDK, Java/Kotlin SDK if
+            /// using JsonSerdes).
             #[starts_with]
             value_utf8: Option<ReString> => DataType::LargeUtf8,
-            /// Uninterpreted value bytes.
+            /// A binary, uninterpreted representation of the value. You can use the more specific column
+            /// `value_utf8` if the value is a string.
             value: Vec<u8> => DataType::LargeBinary,
-            /// Value byte length.
+            /// The byte length of the value. If you are writing a query that only needs to know the length,
+            /// reading this field will be much more efficient than reading length(value).
             value_length: u64 => DataType::UInt64,
         }
     }

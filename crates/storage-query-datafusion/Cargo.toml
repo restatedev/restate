@@ -10,7 +10,6 @@ publish = false
 [features]
 default = []
 options_schema = ["dep:schemars"]
-table_docs = []
 test-util = ["restate-clock/test-util"]
 
 [dependencies]

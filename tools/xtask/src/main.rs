@@ -25,7 +25,7 @@ use restate_ingestion_client::{IngestionClient, SessionOptions};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol_v4::discovery::ServiceDiscovery;
 use restate_service_protocol_v4::serdes::SerdesClient;
-use restate_storage_query_datafusion::table_docs;
+use restate_storage_query_api::table_docs;
 use restate_types::config::Configuration;
 use restate_types::identifiers::PartitionProcessorRpcRequestId;
 use restate_types::invocation::InvocationTermination;
@@ -158,9 +158,8 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
 }
 
 fn render_table_docs(mut write: impl Write) -> io::Result<()> {
-    // `all_table_docs()` yields every entry of ALL_TABLE_DOCS followed by the
-    // synthesized `sys_invocation` view, which is the single source of truth
-    // shared with the CLI's embedded reference.
+    // The logical schemas document every table; the same list feeds the CLI's
+    // embedded reference.
     for table_doc in table_docs::all_table_docs() {
         render_table_doc(&table_doc, &mut write)?;
     }
@@ -168,12 +167,12 @@ fn render_table_docs(mut write: impl Write) -> io::Result<()> {
     Ok(())
 }
 
-fn render_table_doc(table_doc: &impl table_docs::TableDocs, w: &mut impl Write) -> io::Result<()> {
-    writeln!(w, "## Table: `{}`\n", table_doc.name())?;
-    writeln!(w, "{}\n", table_doc.description())?;
+fn render_table_doc(table_doc: &table_docs::TableDocs, w: &mut impl Write) -> io::Result<()> {
+    writeln!(w, "## Table: `{}`\n", table_doc.name)?;
+    writeln!(w, "{}\n", table_doc.description)?;
     writeln!(w, "| Column name | Type | Description |")?;
     writeln!(w, "|-------------|------|-------------|")?;
-    for column in table_doc.columns() {
+    for column in &table_doc.columns {
         writeln!(
             w,
             "| `{}` | `{}` | {} |",
