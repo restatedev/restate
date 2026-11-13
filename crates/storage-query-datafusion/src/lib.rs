@@ -12,6 +12,7 @@ pub mod context;
 mod diagnostics;
 mod environment;
 pub mod local_scanners;
+pub mod migration_records;
 pub use catalog::{
     ClusterTables, MetadataTables, RegisterTable, TableInventoryBuilder, UserTables,
 };

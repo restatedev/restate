@@ -284,6 +284,16 @@ impl PartitionStoreManager {
         }
     }
 
+    /// The databases of the partitions open on this node, skipping any in the
+    /// middle of opening or closing.
+    pub(crate) fn open_partition_dbs(&self) -> Vec<PartitionDb> {
+        self.state
+            .get_maybe_open_dbs()
+            .iter()
+            .filter_map(|state| state.db().cloned())
+            .collect()
+    }
+
     /// Returns a partition db that's already open by a running partition processor
     pub async fn get_partition_db(&self, partition_id: PartitionId) -> Option<PartitionDb> {
         // note: we don't hold the map read lock while trying to acquire the partition cell's lock.

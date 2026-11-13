@@ -230,7 +230,7 @@ async fn query_fixture_shutdown_waits_for_native_close() -> anyhow::Result<()> {
 }
 
 #[derive(Debug)]
-struct NoopSvc;
+pub(crate) struct NoopSvc;
 
 #[async_trait]
 impl RemoteScannerService for NoopSvc {
@@ -243,7 +243,7 @@ impl RemoteScannerService for NoopSvc {
     }
 }
 
-struct AlwaysLocalPartitionLocator;
+pub(crate) struct AlwaysLocalPartitionLocator;
 
 impl PartitionLocator for AlwaysLocalPartitionLocator {
     fn get_partition_target_node(

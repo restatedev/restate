@@ -1057,7 +1057,10 @@ mod backfill_tests {
     use crate::walk::WalkDriver;
     use crate::walk::engine::{Slice, SliceBudget};
     use crate::walk::{OnUnknown, Source, Walk, WalkKind, WalkMember, engine};
-    use crate::{PartitionStoreManager, PartitionStoreTransaction, ReadSnapshot};
+    use crate::{
+        PartitionStoreManager, PartitionStoreTransaction, QueryIoExecutor, ReadSnapshot,
+        ReplicaMigrations,
+    };
 
     use super::super::backfill::read_chunk;
 
@@ -2758,6 +2761,98 @@ mod backfill_tests {
                 .is_some()
         );
         assert!(Instant::now() <= deadline);
+    }
+
+    #[restate_core::test]
+    async fn migration_reports_show_each_replica_through_its_build() {
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        let mut store = manager
+            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+            .await
+            .unwrap();
+        seed(&mut store).await;
+        let known: &[&'static IndexDefinition] = &[&COUNT, &PASSIVE];
+        try_reconcile(&mut store, known, maintain_all(known))
+            .await
+            .unwrap();
+        let [active, passive] = [&COUNT, &PASSIVE]
+            .map(|definition| registry(&store).maintained(definition.name).unwrap().id);
+        let walk = registry(&store).get(active).unwrap().walk.unwrap();
+        let executor = QueryIoExecutor::new(std::num::NonZeroUsize::new(1).unwrap());
+        let report = || async { manager.migration_report(&executor).unwrap().await.unwrap() };
+
+        // Mid-build: both indexes Backfilling on the walk, their jobs running, and
+        // the walk part of the way through the replica's key range.
+        fill(&mut store, walk, 10).await;
+        let mid = report().await;
+        let [replica] = mid.replicas.as_slice() else {
+            panic!("one open replica: {mid:?}");
+        };
+        assert_eq!(replica.partition_id, PartitionId::MIN);
+        assert!(replica.registry.members(walk).count() == 2);
+        let running = replica.walks.get(walk).unwrap();
+        assert!(replica.progress_percent(running).is_some_and(|p| p <= 100));
+        assert_eq!(replica.walks.get(walk).unwrap().uncovered(passive), 10);
+        // Before the first slice, or over a single key, progress is unknown.
+        let unstarted = Walk {
+            cursor: None,
+            ..running.clone()
+        };
+        assert_eq!(replica.progress_percent(&unstarted), None);
+        let single = ReplicaMigrations {
+            key_range: KeyRange::new(5, 5),
+            ..replica.clone()
+        };
+        assert_eq!(single.progress_percent(running), None);
+
+        // After the pass: COUNT's job is in the history, PASSIVE's waits.
+        run_walks(&mut store).await;
+        let after = report().await;
+        let replica = &after.replicas[0];
+        assert!(replica.walks.entries().is_empty());
+        assert_eq!(
+            replica
+                .jobs
+                .history
+                .get(MigrationJobId::for_index(active))
+                .unwrap()
+                .status,
+            MigrationJobStatus::Completed
+        );
+        assert_eq!(
+            replica
+                .jobs
+                .unfinished
+                .get(MigrationJobId::for_index(passive))
+                .unwrap()
+                .status,
+            MigrationJobStatus::Waiting
+        );
+
+        // An unreadable record is reported with its replica, never as a replica
+        // without indexes.
+        let db = store.partition_db();
+        let mut batch = WriteBatch::default();
+        batch.put_cf(
+            db.cf_handle(),
+            crate::fsm_table::migration_jobs_key(
+                db.partition().id(),
+                fsm_variable::MIGRATION_JOB_HISTORY,
+            ),
+            b"not a job list",
+        );
+        db.rocksdb().inner().as_raw_db().write(&batch).unwrap();
+        let broken = report().await;
+        assert!(broken.replicas.is_empty());
+        assert_eq!(
+            broken
+                .unreadable
+                .iter()
+                .map(|replica| (replica.partition_id, replica.record))
+                .collect::<Vec<_>>(),
+            [(PartitionId::MIN, "job history")]
+        );
     }
 
     #[restate_core::test(start_paused = true)]
