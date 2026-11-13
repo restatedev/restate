@@ -63,8 +63,10 @@ use crate::table::{IndexSource, ReadMetadata};
 use crate::{PartitionDb, PartitionReadSnapshot, PartitionSnapshotScan, Result};
 
 mod executor;
+mod report;
 
 pub use executor::QueryIoExecutor;
+pub use report::{MigrationReport, ReplicaMigrations, UnreadableReplica};
 
 /// A read's view of one partition, admitted by its processor: the RocksDB
 /// snapshot plus the storage features and the index registry of that moment.

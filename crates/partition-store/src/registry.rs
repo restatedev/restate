@@ -58,6 +58,16 @@ pub(crate) use active::{DEFINITIONS, Family, IndexDefinition, MaintainedIndexes}
 pub(crate) use backfill::{IndexBackfill, start as start_backfill};
 pub(crate) use reconcile::{FAMILIES, FenceState, Requests, load_job_records};
 
+/// Whether this binary's definition `name` fills rows itself (`Some(true)`, an
+/// active one) or relies on writes and deletions (`Some(false)`, a passive one);
+/// `None` if this binary doesn't know it.
+pub fn fill_capability(name: &str) -> Option<bool> {
+    DEFINITIONS
+        .iter()
+        .find(|definition| definition.name == name)
+        .map(|definition| definition.can_fill)
+}
+
 /// The first index ID the registry issues. Lower IDs belong to the static
 /// index (1–7) and statistic (1–3) identities that predate the registry.
 ///

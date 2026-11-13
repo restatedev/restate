@@ -21,6 +21,7 @@ use crate::bifrost_read_stream::BifrostReadStreamsTable;
 use crate::config::ConfigTable;
 use crate::log::schema::LogTable;
 use crate::loglet_worker::LogletWorkersTable;
+use crate::migration_records::{IndexesTable, MigrationJobsTable};
 use crate::node::schema::NodeTable;
 use crate::partition::schema::PartitionTable;
 use crate::partition_replica_set::schema::PartitionReplicaSetTable;
@@ -111,6 +112,22 @@ impl RegisterTable for ClusterTables {
                 metadata.clone(),
                 self.remote_scanner_manager.clone(),
                 None, // local scanner is registered separately by the node
+            ),
+        )?;
+
+        // Worker nodes register their scanners of these separately
+        // (`local_scanners::register_cluster_scanners`).
+        inventory.add::<IndexesTable>(
+            "cluster",
+            "indexes",
+            IndexesTable::create_provider(metadata.clone(), self.remote_scanner_manager.clone()),
+        )?;
+        inventory.add::<MigrationJobsTable>(
+            "cluster",
+            "migration_jobs",
+            MigrationJobsTable::create_provider(
+                metadata.clone(),
+                self.remote_scanner_manager.clone(),
             ),
         )?;
 

@@ -10,7 +10,8 @@
 
 use std::sync::Arc;
 
-use restate_partition_store::PartitionStoreManager;
+use restate_core::Metadata;
+use restate_partition_store::{PartitionStoreManager, QueryIoExecutor};
 use restate_worker_api::PartitionQueryAccess;
 
 use crate::inbox::schema::SysInboxTable;
@@ -19,6 +20,7 @@ use crate::invocation_status::schema::SysInvocationStatusTable;
 use crate::journal::schema::SysJournalTable;
 use crate::journal_events::schema::SysJournalEventsTable;
 use crate::locks::schema::SysLocksTable;
+use crate::migration_records::{IndexesTable, MigrationJobsTable, create_local_scanners};
 use crate::promise::schema::SysPromiseTable;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::scheduler_status::schema::SysSchedulerTable;
@@ -78,4 +80,18 @@ pub fn register_partition_scanners(
     remote_scanner_manager.register_partition_scanner::<SysVqueuesTable>(Arc::new(
         SysVqueuesTable::create_local_scanner(Arc::clone(&partition_store_manager)),
     ));
+}
+
+/// Registers this worker node's scanners of the cluster tables `indexes` and
+/// `migration_jobs`. They read the partition replicas `partition_store_manager`
+/// has open on `io_executor`, the shared query IO pool.
+pub fn register_cluster_scanners(
+    partition_store_manager: Arc<PartitionStoreManager>,
+    metadata: Metadata,
+    io_executor: QueryIoExecutor,
+    remote_scanner_manager: &RemoteScannerManager,
+) {
+    let (indexes, jobs) = create_local_scanners(partition_store_manager, metadata, io_executor);
+    remote_scanner_manager.register_node_scanner::<IndexesTable>(indexes);
+    remote_scanner_manager.register_node_scanner::<MigrationJobsTable>(jobs);
 }
