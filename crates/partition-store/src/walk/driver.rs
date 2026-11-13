@@ -301,7 +301,8 @@ impl WalkDriver {
             Err((SliceError::Staging(err), examined)) => {
                 // Records it on the committed state, which the failure left as it was.
                 let error = engine::describe(&err);
-                match engine::record_failure(tx, &self.db, walk, &error).await {
+                let work = started.elapsed();
+                match engine::record_failure(tx, &self.db, walk, &error, work).await {
                     Err(SliceError::Commit(err)) => return Err(err),
                     Err(SliceError::Staging(record)) => {
                         warn!(walk, "Failed to record a failed walk slice: {record}");

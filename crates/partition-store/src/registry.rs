@@ -56,7 +56,7 @@ mod reconcile;
 
 pub(crate) use active::{DEFINITIONS, Family, IndexDefinition, MaintainedIndexes};
 pub(crate) use backfill::IndexBackfill;
-pub(crate) use reconcile::{FAMILIES, FenceState, Requests};
+pub(crate) use reconcile::{FAMILIES, FenceState, Requests, load_job_records};
 
 /// The first index ID the registry issues. Lower IDs belong to the static
 /// index (1–7) and statistic (1–3) identities that predate the registry.
@@ -111,6 +111,77 @@ pub enum IndexStatus {
     Dropped,
 }
 
+/// Why an index was dropped, stored as its number in
+/// [`IndexTimeline::drop_reason`].
+///
+/// **Compatibility.** The timeline stores the number, not a bilrost enumeration:
+/// an enumeration value a binary doesn't know fails decoding, which here would
+/// make the whole registry unreadable. A binary that finds a number it doesn't
+/// know keeps it through rewrites and shows it as unknown, so a release can add a
+/// reason without a version floor. Never reuse a number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropReason {
+    /// Its family's reset was requested.
+    Reset = 1,
+    /// The binary that opened the store doesn't know its definition.
+    UnknownDefinition = 2,
+}
+
+impl DropReason {
+    /// The reason stored as `number`, if this binary knows it.
+    pub fn from_number(number: u32) -> Option<Self> {
+        match number {
+            1 => Some(Self::Reset),
+            2 => Some(Self::UnknownDefinition),
+            _ => None,
+        }
+    }
+}
+
+/// When an index went through its states, for operators. Every field is `None`
+/// (or 0) until its event happens, or when unknown. Nothing reads it to decide
+/// anything. Times are wall-clock milliseconds since the epoch on this replica.
+#[derive(Debug, Clone, Default, PartialEq, Eq, bilrost::Message)]
+pub struct IndexTimeline {
+    #[bilrost(1)]
+    pub registered_at: Option<u64>,
+    /// The Restate version that registered it.
+    #[bilrost(2)]
+    pub registered_by: Option<ReString>,
+    #[bilrost(3)]
+    pub ready_at: Option<u64>,
+    #[bilrost(4)]
+    pub dropped_at: Option<u64>,
+    /// Why it was dropped: a [`DropReason`] number, 0 when not dropped.
+    #[bilrost(5)]
+    pub drop_reason: u32,
+}
+
+impl std::fmt::Display for IndexTimeline {
+    /// The times, then the drop reason by name, or `unknown(N)` for a number this
+    /// binary doesn't know.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "registered={:?} registered_by={:?} ready={:?} dropped={:?}",
+            self.registered_at, self.registered_by, self.ready_at, self.dropped_at
+        )?;
+        match (self.drop_reason, DropReason::from_number(self.drop_reason)) {
+            (0, _) => Ok(()),
+            (_, Some(reason)) => write!(f, " drop_reason={reason:?}"),
+            (number, None) => write!(f, " drop_reason=unknown({number})"),
+        }
+    }
+}
+
+impl IndexTimeline {
+    /// Records that the index was dropped at `at` for `reason`.
+    pub(crate) fn dropped(&mut self, at: u64, reason: DropReason) {
+        self.dropped_at = Some(at);
+        self.drop_reason = reason as u32;
+    }
+}
+
 /// One physical build of a definition in this store: its ID, status and, while
 /// it is being backfilled, the walk doing so.
 #[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
@@ -126,6 +197,8 @@ pub struct Index {
     /// The walk backfilling this Backfilling index, once started.
     #[bilrost(5)]
     pub walk: Option<u64>,
+    #[bilrost(6)]
+    pub timeline: IndexTimeline,
 }
 
 impl Index {
@@ -276,6 +349,7 @@ impl IndexRegistry {
             id,
             state: IndexStatus::Backfilling,
             walk: None,
+            timeline: IndexTimeline::default(),
         });
         Ok(id)
     }
@@ -318,6 +392,14 @@ impl IndexRegistry {
         &self.entries
     }
 
+    /// The timeline of index `id`, to record what happens to it.
+    pub(crate) fn timeline_mut(&mut self, id: u32) -> Option<&mut IndexTimeline> {
+        self.entries
+            .iter_mut()
+            .find(|entry| entry.id == id)
+            .map(|entry| &mut entry.timeline)
+    }
+
     /// Completes a Backfilling index: unlinks its walk and makes it Ready.
     pub fn set_ready(&mut self, id: u32) -> Result<(), RegistryError> {
         use IndexStatus::{Backfilling, Ready};
@@ -341,6 +423,77 @@ impl IndexRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_fields_are_skipped_and_unknown_drop_reasons_kept() {
+        // How a binary sees a later release's record: as one without the fields
+        // added since. Here, this binary's record without the timeline.
+        #[derive(bilrost::Message)]
+        struct OlderIndex {
+            #[bilrost(1)]
+            definition: ReString,
+            #[bilrost(2)]
+            kind: IndexKind,
+            #[bilrost(3)]
+            id: u32,
+            #[bilrost(4)]
+            state: IndexStatus,
+            #[bilrost(5)]
+            walk: Option<u64>,
+        }
+        let index = Index {
+            definition: ReString::from_static("stat/1"),
+            kind: IndexKind::Aggregate,
+            id: 64,
+            state: IndexStatus::Backfilling,
+            walk: Some(1),
+            timeline: IndexTimeline {
+                registered_at: Some(5),
+                registered_by: Some(ReString::from_static("1.8.2")),
+                ..IndexTimeline::default()
+            },
+        };
+        let encoded = bilrost::Message::encode_to_vec(&index);
+        let older = <OlderIndex as bilrost::OwnedMessage>::decode(encoded.as_slice()).unwrap();
+        assert_eq!(
+            (older.id, older.walk),
+            (64, Some(1)),
+            "the timeline is skipped"
+        );
+        let rewritten = bilrost::Message::encode_to_vec(&older);
+        let back = <Index as bilrost::OwnedMessage>::decode(rewritten.as_slice()).unwrap();
+        assert_eq!(
+            back.timeline,
+            IndexTimeline::default(),
+            "and lost by a rewrite"
+        );
+        assert_eq!(
+            (back.id, back.state, back.walk),
+            (index.id, index.state, index.walk)
+        );
+
+        // A drop reason a later release added survives this binary's rewrite.
+        let mut dropped = index;
+        dropped.timeline.drop_reason = 99;
+        let back = <Index as bilrost::OwnedMessage>::decode(
+            bilrost::Message::encode_to_vec(&dropped).as_slice(),
+        )
+        .unwrap();
+        assert_eq!(back.timeline.drop_reason, 99);
+        assert!(
+            back.timeline
+                .to_string()
+                .ends_with(" drop_reason=unknown(99)")
+        );
+        // Known reasons show by name.
+        let mut reset = back.timeline;
+        reset.dropped(7, DropReason::Reset);
+        assert!(
+            reset
+                .to_string()
+                .ends_with(" dropped=Some(7) drop_reason=Reset")
+        );
+    }
 
     #[test]
     fn ids_are_shared_monotonic_and_bounded() {

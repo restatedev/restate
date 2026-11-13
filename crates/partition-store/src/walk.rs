@@ -34,10 +34,8 @@
 //! ```
 //!
 //! The `engine` runs walks a slice at a time, through the [`WalkDriver`], between
-//! the partition processor's turns. The record also keeps durable
-//! diagnostics: the keys committed slices examined and the failed attempts, with
-//! the last error until the next slice commits. Like the rest of the record,
-//! they survive a restart as of the last flush.
+//! the partition processor's turns. What a walk's slices did, the rows,
+//! time and failures, is recorded on the jobs it runs (see [`crate::job`]).
 
 use bytes::Bytes;
 
@@ -51,9 +49,6 @@ pub use driver::{WalkDriver, WalkStatsSnapshot};
 
 /// The persisted format this binary reads and writes.
 const FORMAT: u32 = 1;
-
-/// The longest error a walk records, in bytes.
-pub const MAX_ERROR_LEN: usize = 512;
 
 /// The table a walk traverses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, bilrost::Enumeration)]
@@ -105,15 +100,6 @@ pub struct Walk {
     /// Parameters owned and versioned by the walk kind.
     #[bilrost(6)]
     pub params: Bytes,
-    /// Source keys examined by committed slices.
-    #[bilrost(7)]
-    pub scanned: u64,
-    /// Failed attempts at a slice, since the walk started.
-    #[bilrost(8)]
-    pub failures: u32,
-    /// Why the latest attempt failed, cleared by the next committed slice.
-    #[bilrost(9)]
-    pub last_error: Option<ReString>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -232,9 +218,6 @@ impl Walks {
             end,
             cursor: None,
             params: Bytes::new(),
-            scanned: 0,
-            failures: 0,
-            last_error: None,
         });
         if let Err(error) = self.validate() {
             self.walks.pop();
@@ -244,14 +227,8 @@ impl Walks {
         Ok(id)
     }
 
-    /// Records a committed slice: its last key and how many keys it examined. The
-    /// cursor only moves forward.
-    pub(crate) fn advance(
-        &mut self,
-        id: u64,
-        cursor: Bytes,
-        examined: u64,
-    ) -> Result<(), WalkError> {
+    /// Records a committed slice's last key. The cursor only moves forward.
+    pub(crate) fn advance(&mut self, id: u64, cursor: Bytes) -> Result<(), WalkError> {
         let walk = self
             .walks
             .iter_mut()
@@ -268,25 +245,6 @@ impl Walks {
             ));
         }
         walk.cursor = Some(cursor);
-        walk.scanned = walk.scanned.saturating_add(examined);
-        walk.last_error = None;
-        Ok(())
-    }
-
-    /// Records a failed attempt at a slice of walk `id`, keeping at most
-    /// [`MAX_ERROR_LEN`] bytes of `error`.
-    pub(crate) fn record_failure(&mut self, id: u64, error: &str) -> Result<(), WalkError> {
-        let walk = self
-            .walks
-            .iter_mut()
-            .find(|walk| walk.id == id)
-            .ok_or(WalkError::UnknownId(id))?;
-        let mut len = error.len().min(MAX_ERROR_LEN);
-        while !error.is_char_boundary(len) {
-            len -= 1;
-        }
-        walk.failures = walk.failures.saturating_add(1);
-        walk.last_error = Some(ReString::from(&error[..len]));
         Ok(())
     }
 
@@ -323,7 +281,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!((first, second), (1, 2));
-        walks.advance(second, Bytes::from_static(b"b"), 2).unwrap();
+        walks.advance(second, Bytes::from_static(b"b")).unwrap();
         assert_eq!(
             walks.get(second).unwrap().cursor.as_deref(),
             Some(&b"b"[..])
@@ -334,28 +292,15 @@ mod tests {
             "nothing before the first slice"
         );
 
-        walks
-            .record_failure(first, &"é".repeat(MAX_ERROR_LEN))
-            .unwrap();
-        let failed = walks.get(first).unwrap();
-        assert_eq!(failed.failures, 1);
-        assert!(failed.last_error.as_ref().unwrap().len() <= MAX_ERROR_LEN);
-        walks.advance(first, Bytes::from_static(b"c"), 3).unwrap();
-        assert_eq!(
-            walks.get(first).unwrap().last_error,
-            None,
-            "cleared by progress"
-        );
-        assert_eq!(walks.get(first).unwrap().failures, 1);
+        walks.advance(first, Bytes::from_static(b"c")).unwrap();
         assert!(
-            walks.advance(first, Bytes::from_static(b"c"), 1).is_err(),
+            walks.advance(first, Bytes::from_static(b"c")).is_err(),
             "no repeat"
         );
         assert!(
-            walks.advance(first, Bytes::from_static(b"f"), 1).is_err(),
+            walks.advance(first, Bytes::from_static(b"f")).is_err(),
             "not past end"
         );
-        assert_eq!(walks.get(first).unwrap().scanned, 3);
 
         // Removing every walk keeps the counter.
         walks.remove(first).unwrap();

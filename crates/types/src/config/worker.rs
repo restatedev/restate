@@ -1132,6 +1132,23 @@ pub struct StorageOptions {
     /// Since v1.8.2
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub background_migrations_throttling: Option<ThrottlingOptions>,
+
+    /// # Migration job history limit
+    ///
+    /// How many finished background migrations, such as index and statistic
+    /// builds, each partition replica keeps a record of, for inspection. When a
+    /// migration finishes beyond the limit, the record of the oldest finished one
+    /// is dropped. Unfinished migrations are always recorded. `0` keeps no
+    /// finished migrations.
+    ///
+    /// Takes effect when partitions open.
+    ///
+    /// Since v1.8.2
+    #[serde(
+        default = "serde_helpers::default_migration_job_history_limit",
+        skip_serializing_if = "serde_helpers::is_default_migration_job_history_limit"
+    )]
+    pub migration_job_history_limit: u32,
 }
 
 impl StorageOptions {
@@ -1234,6 +1251,7 @@ impl Default for StorageOptions {
                 serde_helpers::default_vqueue_meta_full_write_probability(),
             disable_background_migrations: false,
             background_migrations_throttling: None,
+            migration_job_history_limit: serde_helpers::default_migration_job_history_limit(),
         }
     }
 }
@@ -1590,6 +1608,14 @@ mod serde_helpers {
 
     pub fn is_default_compact_on_deletions_min_sst_file_size(v: &ByteCount) -> bool {
         *v == default_compact_on_deletions_min_sst_file_size()
+    }
+
+    pub const fn default_migration_job_history_limit() -> u32 {
+        100
+    }
+
+    pub fn is_default_migration_job_history_limit(v: &u32) -> bool {
+        *v == default_migration_job_history_limit()
     }
 
     pub const fn default_vqueue_meta_full_write_probability() -> f64 {
