@@ -86,6 +86,43 @@ impl<'a> MigrationJobIds<'a> {
         let ids = chunks.iter().map(|chunk| u32::from_be_bytes(*chunk));
         (rest.is_empty() && ids.clone().is_sorted_by(|a, b| a < b)).then_some(ids)
     }
+
+    /// The stored bytes of this list with the sorted, distinct `added` IDs listed
+    /// too, keeping every ID already listed. For example, `[64, 70]` with
+    /// `[65, 70]` added is `[64, 65, 70]`. Expects validated bytes (see
+    /// [`Self::ids`]).
+    pub fn with(&self, added: impl IntoIterator<Item = u32>) -> Vec<u8> {
+        let (listed, _) = self.0.as_chunks::<4>();
+        let mut listed = listed
+            .iter()
+            .map(|chunk| u32::from_be_bytes(*chunk))
+            .peekable();
+        let mut added = added.into_iter().peekable();
+        let mut out = Vec::with_capacity(self.0.len() + added.size_hint().0 * 4);
+        loop {
+            let next = match (listed.peek(), added.peek()) {
+                (None, None) => break,
+                (Some(_), None) => listed.next(),
+                (None, Some(_)) => added.next(),
+                (Some(listed_id), Some(added_id)) => match listed_id.cmp(added_id) {
+                    std::cmp::Ordering::Less => listed.next(),
+                    std::cmp::Ordering::Greater => added.next(),
+                    std::cmp::Ordering::Equal => {
+                        added.next();
+                        listed.next()
+                    }
+                },
+            };
+            let next = next.expect("peeked");
+            debug_assert!(
+                out.last_chunk::<4>()
+                    .is_none_or(|last| u32::from_be_bytes(*last) < next),
+                "added IDs are sorted and distinct"
+            );
+            out.extend_from_slice(&next.to_be_bytes());
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -98,6 +135,16 @@ mod tests {
         assert_eq!(ids.ids().unwrap().collect::<Vec<_>>(), [64, 65_606]);
         assert!(ids.contains(64) && ids.contains(65_606) && !ids.contains(65));
         assert_eq!(MigrationJobIds::EMPTY.ids().unwrap().count(), 0);
+        // Adding keeps the list sorted and distinct.
+        let added = ids.with([64, 65]);
+        assert_eq!(
+            MigrationJobIds::from_bytes(&added)
+                .ids()
+                .unwrap()
+                .collect::<Vec<_>>(),
+            [64, 65, 65_606]
+        );
+        assert_eq!(MigrationJobIds::EMPTY.with([]), Vec::<u8>::new());
         for malformed in [
             &[0, 0, 0, 64, 0][..],
             &[0, 0, 0, 70, 0, 0, 0, 64],

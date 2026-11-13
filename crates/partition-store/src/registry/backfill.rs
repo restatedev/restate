@@ -8,20 +8,34 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! The index backfill job (`index_backfill/1`): makes Backfilling indexes
+//! The index backfill job (`index_backfill/2`): makes Backfilling indexes
 //! reflect the entries that existed before they were registered, with a walk of
 //! the entry statuses (see [`crate::walk`]), then makes them Ready.
 //!
-//! Entries written since an index was registered already list its ID, so a walk
-//! adds the contribution of every other entry, in entry-status key order. The
-//! indexes of one walk, its members, share its traversal: each entry's status is
-//! read and its target resolved once, then applied to every member that does
-//! not reflect it yet. Each slice commits its contributions with the walk's
-//! cursor, and writes treat every entry up to that cursor as touched, so no
-//! entry is contributed twice. Once no entry remains up to the walk's end, the
-//! same commit makes its members Ready, unlinks them and removes the walk.
-//! Entry headers are never rewritten: once Ready, an index reflects every entry
-//! without listing it.
+//! **Filling.** An entry reflected by an index lists the index's ID, its token
+//! (see [`super::active`]). Entries written since an index was registered already
+//! list it, so a walk fills every other entry, in entry-status key order: it
+//! applies the entry to each of its indexes, its members, that the entry does not
+//! list yet, and rewrites the entry with their tokens added, keeping the tokens it
+//! already lists. Members share the traversal: each entry's status is read and its
+//! target resolved once. The contributions, the rewritten entries and the walk's
+//! cursor commit together, a slice at a time, so a write after the commit finds
+//! the tokens and replaces the filled contributions instead of adding them again.
+//! The cursor only records how far the walk got.
+//!
+//! **Completion.** Once no entry remains up to the walk's end, the same commit
+//! makes the members Ready, unlinks them and removes the walk. That is sound
+//! because the walk is a full pass with no gap: its members are linked only when
+//! it starts, at the beginning of the source, and every member can fill, so each
+//! entry it passes either listed a member's token already or was filled before
+//! the cursor moved past it. A slice that fails to fill an entry commits nothing.
+//! Entries written behind the cursor or after the end are covered by their write.
+//!
+//! For example, statistic 70 counts entries `A..E`. A slice fills `A` and `B`:
+//! it counts them and rewrites both with token 70. A command then moves `B` to
+//! another stage: `B` lists 70, so the write moves its count. The next slice finds
+//! `C` written since (it lists 70) and skips it, fills `D` and `E`, and makes 70
+//! Ready: every entry was counted once.
 //!
 //! Opening a partition starts the walk ([`start`]), and the walk engine runs it
 //! a slice at a time (see [`crate::walk::engine`]).
@@ -30,6 +44,7 @@ use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{EntryContext, EntryStateRef, EntryStatusHeader};
 
 use crate::stats::aggregated::backfill::with_entry_target;
+use crate::vqueue_table::EntryStatusKey;
 use crate::walk::engine::{self, SourceEntry, WalkJob, walk_error};
 use crate::walk::{Source, WalkKind, Walks};
 use crate::{PartitionDb, PartitionStoreTransaction};
@@ -57,26 +72,37 @@ impl WalkJob for IndexBackfill {
         &self,
         tx: &mut PartitionStoreTransaction<'_>,
         db: &PartitionDb,
-        (_, entry, header): &SourceEntry,
+        (key, entry, header): &SourceEntry,
     ) -> Result<(), StorageError> {
         let touched_by = header.touched_by();
-        if self.members.iter().all(|(_, id)| touched_by.contains(*id)) {
+        // Members are sorted by ID, so the tokens they add are too.
+        let unfilled: Vec<_> = self
+            .members
+            .iter()
+            .filter(|(_, id)| !touched_by.contains(*id))
+            .collect();
+        if unfilled.is_empty() {
             return Ok(());
         }
+        let key: [u8; EntryStatusKey::serialized_length_fixed()] = key
+            .as_slice()
+            .try_into()
+            .map_err(|_| StorageError::DataIntegrityError)?;
+        let state = EntryStateRef::from_header(header);
         with_entry_target(db, entry, header.vqueue_id(), header.seq(), |target| {
             let context = EntryContext {
                 qid: header.vqueue_id(),
                 target,
             };
-            let state = EntryStateRef::from_header(header);
-            for (definition, id) in &self.members {
-                if !touched_by.contains(*id) {
-                    (definition.apply)(tx, *id, &context, None, Some(&state));
-                }
+            for (definition, id) in &unfilled {
+                (definition.apply)(tx, *id, &context, None, Some(&state));
             }
             Ok(())
         })
-        .map_err(|err| StorageError::Generic(err.context(format!("entry {entry}"))))
+        .map_err(|err| StorageError::Generic(err.context(format!("entry {entry}"))))?;
+        let touched_by = touched_by.with(unfilled.iter().map(|(_, id)| *id));
+        tx.put_entry_status(key, header.vqueue_id(), &state, &touched_by);
+        Ok(())
     }
 
     fn finish(&self, registry: &mut IndexRegistry) -> Result<(), StorageError> {

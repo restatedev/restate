@@ -15,12 +15,16 @@
 //!    rollback, or another build): their keys are range-deleted and they become
 //!    Dropped, keeping their IDs reserved.
 //! 2. **Reset** the indexes of families whose reset is requested, the same way.
-//! 3. **Register** each requested definition that has no maintained index, under
+//! 3. **Rebuild** the indexes that a development build began backfilling without
+//!    tokens (an `index_backfill/1` walk): its filled entries are recorded only by
+//!    the walk's cursor, which writes no longer consult, so the indexes are
+//!    retired the same way and their walk removed. Step 4 registers them again.
+//! 4. **Register** each requested definition that has no maintained index, under
 //!    a fresh ID. Running out of IDs skips the request with an error log.
-//! 4. **Start** one walk for the Backfilling indexes that have none, over the
+//! 5. **Start** one walk for the Backfilling indexes that have none, over the
 //!    entries that exist now (see [`super::backfill`]). A partition without
 //!    entries has nothing to walk: those indexes become Ready instead.
-//! 5. **Fence:** once anything was ever registered, the `index-registry` storage
+//! 6. **Fence:** once anything was ever registered, the `index-registry` storage
 //!    feature is in the store's ledger, so older binaries cannot open it.
 //!
 //! ```text
@@ -49,7 +53,7 @@
 //! through the walk engine (see [`crate::walk::engine`]) once the processor is
 //! running. Until a walk reaches its end, its indexes stay Backfilling: writes
 //! maintain them and queries of them fail. A started walk keeps its cursor
-//! across restarts, and writes keep honoring it.
+//! across restarts and resumes after it; the entries it filled keep their tokens.
 //!
 //! The registry, the walks, their positions, their links and the fence walks
 //! require are validated before any of this, and before any cleanup or
@@ -77,7 +81,7 @@ use crate::fsm_table::{
 use crate::keys::{DecodeTableKey, IndexKeyPrefix};
 use crate::stats::AggregateKeyPrefix;
 use crate::vqueue_table::EntryStatusKey;
-use crate::walk::Walks;
+use crate::walk::{WalkKind, Walks};
 use crate::{MigrationError, PartitionDb, PartitionStore};
 
 use super::{
@@ -223,6 +227,25 @@ impl PartitionStore {
                 registry.drop_index(id).map_err(registry_error)?;
                 info!(definition = definition.name, id, "Reset the index");
             }
+        }
+        // Rows a token-less backfill filled are recorded only by its cursor:
+        // build those indexes again, under fresh IDs.
+        let untokened: Vec<_> = walks
+            .entries()
+            .iter()
+            .filter(|walk| walk.kind == WalkKind::untokened_index_backfill())
+            .flat_map(|walk| registry.members(walk.id))
+            .map(|index| (index.id, index.kind, index.definition.clone()))
+            .collect();
+        for (id, kind, definition) in untokened {
+            append_instance_delete(&db, &mut batch, kind, id)?;
+            registry.drop_index(id).map_err(registry_error)?;
+            warn!(
+                %definition,
+                id,
+                "Rebuilding an index an earlier development build began backfilling \
+                 without row tokens; its data was deleted"
+            );
         }
         // A walk whose members were all dropped has nothing left to backfill;
         // surviving members keep their walk and its position.
@@ -825,6 +848,16 @@ mod backfill_tests {
         engine::run_all(store, 3).await.unwrap();
     }
 
+    /// Runs one slice of `walk` over its next `keys` entries.
+    async fn fill(store: &mut PartitionStore, walk: u64, keys: usize) {
+        let db = store.partition_db().clone();
+        let mut tx = store.transaction();
+        assert_eq!(
+            engine::run_slice(&mut tx, &db, walk, keys).await.unwrap(),
+            Slice::Progressed
+        );
+    }
+
     fn maintain(definition: &'static IndexDefinition) -> Requests {
         Requests {
             maintain: vec![definition],
@@ -1081,7 +1114,7 @@ mod backfill_tests {
     }
 
     #[restate_core::test]
-    async fn writes_treat_entries_a_walk_covered_as_tracked() {
+    async fn writes_replace_what_a_walk_filled_and_adopt_the_rest() {
         RocksDbManager::init();
         let manager = PartitionStoreManager::create(true).await.unwrap();
         let mut store = manager
@@ -1090,33 +1123,27 @@ mod backfill_tests {
             .unwrap();
         seed(&mut store).await;
         reconcile(&mut store, maintain(&COUNT)).await;
-        // COUNT's walk covered the first ten entries without listing them.
-        let persisted = registry(&store);
-        let index = persisted.maintained(COUNT.name).unwrap().clone();
+        let index = registry(&store).maintained(COUNT.name).unwrap().clone();
+        // A slice fills the first ten entries: it counts them and lists COUNT on
+        // them, in the same commit as its cursor.
+        fill(&mut store, index.walk.unwrap(), 10).await;
         let entries = read_chunk(&store, None, usize::MAX).unwrap();
-        let mut walks = self::walks(&store);
-        walks
-            .advance(index.walk.unwrap(), Bytes::from(entries[9].0.clone()), 10)
-            .unwrap();
-        write_state(&store, &persisted, &walks);
-        add_counts(&store, index.id, 10);
-        store.set_maintained_indexes(MaintainedIndexes::new(&persisted, &walks, KNOWN));
+        let listed = |(_, _, header): &engine::SourceEntry| header.touched_by().contains(index.id);
+        assert!(entries[..10].iter().all(listed) && !entries[10..].iter().any(listed));
+        assert_eq!(count(&store, index.id), 10);
 
-        // Covered and unlisted: touched, so its contribution is removed.
+        // Filled and listed: a delete removes its count, an update keeps it.
         delete(&mut store, &entries[4].1).await;
-        assert_eq!(count(&store, index.id), 9);
-        // Covered: touched, an update keeps it counted once.
         update(&mut store, &entries[5].1).await;
         assert_eq!(count(&store, index.id), 9);
-        // Not covered and unlisted: nothing to remove.
+        // Not filled yet, and unlisted: a delete has nothing to remove, and an
+        // update adopts the entry, so it is counted and listed.
         delete(&mut store, &entries[50].1).await;
-        assert_eq!(count(&store, index.id), 9);
-        // Not covered and unlisted: adopted, so it is counted and listed.
         update(&mut store, &entries[60].1).await;
         assert_eq!(count(&store, index.id), 10);
 
-        // Resuming the walk counts each remaining entry exactly once.
-        reconcile(&mut store, Requests::default()).await;
+        // The walk skips the adopted entry and fills the others: each entry is
+        // counted exactly once.
         run_walks(&mut store).await;
         assert_eq!(count(&store, index.id), SEEDED - 2);
         assert_eq!(
@@ -1141,31 +1168,66 @@ mod backfill_tests {
         assert_eq!((index.state, index.walk), (IndexStatus::Ready, None));
         assert!(walks(&empty).entries().is_empty());
 
-        // Walks of COUNT and RESUMED covered the first ten and twenty entries when
-        // the partition reopens with ADOPTED requested too.
+        // An index an earlier development build began backfilling without tokens
+        // is built again: the filled entries are known only from its walk's
+        // cursor, which writes no longer consult. The open retires the index with
+        // its counts and walks a fresh one from the start.
+        let mut untokened = manager
+            .open(&Partition::new(PartitionId::from(3), KeyRange::FULL), None)
+            .await
+            .unwrap();
+        seed(&mut untokened).await;
+        reconcile(&mut untokened, maintain(&COUNT)).await;
+        let old = registry(&untokened).maintained(COUNT.name).unwrap().clone();
+        let entries = read_chunk(&untokened, None, usize::MAX).unwrap();
+        let mut walks = Walks::default();
+        let walk = walks
+            .start(
+                WalkKind::untokened_index_backfill(),
+                Source::EntryStatus,
+                Bytes::from(entries.last().unwrap().0.clone()),
+            )
+            .unwrap();
+        walks
+            .advance(walk, Bytes::from(entries[9].0.clone()), 10)
+            .unwrap();
+        let mut persisted = registry(&untokened);
+        persisted.link(old.id, walk).unwrap();
+        write_state(&untokened, &persisted, &walks);
+        add_counts(&untokened, old.id, 10);
+        reconcile(&mut untokened, maintain(&COUNT)).await;
+        let rebuilt = registry(&untokened).maintained(COUNT.name).unwrap().clone();
+        assert_eq!(
+            registry(&untokened).get(old.id).unwrap().state,
+            IndexStatus::Dropped
+        );
+        assert_eq!(count(&untokened, old.id), 0, "the old counts are deleted");
+        assert!(rebuilt.id > old.id);
+        assert_eq!(
+            self::walks(&untokened).entries()[0].kind,
+            WalkKind::index_backfill()
+        );
+        run_walks(&mut untokened).await;
+        assert_eq!(count(&untokened, rebuilt.id), SEEDED);
+
+        // COUNT's walk filled ten entries and RESUMED's twenty, each started at
+        // its own open, when the partition reopens with ADOPTED requested too.
         let mut store = manager
             .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
             .await
             .unwrap();
         seed(&mut store).await;
-        reconcile(&mut store, maintain_all(&[&COUNT, &RESUMED])).await;
-        let mut persisted = registry(&store);
-        let entries = read_chunk(&store, None, usize::MAX).unwrap();
-        let end = Bytes::from(entries.last().unwrap().0.clone());
-        let mut walks = Walks::default();
         let mut paused = Vec::new();
-        for (definition, covered) in [(&COUNT, 10), (&RESUMED, 20)] {
-            let id = persisted.maintained(definition.name).unwrap().id;
-            let walk = walks
-                .start(WalkKind::index_backfill(), Source::EntryStatus, end.clone())
-                .unwrap();
-            let cursor = Bytes::from(entries[covered - 1].0.clone());
-            walks.advance(walk, cursor, covered as u64).unwrap();
-            persisted.link(id, walk).unwrap();
-            add_counts(&store, id, covered as u32);
-            paused.push((definition, id, walk, covered));
+        for (definition, filled) in [(&COUNT, 10), (&RESUMED, 20)] {
+            reconcile(&mut store, maintain(definition)).await;
+            let index = registry(&store)
+                .maintained(definition.name)
+                .unwrap()
+                .clone();
+            fill(&mut store, index.walk.unwrap(), filled).await;
+            paused.push((definition, index.id, index.walk.unwrap(), filled));
         }
-        write_state(&store, &persisted, &walks);
+        let walks = self::walks(&store);
         reconcile(&mut store, maintain_all(&[&COUNT, &RESUMED, &ADOPTED])).await;
         let adopted = registry(&store).maintained(ADOPTED.name).unwrap().clone();
         assert_eq!(
@@ -1173,9 +1235,9 @@ mod backfill_tests {
             (IndexStatus::Backfilling, Some(3)),
             "a_requested_index_starts_its_own_walk"
         );
-        for (definition, _, walk, covered) in &paused {
+        for (definition, _, walk, filled) in &paused {
             assert!(reason(&store, definition).contains(&format!(
-                "is still being completed: backfill walk {walk} has examined {covered} entries"
+                "is still being completed: backfill walk {walk} has examined {filled} entries"
             )));
         }
         assert!(reason(&store, &ADOPTED).contains("backfill walk 3 has examined 0 entries"));
@@ -1186,9 +1248,21 @@ mod backfill_tests {
             "started_walks_wait"
         );
 
-        // Every waiting walk's cursor still applies: an entry it covered is
-        // touched without being listed, so deleting it removes its contribution.
-        // The fifth entry is covered by both walks, the fifteenth by RESUMED's.
+        // Filling keeps the tokens an entry already lists: the fifth entry lists
+        // both walks' indexes, the fifteenth RESUMED's only. Deleting them removes
+        // exactly the counts they contributed.
+        let entries = read_chunk(&store, None, usize::MAX).unwrap();
+        let tokens = |entry: usize| {
+            let listed = entries[entry].2.touched_by();
+            paused
+                .iter()
+                .map(|(_, id, ..)| listed.contains(*id))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            (tokens(4), tokens(14)),
+            (vec![true, true], vec![false, true])
+        );
         for index in [4, 14] {
             delete(&mut store, &entries[index].1).await;
         }
