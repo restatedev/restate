@@ -21,7 +21,7 @@ use restate_memory::{
     ByteCount, LocalMemoryPool, MemoryPool, NonZeroByteCount, OutOfMemoryKind, PinnableMemoryStream,
 };
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
-use restate_storage_api::{BudgetedReadError, IsolationLevel, Transaction};
+use restate_storage_api::{BudgetedReadError, Transaction};
 use restate_types::Scope;
 use restate_types::identifiers::ServiceId;
 use restate_util_string::RestateString;
@@ -207,12 +207,13 @@ async fn budgeted_point_reads_are_lazy_and_snapshot_consistent() {
         txn.commit().await.unwrap();
         drop(txn);
 
+        let mut txn = writer.transaction();
+        txn.put_user_state(&service_id, &k2, b"buffered").unwrap();
+        txn.commit().await.unwrap();
+        drop(txn);
+
         let mut snapshot_store = store.clone();
-        let mut snapshot =
-            snapshot_store.transaction_with_isolation(IsolationLevel::RepeatableReads);
-        snapshot
-            .put_user_state(&service_id, &k2, b"buffered")
-            .unwrap();
+        let mut snapshot = snapshot_store.snapshot().unwrap();
         let keys = [
             ByteString::from_static("k2"),
             ByteString::from_static("absent"),
@@ -232,8 +233,8 @@ async fn budgeted_point_reads_are_lazy_and_snapshot_consistent() {
                 .unwrap(),
         );
 
-        // Writes after stream construction must be visible to the live reader,
-        // but not to the snapshot (which must also preserve buffered writes).
+        // Writes after the snapshot must be visible to the live reader,
+        // but not to the snapshot.
         let mut txn = writer.transaction();
         txn.put_user_state(&service_id, &k2, b"new").unwrap();
         txn.commit().await.unwrap();

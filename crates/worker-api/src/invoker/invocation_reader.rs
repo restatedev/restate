@@ -101,7 +101,7 @@ pub trait InvocationReader {
     type Error: InvocationReaderError;
 
     /// Create a read transaction to read information about invocations from the underlying storage.
-    fn transaction(&mut self) -> Self::Transaction<'_>;
+    fn transaction(&mut self) -> Result<Self::Transaction<'_>, Self::Error>;
 
     /// Budget-gated point read of a single journal entry.
     ///
