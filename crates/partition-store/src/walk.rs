@@ -33,7 +33,8 @@
 //!                  covered   cursor = B  end = E   the write path handles it
 //! ```
 //!
-//! The `engine` runs walks a slice at a time. The record also keeps durable
+//! The `engine` runs walks a slice at a time, through the [`WalkDriver`], between
+//! the partition processor's turns. The record also keeps durable
 //! diagnostics: the keys committed slices examined and the failed attempts, with
 //! the last error until the next slice commits. Like the rest of the record,
 //! they survive a restart as of the last flush.
@@ -42,7 +43,11 @@ use bytes::Bytes;
 
 use restate_util_string::ReString;
 
+mod driver;
 pub(crate) mod engine;
+
+pub(crate) use driver::WalkStats;
+pub use driver::{WalkDriver, WalkStatsSnapshot};
 
 /// The persisted format this binary reads and writes.
 const FORMAT: u32 = 1;
