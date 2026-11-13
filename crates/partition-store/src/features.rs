@@ -12,6 +12,7 @@ mod aggregated_status_stats;
 #[cfg(test)]
 pub(crate) use aggregated_status_stats::legacy_status_gauge_key;
 mod index_registry;
+mod indexes_v1;
 mod scoped_promise_migration;
 mod scoped_state_migration;
 mod state_promise_migration_combined;
@@ -100,6 +101,15 @@ storage_features! {
     ///
     /// Since v1.8.2
     pub TrackStatusGauges,
+
+    /// Maintains the busy-vqueue index in the same transaction as vqueue writes.
+    /// Queues written before the feature was enabled are not backfilled, so the
+    /// index can be incomplete. The entry indexes are registered instead
+    /// (`crate::vqueue_table::ENTRY_INDEXES`); keys under their static IDs from
+    /// before the registry are not read.
+    ///
+    /// Since v1.8.2
+    pub IndexesV1,
 
     /// The store holds the index and statistics registry (`crate::registry`): the
     /// tokens in entry-status headers and the keys of registered indexes. Persisted
@@ -525,6 +535,7 @@ macro_rules! storage_features {
                 $visibility enum [<$feature:camel Feature>] {}
             )*
 
+
             impl StorageFeatures {
                 /// Returns the list of enabled features by name
                 pub fn into_names(self) -> Vec<ReString> {
@@ -788,10 +799,35 @@ mod tests {
     }
 
     #[test]
+    fn indexes_v1_activation_respects_versions_and_opt_in() {
+        let mut config = Configuration::default();
+        for (version, opt_in, expected) in [
+            ("1.8.1", true, false),
+            ("1.8.2-dev", false, false),
+            ("1.8.2-dev", true, true),
+            ("1.8.2", true, true),
+            ("1.9.0", true, true),
+        ] {
+            let version = SemanticRestateVersion::parse(version).unwrap();
+            config.common.experimental.set_indexes_v1(opt_in);
+            let features =
+                LoadedStorageFeatures::load(None, StorageVersion::V1_5, &version).unwrap();
+            assert_eq!(
+                features
+                    .automatic_changes(&config, &version, false)
+                    .contains(&KnownStorageFeature::IndexesV1),
+                expected,
+                "version={version}, opt_in={opt_in}",
+            );
+        }
+    }
+
+    #[test]
     fn query_storage_floors_accept_release_candidates_and_preserve_higher_barriers() {
         let candidate = SemanticRestateVersion::parse("1.8.2-dev").unwrap();
         for feature in [
             KnownStorageFeature::TrackStatusGauges,
+            KnownStorageFeature::IndexesV1,
             KnownStorageFeature::IndexRegistry,
         ] {
             assert_eq!(feature.min_required_version(), &candidate);
@@ -800,6 +836,7 @@ mod tests {
         let mut features =
             LoadedStorageFeatures::load(None, StorageVersion::None, &candidate).unwrap();
         features.set_enabled::<TrackStatusGaugesFeature>(Some(&candidate));
+        features.set_enabled::<IndexesV1Feature>(Some(&candidate));
         features.set_enabled::<IndexRegistryFeature>(Some(&candidate));
         let persisted = features.ledger().clone();
         assert!(

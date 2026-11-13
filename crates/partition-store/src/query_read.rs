@@ -294,6 +294,7 @@ impl SnapshotCursor {
 
 #[cfg(test)]
 mod tests {
+    use std::cmp::Reverse;
     use std::ops::ControlFlow;
     use std::time::Duration;
 
@@ -318,6 +319,7 @@ mod tests {
     use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, Seq, VQueueId};
 
     use crate::PartitionStoreManager;
+    use crate::index::{EntryByStageService, EntryByStageServiceKey, SecondaryIndexKey};
     use crate::keys::selection::KeySelection;
     use crate::keys::{EncodeTableKey, KeyKind};
     use crate::state_table::{ScopedStateKey, ScopedStateTable, StateKey, StateTable};
@@ -325,7 +327,7 @@ mod tests {
     use super::*;
 
     #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn query_snapshot_unifies_layouts_primary_and_auxiliary_reads() {
+    async fn query_snapshot_unifies_layouts_index_primary_and_auxiliary_reads() {
         RocksDbManager::init();
         let manager = PartitionStoreManager::create(true).await.unwrap();
         let mut store = manager
@@ -353,6 +355,10 @@ mod tests {
             state_key: Bytes::from_static(b"key"),
         }
         .serialize_to(&mut scoped);
+        // Entry writes maintain the definition's Ready index.
+        crate::index::backfill_indexes(&mut store).await;
+        let scope = crate::index::ready_index_scope::<EntryByStageService>(&store);
+        let mut previous_index = None;
         let mut snapshots = Vec::new();
         for (sequence, service) in [(1, "before"), (2, "after")] {
             let key = EntryKey::new(false, at.to_unix_millis(), sequence, *id.as_entry_id());
@@ -385,8 +391,22 @@ mod tests {
                     stats: &EntryStatistics::new(at, key.run_at()),
                 },
             );
+            // The entry is created again as a new incarnation, without removing
+            // the previous one's key.
+            if let Some(previous) = previous_index.take() {
+                tx.raw_delete_cf(KeyKind::SecondaryIndex, previous);
+            }
+            let mut index = Vec::new();
+            EntryByStageServiceKey::borrowed(
+                Stage::Inbox,
+                service,
+                Reverse(at),
+                id.canonicalize(Seq::new(sequence)),
+            )
+            .encode_key(scope, &mut index);
             tx.commit().await.unwrap();
             drop(tx);
+            previous_index = Some(index);
             snapshots.push(store.query_read(CancellationToken::new()).unwrap());
         }
         for ((read, completed), (sequence, service)) in
@@ -421,6 +441,21 @@ mod tests {
                     "scan_and_primary_lookup_see_same_incarnation"
                 );
             }
+            let (tx, rx) = std::sync::mpsc::channel();
+            <ReadSnapshot as BlockingScan<EntryByStageService>>::scan_blocking(
+                &read,
+                Arc::new(KeySelection::all()),
+                move |(key, _)| {
+                    tx.send(key.decode_all().unwrap().canonical_id).unwrap();
+                    ControlFlow::Continue(())
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                rx.into_iter().collect::<Vec<_>>(),
+                [id.canonicalize(Seq::new(sequence))],
+                "index_and_primary_see_same_incarnation"
+            );
             let (tx, rx) = std::sync::mpsc::channel();
             let scoped_tx = tx.clone();
             <ReadSnapshot as BlockingScan<StateTable>>::scan_blocking(

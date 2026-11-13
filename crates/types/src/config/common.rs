@@ -1239,6 +1239,21 @@ experimental! {
     /// Since v1.8.2
     status_gauges_reset,
 
+    /// # [WIP] Secondary Indexes for vqueue entries
+    ///
+    /// Maintains the six secondary indexes of VQueue entries for the entries
+    /// written from then on; entries that existed before are added by a background
+    /// backfill, and until it completes, reads of the entry indexes fail on that
+    /// partition. Also maintains the busy-vqueue index, which is not backfilled:
+    /// a queue written before this option was enabled is missing from it until
+    /// its next change. Maintenance persists across restarts even if this flag
+    /// is removed. Enabling it registers the indexes in the partition's index
+    /// registry and raises the partition's minimum Restate version to v1.8.2 for
+    /// good, like `experimental-enable-track-status-gauges`.
+    ///
+    /// Since v1.8.2
+    indexes_v1,
+
     /// # Enables service protocol v8
     ///
     /// Set to `true` to enable the experimental service protocol v8,

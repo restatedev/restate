@@ -30,8 +30,10 @@
 /// must be annotated `(primary_key)`: its codec's value type is the index's
 /// `PrimaryKey`, and a read checks that it belongs to the partition it runs on.
 ///
-/// The index is **registered** under `definition:`: each replica's registry
-/// issues the index ID of its build, and a read resolves the Ready one.
+/// With `definition:`, the index is **registered**: each replica's registry
+/// issues the index ID of its build, and a read resolves the Ready one. Without
+/// it, the index is **static** and keeps the `IndexId` of the same name, as the
+/// busy-vqueue index does.
 ///
 /// The declaration generates, through `define_ordered_key!`:
 /// - `EntryByStageServiceKey`, its borrowing `…KeyRef` and `…KeyView`, the prefix
@@ -50,8 +52,6 @@
 ///     stage, service_name => non_null, transitioned_at, canonical_id,
 /// );
 /// ```
-// The index definitions, in their own commit, and tests declare indexes with it.
-#[allow(unused_macros)]
 macro_rules! define_secondary_index {
     (
         $(#[$meta:meta])*
@@ -61,6 +61,15 @@ macro_rules! define_secondary_index {
     ) => {
         crate::index::macros::define_secondary_index!(
             @annotation [$(#[$meta])* $index, $key, [registered $definition]] []; $($fields)*
+        );
+    };
+    (
+        $(#[$meta:meta])*
+        $index:ident,
+        key: $key:ident { $($fields:tt)* } $(,)?
+    ) => {
+        crate::index::macros::define_secondary_index!(
+            @annotation [$(#[$meta])* $index, $key, [static]] []; $($fields)*
         );
     };
 
@@ -120,6 +129,25 @@ macro_rules! define_secondary_index {
 
         impl crate::index::RegisteredIndex for $index {
             const DEFINITION: &'static str = $definition;
+        }
+    };
+    (@identity $index:ident, $primary_type:ty, [static]) => {
+        impl crate::index::SecondaryIndex for $index {
+            type PrimaryKey = <$primary_type as crate::keys::FieldCodec>::Value;
+            type Scope = restate_types::sharding::PartitionId;
+
+            fn scope(
+                metadata: &crate::table::ReadMetadata<'_>,
+            ) -> crate::Result<restate_types::sharding::PartitionId> {
+                Ok(metadata.partition.partition_id)
+            }
+
+            fn prefix(partition: restate_types::sharding::PartitionId) -> crate::keys::IndexKeyPrefix {
+                crate::keys::IndexKeyPrefix::new(
+                    partition,
+                    crate::index::IndexId::$index.as_u32(),
+                )
+            }
         }
     };
 
@@ -194,5 +222,4 @@ macro_rules! define_secondary_index {
     };
 }
 
-#[allow(unused_imports)] // See above.
 pub(crate) use define_secondary_index;

@@ -16,7 +16,7 @@ use zerocopy::{IntoBytes, TryFromBytes, big_endian};
 use restate_storage_api::StorageError;
 use restate_types::sharding::PartitionId;
 
-use crate::index::SecondaryIndex;
+use crate::index::{IndexId, SecondaryIndex};
 use crate::table::ReadMetadata;
 
 use super::header::{HeaderBounds, KeyHeader};
@@ -102,6 +102,12 @@ impl IndexKeyPrefix {
     /// Returns the raw persisted index identifier.
     pub fn index_id_raw(&self) -> u32 {
         self.index_id.get()
+    }
+
+    /// Decodes the static index identifier, if the raw value is one. A registered
+    /// index's ID is resolved through the registry, not here.
+    pub fn index_id(&self) -> Option<IndexId> {
+        IndexId::from_u32(self.index_id_raw())
     }
 
     /// Decodes and validates an index prefix, returning the index key payload decoder.

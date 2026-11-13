@@ -86,7 +86,10 @@ use super::{
 };
 
 /// The released families.
-pub(crate) const FAMILIES: &[Family] = &[crate::vqueue_table::STATUS_GAUGES];
+pub(crate) const FAMILIES: &[Family] = &[
+    crate::vqueue_table::STATUS_GAUGES,
+    crate::vqueue_table::ENTRY_INDEXES,
+];
 
 /// What opening a partition asks of its registry.
 #[derive(Default)]
