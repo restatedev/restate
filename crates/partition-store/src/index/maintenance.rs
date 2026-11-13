@@ -24,6 +24,8 @@
 //! single-deletes the first and puts the second. An entry the index does not reflect yet (see
 //! `registry::active`) passes `None` as `old` and only gets its new key.
 
+use restate_types::sharding::PartitionId;
+
 use crate::keys::header::IndexScope;
 use crate::keys::{IndexKeyPrefix, KeyKind};
 use crate::{PartitionStoreTransaction, StorageRead};
@@ -31,6 +33,36 @@ use crate::{PartitionStoreTransaction, StorageRead};
 use super::{SecondaryIndex, SecondaryIndexKey};
 
 impl PartitionStoreTransaction<'_> {
+    /// Replaces the entry's key in a static index of this partition: removes
+    /// `old`, writes `new` with an empty value, nothing when both encode to the
+    /// same key. `old` must be the key the index holds now (see the module doc);
+    /// `None` means absent. Reads nothing.
+    pub fn update_secondary_index<K>(&mut self, old: Option<&K>, new: Option<&K>)
+    where
+        K: SecondaryIndexKey,
+        K::Index: SecondaryIndex<Scope = PartitionId>,
+    {
+        self.update_covering_secondary_index(
+            old.map(|key| (key, &[][..])),
+            new.map(|key| (key, &[][..])),
+        );
+    }
+
+    /// Like [`Self::update_secondary_index`] for a covering index, whose keys
+    /// carry a value: a changed value at the same key is a SingleDelete followed
+    /// by a put, so every key is still written once per lifetime. `old` must be
+    /// the key and value the index holds now.
+    pub fn update_covering_secondary_index<K>(
+        &mut self,
+        old: Option<(&K, &[u8])>,
+        new: Option<(&K, &[u8])>,
+    ) where
+        K: SecondaryIndexKey,
+        K::Index: SecondaryIndex<Scope = PartitionId>,
+    {
+        self.update_index_entries(self.partition_id(), old, new);
+    }
+
     /// Replaces the entry's key in the registered index `id` of this partition:
     /// removes `old`, writes `new` with an empty value, nothing when both encode
     /// to the same key. `old` must be the key the index holds now (see the module

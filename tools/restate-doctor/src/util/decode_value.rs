@@ -21,7 +21,8 @@ use restate_limiter::RuleBook;
 use restate_partition_store::PartitionSeal;
 use restate_partition_store::blob_table::{BlobHeader, BlobKey};
 use restate_partition_store::fsm_table::PartitionStateMachineKey;
-use restate_partition_store::keys::{DecodeTableKey, KeyKind};
+use restate_partition_store::index::IndexId;
+use restate_partition_store::keys::{DecodeTableKey, IndexKeyPrefix, KeyKind};
 use restate_partition_store::stats::aggregated::{StageCounts, StageStatusCounts};
 use restate_partition_store::stats::{AggregateKeyPrefix, StatKind, StatValueCodec};
 use restate_partition_store::vqueue_table::{EntryStatusKey, InputPayloadKey};
@@ -173,6 +174,13 @@ pub fn decode_value(key_kind: KeyKind, key: &[u8], value: &[u8]) -> DecodedValue
             Ok((_, kind, _)) => decode_stat_value(kind, value),
             Err(err) => DecodedValue::error(None, value.len(), err.to_string()),
         };
+    }
+
+    if key_kind == KeyKind::SecondaryIndex
+        && IndexKeyPrefix::decode_prefix(key)
+            .is_ok_and(|(prefix, _)| prefix.index_id() == Some(IndexId::BusyVQueue))
+    {
+        return decode_stage_counts(value);
     }
 
     if value.is_empty() {

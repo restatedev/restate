@@ -150,8 +150,8 @@ async fn verify_restored_data(partition: &mut PartitionStore) {
     assert_eq!(partition.get_fsm_position().await.unwrap(), Some(POSITION));
 }
 
-/// The service gauges' total, as a query snapshot reads it.
-fn registered_totals(store: &PartitionStore) -> u64 {
+/// The service gauges and the service index, as a query snapshot reads them.
+fn registered_totals(store: &PartitionStore) -> (u64, u64) {
     use std::ops::ControlFlow;
 
     use restate_storage_query_api::scan::BlockingScan;
@@ -172,10 +172,20 @@ fn registered_totals(store: &PartitionStore) -> u64 {
         },
     )
     .unwrap();
-    counted
+    let mut indexed = 0;
+    <crate::ReadSnapshot as BlockingScan<crate::index::EntryByStageService>>::scan_blocking(
+        &snapshot,
+        Arc::new(KeySelection::all()),
+        |_| {
+            indexed += 1;
+            ControlFlow::Continue(())
+        },
+    )
+    .unwrap();
+    (counted, indexed)
 }
 
-/// A replica restored from a snapshot of backfilled gauges opens with
+/// A replica restored from a snapshot of backfilled gauges and indexes opens with
 /// the same Ready indexes, under the source replica's IDs, and keeps maintaining
 /// them, even with the options removed. The registry and walks also preserve the
 /// existing byte-offset position through the backfill and the restore.
@@ -208,6 +218,7 @@ async fn restored_snapshots_keep_ready_registered_instances() {
     }
     let mut config = Configuration::default();
     config.common.experimental.set_track_status_gauges(true);
+    config.common.experimental.set_indexes_v1(true);
     store
         .verify_and_run_migrations(CancellationToken::new(), &config)
         .await
@@ -216,7 +227,7 @@ async fn restored_snapshots_keep_ready_registered_instances() {
     let registry = get_registry_from_partition_db(store.partition_db())
         .unwrap()
         .unwrap();
-    assert_eq!(registered_totals(&store), 147);
+    assert_eq!(registered_totals(&store), (147, 147));
     assert_eq!(store.get_fsm_position().await.unwrap(), Some(POSITION));
 
     let snapshots_dir = tempdir().unwrap();
@@ -275,7 +286,7 @@ async fn restored_snapshots_keep_ready_registered_instances() {
             .iter()
             .any(|name| name.as_str() == "index-registry")
     );
-    assert_eq!(registered_totals(&store), 147);
+    assert_eq!(registered_totals(&store), (147, 147));
     assert_eq!(store.get_fsm_position().await.unwrap(), Some(POSITION));
 
     // A command after the restore advances the position and maintains both views.
@@ -296,7 +307,7 @@ async fn restored_snapshots_keep_ready_registered_instances() {
     );
     tx.commit().await.unwrap();
     drop(tx);
-    assert_eq!(registered_totals(&store), 146);
+    assert_eq!(registered_totals(&store), (146, 146));
     let position = store.get_fsm_position().await.unwrap().unwrap();
     assert_eq!(position.applied_lsn, Lsn::new(101));
     assert_eq!(

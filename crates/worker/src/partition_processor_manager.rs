@@ -2695,6 +2695,7 @@ mod tests {
         seed_finished_entries(stores, &partition, entries, position).await;
         let mut config = Configuration::default();
         config.common.experimental.set_track_status_gauges(true);
+        config.common.experimental.set_indexes_v1(true);
         (config, stores.faults(&partition))
     }
 
@@ -2715,14 +2716,18 @@ mod tests {
         reached.await.unwrap();
     }
 
-    /// Whether the service gauges are Ready in a new snapshot of `store`.
+    /// Whether the service gauges and the service index are Ready in a new snapshot
+    /// of `store`.
     fn ready(store: &restate_partition_store::PartitionStore) -> bool {
         use restate_partition_store::registry::IndexKind;
 
         let snapshot = store.query_read(Default::default()).unwrap().0;
-        snapshot
-            .ready_index("service_stats/1", IndexKind::Aggregate)
-            .is_ok()
+        [
+            ("service_stats/1", IndexKind::Aggregate),
+            ("entry_by_stage_service/1", IndexKind::Secondary),
+        ]
+        .iter()
+        .all(|(name, kind)| snapshot.ready_index(name, *kind).is_ok())
     }
 
     /// The service-gauge total of a snapshot read: entries counted once each.
@@ -2748,8 +2753,8 @@ mod tests {
         total
     }
 
-    /// Statistics backfill in a real processor: opening registers the
-    /// gauges and starts their walk, and the processor's backfill arm
+    /// Index and statistics backfill in a real processor: opening registers the
+    /// gauges and indexes and starts their walk, and the processor's backfill arm
     /// runs it step by step while the processor serves. This fixture's processor
     /// applies no record and serves no RPC, so every step counts as quiet. The
     /// test holds every step at its pause point, so nothing depends on timing.
