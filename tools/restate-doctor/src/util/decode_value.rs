@@ -692,15 +692,29 @@ fn decode_fsm_walks(value: &[u8]) -> DecodedValue {
         .entries()
         .iter()
         .map(|w| {
+            let members = w
+                .members
+                .iter()
+                .map(|m| {
+                    let joined = m
+                        .joined_at
+                        .as_deref()
+                        .map_or_else(|| "start".to_owned(), super::hex_encode);
+                    format!("{}(joined={joined} uncovered={})", m.index, m.uncovered)
+                })
+                .collect::<Vec<_>>();
             format!(
-                "id={} job={}/{} end={} cursor={}",
+                "id={} job={}/{} source={} on_unknown={:?} end={} cursor={} evidence=[{}]",
                 w.id,
                 w.kind.name,
                 w.kind.version,
+                w.source,
+                restate_partition_store::walk::OnUnknown::from_number(w.on_unknown),
                 super::hex_encode(&w.end),
                 w.cursor
                     .as_deref()
                     .map_or_else(|| "-".to_owned(), super::hex_encode),
+                members.join(", "),
             )
         })
         .collect::<Vec<_>>();
@@ -735,7 +749,9 @@ fn decode_fsm_jobs(label: &str, value: &[u8]) -> DecodedValue {
                 "id={} {:?} {} {:?} walk={:?} created={:?} created_by={:?} started={:?} \
                  finished={:?} passes={} rows_examined={} rows_filled={} slices={} work_us={} \
                  last_slice={:?} last_slice_work_us={:?} failures={} consecutive_failures={} \
-                 last_error={:?} last_error_at={:?}",
+                 last_error={:?} last_error_at={:?} pass_started={:?} last_pass_finished={:?} \
+                 rows_uncovered={:?} rows_uncovered_previous={:?} recheck_interval_ms={:?} \
+                 next_eligible_at={:?}",
                 j.id(),
                 j.kind,
                 j.name,
@@ -756,6 +772,12 @@ fn decode_fsm_jobs(label: &str, value: &[u8]) -> DecodedValue {
                 j.consecutive_failures,
                 j.last_error,
                 j.last_error_at,
+                j.pass_started_at,
+                j.last_pass_finished_at,
+                j.rows_uncovered,
+                j.rows_uncovered_previous,
+                j.recheck_interval_ms,
+                j.next_eligible_at,
             )
         })
         .collect::<Vec<_>>();

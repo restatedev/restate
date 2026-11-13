@@ -24,12 +24,13 @@
 //! The cursor only records how far the walk got.
 //!
 //! **Completion.** Once no entry remains up to the walk's end, the same commit
-//! makes the members Ready, unlinks them and removes the walk. That is sound
-//! because the walk is a full pass with no gap: its members are linked only when
-//! it starts, at the beginning of the source, and every member can fill, so each
-//! entry it passes either listed a member's token already or was filled before
-//! the cursor moved past it. A slice that fails to fill an entry commits nothing.
-//! Entries written behind the cursor or after the end are covered by their write.
+//! settles each member, unlinks it and removes the walk. A member that joined at
+//! the start of the source and found no gap becomes Ready. That is sound because
+//! the walk was a full pass for it with no gap: each entry it passed either listed
+//! the member's token already or was filled before the cursor moved past it. A
+//! slice that fails to fill an entry commits nothing, and entries written behind
+//! the cursor or after the end are covered by their write. Any other member stays
+//! Backfilling and waits for another pass (see "Passive members" below).
 //!
 //! For example, statistic 70 counts entries `A..E`. A slice fills `A` and `B`:
 //! it counts them and rewrites both with token 70. A command then moves `B` to
@@ -37,10 +38,18 @@
 //! `C` written since (it lists 70) and skips it, fills `D` and `E`, and makes 70
 //! Ready: every entry was counted once.
 //!
+//! **Passive members.** A member whose definition can't fill
+//! ([`IndexDefinition::can_fill`]) leaves an entry without its token alone, and
+//! the walk counts the entry as uncovered for it, in the slice's commit. At the
+//! walk's end each member settles on its own: one that was a member from the
+//! pass's start and found no gap is made Ready; any other stays Backfilling,
+//! unlinked, and its job waits for another pass (see [`crate::job`]).
+//!
 //! **Records.** Each member has a build job with the member's ID (see
-//! [`crate::job`]). Starting the walk creates the jobs; each slice adds the rows
-//! it took to every member's job and the rows it filled for that member, in the
-//! slice's commit; completion moves the jobs to the history.
+//! [`crate::job`]). Registering an index creates its job ([`register_job`]);
+//! starting a walk links the jobs, keeping what earlier passes recorded; each
+//! slice adds the rows it took to every member's job and the rows it filled for
+//! that member, in the slice's commit; completion moves the jobs to the history.
 //!
 //! Opening a partition starts the walk ([`start`]), and the walk engine runs it
 //! a slice at a time (see [`crate::walk::engine`]).
@@ -48,10 +57,10 @@
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{EntryContext, EntryStateRef, EntryStatusHeader};
 
-use crate::job::{MigrationJob, MigrationJobRecords, MigrationJobStatus, Stamp};
+use crate::job::{MigrationJob, MigrationJobId, MigrationJobRecords, MigrationJobStatus, Stamp};
 use crate::stats::aggregated::backfill::with_entry_target;
 use crate::vqueue_table::EntryStatusKey;
-use crate::walk::engine::{self, SourceEntry, WalkJob, walk_error};
+use crate::walk::engine::{self, Settlement, SourceEntry, Staged, WalkJob, walk_error};
 use crate::walk::{Source, WalkKind, Walks};
 use crate::{PartitionDb, PartitionStoreTransaction};
 
@@ -96,16 +105,21 @@ impl WalkJob for IndexBackfill {
         tx: &mut PartitionStoreTransaction<'_>,
         db: &PartitionDb,
         (key, entry, header): &SourceEntry,
-    ) -> Result<u64, StorageError> {
+    ) -> Result<Staged, StorageError> {
         let touched_by = header.touched_by();
-        let filled_by = self
-            .members
-            .iter()
-            .enumerate()
-            .filter(|(_, (_, id))| !touched_by.contains(*id))
-            .fold(0_u64, |set, (position, _)| set | (1 << position));
+        let mut staged = Staged::default();
+        for (position, (definition, id)) in self.members.iter().enumerate() {
+            if !touched_by.contains(*id) {
+                if definition.can_fill {
+                    staged.filled |= 1 << position;
+                } else {
+                    staged.uncovered |= 1 << position;
+                }
+            }
+        }
+        let filled_by = staged.filled;
         if filled_by == 0 {
-            return Ok(0);
+            return Ok(staged);
         }
         let key: [u8; EntryStatusKey::serialized_length_fixed()] = key
             .as_slice()
@@ -126,12 +140,22 @@ impl WalkJob for IndexBackfill {
         // Members are sorted by ID, so the tokens they add are too.
         let touched_by = touched_by.with(self.filled(filled_by).map(|(_, id)| *id));
         tx.put_entry_status(key, header.vqueue_id(), &state, &touched_by);
-        Ok(filled_by)
+        Ok(staged)
     }
 
-    fn finish(&self, registry: &mut IndexRegistry, at: u64) -> Result<(), StorageError> {
-        for (_, id) in &self.members {
-            set_ready(registry, *id, at)?;
+    fn finish(
+        &self,
+        registry: &mut IndexRegistry,
+        settled: &[(u32, Settlement)],
+        at: u64,
+    ) -> Result<(), StorageError> {
+        for (id, settlement) in settled {
+            match settlement {
+                Settlement::Certified => set_ready(registry, *id, at)?,
+                Settlement::Unfinished => registry
+                    .unlink(*id)
+                    .map_err(|err| StorageError::Conversion(err.into()))?,
+            }
         }
         Ok(())
     }
@@ -148,19 +172,42 @@ fn set_ready(registry: &mut IndexRegistry, id: u32, at: u64) -> Result<(), Stora
     Ok(())
 }
 
-/// Starts one walk for the Backfilling `ids`, ending at the last entry now, and
-/// links them to it, with a `Pending` build job each. A partition without
-/// entries has nothing to walk: the indexes become Ready at once, no walk
-/// starts, and their jobs go straight to the history as completed without a
-/// pass. The change is staged on `registry`, `walks` and `jobs`; the caller
-/// commits them.
+/// Creates the `Pending` build job of index `id`, registered at `stamp`.
+pub(crate) fn register_job(
+    registry: &IndexRegistry,
+    jobs: &mut MigrationJobRecords,
+    id: u32,
+    stamp: &Stamp,
+) -> Result<(), StorageError> {
+    let name = registry
+        .get(id)
+        .map(|index| index.definition.clone())
+        .ok_or(StorageError::DataIntegrityError)?;
+    jobs.unfinished.insert(MigrationJob::index_backfill(
+        id,
+        name,
+        None,
+        Some(stamp.at),
+        Some(stamp.by.clone()),
+    ));
+    Ok(())
+}
+
+/// Starts a pass for the Backfilling `ids`: one walk, ending at the last entry
+/// now, linked to them and to their build jobs, which must exist (see
+/// [`register_job`]). A job keeps what earlier passes recorded; one that waited
+/// runs again. A partition without entries has nothing to walk: the indexes
+/// become Ready at once and their jobs move to the history, completed. For a new
+/// registration that takes no pass; for a job that waited, it is a full pass
+/// that found nothing. The change is staged on `registry`, `walks` and `jobs`;
+/// the caller commits them.
 pub(crate) fn start(
     db: &PartitionDb,
     registry: &mut IndexRegistry,
     walks: &mut Walks,
     jobs: &mut MigrationJobRecords,
     ids: &[u32],
-    stamp: &Stamp,
+    at: u64,
     history_limit: usize,
 ) -> Result<Option<u64>, StorageError> {
     let registry_error = |err: RegistryError| StorageError::Conversion(err.into());
@@ -173,23 +220,34 @@ pub(crate) fn start(
         ),
     };
     for id in ids {
-        let name = registry
-            .get(*id)
-            .map(|index| index.definition.clone())
+        let job_id = MigrationJobId::for_index(*id);
+        let job = jobs
+            .unfinished
+            .get_mut(job_id)
             .ok_or(StorageError::DataIntegrityError)?;
-        let mut job =
-            MigrationJob::index_backfill(*id, name, walk, Some(stamp.at), Some(stamp.by.clone()));
         match walk {
             Some(walk) => {
                 registry.link(*id, walk).map_err(registry_error)?;
-                jobs.unfinished.insert(job);
+                job.walk = Some(walk);
+                job.next_eligible_at = None;
+                if job.status == MigrationJobStatus::Waiting {
+                    job.status = MigrationJobStatus::Running;
+                }
             }
             None => {
-                set_ready(registry, *id, stamp.at)?;
-                job.status = MigrationJobStatus::Completed;
-                job.started_at = Some(stamp.at);
-                job.finished_at = Some(stamp.at);
-                std::sync::Arc::make_mut(&mut jobs.history).push_finished(job, history_limit);
+                set_ready(registry, *id, at)?;
+                if job.status == MigrationJobStatus::Pending {
+                    job.started_at = Some(at);
+                } else {
+                    job.pass_started_at = Some(at);
+                    job.record_full_pass(at, 0);
+                }
+                jobs.finish(
+                    job_id,
+                    MigrationJobStatus::Completed,
+                    Some(at),
+                    history_limit,
+                );
             }
         }
     }
