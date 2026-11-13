@@ -208,11 +208,16 @@ pub(crate) const ENTRY_INDEXES: Family = Family {
         &ENTRY_NEXT_AT_BY_VIRTUAL_OBJECT_STAGE,
     ],
     maintain: indexes_v1,
+    complete: complete_indexes_v1,
     reset: no_reset,
 };
 
 fn indexes_v1(config: &Configuration) -> bool {
     config.common.experimental.is_indexes_v1_enabled()
+}
+
+fn complete_indexes_v1(config: &Configuration) -> bool {
+    config.common.experimental.is_complete_indexes_v1_enabled()
 }
 
 /// Disabling the entry indexes has no option yet.
@@ -346,20 +351,19 @@ mod tests {
         matches!(result, Err(StorageError::Generic(err)) if err.downcast_ref::<IndexNotReady>().is_some())
     }
 
-    /// Opens as a partition does, then runs the walks the open started to their
-    /// ends, as the background driver does in time.
     async fn open(store: &mut PartitionStore, configure: impl Fn(&mut Configuration)) {
         let mut config = Configuration::default();
+        // This test requests completion before querying.
+        config.worker.storage.enable_eager_migrations_on_startup = true;
         configure(&mut config);
         store
             .verify_and_run_migrations(Default::default(), &config)
             .await
             .unwrap();
-        crate::walk::engine::run_all(store, 3).await.unwrap();
     }
 
     #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn backfilled_indexes_match_live_maintenance() {
+    async fn completed_indexes_match_live_maintenance() {
         RocksDbManager::init();
         let manager = PartitionStoreManager::create(true).await.unwrap();
         let mut store = manager
@@ -371,7 +375,7 @@ mod tests {
             .await
             .unwrap();
         // The reference maintains its indexes before any entry exists; the store
-        // backfills its indexes over existing entries.
+        // completes its indexes over existing entries.
         open(&mut store, |_| {}).await;
         open(&mut reference, |config| {
             config.common.experimental.set_indexes_v1(true)
@@ -381,22 +385,19 @@ mod tests {
         seed(&mut reference).await;
         assert!(keys(&store).is_empty());
         assert!(not_ready(indexed(&store)), "absent_indexes_are_not_ready");
-        // Registered before any entry existed, the reference's indexes had
-        // nothing to backfill and were Ready at once.
-        assert_eq!(
-            indexed(&reference).unwrap(),
-            147,
-            "indexes_of_an_empty_partition_are_ready_at_once"
+        assert!(
+            not_ready(indexed(&reference)),
+            "maintained_indexes_are_not_ready"
         );
 
         for store in [&mut store, &mut reference] {
             open(store, |config| {
-                config.common.experimental.set_indexes_v1(true)
+                config.common.experimental.set_complete_indexes_v1(true)
             })
             .await;
         }
         let expected = keys(&reference);
-        assert_eq!(keys(&store), expected, "backfill_matches_maintenance");
+        assert_eq!(keys(&store), expected, "completion_matches_maintenance");
         // Every entry is in the four stage indexes; the 75 virtual-object
         // entries (workflows excluded) are also in the two object indexes.
         assert_eq!(

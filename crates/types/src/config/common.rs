@@ -1200,26 +1200,45 @@ experimental! {
     /// Since v1.8.2
     vqueue_orphaned_active_marker_removal,
 
+    /// # Enables service protocol v8
+    ///
+    /// Set to `true` to enable the experimental service protocol v8,
+    /// adding support for reading state without recording it in the journal.
+    ///
+    /// Only enable once all nodes run v1.8.2 or newer. Once enabled, you **cannot** roll back to a
+    /// Restate-server version older than v1.8.2, as in-flight invocations might be pinned to v8.
+    ///
+    /// Since v1.8.2
+    protocol_v8,
+
     /// # Status Gauges For VQueue Entries
     ///
     /// Maintains current stage/status counts for VQueue entries by service,
     /// deployment, and virtual object. Counts include invocations and state
-    /// mutations, retaining completed entries until deletion. Each partition
-    /// counts the entries written from then on and backfills the entries that
-    /// existed before in the background; until that backfill completes, queries
-    /// of the statistics tables fail on that partition.
+    /// mutations, retaining completed entries until deletion. Each partition starts
+    /// counting the entries written from then on; entries that existed before are
+    /// only counted once `experimental-enable-complete-status-gauges` completes the
+    /// gauges. Until then, queries of the statistics tables fail on that partition.
     ///
     /// Maintenance persists across restarts even if this flag is removed, unless
     /// status gauges are explicitly reset. Statistics-table visibility is controlled
     /// separately on the query coordinator.
     ///
-    /// Enabling this option registers the statistics in the partition's index
-    /// registry and raises the partition's minimum Restate version to v1.8.2.
-    /// That stays, also after the option is removed or the gauges are reset: a
-    /// node that has ever run with it cannot be rolled back to an older version.
-    ///
     /// Since v1.8.2
     track_status_gauges,
+
+    /// # Complete status gauges
+    ///
+    /// Implies `experimental-enable-track-status-gauges`, and also requests counting
+    /// the entries that existed before the gauges were maintained. Enable
+    /// `worker.storage.enable-eager-migrations-on-startup` to run this pass before
+    /// each partition starts; otherwise the pass waits. This can increase startup
+    /// time; an interrupted pass resumes where it stopped. Once complete, the
+    /// partition answers statistics queries. Removing this flag later does not
+    /// undo completion.
+    ///
+    /// Since v1.8.2
+    complete_status_gauges,
 
     /// # Reset status gauges
     ///
@@ -1230,11 +1249,9 @@ experimental! {
     /// on the query coordinator.
     ///
     /// To rebuild the counts from retained VQueue entries, turn this option off,
-    /// turn `experimental-enable-track-status-gauges` on, and restart the nodes:
-    /// the gauges are registered again and backfilled in the background.
-    /// Invocation and VQueue entry data are preserved during reset. A reset does
-    /// not lift the partition's minimum Restate version of v1.8.2 that enabling
-    /// the gauges set.
+    /// enable `experimental-enable-complete-status-gauges` and
+    /// `worker.storage.enable-eager-migrations-on-startup`, and restart the nodes.
+    /// Invocation and VQueue entry data are preserved during reset.
     ///
     /// Since v1.8.2
     status_gauges_reset,
@@ -1247,23 +1264,22 @@ experimental! {
     /// partition. Also maintains the busy-vqueue index, which is not backfilled:
     /// a queue written before this option was enabled is missing from it until
     /// its next change. Maintenance persists across restarts even if this flag
-    /// is removed. Enabling it registers the indexes in the partition's index
-    /// registry and raises the partition's minimum Restate version to v1.8.2 for
-    /// good, like `experimental-enable-track-status-gauges`.
+    /// is removed.
     ///
     /// Since v1.8.2
     indexes_v1,
 
-    /// # Enables service protocol v8
+    /// # [WIP] Complete the secondary indexes for vqueue entries
     ///
-    /// Set to `true` to enable the experimental service protocol v8,
-    /// adding support for reading state without recording it in the journal.
-    ///
-    /// Only enable once all nodes run v1.8.2 or newer. Once enabled, you **cannot** roll back to a
-    /// Restate-server version older than v1.8.2, as in-flight invocations might be pinned to v8.
+    /// Maintains the entry indexes, as `experimental-enable-indexes-v1` does, and
+    /// also requests indexing the entries that existed before. It does not maintain
+    /// the busy-vqueue index. Enable `worker.storage.enable-eager-migrations-on-startup`
+    /// to run this pass before each partition starts; otherwise the pass waits.
+    /// This can increase startup time; an interrupted pass resumes where it
+    /// stopped. Removing this flag later does not undo completion.
     ///
     /// Since v1.8.2
-    protocol_v8,
+    complete_indexes_v1,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");

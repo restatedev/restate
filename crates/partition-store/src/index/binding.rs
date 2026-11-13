@@ -16,7 +16,7 @@
 use std::ops::ControlFlow;
 
 use restate_storage_api::StorageError;
-use restate_storage_query_api::schema::{RecordProgress, row_written};
+use restate_storage_query_api::schema::RecordProgress;
 use restate_storage_query_api::selection::Selection;
 use restate_storage_query_api::tables::index::{EntryByService, EntryByServiceView};
 use restate_storage_query_api::{LogicalSchema, PreparedRead, RowSink, SchemaBinding, Table};
@@ -38,7 +38,9 @@ impl SchemaBinding for EntryByServiceBinding {
         _: &mut (),
         emit: &mut impl RowSink<Self::Schema>,
     ) -> crate::Result<RecordProgress> {
-        row_written(Self::materialize_projected(record, emit))?;
+        if let ControlFlow::Break(result) = Self::materialize_projected(record, emit) {
+            result?;
+        }
         Ok(RecordProgress::Done)
     }
 

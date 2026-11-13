@@ -151,7 +151,6 @@ pub(crate) mod fsm_variable {
     /// Persisted as bilrost.
     ///
     /// *Since v1.8.2*
-    #[allow(dead_code)]
     pub(crate) const INDEX_REGISTRY: u64 = 14;
 
     /// The local walks (not replicated): resumable passes over a source table
@@ -160,7 +159,6 @@ pub(crate) mod fsm_variable {
     /// Persisted as bilrost.
     ///
     /// *Since v1.8.2*
-    #[allow(dead_code)]
     pub(crate) const WALKS: u64 = 15;
 }
 
@@ -312,7 +310,6 @@ pub(crate) fn get_storage_features_from_partition_db(
 }
 
 /// The persisted registry, validated; `None` when nothing was ever registered.
-#[allow(dead_code)]
 pub(crate) fn get_registry_from_partition_db(
     db: &PartitionDb,
 ) -> Result<Option<crate::registry::IndexRegistry>> {
@@ -330,7 +327,6 @@ pub(crate) fn get_registry_from_partition_db(
 }
 
 /// The key of the registry, for reads through a snapshot.
-#[allow(dead_code)]
 pub(crate) fn registry_key(
     partition_id: PartitionId,
 ) -> [u8; PartitionStateMachineKey::serialized_length_fixed()] {
@@ -338,7 +334,6 @@ pub(crate) fn registry_key(
 }
 
 /// Writes the registry through `storage`, to commit it with the transaction's effects.
-#[allow(dead_code)]
 pub(crate) fn put_registry<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
@@ -352,7 +347,6 @@ pub(crate) fn put_registry<S: StorageAccess>(
 }
 
 /// Adds the registry to `wb`, to commit it atomically with its effects.
-#[allow(dead_code)]
 pub(crate) fn append_registry_to_wb(
     cf_handle: &std::sync::Arc<rocksdb::BoundColumnFamily<'_>>,
     wb: &mut rocksdb::WriteBatch,
@@ -364,14 +358,12 @@ pub(crate) fn append_registry_to_wb(
 }
 
 /// The key of the walks, for reads through a snapshot.
-#[allow(dead_code)]
 pub(crate) fn walks_key(
     partition_id: PartitionId,
 ) -> [u8; PartitionStateMachineKey::serialized_length_fixed()] {
     create_key(partition_id, fsm_variable::WALKS).to_bytes()
 }
 
-#[allow(dead_code)]
 pub(crate) fn get_walks_from_partition_db(db: &PartitionDb) -> Result<Option<crate::walk::Walks>> {
     let key = create_key(db.partition().id(), fsm_variable::WALKS);
     db.rocksdb()
@@ -386,7 +378,6 @@ pub(crate) fn get_walks_from_partition_db(db: &PartitionDb) -> Result<Option<cra
 }
 
 /// Writes the walks through `storage`, to commit them with the transaction's effects.
-#[allow(dead_code)]
 pub(crate) fn put_walks<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
@@ -400,7 +391,6 @@ pub(crate) fn put_walks<S: StorageAccess>(
 }
 
 /// Adds the walks to `wb`, to commit them atomically with their effects.
-#[allow(dead_code)]
 pub(crate) fn append_walks_to_wb(
     cf_handle: &std::sync::Arc<rocksdb::BoundColumnFamily<'_>>,
     wb: &mut rocksdb::WriteBatch,

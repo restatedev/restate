@@ -20,7 +20,7 @@ use bilrost::OwnedMessage;
 
 use restate_storage_api::StorageError;
 use restate_storage_api::lock_table::LockState;
-use restate_storage_query_api::schema::{RecordProgress, row_written};
+use restate_storage_query_api::schema::RecordProgress;
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, SelectionPrecision};
 use restate_storage_query_api::tables::locks::{
@@ -103,7 +103,9 @@ impl SchemaBinding for LocksBinding {
         _: &mut (),
         emit: &mut impl RowSink<Self::Schema>,
     ) -> Result<RecordProgress> {
-        row_written(Self::materialize_projected(record, emit))?;
+        if let ControlFlow::Break(result) = Self::materialize_projected(record, emit) {
+            result?;
+        }
         Ok(RecordProgress::Done)
     }
 

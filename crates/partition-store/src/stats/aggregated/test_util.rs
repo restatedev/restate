@@ -8,40 +8,41 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Reads of decoded statistic values for tests.
+//! Compatibility reads for the statistics regression harness.
 
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use restate_storage_query_api::SelectionSchema;
-use restate_storage_query_api::scan::BlockingScan;
+use restate_storage_query_api::scan::Scan;
 use restate_storage_query_api::selection::Selection;
 
 use crate::keys::KeyDecoder;
 use crate::keys::selection::PrepareKeySelection;
 use crate::stats::Stat;
 use crate::table::PhysicalTable;
-use crate::{PartitionStore, ReadSnapshot, Result, break_on_err};
+use crate::{PartitionStore, Result, break_on_err};
 
 use super::{AggregatedStat, binding};
 
-/// Reads the statistic values selected by `selection` from a snapshot of
-/// `store`, on the caller's thread, decoding each stored value for `emit`.
-pub fn read_stats<T, S, F>(
-    store: &PartitionStore,
+/// Reads decoded statistic values for the pre-V2 regression harness. The store
+/// receives only a prepared physical request and emits uninterpreted payloads.
+pub fn read_stats<'s, T, S, F>(
+    store: &'s PartitionStore,
     selection: &Selection<S>,
     mut emit: F,
-) -> Result<()>
+) -> Result<impl Future<Output = Result<()>> + Send + use<'s, T, S, F>>
 where
     T: AggregatedStat + PhysicalTable<Key = <T as Stat>::OwnedKey>,
     T::OwnedKey: PrepareKeySelection<S>,
     S: SelectionSchema,
-    F: for<'a> FnMut(KeyDecoder<'a, T::OwnedKey>, T::Value) -> ControlFlow<Result<()>>,
+    F: for<'a> FnMut(KeyDecoder<'a, T::OwnedKey>, T::Value) -> ControlFlow<Result<()>>
+        + Send
+        + 'static,
 {
     let prepared = binding::prepare::<T, S>(selection)?;
-    let (snapshot, _completed) = store.query_read(Default::default())?;
-    <ReadSnapshot as BlockingScan<T>>::scan_blocking(
-        &snapshot,
+    <PartitionStore as Scan<T>>::scan(
+        store,
         Arc::clone(prepared.request()),
         move |(key, payload)| {
             if let Some(value) = break_on_err(binding::decode::<T>(payload))? {

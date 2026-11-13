@@ -13,7 +13,7 @@ use std::ops::ControlFlow;
 
 use rocksdb::ReadOptions;
 
-use restate_rocksdb::{Priority, RocksDbManager};
+use restate_rocksdb::{IterAction, Priority, RocksDbManager};
 use restate_storage_api::Transaction;
 use restate_storage_api::vqueue_table::{Stage, Status};
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
@@ -189,6 +189,8 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
             sender.send(bytes).unwrap();
             ControlFlow::Continue(())
         })
+        .unwrap()
+        .await
         .unwrap();
         let mut actual = Vec::new();
         while let Some(key) = receiver.recv().await {
@@ -206,18 +208,29 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
             .into_cursor(&fixed)
             .unwrap()
             .unwrap();
-        let (snapshot, _completed) = store.query_read(Default::default()).unwrap();
-        let mut raw = snapshot.physical_cursor(cursor.scan().clone()).unwrap();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        store
+            .iterator_controlled_physical(
+                "test-compound-seeks",
+                Priority::Low,
+                ReadOptions::default(),
+                cursor.scan().clone(),
+                move |(key, _)| {
+                    sender.send(key.to_vec()).unwrap();
+                    match crate::break_on_err(cursor.evaluate(key))? {
+                        KeyMatch::Match => ControlFlow::Continue(IterAction::Next),
+                        KeyMatch::Skip => panic!("fixed_header_uses_ordered_seeks"),
+                        KeyMatch::Seek(target) => ControlFlow::Continue(IterAction::Seek(target)),
+                        KeyMatch::Done => ControlFlow::Break(Ok(())),
+                    }
+                },
+            )
+            .unwrap()
+            .await
+            .unwrap();
         let mut visited = Vec::new();
-        while let Some((key, _)) = raw.peek().unwrap() {
-            let key = key.to_vec();
-            visited.push(key.clone());
-            match cursor.evaluate(&key).unwrap() {
-                KeyMatch::Match => raw.advance().unwrap(),
-                KeyMatch::Skip => panic!("fixed_header_uses_ordered_seeks"),
-                KeyMatch::Seek(target) => raw.seek_forward(target).unwrap(),
-                KeyMatch::Done => break,
-            }
+        while let Some(key) = receiver.recv().await {
+            visited.push(key);
         }
         assert_eq!(
             visited,

@@ -874,6 +874,27 @@ pub struct StorageOptions {
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub always_commit_in_background: bool,
 
+    /// # Enable eager migrations on startup
+    ///
+    /// Runs pending background migrations of partition stores, both those started earlier and
+    /// those requested now, to completion while a partition opens, before its processor starts.
+    /// Backfilling query indexes and statistics is such a migration: a partition with many entries
+    /// takes correspondingly longer to start, and a failure fails the start. When disabled, pending
+    /// migrations wait, while the partition keeps maintaining its indexes and statistics; until
+    /// they finish, queries that need them fail on that partition. Migrations required for
+    /// correctness always run on startup.
+    ///
+    /// Disabled by default. Pending migrations wait for a restart with this option enabled.
+    ///
+    /// Takes effect when partition stores are opened.
+    ///
+    /// Since v1.8.2
+    #[serde(
+        skip_serializing_if = "serde_helpers::is_default_eager_migrations_on_startup",
+        default = "serde_helpers::default_eager_migrations_on_startup"
+    )]
+    pub enable_eager_migrations_on_startup: bool,
+
     /// # Enable L6 filters
     ///
     /// Build Ribbon filters for L6 SST files to avoid unnecessary reads for missing keys.
@@ -1208,6 +1229,8 @@ impl Default for StorageOptions {
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.49,
             always_commit_in_background: false,
+            enable_eager_migrations_on_startup: serde_helpers::default_eager_migrations_on_startup(
+            ),
             rocksdb_enable_l6_filters: false,
             rocksdb_disable_whole_key_filtering: false,
             rocksdb_disable_compact_on_deletion: false,
@@ -1592,6 +1615,14 @@ mod serde_helpers {
         *v == default_compact_on_deletions_min_sst_file_size()
     }
 
+    pub const fn default_eager_migrations_on_startup() -> bool {
+        false
+    }
+
+    pub fn is_default_eager_migrations_on_startup(v: &bool) -> bool {
+        *v == default_eager_migrations_on_startup()
+    }
+
     pub const fn default_vqueue_meta_full_write_probability() -> f64 {
         1.0
     }
@@ -1606,6 +1637,28 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    #[test]
+    fn eager_migrations_default_off_and_preserve_explicit_settings() {
+        let options = StorageOptions::default();
+        assert!(!options.enable_eager_migrations_on_startup);
+
+        let key = "enable-eager-migrations-on-startup";
+        let mut value = serde_json::to_value(options).unwrap();
+        assert!(!value.as_object().unwrap().contains_key(key));
+        let options: StorageOptions = serde_json::from_value(value.clone()).unwrap();
+        assert!(!options.enable_eager_migrations_on_startup);
+
+        for enabled in [false, true] {
+            value[key] = enabled.into();
+            let options: StorageOptions = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(options.enable_eager_migrations_on_startup, enabled);
+            let serialized = serde_json::to_value(options).unwrap();
+            assert_eq!(serialized.get(key).is_some(), enabled);
+            let options: StorageOptions = serde_json::from_value(serialized).unwrap();
+            assert_eq!(options.enable_eager_migrations_on_startup, enabled);
+        }
+    }
 
     #[test]
     fn scheduler_is_enabled_by_default_and_can_be_disabled() {

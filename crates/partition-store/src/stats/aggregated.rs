@@ -31,6 +31,8 @@
 //! An [`Aggregate`] implementation fixes all of this for one kind of statistic;
 //! [`AggregatedStatsMut`] is how a transaction records its deltas.
 
+pub(crate) mod backfill;
+
 mod binding;
 mod bucketed_gauge;
 mod deployment_stats;
@@ -41,35 +43,19 @@ mod virtual_object_stats;
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util;
 
-pub(crate) mod backfill;
+#[cfg(test)]
+mod logical_scan_tests;
 
-/// Registers the status gauges as Ready, for tests that write every entry
-/// afterwards and therefore need no backfill.
+/// Completes the status gauges of `store` at open.
 #[cfg(test)]
 pub(crate) async fn complete_gauges(store: &mut crate::PartitionStore) {
-    use restate_storage_api::Transaction;
-
-    use crate::registry::{DEFINITIONS, IndexKind, IndexRegistry, MaintainedIndexes};
-    use crate::walk::Walks;
-
-    let mut registry = IndexRegistry::default();
-    for definition in crate::vqueue_table::STATUS_GAUGES.definitions {
-        let id = registry
-            .register(definition.name, IndexKind::Aggregate)
-            .unwrap();
-        registry.set_ready(id).unwrap();
-    }
-    // Snapshot reads resolve the Ready index from the persisted registry.
-    let partition_id = store.partition_id();
-    let mut tx = store.transaction();
-    crate::fsm_table::put_registry(&mut tx, partition_id, &registry).unwrap();
-    tx.commit().await.unwrap();
-    drop(tx);
-    store.set_maintained_indexes(MaintainedIndexes::new(
-        &registry,
-        &Walks::default(),
-        DEFINITIONS,
-    ));
+    let mut config = restate_types::config::Configuration::default();
+    config.common.experimental.set_complete_status_gauges(true);
+    config.worker.storage.enable_eager_migrations_on_startup = true;
+    store
+        .verify_and_run_migrations(Default::default(), &config)
+        .await
+        .unwrap();
 }
 
 /// The Ready index of statistic `S` in `store`.

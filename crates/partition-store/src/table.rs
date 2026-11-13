@@ -48,10 +48,14 @@ use std::ops::{ControlFlow, RangeBounds};
 use std::sync::Arc;
 
 use bytes::BytesMut;
+use rocksdb::ReadOptions;
 
 use restate_rocksdb::reads::{OwnedPinnedBatch, ReadSnapshot as RocksReadSnapshot};
+use restate_rocksdb::{IterAction, Priority};
 use restate_storage_api::StorageError;
-use restate_storage_query_api::scan::{BlockingScan, CursorScan, CursorStep, ReadCursor, Table};
+use restate_storage_query_api::scan::{
+    BlockingScan, CursorScan, CursorStep, ReadCursor, Scan, Table,
+};
 use restate_types::identifiers::PartitionKey;
 use restate_types::partitions::Partition;
 
@@ -62,7 +66,7 @@ use crate::keys::{EncodeTableKey, KeyDecoder};
 use crate::partition_db::PhysicalPartition;
 use crate::query_read::SnapshotCursor;
 use crate::registry::{IndexKind, IndexNotReady, MaintainedIndexes};
-use crate::{ReadSnapshot, Result};
+use crate::{PartitionStore, ReadSnapshot, Result, break_on_err};
 
 /// What a read may touch: the partition, the storage features in force and where
 /// the IDs of registered indexes are resolved. A snapshot read uses the features
@@ -81,7 +85,6 @@ pub(crate) enum IndexSource<'a> {
     /// data it reads.
     Snapshot(&'a ReadSnapshot),
     /// The store's installed indexes, for reads that are not snapshot-bound.
-    #[allow(dead_code)] // Used by reads that are not snapshot-bound.
     Store(&'a MaintainedIndexes),
 }
 
@@ -129,6 +132,9 @@ pub trait PhysicalTable:
         Ok(true)
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 /// A table whose records a query fetches by ID: the IDs' order is the order of
 /// the keys they encode to, so a batch of IDs is one sorted multi-get.
@@ -307,6 +313,74 @@ pub(crate) fn navigate_live<K: KeySchema>(
         }
     }
     (matches, visited)
+}
+
+impl<T: PhysicalTable> Scan<T> for PartitionStore {
+    fn scan(
+        &self,
+        request: Arc<KeySelection<T::Key>>,
+        mut emit: impl for<'a> FnMut((KeyDecoder<'a, T::Key>, &'a [u8])) -> ControlFlow<Result<()>>
+        + Send
+        + 'static,
+    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        let active = self.maintained_indexes();
+        let metadata = ReadMetadata {
+            partition: self.partition_db().partition(),
+            features: self.storage_features(),
+            indexes: IndexSource::Store(&active),
+        };
+        let cursor = if T::is_active(&metadata) {
+            request.cursor(<T::Key as KeySchema>::Header::scope(&metadata)?)?
+        } else {
+            None
+        };
+        let partition = Arc::clone(self.partition_db().partition());
+        let features = self.storage_features();
+        let future = cursor
+            .map(|mut cursor| {
+                let scan = cursor.scan().clone();
+                let mut opts = ReadOptions::default();
+                opts.set_async_io(true);
+                self.iterator_controlled_physical(
+                    "query-table-scan",
+                    Priority::Low,
+                    opts,
+                    scan,
+                    move |(key, payload)| {
+                        match break_on_err(cursor.evaluate(key))? {
+                            KeyMatch::Seek(target) => {
+                                return ControlFlow::Continue(IterAction::Seek(target));
+                            }
+                            KeyMatch::Done => return ControlFlow::Break(Ok(())),
+                            KeyMatch::Skip => return ControlFlow::Continue(IterAction::Next),
+                            KeyMatch::Match => {}
+                        }
+                        // The same owner-local bounds constrain the iterator and cursor.
+                        // Borrow key and payload bytes without interpreting the value.
+                        if !break_on_err(T::owns_record(
+                            break_on_err(T::Key::decoder(key))?,
+                            &ReadMetadata {
+                                partition: &partition,
+                                features,
+                                indexes: IndexSource::Store(&active),
+                            },
+                        ))? {
+                            return ControlFlow::Continue(IterAction::Next);
+                        }
+                        emit((break_on_err(T::Key::decoder(key))?, payload))
+                            .map_continue(|()| IterAction::Next)
+                    },
+                )
+            })
+            .transpose()
+            .map_err(|_| StorageError::OperationalError)?;
+        Ok(async move {
+            match future {
+                Some(future) => future.await,
+                None => Ok(()),
+            }
+        })
+    }
 }
 
 impl<T: PhysicalTable> BlockingScan<T> for ReadSnapshot {

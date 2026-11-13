@@ -14,7 +14,7 @@ use std::ops::ControlFlow;
 use bytes::{Bytes, BytesMut};
 use rocksdb::ReadOptions;
 
-use restate_rocksdb::{Priority, RocksDbManager};
+use restate_rocksdb::{IterAction, Priority, RocksDbManager};
 use restate_storage_api::Transaction;
 use restate_storage_api::vqueue_table::{Stage, Status};
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
@@ -354,7 +354,8 @@ async fn scan_keys(
         ServiceStats::encode_key(scope, key, &mut encoded);
         tx.send(encoded).unwrap();
         ControlFlow::Continue(())
-    })?;
+    })?
+    .await?;
     let mut keys = Vec::new();
     while let Some(key) = rx.recv().await {
         keys.push(key);
@@ -479,18 +480,29 @@ async fn service_stats_filters_run_before_value_materialization() {
     let prepared = ServiceStatsKey::prepare_selection(&filter).unwrap();
     let mut cursor = prepared.into_cursor(&fixed).unwrap().unwrap();
     let scan = cursor.scan().clone();
-    let (snapshot, _completed) = store.query_read(Default::default()).unwrap();
-    let mut raw = snapshot.physical_cursor(scan.clone()).unwrap();
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    store
+        .iterator_controlled_physical(
+            "test-stat-seeks",
+            Priority::Low,
+            ReadOptions::default(),
+            scan.clone(),
+            move |(key, _)| {
+                sender.send(key.to_vec()).unwrap();
+                match crate::break_on_err(cursor.evaluate(key))? {
+                    KeyMatch::Match => ControlFlow::Continue(IterAction::Next),
+                    KeyMatch::Skip => panic!("fixed_header_uses_ordered_seeks"),
+                    KeyMatch::Done => ControlFlow::Break(Ok(())),
+                    KeyMatch::Seek(target) => ControlFlow::Continue(IterAction::Seek(target)),
+                }
+            },
+        )
+        .unwrap()
+        .await
+        .unwrap();
     let mut visited = Vec::new();
-    while let Some((key, _)) = raw.peek().unwrap() {
-        let key = key.to_vec();
-        visited.push(key.clone());
-        match cursor.evaluate(&key).unwrap() {
-            KeyMatch::Match => raw.advance().unwrap(),
-            KeyMatch::Skip => panic!("fixed_header_uses_ordered_seeks"),
-            KeyMatch::Done => break,
-            KeyMatch::Seek(target) => raw.seek_forward(target).unwrap(),
-        }
+    while let Some(key) = receiver.recv().await {
+        visited.push(key);
     }
     let mut expected_visits = expected;
     expected_visits.push(encoded_key(scope, &ROWS[8])); // alphabet
@@ -502,8 +514,17 @@ async fn service_stats_filters_run_before_value_materialization() {
         panic!("expected range")
     };
     for target in [visited[0].clone(), fixed.to_vec(), upper.to_vec()] {
-        let mut raw = snapshot.physical_cursor(scan.clone()).unwrap();
-        let error = raw.seek_forward(target.into()).unwrap_err();
-        assert!(error.to_string().contains("must advance"));
+        let error = store
+            .iterator_controlled_physical(
+                "test-invalid-seek",
+                Priority::Low,
+                ReadOptions::default(),
+                scan.clone(),
+                move |_| ControlFlow::Continue(IterAction::Seek(target.clone().into())),
+            )
+            .unwrap()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("scan seek must advance"));
     }
 }

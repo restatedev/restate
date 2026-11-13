@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::ops::ControlFlow;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use rocksdb::ReadOptions;
 use tokio_util::sync::CancellationToken;
@@ -50,7 +51,6 @@ use crate::stats::aggregated::{
     DeploymentStatsBinding, ServiceStatsBinding, StageStatusCounts, VirtualObjectStatsBinding,
 };
 use crate::stats::{AggregateKeyPrefix, StatKind, StatValueCodec};
-use crate::walk::engine;
 use crate::{PartitionStore, PartitionStoreManager};
 
 use super::*;
@@ -254,13 +254,24 @@ fn is_not_ready(err: &StorageError) -> bool {
     matches!(err, StorageError::Generic(err) if err.downcast_ref::<IndexNotReady>().is_some())
 }
 
-/// The totals of the three statistics tables, as a snapshot read sees them.
-/// `None` when they fail because the gauges are not Ready.
+/// The totals of the three statistics tables, which a store read and a snapshot
+/// read must agree on. `None` when they fail because the gauges are not Ready.
 async fn totals(store: &PartitionStore) -> Option<[u64; 3]> {
     let (snapshot, _) = store.query_read(CancellationToken::new()).unwrap();
     macro_rules! total {
         ($binding:ty) => {{
             let prepared = <$binding>::prepare(&Selection::All).unwrap();
+            let count = Arc::new(AtomicU64::new(0));
+            let read = match <$binding>::read(store, &prepared, {
+                let count = Arc::clone(&count);
+                move |row| {
+                    count.fetch_add(row.num_entries, Ordering::Relaxed);
+                    ControlFlow::Continue(())
+                }
+            }) {
+                Ok(read) => read.await.map(|()| count.load(Ordering::Relaxed)),
+                Err(err) => Err(err),
+            };
             let mut count = 0;
             let scanned = <crate::ReadSnapshot as BlockingScan<
                 <$binding as SchemaBinding>::Table,
@@ -273,13 +284,21 @@ async fn totals(store: &PartitionStore) -> Option<[u64; 3]> {
                         ControlFlow::Continue(())
                     })
                 },
-            );
-            match scanned {
-                Ok(()) => count,
-                Err(err) => {
-                    assert!(is_not_ready(&err), "{err:?}");
+            )
+            .map(|()| count);
+            match (read, scanned) {
+                (Ok(read), Ok(scanned)) => {
+                    assert_eq!(read, scanned, "store_and_snapshot_reads_agree");
+                    read
+                }
+                (Err(read), Err(scanned)) => {
+                    assert!(
+                        is_not_ready(&read) && is_not_ready(&scanned),
+                        "{read:?}, {scanned:?}"
+                    );
                     return None;
                 }
+                other => panic!("store and snapshot reads disagree: {other:?}"),
             }
         }};
     }
@@ -290,18 +309,18 @@ async fn totals(store: &PartitionStore) -> Option<[u64; 3]> {
     ])
 }
 
-/// Opens as a partition does, then runs the walks the open started to their
-/// ends, as the background driver does in time.
 async fn open(store: &mut PartitionStore, config: &Configuration) {
+    // Requested completion finishes at open.
+    let mut config = config.clone();
+    config.worker.storage.enable_eager_migrations_on_startup = true;
     store
-        .verify_and_run_migrations(CancellationToken::new(), config)
+        .verify_and_run_migrations(CancellationToken::new(), &config)
         .await
         .unwrap();
-    engine::run_all(store, 3).await.unwrap();
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn backfilled_gauges_match_live_maintenance_and_rebuild_after_reset() {
+async fn completed_gauges_match_live_maintenance_and_rebuild_after_reset() {
     RocksDbManager::init();
     let manager = PartitionStoreManager::create(true).await.unwrap();
     let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
@@ -312,7 +331,7 @@ async fn backfilled_gauges_match_live_maintenance_and_rebuild_after_reset() {
         .unwrap();
 
     // The reference maintains its gauges before any entry exists; the store
-    // backfills its gauges over existing entries.
+    // completes its gauges over existing entries.
     let mut config = Configuration::default();
     open(&mut store, &config).await;
     config.common.experimental.set_track_status_gauges(true);
@@ -322,15 +341,13 @@ async fn backfilled_gauges_match_live_maintenance_and_rebuild_after_reset() {
     assert!(read_all(&store).is_empty());
     assert!(!read_all(&reference).is_empty());
     assert_eq!(totals(&store).await, None, "absent_gauges_are_not_ready");
-    // Registered before any entry existed, the reference's gauges had nothing
-    // to backfill and were Ready at once.
     assert_eq!(
         totals(&reference).await,
-        Some([147, 96, 75]),
-        "gauges_of_an_empty_partition_are_ready_at_once"
+        None,
+        "maintained_gauges_are_not_ready"
     );
 
-    config.common.experimental.set_track_status_gauges(true);
+    config.common.experimental.set_complete_status_gauges(true);
     for store in [&mut store, &mut reference] {
         open(store, &config).await;
         assert!(
@@ -340,7 +357,7 @@ async fn backfilled_gauges_match_live_maintenance_and_rebuild_after_reset() {
         );
     }
     let expected = read_all(&reference);
-    assert_eq!(read_all(&store), expected, "backfill_matches_maintenance");
+    assert_eq!(read_all(&store), expected, "completion_matches_maintenance");
     // Per partition key: 48 invocations and one mutation, 32 pinned invocations,
     // and 24 virtual-object invocations and one mutation (workflows excluded).
     assert_eq!(totals(&store).await, Some([147, 96, 75]));
@@ -406,7 +423,7 @@ async fn legacy_gauges_are_deleted_before_any_instance_is_built() {
     RocksDbManager::init();
     let manager = PartitionStoreManager::create(true).await.unwrap();
     let mut config = Configuration::default();
-    config.common.experimental.set_track_status_gauges(true);
+    config.common.experimental.set_complete_status_gauges(true);
     let legacy = |partition: PartitionId, id: u16| {
         let mut key = crate::features::legacy_status_gauge_key(partition, id);
         key.extend_from_slice(b"payload");
@@ -474,7 +491,10 @@ async fn legacy_gauges_are_deleted_before_any_instance_is_built() {
         let min_version = get_min_restate_version_from_partition_db(store.partition_db()).unwrap();
 
         let mut reopened = Configuration::default();
-        reopened.common.experimental.set_track_status_gauges(true);
+        reopened
+            .common
+            .experimental
+            .set_complete_status_gauges(true);
         open(&mut store, &reopened).await;
         let ledger = serde_json::to_value(
             get_storage_features_from_partition_db(store.partition_db())

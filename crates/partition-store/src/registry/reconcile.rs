@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -15,12 +15,10 @@
 //!    rollback, or another build): their keys are range-deleted and they become
 //!    Dropped, keeping their IDs reserved.
 //! 2. **Reset** the indexes of families whose reset is requested, the same way.
-//! 3. **Register** each requested definition that has no maintained index, under
-//!    a fresh ID. Running out of IDs skips the request with an error log.
-//! 4. **Start** one walk for the Backfilling indexes that have none, over the
-//!    entries that exist now (see [`super::backfill`]). A partition without
-//!    entries has nothing to walk: those indexes become Ready instead.
-//! 5. **Fence:** once anything was ever registered, the `index-registry` storage
+//! 3. **Register** each requested definition that has no maintained index, under a
+//!    fresh ID. Running out of IDs skips a maintenance-only request with an error
+//!    log; a request for completeness fails the open.
+//! 4. **Fence:** once anything was ever registered, the `index-registry` storage
 //!    feature is in the store's ledger, so older binaries cannot open it.
 //!
 //! ```text
@@ -33,23 +31,22 @@
 //! ```
 //!
 //! The changes, the walks (see [`crate::walk`]) and the fence are written in one
-//! batch. The store is then flushed whenever it has any registration history,
-//! even when this open changed nothing: an earlier attempt may have written
-//! registry state or effects without finishing its flush. Only once the flush
-//! succeeded are the reconciled indexes installed for writes, so the registry,
-//! the walks and the fence are durable before any effect depends on them, and a
-//! failed flush publishes nothing.
+//! batch, which also upgrades a format-1 registry: its passes in progress become
+//! walks. The reconciled indexes are then installed for writes, and the
+//! startup driver runs the walks one at a time, a slice per commit, through the
+//! walk engine (see [`crate::walk::engine`] and `complete`): every started walk,
+//! in the order they started, even if its request was cleared. The store is
+//! flushed before they run, so the indexes, walks and fence are durable
+//! before any effect depends on them. Only then do requested indexes that have
+//! not started form one new walk; its start is committed and flushed before its
+//! first effect, and until then they stay unstarted.
 //!
-//! Reconciliation, from its reads to that publication, is work of the
-//! partition's session, like the legacy cleanup: closing the partition waits for
-//! it, and a closed partition rejects it with `OperationalError`, so the handle
-//! of a closed partition can neither write nor publish into a later session.
-//!
-//! Walks do not run here. They run in the background, a slice per commit,
-//! through the walk engine (see [`crate::walk::engine`]) once the processor is
-//! running. Until a walk reaches its end, its indexes stay Backfilling: writes
-//! maintain them and queries of them fail. A started walk keeps its cursor
-//! across restarts, and writes keep honoring it.
+//! With `enable-eager-migrations-on-startup` off, walks wait for a later driver
+//! instead: started walks keep their cursors, which writes keep honoring, and
+//! requested instances stay unstarted, even on an empty partition. Either way,
+//! the store is flushed before the processor starts whenever it has any
+//! registration history, even when this open changed nothing: an earlier attempt
+//! may have written registry state, effects or Ready without finishing its flush.
 //!
 //! The registry, the walks, their positions, their links and the fence walks
 //! require are validated before any of this, and before any cleanup or
@@ -59,6 +56,7 @@ use std::ops::RangeBounds;
 use std::sync::Arc;
 
 use rocksdb::WriteBatch;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use zerocopy::IntoBytes;
 
@@ -68,7 +66,6 @@ use restate_types::SemanticRestateVersion;
 use restate_types::config::Configuration;
 use restate_types::vqueues::EntryKind;
 
-use crate::faults::{self, FaultPoint};
 use crate::features::{LoadedStorageFeatures, StorageFeatures};
 use crate::fsm_table::{
     append_registry_to_wb, append_walks_to_wb, get_registry_from_partition_db,
@@ -77,13 +74,26 @@ use crate::fsm_table::{
 use crate::keys::{DecodeTableKey, IndexKeyPrefix};
 use crate::stats::AggregateKeyPrefix;
 use crate::vqueue_table::EntryStatusKey;
-use crate::walk::Walks;
-use crate::{MigrationError, PartitionDb, PartitionStore};
+use crate::walk::engine::{self, SliceBudget};
+use crate::walk::{Source, WalkKind, Walks};
+use crate::{MigrationError, PartitionDb, PartitionStore, PartitionStoreTransaction};
 
 use super::{
-    Family, IndexDefinition, IndexKind, IndexRegistry, IndexStatus, MaintainedIndexes,
-    RegistryError, backfill,
+    IndexDefinition, IndexKind, IndexRegistry, IndexStatus, MaintainedIndexes, RegistryError,
+    complete,
 };
+
+/// Definitions released together, controlled by the same flags. The registry
+/// still tracks each definition individually.
+pub(crate) struct Family {
+    pub(crate) definitions: &'static [&'static IndexDefinition],
+    /// Register and maintain the definitions.
+    pub(crate) maintain: fn(&Configuration) -> bool,
+    /// Also complete them at open, before the processor starts. Implies maintain.
+    pub(crate) complete: fn(&Configuration) -> bool,
+    /// Disable their indexes, overriding the other requests.
+    pub(crate) reset: fn(&Configuration) -> bool,
+}
 
 /// The released families.
 pub(crate) const FAMILIES: &[Family] = &[
@@ -96,21 +106,38 @@ pub(crate) const FAMILIES: &[Family] = &[
 pub(crate) struct Requests {
     /// Definitions to register when they have no maintained index.
     pub(crate) maintain: Vec<&'static IndexDefinition>,
+    /// Definitions to complete; also in `maintain`.
+    pub(crate) complete: Vec<&'static IndexDefinition>,
     /// Definitions whose maintained index is dropped.
     pub(crate) reset: Vec<&'static IndexDefinition>,
+    /// Leave started and requested walks waiting instead of running them at open,
+    /// when `enable-eager-migrations-on-startup` is off.
+    pub(crate) defer_walks: bool,
 }
 
 impl Requests {
     pub(crate) fn from_config(families: &[Family], config: &Configuration) -> Self {
-        let mut requests = Self::default();
+        let mut requests = Self {
+            defer_walks: !config.worker.storage.enable_eager_migrations_on_startup,
+            ..Self::default()
+        };
         for family in families {
             if (family.reset)(config) {
                 requests.reset.extend(family.definitions);
+            } else if (family.complete)(config) {
+                requests.maintain.extend(family.definitions);
+                requests.complete.extend(family.definitions);
             } else if (family.maintain)(config) {
                 requests.maintain.extend(family.definitions);
             }
         }
         requests
+    }
+
+    fn completes(&self, definition: &IndexDefinition) -> bool {
+        self.complete
+            .iter()
+            .any(|requested| std::ptr::eq(*requested, definition))
     }
 }
 
@@ -123,8 +150,8 @@ pub(crate) struct FenceState<'a> {
 
 impl PartitionStore {
     /// Reads and validates the registry and the walks for opening this partition:
-    /// their formats and invariants, every walk endpoint and cursor against the
-    /// entry-status key schema and this partition's key range,
+    /// their formats and invariants, every walk endpoint and cursor (and format-1
+    /// cursor) against the entry-status key schema and this partition's key range,
     /// and the links between them. Walks also require the `index-registry`
     /// fence in `features`, the loaded storage features, which keeps binaries
     /// predating the registry out of a store with walks. Runs before any cleanup
@@ -180,19 +207,16 @@ impl PartitionStore {
         known: &[&'static IndexDefinition],
         requests: &Requests,
         fence: FenceState<'_>,
+        budget: impl Into<SliceBudget>,
+        cancel: &CancellationToken,
     ) -> Result<(), MigrationError> {
+        let budget = budget.into();
         let FenceState {
             features,
             current_version,
             min_restate_version: current_min_restate_version,
         } = fence;
         let db = self.partition_db().clone();
-        // Admitted by the session until the reconciled indexes are published: a
-        // close waits for it, and a closed session rejects it.
-        let _session = db
-            .gate()
-            .try_acquire()
-            .ok_or(StorageError::OperationalError)?;
         let (persisted, persisted_walks) = self.validate_registry(features.enabled())?;
         let mut registry = persisted.clone().unwrap_or_default();
         let mut walks = persisted_walks.clone();
@@ -242,7 +266,7 @@ impl PartitionStore {
         for definition in &requests.maintain {
             match registry.register(definition.name, definition.kind) {
                 Ok(_) => {}
-                Err(RegistryError::Exhausted) => {
+                Err(RegistryError::Exhausted) if !requests.completes(definition) => {
                     error!(
                         definition = definition.name,
                         "Cannot register: all index IDs of this partition are allocated"
@@ -250,20 +274,6 @@ impl PartitionStore {
                 }
                 Err(err) => return Err(registry_error(err)),
             }
-        }
-
-        // The indexes registered just now, and any an earlier attempt left
-        // without a walk, start one over the entries that exist now.
-        let unstarted: Vec<_> = registry
-            .entries()
-            .iter()
-            .filter(|index| index.state == IndexStatus::Backfilling && index.walk.is_none())
-            .map(|index| index.id)
-            .collect();
-        if !unstarted.is_empty()
-            && let Some(walk) = backfill::start(&db, &mut registry, &mut walks, &unstarted)?
-        {
-            info!(walk, indexes = ?unstarted, "Started the backfill of indexes");
         }
 
         let changed = persisted.as_ref() != Some(&registry) && registry != IndexRegistry::default();
@@ -286,26 +296,93 @@ impl PartitionStore {
             self.set_storage_features(*features.enabled());
         }
 
-        // Whatever this or an earlier attempt wrote becomes durable before
-        // anything depends on it: registry changes, walks, fence, deletions,
-        // effects.
-        if !registry.entries().is_empty() {
-            flush(&db).await?;
-        }
-
         // Writes maintain the reconciled indexes from here on, and walks run on
         // the records as committed.
         db.install_maintained_indexes(Arc::new(MaintainedIndexes::new(&registry, &walks, known)));
+
+        let mut started: Vec<_> = walks.entries().iter().map(|walk| walk.id).collect();
+        started.sort_unstable();
+        let requested: Vec<_> = known
+            .iter()
+            .filter(|definition| requests.completes(definition))
+            .filter_map(|definition| registry.maintained(definition.name))
+            .filter(|active| active.state == IndexStatus::Backfilling && active.walk.is_none())
+            .map(|active| active.id)
+            .collect();
+        if !requests.defer_walks {
+            self.run_walks(&started, &requested, budget, cancel).await?;
+        } else if !started.is_empty() || !requested.is_empty() {
+            warn!(
+                started = started.len(),
+                requested = requested.len(),
+                "Index and statistics backfill waits: enable-eager-migrations-on-startup is \
+                 off, and this build backfills on startup only"
+            );
+        }
+        // Whatever this or an earlier attempt wrote becomes durable before the
+        // processor starts: registry changes, walks, fence, deletions, effects.
+        if !registry.entries().is_empty() {
+            flush(&db).await?;
+        }
+        Ok(())
+    }
+
+    /// The startup driver: runs the `started` walks to their ends, in the order
+    /// they started, even if their request was cleared, then starts one walk for
+    /// the `requested` indexes and runs it. Until the earlier walks finished,
+    /// those stay unstarted, so clearing their request before it starts leaves
+    /// them so.
+    async fn run_walks(
+        &mut self,
+        started: &[u64],
+        requested: &[u32],
+        budget: SliceBudget,
+        cancel: &CancellationToken,
+    ) -> Result<(), MigrationError> {
+        let db = self.partition_db().clone();
+        // Registrations, walks and the fence are durable before any walk commits
+        // effects that depend on them, including state an earlier attempt left
+        // unflushed.
+        if !started.is_empty() {
+            flush(&db).await?;
+        }
+        let mut tx = self.transaction();
+        for walk in started {
+            run_walk(&mut tx, &db, *walk, budget, cancel).await?;
+        }
+        if !requested.is_empty()
+            && let Some(walk) = complete::start(&mut tx, &db, requested)
+                .await
+                .map_err(StorageError::from)?
+        {
+            // The start is durable before its first effect.
+            flush(&db).await?;
+            run_walk(&mut tx, &db, walk, budget, cancel).await?;
+        }
         Ok(())
     }
 }
 
-/// Flushes the memtables, after any fault armed at [`FaultPoint::RegistryFlush`].
+async fn run_walk(
+    tx: &mut PartitionStoreTransaction<'_>,
+    db: &PartitionDb,
+    walk: u64,
+    budget: SliceBudget,
+    cancel: &CancellationToken,
+) -> Result<(), MigrationError> {
+    let names: Vec<_> = tx
+        .maintained_indexes()
+        .registry()
+        .members(walk)
+        .map(|member| member.definition.clone())
+        .collect();
+    info!(walk, definitions = ?names, "Backfilling indexes");
+    engine::run_to_end(tx, db, walk, budget, cancel).await?;
+    info!(walk, definitions = ?names, "The indexes are Ready");
+    Ok(())
+}
+
 async fn flush(db: &PartitionDb) -> Result<(), StorageError> {
-    let fault = db.faults().take(FaultPoint::RegistryFlush);
-    faults::inject(fault)
-        .await
-        .map_err(|err| StorageError::Generic(err.into()))?;
     db.flush_memtables(true)
         .await
         .map_err(|err| StorageError::Generic(err.into()))
@@ -353,23 +430,17 @@ fn validate_cursor(db: &PartitionDb, cursor: &[u8]) -> Result<(), StorageError> 
     Ok(())
 }
 
-/// Commits registry changes through the partition's session; the open flushes
-/// them before publishing.
+/// Commits registry changes; the open flushes them before publishing.
 async fn write(db: &PartitionDb, batch: WriteBatch) -> Result<(), StorageError> {
     let mut options = rocksdb::WriteOptions::default();
     options.disable_wal(true);
-    let lease = db
-        .gate()
-        .try_acquire()
-        .ok_or(StorageError::OperationalError)?;
     db.rocksdb()
-        .write_batch_leased(
+        .write_batch(
             "registry-reconciliation",
             Priority::High,
             IoMode::Default,
             options,
             batch,
-            lease,
         )
         .await
         .map_err(|err| StorageError::Generic(err.into()))?;
@@ -388,7 +459,7 @@ fn registry_error(err: RegistryError) -> MigrationError {
 mod tests {
     use restate_rocksdb::RocksDbManager;
     use restate_types::identifiers::PartitionId;
-    use restate_types::partition_table::Partition;
+    use restate_types::partitions::Partition;
     use restate_types::sharding::KeyRange;
     use restate_types::{RESTATE_VERSION_1_8_2, SemanticRestateVersion};
 
@@ -398,7 +469,6 @@ mod tests {
         get_storage_version_from_partition_db,
     };
     use crate::stats::StatKind;
-    use crate::stats::aggregated::backfill::tests::seed;
     use crate::{PartitionStoreManager, PartitionStoreTransaction};
 
     #[test]
@@ -415,16 +485,11 @@ mod tests {
                 );
             }
         }
-        // Nothing is requested by default; a reset overrides maintenance.
+        // Walks wait by default; running them at open requires an explicit opt-in.
         let mut config = Configuration::default();
-        let requests = Requests::from_config(FAMILIES, &config);
-        assert!(requests.maintain.is_empty() && requests.reset.is_empty());
-        config.common.experimental.set_track_status_gauges(true);
-        assert_eq!(Requests::from_config(FAMILIES, &config).maintain.len(), 3);
-        config.common.experimental.set_status_gauges_reset(true);
-        let requests = Requests::from_config(FAMILIES, &config);
-        assert!(requests.maintain.is_empty());
-        assert_eq!(requests.reset.len(), 3);
+        assert!(Requests::from_config(FAMILIES, &config).defer_walks);
+        config.worker.storage.enable_eager_migrations_on_startup = true;
+        assert!(!Requests::from_config(FAMILIES, &config).defer_walks);
     }
 
     fn ignore(
@@ -469,6 +534,8 @@ mod tests {
                     current_version: SemanticRestateVersion::current(),
                     min_restate_version: &mut min,
                 },
+                3,
+                &CancellationToken::new(),
             )
             .await
     }
@@ -477,12 +544,6 @@ mod tests {
         get_registry_from_partition_db(store.partition_db())
             .unwrap()
             .unwrap()
-    }
-
-    fn walks(store: &PartitionStore) -> Walks {
-        get_walks_from_partition_db(store.partition_db())
-            .unwrap()
-            .unwrap_or_default()
     }
 
     fn maintain(definitions: &[&'static IndexDefinition]) -> Requests {
@@ -510,7 +571,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn opens_fence_register_retire_and_reset_indexes() {
+    async fn opens_fence_register_retire_and_reset_instances() {
         RocksDbManager::init();
         let manager = PartitionStoreManager::create(true).await.unwrap();
         let mut store = manager
@@ -518,7 +579,6 @@ mod tests {
             .await
             .unwrap();
         let db = store.partition_db().clone();
-        seed(&mut store).await;
 
         // Without requests nothing is written and the store stays unfenced.
         reconcile(&mut store, &[&INDEX, &STAT], Requests::default())
@@ -527,23 +587,13 @@ mod tests {
         assert!(get_registry_from_partition_db(&db).unwrap().is_none());
         assert!(!store.storage_features().is_index_registry);
 
-        // The first registration persists the fence and the minimum version with
-        // it, and starts one walk for both indexes.
+        // The first registration persists the fence and the minimum version with it.
         reconcile(&mut store, &[&INDEX, &STAT], maintain(&[&INDEX, &STAT]))
             .await
             .unwrap();
         let registry = persisted(&store);
         assert_eq!(registry.maintained("index/1").unwrap().id, 64);
         assert_eq!(registry.maintained("stat/1").unwrap().id, 65);
-        assert_eq!(
-            (
-                registry.get(64).unwrap().walk,
-                registry.get(65).unwrap().walk
-            ),
-            (Some(1), Some(1)),
-            "one_walk_for_both"
-        );
-        assert_eq!(walks(&store).entries().len(), 1);
         let ledger = LoadedStorageFeatures::load(
             get_storage_features_from_partition_db(&db).unwrap(),
             get_storage_version_from_partition_db(&db).unwrap(),
@@ -559,7 +609,7 @@ mod tests {
         assert_eq!(
             store.maintained_indexes().touched_by_on_write(),
             [0, 0, 0, 64, 0, 0, 0, 65],
-            "reconciled_indexes_are_installed"
+            "reconciled_instances_are_installed"
         );
 
         // Reopening with the same requests changes nothing and allocates nothing.
@@ -567,7 +617,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(persisted(&store), registry);
-        assert_eq!(walks(&store).entries().len(), 1);
 
         // Keys of three neighbouring indexes; only the retired one is deleted.
         let index = |id| {
@@ -596,8 +645,7 @@ mod tests {
             raw.put_cf(db.cf_handle(), key, b"").unwrap();
         }
 
-        // A binary that does not know the definition retires its index; the walk
-        // keeps its other member.
+        // A binary that does not know the definition retires its index.
         reconcile(&mut store, &[&STAT], maintain(&[&STAT]))
             .await
             .unwrap();
@@ -610,16 +658,14 @@ mod tests {
                 keys(&store, &index(65))
             ),
             (1, 0, 1),
-            "retirement_deletes_exactly_the_index"
+            "retirement_deletes_exactly_the_instance"
         );
         assert_eq!(
             store.maintained_indexes().touched_by_on_write(),
             [0, 0, 0, 65]
         );
-        assert_eq!(walks(&store).entries().len(), 1);
 
-        // Resetting the statistic disables it and deletes its keys only; its walk
-        // has no member left and is removed.
+        // Resetting the statistic disables it and deletes its keys only.
         reconcile(
             &mut store,
             &[&INDEX, &STAT],
@@ -639,12 +685,11 @@ mod tests {
                 keys(&store, &stat(66))
             ),
             (1, 0, 1),
-            "reset_deletes_exactly_the_index"
+            "reset_deletes_exactly_the_instance"
         );
         assert!(store.storage_features().is_index_registry, "fence_is_kept");
-        assert!(walks(&store).entries().is_empty(), "abandoned_walks_go");
 
-        // Enabling again builds fresh indexes on a new walk; old IDs stay reserved.
+        // Enabling again builds fresh indexes; old IDs stay reserved.
         reconcile(&mut store, &[&INDEX, &STAT], maintain(&[&INDEX, &STAT]))
             .await
             .unwrap();
@@ -656,18 +701,16 @@ mod tests {
             ),
             (66, 67)
         );
-        assert_eq!(registry.get(66).unwrap().walk, Some(2));
     }
 
     #[restate_core::test]
-    async fn exhaustion_skips_registration_and_invalid_registries_fail() {
+    async fn exhaustion_fails_only_required_completeness_and_invalid_registries_fail() {
         RocksDbManager::init();
         let manager = PartitionStoreManager::create(true).await.unwrap();
         let mut store = manager
             .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
             .await
             .unwrap();
-        seed(&mut store).await;
         let db = store.partition_db().clone();
         let mut registry = IndexRegistry::default();
         registry.register("stat/1", IndexKind::Aggregate).unwrap();
@@ -679,8 +722,7 @@ mod tests {
         };
         write(&registry);
 
-        // A request that cannot be registered is skipped; the existing index
-        // stays maintained and starts its walk.
+        // A maintenance-only request is skipped; the existing index stays active.
         reconcile(&mut store, &[&INDEX, &STAT], maintain(&[&INDEX, &STAT]))
             .await
             .unwrap();
@@ -689,9 +731,20 @@ mod tests {
             store.maintained_indexes().touched_by_on_write(),
             [0, 0, 0, 64]
         );
-        assert_eq!(persisted(&store).get(64).unwrap().walk, Some(1));
 
-        // A registry this binary cannot validate fails the open.
+        // A completeness request that cannot be registered fails the open.
+        let required = Requests {
+            maintain: vec![&INDEX],
+            complete: vec![&INDEX],
+            ..Default::default()
+        };
+        assert!(
+            reconcile(&mut store, &[&INDEX, &STAT], required)
+                .await
+                .is_err()
+        );
+
+        // So does a registry this binary cannot validate.
         registry.next_id = 10;
         write(&registry);
         assert!(
@@ -703,12 +756,10 @@ mod tests {
 }
 
 #[cfg(test)]
-mod backfill_tests {
+mod completeness_tests {
     use std::ops::ControlFlow;
 
     use bytes::Bytes;
-    use futures::FutureExt;
-    use tokio::time::Instant;
     use tokio_util::sync::CancellationToken;
     use zerocopy::IntoBytes;
 
@@ -721,11 +772,9 @@ mod backfill_tests {
         WriteVQueueTable,
     };
     use restate_storage_api::{StorageError, Transaction};
-    use restate_storage_query_api::scan::{BlockingScan, Table};
-    use restate_types::config::StorageOptions;
-    use restate_types::identifiers::{BaseEntryId, PartitionId, PartitionKey, SnapshotId};
-    use restate_types::logs::LogId;
-    use restate_types::partition_table::Partition;
+    use restate_storage_query_api::scan::{BlockingScan, Scan, Table};
+    use restate_types::identifiers::PartitionId;
+    use restate_types::partitions::Partition;
     use restate_types::sharding::KeyRange;
     use restate_types::{SemanticRestateVersion, vqueues::EntryTargetRef};
 
@@ -737,18 +786,15 @@ mod backfill_tests {
     use crate::keys::header::{HeaderBounds, IndexScope, KeyHeader, KeySchema};
     use crate::keys::selection::KeySelection;
     use crate::keys::{KeyDecode, KeyDecoder, KeyKind};
-    use crate::snapshots::{LocalPartitionSnapshot, SnapshotDir};
     use crate::stats::aggregated::Gauge;
     use crate::stats::aggregated::backfill::tests::seed;
-    use crate::stats::aggregated::backfill::with_entry_target;
     use crate::stats::{StatKind, StatValueCodec};
     use crate::table::{PhysicalTable, ReadMetadata};
-    use crate::walk::WalkDriver;
     use crate::walk::engine::{Slice, SliceBudget};
-    use crate::walk::{Source, WalkKind, engine};
+    use crate::walk::{Source, WalkKind, Walks};
     use crate::{PartitionStoreManager, PartitionStoreTransaction, ReadSnapshot};
 
-    use super::super::backfill::read_chunk;
+    use super::super::complete::read_chunk;
 
     const SEEDED: u64 = 147;
 
@@ -791,7 +837,6 @@ mod backfill_tests {
     };
     const KNOWN: &[&IndexDefinition] = &[&COUNT, &ADOPTED, &RESUMED];
 
-    /// Reconciles as an open does: walks start but do not run.
     async fn reconcile(store: &mut PartitionStore, requests: Requests) {
         try_reconcile(store, KNOWN, requests).await.unwrap();
     }
@@ -818,26 +863,16 @@ mod backfill_tests {
                     current_version: SemanticRestateVersion::current(),
                     min_restate_version: &mut min,
                 },
+                3,
+                &CancellationToken::new(),
             )
             .await
     }
 
-    /// Runs every started walk to its end in slices of three entries, as the
-    /// background driver does in time.
-    async fn run_walks(store: &mut PartitionStore) {
-        engine::run_all(store, 3).await.unwrap();
-    }
-
-    fn maintain(definition: &'static IndexDefinition) -> Requests {
+    fn complete(definition: &'static IndexDefinition) -> Requests {
         Requests {
             maintain: vec![definition],
-            ..Default::default()
-        }
-    }
-
-    fn maintain_all(definitions: &[&'static IndexDefinition]) -> Requests {
-        Requests {
-            maintain: definitions.to_vec(),
+            complete: vec![definition],
             ..Default::default()
         }
     }
@@ -860,27 +895,14 @@ mod backfill_tests {
             .unwrap()
     }
 
-    fn walks(store: &PartitionStore) -> Walks {
-        get_walks_from_partition_db(store.partition_db())
-            .unwrap()
-            .unwrap_or_default()
-    }
-
-    fn registry_after(store: &PartitionStore, name: &str) -> super::super::Index {
-        registry(store)
-            .entries()
-            .iter()
-            .find(|index| index.definition == name)
-            .unwrap()
-            .clone()
-    }
-
     /// Writes `registry` and `walks` as a binary would have committed them.
-    fn write_state(store: &PartitionStore, registry: &IndexRegistry, walks: &Walks) {
+    fn write_state(store: &PartitionStore, registry: &IndexRegistry, walks: Option<&Walks>) {
         let db = store.partition_db();
         let mut batch = WriteBatch::default();
         append_registry_to_wb(db.cf_handle(), &mut batch, db.partition().id(), registry);
-        append_walks_to_wb(db.cf_handle(), &mut batch, db.partition().id(), walks);
+        if let Some(walks) = walks {
+            append_walks_to_wb(db.cf_handle(), &mut batch, db.partition().id(), walks);
+        }
         db.rocksdb().inner().as_raw_db().write(&batch).unwrap();
     }
 
@@ -897,190 +919,10 @@ mod backfill_tests {
             .unwrap();
     }
 
-    /// Why `definition` is not Ready in a new snapshot of `store`.
-    fn reason(store: &PartitionStore, definition: &IndexDefinition) -> String {
-        store
-            .query_read(CancellationToken::new())
+    fn walks(store: &PartitionStore) -> Walks {
+        get_walks_from_partition_db(store.partition_db())
             .unwrap()
-            .0
-            .ready_index(definition.name, definition.kind)
-            .unwrap_err()
-            .to_string()
-    }
-
-    /// Statistics here ignore the target, so updates can use any.
-    const TARGET: EntryTargetRef<'static> = EntryTargetRef::Service {
-        scope: None,
-        service: "svc",
-        handler: "run",
-    };
-
-    async fn update(store: &mut PartitionStore, entry: &restate_types::identifiers::BaseEntryId) {
-        let mut tx = store.transaction();
-        let header = tx.get_vqueue_entry_status(entry).await.unwrap().unwrap();
-        tx.update_vqueue_entry_status(
-            &EntryContext {
-                qid: header.vqueue_id(),
-                target: &TARGET,
-            },
-            StoredEntryRef::from_header(&header),
-            EntryStateRef::from_header(&header),
-        );
-        tx.commit().await.unwrap();
-    }
-
-    async fn delete(store: &mut PartitionStore, entry: &restate_types::identifiers::BaseEntryId) {
-        let mut tx = store.transaction();
-        let header = tx.get_vqueue_entry_status(entry).await.unwrap().unwrap();
-        tx.delete_vqueue_entry_status(
-            &EntryContext {
-                qid: header.vqueue_id(),
-                target: &TARGET,
-            },
-            StoredEntryRef::from_header(&header),
-        );
-        tx.commit().await.unwrap();
-    }
-
-    #[restate_core::test]
-    async fn walks_reflect_every_entry_exactly_once() {
-        RocksDbManager::init();
-        let manager = PartitionStoreManager::create(true).await.unwrap();
-        let mut store = manager
-            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
-            .await
-            .unwrap();
-        seed(&mut store).await;
-
-        // Registering starts a walk over the entries; running it in slices of
-        // three makes the index Ready.
-        reconcile(&mut store, maintain(&COUNT)).await;
-        let index = registry(&store).maintained("count/1").unwrap().clone();
-        assert_eq!(
-            (index.state, index.walk),
-            (IndexStatus::Backfilling, Some(1))
-        );
-        assert!(reason(&store, &COUNT).contains("backfill walk 1 has examined 0 entries"));
-        run_walks(&mut store).await;
-        let index = registry(&store).maintained("count/1").unwrap().clone();
-        assert_eq!((index.state, index.walk), (IndexStatus::Ready, None));
-        assert_eq!(count(&store, index.id), SEEDED, "every_entry_once");
-        assert!(
-            store.maintained_indexes().touched_by_on_write().is_empty(),
-            "ready_indexes_are_not_listed"
-        );
-        assert!(walks(&store).entries().is_empty());
-
-        // Entries adopted while Backfilling are skipped by the walk.
-        reconcile(&mut store, maintain(&ADOPTED)).await;
-        let adopted = registry(&store).maintained("adopted/1").unwrap().id;
-        for (_, entry, _) in &read_chunk(&store, None, 2).unwrap() {
-            update(&mut store, entry).await;
-        }
-        assert_eq!(count(&store, adopted), 2, "writes_adopt");
-        run_walks(&mut store).await;
-        assert_eq!(
-            count(&store, adopted),
-            SEEDED,
-            "adopted_entries_are_skipped"
-        );
-
-        // A walk resumes after its committed cursor, here as if a first slice of
-        // ten had committed its counts and position.
-        reconcile(&mut store, maintain(&RESUMED)).await;
-        let resumed = registry(&store).maintained("resumed/1").unwrap().clone();
-        let done = read_chunk(&store, None, 10).unwrap();
-        let mut walks = self::walks(&store);
-        walks
-            .advance(
-                resumed.walk.unwrap(),
-                Bytes::from(done.last().unwrap().0.clone()),
-                done.len() as u64,
-            )
-            .unwrap();
-        write_state(&store, &registry(&store), &walks);
-        add_counts(&store, resumed.id, done.len() as u32);
-        // Reopening installs the committed records.
-        reconcile(&mut store, Requests::default()).await;
-        run_walks(&mut store).await;
-        let index = registry_after(&store, "resumed/1");
-        assert_eq!(
-            (index.state, count(&store, resumed.id)),
-            (IndexStatus::Ready, SEEDED),
-            "resumed_walks_finish_without_double_counting"
-        );
-    }
-
-    /// Registers [`KNOWN`] over the seed and adopts the first two entries by
-    /// writes, then moves RESUMED to a walk of its own that committed a first
-    /// slice of ten entries. Returns the IDs of COUNT, ADOPTED and RESUMED.
-    async fn started(store: &mut PartitionStore) -> [u32; 3] {
-        seed(store).await;
-        reconcile(store, maintain_all(KNOWN)).await;
-        let mut persisted = registry(store);
-        let ids = [&COUNT, &ADOPTED, &RESUMED]
-            .map(|definition| persisted.maintained(definition.name).unwrap().id);
-        let entries = read_chunk(store, None, 10).unwrap();
-        for (_, entry, _) in &entries[..2] {
-            update(store, entry).await;
-        }
-        let mut walks = self::walks(store);
-        let shared = persisted.get(ids[2]).unwrap().walk.unwrap();
-        let end = walks.get(shared).unwrap().end.clone();
-        let own = walks
-            .start(WalkKind::index_backfill(), Source::EntryStatus, end)
-            .unwrap();
-        walks
-            .advance(own, Bytes::from(entries.last().unwrap().0.clone()), 10)
-            .unwrap();
-        persisted.link(ids[2], own).unwrap();
-        write_state(store, &persisted, &walks);
-        // The first slice counted its ten entries but the two adopted ones.
-        add_counts(store, ids[2], 8);
-        // Reopening installs the written records.
-        reconcile(store, Requests::default()).await;
-        ids
-    }
-
-    #[restate_core::test]
-    async fn indexes_of_one_walk_share_its_traversal() {
-        RocksDbManager::init();
-        let manager = PartitionStoreManager::create(true).await.unwrap();
-        let mut shared = manager
-            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
-            .await
-            .unwrap();
-        let mut single = manager
-            .open(&Partition::new(PartitionId::from(2), KeyRange::FULL), None)
-            .await
-            .unwrap();
-
-        // COUNT and ADOPTED share a walk, RESUMED continues on its own.
-        let ids = started(&mut shared).await;
-        assert_eq!(walks(&shared).entries().len(), 2);
-        run_walks(&mut shared).await;
-        // The same indexes, each registered at its own open, walk on their own.
-        seed(&mut single).await;
-        for definition in [&COUNT, &ADOPTED, &RESUMED] {
-            reconcile(&mut single, maintain(definition)).await;
-        }
-        let single_ids = [&COUNT, &ADOPTED, &RESUMED]
-            .map(|definition| registry(&single).maintained(definition.name).unwrap().id);
-        assert_eq!(walks(&single).entries().len(), 3);
-        run_walks(&mut single).await;
-
-        for (store, ids) in [(&shared, ids), (&single, single_ids)] {
-            for (definition, id) in [&COUNT, &ADOPTED, &RESUMED].into_iter().zip(ids) {
-                let index = registry_after(store, definition.name);
-                assert_eq!(
-                    (index.state, index.walk, count(store, id)),
-                    (IndexStatus::Ready, None, SEEDED),
-                    "{} reflects every entry once",
-                    definition.name
-                );
-            }
-            assert!(walks(store).entries().is_empty());
-        }
+            .unwrap_or_default()
     }
 
     #[restate_core::test]
@@ -1094,55 +936,114 @@ mod backfill_tests {
         seed(&mut store).await;
         reconcile(&mut store, maintain(&COUNT)).await;
         // COUNT's walk covered the first ten entries without listing them.
-        let persisted = registry(&store);
-        let index = persisted.maintained(COUNT.name).unwrap().clone();
+        let mut persisted = registry(&store);
+        let id = persisted.maintained(COUNT.name).unwrap().id;
         let entries = read_chunk(&store, None, usize::MAX).unwrap();
-        let mut walks = self::walks(&store);
-        walks
-            .advance(index.walk.unwrap(), Bytes::from(entries[9].0.clone()), 10)
+        let mut walks = Walks::default();
+        let walk = walks
+            .start(
+                WalkKind::index_backfill(),
+                Source::EntryStatus,
+                Bytes::from(entries.last().unwrap().0.clone()),
+                None,
+            )
             .unwrap();
-        write_state(&store, &persisted, &walks);
-        add_counts(&store, index.id, 10);
+        walks
+            .advance(walk, Bytes::from(entries[9].0.clone()), 10)
+            .unwrap();
+        persisted.link(id, walk).unwrap();
+        write_state(&store, &persisted, Some(&walks));
+        add_counts(&store, id, 10);
         store.set_maintained_indexes(MaintainedIndexes::new(&persisted, &walks, KNOWN));
 
+        let delete = async |store: &mut PartitionStore, index: usize| {
+            let mut tx = store.transaction();
+            let header = tx
+                .get_vqueue_entry_status(&entries[index].1)
+                .await
+                .unwrap()
+                .unwrap();
+            tx.delete_vqueue_entry_status(
+                &EntryContext {
+                    qid: header.vqueue_id(),
+                    target: &TARGET,
+                },
+                StoredEntryRef::from_header(&header),
+            );
+            tx.commit().await.unwrap();
+        };
+        let update = async |store: &mut PartitionStore, index: usize| {
+            let mut tx = store.transaction();
+            let header = tx
+                .get_vqueue_entry_status(&entries[index].1)
+                .await
+                .unwrap()
+                .unwrap();
+            tx.update_vqueue_entry_status(
+                &EntryContext {
+                    qid: header.vqueue_id(),
+                    target: &TARGET,
+                },
+                StoredEntryRef::from_header(&header),
+                EntryStateRef::from_header(&header),
+            );
+            tx.commit().await.unwrap();
+        };
         // Covered and unlisted: touched, so its contribution is removed.
-        delete(&mut store, &entries[4].1).await;
-        assert_eq!(count(&store, index.id), 9);
+        delete(&mut store, 4).await;
+        assert_eq!(count(&store, id), 9);
         // Covered: touched, an update keeps it counted once.
-        update(&mut store, &entries[5].1).await;
-        assert_eq!(count(&store, index.id), 9);
+        update(&mut store, 5).await;
+        assert_eq!(count(&store, id), 9);
         // Not covered and unlisted: nothing to remove.
-        delete(&mut store, &entries[50].1).await;
-        assert_eq!(count(&store, index.id), 9);
+        delete(&mut store, 50).await;
+        assert_eq!(count(&store, id), 9);
         // Not covered and unlisted: adopted, so it is counted and listed.
-        update(&mut store, &entries[60].1).await;
-        assert_eq!(count(&store, index.id), 10);
+        update(&mut store, 60).await;
+        assert_eq!(count(&store, id), 10);
 
         // Resuming the walk counts each remaining entry exactly once.
         reconcile(&mut store, Requests::default()).await;
-        run_walks(&mut store).await;
-        assert_eq!(count(&store, index.id), SEEDED - 2);
+        assert_eq!(count(&store, id), SEEDED - 2);
         assert_eq!(
-            registry(&store).get(index.id).unwrap().state,
-            IndexStatus::Ready
+            registry(&store).get(id).unwrap().state,
+            super::IndexStatus::Ready
         );
     }
 
+    /// Why `definition` is not Ready in a new snapshot of `store`.
+    fn reason(store: &PartitionStore, definition: &IndexDefinition) -> String {
+        store
+            .query_read(CancellationToken::new())
+            .unwrap()
+            .0
+            .ready_index(definition.name, definition.kind)
+            .unwrap_err()
+            .to_string()
+    }
+
     #[restate_core::test]
-    async fn started_walks_wait_for_the_driver_with_their_positions() {
+    async fn deferred_walks_wait_with_their_watermarks() {
         RocksDbManager::init();
         let manager = PartitionStoreManager::create(true).await.unwrap();
+        let deferred = |definitions: &[&'static IndexDefinition]| Requests {
+            maintain: definitions.to_vec(),
+            complete: definitions.to_vec(),
+            defer_walks: true,
+            ..Default::default()
+        };
 
-        // A partition without entries has nothing to walk: its index is Ready
-        // at once, and no walk starts.
+        // An empty partition has nothing to walk, but deferring leaves even that
+        // to a driver: no index becomes Ready on its own.
         let mut empty = manager
             .open(&Partition::new(PartitionId::from(2), KeyRange::FULL), None)
             .await
             .unwrap();
-        reconcile(&mut empty, maintain(&COUNT)).await;
-        let index = registry(&empty).maintained(COUNT.name).unwrap().clone();
-        assert_eq!((index.state, index.walk), (IndexStatus::Ready, None));
-        assert!(walks(&empty).entries().is_empty());
+        reconcile(&mut empty, deferred(&[&COUNT])).await;
+        let unstarted = registry(&empty).maintained(COUNT.name).unwrap().clone();
+        assert_eq!(unstarted.state, super::IndexStatus::Backfilling);
+        assert_eq!(unstarted.walk, None);
+        assert!(reason(&empty, &COUNT).contains("its backfill has not started"));
 
         // Walks of COUNT and RESUMED covered the first ten and twenty entries when
         // the partition reopens with ADOPTED requested too.
@@ -1151,7 +1052,14 @@ mod backfill_tests {
             .await
             .unwrap();
         seed(&mut store).await;
-        reconcile(&mut store, maintain_all(&[&COUNT, &RESUMED])).await;
+        reconcile(
+            &mut store,
+            Requests {
+                maintain: vec![&COUNT, &RESUMED],
+                ..Default::default()
+            },
+        )
+        .await;
         let mut persisted = registry(&store);
         let entries = read_chunk(&store, None, usize::MAX).unwrap();
         let end = Bytes::from(entries.last().unwrap().0.clone());
@@ -1160,7 +1068,12 @@ mod backfill_tests {
         for (definition, covered) in [(&COUNT, 10), (&RESUMED, 20)] {
             let id = persisted.maintained(definition.name).unwrap().id;
             let walk = walks
-                .start(WalkKind::index_backfill(), Source::EntryStatus, end.clone())
+                .start(
+                    WalkKind::index_backfill(),
+                    Source::EntryStatus,
+                    end.clone(),
+                    None,
+                )
                 .unwrap();
             let cursor = Bytes::from(entries[covered - 1].0.clone());
             walks.advance(walk, cursor, covered as u64).unwrap();
@@ -1168,32 +1081,40 @@ mod backfill_tests {
             add_counts(&store, id, covered as u32);
             paused.push((definition, id, walk, covered));
         }
-        write_state(&store, &persisted, &walks);
-        reconcile(&mut store, maintain_all(&[&COUNT, &RESUMED, &ADOPTED])).await;
+        write_state(&store, &persisted, Some(&walks));
+        reconcile(&mut store, deferred(&[&COUNT, &RESUMED, &ADOPTED])).await;
         let adopted = registry(&store).maintained(ADOPTED.name).unwrap().clone();
         assert_eq!(
             (adopted.state, adopted.walk),
-            (IndexStatus::Backfilling, Some(3)),
-            "a_requested_index_starts_its_own_walk"
+            (super::IndexStatus::Backfilling, None),
+            "requested_instances_stay_unstarted"
         );
+        assert_eq!(self::walks(&store), walks, "started_walks_wait");
         for (definition, _, walk, covered) in &paused {
             assert!(reason(&store, definition).contains(&format!(
                 "is still being completed: backfill walk {walk} has examined {covered} entries"
             )));
         }
-        assert!(reason(&store, &ADOPTED).contains("backfill walk 3 has examined 0 entries"));
-        let started = self::walks(&store);
-        assert_eq!(
-            &started.entries()[..2],
-            walks.entries(),
-            "started_walks_wait"
-        );
+        assert!(reason(&store, &ADOPTED).contains("its backfill has not started"));
 
         // Every waiting walk's cursor still applies: an entry it covered is
         // touched without being listed, so deleting it removes its contribution.
         // The fifth entry is covered by both walks, the fifteenth by RESUMED's.
         for index in [4, 14] {
-            delete(&mut store, &entries[index].1).await;
+            let mut tx = store.transaction();
+            let header = tx
+                .get_vqueue_entry_status(&entries[index].1)
+                .await
+                .unwrap()
+                .unwrap();
+            tx.delete_vqueue_entry_status(
+                &EntryContext {
+                    qid: header.vqueue_id(),
+                    target: &TARGET,
+                },
+                StoredEntryRef::from_header(&header),
+            );
+            tx.commit().await.unwrap();
         }
         assert_eq!(
             paused
@@ -1203,11 +1124,15 @@ mod backfill_tests {
             [9, 18]
         );
 
-        // The driver finishes the walks in the order they started.
-        run_walks(&mut store).await;
+        // Once walks run at open, the started walks finish first, then the
+        // requested index gets its own.
+        reconcile(&mut store, complete(&ADOPTED)).await;
         for definition in [&COUNT, &RESUMED, &ADOPTED] {
-            let index = registry_after(&store, definition.name);
-            assert_eq!(index.state, IndexStatus::Ready);
+            let index = registry(&store)
+                .maintained(definition.name)
+                .unwrap()
+                .clone();
+            assert_eq!(index.state, super::IndexStatus::Ready);
             assert_eq!(count(&store, index.id), SEEDED - 2, "{}", definition.name);
         }
         assert!(self::walks(&store).entries().is_empty());
@@ -1234,8 +1159,10 @@ mod backfill_tests {
         tx.delete_invocation_status(&invocation).unwrap();
         tx.commit().await.unwrap();
         drop(tx);
-        let error = engine::run_all(&mut store, 3).await.unwrap_err();
-        let StorageError::Generic(cause) = error else {
+        let error = try_reconcile(&mut store, KNOWN, complete(&COUNT))
+            .await
+            .unwrap_err();
+        let MigrationError::StorageError(StorageError::Generic(cause)) = error else {
             panic!("unexpected failure: {error}");
         };
         assert!(format!("{cause:#}").contains("missing invocation status"));
@@ -1265,16 +1192,17 @@ mod backfill_tests {
         tx.put_invocation_status(&invocation, &status).unwrap();
         tx.commit().await.unwrap();
         drop(tx);
-        run_walks(&mut store).await;
+        reconcile(&mut store, Requests::default()).await;
         assert_eq!(count(&store, id), SEEDED);
-        assert_eq!(registry(&store).get(id).unwrap().state, IndexStatus::Ready);
+        assert_eq!(
+            registry(&store).get(id).unwrap().state,
+            super::IndexStatus::Ready
+        );
         assert!(self::walks(&store).entries().is_empty());
     }
 
-    /// The rows of every index, by ID, without the replica-local key prefix. A
-    /// statistic row whose counts all returned to zero is left out, like one never
-    /// written.
-    fn index_rows(store: &PartitionStore) -> Vec<(u32, Vec<u8>, Vec<u8>)> {
+    /// The rows of every index, by ID, without the replica-local key prefix.
+    fn instance_rows(store: &PartitionStore) -> Vec<(u32, Vec<u8>, Vec<u8>)> {
         let partition = store.partition_id();
         let db = store.partition_db().rocksdb().inner().as_raw_db();
         let cf = db.cf_handle(store.partition().cf_name().as_ref()).unwrap();
@@ -1295,9 +1223,7 @@ mod backfill_tests {
             iterator.seek(&prefix);
             while let Some(key) = iterator.key().filter(|key| key.starts_with(&prefix)) {
                 let value = iterator.value().unwrap().to_vec();
-                if index.kind == IndexKind::Secondary || !value.is_empty() {
-                    rows.push((index.id, key[prefix.len()..].to_vec(), value));
-                }
+                rows.push((index.id, key[prefix.len()..].to_vec(), value));
                 iterator.next();
             }
             iterator.status().unwrap();
@@ -1321,25 +1247,26 @@ mod backfill_tests {
         let all = crate::registry::DEFINITIONS;
         seed(&mut store).await;
         seed(&mut reference).await;
-        try_reconcile(&mut reference, all, maintain_all(all))
+        let requests = |complete: bool| Requests {
+            maintain: all.to_vec(),
+            complete: if complete { all.to_vec() } else { Vec::new() },
+            ..Default::default()
+        };
+        try_reconcile(&mut reference, all, requests(true))
             .await
             .unwrap();
-        run_walks(&mut reference).await;
-        try_reconcile(&mut store, all, maintain_all(all))
+        try_reconcile(&mut store, all, requests(false))
             .await
             .unwrap();
-        let registered = registry(&store);
-        assert_eq!(registered.entries().len(), all.len());
-        let walk = registered.entries()[0].walk.unwrap();
-        assert!(
-            registered
-                .entries()
-                .iter()
-                .all(|index| index.walk == Some(walk))
-        );
+        let ids: Vec<_> = registry(&store).entries().iter().map(|r| r.id).collect();
+        assert_eq!(ids.len(), all.len());
         let entries = read_chunk(&store, None, usize::MAX).unwrap();
         let db = store.partition_db().clone();
         let mut tx = store.transaction();
+        let walk = super::super::complete::start(&mut tx, &db, &ids)
+            .await
+            .unwrap()
+            .unwrap();
         let progress = |tx: &PartitionStoreTransaction<'_>| {
             let walk = tx.maintained_indexes().walks().get(walk).unwrap().clone();
             (walk.cursor.unwrap(), walk.scanned as usize)
@@ -1422,9 +1349,9 @@ mod backfill_tests {
             registry(&store)
                 .entries()
                 .iter()
-                .all(|index| index.state == IndexStatus::Ready)
+                .all(|index| index.state == super::IndexStatus::Ready)
         );
-        assert_eq!(index_rows(&store), index_rows(&reference));
+        assert_eq!(instance_rows(&store), instance_rows(&reference));
     }
 
     #[restate_core::test]
@@ -1436,29 +1363,36 @@ mod backfill_tests {
             .await
             .unwrap();
         seed(&mut store).await;
-        reconcile(&mut store, maintain_all(KNOWN)).await;
-        // COUNT and ADOPTED's walk covered ten entries; RESUMED walks on its own.
+        reconcile(
+            &mut store,
+            Requests {
+                maintain: KNOWN.to_vec(),
+                ..Default::default()
+            },
+        )
+        .await;
+        // COUNT and ADOPTED share a walk that covered ten entries.
         let mut persisted = registry(&store);
-        let [count_id, adopted_id, resumed_id] = [&COUNT, &ADOPTED, &RESUMED]
+        let [count_id, adopted_id, _] = [&COUNT, &ADOPTED, &RESUMED]
             .map(|definition| persisted.maintained(definition.name).unwrap().id);
         let entries = read_chunk(&store, None, usize::MAX).unwrap();
-        let mut walks = self::walks(&store);
-        let shared = persisted.get(count_id).unwrap().walk.unwrap();
-        walks
-            .advance(shared, Bytes::from(entries[9].0.clone()), 10)
+        let mut shared = Walks::default();
+        let walk = shared
+            .start(
+                WalkKind::index_backfill(),
+                Source::EntryStatus,
+                Bytes::from(entries.last().unwrap().0.clone()),
+                Some(Bytes::from(entries[9].0.clone())),
+            )
             .unwrap();
-        let end = walks.get(shared).unwrap().end.clone();
-        let own = walks
-            .start(WalkKind::index_backfill(), Source::EntryStatus, end)
-            .unwrap();
-        persisted.link(resumed_id, own).unwrap();
         for id in [count_id, adopted_id] {
+            persisted.link(id, walk).unwrap();
             add_counts(&store, id, 10);
         }
-        write_state(&store, &persisted, &walks);
+        write_state(&store, &persisted, Some(&shared));
 
-        // Resetting ADOPTED deletes its counts; COUNT's walk keeps its cursor
-        // rather than restarting.
+        // Resetting ADOPTED deletes its counts; COUNT's walk resumes after its
+        // cursor rather than restarting.
         reconcile(
             &mut store,
             Requests {
@@ -1468,27 +1402,16 @@ mod backfill_tests {
         )
         .await;
         let after = registry(&store);
-        assert_eq!(after.get(adopted_id).unwrap().state, IndexStatus::Dropped);
-        assert_eq!(count(&store, adopted_id), 0);
-        assert_eq!(after.get(count_id).unwrap().walk, Some(shared));
         assert_eq!(
-            self::walks(&store).get(shared).unwrap().cursor.as_deref(),
-            Some(entries[9].0.as_slice())
+            after.get(adopted_id).unwrap().state,
+            super::IndexStatus::Dropped
         );
-        run_walks(&mut store).await;
-        let after = registry(&store);
+        assert_eq!(count(&store, adopted_id), 0);
         assert_eq!(
             (after.get(count_id).unwrap().state, count(&store, count_id)),
-            (IndexStatus::Ready, SEEDED)
+            (super::IndexStatus::Ready, SEEDED)
         );
-        assert_eq!(
-            (
-                after.get(resumed_id).unwrap().state,
-                count(&store, resumed_id)
-            ),
-            (IndexStatus::Ready, SEEDED)
-        );
-        assert!(self::walks(&store).entries().is_empty());
+        assert!(walks(&store).entries().is_empty());
     }
 
     #[restate_core::test]
@@ -1500,17 +1423,18 @@ mod backfill_tests {
             .await
             .unwrap();
         seed(&mut store).await;
-        let mut base = IndexRegistry::default();
-        let id = base.register(COUNT.name, COUNT.kind).unwrap();
+        reconcile(&mut store, maintain(&COUNT)).await;
+        let base = registry(&store);
+        let id = base.maintained(COUNT.name).unwrap().id;
         let end = Bytes::from(read_chunk(&store, None, 1).unwrap()[0].0.clone());
         let started = |end: Bytes| {
             let mut walks = Walks::default();
-            walks
-                .start(WalkKind::index_backfill(), Source::EntryStatus, end)
+            let walk = walks
+                .start(WalkKind::index_backfill(), Source::EntryStatus, end, None)
                 .unwrap();
-            walks
+            (walks, walk)
         };
-        let cases: [(&str, IndexRegistry, Walks); 3] = [
+        let cases: [(&str, IndexRegistry, Option<Walks>); 3] = [
             (
                 "dangling link",
                 {
@@ -1518,9 +1442,9 @@ mod backfill_tests {
                     registry.link(id, 7).unwrap();
                     registry
                 },
-                Walks::default(),
+                None,
             ),
-            ("walk without members", base.clone(), started(end)),
+            ("walk without members", base.clone(), Some(started(end).0)),
             (
                 "position outside the entry-status schema",
                 {
@@ -1528,11 +1452,11 @@ mod backfill_tests {
                     registry.link(id, 1).unwrap();
                     registry
                 },
-                started(Bytes::from_static(b"not a key")),
+                Some(started(Bytes::from_static(b"not a key")).0),
             ),
         ];
         for (case, registry, walks) in cases {
-            write_state(&store, &registry, &walks);
+            write_state(&store, &registry, walks.as_ref());
             assert!(
                 matches!(
                     store.validate_registry(&store.storage_features()),
@@ -1541,304 +1465,6 @@ mod backfill_tests {
                 "{case}"
             );
         }
-    }
-
-    /// Awaits and runs `driver`'s steps through `tx` while it has any, as the
-    /// processor does between its turns, for at most `steps`. Tests driving it run
-    /// on paused time, so its rests and backoffs pass without waiting.
-    async fn drive(driver: &mut WalkDriver, tx: &mut PartitionStoreTransaction<'_>, steps: usize) {
-        for _ in 0..steps {
-            if driver.due().is_none() {
-                return;
-            }
-            driver.ready().await;
-            driver.step(tx).await.unwrap();
-        }
-    }
-
-    /// Deletes entry `id` through `tx`, as a command does.
-    async fn delete_entry(
-        tx: &mut PartitionStoreTransaction<'_>,
-        db: &PartitionDb,
-        id: BaseEntryId,
-    ) {
-        let header = tx.get_vqueue_entry_status(&id).await.unwrap().unwrap();
-        with_entry_target(db, &id, header.vqueue_id(), header.seq(), |target| {
-            tx.delete_vqueue_entry_status(
-                &EntryContext {
-                    qid: header.vqueue_id(),
-                    target,
-                },
-                StoredEntryRef::from_header(&header),
-            );
-            Ok(())
-        })
-        .unwrap();
-        tx.commit().await.unwrap();
-    }
-
-    #[restate_core::test]
-    async fn background_walks_resume_after_a_restart_to_parity() {
-        RocksDbManager::init();
-        let manager = PartitionStoreManager::create(true).await.unwrap();
-        let partition = Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1));
-        let mut store = manager.open(&partition, None).await.unwrap();
-        let mut reference = manager
-            .open(&Partition::new(PartitionId::from(2), KeyRange::FULL), None)
-            .await
-            .unwrap();
-        let all = crate::registry::DEFINITIONS;
-        seed(&mut store).await;
-        seed(&mut reference).await;
-        try_reconcile(&mut reference, all, maintain_all(all))
-            .await
-            .unwrap();
-        run_walks(&mut reference).await;
-        try_reconcile(&mut store, all, maintain_all(all))
-            .await
-            .unwrap();
-        let entries = read_chunk(&store, None, usize::MAX).unwrap();
-        let db = store.partition_db().clone();
-        let mut driver = store.walk_driver(&StorageOptions::default());
-        // Small slices, so that the walk is still going after a few.
-        driver.tuning_mut().max_keys = 32;
-        let mut tx = store.transaction();
-        let walks = tx.maintained_indexes().walks().clone();
-        let [walk] = walks.entries() else {
-            panic!("one walk: {walks:?}");
-        };
-        let walk = walk.id;
-        assert_eq!(
-            tx.maintained_indexes().registry().members(walk).count(),
-            all.len()
-        );
-
-        // A few slices later, commands delete an entry the walk covered and one it
-        // did not reach, through the same transaction.
-        drive(&mut driver, &mut tx, 4).await;
-        let covered = tx.maintained_indexes().walks().get(walk).unwrap().scanned as usize;
-        assert!((1..entries.len() - 1).contains(&covered), "{covered}");
-        for index in [0, entries.len() - 1] {
-            delete_entry(&mut tx, &db, entries[index].1).await;
-            let reference_db = reference.partition_db().clone();
-            delete_entry(
-                &mut reference.transaction(),
-                &reference_db,
-                entries[index].1,
-            )
-            .await;
-        }
-        assert!(
-            Arc::ptr_eq(&tx.maintained_indexes(), &db.maintained_indexes().unwrap()),
-            "the processor's transaction and the partition share the committed set"
-        );
-
-        // A restart from the flushed state, here a snapshot, resumes the walk
-        // without double-counting.
-        drop(tx);
-        let snapshots = restate_test_util::tempdir().unwrap();
-        let snapshot = store
-            .create_local_snapshot(
-                manager.test_capture_guard(partition.partition_id).await,
-                snapshots.path(),
-                None,
-                SnapshotId::new(),
-            )
-            .await
-            .unwrap();
-        drop((driver, db, store));
-        let restored = LocalPartitionSnapshot {
-            base_dir: SnapshotDir::new(snapshots.path().into()),
-            log_id: LogId::from(partition.partition_id),
-            min_applied_lsn: snapshot.min_applied_lsn,
-            db_comparator_name: snapshot.db_comparator_name.clone(),
-            files: snapshot.files.clone(),
-            key_range: partition.key_range,
-            compatibility: snapshot.compatibility.clone(),
-            byte_offsets_base_lsn: snapshot.byte_offsets_base_lsn,
-            log_byte_offset: snapshot.log_byte_offset,
-            partition_store_byte_offset: snapshot.partition_store_byte_offset,
-        };
-        let _exported = snapshot.base_dir.into_path();
-        manager.drop_partition_store(&partition).await.unwrap();
-        let mut store = manager
-            .open_from_snapshot(&partition, restored)
-            .await
-            .unwrap();
-        try_reconcile(&mut store, all, maintain_all(all))
-            .await
-            .unwrap();
-        assert_eq!(
-            self::walks(&store).get(walk).unwrap().scanned as usize,
-            covered
-        );
-        let mut driver = store.walk_driver(&StorageOptions::default());
-        let mut tx = store.transaction();
-        drive(&mut driver, &mut tx, 1_000).await;
-        assert_eq!(driver.due(), None, "nothing left");
-        drop(tx);
-
-        assert!(self::walks(&store).entries().is_empty());
-        assert!(
-            registry(&store)
-                .entries()
-                .iter()
-                .all(|index| index.state == IndexStatus::Ready)
-        );
-        assert_eq!(index_rows(&store), index_rows(&reference));
-        let snapshot = store.query_read(CancellationToken::new()).unwrap().0;
-        for definition in all {
-            snapshot
-                .ready_index(definition.name, definition.kind)
-                .unwrap();
-        }
-    }
-
-    #[restate_core::test(start_paused = true)]
-    async fn background_walks_wait_out_fences_failures_and_disabling() {
-        RocksDbManager::init();
-        let manager = PartitionStoreManager::create(true).await.unwrap();
-        let mut store = manager
-            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
-            .await
-            .unwrap();
-        seed(&mut store).await;
-        let entries = read_chunk(&store, None, usize::MAX).unwrap();
-
-        // With background migrations disabled, the driver leaves the started walk
-        // waiting: nothing is due, ever.
-        reconcile(&mut store, maintain(&COUNT)).await;
-        let mut disabled = StorageOptions::default();
-        disabled.disable_background_migrations = true;
-        let mut driver = store.walk_driver(&disabled);
-        assert_eq!(driver.due(), None);
-        assert!(driver.ready().now_or_never().is_none());
-        let id = registry(&store).maintained(COUNT.name).unwrap().id;
-        let walk = registry(&store).get(id).unwrap().walk.unwrap();
-        assert_eq!(walks(&store).get(walk).unwrap().cursor, None);
-
-        // Enabled, it runs the walk. While a snapshot export holds commits back,
-        // it does nothing and checks again shortly.
-        let mut driver = store.walk_driver(&StorageOptions::default());
-        let recheck = driver.tuning_mut().fence_recheck;
-        let mut tx = store.transaction();
-        let progress = |tx: &PartitionStoreTransaction<'_>| {
-            tx.maintained_indexes().walks().get(walk).unwrap().clone()
-        };
-        let fence = tx.fence_commits().unwrap();
-        let before = Instant::now();
-        drive(&mut driver, &mut tx, 1).await;
-        assert_eq!(progress(&tx).cursor, None);
-        assert!(driver.due().unwrap() >= before + recheck);
-        drop(fence);
-        drive(&mut driver, &mut tx, 1).await;
-        assert_eq!(
-            progress(&tx).scanned,
-            16,
-            "a first slice of the lower bound"
-        );
-
-        // A slice that fails is recorded, and retried after a backoff while the
-        // index stays Backfilling.
-        let invocation = entries[40].1.to_invocation_id().unwrap();
-        let status = tx.get_invocation_status(&invocation).await.unwrap();
-        tx.delete_invocation_status(&invocation).unwrap();
-        tx.commit().await.unwrap();
-        let committed = progress(&tx);
-        while progress(&tx).failures < 2 {
-            drive(&mut driver, &mut tx, 1).await;
-        }
-        let failed = progress(&tx);
-        assert_eq!(
-            (failed.cursor.clone(), failed.scanned),
-            (committed.cursor, committed.scanned),
-            "failed slices commit no progress"
-        );
-        assert!(
-            failed
-                .last_error
-                .as_deref()
-                .is_some_and(|error| error.contains("missing invocation status"))
-        );
-        assert_eq!(
-            tx.maintained_indexes().registry().get(id).unwrap().state,
-            IndexStatus::Backfilling
-        );
-        tx.put_invocation_status(&invocation, &status).unwrap();
-        tx.commit().await.unwrap();
-        drive(&mut driver, &mut tx, 1_000).await;
-        drop(tx);
-        assert_eq!(count(&store, id), SEEDED);
-        assert_eq!(registry(&store).get(id).unwrap().state, IndexStatus::Ready);
-    }
-
-    #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_closed_partition_takes_no_slice_and_a_held_publication_delays_its_close() {
-        RocksDbManager::init();
-        let manager = PartitionStoreManager::create(true).await.unwrap();
-        let partition = Partition::new(PartitionId::from(32), KeyRange::FULL);
-        let mut store = manager.open(&partition, None).await.unwrap();
-        seed(&mut store).await;
-        reconcile(&mut store, maintain(&COUNT)).await;
-        let id = registry(&store).maintained(COUNT.name).unwrap().id;
-        let walk = registry(&store).get(id).unwrap().walk.unwrap();
-        let entries = read_chunk(&store, None, usize::MAX).unwrap();
-        let faults = manager.faults(&partition);
-        let db = store.partition_db().clone();
-
-        // A slice held at its publication, after its commit, keeps its session:
-        // closing the partition waits for it.
-        let (published, resume) = faults.pause(FaultPoint::WalkPublication);
-        let mut tx = store.transaction();
-        {
-            let mut slice = std::pin::pin!(engine::run_slice(&mut tx, &db, walk, 3));
-            tokio::select! {
-                biased;
-                result = &mut slice => panic!("the slice finished without publishing: {result:?}"),
-                published = published => published.unwrap(),
-            }
-            let mut closing = std::pin::pin!(manager.close(partition.id()));
-            assert!(
-                futures::poll!(closing.as_mut()).is_pending(),
-                "the_close_waits"
-            );
-            drop(resume);
-            assert_eq!(slice.await.unwrap(), Slice::Progressed);
-            closing.await;
-        }
-        assert_eq!(
-            tx.maintained_indexes()
-                .walks()
-                .get(walk)
-                .unwrap()
-                .cursor
-                .as_deref(),
-            Some(entries[2].0.as_slice()),
-            "published_before_the_close"
-        );
-
-        // Once closed, the old handle commits neither a slice nor a failure record.
-        assert!(matches!(
-            engine::run_slice(&mut tx, &db, walk, 3).await,
-            Err(engine::SliceError::Staging(StorageError::OperationalError))
-        ));
-        assert!(tx.is_empty(), "nothing_stays_staged");
-        assert!(matches!(
-            engine::record_failure(&mut tx, &db, walk, "late").await,
-            Err(engine::SliceError::Staging(StorageError::OperationalError))
-        ));
-        drop(tx);
-
-        // A fresh open installs the committed records and continues after them.
-        let mut store = manager.open(&partition, None).await.unwrap();
-        reconcile(&mut store, maintain(&COUNT)).await;
-        let resumed = walks(&store).get(walk).unwrap().clone();
-        assert_eq!(
-            (resumed.cursor.as_deref(), resumed.scanned, resumed.failures),
-            (Some(entries[2].0.as_slice()), 3, 0)
-        );
-        run_walks(&mut store).await;
-        assert_eq!(count(&store, id), SEEDED);
     }
 
     /// `COUNT`'s index read as a table: its header and no suffix.
@@ -1885,18 +1511,31 @@ mod backfill_tests {
         type Key = CountKey;
     }
 
+    fn decode_count(payload: &[u8]) -> ControlFlow<crate::Result<()>, u64> {
+        ControlFlow::Continue(<u64 as StatValueCodec>::deserialize_from(payload).unwrap())
+    }
+
     /// `COUNT` as a snapshot read sees it.
     fn snapshot_count(snapshot: &ReadSnapshot) -> crate::Result<u64> {
         let mut total = 0;
         <ReadSnapshot as BlockingScan<CountTable>>::scan_blocking(
             snapshot,
             Arc::new(KeySelection::all()),
-            |(_, payload)| {
-                total += <u64 as StatValueCodec>::deserialize_from(payload).unwrap();
-                ControlFlow::Continue(())
-            },
+            |(_, payload)| decode_count(payload).map_continue(|count| total += count),
         )?;
         Ok(total)
+    }
+
+    /// `COUNT` as a direct store read sees it.
+    async fn store_count(store: &PartitionStore) -> crate::Result<u64> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        <PartitionStore as Scan<CountTable>>::scan(
+            store,
+            Arc::new(KeySelection::all()),
+            move |(_, payload)| decode_count(payload).map_continue(|count| tx.send(count).unwrap()),
+        )?
+        .await?;
+        Ok(rx.into_iter().sum())
     }
 
     fn not_ready<T: std::fmt::Debug>(result: crate::Result<T>) -> bool {
@@ -1909,7 +1548,7 @@ mod backfill_tests {
     }
 
     #[restate_core::test]
-    async fn queries_admit_only_ready_indexes_of_their_snapshot() {
+    async fn queries_admit_only_ready_instances_of_their_snapshot() {
         RocksDbManager::init();
         let manager = PartitionStoreManager::create(true).await.unwrap();
         let mut store = manager
@@ -1925,27 +1564,30 @@ mod backfill_tests {
             unregistered.ready_index("count/1", IndexKind::Aggregate)
         ));
         assert!(not_ready(snapshot_count(&unregistered)), "table_reads_fail");
+        assert!(not_ready(store_count(&store).await), "store_reads_fail");
         reconcile(&mut store, maintain(&COUNT)).await;
-        let backfilling = snapshot(&store);
+        let maintaining = snapshot(&store);
         assert!(
-            not_ready(backfilling.ready_index("count/1", IndexKind::Aggregate)),
-            "backfilling_indexes_are_not_ready"
+            not_ready(maintaining.ready_index("count/1", IndexKind::Aggregate)),
+            "maintaining_instances_are_not_ready"
         );
-        assert!(not_ready(snapshot_count(&backfilling)));
+        assert!(not_ready(snapshot_count(&maintaining)));
+        assert!(not_ready(store_count(&store).await));
 
-        run_walks(&mut store).await;
+        reconcile(&mut store, complete(&COUNT)).await;
         let id = registry(&store).maintained("count/1").unwrap().id;
         assert!(
-            not_ready(backfilling.ready_index("count/1", IndexKind::Aggregate)),
+            not_ready(maintaining.ready_index("count/1", IndexKind::Aggregate)),
             "readiness_is_that_of_the_snapshot"
         );
-        assert!(not_ready(snapshot_count(&backfilling)));
+        assert!(not_ready(snapshot_count(&maintaining)));
         let ready = snapshot(&store);
         assert_eq!(
             ready.ready_index("count/1", IndexKind::Aggregate).unwrap(),
             id
         );
         assert_eq!(snapshot_count(&ready).unwrap(), SEEDED);
+        assert_eq!(store_count(&store).await.unwrap(), SEEDED);
         assert!(
             not_ready(ready.ready_index("count/1", IndexKind::Secondary)),
             "kinds_must_match"
@@ -1964,9 +1606,10 @@ mod backfill_tests {
         .await;
         assert!(
             not_ready(snapshot(&store).ready_index("count/1", IndexKind::Aggregate)),
-            "dropped_indexes_are_not_ready"
+            "disabled_instances_are_not_ready"
         );
         assert!(not_ready(snapshot_count(&snapshot(&store))));
+        assert!(not_ready(store_count(&store).await));
         assert_eq!(
             ready.ready_index("count/1", IndexKind::Aggregate).unwrap(),
             id,
@@ -1978,6 +1621,31 @@ mod backfill_tests {
             "and_reads_its_data"
         );
     }
+
+    fn registry_after(store: &PartitionStore, name: &str) -> super::super::Index {
+        get_registry_from_partition_db(store.partition_db())
+            .unwrap()
+            .unwrap()
+            .entries()
+            .iter()
+            .find(|index| index.definition == name)
+            .unwrap()
+            .clone()
+    }
+
+    fn maintain(definition: &'static IndexDefinition) -> Requests {
+        Requests {
+            maintain: vec![definition],
+            ..Default::default()
+        }
+    }
+
+    /// Statistics here ignore the target, so updates can use any.
+    const TARGET: EntryTargetRef<'static> = EntryTargetRef::Service {
+        scope: None,
+        service: "svc",
+        handler: "run",
+    };
 }
 
 #[cfg(test)]
@@ -1985,9 +1653,9 @@ mod open_tests {
     use bytes::Bytes;
     use tokio_util::sync::CancellationToken;
 
-    use restate_rocksdb::{RocksDbManager, RocksError};
+    use restate_rocksdb::RocksDbManager;
     use restate_types::identifiers::{BaseEntryId, PartitionId};
-    use restate_types::partition_table::Partition;
+    use restate_types::partitions::Partition;
     use restate_types::sharding::KeyRange;
     use restate_types::vqueues::{EntryId, EntryKind};
 
@@ -1997,12 +1665,10 @@ mod open_tests {
         get_storage_version_from_partition_db,
     };
     use crate::keys::EncodeTableKeyPrefix;
-    use crate::stats::StatKind;
     use crate::stats::aggregated::backfill::tests::seed;
-    use crate::walk::{Source, WalkKind, engine};
     use crate::{PartitionStoreManager, PartitionStoreTransaction};
 
-    use super::super::backfill::read_chunk;
+    use super::super::complete::read_chunk;
 
     fn ignore(
         _: &mut PartitionStoreTransaction<'_>,
@@ -2040,6 +1706,8 @@ mod open_tests {
                     current_version: SemanticRestateVersion::current(),
                     min_restate_version: &mut min,
                 },
+                3,
+                &CancellationToken::new(),
             )
             .await
     }
@@ -2051,12 +1719,9 @@ mod open_tests {
         }
     }
 
-    /// Writes `registry` and `walks` without flushing, as an interrupted open
-    /// might have left them.
-    fn write_unflushed(db: &PartitionDb, registry: &IndexRegistry, walks: &Walks) {
+    fn write_registry_unflushed(db: &PartitionDb, registry: &IndexRegistry) {
         let mut batch = WriteBatch::default();
         append_registry_to_wb(db.cf_handle(), &mut batch, db.partition().id(), registry);
-        append_walks_to_wb(db.cf_handle(), &mut batch, db.partition().id(), walks);
         let mut options = rocksdb::WriteOptions::default();
         options.disable_wal(true);
         db.rocksdb()
@@ -2101,36 +1766,9 @@ mod open_tests {
         let db = store.partition_db().clone();
         let registered = get_registry_from_partition_db(&db).unwrap().unwrap();
         let id = registered.maintained("stat/1").unwrap().id;
-        assert_eq!(unflushed(&db), 0, "registration_is_flushed");
-
-        let started = get_walks_from_partition_db(&db).unwrap().unwrap();
-
-        // A walk positioned at an entry-status key of another partition is not
-        // a walk of this one.
-        let mut outside = Walks::default();
-        let walk = outside
-            .start(
-                WalkKind::index_backfill(),
-                Source::EntryStatus,
-                cursor(500, 1),
-            )
-            .unwrap();
-        outside.advance(walk, cursor(500, 1), 1).unwrap();
-        let mut linked = IndexRegistry::default();
-        assert_eq!(linked.register("stat/1", IndexKind::Aggregate).unwrap(), id);
-        linked.link(id, walk).unwrap();
-        write_unflushed(&db, &linked, &outside);
-        assert!(
-            reconcile(&mut store, maintain()).await.is_err(),
-            "out_of_range"
-        );
-
-        // With the registered state back, its walk runs to completion.
-        write_unflushed(&db, &registered, &started);
-        reconcile(&mut store, maintain()).await.unwrap();
-        engine::run_all(&mut store, 3).await.unwrap();
-        let completed = get_registry_from_partition_db(&db).unwrap().unwrap();
-        assert_eq!(completed.get(id).unwrap().state, IndexStatus::Ready);
+        assert_eq!(registered.get(id).unwrap().state, IndexStatus::Ready);
+        assert_eq!(unflushed(&db), 0, "completion_is_flushed");
+        let completed = registered;
 
         // An attempt that wrote registry state but did not flush it: a retry on
         // the same physical store, with nothing left to change, still flushes.
@@ -2139,7 +1777,7 @@ mod open_tests {
         later
             .drop_index(later.maintained("other/1").unwrap().id)
             .unwrap();
-        write_unflushed(&db, &later, &Walks::default());
+        write_registry_unflushed(&db, &later);
         drop(store);
         let mut retry = manager.open(&partition, None).await.unwrap();
         assert!(unflushed(retry.partition_db()) > 0);
@@ -2156,117 +1794,6 @@ mod open_tests {
             0,
             "but flushes before publishing"
         );
-    }
-
-    #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn reconciliation_through_a_sealed_partition_changes_nothing() {
-        RocksDbManager::init();
-        let manager = PartitionStoreManager::create(true).await.unwrap();
-        let partition = Partition::new(PartitionId::from(31), KeyRange::FULL);
-        let mut store = manager.open(&partition, None).await.unwrap();
-        seed(&mut store).await;
-        reconcile(&mut store, maintain()).await.unwrap();
-        let db = store.partition_db().clone();
-        let registered = get_registry_from_partition_db(&db).unwrap().unwrap();
-        let walks = get_walks_from_partition_db(&db).unwrap().unwrap();
-        let id = registered.maintained("stat/1").unwrap().id;
-        // A row of the index.
-        let mut key = AggregateKeyPrefix::new(partition.id(), id)
-            .as_bytes()
-            .to_vec();
-        key.push(StatKind::AggregatedGauge as u8);
-        key.extend_from_slice(b"payload");
-        let raw = db.rocksdb().inner().as_raw_db();
-        raw.put_cf(db.cf_handle(), &key, b"value").unwrap();
-        let installed = db.maintained_indexes().unwrap();
-        let ledger = |db: &PartitionDb| {
-            serde_json::to_value(get_storage_features_from_partition_db(db).unwrap()).unwrap()
-        };
-        let fenced = ledger(&db);
-
-        // Closing seals the partition's session: the old handle can neither reset
-        // the index nor publish, whether it has a change to make or not.
-        manager.close(partition.id()).await;
-        let reset = Requests {
-            reset: vec![&STAT],
-            ..Default::default()
-        };
-        for requests in [reset, maintain()] {
-            assert!(matches!(
-                reconcile(&mut store, requests).await,
-                Err(MigrationError::StorageError(StorageError::OperationalError))
-            ));
-        }
-        assert!(
-            raw.get_cf(db.cf_handle(), &key).unwrap().is_some(),
-            "the_index_keys_stay"
-        );
-        assert_eq!(
-            get_registry_from_partition_db(&db).unwrap().unwrap(),
-            registered
-        );
-        assert_eq!(get_walks_from_partition_db(&db).unwrap().unwrap(), walks);
-        assert_eq!(ledger(&db), fenced, "the_fence_stays");
-        assert!(
-            Arc::ptr_eq(&db.maintained_indexes().unwrap(), &installed),
-            "nothing_was_published"
-        );
-
-        // A fresh open reconciles as usual.
-        let mut store = manager.open(&partition, None).await.unwrap();
-        reconcile(&mut store, maintain()).await.unwrap();
-        assert_eq!(
-            get_registry_from_partition_db(store.partition_db())
-                .unwrap()
-                .unwrap(),
-            registered
-        );
-    }
-
-    #[restate_core::test]
-    async fn reconciled_indexes_are_published_only_once_flushed() {
-        RocksDbManager::init();
-        let manager = PartitionStoreManager::create(true).await.unwrap();
-        let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
-        let mut store = manager.open(&partition, None).await.unwrap();
-        seed(&mut store).await;
-        let db = store.partition_db().clone();
-        let faults = manager.faults(&partition);
-        // Seeding installed the empty set a store without reconciliation uses.
-        let empty = db.maintained_indexes().unwrap();
-        assert!(empty.registry().entries().is_empty());
-        let unpublished = |db: &PartitionDb| Arc::ptr_eq(&db.maintained_indexes().unwrap(), &empty);
-
-        // A failed flush fails the open and publishes nothing: the registration
-        // is written, but not installed.
-        faults.fail(FaultPoint::RegistryFlush, RocksError::ReadOnly);
-        assert!(matches!(
-            reconcile(&mut store, maintain()).await,
-            Err(MigrationError::StorageError(StorageError::Generic(_)))
-        ));
-        assert!(unpublished(&db), "nothing_was_published");
-        let written = get_registry_from_partition_db(&db).unwrap().unwrap();
-        assert_eq!(
-            written.maintained("stat/1").map(|index| index.state),
-            Some(IndexStatus::Backfilling)
-        );
-
-        // A retry changes nothing but still flushes; while that flush is pending,
-        // nothing is published either. Once it succeeds, the written registration
-        // is installed.
-        let (reached, resume) = faults.pause(FaultPoint::RegistryFlush);
-        let mut retry = std::pin::pin!(reconcile(&mut store, maintain()));
-        tokio::select! {
-            biased;
-            result = &mut retry => panic!("reconciliation finished without flushing: {result:?}"),
-            reached = reached => reached.unwrap(),
-        }
-        assert!(unpublished(&db), "unpublished_while_the_flush_is_pending");
-        drop(resume);
-        retry.await.unwrap();
-        let installed = db.maintained_indexes().unwrap();
-        assert_eq!(installed.registry(), &written);
-        assert!(!installed.touched_by_on_write().is_empty());
     }
 
     #[restate_core::test]
@@ -2287,7 +1814,7 @@ mod open_tests {
         let mut invalid = IndexRegistry::default();
         invalid.register("stat/1", IndexKind::Aggregate).unwrap();
         invalid.next_id = 10;
-        write_unflushed(&db, &invalid, &Walks::default());
+        write_registry_unflushed(&db, &invalid);
         // A legacy gauge, which a successful open would delete first.
         let legacy = crate::features::legacy_status_gauge_key(db.partition().id(), 1);
         let raw = db.rocksdb().inner().as_raw_db();
@@ -2298,7 +1825,7 @@ mod open_tests {
         let before = ledger(&db);
         let entries = read_chunk(&store, None, usize::MAX).unwrap().len();
         let mut config = Configuration::default();
-        config.common.experimental.set_track_status_gauges(true);
+        config.common.experimental.set_complete_status_gauges(true);
         let error = store
             .verify_and_run_migrations(CancellationToken::new(), &config)
             .await
