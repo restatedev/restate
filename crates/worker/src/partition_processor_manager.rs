@@ -2102,33 +2102,46 @@ fn report_quantile_gauges(metric_name: &'static str, samples: &mut [u64]) {
 
 #[cfg(test)]
 mod tests {
-    use crate::partition_processor_manager::{PartitionProcessorManager, is_snapshot_due};
+    use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+    use std::sync::Arc;
+    use std::time::Duration;
+
     use googletest::IntoTestResult;
+    use test_log::test;
+    use tracing::info;
+
     use restate_bifrost::BifrostService;
     use restate_bifrost::providers::memory_loglet;
+    use restate_clock::UniqueTimestamp;
     use restate_core::partitions::PartitionRouting;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder};
     use restate_ingestion_client::{IngestionClient, SessionOptions};
-    use restate_partition_store::PartitionStoreManager;
+    use restate_partition_store::faults::{FaultPoint, Faults};
     use restate_partition_store::snapshots::PartitionSnapshotStatus;
+    use restate_partition_store::{PartitionStoreManager, ReadSnapshot};
     use restate_rocksdb::RocksDbManager;
+    use restate_storage_api::fsm_table::{FsmPosition, ReadFsmTable};
     use restate_types::cluster::cluster_state::PartitionProcessorStatus;
-    use restate_types::config::{AutomaticSnapshots, Configuration};
+    use restate_types::config::{AutomaticSnapshots, Configuration, ThrottlingOptions};
     use restate_types::health::HealthStatus;
     use restate_types::identifiers::PartitionId;
     use restate_types::live::Live;
+    use restate_types::logs::builder::LogsBuilder;
+    use restate_types::logs::metadata::{LogsConfiguration, ProviderConfiguration};
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
     use restate_types::net::address::AdvertisedAddress;
+    use restate_types::net::metadata::MetadataKind;
     use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
     use restate_types::partitions::state::{
         MemberState, PartitionReplicaSetStates, ReplicaSetState,
     };
+    use restate_types::rate::Rate;
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, RestateVersion, Version};
-    use std::num::{NonZeroU64, NonZeroUsize};
-    use std::time::Duration;
-    use test_log::test;
-    use tracing::info;
+    use restate_worker_api::ProcessorsManagerHandle;
+
+    use crate::partition_processor_manager::spawn_processor_task;
+    use crate::partition_processor_manager::{PartitionProcessorManager, is_snapshot_due};
 
     #[test]
     fn snapshot_due_triggers() {
@@ -2417,10 +2430,18 @@ mod tests {
         proper_partition_processor_lifecycle(true).await
     }
 
-    /// This test ensures that the lifecycle of partition processors is properly managed by the
-    /// [`PartitionProcessorManager`]. See https://github.com/restatedev/restate/issues/2258 for
-    /// more details.
-    async fn proper_partition_processor_lifecycle(multi_db: bool) -> googletest::Result<()> {
+    /// A running partition processor manager of one node, with in-memory logs. Its
+    /// processors start once their partition's membership names the node.
+    struct Processors {
+        handle: ProcessorsManagerHandle,
+        replica_set_states: PartitionReplicaSetStates,
+        node_id: GenerationalNodeId,
+    }
+
+    async fn start_processors(
+        config: Configuration,
+        partition_store_manager: Arc<PartitionStoreManager>,
+    ) -> googletest::Result<Processors> {
         let mut nodes_config = NodesConfiguration::new_for_testing();
         let node_id = GenerationalNodeId::new(42, 42);
         let node_config = NodeConfig::builder()
@@ -2437,15 +2458,11 @@ mod tests {
             .set_nodes_config(nodes_config);
         let health_status = HealthStatus::default();
 
-        RocksDbManager::init();
-
         let bifrost_svc = BifrostService::new(env_builder.metadata_writer.clone())
             .with_factory(memory_loglet::Factory::default());
         let bifrost = bifrost_svc.handle();
 
         let replica_set_states = PartitionReplicaSetStates::default();
-
-        let partition_store_manager = PartitionStoreManager::create(multi_db).await?;
 
         let ingestion_client = IngestionClient::new(
             env_builder.networking.clone(),
@@ -2457,7 +2474,7 @@ mod tests {
 
         let partition_processor_manager = PartitionProcessorManager::new(
             health_status,
-            Live::from_value(Configuration::default()),
+            Live::from_value(config),
             env_builder.metadata_writer.clone(),
             partition_store_manager,
             replica_set_states.clone(),
@@ -2468,8 +2485,18 @@ mod tests {
         );
 
         // only needed for setting up the metadata
-        let _env = env_builder.build().await;
-        let processors_manager_handle = partition_processor_manager.handle();
+        let env = env_builder.build().await;
+        // Match the log default to this fixture's enabled in-memory provider, so
+        // that processors can read their logs.
+        env.metadata
+            .wait_for_version(MetadataKind::Logs, Version::MIN)
+            .await?;
+        let mut logs = LogsBuilder::try_from(env.metadata.logs_snapshot().as_ref().clone())?;
+        logs.set_configuration(LogsConfiguration {
+            default_provider: ProviderConfiguration::InMemory,
+        });
+        env.metadata_writer.update(Arc::new(logs.build())).await?;
+        let handle = partition_processor_manager.handle();
 
         bifrost_svc.start().await.into_test_result()?;
         TaskCenter::spawn(
@@ -2477,6 +2504,47 @@ mod tests {
             "partition-processor-manager",
             partition_processor_manager.run(),
         )?;
+        Ok(Processors {
+            handle,
+            replica_set_states,
+            node_id,
+        })
+    }
+
+    impl Processors {
+        /// Names this node the only member of `partition`, or no member at all.
+        fn set_membership(&self, partition: PartitionId, version: Version, member: bool) {
+            let members = if member {
+                vec![MemberState {
+                    node_id: self.node_id.as_plain(),
+                    durable_lsn: Lsn::INVALID,
+                }]
+            } else {
+                Vec::new()
+            };
+            self.replica_set_states.note_observed_membership(
+                partition,
+                Default::default(),
+                &ReplicaSetState { version, members },
+                &None,
+            );
+        }
+    }
+
+    /// This test ensures that the lifecycle of partition processors is properly managed by the
+    /// [`PartitionProcessorManager`]. See https://github.com/restatedev/restate/issues/2258 for
+    /// more details.
+    async fn proper_partition_processor_lifecycle(multi_db: bool) -> googletest::Result<()> {
+        RocksDbManager::init();
+        let Processors {
+            handle: processors_manager_handle,
+            replica_set_states,
+            node_id,
+        } = start_processors(
+            Configuration::default(),
+            PartitionStoreManager::create(multi_db).await?,
+        )
+        .await?;
 
         let mut current_replica_set_node = ReplicaSetState {
             version: Version::MIN,
@@ -2525,6 +2593,459 @@ mod tests {
             version = version.next();
         }
 
+        TaskCenter::shutdown_node("test completed", 0).await;
+        Ok(())
+    }
+
+    /// Writes `n` finished entries to `partition` while no index or statistic is
+    /// maintained, so a backfill has to walk them, then closes the store.
+    async fn seed_finished_entries(
+        stores: &PartitionStoreManager,
+        partition: &restate_types::partitions::Partition,
+        n: u64,
+        position: Option<FsmPosition>,
+    ) {
+        use restate_clock::RoughTimestamp;
+        use restate_storage_api::Transaction;
+        use restate_storage_api::invocation_status_table::{
+            CompletedInvocation, InvocationStatus, WriteInvocationStatusTable,
+        };
+        use restate_storage_api::vqueue_table::stats::EntryStatistics;
+        use restate_storage_api::vqueue_table::{
+            EntryContext, EntryKey, EntryMetadata, EntryStateRef, Stage, Status, WriteVQueueTable,
+        };
+        use restate_types::identifiers::{InvocationId, InvocationUuid};
+        use restate_types::vqueues::{EntryId, EntryTargetExt};
+
+        let mut store = stores.open(partition, None).await.unwrap();
+        if position.is_some() {
+            // A store with a position is not empty: initialize it first, so that its
+            // later opens find a storage version to migrate from.
+            store
+                .verify_and_run_migrations(Default::default(), &Configuration::default())
+                .await
+                .unwrap();
+        }
+        let mut tx = store.transaction();
+        // With a position, the commit persists it with the batch's bytes counted.
+        if let Some(position) = position {
+            tx.set_fsm_position(position);
+        }
+        for i in 0..n {
+            let partition_key = partition.key_range.start() + i;
+            let mut uuid = [0; 16];
+            uuid[..8].copy_from_slice(&i.to_be_bytes());
+            let id = InvocationId::from_parts(partition_key, InvocationUuid::from_bytes(uuid));
+            let status = CompletedInvocation::mock_neo_with_vqueue(partition_key);
+            let qid = status.vqueue_id.clone().unwrap();
+            let target = status.invocation_target.clone();
+            tx.put_invocation_status(&id, &InvocationStatus::Completed(status))
+                .unwrap();
+            let key = EntryKey::new(false, RoughTimestamp::new(10), i, EntryId::from(id));
+            let stats = EntryStatistics::new(
+                UniqueTimestamp::try_from_parts(100, 1).unwrap(),
+                key.run_at(),
+            );
+            tx.create_vqueue_entry_status(
+                &EntryContext {
+                    qid: &qid,
+                    target: &target.entry_target_ref(),
+                },
+                EntryStateRef {
+                    stage: Stage::Finished,
+                    status: Status::Succeeded,
+                    entry_key: &key,
+                    metadata: &EntryMetadata::default(),
+                    stats: &stats,
+                },
+            );
+        }
+        tx.commit().await.unwrap();
+        drop(tx);
+        drop(store);
+        stores.close(partition.partition_id).await;
+    }
+
+    /// Partition 0 of the fixture's partition table, seeded with `entries` finished
+    /// entries: a configuration that maintains the status gauges and the entry
+    /// indexes, so opening registers them and starts their backfill, and the
+    /// partition's faults.
+    async fn seeded_partition(
+        stores: &PartitionStoreManager,
+        entries: u64,
+    ) -> (Configuration, Faults) {
+        seeded_partition_at(stores, entries, None).await
+    }
+
+    /// [`seeded_partition`] with the partition at `position`, so that it tracks
+    /// byte offsets.
+    async fn seeded_partition_at(
+        stores: &PartitionStoreManager,
+        entries: u64,
+        position: Option<FsmPosition>,
+    ) -> (Configuration, Faults) {
+        let table = restate_types::partition_table::PartitionTable::with_equally_sized_partitions(
+            Version::MIN,
+            10,
+        );
+        let partition = restate_types::partitions::Partition::new(
+            PartitionId::MIN,
+            table.get(&PartitionId::MIN).unwrap().key_range,
+        );
+        seed_finished_entries(stores, &partition, entries, position).await;
+        let mut config = Configuration::default();
+        config.common.experimental.set_track_status_gauges(true);
+        config.common.experimental.set_indexes_v1(true);
+        (config, stores.faults(&partition))
+    }
+
+    /// Background throttling that caps every slice at `keys` entries, at a rate so
+    /// high that the cap, not the rate, sizes the slices.
+    fn slices_of(keys: u32) -> Option<ThrottlingOptions> {
+        Some(ThrottlingOptions {
+            rate: Rate::Second(NonZeroU32::MAX),
+            capacity: NonZeroU32::new(keys),
+        })
+    }
+
+    /// Lets the background step held at its pause point go ahead, and waits until
+    /// the next one is due and held.
+    async fn next_step(faults: &Faults, resume: &mut tokio::sync::oneshot::Sender<()>) {
+        let (reached, next) = faults.pause(FaultPoint::WalkStep);
+        drop(std::mem::replace(resume, next));
+        reached.await.unwrap();
+    }
+
+    /// Whether the service gauges and the service index are Ready in a new snapshot
+    /// of `store`.
+    fn ready(store: &restate_partition_store::PartitionStore) -> bool {
+        use restate_partition_store::registry::IndexKind;
+
+        let snapshot = store.query_read(Default::default()).unwrap().0;
+        [
+            ("service_stats/1", IndexKind::Aggregate),
+            ("entry_by_stage_service/1", IndexKind::Secondary),
+        ]
+        .iter()
+        .all(|(name, kind)| snapshot.ready_index(name, *kind).is_ok())
+    }
+
+    /// The service-gauge total of a snapshot read: entries counted once each.
+    fn service_total(snapshot: &ReadSnapshot) -> u64 {
+        use std::ops::ControlFlow;
+
+        use restate_partition_store::keys::selection::KeySelection;
+        use restate_partition_store::stats::StatValueCodec;
+        use restate_partition_store::stats::aggregated::{ServiceStats, StageStatusCounts};
+        use restate_storage_query_api::scan::BlockingScan;
+
+        let mut total = 0;
+        <ReadSnapshot as BlockingScan<ServiceStats>>::scan_blocking(
+            snapshot,
+            Arc::new(KeySelection::all()),
+            |(_, payload)| {
+                let counts = StageStatusCounts::deserialize_from(payload).unwrap();
+                total += counts.iter().map(|(_, count)| count).sum::<u64>();
+                ControlFlow::Continue(())
+            },
+        )
+        .unwrap();
+        total
+    }
+
+    /// Index and statistics backfill in a real processor: opening registers the
+    /// gauges and indexes and starts their walk, and the processor's backfill arm
+    /// runs it step by step while the processor serves. This fixture's processor
+    /// applies no record and serves no RPC, so every step counts as quiet. The
+    /// test holds every step at its pause point, so nothing depends on timing.
+    #[test(restate_core::test(flavor = "multi_thread", worker_threads = 4))]
+    async fn background_backfill_progresses_step_by_step_and_publishes_ready()
+    -> googletest::Result<()> {
+        RocksDbManager::init();
+        let stores = PartitionStoreManager::create(true).await?;
+        let (mut config, faults) = seeded_partition(&stores, 300).await;
+        config.worker.storage.background_migrations_throttling = slices_of(16);
+        let (reached, mut resume) = faults.pause(FaultPoint::WalkStep);
+        let processors = start_processors(config, Arc::clone(&stores)).await?;
+        processors.set_membership(PartitionId::MIN, Version::MIN, true);
+        reached.await.unwrap();
+        // The observer reads the store directly, not through the processor.
+        let store = stores.get_partition_store(PartitionId::MIN).await.unwrap();
+        assert!(!ready(&store));
+        assert_eq!(
+            store.walk_stats(),
+            restate_partition_store::walk::WalkStatsSnapshot::default()
+        );
+
+        // Each step takes one slice of the throttling's size.
+        for step in 1..=3 {
+            next_step(&faults, &mut resume).await;
+            let stats = store.walk_stats();
+            assert_eq!(
+                (stats.quiet_steps, stats.busy_steps, stats.examined),
+                (step, 0, 16 * step),
+                "{stats:?}"
+            );
+        }
+        assert!(!ready(&store));
+
+        // Unheld, the backfill runs to its end: Ready, each entry counted once.
+        let (idle, _) = faults.pause(FaultPoint::WalksIdle);
+        drop(resume);
+        idle.await.unwrap();
+        assert!(ready(&store));
+        let snapshot = store.query_read(Default::default()).unwrap().0;
+        assert_eq!(service_total(&snapshot), 300);
+        let done = store.walk_stats();
+        assert_eq!(
+            (done.examined, done.busy_steps, done.failures),
+            (300, 0, 0),
+            "{done:?}"
+        );
+        drop((snapshot, store));
+        TaskCenter::shutdown_node("test completed", 0).await;
+        Ok(())
+    }
+
+    /// The status a processor reports once its partition store byte offset is
+    /// `offset`: the processor refreshes its position after a commit and
+    /// publishes the status on its timer.
+    async fn status_at_store_offset(
+        handle: &ProcessorsManagerHandle,
+        offset: u64,
+    ) -> PartitionProcessorStatus {
+        loop {
+            if let Some(status) = handle.get_state().await.unwrap().get(&PartitionId::MIN)
+                && status.partition_store_byte_offset == Some(offset)
+            {
+                return status.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// A background commit alone advances the store byte offset the processor's
+    /// status reports, to the persisted value, while the applied LSN and the log
+    /// byte offset stay: the processor refreshes its position after the step.
+    #[test(restate_core::test(flavor = "multi_thread", worker_threads = 4))]
+    async fn background_backfill_commits_advance_the_reported_store_offset()
+    -> googletest::Result<()> {
+        RocksDbManager::init();
+        let stores = PartitionStoreManager::create(true).await?;
+        // A partition that tracks byte offsets from its first record, none applied
+        // yet: its log is empty, so nothing is ahead of it.
+        let position = FsmPosition {
+            applied_lsn: Lsn::INVALID,
+            byte_offsets_base_lsn: Lsn::OLDEST,
+            log_byte_offset: 0,
+            partition_store_byte_offset: 0,
+        };
+        let (mut config, faults) = seeded_partition_at(&stores, 300, Some(position)).await;
+        config.worker.storage.background_migrations_throttling = slices_of(16);
+        let (reached, mut resume) = faults.pause(FaultPoint::WalkStep);
+        let processors = start_processors(config, Arc::clone(&stores)).await?;
+        processors.set_membership(PartitionId::MIN, Version::MIN, true);
+        reached.await.unwrap();
+        let mut store = stores.get_partition_store(PartitionId::MIN).await.unwrap();
+        let before = store.get_fsm_position().await?.unwrap();
+        assert!(before.partition_store_byte_offset > 0, "{before:?}");
+        let reported =
+            status_at_store_offset(&processors.handle, before.partition_store_byte_offset).await;
+        assert_eq!(reported.byte_offsets_base_lsn, Some(Lsn::OLDEST));
+
+        // One step commits a slice through the processor's transaction.
+        next_step(&faults, &mut resume).await;
+        let after = store.get_fsm_position().await?.unwrap();
+        assert!(
+            after.partition_store_byte_offset > before.partition_store_byte_offset,
+            "{before:?} {after:?}"
+        );
+        assert_eq!(
+            (
+                after.applied_lsn,
+                after.byte_offsets_base_lsn,
+                after.log_byte_offset
+            ),
+            (
+                before.applied_lsn,
+                before.byte_offsets_base_lsn,
+                before.log_byte_offset
+            )
+        );
+        let reported =
+            status_at_store_offset(&processors.handle, after.partition_store_byte_offset).await;
+        assert_eq!(
+            (reported.byte_offsets_base_lsn, reported.log_byte_offset),
+            (Some(Lsn::OLDEST), Some(0)),
+            "{reported:?}"
+        );
+        drop((resume, store));
+        TaskCenter::shutdown_node("test completed", 0).await;
+        Ok(())
+    }
+
+    /// A snapshot export of a partition whose processor is backfilling. While the
+    /// export holds the processor's commit fence, each due backfill step commits
+    /// nothing and only schedules a recheck; once the export released the fence,
+    /// the backfill resumes and completes. The test holds every step at its pause
+    /// point and lets them go one at a time, so nothing depends on timing.
+    #[test(restate_core::test(flavor = "multi_thread", worker_threads = 4))]
+    async fn background_backfill_waits_out_a_held_export_fence() -> googletest::Result<()> {
+        use restate_partition_store::walk::WalkStatsSnapshot;
+        use restate_types::identifiers::SnapshotId;
+
+        RocksDbManager::init();
+        let (fences_tx, mut fences) = tokio::sync::mpsc::unbounded_channel();
+        *spawn_processor_task::FENCE_TAP.lock() = Some(fences_tx);
+        let stores = PartitionStoreManager::create(true).await?;
+        let (config, faults) = seeded_partition(&stores, 300).await;
+        let (reached, mut resume) = faults.pause(FaultPoint::WalkStep);
+        let processors = start_processors(config, Arc::clone(&stores)).await?;
+        processors.set_membership(PartitionId::MIN, Version::MIN, true);
+        let (_, fence_sender) = fences.recv().await.unwrap();
+
+        // The first step takes the walk's first slice.
+        reached.await.unwrap();
+        let store = stores.get_partition_store(PartitionId::MIN).await.unwrap();
+        assert_eq!(store.walk_stats(), WalkStatsSnapshot::default());
+        next_step(&faults, &mut resume).await;
+        let progressed = store.walk_stats();
+        assert!(
+            progressed.examined > 0 && progressed.examined < 300,
+            "{progressed:?}"
+        );
+
+        // The export of the partition, paused once its fence holds. The held step
+        // does not hold the processor, which grants the fence.
+        let (captured, release) = faults.pause(FaultPoint::SnapshotCapture);
+        let exports = restate_test_util::tempdir().unwrap();
+        let export = tokio::spawn({
+            let stores = Arc::clone(&stores);
+            let path = exports.path().join("export");
+            async move {
+                stores
+                    .export_partition(
+                        PartitionId::MIN,
+                        Some(&fence_sender),
+                        None,
+                        SnapshotId::new(),
+                        &path,
+                    )
+                    .await
+            }
+        });
+        captured.await.unwrap();
+        assert_eq!(store.walk_stats(), progressed);
+        // Every due step skips without work, and schedules the next.
+        for skips in 1..=3 {
+            next_step(&faults, &mut resume).await;
+            assert_eq!(
+                store.walk_stats(),
+                WalkStatsSnapshot {
+                    fence_skips: progressed.fence_skips + skips,
+                    ..progressed
+                },
+            );
+        }
+
+        drop(release);
+        // This fixture's processor applies no record, so the export, once released,
+        // stops at its applied-LSN precondition before capturing; that releases the
+        // fence just as a completed capture does.
+        assert!(matches!(
+            export.await.unwrap(),
+            Err(restate_partition_store::SnapshotError {
+                kind: restate_partition_store::SnapshotErrorKind::Export(_),
+                ..
+            })
+        ));
+        // Unheld from here, the backfill runs to its end, each entry examined once.
+        let (idle, _) = faults.pause(FaultPoint::WalksIdle);
+        drop(resume);
+        idle.await.unwrap();
+        let done = store.walk_stats();
+        assert_eq!((done.examined, done.fence_skips), (300, 3), "{done:?}");
+        assert!(ready(&store));
+        let snapshot = store.query_read(Default::default()).unwrap().0;
+        assert_eq!(service_total(&snapshot), 300);
+        drop((snapshot, store));
+        TaskCenter::shutdown_node("test completed", 0).await;
+        Ok(())
+    }
+
+    /// Processors replaced in the middle of a backfill commit: one while a slice's
+    /// native write is queued, which is then skipped, and one after a slice's write
+    /// but before its publication. Each replacement reloads the committed walk and
+    /// indexes on reopen, and the backfill completes with every entry counted
+    /// once. Pause points sequence every step, so nothing depends on timing.
+    #[test(restate_core::test(flavor = "multi_thread", worker_threads = 4))]
+    async fn background_backfill_survives_processor_replacement_mid_commit()
+    -> googletest::Result<()> {
+        use restate_rocksdb::Priority;
+
+        let rocksdb = RocksDbManager::init();
+        let stores = PartitionStoreManager::create(true).await?;
+        let (mut config, faults) = seeded_partition(&stores, 300).await;
+        config.worker.storage.background_migrations_throttling = slices_of(16);
+        // Commits queue on the storage pool, where a paused pool holds them. Commits
+        // read this option from the global configuration.
+        config.worker.storage.always_commit_in_background = true;
+        restate_types::config::set_current_config(config.clone());
+        let (reached, mut resume) = faults.pause(FaultPoint::WalkStep);
+        let processors = start_processors(config, Arc::clone(&stores)).await?;
+        let mut version = Version::MIN;
+        let mut member = |member: bool| {
+            processors.set_membership(PartitionId::MIN, version, member);
+            version = version.next();
+        };
+        let examined = async || {
+            stores
+                .get_partition_store(PartitionId::MIN)
+                .await
+                .unwrap()
+                .walk_stats()
+                .examined
+        };
+
+        // The walk's first slice commits.
+        member(true);
+        reached.await.unwrap();
+        next_step(&faults, &mut resume).await;
+        assert_eq!(examined().await, 16);
+
+        // The next slice's native write is queued on the held pool when its
+        // processor stops, dropping the commit. The write is then skipped.
+        let paused = rocksdb.pause_background(Priority::High).await;
+        let (queued, mut write) = faults.pause(FaultPoint::NativeWriteQueued);
+        drop(resume);
+        queued.await.unwrap();
+        member(false);
+        write.closed().await;
+        drop(paused);
+
+        // The replacement resumes after the committed slice. Its first slice's
+        // write completes, and its processor stops before the publication.
+        let (reached, resume) = faults.pause(FaultPoint::WalkStep);
+        member(true);
+        reached.await.unwrap();
+        assert_eq!(examined().await, 16, "the dropped slice charged nothing");
+        let (written, mut publication) = faults.pause(FaultPoint::WalkPublication);
+        drop(resume);
+        written.await.unwrap();
+        member(false);
+        publication.closed().await;
+
+        // The next replacement installs that slice from disk and continues after
+        // it: only the remaining entries are examined again.
+        let (idle, _) = faults.pause(FaultPoint::WalksIdle);
+        member(true);
+        idle.await.unwrap();
+        let store = stores.get_partition_store(PartitionId::MIN).await.unwrap();
+        assert_eq!(store.walk_stats().examined, 300 - 16);
+        assert!(ready(&store));
+        let snapshot = store.query_read(Default::default()).unwrap().0;
+        assert_eq!(service_total(&snapshot), 300, "every entry counted once");
+        drop((snapshot, store));
         TaskCenter::shutdown_node("test completed", 0).await;
         Ok(())
     }
