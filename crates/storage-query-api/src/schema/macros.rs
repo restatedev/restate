@@ -969,7 +969,16 @@ macro_rules! define_schema {
         ))
     };
 
+    // The reference names types as the introspection API presents them: the
+    // large variants read as their plain counterparts, and durations and lists
+    // by their units and items.
+    (@type_name $namespace:ident :: LargeUtf8) => { "Utf8" };
+    (@type_name $namespace:ident :: LargeBinary) => { "Binary" };
+    (@type_name $namespace:ident :: Duration) => { "DurationMillisecond" };
     (@type_name $namespace:ident :: $arrow:ident) => { stringify!($arrow) };
+    (@type_name UInt32List) => { "UInt32 List" };
+    (@type_name Utf8List) => { "Utf8 List" };
+    (@type_name LargeUtf8List) => { "Utf8 List" };
     (@type_name $arrow:ident) => { stringify!($arrow) };
 
     (@builder $namespace:ident :: Utf8) => { $crate::schema::__private::datafusion::arrow::array::StringBuilder };
