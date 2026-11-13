@@ -31,7 +31,7 @@ use super::{ColumnFamilies, PinnedBatch, ReadIterator, ReadSnapshot, ScopedReads
 use crate::configuration::{
     CfConfigurator, DbConfigurator, create_default_cf_options, create_default_db_options,
 };
-use crate::reads::{IterationError, IterationOutcome, LeasePolicy};
+use crate::reads::{IterationError, IterationOutcome};
 use crate::{
     CfHandles, CfName, CfPrefixPattern, DbEnv, DbName, DbSpec, DbSpecBuilder, GlobalExecutor,
     IterAction, RocksAccess, RocksDb, RocksDbManager, RocksError, StorageTaskKind,
@@ -655,7 +655,6 @@ async fn prepared_iteration() -> anyhow::Result<()> {
     let iteration = iterator
         .prepare_iteration(
             &gate,
-            LeasePolicy::WholeIteration,
             Some(IterAction::Seek(bytes::Bytes::from_static(&[0]))),
             async move |key: &[u8], value: &[u8]| -> Result<IterAction, RocksError> {
                 match tx
@@ -676,6 +675,10 @@ async fn prepared_iteration() -> anyhow::Result<()> {
     wait_until_full(&rx).await;
     timeout(DEADLINE, executor.spawn_fn("test", || ())?).await??;
     assert_eq!(rx.len(), 50);
+
+    // Sealing refuses new work but lets the admitted scan finish normally.
+    gate.seal();
+    assert!(is_pending(gate.drain()));
 
     // Once we start consuming, the iterator should be able to complete
     for b in 0..100 {
@@ -698,6 +701,7 @@ async fn prepared_iteration() -> anyhow::Result<()> {
         rx.try_recv(),
         Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
     ));
+    timeout(DEADLINE, gate.drain()).await?;
 
     drop(data);
     drop((scope, db));
@@ -728,11 +732,12 @@ async fn wait_until_full<T>(rx: &tokio::sync::mpsc::Receiver<T>) {
 }
 
 #[tokio::test]
-async fn prepared_iteration_ends_early_on_panic_cancellation_or_seal() -> anyhow::Result<()> {
+async fn prepared_iteration_cancellation_cleans_up_before_drain() -> anyhow::Result<()> {
     let tempdir = restate_test_util::tempdir()?;
     let db = standalone(&tempdir.path().join("db"))?;
     let data = db.inner().cf_handle("data").unwrap();
-    for b in 0..100 {
+    // More than one slice, including when the visitor never suspends.
+    for b in 0..=u8::MAX {
         db.inner().as_raw_db().put_cf(&data, [b], [b])?;
     }
     let scope = test_scope(&db, false);
@@ -744,7 +749,6 @@ async fn prepared_iteration_ends_early_on_panic_cancellation_or_seal() -> anyhow
         .owned_iterator(Cf::Data, ReadOptions::default())
         .prepare_iteration(
             &gate,
-            LeasePolicy::StopOnSeal,
             Some(IterAction::SeekToFirst),
             async |key: &[u8], _value: &[u8]| -> Result<IterAction, RocksError> {
                 assert_ne!(key, [5], "callback panic");
@@ -767,7 +771,6 @@ async fn prepared_iteration_ends_early_on_panic_cancellation_or_seal() -> anyhow
         .owned_iterator(Cf::Data, ReadOptions::default())
         .prepare_iteration(
             &iteration_gate,
-            LeasePolicy::WholeIteration,
             Some(IterAction::SeekToFirst),
             send_keys(tx),
         );
@@ -781,35 +784,100 @@ async fn prepared_iteration_ends_early_on_panic_cancellation_or_seal() -> anyhow
     }
     assert_eq!(received, 10);
 
-    // Sealing the gate while the callback waits for room ends the iteration
-    // once the callback is done, with `ScopeClosed`. Waiting holds no
-    // lease, so the gate drains meanwhile.
-    let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+    // A cancelled task that has not started still holds admission until cleanup.
+    // Its visitor must not run, and cancellation is distinct from rejection.
+    let queued_gate = scope.gate().child();
+    let task = scope
+        .owned_iterator(Cf::Data, ReadOptions::default())
+        .prepare_iteration(
+            &queued_gate,
+            Some(IterAction::SeekToFirst),
+            async |_: &[u8], _: &[u8]| -> Result<IterAction, RocksError> {
+                panic!("cancelled before starting")
+            },
+        )
+        .map_ok(drop)
+        .with_read_perf("test")
+        .into_task()?;
+    queued_gate.cancel();
+    assert!(is_pending(queued_gate.drain()));
+    assert_matches!(task.run().await, Err(IterationError::Cancelled));
+    timeout(DEADLINE, queued_gate.drain()).await?;
+    assert!(matches!(
+        scope
+            .owned_iterator(Cf::Data, ReadOptions::default())
+            .prepare_iteration(
+                &queued_gate,
+                Some(IterAction::Stop),
+                send_keys(tokio::sync::mpsc::channel(1).0),
+            )
+            .into_task(),
+        Err(AdmissionClosed)
+    ));
+
+    // A ready visitor cancels on its first row. The slice yield must observe
+    // cancellation before the scan exhausts, without relying on backpressure.
+    let slice_gate = scope.gate().child();
+    let cancel = Arc::clone(&slice_gate);
     let iteration = scope
         .owned_iterator(Cf::Data, ReadOptions::default())
         .prepare_iteration(
-            &gate,
-            LeasePolicy::StopOnSeal,
+            &slice_gate,
             Some(IterAction::SeekToFirst),
-            send_keys(tx),
+            async move |key: &[u8], _: &[u8]| -> Result<IterAction, RocksError> {
+                if key == [0] {
+                    cancel.cancel();
+                }
+                Ok(IterAction::Next)
+            },
         );
+    assert_matches!(
+        timeout(DEADLINE, executor.spawn(iteration)?)
+            .await?
+            .map(|r| r.map(drop)),
+        Ok(Err(IterationError::Cancelled))
+    );
+    timeout(DEADLINE, slice_gate.drain()).await?;
+
+    // Escalation wakes a visitor blocked on capacity. The native snapshot and
+    // scope are released before the operation's lease allows draining to finish.
+    watch(&scope, &gate);
+    let dropped = Arc::clone(&scope.payload().dropped);
+    let snapshot = ReadSnapshot::new(&scope, &gate)?;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+    let iteration = snapshot
+        .owned_iterator(Cf::Data, ReadOptions::default())
+        .prepare_iteration(&gate, Some(IterAction::SeekToFirst), send_keys(tx));
     let driver = executor.spawn(iteration)?;
+    drop((snapshot, scope));
     wait_until_full(&rx).await;
+    // With one worker, this runs only after the scan suspends on the full channel.
+    timeout(DEADLINE, executor.spawn_fn("test", || ())?).await??;
     gate.seal();
+    assert!(is_pending(gate.drain()));
+    assert!(dropped.lock().is_none());
+    gate.cancel();
     timeout(DEADLINE, gate.drain()).await?;
+    assert_eq!(
+        dropped.lock().take(),
+        Some(PayloadDrop {
+            native_snapshots: Some(0),
+            gate_idle: Some(false),
+        })
+    );
     assert_eq!(rx.recv().await, Some(vec![0]));
     assert_matches!(
         timeout(DEADLINE, driver).await?.map(|r| r.map(drop)),
-        Ok(Err(IterationError::ScopeClosed(AdmissionClosed)))
+        Ok(Err(IterationError::Cancelled))
     );
 
-    // The item the callback was waiting to send still arrives, and nothing
-    // after it.
+    // The callback's pending send was dropped: only the items sent before
+    // cancellation arrive.
     let mut received = 1;
     while rx.recv().await.is_some() {
         received += 1;
     }
-    assert_eq!(received, 11);
+    assert_eq!(received, 10);
 
     Ok(())
 }

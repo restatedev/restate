@@ -23,4 +23,4 @@ pub use executor::{
     AdmissionClosed, FutureTask, IdleTracker, IoExecutor, IoOp, IoTask, IoTaskError,
     TrackedExecutor, TrackedTask,
 };
-pub use restate_util_lifecycle::{Gate, Lease, OwnedLease};
+pub use restate_util_lifecycle::{Cancelled, Gate, Lease, OwnedLease};
