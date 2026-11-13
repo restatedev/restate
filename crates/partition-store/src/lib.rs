@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+#![doc = include_str!("../README.md")]
+
 pub mod blob_table;
 mod compaction_filter;
 pub mod deduplication_table;
@@ -33,6 +35,7 @@ mod partition_store;
 mod partition_store_manager;
 pub mod promise_table;
 mod read_snapshot;
+pub mod registry;
 pub mod scan;
 pub mod service_status_table;
 pub mod snapshots;
@@ -40,6 +43,7 @@ pub mod state_table;
 pub mod stats;
 pub mod timer_table;
 pub mod vqueue_table;
+pub mod walk;
 
 #[cfg(test)]
 mod tests;
