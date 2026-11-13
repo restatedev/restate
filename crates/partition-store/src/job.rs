@@ -204,7 +204,7 @@ pub struct MigrationJob {
     /// The last committed slice's work time before commit, in microseconds.
     #[bilrost(16)]
     pub last_slice_work_us: Option<u64>,
-    /// Failed attempts at a slice.
+    /// Failed attempts: at a slice, or at starting another pass.
     #[bilrost(17)]
     pub failures: u32,
     /// Failed attempts since the last committed slice.

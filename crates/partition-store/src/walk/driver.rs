@@ -11,9 +11,15 @@
 //! The background driver: runs walks between the partition processor's turns, a
 //! slice at a time, through the processor's own transaction (see [`engine`]).
 //!
-//! **Order.** One walk at a time, the started walks in ascending ID. Opening the
-//! partition started them (see `registry::reconcile`), so the driver only runs
-//! what is already durable.
+//! **Order.** Slices take turns between the started walks, by ID: after a slice
+//! of walk 3, the next goes to the lowest started walk above 3, or else the
+//! lowest. A walk waiting out its retry backoff is skipped. Before any slice, the
+//! waiting jobs whose wait is over start a pass, together in one commit (see
+//! [`engine::start_passes`]). A waiting job's wall-clock eligibility becomes a
+//! deadline on this process's clock when the driver first sees it, at most the
+//! longest re-check wait away, so a clock jump can't strand it. With nothing
+//! runnable, the driver sleeps until the earliest retry or eligibility, and idles
+//! when there is neither.
 //!
 //! **Pacing.** A slice occupies the processor while it runs, so the driver limits
 //! the share of time slices take: a slice that occupied `d` defers the next by
@@ -28,15 +34,18 @@
 //! 20 ms or so. Rests shorter than the timer's millisecond resolution round up,
 //! which only lowers the share.
 //!
-//! **Failures.** A slice that fails before its commit is recorded on its walk,
-//! and the driver retries after an exponential backoff, while the partition
-//! keeps serving and the indexes stay Backfilling. A failed commit has an
+//! **Failures.** A slice that fails before its commit is recorded on its walk's
+//! jobs, and that walk retries after its own exponential backoff while the other
+//! walks keep their turns, the partition keeps serving and the indexes stay
+//! Backfilling. A pass that fails to start likewise defers only its jobs, behind
+//! a backoff of its own; started walks keep their turns meanwhile. A failed commit has an
 //! unknown outcome: [`WalkDriver::step`] returns it, and the processor stops; its
 //! reopen reloads the records.
 //!
 //! **Snapshots.** While a snapshot export holds the transaction's commits back,
 //! the driver does nothing and checks again shortly after.
 
+use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -46,10 +55,13 @@ use gardal::{Limit, LocalTokenBucket, TokioClock, TryConsumeError};
 use tokio::time::{Instant, Sleep};
 use tracing::{info, warn};
 
+use restate_clock::WallClock;
 use restate_storage_api::StorageError;
 use restate_types::config::StorageOptions;
 
 use crate::faults::{self, FaultPoint};
+use crate::job::{MigrationJobStatus, RECHECK_CAP_MS};
+use crate::registry::{IndexStatus, MaintainedIndexes};
 use crate::{PartitionDb, PartitionStore, PartitionStoreTransaction};
 
 use super::engine::{self, Slice, SliceBudget, SliceError};
@@ -154,8 +166,15 @@ pub struct WalkDriver {
     rested: Instant,
     sleep: Pin<Box<Sleep>>,
     pacing: Pacing,
-    /// Consecutive failures, for the backoff.
-    failures: u32,
+    /// The walk of the latest slice: the next slice goes to the next walk by ID.
+    last_walk: Option<u64>,
+    /// The walks whose latest slice failed: their consecutive failures, and when
+    /// they may retry.
+    backoffs: HashMap<u64, (u32, Instant)>,
+    /// When each waiting job, by index ID, may start its next pass.
+    eligible_at: HashMap<u32, Instant>,
+    /// Consecutive failed pass starts, for their backoff.
+    start_failures: u32,
     busy: bool,
     /// The resumption of a step paused at [`FaultPoint::WalkStep`].
     held: Option<faults::Resume>,
@@ -171,8 +190,15 @@ impl PartitionStore {
     /// The background driver of this partition's walks, under `options`.
     pub fn walk_driver(&self, options: &StorageOptions) -> WalkDriver {
         let db = self.partition_db().clone();
-        let started = self.maintained_indexes().walks().entries().len();
-        let pending = started > 0;
+        let active = self.maintained_indexes();
+        let started = active.walks().entries().len();
+        let waiting = active
+            .jobs()
+            .unfinished
+            .entries()
+            .iter()
+            .any(|job| job.status == MigrationJobStatus::Waiting);
+        let pending = started > 0 || waiting;
         if pending && options.disable_background_migrations {
             info!(
                 started,
@@ -197,7 +223,10 @@ impl PartitionStore {
                     .clone()
                     .map(Limit::from),
             ),
-            failures: 0,
+            last_walk: None,
+            backoffs: HashMap::new(),
+            eligible_at: HashMap::new(),
+            start_failures: 0,
             busy: false,
             held: None,
         }
@@ -238,7 +267,8 @@ impl WalkDriver {
         self.busy = true;
     }
 
-    /// Does what is due, if anything: a slice of the current walk. `tx` must have
+    /// Does what is due, if anything: starting the passes whose wait is over, or
+    /// else a slice of the next walk (see the module documentation). `tx` must have
     /// no pending writes. Fails only with a failed commit, after which the
     /// processor must stop.
     ///
@@ -260,20 +290,121 @@ impl WalkDriver {
             self.due = Some(started + self.pacing.tuning.fence_recheck);
             return Ok(());
         }
-        match tx
-            .maintained_indexes()
-            .walks()
-            .entries()
-            .iter()
-            .map(|w| w.id)
-            .min()
-        {
+        let active = tx.maintained_indexes();
+        let eligible = self.eligible(&active, started);
+        if !eligible.is_empty() {
+            return self.start_passes(tx, &eligible, started).await;
+        }
+        match self.next_walk(&active, started) {
             Some(walk) => self.slice(tx, walk, started).await,
             None => {
-                self.due = None;
+                self.due = self.wake_up();
                 Ok(())
             }
         }
+    }
+
+    /// The waiting jobs, by index ID, whose wait is over at `now`. Gives each
+    /// waiting job first seen a deadline on this process's clock: its wall-clock
+    /// eligibility, at most [`RECHECK_CAP_MS`] away.
+    fn eligible(&mut self, active: &MaintainedIndexes, now: Instant) -> Vec<u32> {
+        let wall = WallClock::now_ms().as_u64();
+        let waiting: Vec<_> = active
+            .jobs()
+            .unfinished
+            .entries()
+            .iter()
+            .filter(|job| job.status == MigrationJobStatus::Waiting)
+            .filter(|job| {
+                active
+                    .registry()
+                    .get(job.id().as_u32())
+                    .is_some_and(|index| {
+                        index.state == IndexStatus::Backfilling && index.walk.is_none()
+                    })
+            })
+            .map(|job| (job.id().as_u32(), job.next_eligible_at))
+            .collect();
+        self.eligible_at
+            .retain(|id, _| waiting.iter().any(|(waiting, _)| waiting == id));
+        for (id, at) in &waiting {
+            self.eligible_at.entry(*id).or_insert_with(|| {
+                let wait = at.map_or(0, |at| at.saturating_sub(wall).min(RECHECK_CAP_MS));
+                now + Duration::from_millis(wait)
+            });
+        }
+        waiting
+            .into_iter()
+            .map(|(id, _)| id)
+            .filter(|id| self.eligible_at.get(id).is_some_and(|at| *at <= now))
+            .collect()
+    }
+
+    /// The next walk to take a slice at `now`: the lowest started walk after the
+    /// latest one, or else the lowest, skipping those in backoff.
+    fn next_walk(&mut self, active: &MaintainedIndexes, now: Instant) -> Option<u64> {
+        let walks = active.walks().entries();
+        self.backoffs
+            .retain(|id, _| walks.iter().any(|walk| walk.id == *id));
+        let mut runnable: Vec<_> = walks
+            .iter()
+            .map(|walk| walk.id)
+            .filter(|id| self.backoffs.get(id).is_none_or(|(_, retry)| *retry <= now))
+            .collect();
+        runnable.sort_unstable();
+        let after = self.last_walk.unwrap_or(0);
+        runnable
+            .iter()
+            .find(|id| **id > after)
+            .or_else(|| runnable.first())
+            .copied()
+    }
+
+    /// When something next becomes runnable: the earliest retry or eligibility.
+    fn wake_up(&self) -> Option<Instant> {
+        self.backoffs
+            .values()
+            .map(|(_, retry)| *retry)
+            .chain(self.eligible_at.values().copied())
+            .min()
+    }
+
+    /// Starts a pass for the waiting jobs `ids` in one commit. A failed start
+    /// defers only those jobs, behind a backoff of its own, so started walks keep
+    /// their turns; the deferred start counts towards the next wake-up.
+    async fn start_passes(
+        &mut self,
+        tx: &mut PartitionStoreTransaction<'_>,
+        ids: &[u32],
+        started: Instant,
+    ) -> Result<(), StorageError> {
+        match engine::start_passes(tx, &self.db, ids).await {
+            Ok(walk) => {
+                info!(?walk, indexes = ?ids, "Started another backfill pass of indexes");
+                self.start_failures = 0;
+            }
+            Err(SliceError::Commit(err)) => return Err(err),
+            Err(SliceError::Staging(err)) => {
+                warn!(indexes = ?ids, "Failed to start a backfill pass, retrying: {err}");
+                let retry = self.pacing.retry(Instant::now(), self.start_failures);
+                self.start_failures = self.start_failures.saturating_add(1);
+                for id in ids {
+                    self.eligible_at.insert(*id, retry);
+                }
+                // Like a failed slice, the failed start shows on the jobs.
+                let error = engine::describe(&err);
+                let work = started.elapsed();
+                match engine::record_job_failures(tx, &self.db, ids, &error, work).await {
+                    Err(SliceError::Commit(err)) => return Err(err),
+                    Err(SliceError::Staging(record)) => {
+                        warn!(indexes = ?ids, "Failed to record a failed pass start: {record}");
+                    }
+                    Ok(()) => {}
+                }
+            }
+        }
+        self.due = Some(started.max(self.rested));
+        Ok(())
     }
 
     async fn slice(
@@ -285,7 +416,15 @@ impl WalkDriver {
         let keys = match self.pacing.keys(started) {
             Ok(keys) => keys,
             Err(refilled) => {
-                self.due = Some(refilled.max(self.rested));
+                // A waiting job may become eligible before the bucket refills;
+                // starting its pass needs no tokens.
+                let refilled = refilled.max(self.rested);
+                self.due = Some(
+                    self.eligible_at
+                        .values()
+                        .copied()
+                        .fold(refilled, Instant::min),
+                );
                 return Ok(());
             }
         };
@@ -315,17 +454,15 @@ impl WalkDriver {
                 (examined, Some(error))
             }
         };
-        self.charge(started, examined, failure);
-        if tx.maintained_indexes().walks().entries().is_empty() {
-            self.due = None;
-        }
+        self.charge(walk, started, examined, failure);
         Ok(())
     }
 
-    /// Charges work that started at `started` and ends now, examining `examined`
-    /// source keys, and schedules the next step once its rest, or after a
-    /// `failure` its backoff too, has passed since the work ended.
-    fn charge(&mut self, started: Instant, examined: usize, failure: Option<String>) {
+    /// Charges `walk`'s work that started at `started` and ends now, examining
+    /// `examined` source keys, and schedules the next step once its rest has
+    /// passed since the work ended. After a `failure`, `walk` itself also waits
+    /// out its backoff.
+    fn charge(&mut self, walk: u64, started: Instant, examined: usize, failure: Option<String>) {
         let ended = Instant::now();
         let busy = std::mem::take(&mut self.busy);
         let stats = self.db.walk_stats();
@@ -346,18 +483,26 @@ impl WalkDriver {
             add(&stats.failures, 1);
         }
         self.rested = self.pacing.charge(started, ended, examined, busy);
-        self.due = Some(match failure {
+        self.last_walk = Some(walk);
+        match failure {
             None => {
-                self.failures = 0;
-                self.rested
+                self.backoffs.remove(&walk);
             }
             Some(error) => {
-                warn!("Background index and statistics backfill failed, retrying: {error}");
-                let retry = self.pacing.retry(ended, self.failures);
-                self.failures = self.failures.saturating_add(1);
-                retry.max(self.rested)
+                warn!(
+                    walk,
+                    "Background index and statistics backfill failed, retrying: {error}"
+                );
+                let failures = self
+                    .backoffs
+                    .get(&walk)
+                    .map_or(0, |(failures, _)| *failures);
+                let retry = self.pacing.retry(ended, failures);
+                self.backoffs
+                    .insert(walk, (failures.saturating_add(1), retry));
             }
-        });
+        }
+        self.due = Some(self.rested);
     }
 
     #[cfg(test)]
