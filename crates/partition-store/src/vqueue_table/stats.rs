@@ -54,19 +54,16 @@ pub(crate) static VIRTUAL_OBJECT_STATS: IndexDefinition = IndexDefinition {
 };
 
 /// The status gauges, released and controlled together.
-#[allow(dead_code)] // Consumed when the registry is reconciled at open.
 pub(crate) const STATUS_GAUGES: Family = Family {
     definitions: &[&SERVICE_STATS, &DEPLOYMENT_STATS, &VIRTUAL_OBJECT_STATS],
     maintain: track_status_gauges,
     reset: status_gauges_reset,
 };
 
-#[allow(dead_code)] // Consumed when the registry is reconciled at open.
 fn track_status_gauges(config: &Configuration) -> bool {
     config.common.experimental.is_track_status_gauges_enabled()
 }
 
-#[allow(dead_code)] // Consumed when the registry is reconciled at open.
 fn status_gauges_reset(config: &Configuration) -> bool {
     config.common.experimental.is_status_gauges_reset_enabled()
 }

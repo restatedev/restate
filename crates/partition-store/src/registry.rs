@@ -51,8 +51,12 @@
 use restate_util_string::ReString;
 
 mod active;
+mod backfill;
+mod reconcile;
 
 pub(crate) use active::{DEFINITIONS, Family, IndexDefinition, MaintainedIndexes};
+pub(crate) use backfill::IndexBackfill;
+pub(crate) use reconcile::{FAMILIES, FenceState, Requests};
 
 /// The first index ID the registry issues. Lower IDs belong to the static
 /// index (1–7) and statistic (1–3) identities that predate the registry.
@@ -234,7 +238,6 @@ impl IndexRegistry {
     }
 
     /// Links a Backfilling index to the walk backfilling it.
-    #[allow(dead_code)]
     pub(crate) fn link(&mut self, id: u32, walk: u64) -> Result<(), RegistryError> {
         use IndexStatus::Backfilling;
         self.transition(id, &[Backfilling], Backfilling)?.walk = Some(walk);
