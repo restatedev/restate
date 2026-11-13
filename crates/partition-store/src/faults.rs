@@ -253,11 +253,17 @@ pub(crate) async fn inject(fault: Option<Fault>) -> Result<(), RocksError> {
 /// waiter pauses.
 #[cfg(any(test, feature = "faults"))]
 pub(crate) async fn queued<T>(faults: &Faults, write: impl Future<Output = T>) -> T {
+    // Declared before the write, so that dropping this future drops the write's
+    // waiter first: once the pause's `resume.closed()` resolves, a write still
+    // queued on the pool is no longer wanted and is skipped.
+    let mut resume = None;
     let mut write = std::pin::pin!(write);
     if let std::task::Poll::Ready(output) = futures::poll!(write.as_mut()) {
         return output;
     }
-    faults.reach(FaultPoint::NativeWriteQueued).await;
+    if let Some(arrived) = faults.arrive(FaultPoint::NativeWriteQueued) {
+        let _ = resume.insert(arrived).await;
+    }
     write.await
 }
 

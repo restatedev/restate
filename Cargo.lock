@@ -9362,6 +9362,7 @@ dependencies = [
  "restate-service-protocol",
  "restate-service-protocol-v4",
  "restate-storage-api",
+ "restate-storage-query-api",
  "restate-storage-query-datafusion",
  "restate-test-util",
  "restate-timer",

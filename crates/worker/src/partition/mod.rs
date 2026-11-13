@@ -585,6 +585,11 @@ where
             .watch_leadership_state(partition_id);
         watch_leader_changes.mark_changed();
 
+        // Backfills of indexes and statistics run between the arms below, through
+        // `txn`, which has no pending writes there.
+        let mut walks = self
+            .partition_store
+            .walk_driver(&self.node_ctx.config.live_load().worker.storage);
         let mut cloned_partition_store = self.partition_store.clone();
         let mut txn = cloned_partition_store.transaction();
         txn.set_fsm_position(self.ctx.fsm_position());
@@ -629,6 +634,7 @@ where
                         partition_id,
                         "network_leader_svc_rx",
                     );
+                    walks.note_foreground();
                     // todo: replace the live schema with the leader's consistent schema
                     self.on_rpc(msg, live_schemas.live_load(), &last_applied_lsn_watch, rpc_proposal_sender.expect("guarded with is_some")).await;
                 }
@@ -653,6 +659,7 @@ where
                         return Err(ProcessorError::LogReadStreamTerminated);
                     };
                     let first = first?;
+                    walks.note_foreground();
 
                     txn.clear();
                     txn.set_write_batch_size_histogram(if self.leadership_state.is_leader() {
@@ -769,7 +776,36 @@ where
                         partition_id,
                         "leader_query_rx",
                     );
+                    walks.note_foreground();
                     self.on_leader_query(leader_query_cmd);
+                }
+                // A slice of a backfill, paced to leave most of the time to the other arms: the
+                // record, RPC and query arms count as load, the timers do not. It commits through
+                // `txn` and installs what it committed in `txn`, so the next command batch
+                // maintains the indexes it changed. A failed commit stops the processor, like a
+                // failed command batch.
+                () = walks.ready() => {
+                    let _guard = SlowPartitionProcessorArmTracker::new(
+                        partition_id,
+                        "background_walks",
+                    );
+                    // Work waiting for the record, RPC and query arms counts as load, like
+                    // handled work. None of these checks takes anything: the peeked record
+                    // stays buffered for the record arm, and RPCs only count while their arm
+                    // is enabled.
+                    let waiting = record_stream.as_mut().peek().now_or_never().is_some_and(|next| next.is_some())
+                        || (rpc_proposal_sender.is_some() && !self.network_leader_svc_rx.is_empty())
+                        || !self.leader_query_rx.is_empty();
+                    if waiting {
+                        walks.note_foreground();
+                    }
+                    // A slice is sized by the walk's budget, not by command batching: keep
+                    // it out of the command batch histogram. The record arm sets the
+                    // histogram again before its next batch.
+                    txn.clear_write_batch_size_histogram();
+                    walks.step(&mut txn).await?;
+                    // A committed slice or failure record advanced the store byte offset.
+                    self.ctx.refresh_fsm_position(&txn);
                 }
                 // Everything applied so far is committed, so a snapshot exported until the fence
                 // is dropped holds exactly what it reads from the store.
