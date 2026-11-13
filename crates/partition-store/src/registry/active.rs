@@ -55,7 +55,6 @@ pub(crate) type ApplyEntryChange = fn(
 );
 
 /// Definitions released together, switched on by the same configuration options.
-#[allow(dead_code)] // Consumed when the registry is reconciled at open.
 pub(crate) struct Family {
     pub(crate) definitions: &'static [&'static IndexDefinition],
     /// Register and maintain the definitions.
@@ -86,7 +85,6 @@ pub(crate) const DEFINITIONS: &[&IndexDefinition] = &[
     &crate::vqueue_table::ENTRY_NEXT_AT_BY_VIRTUAL_OBJECT_STAGE,
 ];
 
-#[allow(dead_code)] // Consumed when the registry is reconciled at open.
 struct Active {
     id: u32,
     ready: bool,
@@ -102,7 +100,6 @@ struct Active {
 /// committed registry and walks whenever a commit changes them, and shared by
 /// every transaction.
 #[derive(Default)]
-#[allow(dead_code)] // Consumed when the registry is reconciled at open.
 pub(crate) struct MaintainedIndexes {
     /// Sorted by ID.
     entries: Vec<Active>,
@@ -140,7 +137,6 @@ impl MaintainedIndexes {
 
     /// The set of the same definitions after a commit changed the registry or the
     /// walks to `registry` and `walks`.
-    #[allow(dead_code)] // Consumed when the registry is reconciled at open.
     pub(crate) fn successor(&self, registry: IndexRegistry, walks: Walks) -> Self {
         let known: Vec<_> = self.entries.iter().map(|entry| entry.definition).collect();
         Self::build(registry, walks, &known)
@@ -184,20 +180,17 @@ impl MaintainedIndexes {
     }
 
     /// The committed registry.
-    #[allow(dead_code)] // Consumed when the registry is reconciled at open.
     pub(crate) fn registry(&self) -> &IndexRegistry {
         &self.registry
     }
 
     /// The committed walks.
-    #[allow(dead_code)] // Consumed when the registry is reconciled at open.
     pub(crate) fn walks(&self) -> &Walks {
         &self.walks
     }
 
     /// The indexes walk `walk` backfills, or an error if a member's definition
     /// is unknown here.
-    #[allow(dead_code)] // Consumed when the registry is reconciled at open.
     pub(crate) fn members(
         &self,
         walk: u64,

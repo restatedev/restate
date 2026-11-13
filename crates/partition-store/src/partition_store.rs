@@ -727,6 +727,8 @@ impl PartitionStore {
             write_batch_size_histogram: None,
             fsm_position: None,
             fsm_position_pending: false,
+            #[cfg(any(test, feature = "faults"))]
+            faults: self.db.faults(),
         }
     }
 
@@ -925,6 +927,10 @@ impl PartitionStore {
             ));
         }
 
+        // An unsupported or invalid registry fails the open before any migration
+        // below mutates the store.
+        self.validate_registry(storage_features.enabled())?;
+
         // Registered indexes replace the legacy status gauges. Delete them once
         // every compatibility check above passed, before any family can be
         // activated below.
@@ -959,6 +965,20 @@ impl PartitionStore {
             storage_features.mark_persisted();
         }
         self.set_storage_features(*storage_features.enabled());
+
+        // Before the processor starts writing: retire, reset and register
+        // indexes, start their walks, fence the store, and install the indexes
+        // maintained on writes.
+        self.reconcile_registry(
+            crate::registry::DEFINITIONS,
+            &crate::registry::Requests::from_config(crate::registry::FAMILIES, config),
+            crate::registry::FenceState {
+                features: &mut storage_features,
+                current_version: current_restate_version,
+                min_restate_version: &mut current_min_restate_version,
+            },
+        )
+        .await?;
 
         // Keep StorageVersion aligned for older binaries that used it as the sole signal for these
         // migrations. The combined variant is accurate only when both features are enabled; a
@@ -1149,6 +1169,8 @@ pub struct PartitionStoreTransaction<'a> {
     /// Whether the next commit persists the position even if it has nothing else to write,
     /// because the applied LSN advanced while only the position holds it.
     fsm_position_pending: bool,
+    #[cfg(any(test, feature = "faults"))]
+    faults: &'a crate::faults::Faults,
 }
 
 /// Holds back the commits of the [`PartitionStoreTransaction`] that created it until dropped.
@@ -1364,6 +1386,52 @@ impl<'a> PartitionStoreTransaction<'a> {
         Arc::clone(&self.maintained_indexes)
     }
 
+    /// Replaces the indexes maintained on writes, once a commit changed them.
+    pub(crate) fn set_maintained_indexes(&mut self, maintained_indexes: Arc<MaintainedIndexes>) {
+        self.maintained_indexes = maintained_indexes;
+    }
+
+    /// Whether a [`CommitFence`] currently holds back commits. Neither takes nor lifts a
+    /// fence; it only forgets one already released.
+    pub(crate) fn commits_held(&mut self) -> bool {
+        let held = self.commit_fence.as_mut().is_some_and(|released| {
+            matches!(
+                released.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            )
+        });
+        if !held {
+            self.commit_fence = None;
+        }
+        held
+    }
+
+    /// Marks the buffered writes, so that [`Self::rollback_to_save_point`] can drop
+    /// the ones that follow. Save points nest, and a commit or [`Self::clear`]
+    /// drops them.
+    pub(crate) fn set_save_point(&mut self) {
+        self.write_batch_with_index
+            .as_mut()
+            .expect("transaction valid")
+            .set_save_point();
+    }
+
+    /// Drops the writes buffered since the latest save point, and that save point.
+    pub(crate) fn rollback_to_save_point(&mut self) -> Result<()> {
+        self.write_batch_with_index
+            .as_mut()
+            .expect("transaction valid")
+            .rollback_to_save_point()
+            .map_err(|err| StorageError::Generic(err.into()))
+    }
+
+    /// Whether no write is buffered.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.write_batch_with_index
+            .as_ref()
+            .is_none_or(|batch| batch.is_empty())
+    }
+
     #[inline]
     pub(crate) fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) -> Result<()> {
         assert_partition_key_or_err(self.meta.key_range, partition_key)
@@ -1462,16 +1530,18 @@ impl Transaction for PartitionStoreTransaction<'_> {
         let mut opts = rocksdb::WriteOptions::default();
         // We disable WAL since bifrost is our durable distributed log.
         opts.disable_wal(true);
+        let write = self.rocksdb.write_batch_with_index(
+            "partition-store-txn-commit",
+            Priority::High,
+            io_mode,
+            opts,
+            write_batch,
+            lease,
+        );
+        #[cfg(any(test, feature = "faults"))]
+        let write = crate::faults::queued(self.faults, write);
         self.write_batch_with_index = Some(
-            self.rocksdb
-                .write_batch_with_index(
-                    "partition-store-txn-commit",
-                    Priority::High,
-                    io_mode,
-                    opts,
-                    write_batch,
-                    lease,
-                )
+            write
                 .await
                 .map_err(|error| StorageError::Generic(error.into()))?,
         );

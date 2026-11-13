@@ -33,7 +33,8 @@
 //!                  covered   cursor = B  end = E   the write path handles it
 //! ```
 //!
-//! A slice engine runs walks a slice at a time. The record also keeps durable
+//! The `engine` runs walks a slice at a time, through the [`WalkDriver`], between
+//! the partition processor's turns. The record also keeps durable
 //! diagnostics: the keys committed slices examined and the failed attempts, with
 //! the last error until the next slice commits. Like the rest of the record,
 //! they survive a restart as of the last flush.
@@ -41,6 +42,12 @@
 use bytes::Bytes;
 
 use restate_util_string::ReString;
+
+mod driver;
+pub(crate) mod engine;
+
+pub(crate) use driver::WalkStats;
+pub use driver::{WalkDriver, WalkStatsSnapshot};
 
 /// The persisted format this binary reads and writes.
 const FORMAT: u32 = 1;
@@ -213,7 +220,6 @@ impl Walks {
     /// Starts a walk of `kind` over `source` up to `end`, inclusive. The new
     /// record is checked like a decoded one, so that nothing `start` accepts can
     /// fail to load again; a rejected walk leaves the record unchanged.
-    #[allow(dead_code)]
     pub(crate) fn start(
         &mut self,
         kind: WalkKind,
@@ -246,7 +252,6 @@ impl Walks {
 
     /// Records a committed slice: its last key and how many keys it examined. The
     /// cursor only moves forward.
-    #[allow(dead_code)]
     pub(crate) fn advance(
         &mut self,
         id: u64,
@@ -276,7 +281,6 @@ impl Walks {
 
     /// Records a failed attempt at a slice of walk `id`, keeping at most
     /// [`MAX_ERROR_LEN`] bytes of `error`.
-    #[allow(dead_code)]
     pub(crate) fn record_failure(&mut self, id: u64, error: &str) -> Result<(), WalkError> {
         let walk = self
             .walks
@@ -293,7 +297,6 @@ impl Walks {
     }
 
     /// Removes a finished or abandoned walk. Its ID stays issued.
-    #[allow(dead_code)]
     pub(crate) fn remove(&mut self, id: u64) -> Result<(), WalkError> {
         let before = self.walks.len();
         self.walks.retain(|walk| walk.id != id);

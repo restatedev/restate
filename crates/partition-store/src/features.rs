@@ -9,6 +9,8 @@
 // by the Apache License, Version 2.0.
 
 mod aggregated_status_stats;
+#[cfg(test)]
+pub(crate) use aggregated_status_stats::legacy_status_gauge_key;
 mod index_registry;
 mod indexes_v1;
 mod scoped_promise_migration;
@@ -230,7 +232,6 @@ impl LoadedStorageFeatures {
     /// entry and, when higher, the minimum Restate version. The registry state the
     /// fence protects must be written in the same batch. Call `mark_persisted`
     /// once the batch commits. Returns whether anything was added.
-    #[allow(dead_code)] // Consumed when the registry is reconciled at open.
     pub(crate) fn append_registry_fence(
         &mut self,
         current_version: &SemanticRestateVersion,

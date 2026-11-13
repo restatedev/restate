@@ -1104,6 +1104,34 @@ pub struct StorageOptions {
         skip_serializing_if = "serde_helpers::is_default_vqueue_meta_full_write_probability"
     )]
     pub vqueue_meta_full_write_probability: f64,
+
+    /// # Disable background migrations
+    ///
+    /// Stops partitions from running background migrations while they process commands,
+    /// such as backfilling query indexes and statistics. Pending migrations then wait,
+    /// while the partition keeps maintaining its indexes and statistics for the entries
+    /// written from then on; indexes and statistics that are already complete stay
+    /// complete.
+    ///
+    /// Takes effect when partition processors start.
+    ///
+    /// Since v1.8.2
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub disable_background_migrations: bool,
+
+    /// # Background migrations throttling
+    ///
+    /// Token-bucket limit on the entries that background migrations examine on each
+    /// partition replica, one token per entry. After a pause, they may examine up to the
+    /// burst capacity at once. Unset by default: background migrations already yield to
+    /// the partition's commands, and this limit further caps their I/O and CPU use. A
+    /// lower rate makes them take correspondingly longer.
+    ///
+    /// Takes effect when partition processors start.
+    ///
+    /// Since v1.8.2
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub background_migrations_throttling: Option<ThrottlingOptions>,
 }
 
 impl StorageOptions {
@@ -1204,6 +1232,8 @@ impl Default for StorageOptions {
             rocksdb_max_successive_merges: DEFAULT_MAX_SUCCESSIVE_MERGES,
             vqueue_meta_full_write_probability:
                 serde_helpers::default_vqueue_meta_full_write_probability(),
+            disable_background_migrations: false,
+            background_migrations_throttling: None,
         }
     }
 }

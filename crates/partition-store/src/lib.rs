@@ -15,7 +15,7 @@ mod compaction_filter;
 pub mod deduplication_table;
 mod durable_lsn_tracking;
 pub mod error;
-mod faults;
+pub mod faults;
 mod features;
 pub mod fsm_table;
 pub mod inbox_table;

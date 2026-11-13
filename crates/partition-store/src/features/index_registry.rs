@@ -19,8 +19,9 @@ use crate::{MigrationError, PartitionStore};
 
 use super::{StorageFeature, StorageFeatures};
 
-/// A fence, not a switch: it is persisted in the batch of the first registration
-/// and never enables itself; it has nothing to migrate.
+/// A fence, not a switch: registry reconciliation persists it in the batch of the
+/// first registration (`PartitionStore::reconcile_registry`). It never enables
+/// itself and has nothing to migrate.
 impl StorageFeature for super::IndexRegistryFeature {
     fn persisted_name() -> &'static ReString {
         const NAME: &ReString = &ReString::from_static("index-registry");
