@@ -59,10 +59,13 @@ a new ID; IDs are never reused.
   remembers how far it got in a **cursor** so it can resume after a restart. The
   cursor is only a bookmark: no write consults it.
 
-**Status.** An index is `Backfilling` while its walk hasn't finished: writes keep
+**Status.** An index is `Backfilling` until a walk finds it complete: writes keep
 it up to date, but it is incomplete, so queries must not read it. It becomes
-`Ready` when the walk has added every row; queries may read it. It is
-`Dropped` when its keys have been deleted; its ID stays reserved forever.
+`Ready` once a full pass of a walk finds every row covered; queries may read it.
+A definition that can't fill rows from the row alone (a *passive* one) relies on
+writes and deletions to cover them: between passes it stays `Backfilling`
+without a walk, and its job waits for the next pass. It is `Dropped` when its
+keys have been deleted; its ID stays reserved forever.
 
 **Token.** For a write to know whether an index already contains a row's old
 state, the source row keeps a small list, `touched_by`: the IDs of the indexes
@@ -86,9 +89,10 @@ replicas of one partition can be at different points, which is normal.
 **Migration job.** The general unit of maintenance work, today building an
 index. Each index has a build job with the same ID, recorded next to the
 registry (`src/job.rs`): its status, when it started and finished, and what
-its slices did. The records are for operators only: the registry decides
-whether an index is Ready, and the walk where its work resumes. Finished jobs
-are kept up to `worker.storage.migration-job-history-limit`.
+its slices did, and when a waiting job may start its next pass. The registry
+decides whether an index is Ready, and the walk holds where its work resumes and
+the evidence for completing it; a job record can be rebuilt from the registry.
+Finished jobs are kept up to `worker.storage.migration-job-history-limit`.
 
 ## The rules
 

@@ -68,6 +68,12 @@ pub(crate) struct IndexDefinition {
     pub(crate) name: &'static str,
     pub(crate) kind: IndexKind,
     pub(crate) apply: ApplyEntryChange,
+    /// Whether a walk can fill an entry it finds without this definition's token:
+    /// apply the entry and add the token (an *active* definition). A *passive* one
+    /// is maintained by writes only; its walk counts the entries it can't cover,
+    /// and its build waits until writes or deletions have covered them (see
+    /// [`crate::job`]). Not persisted: a release may add a definition's fill.
+    pub(crate) can_fill: bool,
 }
 
 /// The definitions this binary maintains. Opening a store retires the indexes of

@@ -55,7 +55,7 @@ mod backfill;
 mod reconcile;
 
 pub(crate) use active::{DEFINITIONS, Family, IndexDefinition, MaintainedIndexes};
-pub(crate) use backfill::IndexBackfill;
+pub(crate) use backfill::{IndexBackfill, start as start_backfill};
 pub(crate) use reconcile::{FAMILIES, FenceState, Requests, load_job_records};
 
 /// The first index ID the registry issues. Lower IDs belong to the static
@@ -71,6 +71,13 @@ pub const FIRST_INDEX_ID: u32 = 64;
 const FORMAT: u32 = 1;
 
 /// What an index stores for each entry.
+///
+/// **Compatibility.** A kind this binary doesn't know makes the whole registry
+/// unreadable (bilrost rejects unknown enumeration values), which fails the open;
+/// nor could this binary delete the keys of such an index. A release adding a
+/// kind raises the version floor before registering one, so older binaries
+/// refuse the store with a clear version error. This binary refuses a store whose
+/// floor is above its version the same way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, bilrost::Enumeration)]
 pub enum IndexKind {
     #[bilrost(0)]
@@ -93,6 +100,9 @@ pub enum IndexKind {
 ///                  │                                          │
 ///                  └──────────── drop ───────────────────────┘──▶ Dropped
 /// ```
+///
+/// **Compatibility.** As for [`IndexKind`]: a status this binary doesn't know
+/// fails the open, so a release adding one raises the version floor first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, bilrost::Enumeration)]
 pub enum IndexStatus {
     #[bilrost(0)]
@@ -398,6 +408,14 @@ impl IndexRegistry {
             .iter_mut()
             .find(|entry| entry.id == id)
             .map(|entry| &mut entry.timeline)
+    }
+
+    /// Unlinks a Backfilling index from its walk; it stays Backfilling, waiting
+    /// for another pass.
+    pub fn unlink(&mut self, id: u32) -> Result<(), RegistryError> {
+        use IndexStatus::Backfilling;
+        self.transition(id, &[Backfilling], Backfilling)?.walk = None;
+        Ok(())
     }
 
     /// Completes a Backfilling index: unlinks its walk and makes it Ready.

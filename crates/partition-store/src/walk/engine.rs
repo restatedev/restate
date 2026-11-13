@@ -40,6 +40,14 @@
 //! slice 2   read E, none after ─▶ stage work(E), finish ─▶ commit {work, Ready, walk removed}
 //! ```
 //!
+//! **Members that can't fill.** A slice leaves an entry alone for a member whose
+//! definition can't fill it, and counts the entry as uncovered for that member on
+//! the walk itself ([`super::WalkMember`]). The count commits with the slice and
+//! rolls back with a candidate dropped at the byte limit, like the entry's work.
+//! When the walk is exhausted, each member settles on its own: one that was a
+//! member from the start and found no gap is complete; any other waits for
+//! another pass (see [`crate::job`]).
+//!
 //! A slice always takes the work on its first key, so a key whose work alone
 //! exceeds a byte limit still makes progress, in a slice of its own: the slice
 //! stops before staging anything for the next key. Likewise, a slice that finds
@@ -137,25 +145,49 @@ impl From<SliceError> for StorageError {
     }
 }
 
+/// What a job did with one source entry, as bit sets over its jobs by position
+/// in [`WalkJob::job_ids`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Staged {
+    /// The jobs that filled the entry.
+    pub(crate) filled: u64,
+    /// The jobs that lacked the entry but can't fill it (passive ones).
+    pub(crate) uncovered: u64,
+}
+
+/// How a job ends the pass of an exhausted walk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Settlement {
+    /// A full pass with no gap: the job is complete.
+    Certified,
+    /// Gaps, or a late join: the job waits for another pass.
+    Unfinished,
+}
+
 /// A job's side of its walks. The engine reads the source, keeps the walk's
-/// progress and its jobs' records, and commits; a job only stages its own work.
+/// progress, its members' evidence and its jobs' records, and commits; a job only
+/// stages its own work.
 pub(crate) trait WalkJob {
-    /// The migration jobs the walk runs, at most 64. A slice reports what it
-    /// filled for each by position in this list.
+    /// The migration jobs the walk runs, at most 64. A slice reports what it did
+    /// for each by position in this list.
     fn job_ids(&self) -> impl Iterator<Item = u32>;
 
-    /// Stages the work on `entry`, the next source entry of the walk. Returns
-    /// which jobs, by position in [`Self::job_ids`], filled it, as a bit set.
+    /// Stages the work on `entry`, the next source entry of the walk.
     fn stage(
         &self,
         tx: &mut PartitionStoreTransaction<'_>,
         db: &PartitionDb,
         entry: &SourceEntry,
-    ) -> Result<u64, StorageError>;
+    ) -> Result<Staged, StorageError>;
 
-    /// Applies what exhausting the walk at `at` publishes to `registry`, which
+    /// Applies to `registry` how each job ended the walk's pass at `at`; it
     /// commits with the walk's last work and removal.
-    fn finish(&self, registry: &mut IndexRegistry, at: u64) -> Result<(), StorageError>;
+    fn finish(
+        &self,
+        registry: &mut IndexRegistry,
+        settled: &[(u32, Settlement)],
+        at: u64,
+    ) -> Result<(), StorageError>;
 }
 
 /// The job running `walk`.
@@ -207,13 +239,23 @@ pub(crate) async fn run_counted_slice(
         let job = job(&active, walk)?;
         let job_ids: Vec<_> = job.job_ids().collect();
         let mut filled = vec![0_u64; job_ids.len()];
-        // The records this slice commits with, generously: the walks, the
+        let mut uncovered = vec![0_u64; job_ids.len()];
+        // The first slice of a walk starts a pass.
+        let pass_start = walk.cursor.is_none();
+        // The records this slice commits with, generously: the walks as large as
+        // this slice can make them (every member with the largest evidence), the
         // registry and the unfinished jobs, which grow by at most a few fields,
         // and the history, which a finishing slice also writes. Whether a slice
         // finishes is only known at its end, so every slice counts the history.
+        let mut largest_walks = active.walks().clone();
+        for job_id in &job_ids {
+            largest_walks
+                .add_uncovered(id, *job_id, u64::MAX)
+                .map_err(walk_error)?;
+        }
         let jobs = active.jobs();
         let records = 4 * RECORD_OVERHEAD
-            + bilrost::Message::encoded_len(active.walks())
+            + bilrost::Message::encoded_len(&largest_walks)
             + bilrost::Message::encoded_len(active.registry())
             + jobs.unfinished.encoded_len()
             + jobs.history.encoded_len()
@@ -239,14 +281,16 @@ pub(crate) async fn run_counted_slice(
             if taken > 0 {
                 tx.set_save_point();
             }
-            let filled_by = job.stage(tx, db, &entry)?;
+            let staged = job.stage(tx, db, &entry)?;
             if taken > 0 && tx.estimated_size_in_bytes() + records > budget.write_bytes {
+                // The entry's work, tokens and evidence roll back together.
                 tx.rollback_to_save_point()?;
                 break false;
             }
             taken += 1;
-            for (position, count) in filled.iter_mut().enumerate() {
-                *count += (filled_by >> position) & 1;
+            for position in 0..job_ids.len() {
+                filled[position] += (staged.filled >> position) & 1;
+                uncovered[position] += (staged.uncovered >> position) & 1;
             }
             last = Some(entry.0);
         };
@@ -257,22 +301,39 @@ pub(crate) async fn run_counted_slice(
         let mut walks = active.walks().clone();
         // Shares the history; only a finishing slice copies it.
         let mut jobs = active.jobs().clone();
-        for (job_id, filled) in job_ids.iter().zip(filled) {
+        for ((job_id, filled), uncovered) in job_ids.iter().zip(filled).zip(uncovered) {
+            walks
+                .add_uncovered(id, *job_id, uncovered)
+                .map_err(walk_error)?;
             if let Some(record) = jobs.unfinished.get_mut(MigrationJobId::for_index(*job_id)) {
-                record.record_slice(now, taken as u64, filled, work_us);
+                let pass_start = pass_start && !walk.joined_late(*job_id);
+                record.record_slice(now, taken as u64, filled, work_us, pass_start);
             }
         }
         let slice = match last {
             _ if exhausted => {
-                job.finish(&mut registry, now)?;
+                let evidence = walks
+                    .get(id)
+                    .ok_or(WalkError::UnknownId(id))
+                    .map_err(walk_error)?
+                    .clone();
+                let settled: Vec<_> = job_ids
+                    .iter()
+                    .map(|job_id| {
+                        let certified =
+                            !evidence.joined_late(*job_id) && evidence.uncovered(*job_id) == 0;
+                        let settlement = if certified {
+                            Settlement::Certified
+                        } else {
+                            Settlement::Unfinished
+                        };
+                        (*job_id, settlement)
+                    })
+                    .collect();
+                job.finish(&mut registry, &settled, now)?;
                 walks.remove(id).map_err(walk_error)?;
                 for job_id in &job_ids {
-                    jobs.finish(
-                        MigrationJobId::for_index(*job_id),
-                        MigrationJobStatus::Completed,
-                        Some(now),
-                        active.history_limit(),
-                    );
+                    settle(&mut jobs, &evidence, *job_id, now, active.history_limit());
                 }
                 put_registry(tx, partition, &registry)?;
                 put_migration_jobs(
@@ -305,6 +366,35 @@ pub(crate) async fn run_counted_slice(
     Ok((slice, examined))
 }
 
+/// Records how job `job_id` ended the pass of the exhausted walk `evidence` at
+/// `now`. A late joiner saw only a suffix: no full pass, eligible again at once.
+/// Otherwise the full pass is recorded, gaps or not; a gap-free job completes and
+/// one with gaps waits as its schedule says.
+fn settle(
+    jobs: &mut MigrationJobRecords,
+    evidence: &Walk,
+    job_id: u32,
+    now: u64,
+    history_limit: usize,
+) {
+    let id = MigrationJobId::for_index(job_id);
+    let Some(record) = jobs.unfinished.get_mut(id) else {
+        return;
+    };
+    if evidence.joined_late(job_id) {
+        let interval = record.recheck_interval_ms;
+        record.wait(interval, None);
+        return;
+    }
+    let gaps = evidence.uncovered(job_id);
+    record.record_full_pass(now, gaps);
+    if gaps > 0 {
+        record.wait_after_gaps(now);
+    } else {
+        jobs.finish(id, MigrationJobStatus::Completed, Some(now), history_limit);
+    }
+}
+
 /// Whole microseconds of `duration`, saturating.
 fn micros(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
@@ -314,9 +404,11 @@ fn micros(duration: Duration) -> u64 {
 /// own framing, with room to spare.
 const RECORD_OVERHEAD: usize = 256;
 
-/// Bytes an unfinished job's record can grow by in one slice: its start, last
-/// slice and finish times and its counters, with room to spare.
-const JOB_GROWTH: usize = 64;
+/// Bytes an unfinished job's record can grow by in one slice. A slice can set or
+/// grow about fifteen fields, the times, the pass fields and the counters, by at
+/// most 12 bytes each in their largest encoding (about 180 bytes in all); this
+/// leaves room to spare.
+const JOB_GROWTH: usize = 256;
 
 /// Runs every walk of `store` to its end, in ID order, in slices within
 /// `budget`, as the background driver does over time. A failed slice is recorded
@@ -394,6 +486,49 @@ pub(crate) async fn record_failure(
     })?;
     let (registry, walks) = (active.registry().clone(), active.walks().clone());
     commit(tx, db, &active, registry, walks, jobs).await
+}
+
+/// Starts a pass for the waiting Backfilling indexes `ids` in one commit, as
+/// opening does for eligible ones (see `registry::backfill::start`): one walk over
+/// the entries that exist now, or completion at once without any. Commits and
+/// publishes like a slice, and returns the new walk, if any.
+pub(crate) async fn start_passes(
+    tx: &mut PartitionStoreTransaction<'_>,
+    db: &PartitionDb,
+    ids: &[u32],
+) -> Result<Option<u64>, SliceError> {
+    let fault = db.faults().take(crate::faults::FaultPoint::PassStart);
+    crate::faults::inject(fault)
+        .await
+        .map_err(|err| SliceError::Staging(StorageError::Generic(err.into())))?;
+    let active = tx.maintained_indexes();
+    let now = WallClock::now_ms().as_u64();
+    let (registry, walks, jobs, walk) = stage(tx, |tx| {
+        let mut registry = active.registry().clone();
+        let mut walks = active.walks().clone();
+        let mut jobs = active.jobs().clone();
+        let walk = crate::registry::start_backfill(
+            db,
+            &mut registry,
+            &mut walks,
+            &mut jobs,
+            ids,
+            now,
+            active.history_limit(),
+        )?;
+        let partition = db.partition().id();
+        put_registry(tx, partition, &registry)?;
+        put_walks(tx, partition, &walks)?;
+        for (state_id, list) in [
+            (fsm_variable::MIGRATION_JOBS, &jobs.unfinished),
+            (fsm_variable::MIGRATION_JOB_HISTORY, &*jobs.history),
+        ] {
+            put_migration_jobs(tx, partition, state_id, list)?;
+        }
+        Ok((registry, walks, jobs, walk))
+    })?;
+    commit(tx, db, &active, registry, walks, jobs).await?;
+    Ok(walk)
 }
 
 /// Runs `f` to stage writes into `tx`, which must have none pending, and clears
