@@ -704,6 +704,8 @@ mod backfill_tests {
     use std::ops::ControlFlow;
 
     use bytes::Bytes;
+    use futures::FutureExt;
+    use tokio::time::Instant;
     use tokio_util::sync::CancellationToken;
     use zerocopy::IntoBytes;
 
@@ -717,7 +719,9 @@ mod backfill_tests {
     };
     use restate_storage_api::{StorageError, Transaction};
     use restate_storage_query_api::scan::{BlockingScan, Table};
-    use restate_types::identifiers::PartitionId;
+    use restate_types::config::StorageOptions;
+    use restate_types::identifiers::{BaseEntryId, PartitionId, PartitionKey, SnapshotId};
+    use restate_types::logs::LogId;
     use restate_types::partition_table::Partition;
     use restate_types::sharding::KeyRange;
     use restate_types::{SemanticRestateVersion, vqueues::EntryTargetRef};
@@ -730,10 +734,13 @@ mod backfill_tests {
     use crate::keys::header::{HeaderBounds, IndexScope, KeyHeader, KeySchema};
     use crate::keys::selection::KeySelection;
     use crate::keys::{KeyDecode, KeyDecoder, KeyKind};
+    use crate::snapshots::{LocalPartitionSnapshot, SnapshotDir};
     use crate::stats::aggregated::Gauge;
     use crate::stats::aggregated::backfill::tests::seed;
+    use crate::stats::aggregated::backfill::with_entry_target;
     use crate::stats::{StatKind, StatValueCodec};
     use crate::table::{PhysicalTable, ReadMetadata};
+    use crate::walk::WalkDriver;
     use crate::walk::engine::{Slice, SliceBudget};
     use crate::walk::{Source, WalkKind, engine};
     use crate::{PartitionStoreManager, PartitionStoreTransaction, ReadSnapshot};
@@ -1285,7 +1292,9 @@ mod backfill_tests {
             iterator.seek(&prefix);
             while let Some(key) = iterator.key().filter(|key| key.starts_with(&prefix)) {
                 let value = iterator.value().unwrap().to_vec();
-                rows.push((index.id, key[prefix.len()..].to_vec(), value));
+                if index.kind == IndexKind::Secondary || !value.is_empty() {
+                    rows.push((index.id, key[prefix.len()..].to_vec(), value));
+                }
                 iterator.next();
             }
             iterator.status().unwrap();
@@ -1529,6 +1538,304 @@ mod backfill_tests {
                 "{case}"
             );
         }
+    }
+
+    /// Awaits and runs `driver`'s steps through `tx` while it has any, as the
+    /// processor does between its turns, for at most `steps`. Tests driving it run
+    /// on paused time, so its rests and backoffs pass without waiting.
+    async fn drive(driver: &mut WalkDriver, tx: &mut PartitionStoreTransaction<'_>, steps: usize) {
+        for _ in 0..steps {
+            if driver.due().is_none() {
+                return;
+            }
+            driver.ready().await;
+            driver.step(tx).await.unwrap();
+        }
+    }
+
+    /// Deletes entry `id` through `tx`, as a command does.
+    async fn delete_entry(
+        tx: &mut PartitionStoreTransaction<'_>,
+        db: &PartitionDb,
+        id: BaseEntryId,
+    ) {
+        let header = tx.get_vqueue_entry_status(&id).await.unwrap().unwrap();
+        with_entry_target(db, &id, header.vqueue_id(), header.seq(), |target| {
+            tx.delete_vqueue_entry_status(
+                &EntryContext {
+                    qid: header.vqueue_id(),
+                    target,
+                },
+                StoredEntryRef::from_header(&header),
+            );
+            Ok(())
+        })
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    #[restate_core::test]
+    async fn background_walks_resume_after_a_restart_to_parity() {
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        let partition = Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1));
+        let mut store = manager.open(&partition, None).await.unwrap();
+        let mut reference = manager
+            .open(&Partition::new(PartitionId::from(2), KeyRange::FULL), None)
+            .await
+            .unwrap();
+        let all = crate::registry::DEFINITIONS;
+        seed(&mut store).await;
+        seed(&mut reference).await;
+        try_reconcile(&mut reference, all, maintain_all(all))
+            .await
+            .unwrap();
+        run_walks(&mut reference).await;
+        try_reconcile(&mut store, all, maintain_all(all))
+            .await
+            .unwrap();
+        let entries = read_chunk(&store, None, usize::MAX).unwrap();
+        let db = store.partition_db().clone();
+        let mut driver = store.walk_driver(&StorageOptions::default());
+        // Small slices, so that the walk is still going after a few.
+        driver.tuning_mut().max_keys = 32;
+        let mut tx = store.transaction();
+        let walks = tx.maintained_indexes().walks().clone();
+        let [walk] = walks.entries() else {
+            panic!("one walk: {walks:?}");
+        };
+        let walk = walk.id;
+        assert_eq!(
+            tx.maintained_indexes().registry().members(walk).count(),
+            all.len()
+        );
+
+        // A few slices later, commands delete an entry the walk covered and one it
+        // did not reach, through the same transaction.
+        drive(&mut driver, &mut tx, 4).await;
+        let covered = tx.maintained_indexes().walks().get(walk).unwrap().scanned as usize;
+        assert!((1..entries.len() - 1).contains(&covered), "{covered}");
+        for index in [0, entries.len() - 1] {
+            delete_entry(&mut tx, &db, entries[index].1).await;
+            let reference_db = reference.partition_db().clone();
+            delete_entry(
+                &mut reference.transaction(),
+                &reference_db,
+                entries[index].1,
+            )
+            .await;
+        }
+        assert!(
+            Arc::ptr_eq(&tx.maintained_indexes(), &db.maintained_indexes().unwrap()),
+            "the processor's transaction and the partition share the committed set"
+        );
+
+        // A restart from the flushed state, here a snapshot, resumes the walk
+        // without double-counting.
+        drop(tx);
+        let snapshots = restate_test_util::tempdir().unwrap();
+        let snapshot = store
+            .create_local_snapshot(
+                manager.test_capture_guard(partition.partition_id).await,
+                snapshots.path(),
+                None,
+                SnapshotId::new(),
+            )
+            .await
+            .unwrap();
+        drop((driver, db, store));
+        let restored = LocalPartitionSnapshot {
+            base_dir: SnapshotDir::new(snapshots.path().into()),
+            log_id: LogId::from(partition.partition_id),
+            min_applied_lsn: snapshot.min_applied_lsn,
+            db_comparator_name: snapshot.db_comparator_name.clone(),
+            files: snapshot.files.clone(),
+            key_range: partition.key_range,
+            compatibility: snapshot.compatibility.clone(),
+            byte_offsets_base_lsn: snapshot.byte_offsets_base_lsn,
+            log_byte_offset: snapshot.log_byte_offset,
+            partition_store_byte_offset: snapshot.partition_store_byte_offset,
+        };
+        let _exported = snapshot.base_dir.into_path();
+        manager.drop_partition_store(&partition).await.unwrap();
+        let mut store = manager
+            .open_from_snapshot(&partition, restored)
+            .await
+            .unwrap();
+        try_reconcile(&mut store, all, maintain_all(all))
+            .await
+            .unwrap();
+        assert_eq!(
+            self::walks(&store).get(walk).unwrap().scanned as usize,
+            covered
+        );
+        let mut driver = store.walk_driver(&StorageOptions::default());
+        let mut tx = store.transaction();
+        drive(&mut driver, &mut tx, 1_000).await;
+        assert_eq!(driver.due(), None, "nothing left");
+        drop(tx);
+
+        assert!(self::walks(&store).entries().is_empty());
+        assert!(
+            registry(&store)
+                .entries()
+                .iter()
+                .all(|index| index.state == IndexStatus::Ready)
+        );
+        assert_eq!(index_rows(&store), index_rows(&reference));
+        let snapshot = store.query_read(CancellationToken::new()).unwrap().0;
+        for definition in all {
+            snapshot
+                .ready_index(definition.name, definition.kind)
+                .unwrap();
+        }
+    }
+
+    #[restate_core::test(start_paused = true)]
+    async fn background_walks_wait_out_fences_failures_and_disabling() {
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        let mut store = manager
+            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+            .await
+            .unwrap();
+        seed(&mut store).await;
+        let entries = read_chunk(&store, None, usize::MAX).unwrap();
+
+        // With background migrations disabled, the driver leaves the started walk
+        // waiting: nothing is due, ever.
+        reconcile(&mut store, maintain(&COUNT)).await;
+        let mut disabled = StorageOptions::default();
+        disabled.disable_background_migrations = true;
+        let mut driver = store.walk_driver(&disabled);
+        assert_eq!(driver.due(), None);
+        assert!(driver.ready().now_or_never().is_none());
+        let id = registry(&store).maintained(COUNT.name).unwrap().id;
+        let walk = registry(&store).get(id).unwrap().walk.unwrap();
+        assert_eq!(walks(&store).get(walk).unwrap().cursor, None);
+
+        // Enabled, it runs the walk. While a snapshot export holds commits back,
+        // it does nothing and checks again shortly.
+        let mut driver = store.walk_driver(&StorageOptions::default());
+        let recheck = driver.tuning_mut().fence_recheck;
+        let mut tx = store.transaction();
+        let progress = |tx: &PartitionStoreTransaction<'_>| {
+            tx.maintained_indexes().walks().get(walk).unwrap().clone()
+        };
+        let fence = tx.fence_commits().unwrap();
+        let before = Instant::now();
+        drive(&mut driver, &mut tx, 1).await;
+        assert_eq!(progress(&tx).cursor, None);
+        assert!(driver.due().unwrap() >= before + recheck);
+        drop(fence);
+        drive(&mut driver, &mut tx, 1).await;
+        assert_eq!(
+            progress(&tx).scanned,
+            16,
+            "a first slice of the lower bound"
+        );
+
+        // A slice that fails is recorded, and retried after a backoff while the
+        // index stays Backfilling.
+        let invocation = entries[40].1.to_invocation_id().unwrap();
+        let status = tx.get_invocation_status(&invocation).await.unwrap();
+        tx.delete_invocation_status(&invocation).unwrap();
+        tx.commit().await.unwrap();
+        let committed = progress(&tx);
+        while progress(&tx).failures < 2 {
+            drive(&mut driver, &mut tx, 1).await;
+        }
+        let failed = progress(&tx);
+        assert_eq!(
+            (failed.cursor.clone(), failed.scanned),
+            (committed.cursor, committed.scanned),
+            "failed slices commit no progress"
+        );
+        assert!(
+            failed
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("missing invocation status"))
+        );
+        assert_eq!(
+            tx.maintained_indexes().registry().get(id).unwrap().state,
+            IndexStatus::Backfilling
+        );
+        tx.put_invocation_status(&invocation, &status).unwrap();
+        tx.commit().await.unwrap();
+        drive(&mut driver, &mut tx, 1_000).await;
+        drop(tx);
+        assert_eq!(count(&store, id), SEEDED);
+        assert_eq!(registry(&store).get(id).unwrap().state, IndexStatus::Ready);
+    }
+
+    #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_closed_partition_takes_no_slice_and_a_held_publication_delays_its_close() {
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        let partition = Partition::new(PartitionId::from(32), KeyRange::FULL);
+        let mut store = manager.open(&partition, None).await.unwrap();
+        seed(&mut store).await;
+        reconcile(&mut store, maintain(&COUNT)).await;
+        let id = registry(&store).maintained(COUNT.name).unwrap().id;
+        let walk = registry(&store).get(id).unwrap().walk.unwrap();
+        let entries = read_chunk(&store, None, usize::MAX).unwrap();
+        let faults = manager.faults(&partition);
+        let db = store.partition_db().clone();
+
+        // A slice held at its publication, after its commit, keeps its session:
+        // closing the partition waits for it.
+        let (published, resume) = faults.pause(FaultPoint::WalkPublication);
+        let mut tx = store.transaction();
+        {
+            let mut slice = std::pin::pin!(engine::run_slice(&mut tx, &db, walk, 3));
+            tokio::select! {
+                biased;
+                result = &mut slice => panic!("the slice finished without publishing: {result:?}"),
+                published = published => published.unwrap(),
+            }
+            let mut closing = std::pin::pin!(manager.close(partition.id()));
+            assert!(
+                futures::poll!(closing.as_mut()).is_pending(),
+                "the_close_waits"
+            );
+            drop(resume);
+            assert_eq!(slice.await.unwrap(), Slice::Progressed);
+            closing.await;
+        }
+        assert_eq!(
+            tx.maintained_indexes()
+                .walks()
+                .get(walk)
+                .unwrap()
+                .cursor
+                .as_deref(),
+            Some(entries[2].0.as_slice()),
+            "published_before_the_close"
+        );
+
+        // Once closed, the old handle commits neither a slice nor a failure record.
+        assert!(matches!(
+            engine::run_slice(&mut tx, &db, walk, 3).await,
+            Err(engine::SliceError::Staging(StorageError::OperationalError))
+        ));
+        assert!(tx.is_empty(), "nothing_stays_staged");
+        assert!(matches!(
+            engine::record_failure(&mut tx, &db, walk, "late").await,
+            Err(engine::SliceError::Staging(StorageError::OperationalError))
+        ));
+        drop(tx);
+
+        // A fresh open installs the committed records and continues after them.
+        let mut store = manager.open(&partition, None).await.unwrap();
+        reconcile(&mut store, maintain(&COUNT)).await;
+        let resumed = walks(&store).get(walk).unwrap().clone();
+        assert_eq!(
+            (resumed.cursor.as_deref(), resumed.scanned, resumed.failures),
+            (Some(entries[2].0.as_slice()), 3, 0)
+        );
+        run_walks(&mut store).await;
+        assert_eq!(count(&store, id), SEEDED);
     }
 
     /// `COUNT`'s index read as a table: its header and no suffix.
