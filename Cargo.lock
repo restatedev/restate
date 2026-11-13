@@ -8945,6 +8945,7 @@ dependencies = [
  "bytes",
  "bytestring",
  "derive_more",
+ "enum-map",
  "futures",
  "opentelemetry",
  "prost",
@@ -8961,6 +8962,7 @@ dependencies = [
  "serde_with",
  "strum",
  "thiserror 2.0.20",
+ "zerocopy",
 ]
 
 [[package]]

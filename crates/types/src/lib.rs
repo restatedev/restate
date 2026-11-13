@@ -186,6 +186,12 @@ impl From<&str> for ServiceName {
     }
 }
 
+impl From<ServiceName> for ReString {
+    fn from(value: ServiceName) -> Self {
+        value.0.into_restring()
+    }
+}
+
 /// An interned scope
 ///
 /// A scope defines the partitioning boundary for sets of service instances and
