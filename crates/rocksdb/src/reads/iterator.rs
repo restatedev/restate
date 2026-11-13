@@ -163,8 +163,9 @@ where
     H: ReadSource + Send + Sync + 'static,
 {
     type Owned = OwnedReadIterator<H>;
+    type Admission = ();
 
-    fn into_owned(self) -> OwnedReadIterator<H> {
+    fn into_owned(self, (): ()) -> OwnedReadIterator<H> {
         ReadIterator::into_owned(self)
     }
 }
