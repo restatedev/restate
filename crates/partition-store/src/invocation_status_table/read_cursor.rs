@@ -117,6 +117,7 @@ impl OrderedKeySchema for InvocationStatusKey {
 }
 
 /// A prepared invocation-status read.
+#[derive(Clone)]
 pub enum InvocationStatusScan {
     /// Point reads of a finite ID set, batched through multi-get.
     Ids(BTreeSet<InvocationId>),
@@ -124,6 +125,9 @@ pub enum InvocationStatusScan {
     Keys(Arc<KeySelection<InvocationStatusKey>>),
 }
 
+/// Invocation-status records. A caller can step through them with a cursor, or
+/// a query can scan them on the query IO pool through [`CursorScan`]. Both read
+/// the same keys in the same way.
 pub enum InvocationStatusRecords {}
 
 impl Table for InvocationStatusRecords {
@@ -158,6 +162,17 @@ impl ReadSnapshot {
             }
         };
         Ok(InvocationStatusCursor { mode })
+    }
+}
+
+impl CursorScan<InvocationStatusRecords> for ReadSnapshot {
+    type Cursor = InvocationStatusCursor;
+
+    fn scan_cursor(&self, request: Arc<InvocationStatusScan>) -> Result<Self::Cursor> {
+        // A request scanned more than once gives each cursor its own copy of the
+        // ID list, so cursors don't affect each other. A request scanned once
+        // hands its list over without copying.
+        self.invocation_status_cursor(Arc::unwrap_or_clone(request))
     }
 }
 
@@ -230,9 +245,11 @@ mod tests {
         // Returns the records read and the cursor steps taken to read them.
         let read = |selection: Selection<InvocationStatus>, header: KeyRange| {
             let request = InvocationStatusKeys::prepare(&selection, Some(header)).unwrap();
-            let mut cursor = snapshot
-                .invocation_status_cursor(InvocationStatusScan::Keys(Arc::new(request)))
-                .unwrap();
+            let mut cursor = <ReadSnapshot as CursorScan<InvocationStatusRecords>>::scan_cursor(
+                &snapshot,
+                Arc::new(InvocationStatusScan::Keys(Arc::new(request))),
+            )
+            .unwrap();
             let (mut ids, mut steps) = (Vec::new(), 0);
             loop {
                 match cursor.advance().unwrap() {
@@ -275,5 +292,25 @@ mod tests {
             128,
             "header_only_reads_every_neighbor"
         );
+
+        // Two cursors from one ID request must not affect each other: open both,
+        // read one to the end, then check that the other still returns every ID.
+        let expected = [id(7, 5), id(8, 90)];
+        let request = Arc::new(InvocationStatusScan::Ids(expected.into()));
+        let cursors = [Arc::clone(&request), request].map(|request| {
+            <ReadSnapshot as CursorScan<InvocationStatusRecords>>::scan_cursor(&snapshot, request)
+                .unwrap()
+        });
+        for mut cursor in cursors {
+            let mut found = Vec::new();
+            loop {
+                match cursor.advance().unwrap() {
+                    CursorStep::Record => found.push(cursor.current().unwrap().0),
+                    CursorStep::Skipped => {}
+                    CursorStep::Done => break,
+                }
+            }
+            assert_eq!(found, expected, "shared_requests_have_independent_cursors");
+        }
     }
 }

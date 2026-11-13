@@ -155,6 +155,7 @@ impl OrderedKeySchema for EntryStatusKey {
 }
 
 /// A prepared entry-status read.
+#[derive(Clone)]
 pub enum EntryStatusScan {
     /// A storage filter: a finite ID set uses multi-get, ranges iterate.
     Filter(ScanEntryIdFilter),
@@ -171,7 +172,9 @@ impl From<ScanEntryIdFilter> for EntryStatusScan {
     }
 }
 
-/// Borrowed entry-status records, including the base identity used for lookup.
+/// Entry-status records, each with the base entry ID it was looked up by. A
+/// caller can step through them with a cursor, or a query can scan them on the
+/// query IO pool through [`CursorScan`]. Both read the same keys in the same way.
 pub enum EntryStatusRecords {}
 
 impl Table for EntryStatusRecords {
@@ -238,6 +241,17 @@ impl ReadSnapshot {
             None => Mode::Empty,
         };
         Ok(EntryStatusCursor { mode, first: true })
+    }
+}
+
+impl CursorScan<EntryStatusRecords> for ReadSnapshot {
+    type Cursor = EntryStatusCursor;
+
+    fn scan_cursor(&self, request: Arc<EntryStatusScan>) -> Result<Self::Cursor> {
+        // A request scanned more than once gives each cursor its own copy of the
+        // ID list, so cursors don't affect each other. A request scanned once
+        // hands its list over without copying.
+        self.entry_status_cursor(Arc::unwrap_or_clone(request))
     }
 }
 
@@ -363,9 +377,11 @@ mod tests {
         // Returns the records read and the cursor steps taken to read them.
         let read = |selection: Selection<VqueueEntryStatus>, header: KeyRange| {
             let request = EntryStatusKeys::prepare(&selection, Some(header)).unwrap();
-            let mut cursor = snapshot
-                .entry_status_cursor(EntryStatusScan::Keys(Arc::new(request)))
-                .unwrap();
+            let mut cursor = <ReadSnapshot as CursorScan<EntryStatusRecords>>::scan_cursor(
+                &snapshot,
+                Arc::new(EntryStatusScan::Keys(Arc::new(request))),
+            )
+            .unwrap();
             let (mut ids, mut steps) = (Vec::new(), 0);
             loop {
                 match cursor.advance().unwrap() {
