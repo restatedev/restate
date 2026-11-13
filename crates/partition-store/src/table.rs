@@ -138,7 +138,7 @@ pub trait PhysicalTable:
 pub(crate) trait MultiGetTable: PhysicalTable<Key: EncodeTableKey> {
     /// The ID of a record. Its `Ord` is the stored key order, which the sorted
     /// multi-get relies on; the keys of the table have one fixed length.
-    type Id: Copy + Ord;
+    type Id: Clone + Ord;
 
     /// IDs per multi-get.
     const BATCH_SIZE: NonZeroUsize;
@@ -220,7 +220,7 @@ impl<T: MultiGetTable> MultiGetCursor<T> {
             .get(index)
             .map_err(|error| StorageError::Generic(error.into()))?
             .ok_or(StorageError::DataIntegrityError)?;
-        Ok((self.batch_ids[index], value))
+        Ok((self.batch_ids[index].clone(), value))
     }
 
     fn results(&self) -> Result<&OwnedPinnedBatch<RocksReadSnapshot<PhysicalPartition>>> {
