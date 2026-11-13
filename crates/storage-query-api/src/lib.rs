@@ -39,6 +39,9 @@ pub use schema::{
     ShardingScheme,
 };
 
+#[cfg(feature = "test-util")]
+pub mod test_util;
+
 use std::any::Any;
 
 use datafusion::arrow::datatypes::SchemaRef;

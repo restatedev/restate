@@ -58,6 +58,23 @@ pub trait Table: 'static {
     type Scan: Send + Sync + 'static;
 }
 
+/// Executes a prepared physical read against a table on this backend.
+///
+/// Each record satisfies the restrictions contained in the request. Logical
+/// materialization, residual evaluation, and Arrow batching belong to consumers.
+/// This is a synchronous record-consumer boundary: callbacks can block or stop,
+/// but cannot await capacity. An asynchronous query adapter supplies bounded
+/// buffering and backpressure appropriate to its backend's execution context.
+pub trait Scan<T: Table>: Debug + Send + Sync + 'static {
+    /// `Break(Ok(()))` stops successfully; callback errors fail the scan. Records
+    /// may have been delivered before an error. Completion releases the callback.
+    fn scan(
+        &self,
+        request: Arc<T::Scan>,
+        emit: impl for<'a> FnMut(T::Record<'a>) -> ControlFlow<Result<()>> + Send + 'static,
+    ) -> Result<impl Future<Output = Result<()>> + Send>;
+}
+
 /// Executes a prepared read on the caller's thread, including blocking storage
 /// I/O and record consumption. The caller owns scheduling and backpressure.
 pub trait BlockingScan<T: Table>: Debug + Send + Sync + 'static {

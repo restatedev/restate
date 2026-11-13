@@ -56,7 +56,7 @@ use std::sync::Arc;
 
 use restate_storage_api::{Result, StorageError};
 
-use crate::scan::Table;
+use crate::scan::{Scan, Table};
 use crate::selection::{Selection, SelectionPrecision};
 
 use super::{LogicalSchema, RowBuilder};
@@ -150,6 +150,24 @@ pub trait SchemaBinding: Sized + 'static {
         emit: &mut impl RowSink<Self::Schema>,
     ) -> ControlFlow<Result<()>> {
         Self::materialize(record, &mut |row| emit.append(row))
+    }
+
+    /// Adapts a prepared physical read into logical candidates. Callers retain
+    /// SQL residuals and materialize their dependencies before final projection
+    /// and unsafe LIMIT placement. This helper does not buffer or allocate rows.
+    fn read<'s, S: Scan<Self::Table>, F>(
+        backend: &'s S,
+        prepared: &PreparedRead<Self::Table>,
+        mut emit: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send + use<'s, Self, S, F>>
+    where
+        F: for<'a> FnMut(<Self::Schema as LogicalSchema>::Row<'a>) -> ControlFlow<Result<()>>
+            + Send
+            + 'static,
+    {
+        backend.scan(Arc::clone(&prepared.request), move |record| {
+            Self::materialize(record, &mut emit)
+        })
     }
 }
 
