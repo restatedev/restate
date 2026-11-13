@@ -46,39 +46,65 @@ pub fn register_live_scanners(
     ));
 }
 
+/// Registers stored tables on the query service's shared IO executor.
 pub fn register_partition_scanners(
     partition_store_manager: Arc<PartitionStoreManager>,
+    io_executor: QueryIoExecutor,
     remote_scanner_manager: &RemoteScannerManager,
 ) {
     remote_scanner_manager.register_partition_scanner::<StateTable>(Arc::new(
-        StateTable::create_local_scanner(Arc::clone(&partition_store_manager)),
+        StateTable::create_local_scanner(Arc::clone(&partition_store_manager), io_executor.clone()),
     ));
     remote_scanner_manager.register_partition_scanner::<SysInvocationStatusTable>(Arc::new(
-        SysInvocationStatusTable::create_local_scanner(Arc::clone(&partition_store_manager)),
+        SysInvocationStatusTable::create_local_scanner(
+            Arc::clone(&partition_store_manager),
+            io_executor.clone(),
+        ),
     ));
     remote_scanner_manager.register_partition_scanner::<SysLocksTable>(Arc::new(
-        SysLocksTable::create_local_scanner(Arc::clone(&partition_store_manager)),
+        SysLocksTable::create_local_scanner(
+            Arc::clone(&partition_store_manager),
+            io_executor.clone(),
+        ),
     ));
     remote_scanner_manager.register_partition_scanner::<SysJournalTable>(Arc::new(
-        SysJournalTable::create_local_scanner(Arc::clone(&partition_store_manager)),
+        SysJournalTable::create_local_scanner(
+            Arc::clone(&partition_store_manager),
+            io_executor.clone(),
+        ),
     ));
     remote_scanner_manager.register_partition_scanner::<SysJournalEventsTable>(Arc::new(
-        SysJournalEventsTable::create_local_scanner(Arc::clone(&partition_store_manager)),
+        SysJournalEventsTable::create_local_scanner(
+            Arc::clone(&partition_store_manager),
+            io_executor.clone(),
+        ),
     ));
     remote_scanner_manager.register_partition_scanner::<SysInboxTable>(Arc::new(
-        SysInboxTable::create_local_scanner(Arc::clone(&partition_store_manager)),
+        SysInboxTable::create_local_scanner(
+            Arc::clone(&partition_store_manager),
+            io_executor.clone(),
+        ),
     ));
     remote_scanner_manager.register_partition_scanner::<SysPromiseTable>(Arc::new(
-        SysPromiseTable::create_local_scanner(Arc::clone(&partition_store_manager)),
+        SysPromiseTable::create_local_scanner(
+            Arc::clone(&partition_store_manager),
+            io_executor.clone(),
+        ),
     ));
     remote_scanner_manager.register_partition_scanner::<SysVqueueMetaTable>(Arc::new(
-        SysVqueueMetaTable::create_local_scanner(Arc::clone(&partition_store_manager)),
+        SysVqueueMetaTable::create_local_scanner(
+            Arc::clone(&partition_store_manager),
+            io_executor.clone(),
+        ),
     ));
     remote_scanner_manager.register_partition_scanner::<SysVqueueEntryStatusTable>(Arc::new(
-        SysVqueueEntryStatusTable::create_local_scanner(Arc::clone(&partition_store_manager)),
+        SysVqueueEntryStatusTable::create_local_scanner(
+            Arc::clone(&partition_store_manager),
+            io_executor.clone(),
+        ),
     ));
     remote_scanner_manager.register_partition_scanner::<SysVqueuesTable>(Arc::new(
-        SysVqueuesTable::create_local_scanner(Arc::clone(&partition_store_manager)),
+        SysVqueuesTable::create_local_scanner(partition_store_manager, io_executor),
     ));
 }
 

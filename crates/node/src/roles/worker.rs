@@ -18,7 +18,7 @@ use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
 use restate_core::{MetadataWriter, TaskCenter, TaskKind};
 use restate_ingestion_client::IngestionClient;
-use restate_partition_store::PartitionStoreManager;
+use restate_partition_store::{PartitionStoreManager, QueryIoExecutor};
 use restate_storage_query_datafusion::remote_query_scanner_manager::RemoteScannerManager;
 use restate_types::health::HealthStatus;
 use restate_types::partitions::state::PartitionReplicaSetStates;
@@ -56,6 +56,7 @@ where
         bifrost: Bifrost,
         ingestion_client: IngestionClient<T, Envelope<Raw>>,
         metadata_writer: MetadataWriter,
+        io_executor: QueryIoExecutor,
         remote_scanner_manager: &RemoteScannerManager,
     ) -> Result<Self, WorkerRoleBuildError> {
         let worker = Worker::create(
@@ -74,6 +75,7 @@ where
         // the worker role.
         restate_storage_query_datafusion::local_scanners::register_partition_scanners(
             Arc::clone(&partition_store_manager),
+            io_executor,
             remote_scanner_manager,
         );
         restate_storage_query_datafusion::local_scanners::register_live_scanners(

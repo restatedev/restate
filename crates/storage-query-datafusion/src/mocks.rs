@@ -332,12 +332,16 @@ impl MockQueryEngine {
             // `my_node_id`. A blank Metadata is sufficient here.
             restate_core::MetadataBuilder::default().to_metadata(),
         );
-        register_partition_scanners(Arc::clone(&manager), &remote_scanner_manager);
-        register_live_scanners(Arc::new(status), &remote_scanner_manager);
         let env = DataFusionEnv::from_options(options)
             .unwrap()
             .with_mock_clock(MockClock::new())
             .unwrap();
+        register_partition_scanners(
+            Arc::clone(&manager),
+            env.io_executor().clone(),
+            &remote_scanner_manager,
+        );
+        register_live_scanners(Arc::new(status), &remote_scanner_manager);
         env.register_tables(catalog(remote_scanner_manager.clone(), partitions.clone()))
             .await
             .unwrap();
