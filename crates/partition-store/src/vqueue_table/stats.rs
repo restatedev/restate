@@ -57,19 +57,11 @@ pub(crate) static VIRTUAL_OBJECT_STATS: IndexDefinition = IndexDefinition {
 pub(crate) const STATUS_GAUGES: Family = Family {
     definitions: &[&SERVICE_STATS, &DEPLOYMENT_STATS, &VIRTUAL_OBJECT_STATS],
     maintain: track_status_gauges,
-    complete: complete_status_gauges,
     reset: status_gauges_reset,
 };
 
 fn track_status_gauges(config: &Configuration) -> bool {
     config.common.experimental.is_track_status_gauges_enabled()
-}
-
-fn complete_status_gauges(config: &Configuration) -> bool {
-    config
-        .common
-        .experimental
-        .is_complete_status_gauges_enabled()
 }
 
 fn status_gauges_reset(config: &Configuration) -> bool {
@@ -205,7 +197,6 @@ mod tests {
         EntryKey, EntryMetadata, EntryStateRef, ReadVQueueTable, Stage, Status, StoredEntryRef,
         WriteVQueueTable,
     };
-    use restate_types::config::Configuration;
     use restate_types::partition_table::Partition;
     use restate_types::sharding::{KeyRange, PartitionId};
     use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, HandlerRef, VQueueId};
@@ -291,13 +282,7 @@ mod tests {
         let deployment_a = DeploymentStatsKey::borrowed("dp_a", "counter");
         let deployment_b = DeploymentStatsKey::borrowed("dp_b", "counter");
 
-        let mut config = Configuration::default();
-        config.common.experimental.set_complete_status_gauges(true);
-        config.worker.storage.enable_eager_migrations_on_startup = true;
-        store
-            .verify_and_run_migrations(Default::default(), &config)
-            .await
-            .unwrap();
+        crate::stats::aggregated::complete_gauges(&mut store).await;
 
         // Aborting a source write also discards its aggregate contributions.
         {

@@ -764,7 +764,7 @@ mod tests {
 
         // The status-gauge options control registered instances, not the
         // retired legacy feature.
-        config.common.experimental.set_complete_status_gauges(true);
+        config.common.experimental.set_track_status_gauges(true);
         config.common.experimental.set_status_gauges_reset(true);
         for empty in [false, true] {
             assert!(

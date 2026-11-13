@@ -51,12 +51,12 @@
 use restate_util_string::ReString;
 
 mod active;
-mod complete;
+mod backfill;
 mod reconcile;
 
-pub(crate) use active::{DEFINITIONS, IndexDefinition, MaintainedIndexes};
-pub(crate) use complete::{CHUNK as COMPLETENESS_CHUNK, IndexBackfill};
-pub(crate) use reconcile::{FAMILIES, Family, FenceState, Requests};
+pub(crate) use active::{DEFINITIONS, Family, IndexDefinition, MaintainedIndexes};
+pub(crate) use backfill::IndexBackfill;
+pub(crate) use reconcile::{FAMILIES, FenceState, Requests};
 
 /// The first index ID the registry issues. Lower IDs belong to the static
 /// index (1–7) and statistic (1–3) identities that predate the registry.

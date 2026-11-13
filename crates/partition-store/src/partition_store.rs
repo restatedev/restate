@@ -370,6 +370,7 @@ impl PartitionStore {
     /// Installs the maintained indexes for every handle of this partition, as opening does
     /// after reconciling the registry. Tests install indexes of test definitions.
     #[cfg(test)]
+    #[allow(dead_code)] // Consumed when the registry is reconciled at open.
     pub(crate) fn set_maintained_indexes(&mut self, maintained_indexes: MaintainedIndexes) {
         self.db
             .install_maintained_indexes(Arc::new(maintained_indexes));
@@ -940,10 +941,6 @@ impl PartitionStore {
             });
         }
 
-        // An unsupported or invalid registry fails the open before any migration
-        // below mutates the store.
-        self.validate_registry(storage_features.enabled())?;
-
         // A store without an applied LSN is empty because normal state changes and the applied LSN
         // are committed in the same partition-store transaction.
         let is_store_empty = self.get_applied_lsn().await?.is_none();
@@ -957,6 +954,10 @@ impl PartitionStore {
                     .to_owned(),
             ));
         }
+
+        // An unsupported or invalid registry fails the open before any migration
+        // below mutates the store.
+        self.validate_registry(storage_features.enabled())?;
 
         // Registered indexes replace the legacy status gauges. Delete them once
         // every compatibility check above passed, before any family can be
@@ -993,8 +994,9 @@ impl PartitionStore {
         }
         self.set_storage_features(*storage_features.enabled());
 
-        // Before the processor starts writing: retire, reset and register registry
-        // indexes, fence the store, and install the indexes maintained on writes.
+        // Before the processor starts writing: retire, reset and register
+        // indexes, start their walks, fence the store, and install the indexes
+        // maintained on writes.
         self.reconcile_registry(
             crate::registry::DEFINITIONS,
             &crate::registry::Requests::from_config(crate::registry::FAMILIES, config),
@@ -1003,8 +1005,6 @@ impl PartitionStore {
                 current_version: current_restate_version,
                 min_restate_version: &mut current_min_restate_version,
             },
-            crate::registry::COMPLETENESS_CHUNK,
-            &cancel,
         )
         .await?;
 
@@ -1971,7 +1971,6 @@ mod tests {
 
         // Retired/reserved kinds intentionally map to no table: their byte
         // encodings are kept reserved but nothing reads or writes them.
-        #[allow(deprecated)]
         #[allow(deprecated)]
         let reserved = [
             KeyKind::Idempotency,

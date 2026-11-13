@@ -185,10 +185,10 @@ fn registered_totals(store: &PartitionStore) -> (u64, u64) {
     (counted, indexed)
 }
 
-/// A replica restored from a snapshot of completed gauges and indexes opens with
-/// the same Ready instances, under the source replica's physical IDs, and keeps
-/// maintaining them, even with the options removed. The registry and walks also
-/// preserve the existing byte-offset position through completion and restore.
+/// A replica restored from a snapshot of backfilled gauges and indexes opens with
+/// the same Ready indexes, under the source replica's IDs, and keeps maintaining
+/// them, even with the options removed. The registry and walks also preserve the
+/// existing byte-offset position through the backfill and the restore.
 #[restate_core::test]
 async fn restored_snapshots_keep_ready_registered_instances() {
     use restate_storage_api::vqueue_table::{
@@ -217,13 +217,13 @@ async fn restored_snapshots_keep_ready_registered_instances() {
         tx.commit().await.unwrap();
     }
     let mut config = Configuration::default();
-    config.common.experimental.set_complete_status_gauges(true);
-    config.common.experimental.set_complete_indexes_v1(true);
-    config.worker.storage.enable_eager_migrations_on_startup = true;
+    config.common.experimental.set_track_status_gauges(true);
+    config.common.experimental.set_indexes_v1(true);
     store
         .verify_and_run_migrations(CancellationToken::new(), &config)
         .await
         .unwrap();
+    crate::walk::engine::run_all(&mut store, 3).await.unwrap();
     let registry = get_registry_from_partition_db(store.partition_db())
         .unwrap()
         .unwrap();

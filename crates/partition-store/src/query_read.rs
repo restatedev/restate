@@ -356,7 +356,7 @@ mod tests {
         }
         .serialize_to(&mut scoped);
         // Entry writes maintain the definition's Ready index.
-        crate::index::complete_indexes(&mut store).await;
+        crate::index::backfill_indexes(&mut store).await;
         let scope = crate::index::ready_index_scope::<EntryByStageService>(&store);
         let mut previous_index = None;
         let mut snapshots = Vec::new();

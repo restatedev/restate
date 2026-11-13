@@ -19,7 +19,7 @@ use std::ops::ControlFlow;
 use restate_storage_api::StorageError;
 use restate_storage_api::promise_table::Promise as StoredPromise;
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
-use restate_storage_query_api::schema::RecordProgress;
+use restate_storage_query_api::schema::{RecordProgress, row_written};
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, SelectionPrecision};
 use restate_storage_query_api::tables::promise::{
@@ -183,9 +183,7 @@ macro_rules! promise_binding {
                 _: &mut (),
                 emit: &mut impl RowSink<Self::Schema>,
             ) -> Result<RecordProgress> {
-                if let ControlFlow::Break(result) = Self::materialize_projected(record, emit) {
-                    result?;
-                }
+                row_written(Self::materialize_projected(record, emit))?;
                 Ok(RecordProgress::Done)
             }
 

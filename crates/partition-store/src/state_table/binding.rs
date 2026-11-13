@@ -17,7 +17,7 @@
 
 use std::ops::ControlFlow;
 
-use restate_storage_query_api::schema::RecordProgress;
+use restate_storage_query_api::schema::{RecordProgress, row_written};
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, SelectionPrecision};
 use restate_storage_query_api::tables::state::{
@@ -108,9 +108,7 @@ impl SchemaBinding for StateBinding {
         _: &mut (),
         emit: &mut impl RowSink<Self::Schema>,
     ) -> Result<RecordProgress> {
-        if let ControlFlow::Break(result) = Self::materialize_projected(record, emit) {
-            result?;
-        }
+        row_written(Self::materialize_projected(record, emit))?;
         Ok(RecordProgress::Done)
     }
 
@@ -145,9 +143,7 @@ impl SchemaBinding for ScopedStateBinding {
         _: &mut (),
         emit: &mut impl RowSink<Self::Schema>,
     ) -> Result<RecordProgress> {
-        if let ControlFlow::Break(result) = Self::materialize_projected(record, emit) {
-            result?;
-        }
+        row_written(Self::materialize_projected(record, emit))?;
         Ok(RecordProgress::Done)
     }
 

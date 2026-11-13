@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Resolves the targets of retained VQueue entries, for completeness passes over
-//! entries written before an instance was maintained.
+//! Resolves the targets of retained VQueue entries, for the backfill of entries
+//! written before an index was maintained.
 //!
 //! An invocation's target comes from its invocation status. A state mutation's
 //! comes from its input payload, without decoding its state map.

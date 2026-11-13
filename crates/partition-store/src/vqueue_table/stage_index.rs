@@ -25,7 +25,7 @@ use std::ops::ControlFlow;
 use restate_clock::RoughTimestamp;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::Stage;
-use restate_storage_query_api::schema::RecordProgress;
+use restate_storage_query_api::schema::{RecordProgress, row_written};
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, SelectionPrecision, ValuePredicate};
 use restate_storage_query_api::tables::index::{
@@ -213,9 +213,7 @@ macro_rules! stage_index {
                 _: &mut (),
                 emit: &mut impl RowSink<Self::Schema>,
             ) -> Result<RecordProgress> {
-                if let ControlFlow::Break(result) = Self::materialize_projected(record, emit) {
-                    result?;
-                }
+                row_written(Self::materialize_projected(record, emit))?;
                 Ok(RecordProgress::Done)
             }
 

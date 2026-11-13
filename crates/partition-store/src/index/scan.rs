@@ -295,7 +295,7 @@ mod tests {
             .canonicalize(Seq::new(1))
         };
         let at = UniqueTimestamp::try_from_parts(100, 1).unwrap();
-        crate::index::complete_indexes(&mut store).await;
+        crate::index::backfill_indexes(&mut store).await;
         let scope = crate::index::ready_index_scope::<crate::index::EntryByStageService>(&store);
         let mut tx = store.transaction();
         // A narrowed store can inherit foreign locators from a larger snapshot.
