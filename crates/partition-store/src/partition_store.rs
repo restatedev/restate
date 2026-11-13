@@ -728,6 +728,8 @@ impl PartitionStore {
             write_batch_size_histogram: None,
             fsm_position: None,
             fsm_position_pending: false,
+            #[cfg(any(test, feature = "faults"))]
+            faults: self.db.faults(),
         }
     }
 
@@ -1146,6 +1148,8 @@ pub struct PartitionStoreTransaction<'a> {
     /// Whether the next commit persists the position even if it has nothing else to write,
     /// because the applied LSN advanced while only the position holds it.
     fsm_position_pending: bool,
+    #[cfg(any(test, feature = "faults"))]
+    faults: &'a crate::faults::Faults,
 }
 
 /// Holds back the commits of the [`PartitionStoreTransaction`] that created it until dropped.
@@ -1449,16 +1453,18 @@ impl Transaction for PartitionStoreTransaction<'_> {
         let mut opts = rocksdb::WriteOptions::default();
         // We disable WAL since bifrost is our durable distributed log.
         opts.disable_wal(true);
+        let write = self.rocksdb.write_batch_with_index(
+            "partition-store-txn-commit",
+            Priority::High,
+            io_mode,
+            opts,
+            write_batch,
+            lease,
+        );
+        #[cfg(any(test, feature = "faults"))]
+        let write = crate::faults::queued(self.faults, write);
         self.write_batch_with_index = Some(
-            self.rocksdb
-                .write_batch_with_index(
-                    "partition-store-txn-commit",
-                    Priority::High,
-                    io_mode,
-                    opts,
-                    write_batch,
-                    lease,
-                )
+            write
                 .await
                 .map_err(|error| StorageError::Generic(error.into()))?,
         );

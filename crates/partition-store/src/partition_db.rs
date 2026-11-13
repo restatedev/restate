@@ -117,6 +117,8 @@ pub struct PhysicalPartition {
     /// partition was opened. Shared by every session and clone, so no handle keeps
     /// a stale set.
     maintained_indexes: parking_lot::RwLock<Option<Arc<crate::registry::MaintainedIndexes>>>,
+    /// The faults armed for the partition, shared with its cell.
+    faults: Faults,
     // Looked up once, when the partition is first opened, and shared by every
     // session. Last, because it holds the keep-alive of the database.
     cfs: CfHandles<KeyKind>,
@@ -150,6 +152,7 @@ impl PartitionDb {
         meta: Arc<Partition>,
         archived_lsn: watch::Sender<Option<Lsn>>,
         database: PartitionStoreDb,
+        faults: Faults,
     ) -> Option<Self> {
         // For now, every key kind lives in the partition's only column family.
         let cfs = CfHandles::new(&database.rocksdb, [meta.cf_name()], |_| 0).ok()?;
@@ -161,6 +164,7 @@ impl PartitionDb {
                 archived_lsn,
                 notifications: database.notifications,
                 maintained_indexes: Default::default(),
+                faults,
                 cfs,
             },
         );
@@ -206,6 +210,11 @@ impl PartitionDb {
         maintained_indexes: Option<Arc<crate::registry::MaintainedIndexes>>,
     ) {
         *self.physical().maintained_indexes.write() = maintained_indexes;
+    }
+
+    /// The faults armed for the partition.
+    pub(crate) fn faults(&self) -> &Faults {
+        &self.physical().faults
     }
 
     pub fn rocksdb(&self) -> &Arc<RocksDb> {
@@ -535,7 +544,7 @@ impl PartitionCell {
             executor,
             archived_lsn: Default::default(),
             inner: Arc::new(AsyncRwLock::new(State::Unknown)),
-            faults: Faults::default(),
+            faults: Default::default(),
         }
     }
 
@@ -586,6 +595,7 @@ impl PartitionCell {
             self.meta.clone(),
             self.archived_lsn.clone(),
             database.clone(),
+            self.faults.clone(),
         ) {
             Some(db) => {
                 self.open_local_cf(guard, db);
@@ -691,6 +701,7 @@ impl PartitionCell {
         let meta = self.meta.clone();
         let partition_id = meta.partition_id;
         let archived_lsn = self.archived_lsn.clone();
+        let faults = self.faults.clone();
         let (completion, result) = watch::channel(None);
         **guard = State::Opening { result };
         let worker_completion = completion.clone();
@@ -710,7 +721,7 @@ impl PartitionCell {
                         rocksdb: Arc::clone(rocksdb),
                         notifications,
                     };
-                    let db = PartitionDb::new(meta, archived_lsn, database)
+                    let db = PartitionDb::new(meta, archived_lsn, database, faults)
                         .ok_or_else(|| RocksError::UnknownColumnFamily(cf_name.into()))?;
                     // Load the durable LSN before anyone can see the partition or subscribe
                     // to its durability updates. If the read fails, keep the partition anyway

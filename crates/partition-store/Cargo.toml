@@ -9,6 +9,9 @@ publish = false
 
 [features]
 default = []
+# Lets callers arm the fault points of a partition (see the `faults` module). Enables
+# nothing else.
+faults = []
 test-util = ["restate-object-store-util/test-util", "restate-types/test-util"]
 
 [dependencies]
