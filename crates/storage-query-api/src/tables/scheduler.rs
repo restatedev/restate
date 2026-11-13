@@ -35,9 +35,10 @@ define_schema! {
             /// High-level scheduler state (dormant, blocked, scheduled, ...).
             status: ReString => DataType::LargeUtf8,
             /// Identifier of the head entry if the scheduler has already advanced to it.
-            /// Null when the head has not yet been materialized.
+            /// Null when the head has not yet been materialized
             head_entry_id: Option<BaseEntryId> => DataType::LargeUtf8,
             /// Earliest time when the head entry becomes runnable.
+            ///
             /// Set only when status is `Scheduled`.
             scheduled_at: Option<MillisSinceEpoch> => TimestampMillisecond,
             /// The current resource blocking the queue from dequeuing.
@@ -48,7 +49,7 @@ define_schema! {
             invoker_concurrency_block_duration: i64 => DataType::Duration,
             /// Time the head entry spent waiting on user-defined per-vqueue throttling rules.
             throttling_rules_block_duration: i64 => DataType::Duration,
-            /// Time the head entry spent waiting on node-level invoker throttling tokens.
+            /// Time the head entry spent waiting on node-level invoker throttling.
             invoker_throttling_block_duration: i64 => DataType::Duration,
             /// Time the head entry spent waiting on invoker memory pool capacity.
             invoker_memory_block_duration: i64 => DataType::Duration,

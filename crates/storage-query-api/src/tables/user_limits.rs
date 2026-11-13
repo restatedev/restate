@@ -17,30 +17,34 @@ use crate::{ShardingScheme, define_schema};
 
 define_schema! {
     /// Counters of the concurrency limits set by rules.
+    ///
+    /// One row per counter, with its current usage, its limit, the rule defining it and how many vqueues are waiting on it.
     user_limits {
         name: "sys_user_limits",
         sharding: ShardingScheme::ByPartitionKey { is_leader_required: true },
         sharding_columns { partition_key: PartitionKey, scope: Scope },
         columns {
-            /// Partition key derived from the counter's scope.
+            /// Internal column that is used for partitioning. Can be ignored.
             partition_key: PartitionKey => DataType::UInt64,
-            /// Scope owning this counter.
+            /// The scope this counter belongs to.
             scope: ReString => DataType::LargeUtf8,
-            /// Level-1 key; null for scope-level counters.
+            /// The level-1 key component (null for scope-level counters).
             l1: Option<ReString> => DataType::LargeUtf8,
-            /// Level-2 key; null for scope-level and level-1 counters.
+            /// The level-2 key component (null for scope-level and L1-level counters).
             l2: Option<ReString> => DataType::LargeUtf8,
-            /// Counter level: Scope, Level1, or Level2.
+            /// The hierarchy level: "Scope", "Level1", or "Level2".
             level: ReString => DataType::LargeUtf8,
-            /// Current concurrency usage.
+            /// Current concurrency usage at this counter.
             usage: u32 => DataType::UInt32,
-            /// Configured concurrency limit; null if unlimited.
+            /// The configured concurrency limit (null if unlimited).
             concurrency_limit: Option<u32> => DataType::UInt32,
-            /// Rule defining this limit; null if unlimited.
+            /// The rule pattern that defines the limit (null if unlimited).
+            /// Resolved from the rule handle; shows "[removed]" if the rule was
+            /// deleted since the counter was created.
             rule_pattern: Option<ReString> => DataType::LargeUtf8,
-            /// Remaining capacity; null if unlimited.
+            /// Available capacity (limit - usage). Null if unlimited.
             available: Option<u32> => DataType::UInt32,
-            /// Number of waiting vqueues.
+            /// Number of vqueues currently waiting behind this counter.
             num_waiters: u64 => DataType::UInt64,
         }
     }

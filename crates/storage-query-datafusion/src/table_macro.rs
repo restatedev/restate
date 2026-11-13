@@ -339,49 +339,6 @@ macro_rules! define_data_type {
     };
 }
 
-#[cfg(feature = "table_docs")]
-macro_rules! document_type {
-    (DataType::Utf8) => {
-        "Utf8"
-    };
-    (DataType::LargeUtf8) => {
-        "Utf8"
-    };
-    (DataType::Binary) => {
-        "Binary"
-    };
-    (DataType::LargeBinary) => {
-        "Binary"
-    };
-    (DataType::UInt32) => {
-        "UInt32"
-    };
-    (DataType::UInt64) => {
-        "UInt64"
-    };
-    (DataType::Int32) => {
-        "Int32"
-    };
-    (TimestampMillisecond) => {
-        "TimestampMillisecond"
-    };
-    (DataType::Duration) => {
-        "DurationMillisecond"
-    };
-    (DataType::Boolean) => {
-        "Boolean"
-    };
-    (UInt32List) => {
-        "UInt32 List"
-    };
-    (LargeUtf8List) => {
-        "Utf8 List"
-    };
-    (Utf8List) => {
-        "Utf8 List"
-    };
-}
-
 ///
 /// Given the following table definition:
 ///
@@ -809,26 +766,6 @@ macro_rules! define_table {
             }
         }
 
-        // --------------------------------------------------------------------------
-        // Docs function
-        // --------------------------------------------------------------------------
-
-        #[cfg(feature = "table_docs")]
-        #[allow(dead_code)]
-        #[allow(clippy::all)]
-        pub const TABLE_DOCS: $crate::table_docs::StaticTableDocs = $crate::table_docs::StaticTableDocs {
-            name: stringify!($table_name),
-            description: concat!($($description),*),
-            columns: &[
-                $(
-                    $crate::table_docs::TableColumn {
-                        name: stringify!($element),
-                        column_type: document_type!($ty),
-                        description: concat!($($doc),*)
-                    },
-                )+
-            ],
-        };
     })
 }
 
@@ -853,5 +790,3 @@ pub(crate) use define_fmt;
 pub(crate) use define_primitive_trait;
 pub(crate) use define_sort_order;
 pub(crate) use define_table;
-#[cfg(feature = "table_docs")]
-pub(crate) use document_type;

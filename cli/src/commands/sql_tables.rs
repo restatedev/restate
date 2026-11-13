@@ -23,14 +23,6 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
         SqlColumnDoc { name: "max_service_protocol_version", ty: "UInt32", description: "Maximum supported protocol version." },
         SqlColumnDoc { name: "services", ty: "Utf8 List", description: "List of service names registered by this deployment." },
     ] },
-    SqlTableDoc { name: "sys_inbox", description: "Invocations queued for a Virtual Object or Workflow key. Only one invocation runs at a time per key; the others wait here, ordered by `sequence_number`.", columns: &[
-        SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Internal column that is used for partitioning the services invocations. Can be ignored." },
-        SqlColumnDoc { name: "service_name", ty: "Utf8", description: "The name of the invoked virtual object/workflow." },
-        SqlColumnDoc { name: "service_key", ty: "Utf8", description: "The key of the virtual object/workflow." },
-        SqlColumnDoc { name: "id", ty: "Utf8", description: "[Invocation ID](/services/invocation/managing-invocations#invocation-id)." },
-        SqlColumnDoc { name: "sequence_number", ty: "UInt64", description: "Sequence number in the inbox." },
-        SqlColumnDoc { name: "created_at", ty: "TimestampMillisecond", description: "Timestamp indicating the start of this invocation. DEPRECATED: you should not use this field anymore, but join with the sys_invocation table" },
-    ] },
     SqlTableDoc { name: "sys_journal", description: "Journal entries of invocations. The journal records the steps an invocation took (calls, sleeps, state access, promises, ...), one row per entry, ordered by `index`.", columns: &[
         SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Internal column that is used for partitioning the services invocations. Can be ignored." },
         SqlColumnDoc { name: "id", ty: "Utf8", description: "[Invocation ID](/services/invocation/managing-invocations#invocation-id)." },
@@ -277,4 +269,4 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
     ] },
 ];
 
-pub static SQL_TABLES_HELP: &str = "Queryable introspection tables:\n  sys_deployment, sys_inbox, sys_journal, sys_journal_events, sys_locks, sys_promise, sys_rules, sys_scheduler, sys_service, state, sys_user_limits, sys_vqueue_entry_status, sys_vqueue_meta, sys_vqueues, sys_invocation\n\nRun `restate sql describe <table>` for a table's columns.";
+pub static SQL_TABLES_HELP: &str = "Queryable introspection tables:\n  sys_deployment, sys_journal, sys_journal_events, sys_locks, sys_promise, sys_rules, sys_scheduler, sys_service, state, sys_user_limits, sys_vqueue_entry_status, sys_vqueue_meta, sys_vqueues, sys_invocation\n\nRun `restate sql describe <table>` for a table's columns.";
