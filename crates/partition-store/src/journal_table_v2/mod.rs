@@ -8,6 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+//! Journal V2 storage and its table-specific lookup keys.
+//!
+//! [`JournalKey`] and [`JournalCompletionIdToCommandIndexKey`] use fixed-width fields.
+//! [`JournalNotificationIdToNotificationIndexKey`] instead allows a raw signal-name
+//! suffix: names compare lexicographically there, but the codec consumes the rest
+//! of the key and is not a composable, prefix-free ordered-field codec. Keep
+//! `notification_id` last. See the [key encoding families](crate::keys#two-encoding-families).
+
 use std::collections::HashMap;
 
 use anyhow::anyhow;
