@@ -273,7 +273,7 @@ use restate_util_lifecycle::{Scope, ScopePayload};
 use crate::{CfHandles, RawRocksDb};
 
 pub use self::iteration::{
-    Iteration, IterationError, IterationOptions, IterationOutcome, IteratorVisitor, LeasePolicy,
+    Iteration, IterationError, IterationOptions, IterationOutcome, IteratorVisitor,
 };
 pub use self::iterator::{OwnedReadIterator, ReadIterator};
 pub use self::reader::{OwnedPinnedBatch, OwnedReader, PinnedBatch, Reader};

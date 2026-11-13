@@ -8,19 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::pin::pin;
 use std::sync::Arc;
-use std::task::Poll;
 
-use restate_core::io::{AdmissionClosed, Gate, Lease};
+use restate_core::io::Gate;
 
 use super::{OwnedReadIterator, ReadIterator, ReadSource};
 use crate::background::{OpFn, yield_now};
-use crate::{IterAction, RocksError, StorageOp, StorageTaskKind};
+use crate::{Cancellable, Cooperative, IterAction, RocksError, StorageOp, StorageTaskKind};
 
 /// How many items an iteration reads in one slice: it then lets the thread's
-/// other tasks run. With [`LeasePolicy::StopOnSeal`], a slice also shares one
-/// lease across its reads.
+/// other tasks run.
 const STEPS_PER_SLICE: usize = 128;
 
 /// Consumes an iterator's borrowed rows on a storage worker.
@@ -33,7 +30,8 @@ pub trait IteratorVisitor: Send + Sized + 'static {
     type Error: Send + 'static;
 
     /// Processes a row and chooses where to move next. An error fails the
-    /// iteration immediately.
+    /// iteration immediately. Gate cancellation can drop a suspended visit;
+    /// any resources it holds must be released when its future is dropped.
     fn visit(
         &mut self,
         key: &[u8],
@@ -72,55 +70,22 @@ impl<V> IterationOutcome<V> {
     }
 }
 
-/// A failure while reading rows, admitting a slice, or running a visitor.
+/// A failure while reading rows or running a visitor.
 #[derive(Debug, thiserror::Error)]
 pub enum IterationError<E> {
+    /// The gate's owner requested early termination after admission.
+    #[error("iteration cancelled")]
+    Cancelled,
     #[error(transparent)]
     RocksDb(#[from] RocksError),
-    /// The operation was accepted, but its gate closed before a read slice.
-    #[error(transparent)]
-    ScopeClosed(#[from] AdmissionClosed),
     #[error("iterator visitor failed: {0}")]
     Visitor(#[source] E),
-}
-
-/// What happens to an iteration from [`ReadIterator::prepare_iteration`] once
-/// its gate is sealed,
-/// which decides how long the iteration holds a lease from the gate:
-///
-/// - [`Self::StopOnSeal`]: the iteration stops early. Use it for reads that
-///   are pointless once their owner shuts down, such as a query on a partition
-///   that is closing.
-/// - [`Self::WholeIteration`]: the iteration runs to completion, and shutting
-///   down waits for it. Use it for reads that must not be cut short.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LeasePolicy {
-    /// The iteration stops once the gate is sealed, and resolves to
-    /// [`IterationError::ScopeClosed`], distinguishing interruption from a
-    /// complete iteration. This includes an iteration that hasn't started reading yet,
-    /// if the gate was sealed already.
-    ///
-    /// The iteration holds a lease while it reads, and none while the callback
-    /// waits (for example for room downstream) or yields, so draining
-    /// the gate doesn't wait for a consumer. It takes a new lease to read again,
-    /// and stops if the gate was sealed meanwhile. Until then, the iterator and
-    /// the callback stay alive.
-    StopOnSeal,
-    /// The iteration runs to completion even if the gate is sealed meanwhile,
-    /// and draining the gate waits until it's done.
-    ///
-    /// The iteration takes one lease when it's submitted, like any
-    /// [`StorageOp`], and holds it until the iteration ends and the iterator
-    /// is dropped.
-    WholeIteration,
 }
 
 /// How [`RocksDb::prepare_iteration`](crate::RocksDb::prepare_iteration) runs
 /// an iteration.
 #[derive(Clone)]
 pub struct IterationOptions {
-    /// What sealing the iteration's gate does.
-    pub lease_policy: LeasePolicy,
     /// The iterator's first move.
     pub initial_action: IterAction,
 }
@@ -146,20 +111,25 @@ where
     ///
     /// # Errors
     /// Preparing this operation does not acquire admission. Submission can fail
-    /// with [`AdmissionClosed`] before the executor accepts it. After acceptance,
-    /// [`IterationError::ScopeClosed`] means a read slice could not acquire its
-    /// lease, [`IterationError::RocksDb`] reports a read failure, and
-    /// [`IterationError::Visitor`] preserves the visitor's error. The executor's
-    /// separate [`IoTaskError`](restate_core::io::IoTaskError) means accepted work
-    /// ended without delivering its result, for example after a panic.
-    /// Dropping a cancellable result requests worker cleanup without waiting for it.
+    /// with [`AdmissionClosed`](restate_core::io::AdmissionClosed) before the
+    /// executor accepts it. After acceptance, [`IterationError::RocksDb`]
+    /// reports a read failure, and [`IterationError::Visitor`] preserves the
+    /// visitor's error. [`IterationError::Cancelled`] reports a gate owner's
+    /// request to stop after admission. The executor's separate
+    /// [`IoTaskError`](restate_core::io::IoTaskError) means accepted work ended
+    /// without delivering its result, for example after a panic. Dropping a
+    /// cancellable result requests worker cleanup without waiting for it.
     ///
-    /// The iteration admits through `gate`, and `lease_policy` decides what
-    /// sealing it does (see [`LeasePolicy`]).
+    /// The iteration admits through `gate` at submission and holds its lease
+    /// through cleanup. Sealing lets it finish; cancelling the gate stops it at
+    /// a slice boundary or while its visitor is suspended. The visitor must
+    /// be safe to drop while suspended. A slice bounds the number of visits,
+    /// not elapsed time: native calls and synchronous visitor work cannot be
+    /// interrupted.
     ///
     /// ```ignore
     /// let iteration = iterator
-    ///     .prepare_iteration(gate, LeasePolicy::StopOnSeal, Some(IterAction::SeekToFirst), visitor)
+    ///     .prepare_iteration(gate, Some(IterAction::SeekToFirst), visitor)
     ///     .with_read_perf("scan");
     /// executor.spawn_cancellable(iteration)?.await?;
     /// ```
@@ -169,26 +139,17 @@ where
     pub fn prepare_iteration<'g, V: IteratorVisitor>(
         self,
         gate: &'g Arc<Gate>,
-        lease_policy: LeasePolicy,
         initial_action: Option<IterAction>,
         visitor: V,
-    ) -> StorageOp<'g, Self, Iteration<V>> {
+    ) -> StorageOp<'g, Cooperative<Self>, Iteration<V>> {
         self.debug_assert_inside(gate);
-        // `WholeIteration` is plain `StorageOp` admission: one lease for the
-        // whole task. `StopOnSeal` takes no lease up front: the iteration takes
-        // one per slice instead.
-        let (op_gate, slice_gate) = match lease_policy {
-            LeasePolicy::StopOnSeal => (None, Some(Arc::clone(gate))),
-            LeasePolicy::WholeIteration => (Some(gate), None),
-        };
         StorageOp::from_parts(
-            self,
-            op_gate,
+            Cooperative(self),
+            gate,
             StorageTaskKind::BackgroundIterator,
             Iteration {
                 visitor,
                 initial_action,
-                gate: slice_gate,
             },
         )
     }
@@ -198,25 +159,29 @@ where
 pub struct Iteration<V> {
     visitor: V,
     initial_action: Option<IterAction>,
-    // Set with `LeasePolicy::StopOnSeal`: the gate to admit each slice through.
-    gate: Option<Arc<Gate>>,
 }
 
-impl<'a, H, V> OpFn<ReadIterator<'a, H>> for Iteration<V>
+impl<'a, H, V> OpFn<Cooperative<ReadIterator<'a, H>>> for Iteration<V>
 where
     H: ReadSource + Send + Sync + 'static,
     V: IteratorVisitor,
 {
     type Output = Result<IterationOutcome<V>, IterationError<V::Error>>;
 
-    async fn run_async(mut self, mut iterator: OwnedReadIterator<H>) -> Self::Output {
-        let completion = run(
-            &mut iterator,
-            &mut self.visitor,
-            self.initial_action,
-            &self.gate,
-        )
-        .await?;
+    async fn run_async(
+        mut self,
+        Cancellable {
+            context: mut iterator,
+            cancelled,
+        }: Cancellable<OwnedReadIterator<H>>,
+    ) -> Self::Output {
+        // Check cancellation before each poll, including after a slice yield
+        // or while a visitor is suspended, rather than locking for every row.
+        let completion = tokio::select! {
+            biased;
+            _ = cancelled.cancelled() => return Err(IterationError::Cancelled),
+            completion = run(&mut iterator, &mut self.visitor, self.initial_action) => completion?,
+        };
         Ok(completion.map(|()| self.visitor))
     }
 }
@@ -226,13 +191,11 @@ async fn run<H, V>(
     iterator: &mut OwnedReadIterator<H>,
     visitor: &mut V,
     initial_action: Option<IterAction>,
-    gate: &Option<Arc<Gate>>,
 ) -> Result<IterationOutcome<()>, IterationError<V::Error>>
 where
     H: ReadSource,
     V: IteratorVisitor,
 {
-    let mut lease = admit(gate)?;
     if let Some(action) = initial_action
         && !apply(iterator, action)
     {
@@ -240,45 +203,22 @@ where
     }
     let mut steps = 0;
     while let Some((key, value)) = iterator.item()? {
-        // Check the next row before yielding so exhaustion and errors take
-        // precedence over re-admission.
+        // Check the next row before yielding, so a finished iteration returns
+        // without yielding once more.
         if steps == STEPS_PER_SLICE {
-            drop(lease);
             yield_now().await;
-            lease = admit(gate)?;
             steps = 0;
         }
-        let action = {
-            let mut action = pin!(visitor.visit(key, value));
-            match futures::poll!(action.as_mut()) {
-                Poll::Ready(action) => action.map_err(IterationError::Visitor)?,
-                // Release the lease while the callback waits, so draining
-                // the gate doesn't wait for a consumer.
-                Poll::Pending => {
-                    drop(lease);
-                    let action = action.await.map_err(IterationError::Visitor)?;
-                    if matches!(action, IterAction::Stop) {
-                        return Ok(IterationOutcome::Stopped(()));
-                    }
-                    lease = admit(gate)?;
-                    action
-                }
-            }
-        };
+        let action = visitor
+            .visit(key, value)
+            .await
+            .map_err(IterationError::Visitor)?;
         if !apply(iterator, action) {
             return Ok(IterationOutcome::Stopped(()));
         }
         steps += 1;
     }
     Ok(IterationOutcome::Exhausted(()))
-}
-
-/// Takes the lease the iteration holds while it reads, with
-/// [`LeasePolicy::StopOnSeal`].
-fn admit(gate: &Option<Arc<Gate>>) -> Result<Option<Lease<'_>>, AdmissionClosed> {
-    gate.as_ref()
-        .map(|gate| gate.try_acquire().ok_or(AdmissionClosed))
-        .transpose()
 }
 
 /// Moves `iterator` as `action` says. Returns `false` for [`IterAction::Stop`].
