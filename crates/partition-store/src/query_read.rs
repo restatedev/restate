@@ -49,7 +49,7 @@ use restate_types::sharding::KeyRange;
 
 use crate::features::StorageFeatures;
 use crate::fsm_table::{fsm_variable, migration_jobs_key, registry_key};
-use crate::job::{MigrationJobId, MigrationJobs};
+use crate::job::{MigrationJobId, MigrationJobStatus, MigrationJobs};
 use crate::keys::KeyKind;
 use crate::registry::{Index, IndexKind, IndexNotReady, IndexRegistry, IndexStatus};
 use crate::scan::PhysicalScan;
@@ -189,9 +189,6 @@ impl ReadSnapshot {
     /// How far the backfill of the Backfilling `index` is in this snapshot, from
     /// its build job's record.
     fn backfill_status(&self, index: &Index) -> String {
-        let Some(walk) = index.walk else {
-            return "its backfill has not started".to_owned();
-        };
         let jobs = self.inner.jobs.get_or_init(|| {
             let key = migration_jobs_key(self.partition_id(), fsm_variable::MIGRATION_JOBS);
             self.inner
@@ -203,10 +200,27 @@ impl ReadSnapshot {
                 .transpose()
                 .map(Option::unwrap_or_default)
         });
-        let job = match jobs {
-            Ok(jobs) => jobs.get(MigrationJobId::for_index(index.id)),
-            Err(err) => return format!("backfill walk {walk}; unreadable job records: {err}"),
+        let job = jobs
+            .as_ref()
+            .ok()
+            .and_then(|jobs| jobs.get(MigrationJobId::for_index(index.id)));
+        let Some(walk) = index.walk else {
+            // Between passes, or not started yet.
+            return match job {
+                Some(job) if job.status == MigrationJobStatus::Waiting => {
+                    match job.rows_uncovered {
+                        Some(rows) => format!(
+                            "it waits for its next pass; the last full pass found {rows} entries it couldn't cover"
+                        ),
+                        None => "it waits for its next pass".to_owned(),
+                    }
+                }
+                _ => "its backfill has not started".to_owned(),
+            };
         };
+        if let Err(err) = jobs {
+            return format!("backfill walk {walk}; unreadable job records: {err}");
+        }
         let Some(job) = job else {
             return format!("backfill walk {walk}; its job record is missing");
         };

@@ -50,17 +50,59 @@ pub use driver::{WalkDriver, WalkStatsSnapshot};
 /// The persisted format this binary reads and writes.
 const FORMAT: u32 = 1;
 
-/// The table a walk traverses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, bilrost::Enumeration)]
+/// The table a walk traverses, stored on the walk as its number.
+///
+/// **Compatibility.** The walk stores the number, not a bilrost enumeration, so a
+/// walk over a source this binary doesn't know still decodes, and its
+/// [`OnUnknown`] policy decides what an open does with it. A release adding a
+/// source sets that policy on its walks, and raises the version floor first if
+/// the policy is `Refuse`. Never reuse a number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
-    #[bilrost(0)]
-    Unknown,
     /// Entry statuses, in entry-status key order within the partition's key range.
-    #[bilrost(1)]
-    EntryStatus,
+    EntryStatus = 1,
+}
+
+impl Source {
+    /// The source stored as `number`, if this binary knows it.
+    pub fn from_number(number: u32) -> Option<Self> {
+        (number == Self::EntryStatus as u32).then_some(Self::EntryStatus)
+    }
+}
+
+/// What an open must do with a walk whose kind or source this binary doesn't
+/// know, stored on the walk as its number.
+///
+/// **Compatibility.** A number this binary doesn't know means `Refuse`. The author
+/// of a new kind or source chooses its policy: `Discard` only after showing that
+/// dropping the walk and restarting its known members under the opening binary's
+/// own kind keeps their meaning, with no source conversion; otherwise `Refuse`,
+/// with the version floor raised before such a walk starts. A new policy needs a
+/// version floor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnUnknown {
+    /// The open fails without changing anything.
+    Refuse = 0,
+    /// The open removes the walk and unlinks its members: members of known
+    /// definitions start a pass of this binary's own kind, the others are retired.
+    Discard = 1,
+}
+
+impl OnUnknown {
+    pub fn from_number(number: u32) -> Self {
+        if number == Self::Discard as u32 {
+            Self::Discard
+        } else {
+            Self::Refuse
+        }
+    }
 }
 
 /// The kind of a walk: its name and the version of its semantics.
+///
+/// **Compatibility.** A walk of a kind this binary doesn't know still decodes; its
+/// [`OnUnknown`] policy decides what an open does. Changing a kind's semantics
+/// needs a new version, with a policy chosen as [`OnUnknown`] describes.
 #[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
 pub struct WalkKind {
     #[bilrost(1)]
@@ -79,6 +121,28 @@ impl WalkKind {
             version: 1,
         }
     }
+
+    /// The policy this binary's walks of this kind carry. An index backfill is
+    /// discardable: tokens are the only proof of coverage, so restarting its
+    /// members from the start loses nothing.
+    fn on_unknown(&self) -> OnUnknown {
+        OnUnknown::Discard
+    }
+}
+
+/// A member of a walk whose completion evidence differs from the default.
+#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
+pub struct WalkMember {
+    /// The member's index ID.
+    #[bilrost(1)]
+    pub index: u32,
+    /// Where the member joined this pass: the walk's committed cursor then.
+    /// `None` means at the start of the pass.
+    #[bilrost(2)]
+    pub joined_at: Option<Bytes>,
+    /// Rows this pass found that the member couldn't cover. Saturating.
+    #[bilrost(3)]
+    pub uncovered: u64,
 }
 
 /// One walk and its committed progress.
@@ -88,8 +152,9 @@ pub struct Walk {
     pub id: u64,
     #[bilrost(2)]
     pub kind: WalkKind,
+    /// A [`Source`] number.
     #[bilrost(3)]
-    pub source: Source,
+    pub source: u32,
     /// The last source key when the walk started, inclusive.
     #[bilrost(4)]
     pub end: Bytes,
@@ -100,6 +165,44 @@ pub struct Walk {
     /// Parameters owned and versioned by the walk kind.
     #[bilrost(6)]
     pub params: Bytes,
+    /// Completion evidence of the members that differ from the default: joined
+    /// this pass late, or found rows they couldn't cover. A member without an
+    /// entry joined at the start of the pass and has no gap so far; omitting one is
+    /// an encoding, never a stand-in for missing evidence. The registry decides
+    /// who the members are.
+    #[bilrost(7)]
+    pub members: Vec<WalkMember>,
+    /// An [`OnUnknown`] number.
+    #[bilrost(8)]
+    pub on_unknown: u32,
+}
+
+impl Walk {
+    /// The source, if this binary knows it.
+    pub fn source(&self) -> Option<Source> {
+        Source::from_number(self.source)
+    }
+
+    /// Whether this binary knows the walk's kind and source, so it can run it.
+    pub fn is_supported(&self) -> bool {
+        self.kind == WalkKind::index_backfill() && self.source() == Some(Source::EntryStatus)
+    }
+
+    /// The evidence of member `index`, if it differs from the default.
+    pub fn member(&self, index: u32) -> Option<&WalkMember> {
+        self.members.iter().find(|member| member.index == index)
+    }
+
+    /// Whether member `index` joined this pass after its start.
+    pub fn joined_late(&self, index: u32) -> bool {
+        self.member(index)
+            .is_some_and(|member| member.joined_at.is_some())
+    }
+
+    /// Rows this pass found that member `index` couldn't cover.
+    pub fn uncovered(&self, index: u32) -> u64 {
+        self.member(index).map_or(0, |member| member.uncovered)
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -110,6 +213,13 @@ pub enum WalkError {
     UnsupportedFormat(u32),
     #[error("unsupported walk kind '{}' version {}", .0.name, .0.version)]
     UnsupportedKind(WalkKind),
+    #[error(
+        "walk {id} is of kind '{}' version {} over source {table}, which this binary \
+         doesn't know and must not discard; open the store with the release that \
+         started it",
+        .kind.name, .kind.version
+    )]
+    Refused { id: u64, kind: WalkKind, table: u32 },
     #[error("no walk has ID {0}")]
     UnknownId(u64),
     #[error("malformed walk record: {0}")]
@@ -141,8 +251,10 @@ impl Default for Walks {
 }
 
 impl Walks {
-    /// Decodes a persisted record and checks its invariants. Unknown jobs fail:
-    /// this binary cannot run them, nor tell which effects they own.
+    /// Decodes a persisted record and checks its invariants. Walks of a kind or
+    /// source this binary doesn't know decode too, with only their common
+    /// invariants checked: an open resolves them by their policy (see
+    /// [`Self::preflight`]).
     pub fn decode(bytes: &[u8]) -> Result<Self, WalkError> {
         let walks = <Self as bilrost::OwnedMessage>::decode(bytes)?;
         if walks.format != FORMAT {
@@ -165,14 +277,12 @@ impl Walks {
             if !ids.insert(walk.id) {
                 return invalid("a walk ID is used twice");
             }
-            if walk.kind != WalkKind::index_backfill() {
-                return Err(WalkError::UnsupportedKind(walk.kind.clone()));
+            if !walk.is_supported() {
+                // Its params, positions and evidence are the unknown kind's own.
+                continue;
             }
             if !walk.params.is_empty() {
                 return invalid("an index backfill has parameters");
-            }
-            if walk.source != Source::EntryStatus {
-                return invalid("a walk has an unknown source");
             }
             if walk
                 .cursor
@@ -181,6 +291,105 @@ impl Walks {
             {
                 return invalid("a walk's cursor is past its end");
             }
+            let mut members = std::collections::BTreeSet::new();
+            for member in &walk.members {
+                if !members.insert(member.index) {
+                    return invalid("a walk lists a member twice");
+                }
+                if member
+                    .joined_at
+                    .as_ref()
+                    .is_some_and(|joined| walk.cursor.as_ref().is_none_or(|cursor| joined > cursor))
+                {
+                    return invalid("a member joined a walk past its cursor");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks, before an open changes anything, that every walk of a kind or
+    /// source this binary doesn't know may be discarded.
+    pub(crate) fn preflight(&self) -> Result<(), WalkError> {
+        match self.walks.iter().find(|walk| {
+            !walk.is_supported() && OnUnknown::from_number(walk.on_unknown) == OnUnknown::Refuse
+        }) {
+            Some(walk) => Err(WalkError::Refused {
+                id: walk.id,
+                kind: walk.kind.clone(),
+                table: walk.source,
+            }),
+            None => Ok(()),
+        }
+    }
+
+    /// Removes the walks this binary doesn't know, returning their IDs, which stay
+    /// issued. Run [`Self::preflight`] first: it refuses the ones that must stay.
+    pub(crate) fn discard_unknown(&mut self) -> Vec<u64> {
+        let discarded = self
+            .walks
+            .iter()
+            .filter(|walk| !walk.is_supported())
+            .map(|walk| walk.id)
+            .collect();
+        self.walks.retain(Walk::is_supported);
+        discarded
+    }
+
+    /// Records that index `index` joins walk `id` now, after its committed cursor,
+    /// as a later release may. Tests only: this binary attaches members at a
+    /// pass's start.
+    #[cfg(test)]
+    pub(crate) fn join(&mut self, id: u64, index: u32) -> Result<(), WalkError> {
+        let walk = self
+            .walks
+            .iter_mut()
+            .find(|walk| walk.id == id)
+            .ok_or(WalkError::UnknownId(id))?;
+        walk.members.push(WalkMember {
+            index,
+            joined_at: walk.cursor.clone(),
+            uncovered: 0,
+        });
+        Ok(())
+    }
+
+    /// The walks, to change them as another binary might. Tests only.
+    #[cfg(test)]
+    pub(crate) fn entries_mut(&mut self) -> &mut [Walk] {
+        &mut self.walks
+    }
+
+    /// Keeps the evidence of the members for which `keep(walk, index)` holds, for
+    /// example those still linked to their walk.
+    pub(crate) fn retain_members(&mut self, mut keep: impl FnMut(u64, u32) -> bool) {
+        for walk in &mut self.walks {
+            walk.members.retain(|member| keep(walk.id, member.index));
+        }
+    }
+
+    /// Adds `count` rows that member `index` of walk `id` couldn't cover.
+    pub(crate) fn add_uncovered(
+        &mut self,
+        id: u64,
+        index: u32,
+        count: u64,
+    ) -> Result<(), WalkError> {
+        if count == 0 {
+            return Ok(());
+        }
+        let walk = self
+            .walks
+            .iter_mut()
+            .find(|walk| walk.id == id)
+            .ok_or(WalkError::UnknownId(id))?;
+        match walk.members.iter_mut().find(|member| member.index == index) {
+            Some(member) => member.uncovered = member.uncovered.saturating_add(count),
+            None => walk.members.push(WalkMember {
+                index,
+                joined_at: None,
+                uncovered: count,
+            }),
         }
         Ok(())
     }
@@ -211,14 +420,22 @@ impl Walks {
         }
         let id = self.next_id;
         self.next_id += 1;
+        let on_unknown = kind.on_unknown() as u32;
         self.walks.push(Walk {
             id,
             kind,
-            source,
+            source: source as u32,
             end,
             cursor: None,
             params: Bytes::new(),
+            members: Vec::new(),
+            on_unknown,
         });
+        if !self.walks.last().is_some_and(Walk::is_supported) {
+            let walk = self.walks.pop().expect("just pushed");
+            self.next_id -= 1;
+            return Err(WalkError::UnsupportedKind(walk.kind));
+        }
         if let Err(error) = self.validate() {
             self.walks.pop();
             self.next_id -= 1;
@@ -328,15 +545,73 @@ mod tests {
             corrupt(|walks| walks.format = FORMAT + 1),
             Err(WalkError::UnsupportedFormat(FORMAT + 1))
         );
-        assert!(matches!(
-            corrupt(|walks| walks.walks[0].kind.version = 2),
-            Err(WalkError::UnsupportedKind(_))
-        ));
         assert!(corrupt(|walks| walks.walks[0].id = walks.next_id).is_err());
         assert!(corrupt(|walks| walks.walks.push(walks.walks[0].clone())).is_err());
-        assert!(corrupt(|walks| walks.walks[0].source = Source::Unknown).is_err());
         assert!(corrupt(|walks| walks.walks[0].params = Bytes::from_static(b"x")).is_err());
         assert!(corrupt(|walks| walks.walks[0].cursor = Some(Bytes::from_static(b"z"))).is_err());
+        fn member(joined_at: Option<&'static [u8]>) -> WalkMember {
+            WalkMember {
+                index: 64,
+                joined_at: joined_at.map(Bytes::from_static),
+                uncovered: 1,
+            }
+        }
+        assert!(
+            corrupt(|walks| walks.walks[0].members = vec![member(None), member(None)]).is_err(),
+            "a member listed twice"
+        );
+        assert!(
+            corrupt(|walks| walks.walks[0].members = vec![member(Some(b"a"))]).is_err(),
+            "a late join before any cursor"
+        );
+
+        // A walk of a kind or source this binary doesn't know decodes with its
+        // params and positions unchecked. Its policy decides: a discardable one
+        // is removed with its ID kept issued; any refusing one refuses them all.
+        let unknown = |on_unknown: OnUnknown| {
+            let mut walks = reloaded.clone();
+            let walk = &mut walks.walks[0];
+            (walk.source, walk.params, walk.on_unknown) =
+                (99, Bytes::from_static(b"opaque"), on_unknown as u32);
+            walk.cursor = Some(Bytes::from_static(b"zz"));
+            Walks::decode(&walks.encode()).unwrap()
+        };
+        // Evidence of a member that left goes; the others keep theirs.
+        let mut pruned = reloaded.clone();
+        pruned.add_uncovered(3, 64, 2).unwrap();
+        pruned.add_uncovered(3, 65, 1).unwrap();
+        pruned.retain_members(|_, index| index == 64);
+        assert_eq!(
+            (
+                pruned.get(3).unwrap().uncovered(64),
+                pruned.get(3).unwrap().member(65)
+            ),
+            (2, None)
+        );
+
+        let mut discardable = unknown(OnUnknown::Discard);
+        discardable.preflight().unwrap();
+        assert_eq!(discardable.discard_unknown(), [3]);
+        assert!(discardable.entries().is_empty());
+        assert_eq!(discardable.next_id, 4, "the ID stays issued");
+        assert!(matches!(
+            unknown(OnUnknown::Refuse).preflight(),
+            Err(WalkError::Refused {
+                id: 3,
+                table: 99,
+                ..
+            })
+        ));
+        let mut future_policy = reloaded.clone();
+        future_policy.walks[0].kind.version = 2;
+        future_policy.walks[0].on_unknown = 7;
+        assert!(
+            Walks::decode(&future_policy.encode())
+                .unwrap()
+                .preflight()
+                .is_err(),
+            "a policy this binary doesn't know refuses"
+        );
         // `start` rejects what `decode` would reject, and reserves no ID for it.
         let before = reloaded.clone();
         assert!(matches!(

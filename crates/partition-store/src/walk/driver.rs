@@ -293,7 +293,10 @@ impl WalkDriver {
         let (examined, failure) = match result {
             Ok((slice, examined)) => {
                 if slice == Slice::Exhausted {
-                    info!(walk, "Backfilled the indexes of the walk; they are Ready");
+                    info!(
+                        walk,
+                        "A backfill walk ended its pass: its indexes are Ready, or wait for another pass"
+                    );
                 }
                 (examined, None)
             }

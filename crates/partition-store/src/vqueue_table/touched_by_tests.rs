@@ -139,16 +139,19 @@ static INBOX_A: IndexDefinition = IndexDefinition {
     name: "inbox_a/1",
     kind: IndexKind::Secondary,
     apply: apply_inbox_index,
+    can_fill: true,
 };
 static INBOX_B: IndexDefinition = IndexDefinition {
     name: "inbox_b/1",
     kind: IndexKind::Secondary,
     apply: apply_inbox_index,
+    can_fill: true,
 };
 static NOOP: IndexDefinition = IndexDefinition {
     name: "noop/1",
     kind: IndexKind::Aggregate,
     apply: apply_nothing,
+    can_fill: true,
 };
 
 /// Raw keys of index `id`.
