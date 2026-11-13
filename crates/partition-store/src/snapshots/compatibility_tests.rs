@@ -14,6 +14,7 @@
 //! the `legacy` module freeze them as of v1.8.1.
 
 use std::num::NonZeroU8;
+use std::sync::Arc;
 
 use bytes::Bytes;
 use object_store::path::Path as ObjectPath;
@@ -33,6 +34,7 @@ use restate_types::{GenerationalNodeId, SemanticRestateVersion};
 use super::{LatestSnapshot, PartitionSnapshotStatus, SnapshotReference, SnapshotRepository};
 use crate::snapshots::{
     PartitionSnapshotMetadata, SnapshotCompatibility, SnapshotDir, SnapshotFormatVersion,
+    SnapshotLeaseGuard,
 };
 
 /// `metadata.json` as v1.8.1 writes it.
@@ -312,7 +314,7 @@ async fn old_and_new_servers_alternate_publishing() -> anyhow::Result<()> {
         num_retained: NonZeroU8::new(4).unwrap(),
         ..SnapshotsOptions::default()
     };
-    let repository = SnapshotRepository::new_from_config(&opts, tempdir()?.keep())
+    let repository = SnapshotRepository::new_from_config_with_stub_leases(&opts, tempdir()?.keep())
         .await?
         .unwrap();
     let latest_path = repository.latest_snapshot_pointer_path(PartitionId::MIN);
@@ -358,7 +360,13 @@ async fn old_and_new_servers_alternate_publishing() -> anyhow::Result<()> {
 
     // A new server publishes A, and old servers read its manifests.
     let (a, a_dir) = snapshot(Lsn::new(1000), b"a-data").await?;
-    repository.put(&a, SnapshotDir::new(a_dir)).await?;
+    repository
+        .put(
+            &a,
+            SnapshotDir::new(a_dir),
+            Arc::new(SnapshotLeaseGuard::noop()),
+        )
+        .await?;
     let status = latest_status().await?;
     assert_eq!(status.latest_snapshot_compatibility, a.compatibility);
     assert_eq!(
@@ -409,7 +417,13 @@ async fn old_and_new_servers_alternate_publishing() -> anyhow::Result<()> {
     // A new server publishes B, whose compatibility couldn't be captured: A's isn't carried over.
     let (mut b, b_dir) = snapshot(Lsn::new(2000), b"b-data-longer").await?;
     b.compatibility = None;
-    repository.put(&b, SnapshotDir::new(b_dir)).await?;
+    repository
+        .put(
+            &b,
+            SnapshotDir::new(b_dir),
+            Arc::new(SnapshotLeaseGuard::noop()),
+        )
+        .await?;
     let status = latest_status().await?;
     assert_eq!(status.latest_snapshot_id, b.snapshot_id);
     assert_eq!(status.latest_snapshot_compatibility, None);
@@ -447,7 +461,13 @@ async fn old_and_new_servers_alternate_publishing() -> anyhow::Result<()> {
     // A new server publishes D over what the old one wrote, and old servers still read it. The
     // older snapshots stay unknown: nothing fills them in from another snapshot.
     let (d, d_dir) = snapshot(Lsn::new(4000), b"d-data").await?;
-    repository.put(&d, SnapshotDir::new(d_dir)).await?;
+    repository
+        .put(
+            &d,
+            SnapshotDir::new(d_dir),
+            Arc::new(SnapshotLeaseGuard::noop()),
+        )
+        .await?;
     let status = latest_status().await?;
     assert_eq!(status.latest_snapshot_id, d.snapshot_id);
     assert_eq!(status.archived_lsn, Lsn::new(1000));

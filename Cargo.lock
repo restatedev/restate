@@ -8650,6 +8650,7 @@ dependencies = [
  "restate-futures-util",
  "restate-limiter",
  "restate-memory",
+ "restate-metadata-store",
  "restate-object-store-util",
  "restate-platform",
  "restate-rocksdb",
@@ -8678,6 +8679,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "ulid",
  "url",
  "zerocopy",
 ]
