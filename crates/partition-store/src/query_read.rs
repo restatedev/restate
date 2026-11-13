@@ -300,19 +300,192 @@ mod tests {
     use bytes::Bytes;
     use futures::FutureExt;
 
+    use restate_clock::{UniqueTimestamp, time::MillisSinceEpoch};
     use restate_core::io::IoExecutor;
+    use restate_limiter::LimitKey;
     use restate_rocksdb::RocksDbManager;
     use restate_storage_api::Transaction;
+    use restate_storage_api::vqueue_table::{
+        EntryContext, EntryKey, EntryMetadata, EntryStateRef, Stage, Status, WriteVQueueTable,
+        filters::ScanEntryIdFilter,
+        metadata::{VQueueLink, VQueueMeta},
+        stats::EntryStatistics,
+    };
     use restate_storage_query_api::scan::{BlockingScan, CursorScan, CursorStep, ReadCursor};
+    use restate_types::ServiceName;
+    use restate_types::identifiers::BaseEntryId;
     use restate_types::partitions::Partition;
-    use restate_types::vqueues::VQueueId;
+    use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, Seq, VQueueId};
 
     use crate::PartitionStoreManager;
     use crate::keys::selection::KeySelection;
     use crate::keys::{EncodeTableKey, KeyKind};
-    use crate::state_table::{StateKey, StateTable};
+    use crate::state_table::{ScopedStateKey, ScopedStateTable, StateKey, StateTable};
 
     use super::*;
+
+    #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn query_snapshot_unifies_layouts_primary_and_auxiliary_reads() {
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        let mut store = manager
+            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+            .await
+            .unwrap();
+        let qid = VQueueId::custom(9, "snapshot");
+        let id = BaseEntryId::new(9, EntryId::new(EntryKind::Invocation, [1; 16]));
+        let at = UniqueTimestamp::try_from_unix_millis(MillisSinceEpoch::new(1_744_010_000_000))
+            .unwrap();
+        let mut legacy = Vec::new();
+        StateKey {
+            partition_key: 9,
+            service_name: "svc".into(),
+            service_key: "object".into(),
+            state_key: Bytes::from_static(b"key"),
+        }
+        .serialize_to(&mut legacy);
+        let mut scoped = Vec::new();
+        ScopedStateKey {
+            partition_key: 9,
+            scope: None,
+            service_name: "svc".into(),
+            service_key: "object".into(),
+            state_key: Bytes::from_static(b"key"),
+        }
+        .serialize_to(&mut scoped);
+        let mut snapshots = Vec::new();
+        for (sequence, service) in [(1, "before"), (2, "after")] {
+            let key = EntryKey::new(false, at.to_unix_millis(), sequence, *id.as_entry_id());
+            let mut tx = store.transaction();
+            tx.raw_put_cf(KeyKind::State, &legacy, service.as_bytes());
+            tx.raw_put_cf(KeyKind::ScopedState, &scoped, service.as_bytes());
+            tx.create_vqueue(
+                &qid,
+                &VQueueMeta::new(
+                    at,
+                    None,
+                    LimitKey::None,
+                    VQueueLink::Service(ServiceName::new(service)),
+                ),
+            );
+            tx.create_vqueue_entry_status(
+                &EntryContext {
+                    qid: &qid,
+                    target: &EntryTargetRef::Service {
+                        scope: None,
+                        service,
+                        handler: "run",
+                    },
+                },
+                EntryStateRef {
+                    stage: Stage::Inbox,
+                    status: Status::New,
+                    entry_key: &key,
+                    metadata: &EntryMetadata::default(),
+                    stats: &EntryStatistics::new(at, key.run_at()),
+                },
+            );
+            tx.commit().await.unwrap();
+            drop(tx);
+            snapshots.push(store.query_read(CancellationToken::new()).unwrap());
+        }
+        for ((read, completed), (sequence, service)) in
+            snapshots.into_iter().zip([(1, "before"), (2, "after")])
+        {
+            assert_eq!(
+                read.map_vqueue_meta_blocking(&qid, |meta| meta.service_name().unwrap().to_owned())
+                    .unwrap()
+                    .as_deref(),
+                Some(service),
+                "auxiliary_lookup_uses_admitted_snapshot"
+            );
+            for filter in [
+                ScanEntryIdFilter::PartitionKey(KeyRange::FULL),
+                ScanEntryIdFilter::EntryIdSet([id].into()),
+            ] {
+                let caller = std::thread::current().id();
+                let mut rows = Vec::new();
+                read.for_each_vqueue_entry_status_blocking(filter, |id, header| {
+                    assert_eq!(
+                        std::thread::current().id(),
+                        caller,
+                        "read_runs_on_callers_thread"
+                    );
+                    rows.push((*id, header.seq));
+                    ControlFlow::Continue(())
+                })
+                .unwrap();
+                assert_eq!(
+                    rows,
+                    [(id, Seq::new(sequence))],
+                    "scan_and_primary_lookup_see_same_incarnation"
+                );
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let scoped_tx = tx.clone();
+            <ReadSnapshot as BlockingScan<StateTable>>::scan_blocking(
+                &read,
+                Arc::new(KeySelection::all()),
+                move |(_, value)| {
+                    tx.send(value.to_vec()).unwrap();
+                    ControlFlow::Continue(())
+                },
+            )
+            .unwrap();
+            <ReadSnapshot as BlockingScan<ScopedStateTable>>::scan_blocking(
+                &read,
+                Arc::new(KeySelection::all()),
+                move |(_, value)| {
+                    scoped_tx.send(value.to_vec()).unwrap();
+                    ControlFlow::Continue(())
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                rx.into_iter().collect::<Vec<_>>(),
+                [service.as_bytes(), service.as_bytes()],
+                "both_layouts_share_admission_time"
+            );
+            // The cursor is an ordinary owner: dropping the originating handle
+            // does not invalidate its borrowed records or change visibility.
+            let mut cursor = <ReadSnapshot as CursorScan<StateTable>>::scan_cursor(
+                &read,
+                Arc::new(KeySelection::all()),
+            )
+            .unwrap();
+            let mut lookup = read
+                .entry_status_cursor(ScanEntryIdFilter::EntryIdSet([id].into()))
+                .unwrap();
+            assert_eq!(lookup.advance().unwrap(), CursorStep::Record);
+            drop(read);
+            let mut completed = Box::pin(completed);
+            assert!(
+                completed.as_mut().now_or_never().is_none(),
+                "returned_cursor_pins_its_snapshot"
+            );
+            // Moving an already-positioned pinned lookup and a raw iterator to
+            // another thread is the same ownership handoff used between quanta.
+            std::thread::spawn(move || {
+                assert_eq!(cursor.advance().unwrap(), CursorStep::Record);
+                assert_eq!(
+                    cursor.current().unwrap().1,
+                    service.as_bytes(),
+                    "resumed_cursor_preserves_snapshot"
+                );
+                assert_eq!(
+                    lookup.current().unwrap().1.seq,
+                    Seq::new(sequence),
+                    "pinned_primary_survives_cross_thread_pause"
+                );
+                assert_eq!(cursor.advance().unwrap(), CursorStep::Done);
+            })
+            .join()
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(5), completed)
+                .await
+                .unwrap();
+        }
+    }
 
     #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
     async fn query_completion_waits_for_storage_after_waiter_and_capability_drop() {

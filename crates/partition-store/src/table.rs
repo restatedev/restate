@@ -121,6 +121,57 @@ pub trait PhysicalTable:
     }
 }
 
+/// Visits sorted full keys as the storage iterator does: in-bounds keys only, and
+/// a seek repositions at the first key at or after its target. Returns the indices
+/// of matching keys and the number of evaluated keys.
+#[cfg(test)]
+pub(crate) fn navigate<K: KeySchema>(
+    request: impl Into<Arc<KeySelection<K>>>,
+    scope: <K::Header as KeyHeader>::Scope,
+    keys: &[impl AsRef<[u8]>],
+) -> (Vec<usize>, usize) {
+    navigate_live(request, None, scope, keys)
+}
+
+/// [`navigate`] with an independently prepared live selection.
+#[cfg(test)]
+pub(crate) fn navigate_live<K: KeySchema>(
+    request: impl Into<Arc<KeySelection<K>>>,
+    live: Option<KeySelection<K>>,
+    scope: <K::Header as KeyHeader>::Scope,
+    keys: &[impl AsRef<[u8]>],
+) -> (Vec<usize>, usize) {
+    let Some(mut cursor) = request.into().cursor(scope).unwrap() else {
+        return (Vec::new(), 0);
+    };
+    if let Some(live) = live {
+        cursor.set_live(live);
+    }
+    let (mut matches, mut visited) = (Vec::new(), 0);
+    let mut position = keys
+        .iter()
+        .position(|key| cursor.scan().contains_key(key))
+        .unwrap_or(keys.len());
+    while let Some(key) = keys.get(position).map(AsRef::as_ref)
+        && cursor.scan().contains_key(key)
+    {
+        visited += 1;
+        match cursor.evaluate(key).unwrap() {
+            KeyMatch::Match => {
+                matches.push(position);
+                position += 1;
+            }
+            KeyMatch::Seek(target) => {
+                assert!(target.as_ref() > key);
+                position = keys.partition_point(|key| key.as_ref() < target.as_ref());
+            }
+            KeyMatch::Skip => position += 1,
+            KeyMatch::Done => break,
+        }
+    }
+    (matches, visited)
+}
+
 impl<T: PhysicalTable> BlockingScan<T> for ReadSnapshot {
     fn scan_blocking(
         &self,
