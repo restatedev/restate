@@ -20,7 +20,9 @@ use futures::task::{LocalFutureObj, LocalSpawn};
 use metrics::{Gauge, gauge, histogram};
 use tracing::Instrument;
 
-use restate_core::io::{AdmissionClosed, FutureTask, Gate, IoExecutor, IoOp, IoTask, TrackedTask};
+use restate_core::io::{
+    AdmissionClosed, Cancelled, FutureTask, Gate, IoExecutor, IoOp, IoTask, Lease, TrackedTask,
+};
 
 use crate::RocksDbPerfExt;
 use crate::metric_definitions::{STORAGE_BG_TASK_RUN_DURATION, STORAGE_BG_TASK_WAIT_DURATION};
@@ -67,6 +69,29 @@ impl StorageTaskKind {
     }
 }
 
+/// What gate admission supplies to an operation's context, besides its lease.
+///
+/// Ordinary contexts use `()`; [`Cooperative`] contexts use [`Cancelled`].
+/// The lease accounts for the task until cleanup is complete, independently of
+/// whether the context observes cancellation.
+pub trait Admission: Sized {
+    /// Acquires a lease and the context's admission value, or returns `None`
+    /// once the gate is sealed.
+    fn acquire(gate: &Arc<Gate>) -> Option<(Lease<'_>, Self)>;
+}
+
+impl Admission for () {
+    fn acquire(gate: &Arc<Gate>) -> Option<(Lease<'_>, Self)> {
+        gate.try_acquire().map(|lease| (lease, ()))
+    }
+}
+
+impl Admission for Cancelled {
+    fn acquire(gate: &Arc<Gate>) -> Option<(Lease<'_>, Self)> {
+        gate.try_acquire_cancellable()
+    }
+}
+
 /// What a prepared [`StorageOp`] works on, such as the database or a scope.
 ///
 /// A context stays borrowed for as long as it can: while the operation is
@@ -80,6 +105,7 @@ impl StorageTaskKind {
 /// | `&C`, for a shared handle `C` | [`RocksDb::prepare`](crate::RocksDb::prepare) (the database), [`StorageOp::with_context`] | a clone of `C` | `&C` |
 /// | a [`ReadIterator`](crate::reads::ReadIterator) | [`ReadIterator::prepare`](crate::reads::ReadIterator::prepare) | the same iterator, made owned, at the same position | `&mut ReadIterator<'_, _>` |
 /// | `()` | operations that need nothing, such as deleting a column family | nothing | nothing |
+/// | [`Cooperative<C>`] | [`StorageOp::with_context_cancellable_async`], [`ReadIterator::prepare_iteration`](crate::reads::ReadIterator::prepare_iteration) | [`Cancellable<C::Owned>`] | the owned context and a required [`Cancelled`] observer |
 ///
 /// A shared handle is a type such as `Arc<RocksDb>`, a `Scope`, or a
 /// `ReadSnapshot`: its clones are cheap and point to the same thing. See
@@ -88,8 +114,40 @@ pub trait OpContext {
     /// What a background task holds instead of the borrowed context.
     type Owned: Send + 'static;
 
-    /// Turns the context into what a background task holds.
-    fn into_owned(self) -> Self::Owned;
+    /// What admission supplies: `()` for ordinary work, [`Cancelled`] for
+    /// cooperative work. Preparing the context acquires neither this nor a lease.
+    type Admission: Admission;
+
+    /// Turns the context into what a background task holds, after admission.
+    fn into_owned(self, admission: Self::Admission) -> Self::Owned;
+}
+
+/// The prepared context of cooperative work. It holds no cancellation observer;
+/// submission obtains one from the operation's gate.
+pub struct Cooperative<C>(pub(crate) C);
+
+/// The owned context of admitted cooperative work.
+///
+/// The observer reports requests for early cleanup; it does not release admission.
+/// The task's lease is held separately, until its operation and context have been
+/// dropped.
+pub struct Cancellable<C> {
+    /// The resource the operation works on.
+    pub context: C,
+    /// Observes cancellation of the admitting gate or one of its ancestors.
+    pub cancelled: Cancelled,
+}
+
+impl<C: OpContext<Admission = ()>> OpContext for Cooperative<C> {
+    type Owned = Cancellable<C::Owned>;
+    type Admission = Cancelled;
+
+    fn into_owned(self, cancelled: Cancelled) -> Self::Owned {
+        Cancellable {
+            context: self.0.into_owned(()),
+            cancelled,
+        }
+    }
 }
 
 /// The work of a [`StorageOp`], as it runs on a storage worker with the owned
@@ -115,7 +173,7 @@ pub trait OpFn<C: OpContext>: Send + 'static {
 /// closure serves both.
 ///
 /// There is no need to implement it: pass a closure. Closures implement it for
-/// every kind of context, and take what the table in [`OpContext`] lists:
+/// ordinary contexts, and take what the table in [`OpContext`] lists:
 /// `FnOnce(&C)` for a shared handle, `FnOnce(&mut ReadIterator<'_, H>)` for an
 /// iterator, and `FnOnce()` for no context.
 pub trait SyncOpFn<C: OpContext>: OpFn<C> {
@@ -125,8 +183,9 @@ pub trait SyncOpFn<C: OpContext>: OpFn<C> {
 
 impl<C: Clone + Send + Sync + 'static> OpContext for &C {
     type Owned = C;
+    type Admission = ();
 
-    fn into_owned(self) -> C {
+    fn into_owned(self, (): ()) -> C {
         self.clone()
     }
 }
@@ -155,8 +214,9 @@ where
 
 impl OpContext for () {
     type Owned = ();
+    type Admission = ();
 
-    fn into_owned(self) {}
+    fn into_owned(self, (): ()) {}
 }
 
 impl<F, R> SyncOpFn<()> for F
@@ -178,6 +238,25 @@ where
         self()
     }
 }
+
+/// Gate-backed admission for a [`StorageOp`].
+pub struct Gated<'a>(&'a Arc<Gate>);
+
+/// An operation that needs no gate admission, such as opening a database or
+/// deleting a column family. Only contexts with [`OpContext::Admission`] equal
+/// to `()` can be submitted this way; cooperative work requires a gate.
+///
+/// ```compile_fail
+/// use restate_core::io::IoOp;
+/// use restate_rocksdb::{Cooperative, OpFn, StorageOp, Ungated};
+///
+/// fn submit<F: OpFn<Cooperative<()>, Output = ()>>(
+///     op: StorageOp<Cooperative<()>, F, Ungated>,
+/// ) {
+///     op.into_task(); // Cooperative work cannot run without gate admission.
+/// }
+/// ```
+pub struct Ungated;
 
 /// An operation on the database that has been prepared but hasn't run yet,
 /// for example with [`RocksDb::prepare`](crate::RocksDb::prepare).
@@ -216,34 +295,34 @@ where
 /// `C` is the operation's context, what it works on, such as the database. It
 /// stays borrowed until the operation moves to a background thread (see
 /// [`OpContext`]). `F` is the work itself (see [`OpFn`]).
+/// `G` says how it is admitted: [`Gated`], through a gate, or [`Ungated`], for
+/// the few lifecycle operations that must run regardless.
 ///
 /// Its kind says what the operation does. When it runs in the background, the
 /// kind labels the task's metrics and tracing span.
 #[must_use = "execute, schedule, or explicitly drop the operation"]
-pub struct StorageOp<'a, C, F> {
+pub struct StorageOp<C, F, G> {
     // Borrowed until the operation moves to a background thread.
     context: C,
     op: F,
-    // `None` for the few operations that must be accepted even after the
-    // database is sealed, such as deleting a column family.
-    gate: Option<&'a Arc<Gate>>,
+    gate: G,
     kind: StorageTaskKind,
 }
 
-impl<'a, F> StorageOp<'a, (), F> {
+impl<'a, F> StorageOp<(), F, Gated<'a>> {
     // An operation without a context, counted in `gate`.
     #[cfg(test)]
     pub(crate) fn new(op: F, gate: &'a Arc<Gate>, kind: StorageTaskKind) -> Self {
         Self {
             context: (),
             op,
-            gate: Some(gate),
+            gate: Gated(gate),
             kind,
         }
     }
 }
 
-impl<F> StorageOp<'static, (), F> {
+impl<F> StorageOp<(), F, Ungated> {
     /// An operation that takes no lease, so it is accepted even after the
     /// database is sealed. Only for work that must finish regardless, such as
     /// deleting a column family or opening a database that was already
@@ -252,13 +331,13 @@ impl<F> StorageOp<'static, (), F> {
         Self {
             context: (),
             op,
-            gate: None,
+            gate: Ungated,
             kind,
         }
     }
 }
 
-impl<'a, 'c, C, F> StorageOp<'a, &'c C, F>
+impl<'a, 'c, C, F> StorageOp<&'c C, F, Gated<'a>>
 where
     C: Clone + Send + Sync + 'static,
 {
@@ -298,7 +377,7 @@ where
     }
 }
 
-impl<'a, 'c, C, F> StorageOp<'a, &'c C, Async<F>>
+impl<'a, 'c, C, F> StorageOp<&'c C, Async<F>, Gated<'a>>
 where
     C: Clone + Send + Sync + 'static,
 {
@@ -340,27 +419,66 @@ where
     }
 }
 
-impl<'a, C, F> StorageOp<'a, C, F> {
-    // An operation on any kind of context, counted in `gate`, if any.
+impl<'a, 'c, C, F> StorageOp<Cooperative<&'c C>, CancellableAsync<F>, Gated<'a>>
+where
+    C: Clone + Send + Sync + 'static,
+{
+    /// Prepares multi-step async work that observes gate cancellation. Like
+    /// [`StorageOp::with_context_async`], it runs on a storage worker; the
+    /// callback also receives a [`Cancelled`] handle when admitted.
+    ///
+    /// The callback decides where it is safe to stop and how to report that.
+    /// In particular, waits for output capacity should also await cancellation.
+    /// Sealing alone lets the work finish; cancellation requests early cleanup,
+    /// and draining still waits for the task's lease to be released.
+    ///
+    /// Cooperative work runs on a storage worker, never inline:
+    ///
+    /// ```compile_fail
+    /// use std::sync::Arc;
+    /// use restate_core::io::Gate;
+    /// use restate_rocksdb::{StorageOp, StorageTaskKind};
+    ///
+    /// let gate = Arc::new(Gate::default());
+    /// StorageOp::with_context_cancellable_async(
+    ///     &(), &gate, StorageTaskKind::MultiGet,
+    ///     async |_, cancelled| cancelled.is_cancelled(),
+    /// ).call();
+    /// ```
+    pub fn with_context_cancellable_async<R>(
+        context: &'c C,
+        gate: &'a Arc<Gate>,
+        kind: StorageTaskKind,
+        op: F,
+    ) -> Self
+    where
+        F: AsyncFnOnce(&C, Cancelled) -> R + Send + 'static,
+    {
+        Self::from_parts(Cooperative(context), gate, kind, CancellableAsync(op))
+    }
+}
+
+impl<'a, C, F> StorageOp<C, F, Gated<'a>> {
+    // An operation on any kind of context, counted in `gate`.
     pub(crate) fn from_parts(
         context: C,
-        gate: impl Into<Option<&'a Arc<Gate>>>,
+        gate: &'a Arc<Gate>,
         kind: StorageTaskKind,
         op: F,
     ) -> Self {
         Self {
             context,
             op,
-            gate: gate.into(),
+            gate: Gated(gate),
             kind,
         }
     }
 }
 
-impl<'a, C: OpContext, F: OpFn<C>> StorageOp<'a, C, F> {
+impl<C: OpContext, F: OpFn<C>, G> StorageOp<C, F, G> {
     /// Measures RocksDB read perf counters while the work runs, also across
     /// `.await` points, and reports them under `name` when it finishes.
-    pub fn with_read_perf(self, name: &'static str) -> StorageOp<'a, C, ReadPerf<F>> {
+    pub fn with_read_perf(self, name: &'static str) -> StorageOp<C, ReadPerf<F>, G> {
         let Self {
             context,
             op,
@@ -383,7 +501,7 @@ impl<'a, C: OpContext, F: OpFn<C>> StorageOp<'a, C, F> {
     ///
     /// For an operation that returns a `Result`, [`Self::map_ok`] changes only
     /// a successful result.
-    pub fn map<U, M>(self, f: M) -> StorageOp<'a, C, Mapped<F, M>>
+    pub fn map<U, M>(self, f: M) -> StorageOp<C, Mapped<F, M>, G>
     where
         M: FnOnce(F::Output) -> U + Send + 'static,
     {
@@ -415,7 +533,7 @@ impl<'a, C: OpContext, F: OpFn<C>> StorageOp<'a, C, F> {
     ///     .map_ok(|value| value.map_or(0, |value| value.len()));
     /// # }
     /// ```
-    pub fn map_ok<T, E, U, M>(self, f: M) -> StorageOp<'a, C, MappedOk<F, M>>
+    pub fn map_ok<T, E, U, M>(self, f: M) -> StorageOp<C, MappedOk<F, M>, G>
     where
         F: OpFn<C, Output = Result<T, E>>,
         M: FnOnce(T) -> U + Send + 'static,
@@ -435,7 +553,7 @@ impl<'a, C: OpContext, F: OpFn<C>> StorageOp<'a, C, F> {
     }
 }
 
-impl<'a, C: OpContext, F: SyncOpFn<C>> StorageOp<'a, C, F> {
+impl<C: OpContext, F: SyncOpFn<C>, G> StorageOp<C, F, G> {
     /// Calls `make_guard` on the thread that runs the operation, right before it
     /// runs, and drops the guard right after, also if the operation panics. Use it
     /// for setup that must happen on that thread, like RocksDB perf counters. The
@@ -507,9 +625,9 @@ impl<'a, C: OpContext, F: SyncOpFn<C>> StorageOp<'a, C, F> {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn with_guard<G, M>(self, make_guard: M) -> StorageOp<'a, C, Guarded<F, M>>
+    pub fn with_guard<T, M>(self, make_guard: M) -> StorageOp<C, Guarded<F, M>, G>
     where
-        M: FnOnce() -> G + Send + 'static,
+        M: FnOnce() -> T + Send + 'static,
     {
         let Self {
             context,
@@ -640,6 +758,22 @@ where
     }
 }
 
+/// Async work that observes gate cancellation, from
+/// [`StorageOp::with_context_cancellable_async`].
+pub struct CancellableAsync<F>(F);
+
+impl<C, F, R> OpFn<Cooperative<&C>> for CancellableAsync<F>
+where
+    C: Clone + Send + Sync + 'static,
+    F: AsyncFnOnce(&C, Cancelled) -> R + Send + 'static,
+{
+    type Output = R;
+
+    async fn run_async(self, Cancellable { context, cancelled }: Cancellable<C>) -> R {
+        (self.0)(&context, cancelled).await
+    }
+}
+
 /// The work of an operation returned by [`StorageOp::with_read_perf`]: the
 /// original work, with its RocksDB read perf counters measured.
 pub struct ReadPerf<F> {
@@ -655,7 +789,7 @@ impl<C: OpContext, F: OpFn<C>> OpFn<C> for ReadPerf<F> {
     }
 }
 
-impl<C, F> IoOp for StorageOp<'_, C, F>
+impl<C, F> IoOp for StorageOp<C, F, Gated<'_>>
 where
     C: OpContext,
     F: OpFn<C>,
@@ -668,18 +802,14 @@ where
     }
 
     fn into_task(self) -> Result<impl IoTask<F::Output>, AdmissionClosed> {
-        let lease = self
-            .gate
-            .map(|gate| {
-                gate.try_acquire()
-                    .map(|lease| lease.into_owned())
-                    .ok_or(AdmissionClosed)
-            })
-            .transpose()?;
+        let (lease, admission) = C::Admission::acquire(self.gate.0).ok_or(AdmissionClosed)?;
+        let lease = lease.into_owned();
+        // Declare the operation after the lease, so its captures drop first even
+        // if converting the context to owned form panics.
+        let op = self.op;
         // Only now, and only once admitted, does the context become owned: the
         // task moves to another thread, where the borrow can't follow it.
-        let context = self.context.into_owned();
-        let op = self.op;
+        let context = self.context.into_owned(admission);
         // The lease is released after the operation and its context are dropped,
         // even if the task is dropped without running.
         Ok(TrackedTask::new(
@@ -689,16 +819,32 @@ where
     }
 }
 
-impl<C: OpContext, F: SyncOpFn<C>> StorageOp<'_, C, F> {
+impl<C, F> IoOp for StorageOp<C, F, Ungated>
+where
+    C: OpContext<Admission = ()>,
+    F: OpFn<C>,
+    F::Output: Send + 'static,
+{
+    type Output = F::Output;
+
+    fn operation(&self) -> &'static str {
+        self.kind.as_static_str()
+    }
+
+    fn into_task(self) -> Result<impl IoTask<F::Output>, AdmissionClosed> {
+        let context = self.context.into_owned(());
+        let op = self.op;
+        Ok(FutureTask(move || op.run_async(context)))
+    }
+}
+
+impl<C: OpContext<Admission = ()>, F: SyncOpFn<C>> StorageOp<C, F, Gated<'_>> {
     /// Runs the operation now, on the current thread, with its context still
     /// borrowed. Fails with [`AdmissionClosed`] if the database (or scope) is
     /// sealed. Unlike background tasks, it records no task metrics or tracing
     /// span.
     pub fn call(self) -> Result<F::Output, AdmissionClosed> {
-        let lease = self
-            .gate
-            .map(|gate| gate.try_acquire().ok_or(AdmissionClosed))
-            .transpose()?;
+        let lease = self.gate.0.try_acquire().ok_or(AdmissionClosed)?;
         // `run` consumes the operation and its context, so both are dropped
         // before the lease is released.
         let output = self.op.run(self.context);
@@ -925,11 +1071,32 @@ impl GlobalExecutor {
 #[cfg(test)]
 mod tests {
     use std::rc::Rc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use restate_core::io::{Gate, TrackedExecutor};
+    use restate_core::io::{Gate, OwnedLease, TrackedExecutor};
 
     use super::*;
+
+    #[test]
+    fn ordinary_tasks_have_no_cancellation_payload() {
+        let gate = Arc::new(Gate::default());
+        let task =
+            StorageOp::with_context_async(&(), &gate, StorageTaskKind::MultiGet, async |_: &()| {})
+                .into_task()
+                .unwrap();
+        // With an empty context and callback, admission is the only payload.
+        assert_eq!(
+            std::mem::size_of_val(&task),
+            std::mem::size_of::<OwnedLease>()
+        );
+        drop(task);
+        assert!(gate.is_idle());
+
+        let task = StorageOp::without_admission(|| (), StorageTaskKind::OpenDb)
+            .into_task()
+            .unwrap();
+        assert_eq!(std::mem::size_of_val(&task), 0);
+    }
 
     #[test]
     fn guards_are_execution_local_and_optional() {
@@ -1005,6 +1172,35 @@ mod tests {
             .unwrap();
         drop(task);
         assert!(gate.is_idle());
+
+        // A context conversion that panics still drops the operation's captures
+        // before it releases the lease.
+        struct PanicsOnClone;
+        impl Clone for PanicsOnClone {
+            fn clone(&self) -> Self {
+                panic!("context conversion panic")
+            }
+        }
+        struct Capture(Arc<Gate>, Arc<AtomicBool>);
+        impl Drop for Capture {
+            fn drop(&mut self) {
+                self.1.store(!self.0.is_idle(), Ordering::Relaxed);
+            }
+        }
+        let leased_at_drop = Arc::new(AtomicBool::new(false));
+        let capture = Capture(gate.clone(), leased_at_drop.clone());
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            StorageOp::with_context(
+                &PanicsOnClone,
+                &gate,
+                StorageTaskKind::MultiGet,
+                move |_| drop(capture),
+            )
+            .into_task()
+        }));
+        assert!(result.is_err());
+        assert!(leased_at_drop.load(Ordering::Relaxed));
+        assert!(gate.is_idle());
         gate.seal();
         assert_eq!(
             StorageOp::new(|| (), &gate, StorageTaskKind::MultiGet)
@@ -1026,7 +1222,11 @@ mod tests {
                 &context,
                 &gate,
                 StorageTaskKind::MultiGet,
-                async move |context: &String| format!("{context}:{}", rx.await.unwrap()),
+                async move |context: &String| {
+                    // A non-Send value can live across awaits on the worker.
+                    let local = Rc::new(context.as_str());
+                    format!("{local}:{}", rx.await.unwrap())
+                },
             )
             .with_read_perf("test"),
         )
@@ -1045,11 +1245,49 @@ mod tests {
         assert_eq!(other.await.unwrap(), "test-async");
         assert!(!gate.is_idle());
 
+        // Plain async work keeps running even after cancellation is requested.
+        gate.cancel();
         tx.send(7).unwrap();
         assert_eq!(pending.await.unwrap(), "ctx:7");
         // Draining returns once the finished task releases its lease.
         gate.seal();
         gate.drain().await;
+    }
+
+    #[tokio::test]
+    async fn cooperative_work_keeps_admission_through_cancellation_cleanup() {
+        let gate = Arc::new(Gate::default());
+        let (finish_cleanup, cleanup) = tokio::sync::oneshot::channel();
+        let op = StorageOp::with_context_cancellable_async(
+            &gate,
+            &gate,
+            StorageTaskKind::MultiGet,
+            async move |gate: &Arc<Gate>, cancelled: Cancelled| {
+                let local = Rc::new(gate);
+                cancelled.cancelled().await;
+                assert!(cancelled.is_cancelled());
+                // The callback controls cleanup, including asynchronous work,
+                // and still holds the lease while it does.
+                cleanup.await.unwrap();
+                Ok::<_, std::convert::Infallible>(local.is_idle())
+            },
+        )
+        // Cooperative work composes with the same wrappers as other work.
+        .map_ok(|idle| if idle { "idle" } else { "leased" })
+        .map(Result::unwrap)
+        .with_read_perf("test");
+        assert!(gate.is_idle());
+        let task = op.into_task().unwrap();
+        // Cancellation before execution does not release a queued task's lease.
+        gate.cancel();
+        let mut draining = std::pin::pin!(gate.drain());
+        assert!(futures::poll!(&mut draining).is_pending());
+        let mut running = std::pin::pin!(task.run());
+        assert!(futures::poll!(&mut running).is_pending());
+        assert!(futures::poll!(&mut draining).is_pending());
+        finish_cleanup.send(()).unwrap();
+        assert_eq!(running.await, "leased");
+        draining.await;
     }
 
     #[tokio::test]
@@ -1061,11 +1299,18 @@ mod tests {
         let gate = Arc::new(Gate::default());
         let high_pri = TrackedExecutor::new(backend.high_pri(), &gate);
         let low_pri = TrackedExecutor::new(backend.pool(Priority::Low), &gate);
+        // Gate-less work composes with the same wrappers as gated work.
         let high = high_pri
-            .spawn(StorageOp::without_admission(
-                || std::thread::current().name().unwrap().to_owned(),
-                StorageTaskKind::MultiGet,
-            ))
+            .spawn(
+                StorageOp::without_admission(
+                    || Ok::<_, std::convert::Infallible>(std::thread::current()),
+                    StorageTaskKind::MultiGet,
+                )
+                .with_guard(|| Rc::new(()))
+                .map_ok(|thread| thread.name().unwrap().to_owned())
+                .map(Result::unwrap)
+                .with_read_perf("test"),
+            )
             .unwrap();
         let low = low_pri
             .spawn_fn("test", || std::thread::current().name().unwrap().to_owned())

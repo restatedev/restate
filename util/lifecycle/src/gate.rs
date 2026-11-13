@@ -9,9 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use parking_lot::Mutex;
 use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 
 /// Lets work in while a resource is open, and tells the resource's owner when
 /// all of that work has finished.
@@ -51,6 +53,36 @@ use tokio::sync::Notify;
 /// ```
 ///
 /// Sealing is permanent. To accept work again, create a new gate.
+///
+/// # Cooperative cancellation
+///
+/// Multi-step work that can stop early uses [`Gate::try_acquire_cancellable`]
+/// to get a lease and a [`Cancelled`] observer. Sealing still lets that work
+/// finish normally. The owner can escalate with [`Gate::cancel`], waking
+/// observers so they can stop at a safe boundary, or use
+/// [`Gate::drain_with_grace_period`] to allow time for graceful completion
+/// first. [`Gate::cancel_and_drain`] requests cancellation and waits for cleanup
+/// without a grace period or timer.
+///
+/// Cancellation propagates to child gates, never to parents. It never releases a
+/// lease: draining still waits for all work to clean up, including work with
+/// plain leases.
+///
+/// For example, a partition closes with `drain_with_grace_period` and an
+/// illustrative grace of five seconds, while a scan waits for room in a full
+/// channel:
+///
+/// ```text
+/// t = 0s   seal          new work is refused; the scan keeps its lease and waits
+/// t = 5s   cancel        the scan's observer wakes; it stops waiting, returns
+///                        an error and drops its iterator and snapshot
+/// later    lease dropped the scan's task has cleaned up
+///          drain returns every lease of the gate and its children is released
+/// ```
+///
+/// The grace period only decides when cancellation is requested. It does not
+/// bound the drain: work stops at its next safe boundary, a native call in
+/// progress finishes first, and work with a plain lease runs to completion.
 ///
 /// # When is a piece of work finished?
 ///
@@ -117,8 +149,25 @@ pub struct Gate {
 struct State {
     sealed: bool,
     active: usize,
+    // Under the same lock as `sealed`: `cancel` captures the token while it
+    // seals, and `child` derives the child's token while it reads `sealed`, so a
+    // child created during a cancellation is cancelled with it.
+    cancellation: CancellationToken,
     // Weak, so a child is freed as soon as its owner drops it.
     children: Vec<Weak<Gate>>,
+}
+
+impl State {
+    fn try_acquire(&mut self) -> Option<()> {
+        if self.sealed {
+            return None;
+        }
+        self.active = self
+            .active
+            .checked_add(1)
+            .expect("too many active operations");
+        Some(())
+    }
 }
 
 impl Gate {
@@ -127,7 +176,8 @@ impl Gate {
     /// The child works like any other gate, and can be sealed and drained on
     /// its own. In addition:
     ///
-    /// - sealing this gate also seals the child, and
+    /// - sealing this gate also seals the child,
+    /// - cancelling this gate also cancels the child, and
     /// - draining this gate also waits for the child's leases.
     ///
     /// A child that is created after this gate was sealed starts out sealed.
@@ -149,7 +199,9 @@ impl Gate {
         let child = Arc::new(Gate {
             state: Mutex::new(State {
                 sealed: state.sealed,
-                ..State::default()
+                active: 0,
+                cancellation: state.cancellation.child_token(),
+                children: Vec::new(),
             }),
             drained: Notify::new(),
             parent: Some(Arc::clone(self)),
@@ -183,33 +235,59 @@ impl Gate {
     /// The lease borrows the gate. To move the work to another thread, turn
     /// the lease into an [`OwnedLease`] with [`Lease::into_owned`].
     pub fn try_acquire(self: &Arc<Self>) -> Option<Lease<'_>> {
-        let mut state = self.state.lock();
-        if state.sealed {
-            return None;
-        }
-        state.active = state
-            .active
-            .checked_add(1)
-            .expect("too many active operations");
+        self.state.lock().try_acquire()?;
         Some(Lease { gate: self })
+    }
+
+    /// Admits work that can stop at a safe boundary, returning its lease and an
+    /// observer for this gate's cancellation. Returns `None` once sealed.
+    ///
+    /// The lease has the same lifetime rules as [`Self::try_acquire`]. The
+    /// observer wakes only when this gate or an ancestor is cancelled; sealing
+    /// alone lets the work finish. Keep the lease until cleanup is complete.
+    pub fn try_acquire_cancellable(self: &Arc<Self>) -> Option<(Lease<'_>, Cancelled)> {
+        let mut state = self.state.lock();
+        state.try_acquire()?;
+        Some((Lease { gate: self }, Cancelled(state.cancellation.clone())))
     }
 
     /// Refuses new work, in this gate and in every gate below it. Leases that
     /// were handed out earlier stay valid.
     ///
-    /// Sealing can't be undone.
+    /// Sealing can't be undone. It does not request cancellation; use
+    /// [`Self::cancel`] to ask admitted work to stop early.
     pub fn seal(&self) {
-        // Seal the children after unlocking, so this never holds two locks at
-        // once. A child created in between sees this gate sealed and starts out
-        // sealed itself.
-        let children = {
+        self.seal_inner(|_| ());
+    }
+
+    // Lets cancellation capture the token under the sealing lock, without
+    // cloning it for ordinary sealing or waking observers under the lock.
+    fn seal_inner<T>(&self, capture: impl FnOnce(&CancellationToken) -> T) -> T {
+        // Seal the children after unlocking, so this never holds two gate locks
+        // at once. A child created in between sees this gate sealed and starts
+        // out sealed itself.
+        let (children, result) = {
             let mut state = self.state.lock();
             state.sealed = true;
-            live_children(&state)
+            (live_children(&state), capture(&state.cancellation))
         };
         for child in children {
             child.seal();
         }
+        result
+    }
+
+    /// Seals this gate and asks cancellation-aware work in its subtree to stop
+    /// at a safe boundary. Plain leases remain valid, as do leases whose work
+    /// has not yet observed cancellation.
+    ///
+    /// This only requests cancellation. [`Self::drain`] still waits for every
+    /// lease to be released after its work has cleaned up. Repeated requests
+    /// have the same effect.
+    pub fn cancel(&self) {
+        let cancellation = self.seal_inner(Clone::clone);
+        // Cancellation wakes arbitrary observers, so do it without our lock.
+        cancellation.cancel();
     }
 
     /// Waits until every lease of this gate, and of every gate below it, has
@@ -230,6 +308,32 @@ impl Gate {
         while let Some(gate) = pending.pop() {
             gate.wait_idle().await;
             pending.extend(live_children(&gate.state.lock()));
+        }
+    }
+
+    /// Seals this gate, requests cancellation throughout its subtree, and waits
+    /// until every lease has been released after cleanup. There is no grace
+    /// period or timer; plain leases and work still cleaning up must also finish.
+    ///
+    /// Dropping this future stops the wait. The gate stays sealed and cancellation
+    /// stays requested once the future has been polled.
+    pub async fn cancel_and_drain(&self) {
+        self.cancel();
+        self.drain().await;
+    }
+
+    /// Seals this gate and allows `grace` for its subtree to drain normally.
+    /// If work remains, requests cancellation and continues waiting for every
+    /// lease to be released. The grace period does not bound the total wait:
+    /// plain leases and work still cleaning up must also finish.
+    ///
+    /// Dropping this future stops the wait and its timer. The gate stays sealed,
+    /// and cancellation already requested stays requested. Requires a Tokio
+    /// runtime with time enabled.
+    pub async fn drain_with_grace_period(&self, grace: Duration) {
+        self.seal();
+        if tokio::time::timeout(grace, self.drain()).await.is_err() {
+            self.cancel_and_drain().await;
         }
     }
 
@@ -276,12 +380,22 @@ impl Gate {
 
     /// Opens a sealed and drained gate again, so tests can reuse a fixture.
     /// Panics if a lease is still held. Any earlier `drain` or `wait_idle` call
-    /// must have returned. Gates below this one stay sealed.
+    /// must have returned. Gates below this one stay sealed. If this gate's
+    /// parent is sealed, this gate stays sealed too. Existing cancellation
+    /// observers keep their old generation; new admissions get a fresh one.
     #[cfg(any(test, feature = "test-util"))]
     pub fn reset(&self) {
+        let (sealed, cancellation) = match &self.parent {
+            Some(parent) => {
+                let state = parent.state.lock();
+                (state.sealed, state.cancellation.child_token())
+            }
+            None => (false, CancellationToken::new()),
+        };
         let mut state = self.state.lock();
         assert_eq!(state.active, 0, "cannot reset outstanding work");
-        state.sealed = false;
+        state.sealed = sealed;
+        state.cancellation = cancellation;
     }
 
     fn release(&self) {
@@ -299,6 +413,28 @@ impl Gate {
 
 fn live_children(state: &State) -> Vec<Arc<Gate>> {
     state.children.iter().filter_map(Weak::upgrade).collect()
+}
+
+/// Observes a gate owner's request to stop work at a safe boundary.
+///
+/// Obtained with a lease from [`Gate::try_acquire_cancellable`]. This handle can
+/// only observe cancellation, never request it. Clones share the same signal;
+/// neither keeping nor dropping an observer affects the gate's lease count.
+#[derive(Debug, Clone)]
+pub struct Cancelled(CancellationToken);
+
+impl Cancelled {
+    /// Whether this gate or an ancestor has requested cancellation.
+    pub fn is_cancelled(&self) -> bool {
+        self.0.is_cancelled()
+    }
+
+    /// Waits for cancellation, returning immediately if already requested.
+    /// Dropping the future only stops this wait. It does not cancel the work
+    /// or release its lease.
+    pub async fn cancelled(&self) {
+        self.0.cancelled().await;
+    }
 }
 
 /// Permission for one piece of work to use the gate's resource. The work is
@@ -471,5 +607,94 @@ mod tests {
         assert!(drain.as_mut().poll(&mut cx).is_pending());
         drop(owned);
         drain.await;
+    }
+
+    #[tokio::test]
+    async fn cancellation_is_optional_and_only_propagates_downward() {
+        let root = Arc::new(Gate::default());
+        let child = root.child();
+        let grandchild = child.child();
+        let sibling = root.child();
+        let (root_lease, root_cancelled) = root.try_acquire_cancellable().unwrap();
+        let (child_lease, child_cancelled) = child.try_acquire_cancellable().unwrap();
+        let (grandchild_lease, grandchild_cancelled) =
+            grandchild.try_acquire_cancellable().unwrap();
+        let (sibling_lease, sibling_cancelled) = sibling.try_acquire_cancellable().unwrap();
+        let plain = child.try_acquire().unwrap();
+
+        child.seal();
+        assert!(child.try_acquire_cancellable().is_none());
+        assert!(!child_cancelled.is_cancelled());
+        assert!(!grandchild_cancelled.is_cancelled());
+        let wakes = Arc::new(WakeCount::default());
+        let waker = Waker::from(wakes.clone());
+        let mut cx = Context::from_waker(&waker);
+        let mut waiting = pin!(grandchild_cancelled.cancelled());
+        assert!(waiting.as_mut().poll(&mut cx).is_pending());
+
+        let mut draining = pin!(child.cancel_and_drain());
+        assert!(draining.as_mut().poll(&mut cx).is_pending());
+        assert_ne!(wakes.0.load(Ordering::Relaxed), 0);
+        waiting.await;
+        assert!(child_cancelled.is_cancelled());
+        assert!(!root_cancelled.is_cancelled());
+        assert!(!sibling_cancelled.is_cancelled());
+        assert!(root.try_acquire().is_some());
+        let late = child.child();
+        assert!(late.try_acquire_cancellable().is_none());
+        assert!(late.state.lock().cancellation.is_cancelled());
+
+        drop((child_lease, grandchild_lease));
+        assert!(draining.as_mut().poll(&mut cx).is_pending());
+        drop(plain);
+        draining.await;
+
+        root.cancel();
+        assert!(root_cancelled.is_cancelled());
+        assert!(sibling_cancelled.is_cancelled());
+        drop((root_lease, sibling_lease));
+        root.drain().await;
+        // Observers don't hold leases, and reset doesn't un-cancel old observers.
+        root.reset();
+        let (lease, fresh) = root.try_acquire_cancellable().unwrap();
+        assert!(!fresh.is_cancelled());
+        assert!(root_cancelled.is_cancelled());
+        assert!(child.try_acquire().is_none());
+        drop(lease);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn grace_period_escalates_then_waits_for_every_lease() {
+        let root = Arc::new(Gate::default());
+        let child = root.child();
+        let (lease, cancelled) = child.try_acquire_cancellable().unwrap();
+        let plain = root.try_acquire().unwrap();
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut draining = pin!(root.drain_with_grace_period(Duration::from_secs(5)));
+        assert!(draining.as_mut().poll(&mut cx).is_pending());
+        assert!(child.try_acquire().is_none());
+        tokio::time::advance(Duration::from_secs(4)).await;
+        assert!(draining.as_mut().poll(&mut cx).is_pending());
+        assert!(!cancelled.is_cancelled());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(draining.as_mut().poll(&mut cx).is_pending());
+        assert!(cancelled.is_cancelled());
+        drop(lease);
+        assert!(draining.as_mut().poll(&mut cx).is_pending());
+        drop(plain);
+        draining.await;
+
+        // Dropping the waiter stops escalation; a later graceful drain can finish
+        // without ever cancelling the admitted operation.
+        let gate = Arc::new(Gate::default());
+        let (lease, cancelled) = gate.try_acquire_cancellable().unwrap();
+        let mut abandoned = Box::pin(gate.drain_with_grace_period(Duration::from_secs(1)));
+        assert!(abandoned.as_mut().poll(&mut cx).is_pending());
+        drop(abandoned);
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(!cancelled.is_cancelled());
+        drop(lease);
+        gate.drain_with_grace_period(Duration::ZERO).await;
+        assert!(!cancelled.is_cancelled());
     }
 }

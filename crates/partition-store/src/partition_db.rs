@@ -27,7 +27,7 @@ use restate_core::io::{AdmissionClosed, Gate, IdleTracker, IoExecutor, IoOp};
 use restate_rocksdb::configuration::{CfConfigurator, DbConfigurator};
 use restate_rocksdb::reads::ColumnFamilies;
 use restate_rocksdb::{
-    CfHandles, DbName, Guarded, RawRocksDb, RocksAccess, RocksDb, RocksDbManager,
+    CfHandles, DbName, Gated, Guarded, RawRocksDb, RocksAccess, RocksDb, RocksDbManager,
     RocksDbReadPerfGuard, RocksError, SinglePoolExecutor, StorageOp, StorageTaskKind,
 };
 use restate_storage_api::StorageError;
@@ -100,7 +100,8 @@ type Session = Scope<Scope<PhysicalPartition>>;
 /// A read of a partition prepared with [`PartitionDb::prepare_read`]: an
 /// operation on the partition's physical scope, `F`, measured by the perf guard
 /// that `G` creates.
-pub(crate) type PreparedRead<'a, F, G> = StorageOp<'a, &'a Scope<PhysicalPartition>, Guarded<F, G>>;
+pub(crate) type PreparedRead<'a, F, G> =
+    StorageOp<&'a Scope<PhysicalPartition>, Guarded<F, G>, Gated<'a>>;
 
 /// A partition's column families, and the state that lives as long as they do.
 /// See [`PartitionDb`] for how it relates to the partition's sessions.

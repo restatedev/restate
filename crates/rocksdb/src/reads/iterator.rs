@@ -15,7 +15,7 @@ use rocksdb::{DBRawIteratorWithThreadMode, ReadOptions};
 use restate_core::io::Gate;
 
 use super::{ReadSource, Source, TOKEN, iterator_options};
-use crate::{OpContext, OpFn, RawRocksDb, RocksError, StorageOp, StorageTaskKind, SyncOpFn};
+use crate::{Gated, OpContext, OpFn, RawRocksDb, RocksError, StorageOp, StorageTaskKind, SyncOpFn};
 
 /// An iterator over one column family, through a snapshot or of the data as it
 /// was when the iterator was created.
@@ -140,7 +140,7 @@ where
         gate: &'g Arc<Gate>,
         kind: StorageTaskKind,
         op: F,
-    ) -> StorageOp<'g, Self, F>
+    ) -> StorageOp<Self, F, Gated<'g>>
     where
         F: FnOnce(&mut ReadIterator<'_, H>) -> R + Send + 'static,
     {
@@ -163,8 +163,9 @@ where
     H: ReadSource + Send + Sync + 'static,
 {
     type Owned = OwnedReadIterator<H>;
+    type Admission = ();
 
-    fn into_owned(self) -> OwnedReadIterator<H> {
+    fn into_owned(self, (): ()) -> OwnedReadIterator<H> {
         ReadIterator::into_owned(self)
     }
 }
