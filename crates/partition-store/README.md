@@ -83,10 +83,12 @@ replicas of one partition can be at different points, which is normal.
 **Definition families.** Definitions released together are grouped in a
 *family*, switched on by the same configuration options.
 
-**Migration job** *(planned)*. The general unit of maintenance work, building an
-index or migrating a table, with a status, timestamps and progress. For current
-index builds, the registry holds build identity and status; separate, possibly
-shared walks hold traversal progress.
+**Migration job.** The general unit of maintenance work, today building an
+index. Each index has a build job with the same ID, recorded next to the
+registry (`src/job.rs`): its status, when it started and finished, and what
+its slices did. The records are for operators only: the registry decides
+whether an index is Ready, and the walk where its work resumes. Finished jobs
+are kept up to `worker.storage.migration-job-history-limit`.
 
 ## The rules
 
