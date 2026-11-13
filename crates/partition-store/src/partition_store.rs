@@ -29,7 +29,7 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio_stream::wrappers::ReceiverStream;
-use tokio_util::sync::CancellationToken;
+use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tracing::{Level, instrument, trace, warn};
 
 use restate_core::io::{AdmissionClosed, Gate, IoExecutor};
@@ -360,6 +360,27 @@ impl PartitionStore {
             &mut self.key_buffer,
             storage_features,
             key_range,
+        ))
+    }
+
+    /// Admits a read: captures a [`crate::ReadSnapshot`] of the store as it is
+    /// now, with its storage features and index registry, and returns the future
+    /// that resolves once the snapshot's last holder (a clone, a cursor or a
+    /// storage job) has released it. The processor calls this in its loop, after
+    /// its readiness checks; `cancel` is the token that ends the read.
+    pub fn query_read(
+        &self,
+        cancel: CancellationToken,
+    ) -> Result<(crate::ReadSnapshot, WaitForCancellationFutureOwned)> {
+        let completed = CancellationToken::new();
+        Ok((
+            crate::ReadSnapshot::new(
+                self.db.clone(),
+                self.storage_features(),
+                cancel,
+                completed.clone(),
+            )?,
+            completed.cancelled_owned(),
         ))
     }
 

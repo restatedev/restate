@@ -16,6 +16,7 @@ mod key_codec;
 mod metadata;
 mod reader;
 mod running_reader;
+
 #[cfg(test)]
 mod touched_by_tests;
 
@@ -61,8 +62,8 @@ use crate::keys::{
 use crate::scan::TableScan;
 use crate::vqueue_table::input::InputPayloadKeyRef;
 use crate::{
-    PartitionDb, PartitionStore, PartitionStoreTransaction, Result, StorageAccess, StorageRead,
-    break_on_err,
+    PartitionDb, PartitionStore, PartitionStoreTransaction, ReadSnapshot, Result, StorageAccess,
+    StorageRead, break_on_err,
 };
 
 impl ScanVQueueTable for PartitionDb {
@@ -658,6 +659,29 @@ impl ScanVQueueMetaTable for PartitionStore {
             .map_err(|_| StorageError::OperationalError)?;
 
         Ok(scan_fut.boxed())
+    }
+}
+
+impl ReadSnapshot {
+    /// Reads queue metadata from the admitted snapshot on the caller's thread.
+    pub fn map_vqueue_meta_blocking<R>(
+        &self,
+        qid: &VQueueId,
+        f: impl FnOnce(&VQueueMetaRef<'_>) -> R,
+    ) -> Result<Option<R>> {
+        let mut key = [0u8; MetaKey::serialized_length_fixed()];
+        MetaKeyRef::builder()
+            .qid(qid)
+            .serialize_to(&mut key.as_mut());
+        self.check_active()?;
+        let reader = self.storage_snapshot().reader();
+        let Some(value) = reader
+            .get_pinned(KeyKind::VQueueMeta, &key)
+            .map_err(|error| StorageError::Generic(error.into()))?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(f(&VQueueMetaRef::decode_borrowed(value.as_ref())?)))
     }
 }
 
