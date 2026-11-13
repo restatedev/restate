@@ -31,6 +31,6 @@ mod gate;
 mod keep_alive;
 mod scope;
 
-pub use gate::{Gate, Lease, OwnedLease};
+pub use gate::{Cancelled, Gate, Lease, OwnedLease};
 pub use keep_alive::{KeepAlive, KeepAliveTarget};
 pub use scope::{Node, Scope, ScopeParent, ScopePayload};
