@@ -19,6 +19,8 @@ use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 
 use crate::BuildError;
+use crate::blob::output::schema::SysBlobOutputTable;
+use crate::blob::schema::SysBlobTable;
 use crate::context::SelectPartitions;
 use crate::deployment::schema::SysDeploymentTable;
 use crate::inbox::schema::SysInboxTable;
@@ -102,7 +104,9 @@ pub(super) const SYS_INVOCATION_VIEW: &str = "CREATE VIEW restate.public.sys_inv
                 ELSE 'ready'
             END, 'LargeUtf8') AS status,
             ss.completion_result,
-            ss.completion_failure
+            ss.completion_failure,
+            ss.completion_failure_code,
+            ss.completion_blob_id
         FROM restate.public.sys_invocation_state sis
         RIGHT JOIN restate.public.sys_invocation_status ss ON ss.id = sis.id";
 
@@ -210,6 +214,8 @@ where
             SysJournalEventsTable,
             SysInboxTable,
             SysPromiseTable,
+            SysBlobTable,
+            SysBlobOutputTable,
             SysVqueueMetaTable,
             SysVqueueEntryStatusTable,
             SysVqueuesTable,

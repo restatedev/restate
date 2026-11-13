@@ -29,15 +29,19 @@ use std::collections::VecDeque;
 use tracing::debug;
 
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
+use restate_storage_api::blob_table::WriteBlobTable;
 use restate_storage_api::fsm_table::WriteFsmTable;
+use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
+use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table as journal_table_v1;
 use restate_storage_api::journal_table_v2::{ReadJournalTable, WriteJournalTable};
 use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::outbox_table::WriteOutboxTable;
 use restate_storage_api::promise_table::{ReadPromiseTable, WritePromiseTable};
+use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_storage_api::timer_table::WriteTimerTable;
 use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
@@ -68,7 +72,9 @@ use crate::partition::state_machine::entries::peek_promise_command::ApplyPeekPro
 use crate::partition::state_machine::entries::send_signal_command::ApplySendSignalCommand;
 use crate::partition::state_machine::entries::set_state_command::ApplySetStateCommand;
 use crate::partition::state_machine::entries::sleep_command::ApplySleepCommand;
-use crate::partition::state_machine::lifecycle::VerifyOrMigrateJournalTableToV2Command;
+use crate::partition::state_machine::lifecycle::{
+    EndInvocationCommand, EndInvocationReason, VerifyOrMigrateJournalTableToV2Command,
+};
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub(super) struct OnJournalEntryCommand {
@@ -106,7 +112,11 @@ impl OnJournalEntryCommand {
 impl<'ctx, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for OnJournalEntryCommand
 where
-    S: WriteJournalTable
+    S: WriteInboxTable
+        + WriteVirtualObjectStatusTable
+        + WriteJournalEventsTable
+        + WriteBlobTable
+        + WriteJournalTable
         + ReadJournalTable
         + journal_table_v1::WriteJournalTable
         + journal_table_v1::ReadJournalTable
@@ -195,13 +205,34 @@ where
                     related_completion_ids = cmd.related_completion_ids();
                     match cmd {
                         Command::Input(_)
-                        | Command::Output(_)
                         | Command::GetEagerState(_)
                         | Command::GetEagerStateKeys(_)
                         | Command::Run(_) => {
                             // For these entries, we don't need to perform operations, we just need to store them
                         }
-
+                        Command::Output(output) => {
+                            if ctx.processor.fsm().features().is_write_blob_table_enabled() {
+                                // When write_blob_table feature is enabled, we no longer
+                                // write the output journal to the journal table and instead
+                                // go directly to end invocations.
+                                // EndInvocationCommand will write the output directly to the
+                                // blob table and only store a reference to the output.
+                                debug_assert!(entries.is_empty(), "output entry is not last entry");
+                                return EndInvocationCommand::new(
+                                    self.invocation_id,
+                                    self.invocation_status
+                                        .into_invocation_metadata()
+                                        .expect("status is invoked, suspended, or paused"),
+                                    EndInvocationReason::Completed(output),
+                                )
+                                .apply(ctx)
+                                .await;
+                            }
+                        }
+                        Command::EndMarker(_) => {
+                            // Only the partition processor writes markers, they can't come from the SDK
+                            return Err(Error::BadEntryVariant(entry.ty()));
+                        }
                         Command::GetLazyState(entry) => {
                             ApplyGetLazyStateCommand {
                                 invocation_id: self.invocation_id,

@@ -85,6 +85,12 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.8.2*
     EnableByteOffsets = 8,
+    /// Write invocation results into the blob
+    /// table and only reference this value from
+    /// the invocation status.
+    ///
+    /// *Since v1.8.2*
+    EnableWriteBlobTable = 9,
 }
 
 impl PartitionFeatureChange {
@@ -106,6 +112,7 @@ impl PartitionFeatureChange {
             Self::EnableInconsistentStateMutationCleanup => &RESTATE_VERSION_1_8_0,
             Self::EnablePreflightSignalRecording => &RESTATE_VERSION_1_8_1,
             Self::EnableByteOffsets => &RESTATE_VERSION_1_8_2,
+            Self::EnableWriteBlobTable => &RESTATE_VERSION_1_8_2,
         }
     }
 
@@ -137,6 +144,7 @@ impl PartitionFeatureChange {
                 !std::mem::replace(&mut features.preflight_signal_recording, true)
             }
             Self::EnableByteOffsets => !std::mem::replace(&mut features.byte_offsets, true),
+            Self::EnableWriteBlobTable => !std::mem::replace(&mut features.write_blob_table, true),
         }
     }
 }
@@ -213,6 +221,14 @@ pub struct PersistedFeatures {
     /// *Since v1.8.2*
     #[bilrost(tag(8))]
     pub byte_offsets: bool,
+
+    /// Write invocation results into the blob
+    /// table and only reference this value from
+    /// the invocation status.
+    ///
+    /// *Since v1.8.2*
+    #[bilrost(tag(9))]
+    pub write_blob_table: bool,
 }
 
 impl PersistedFeatures {
@@ -233,6 +249,7 @@ impl PersistedFeatures {
             self.preflight_signal_recording
                 .then_some("preflight_signal_recording"),
             self.byte_offsets.then_some("byte_offsets"),
+            self.write_blob_table.then_some("write_blob_table"),
         ]
         .into_iter()
         .flatten()

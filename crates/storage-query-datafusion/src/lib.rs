@@ -20,6 +20,7 @@ pub use environment::DataFusionEnv;
 pub mod remote_query_scanner_server;
 
 pub mod bifrost_read_stream;
+mod blob;
 mod catalog;
 pub mod config;
 mod deployment;

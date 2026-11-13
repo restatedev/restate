@@ -25,7 +25,7 @@ use restate_types::journal_v2::encoding::DecodingError;
 use restate_types::journal_v2::lite::{
     AttachInvocationCommandLite, CallCommandLite, ClearAllStateCommandLite, ClearStateCommandLite,
     CompleteAwakeableCommandLite, CompleteAwakeableResultLite, CompletePromiseCommandLite,
-    EntryLite, GetEagerStateCommandLite, GetEagerStateKeysCommandLite,
+    EndMarkerCommandLite, EntryLite, GetEagerStateCommandLite, GetEagerStateKeysCommandLite,
     GetInvocationOutputCommandLite, GetLazyStateCommandLite, GetLazyStateKeysCommandLite,
     GetPromiseCommandLite, GetStateResultLite, InputCommandLite, NotificationLite,
     NotificationResultLite, OneWayCallCommandLite, OutputCommandLite, OutputResultLite,
@@ -387,6 +387,17 @@ impl Encoder for ServiceProtocolV4Codec {
                     name: name.to_string(),
                     result_completion_id: completion_id,
                     target: Some(target.into()),
+                }
+                .encode_to_vec(),
+            )
+            .into(),
+
+            // The marker reuses the Output message layout, without the result
+            Entry::Command(Command::EndMarker(EndMarkerCommand { name })) => RawCommand::new(
+                CommandType::EndMarker,
+                proto::OutputCommandMessage {
+                    name: name.to_string(),
+                    result: None,
                 }
                 .encode_to_vec(),
             )
@@ -966,6 +977,11 @@ impl Decoder for ServiceProtocolV4Codec {
                     }
                     .into()
                 }
+                CommandType::EndMarker => {
+                    let proto::OutputCommandMessage { name, .. } =
+                        decode_or_bail!(cmd.serialized_content(), OutputCommandMessage);
+                    EndMarkerCommand { name: name.into() }.into()
+                }
             },
 
             RawEntry::Notification(notif) => match notif.ty() {
@@ -1371,6 +1387,7 @@ impl Decoder for ServiceProtocolV4Codec {
                     }
                     .into()
                 }
+                CommandType::EndMarker => EndMarkerCommandLite {}.into(),
             },
 
             RawEntry::Notification(notif) => {

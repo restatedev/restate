@@ -772,6 +772,12 @@ pub enum ResponseResult {
     Failure(InvocationError),
 }
 
+impl ResponseResult {
+    pub fn is_success(&self) -> bool {
+        matches!(self, Self::Success(_))
+    }
+}
+
 impl From<Result<Bytes, InvocationError>> for ResponseResult {
     fn from(value: Result<Bytes, InvocationError>) -> Self {
         match value {
@@ -793,6 +799,91 @@ impl From<&InvocationError> for ResponseResult {
     }
 }
 
+mod response_result_storage {
+    use bilrost::OwnedMessage;
+    use bytes::BufMut;
+
+    use restate_platform::storage::{
+        StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
+    };
+
+    use crate::{errors::InvocationError, storage::encode::encode_bilrost};
+
+    #[repr(u8)]
+    enum Variant {
+        Success = 0,
+        Failure = 1,
+    }
+
+    impl TryFrom<u8> for Variant {
+        type Error = StorageDecodeError;
+
+        fn try_from(value: u8) -> Result<Self, Self::Error> {
+            let v = match value {
+                0 => Self::Success,
+                1 => Self::Failure,
+                v => {
+                    return Err(StorageDecodeError::DecodeValue(
+                        anyhow::anyhow!("Unknown result variant {v}").into(),
+                    ));
+                }
+            };
+
+            Ok(v)
+        }
+    }
+
+    impl StorageEncode for super::ResponseResult {
+        fn default_codec(&self) -> StorageCodecKind {
+            StorageCodecKind::Custom
+        }
+
+        fn encode(&self, buf: &mut bytes::BytesMut) -> Result<(), StorageEncodeError> {
+            match self {
+                Self::Success(data) => {
+                    buf.put_u8(Variant::Success as u8);
+                    buf.put_slice(data);
+                    Ok(())
+                }
+                Self::Failure(err) => {
+                    buf.put_u8(Variant::Failure as u8);
+                    encode_bilrost(err, buf)
+                }
+            }
+        }
+    }
+
+    impl StorageDecode for super::ResponseResult {
+        fn decode<B: bytes::Buf>(
+            mut buf: B,
+            kind: StorageCodecKind,
+        ) -> Result<Self, StorageDecodeError>
+        where
+            Self: Sized,
+        {
+            if kind != StorageCodecKind::Custom {
+                return Err(StorageDecodeError::UnsupportedCodecKind(kind));
+            }
+
+            if buf.remaining() == 0 {
+                return Err(StorageDecodeError::DecodeValue(
+                    "invalid buffer length".into(),
+                ));
+            }
+            let variant: Variant = buf.get_u8().try_into()?;
+            let result = match variant {
+                Variant::Success => Self::Success(buf.copy_to_bytes(buf.remaining())),
+                Variant::Failure => {
+                    let err = InvocationError::decode(buf)
+                        .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
+                    Self::Failure(err)
+                }
+            };
+
+            Ok(result)
+        }
+    }
+}
 // Represents a response to get invocation output
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]
 #[serde(
@@ -840,6 +931,10 @@ impl ServiceInvocationResponseSink {
 
     pub fn ingress(request_id: PartitionProcessorRpcRequestId) -> Self {
         Self::Ingress { request_id }
+    }
+
+    pub fn is_partition_processor(&self) -> bool {
+        matches!(self, Self::PartitionProcessor(_))
     }
 }
 
@@ -2022,6 +2117,52 @@ mod tests {
             assert_eq!(old_response.id, caller_id);
             assert_eq!(old_response.entry_index, caller_completion_id);
             assert_eq!(old_response.result, result);
+        }
+    }
+
+    mod response_result_storage {
+        use bytes::BytesMut;
+
+        use super::*;
+        use crate::storage::{StorageCodec, StorageCodecKind, StorageDecode, StorageDecodeError};
+
+        #[test]
+        fn roundtrip() {
+            let results = [
+                ResponseResult::Success(Bytes::new()),
+                ResponseResult::Success(Bytes::from_static(b"some output")),
+                ResponseResult::Failure(
+                    InvocationError::new(500u16, "boom")
+                        .with_stacktrace("at foo()")
+                        .with_metadata_vec(vec![("k".to_owned(), "v".to_owned())]),
+                ),
+            ];
+
+            let mut buf = BytesMut::new();
+            for result in results {
+                let mut encoded = StorageCodec::encode_and_split(&result, &mut buf).unwrap();
+                assert_eq!(encoded[0], u8::from(StorageCodecKind::Custom));
+                let decoded: ResponseResult = StorageCodec::decode(&mut encoded).unwrap();
+                assert_eq!(decoded, result);
+            }
+        }
+
+        #[test]
+        fn decode_errors() {
+            assert!(matches!(
+                ResponseResult::decode(&[][..], StorageCodecKind::Custom),
+                Err(StorageDecodeError::DecodeValue(_))
+            ));
+            assert!(matches!(
+                ResponseResult::decode(&[2u8][..], StorageCodecKind::Custom),
+                Err(StorageDecodeError::DecodeValue(_))
+            ));
+            assert!(matches!(
+                ResponseResult::decode(&[0u8][..], StorageCodecKind::FlexbuffersSerde),
+                Err(StorageDecodeError::UnsupportedCodecKind(
+                    StorageCodecKind::FlexbuffersSerde
+                ))
+            ));
         }
     }
 

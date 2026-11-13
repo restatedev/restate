@@ -12,7 +12,7 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use crate::{
-    deployment, inbox, invocation_state, invocation_status, journal, journal_events, locks,
+    blob, deployment, inbox, invocation_state, invocation_status, journal, journal_events, locks,
     promise, rules, scheduler_status, service, state, user_limits, vqueue_entry_status,
     vqueue_meta, vqueues,
 };
@@ -21,6 +21,8 @@ use crate::{
 /// this array. This will ensure that the table docs will be included in the automatic
 /// table docs generation process.
 pub const ALL_TABLE_DOCS: &[StaticTableDocs] = &[
+    blob::schema::TABLE_DOCS,
+    blob::output::schema::TABLE_DOCS,
     deployment::schema::TABLE_DOCS,
     inbox::schema::TABLE_DOCS,
     journal::schema::TABLE_DOCS,
@@ -285,6 +287,12 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
         sys_invocation_status
             .remove("completion_failure")
             .expect("completion_failure should exist"),
+        sys_invocation_status
+            .remove("completion_failure_code")
+            .expect("completion_failure_code should exist"),
+        sys_invocation_status
+            .remove("completion_blob_id")
+            .expect("completion_blob_id should exist"),
     ];
 
     OwnedTableDocs {

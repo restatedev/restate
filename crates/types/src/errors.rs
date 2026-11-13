@@ -109,18 +109,22 @@ pub mod codes {
 }
 
 /// This struct represents errors arisen when processing a service invocation.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]
 #[non_exhaustive]
 pub struct InvocationError {
+    #[bilrost(tag(1))]
     pub code: InvocationErrorCode,
+    #[bilrost(tag(2))]
     pub message: Cow<'static, str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag(3))]
     pub stacktrace: Option<Cow<'static, str>>,
     #[serde(
         default,
         skip_serializing_if = "Vec::is_empty",
         with = "serde_with::As::<serde_with::Map<serde_with::Same, serde_with::Same>>"
     )]
+    #[bilrost(tag(4))]
     pub metadata: Vec<(String, String)>,
 }
 
@@ -281,7 +285,8 @@ pub const KILLED_INVOCATION_ERROR: InvocationError =
 pub const CANCELED_INVOCATION_ERROR: InvocationError =
     InvocationError::new_static(codes::ABORTED, "canceled");
 
-pub const GONE_INVOCATION_ERROR: InvocationError = InvocationError::new_static(codes::GONE, "gone");
+pub const GONE_INVOCATION_ERROR: InvocationError =
+    InvocationError::new_static(codes::GONE, "invocation result is gone");
 
 pub const NOT_FOUND_INVOCATION_ERROR: InvocationError =
     InvocationError::new_static(codes::NOT_FOUND, "not found");
