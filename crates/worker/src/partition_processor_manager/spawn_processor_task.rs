@@ -29,6 +29,20 @@ use crate::partition::NodeContext;
 use crate::partition::{ProcessorError, TargetLeaderState};
 use crate::partition_processor_manager::processor_state::StartedProcessor;
 
+/// The commit fence sender of a processor that started.
+#[cfg(test)]
+pub(super) type FenceSender = (
+    restate_types::identifiers::PartitionId,
+    mpsc::Sender<restate_partition_store::snapshots::CommitFenceRequest>,
+);
+
+/// Receives the commit fence sender of every processor that starts, so that tests
+/// can hold a real processor's commits back as a snapshot export does.
+#[cfg(test)]
+pub(super) static FENCE_TAP: parking_lot::Mutex<
+    Option<tokio::sync::mpsc::UnboundedSender<FenceSender>>,
+> = parking_lot::Mutex::new(None);
+
 pub struct SpawnPartitionProcessorTask<T> {
     node_ctx: NodeContext,
     task_name: ReString,
@@ -89,6 +103,10 @@ where
         let (watch_tx, watch_rx) = watch::channel(PartitionProcessorStatus::default());
         // One snapshot export runs per partition at a time.
         let (commit_fence_tx, commit_fence_rx) = mpsc::channel(1);
+        #[cfg(test)]
+        if let Some(tap) = FENCE_TAP.lock().as_ref() {
+            let _ = tap.send((partition.partition_id, commit_fence_tx.clone()));
+        }
 
         let key_range = partition.key_range;
 
