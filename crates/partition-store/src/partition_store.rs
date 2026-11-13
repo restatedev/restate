@@ -1205,6 +1205,13 @@ impl<'a> PartitionStoreTransaction<'a> {
         self.write_batch_size_histogram = Some(histogram);
     }
 
+    /// Stops recording write batch sizes until a histogram is set again, so that
+    /// commits that are not command batches stay out of the command batches'
+    /// histogram.
+    pub fn clear_write_batch_size_histogram(&mut self) {
+        self.write_batch_size_histogram = None;
+    }
+
     /// Lets this transaction maintain the partition's position, starting from `position`, the
     /// one at the partition's applied LSN. [`Self::advance_fsm_position`] advances it with every
     /// record applied, and every later commit that writes something persists it while the
