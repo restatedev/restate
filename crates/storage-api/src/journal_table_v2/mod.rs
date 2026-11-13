@@ -14,6 +14,7 @@ use std::ops::RangeInclusive;
 use futures::Stream;
 
 use restate_memory::{LocalMemoryLease, LocalMemoryPool};
+use restate_types::blob::RelatedBlob;
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::journal_v2::raw::{RawCommand, RawNotificationResultVariant};
 use restate_types::journal_v2::{CompletionId, NotificationId};
@@ -128,6 +129,17 @@ pub struct StoredEntry(pub StoredRawEntry);
 
 impl PartitionStoreProtobufValue for StoredEntry {
     type ProtobufType = crate::protobuf_types::v1::Entry;
+}
+
+/// Projection of [`StoredEntry`] that decodes only the referenced blob, skipping the entry
+/// content. Decodes from the same bytes as [`StoredEntry`].
+#[derive(Debug, Clone, Default)]
+pub struct StoredEntryLite {
+    pub related_blob: Option<RelatedBlob>,
+}
+
+impl PartitionStoreProtobufValue for StoredEntryLite {
+    type ProtobufType = crate::protobuf_types::v1::EntryLite;
 }
 
 #[derive(Debug, Clone, Copy, derive_more::From, derive_more::Into)]

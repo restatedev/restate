@@ -649,7 +649,20 @@ message Entry {
 
   NotificationResultVariant notification_result_variant = 12;
 
-  repeated string related_blob_ids = 13;
+  RelatedBlob related_blob = 13;
+}
+
+// Blob referenced by a journal entry.
+message RelatedBlob {
+  // Raw BlobId bytes
+  bytes id = 1;
+  uint64 size = 2;
+}
+
+// Projection of `Entry` that only decodes the referenced blob, skipping the
+// entry content. Field numbers MUST match the ones of `Entry`.
+message EntryLite {
+  RelatedBlob related_blob = 13;
 }
 
 message ResponseResult {

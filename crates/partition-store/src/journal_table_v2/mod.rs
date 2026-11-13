@@ -24,9 +24,10 @@ use futures_util::stream;
 
 use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
+use restate_storage_api::blob_table::WriteBlobTable;
 use restate_storage_api::journal_table_v2::{
     JournalEntryIndex, NotificationEntryIndex, ReadJournalTable, ScanJournalTable,
-    ScanJournalTableRange, StoredEntry, WriteJournalTable,
+    ScanJournalTableRange, StoredEntry, StoredEntryLite, WriteJournalTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{BudgetedReadError, Result, StorageError};
@@ -261,18 +262,38 @@ fn get_journal<'a, S: StorageRead>(
     Ok(JournalEntryIter::new(iter, journal_length))
 }
 
-fn delete_journal<S: StorageAccess>(
+fn delete_journal<S: StorageAccess + WriteBlobTable>(
     storage: &mut S,
     invocation_id: &InvocationId,
     journal_length: EntryIndex,
 ) -> Result<()> {
     let _x = RocksDbReadPerfGuard::new("delete-journal");
 
+    // Collect the blobs referenced by the entries before deleting them. Only the related blob is
+    // decoded, the entry content is skipped.
+    let mut related_blob_ids = Vec::new();
+    {
+        let mut iter = get_journal(storage, invocation_id, journal_length)?;
+        while let Some(item) = iter.peek_item() {
+            let (_, mut value) = item?;
+            related_blob_ids.extend(
+                StoredEntryLite::decode(&mut value)?
+                    .related_blob
+                    .map(|blob| blob.id),
+            );
+            iter.advance();
+        }
+    }
+
     let mut key = write_journal_entry_key(invocation_id, 0);
     let k = &mut key;
     for journal_index in 0..journal_length {
         k.journal_index = journal_index;
         storage.delete_key(k)?;
+    }
+
+    for blob_id in related_blob_ids {
+        storage.decrement_ref_count(blob_id, 1);
     }
 
     // Delete the indexes

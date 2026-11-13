@@ -406,7 +406,7 @@ where
                 // append times.
                 &StoredRawEntry::new(
                     StoredRawEntryHeader::new(ctx.record_created_at),
-                    vec![],
+                    None,
                     entry,
                 ),
                 &related_completion_ids,
