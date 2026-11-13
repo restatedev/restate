@@ -22,8 +22,7 @@ use bytes::BytesMut;
 use enum_map::Enum;
 use metrics::Histogram;
 use rocksdb::{
-    AsColumnFamilyRef, BoundColumnFamily, DBPinnableSlice, DBRawIteratorWithThreadMode,
-    ReadOptions, SnapshotWithThreadMode,
+    AsColumnFamilyRef, BoundColumnFamily, DBPinnableSlice, DBRawIteratorWithThreadMode, ReadOptions,
 };
 use static_assertions::const_assert_eq;
 use tokio::sync::mpsc;
@@ -35,12 +34,13 @@ use tracing::{Level, instrument, trace, warn};
 
 use restate_core::io::{AdmissionClosed, Gate, IoExecutor};
 use restate_futures_util::overdue::OverdueLoggingExt;
+use restate_rocksdb::reads::ReadIterator;
 use restate_rocksdb::{
     IoMode, IterAction, Priority, RocksDb, RocksDbManager, RocksError, StorageTaskKind,
 };
 use restate_storage_api::fsm_table::{FsmPosition, ReadFsmTable};
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
-use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
+use restate_storage_api::{Storage, StorageError, Transaction};
 use restate_types::SemanticRestateVersion;
 use restate_types::config::{Configuration, StorageOptions};
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId, WithPartitionKey};
@@ -53,6 +53,7 @@ use restate_types::storage::StorageDecode;
 use restate_types::storage::StorageEncode;
 use restate_util_string::ReString;
 
+use crate::PartitionStoreSnapshot;
 use crate::features::{LoadedStorageFeatures, StorageFeatures};
 use crate::fsm_table::delete_applied_lsn;
 use crate::fsm_table::get_partition_seal;
@@ -347,6 +348,21 @@ impl PartitionStore {
         self.db.partition().key_range
     }
 
+    /// Takes a read snapshot of the partition's tables. See [`PartitionStoreSnapshot`].
+    ///
+    /// Fails once the partition is closing or closed.
+    pub fn snapshot(&mut self) -> std::result::Result<PartitionStoreSnapshot<'_>, AdmissionClosed> {
+        let storage_features = self.storage_features();
+        let key_range = self.partition_key_range();
+        let snapshot = self.db.read_snapshot()?;
+        Ok(PartitionStoreSnapshot::new(
+            snapshot,
+            &mut self.key_buffer,
+            storage_features,
+            key_range,
+        ))
+    }
+
     #[inline]
     pub(crate) fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) -> Result<()> {
         assert_partition_key_or_err(self.db.partition().key_range, partition_key)
@@ -600,10 +616,6 @@ impl PartitionStore {
         Ok(())
     }
 
-    pub fn transaction(&mut self) -> PartitionStoreTransaction<'_> {
-        self.transaction_with_isolation(IsolationLevel::Committed)
-    }
-
     /// Returns a watch of the durably persisted applied LSN, or [`Lsn::INVALID`]
     /// when no durable position is known or the old column family has been removed.
     pub async fn get_durable_lsn(&mut self) -> Result<watch::Receiver<Lsn>> {
@@ -617,19 +629,10 @@ impl PartitionStore {
         Ok(rx)
     }
 
-    pub fn transaction_with_isolation(
-        &mut self,
-        isolation_level: IsolationLevel,
-    ) -> PartitionStoreTransaction<'_> {
+    pub fn transaction(&mut self) -> PartitionStoreTransaction<'_> {
         // An optimization to avoid looking up the cf handle everytime, if we split into more
         // column families, we will need to cache those cfs here as well.
         let data_cf_handle = self.db.cf_handle();
-        let snapshot = match isolation_level {
-            IsolationLevel::Committed => None,
-            IsolationLevel::RepeatableReads => {
-                Some(self.db.rocksdb().inner().as_raw_db().snapshot())
-            }
-        };
 
         // 99.9% of the time, this will return an already loaded value.
         // If PartitionStore.storage_features() was never called before,
@@ -646,7 +649,6 @@ impl PartitionStore {
             value_buffer: &mut self.value_buffer,
             meta: self.db.partition(),
             storage_features,
-            snapshot,
             settings,
             commit_fence: None,
             write_batch_size_histogram: None,
@@ -916,11 +918,8 @@ impl PartitionStore {
 impl Storage for PartitionStore {
     type TransactionType<'a> = PartitionStoreTransaction<'a>;
 
-    fn transaction_with_isolation(
-        &mut self,
-        read_isolation: IsolationLevel,
-    ) -> Self::TransactionType<'_> {
-        PartitionStore::transaction_with_isolation(self, read_isolation)
+    fn transaction(&mut self) -> Self::TransactionType<'_> {
+        PartitionStore::transaction(self)
     }
 }
 
@@ -1056,7 +1055,6 @@ pub struct PartitionStoreTransaction<'a> {
     key_buffer: &'a mut BytesMut,
     value_buffer: &'a mut BytesMut,
     storage_features: StorageFeatures,
-    snapshot: Option<SnapshotWithThreadMode<'a, rocksdb::DB>>,
     settings: TransactionSettings,
     /// Resolves once the [`CommitFence`] holding back commits is dropped.
     commit_fence: Option<oneshot::Receiver<()>>,
@@ -1157,16 +1155,6 @@ impl<'a> PartitionStoreTransaction<'a> {
             .clear();
         self.key_buffer.clear();
         self.value_buffer.clear();
-    }
-
-    fn read_options(&self) -> ReadOptions {
-        let mut opts = ReadOptions::default();
-
-        if let Some(snapshot) = self.snapshot.as_ref() {
-            opts.set_snapshot(snapshot);
-        }
-
-        opts
     }
 
     #[inline]
@@ -1296,7 +1284,7 @@ fn write_batch_put_size(cf_id: u32, key_len: usize, value_len: usize) -> usize {
     1 + cf_id_len + varint32_len(key_len) + key_len + varint32_len(value_len) + value_len
 }
 
-fn assert_partition_key_or_err(
+pub(crate) fn assert_partition_key_or_err(
     partition_key_range: KeyRange,
     partition_key: &impl WithPartitionKey,
 ) -> Result<()> {
@@ -1410,12 +1398,12 @@ impl StorageRead for PartitionStoreTransaction<'_> {
         let scan: PhysicalScan<Bytes> = scan.into();
         let (cf, start, opts) = match scan {
             PhysicalScan::Prefix(key_kind, prefix) => {
-                let mut opts = self.read_options();
+                let mut opts = ReadOptions::default();
                 configure_prefix_iterator_opts(&mut opts, prefix.as_ref());
                 (self.cf_for_key_kind(key_kind), prefix, opts)
             }
             PhysicalScan::RangeExclusive(key_kind, scan_mode, start, end) => {
-                let mut opts = self.read_options();
+                let mut opts = ReadOptions::default();
                 configure_range_iterator_opts(&mut opts, scan_mode, start.as_ref(), end);
                 (self.cf_for_key_kind(key_kind), start, opts)
             }
@@ -1442,6 +1430,7 @@ impl StorageRead for PartitionStoreTransaction<'_> {
         key: K,
     ) -> Result<Option<DBPinnableSlice<'_>>> {
         let cf = self.cf_for_key_kind(key_kind);
+        let read_options = ReadOptions::default();
         self.write_batch_with_index
             .as_ref()
             .expect("transaction valid")
@@ -1449,7 +1438,7 @@ impl StorageRead for PartitionStoreTransaction<'_> {
                 self.rocksdb.inner().as_raw_db(),
                 cf,
                 key,
-                &self.read_options(),
+                &read_options,
             )
             .map_err(|error| StorageError::Generic(error.into()))
     }
@@ -1566,7 +1555,8 @@ pub(crate) trait StorageAccess: StorageRead {
     }
 }
 
-/// A cursor over the entries of a scan.
+/// A cursor over the entries of a scan, implemented for both RocksDB's raw iterators and
+/// snapshot scans.
 pub(crate) trait StorageIterator {
     /// The key and value at the current position. Returns `Ok(None)` once the iterator has moved
     /// past the last entry, or the error that stopped it.
@@ -1592,6 +1582,18 @@ impl<D: rocksdb::DBAccess> StorageIterator for DBRawIteratorWithThreadMode<'_, D
     #[inline]
     fn next(&mut self) {
         DBRawIteratorWithThreadMode::next(self)
+    }
+}
+
+impl<H> StorageIterator for ReadIterator<'_, H> {
+    #[inline]
+    fn item(&self) -> Result<Option<(&[u8], &[u8])>> {
+        ReadIterator::item(self).map_err(|err| StorageError::Generic(err.into()))
+    }
+
+    #[inline]
+    fn next(&mut self) {
+        ReadIterator::next(self)
     }
 }
 
@@ -1726,7 +1728,7 @@ mod tests {
     use bytes::{Buf, BufMut};
 
     use restate_rocksdb::RocksDbManager;
-    use restate_storage_api::{IsolationLevel, StorageError, Transaction};
+    use restate_storage_api::{StorageError, Transaction};
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::logs::Lsn;
     use restate_types::partitions::Partition;
@@ -1813,19 +1815,18 @@ mod tests {
         partition_store.put_kv_raw(key_b.clone(), 0_u32.to_be_bytes())?;
 
         let mut partition_store_clone = partition_store.clone();
-        // repeatable reads shouldn't see writes of concurrently finishing transactions
-        let mut read_txn =
-            partition_store.transaction_with_isolation(IsolationLevel::RepeatableReads);
+        // a snapshot shouldn't see writes of concurrently finishing transactions
+        let mut read_snapshot = partition_store.snapshot()?;
 
-        let value_a = read_txn.get_kv_raw(key_a.clone(), decode_u32)?;
+        let value_a = read_snapshot.get_kv_raw(key_a.clone(), decode_u32)?;
 
-        // concurrent write which should not be visible by read_txn
+        // concurrent write which should not be visible by read_snapshot
         let mut write_txn = partition_store_clone.transaction();
         write_txn.put_kv_raw(key_a.clone(), 42_u32.to_be_bytes())?;
         write_txn.put_kv_raw(key_b.clone(), 42_u32.to_be_bytes())?;
         write_txn.commit().await?;
 
-        let value_b = read_txn.get_kv_raw(key_b.clone(), decode_u32)?;
+        let value_b = read_snapshot.get_kv_raw(key_b.clone(), decode_u32)?;
 
         assert_eq!(value_a, value_b);
 
