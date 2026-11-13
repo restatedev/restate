@@ -48,8 +48,8 @@ const _: () = assert!(
     "faults cost nothing without the `faults` feature"
 );
 
-/// Where a fault can be injected. Every point can pause; the work at those that say so
-/// can also fail.
+/// Where a fault can be injected. Every point can pause, unless it says it only
+/// signals; the work at those that say so can also fail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FaultPoint {
     /// Creating or importing the column family, after the cell switched to `Opening`
@@ -74,6 +74,15 @@ pub enum FaultPoint {
     /// Flushing the registry, the walks and the fence a reconciliation wrote, before
     /// the reconciled indexes are installed for writes. Can fail.
     RegistryFlush,
+    /// A background step of the walks is due, before the driver takes it. The partition
+    /// processor keeps handling its other work while the step waits.
+    WalkStep,
+    /// The background driver has nothing left to do. It only signals: the driver goes
+    /// idle without waiting to resume.
+    WalksIdle,
+    /// A walk's commit has completed, before the committed state is installed for the
+    /// next writes.
+    WalkPublication,
 }
 
 impl FaultPoint {
