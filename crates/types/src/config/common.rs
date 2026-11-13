@@ -1213,6 +1213,11 @@ experimental! {
     /// status gauges are explicitly reset. Statistics-table visibility is controlled
     /// separately on the query coordinator.
     ///
+    /// Enabling this option registers the statistics in the partition's index
+    /// registry and raises the partition's minimum Restate version to v1.8.2.
+    /// That stays, also after the option is removed or the gauges are reset: a
+    /// node that has ever run with it cannot be rolled back to an older version.
+    ///
     /// Since v1.8.2
     track_status_gauges,
 
@@ -1227,7 +1232,9 @@ experimental! {
     /// To rebuild the counts from retained VQueue entries, turn this option off,
     /// turn `experimental-enable-track-status-gauges` on, and restart the nodes:
     /// the gauges are registered again and backfilled in the background.
-    /// Invocation and VQueue entry data are preserved during reset.
+    /// Invocation and VQueue entry data are preserved during reset. A reset does
+    /// not lift the partition's minimum Restate version of v1.8.2 that enabling
+    /// the gauges set.
     ///
     /// Since v1.8.2
     status_gauges_reset,
