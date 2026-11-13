@@ -29,8 +29,8 @@ use restate_util_string::format_restring;
 use crate::keys::{DecodeTableKey, FixedLengthTableKey, KeyKind, define_table_key};
 use crate::scan::TableScan;
 use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, StorageIterator, StorageRead,
-    TableKind, break_on_err,
+    PartitionStore, PartitionStoreSnapshot, PartitionStoreTransaction, StorageAccess,
+    StorageIterator, StorageRead, TableKind, break_on_err,
 };
 
 define_table_key!(
@@ -284,6 +284,20 @@ impl ScanInvocationStatusTable for PartitionStore {
 }
 
 impl ReadInvocationStatusTable for PartitionStoreTransaction<'_> {
+    async fn get_invocation_status(
+        &mut self,
+        invocation_id: &InvocationId,
+    ) -> Result<InvocationStatus> {
+        self.assert_partition_key(invocation_id)?;
+        get_invocation_status(self, invocation_id)
+    }
+
+    async fn any_non_completed_invocation_in_range(&mut self, range: KeyRange) -> Result<bool> {
+        any_non_completed_invocation_in_range(self, range)
+    }
+}
+
+impl ReadInvocationStatusTable for PartitionStoreSnapshot<'_> {
     async fn get_invocation_status(
         &mut self,
         invocation_id: &InvocationId,

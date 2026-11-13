@@ -33,8 +33,8 @@ use crate::TableKind::Journal;
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
 use crate::owned_iter::OwnedIterator;
 use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, StorageIterator, StorageRead,
-    TableScan, break_on_err,
+    PartitionStore, PartitionStoreSnapshot, PartitionStoreTransaction, StorageAccess,
+    StorageIterator, StorageRead, TableScan, break_on_err,
 };
 
 define_table_key!(
@@ -659,6 +659,83 @@ impl ScanJournalTable for PartitionStore {
 }
 
 impl ReadJournalTable for PartitionStoreTransaction<'_> {
+    async fn get_journal_entry(
+        &mut self,
+        invocation_id: InvocationId,
+        journal_index: u32,
+    ) -> Result<Option<StoredRawEntry>> {
+        self.assert_partition_key(&invocation_id)?;
+        let _x = RocksDbReadPerfGuard::new("get-journal-entry");
+        get_journal_entry(self, &invocation_id, journal_index)
+    }
+
+    fn get_journal(
+        &self,
+        invocation_id: InvocationId,
+        journal_length: EntryIndex,
+    ) -> Result<impl Stream<Item = Result<(EntryIndex, StoredRawEntry)>> + Send> {
+        self.assert_partition_key(&invocation_id)?;
+        Ok(stream::iter(get_journal(
+            self,
+            &invocation_id,
+            journal_length,
+        )?))
+    }
+
+    async fn get_notifications_index(
+        &mut self,
+        invocation_id: InvocationId,
+    ) -> Result<HashMap<NotificationId, NotificationEntryIndex>> {
+        get_notifications_index(self, invocation_id)
+    }
+
+    async fn get_command_by_completion_id(
+        &mut self,
+        invocation_id: InvocationId,
+        notification_id: CompletionId,
+    ) -> Result<Option<(StoredRawEntryHeader, RawCommand)>> {
+        get_command_by_completion_id(self, invocation_id, notification_id)
+    }
+
+    async fn has_completion(
+        &mut self,
+        invocation_id: InvocationId,
+        completion_id: CompletionId,
+    ) -> Result<bool> {
+        has_completion(self, invocation_id, completion_id)
+    }
+
+    async fn get_journal_entry_budgeted(
+        &mut self,
+        invocation_id: InvocationId,
+        journal_index: u32,
+        budget: &mut LocalMemoryPool,
+    ) -> std::result::Result<Option<(StoredRawEntry, LocalMemoryLease)>, BudgetedReadError> {
+        self.assert_partition_key(&invocation_id)?;
+        get_journal_entry_budgeted(self, &invocation_id, journal_index, budget).await
+    }
+
+    fn get_journal_budgeted<'a>(
+        &'a self,
+        invocation_id: InvocationId,
+        journal_length: EntryIndex,
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<
+        impl Stream<
+            Item = std::result::Result<
+                (EntryIndex, StoredRawEntry, LocalMemoryLease),
+                BudgetedReadError,
+            >,
+        > + Send
+        + 'a,
+    > {
+        self.assert_partition_key(&invocation_id)?;
+        let iter = get_journal(self, &invocation_id, journal_length)?;
+        Ok(budgeted_journal_v2_stream(iter, budget))
+    }
+}
+
+impl ReadJournalTable for PartitionStoreSnapshot<'_> {
     async fn get_journal_entry(
         &mut self,
         invocation_id: InvocationId,
