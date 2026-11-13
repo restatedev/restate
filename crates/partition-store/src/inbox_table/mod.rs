@@ -16,6 +16,8 @@
 //! guarantees do not make the complete key mem-comparable.
 //! See the [key encoding families](crate::keys#two-encoding-families).
 
+mod scan;
+
 use std::ops::ControlFlow;
 
 use bytestring::ByteString;
@@ -38,6 +40,8 @@ use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
     TableScanIterationDecision, break_on_err,
 };
+
+pub use scan::InboxTable;
 
 define_table_key!(
     Inbox,

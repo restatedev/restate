@@ -26,6 +26,7 @@ use restate_storage_query_api::selection::{Selection, ValuePredicate};
 use restate_types::partition_table::Partition;
 use restate_types::sharding::{KeyRange, PartitionId};
 
+use crate::inbox_table::{InboxKey, InboxTable};
 use crate::keys::codecs::U64Codec;
 use crate::keys::header::{HeaderBounds, KeyHeader, KeySchema, PartitionKeyHeader};
 use crate::keys::macros::define_ordered_key;
@@ -219,6 +220,67 @@ async fn legacy_state_reads_intersect_implicit_ownership_without_ordered_suffixe
         drop(snapshot);
         closed.await;
     }
+}
+
+#[restate_core::test]
+async fn inbox_reads_keep_legacy_keys_and_snapshot_bounds() {
+    use crate::keys::EncodeTableKeyPrefix;
+
+    RocksDbManager::init();
+    let manager = PartitionStoreManager::create(true).await.unwrap();
+    let mut store = manager
+        .open(
+            &Partition::new(PartitionId::MIN, KeyRange::new(20, 40)),
+            None,
+        )
+        .await
+        .unwrap();
+    let key = |partition_key, name: &str| {
+        InboxKey::builder()
+            .partition_key(partition_key)
+            .service_name(name.into())
+            .service_key("object".into())
+            .sequence_number(7)
+            .serialize()
+    };
+    let mut tx = store.transaction();
+    // Include keys outside the owner and outside the requested interval, in the
+    // same CF. Length-prefixed names sort "b" before "aa", unlike strings.
+    for partition_key in [19, 20, 30, 31, 40, 41] {
+        for name in ["aa", "b"] {
+            tx.raw_put_cf(KeyKind::Inbox, key(partition_key, name), b"\0\xff");
+        }
+    }
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let (snapshot, closed) = store.query_read(CancellationToken::new()).unwrap();
+    // The cursor is opened after this commit, but must read the admitted snapshot.
+    let mut tx = store.transaction();
+    tx.raw_put_cf(KeyKind::Inbox, key(25, "new"), b"\0\xff");
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let executor = QueryIoExecutor::new(NonZeroUsize::new(1).unwrap());
+    let request = Arc::new(KeySelection::<InboxKey>::all().restrict_scope(KeyRange::new(10, 30)));
+    let found: Vec<_> = read_keys::<InboxTable>(&snapshot, &executor, &request)
+        .await
+        .into_iter()
+        .map(|key| key.split())
+        .collect();
+    assert_eq!(
+        found,
+        [20, 30]
+            .into_iter()
+            .flat_map(|partition_key| {
+                ["b", "aa"]
+                    .into_iter()
+                    .map(move |name| (partition_key, name.into(), "object".into(), 7))
+            })
+            .collect::<Vec<_>>()
+    );
+    drop(snapshot);
+    closed.await;
 }
 
 // An ordered suffix behind a varying partition-key header; it shares only the
