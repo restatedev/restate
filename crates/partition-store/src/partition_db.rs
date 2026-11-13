@@ -117,6 +117,8 @@ pub struct PhysicalPartition {
     /// partition was opened. Shared by every session and clone, so no handle keeps
     /// a stale set.
     maintained_indexes: parking_lot::RwLock<Option<Arc<crate::registry::MaintainedIndexes>>>,
+    /// What the background walk drivers did, across sessions.
+    walk_stats: crate::walk::WalkStats,
     /// The faults armed for the partition, shared with its cell.
     faults: Faults,
     // Looked up once, when the partition is first opened, and shared by every
@@ -164,6 +166,7 @@ impl PartitionDb {
                 archived_lsn,
                 notifications: database.notifications,
                 maintained_indexes: Default::default(),
+                walk_stats: Default::default(),
                 faults,
                 cfs,
             },
@@ -200,6 +203,11 @@ impl PartitionDb {
         maintained_indexes: Arc<crate::registry::MaintainedIndexes>,
     ) {
         *self.physical().maintained_indexes.write() = Some(maintained_indexes);
+    }
+
+    /// What the background walk drivers of this partition did.
+    pub(crate) fn walk_stats(&self) -> &crate::walk::WalkStats {
+        &self.physical().walk_stats
     }
 
     /// The faults armed for the partition.
