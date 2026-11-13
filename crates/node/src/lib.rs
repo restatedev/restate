@@ -400,6 +400,7 @@ impl Node {
                     bifrost_svc.handle(),
                     ingestion_client.clone(),
                     metadata_manager.writer(),
+                    datafusion_env.io_executor().clone(),
                     &remote_scanner_manager,
                 )
                 .await?,

@@ -8936,6 +8936,7 @@ dependencies = [
  "ahash",
  "anyhow",
  "async-trait",
+ "bilrost",
  "bytes",
  "bytestring",
  "codederror",
@@ -8975,6 +8976,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tracing",
 ]
 
