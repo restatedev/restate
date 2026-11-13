@@ -175,6 +175,11 @@ fn main() {
         .expect("task_center builds");
     let res = tc.block_on({
         async move {
+            // The watchdog allows another grace period after the task center's own shutdown
+            // timeout. This covers the tracing shutdown (half the grace period) and the RocksDB
+            // flush that follow it.
+            TaskCenter::enable_shutdown_watchdog();
+
             // Apply tracing config globally
             // We need to apply this first to log correctly
             let tracing_guard =

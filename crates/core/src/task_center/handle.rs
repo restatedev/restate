@@ -313,6 +313,13 @@ impl Handle {
     pub fn set_on_shutdown(&self, on_shutdown: BoxFuture<'static, ()>) {
         self.inner.set_on_shutdown(on_shutdown)
     }
+
+    /// See [`crate::TaskCenter::enable_shutdown_watchdog`].
+    pub fn enable_shutdown_watchdog(&self) {
+        self.inner
+            .shutdown_watchdog_enabled
+            .store(true, Ordering::Relaxed);
+    }
 }
 
 // Shutsdown
