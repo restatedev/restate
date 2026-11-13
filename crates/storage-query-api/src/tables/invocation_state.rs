@@ -23,39 +23,49 @@ define_schema! {
         sharding: ShardingScheme::ByPartitionKey { is_leader_required: true },
         sharding_columns { partition_key: PartitionKey, id: InvocationId },
         columns {
-            /// Internal partitioning key.
+            /// Internal column that is used for partitioning the services invocations. Can be ignored.
             partition_key: PartitionKey => DataType::UInt64,
-            /// Invocation ID.
+            /// [Invocation ID](/services/invocation/managing-invocations#invocation-id).
             id: InvocationId => DataType::LargeUtf8,
-            /// Whether the invocation is currently in flight.
+            /// If true, the invocation is currently in-flight
             in_flight: bool => DataType::Boolean,
-            /// Number of attempts since this leader started executing the invocation.
+            /// The number of invocation attempts since the current leader started executing it. Increments
+            /// on start, so a value greater than 1 means a failure occurred. Note: the value is not a
+            /// global attempt counter across invocation suspensions and leadership changes.
             retry_count: u64 => DataType::UInt64,
-            /// Start time of the most recent attempt.
+            /// Timestamp indicating the start of the most recent attempt of this invocation.
             last_start_at: MillisSinceEpoch => TimestampMillisecond,
-            /// Deployment selected for the most recent attempt.
+            /// The ID of the service deployment that executed the most recent attempt of this invocation;
+            /// this is set before a journal entry is stored, but can change later.
             last_attempt_deployment_id: Option<ReString> => DataType::LargeUtf8,
-            /// Server or SDK version used for the most recent attempt.
+            /// Server/SDK version, e.g. `restate-sdk-java/1.0.1`
             last_attempt_server: Option<ReString> => DataType::LargeUtf8,
-            /// Start time of the next attempt.
+            /// Timestamp indicating the start of the next attempt of this invocation.
             next_retry_at: Option<MillisSinceEpoch> => TimestampMillisecond,
-            /// Most recent failure message.
+            /// An error message describing the most recent failed attempt of this invocation, if any.
             last_failure: Option<ReString> => DataType::LargeUtf8,
-            /// Most recent failure's documentation error code.
+            /// The error code of the most recent failed attempt of this invocation, if any.
             last_failure_error_code: Option<ReString> => DataType::LargeUtf8,
-            /// Index of the command related to the failure.
+            /// The index of the command in the journal that caused the failure, if any. It may be out-of-bound
+            /// of the currently stored commands in `sys_journal`.
             last_failure_related_command_index: Option<u64> => DataType::UInt64,
-            /// Name of the command related to the failure.
+            /// The name of the command that caused the failure, if any.
             last_failure_related_command_name: Option<ReString> => DataType::LargeUtf8,
-            /// Type of the command related to the failure.
+            /// The type of the command that caused the failure, if any. You can check all the
+            /// available command types in [`entries.rs`](https://github.com/restatedev/restate/blob/main/crates/types/src/journal_v2/command.rs).
             last_failure_related_command_type: Option<ReString> => DataType::LargeUtf8,
-            /// Deprecated: index of the entry related to the failure.
+            /// The index of the journal entry that caused the failure, if any. It may be out-of-bound
+            /// of the currently stored entries in `sys_journal`.
+            /// DEPRECATED: you should not use this field anymore, but last_failure_related_command_index instead.
             last_failure_related_entry_index: Option<u64> => DataType::UInt64,
-            /// Deprecated: name of the entry related to the failure.
+            /// The name of the journal entry that caused the failure, if any.
+            /// DEPRECATED: you should not use this field anymore, but last_failure_related_command_name instead.
             last_failure_related_entry_name: Option<ReString> => DataType::LargeUtf8,
-            /// Deprecated: type of the entry related to the failure.
+            /// The type of the journal entry that caused the failure, if any. You can check all the
+            /// available entry types in [`entries.rs`](https://github.com/restatedev/restate/blob/main/crates/types/src/journal/entries.rs).
+            /// DEPRECATED: you should not use this field anymore, but last_failure_related_command_type instead.
             last_failure_related_entry_type: Option<ReString> => DataType::LargeUtf8,
-            /// Last known future the SDK was awaiting.
+            /// Last known future the SDK was awaiting on, if `in_flight = true`.
             last_awaiting_on_future_json: Option<ReString> => DataType::LargeUtf8,
         }
     }
