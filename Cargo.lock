@@ -8796,6 +8796,7 @@ dependencies = [
  "restate-workspace-hack",
  "rlimit",
  "rustls",
+ "serde",
  "serde_json",
  "test-log",
  "tikv-jemallocator",
