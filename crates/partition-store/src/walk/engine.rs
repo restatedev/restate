@@ -18,10 +18,10 @@
 //! job's finish and the walk's removal. A [`SliceBudget`] bounds the keys read,
 //! their bytes, and the bytes of the staged batch with the records it commits
 //! with. One commit makes the work and the progress visible together. Only
-//! after it does
-//! the engine publish the committed records (the [`MaintainedIndexes`]) to the
-//! transaction and the partition, so the next write sees the new cursor and a
-//! failed commit never publishes. Recording a failure commits and publishes the
+//! after it does the engine publish the committed records (the
+//! [`MaintainedIndexes`]) to the transaction and the partition, so the next slice
+//! resumes after the new cursor, the next write sees indexes the slice made
+//! Ready, and a failed commit never publishes. Recording a failure commits and publishes the
 //! same way. Starting a walk does not go through the engine: the open stages it
 //! in its registration batch and flushes that before publishing (see
 //! `registry::backfill::start`).
