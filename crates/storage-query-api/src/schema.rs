@@ -51,7 +51,9 @@ mod macros;
 pub mod rows;
 pub mod sharding;
 
-pub use binding::{PreparedRead, RecordProgress, RowSink, SchemaBinding, row_written};
+pub use binding::{
+    AsyncRowSink, PreparedRead, RecordProgress, RowSink, SchemaBinding, row_written,
+};
 
 #[cfg(test)]
 mod tests;

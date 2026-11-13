@@ -61,7 +61,7 @@ pub use partition_db::{DroppedPartitionStore, PartitionDb};
 pub use partition_store::*;
 pub use partition_store_manager::*;
 pub use partition_store_snapshot::PartitionStoreSnapshot;
-pub use query_read::ReadSnapshot;
+pub use query_read::{QueryIoExecutor, ReadSnapshot};
 pub use read_snapshot::{PartitionReadSnapshot, PartitionSnapshotReader, PartitionSnapshotScan};
 // re-export
 pub use restate_rocksdb::Priority;

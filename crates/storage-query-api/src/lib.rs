@@ -16,7 +16,7 @@
 //! - [`selection`] states which rows of a schema a read must return, as typed
 //!   conditions on its columns, and derives candidate domains from SQL predicates.
 //! - [`scan`] is the physical side: a table's records and prepared read requests,
-//!   as storage defines them, read on the caller's thread. A [`SchemaBinding`]
+//!   as storage defines them, read directly or on a query IO worker. A [`SchemaBinding`]
 //!   connects a physical table to a logical schema, so a selection can be prepared
 //!   and records become rows.
 //! - [`tables`] holds the declarations of the SQL catalog's tables.
@@ -33,9 +33,12 @@ pub mod table_docs;
 pub mod tables;
 mod writer;
 
+#[cfg(feature = "test-util")]
+pub mod test_util;
+
 pub use scan::Table;
 pub use schema::{
-    LogicalSchema, PreparedRead, RowBuilder, RowSink, SchemaBinding, SelectionSchema,
+    AsyncRowSink, LogicalSchema, PreparedRead, RowBuilder, RowSink, SchemaBinding, SelectionSchema,
     ShardingScheme,
 };
 
@@ -66,6 +69,10 @@ pub trait QueryEngineTable: Any + Send + Sync + Clone + std::fmt::Debug + 'stati
 }
 
 /// An engine-independent scanner for node-local or global, non-partitioned data.
+///
+/// This query-source interface returns Arrow batches for SQL projections and
+/// filters. [`scan::Scan`] executes prepared physical reads on query IO workers,
+/// lending storage records to typed consumers before they become Arrow batches.
 pub trait Scan: std::fmt::Debug + Send + Sync + 'static {
     fn scan(
         &self,

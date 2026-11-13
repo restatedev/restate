@@ -51,12 +51,14 @@
 //! write it or fail. A sink that stopped successfully instead would lose that
 //! row on resume, which is why [`row_written`] reports it as an error.
 
+use std::marker::PhantomData;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
+use restate_storage_api::scan::{RowConsumer, ScanOutcome};
 use restate_storage_api::{Result, StorageError};
 
-use crate::scan::Table;
+use crate::scan::{CursorScan, SCAN_SLICE, Scan, Table, yield_now};
 use crate::selection::{Selection, SelectionPrecision};
 
 use super::{LogicalSchema, RowBuilder};
@@ -86,6 +88,18 @@ pub trait RowSink<S: LogicalSchema> {
         &mut self,
         write: impl FnOnce(&mut S::RowBuilder) -> Result<()>,
     ) -> ControlFlow<Result<()>>;
+}
+
+/// A projected sink that can await capacity before a materialization call.
+///
+/// A successful reservation permits at most one row through [`RowSink`]. The
+/// subsequent append must write or fail, never stop successfully. A record can
+/// produce no row, so reserving again must also work without an intervening
+/// append. Cancellation may drop the sink or a pending reservation at any time.
+pub trait AsyncRowSink<S: LogicalSchema>: RowSink<S> + Send + 'static {
+    /// Waits for room for one row, or stops before reserving it. Successful stops
+    /// belong here, between calls to [`SchemaBinding::materialize_next`].
+    fn reserve(&mut self) -> impl Future<Output = Result<ControlFlow<()>>>;
 }
 
 /// Whether the current physical record has more logical rows to materialize.
@@ -151,6 +165,85 @@ pub trait SchemaBinding: Sized + 'static {
     ) -> ControlFlow<Result<()>> {
         Self::materialize(record, &mut |row| emit.append(row))
     }
+
+    /// Runs a prepared read into an awaitable projected sink. Physical records
+    /// are cheap, copyable views so an expanding binding can revisit the same
+    /// record without copying its bytes. Materialization yields every
+    /// [`SCAN_SLICE`] calls, including across record boundaries; physical skips
+    /// have their own budget.
+    ///
+    /// The caller retains SQL residuals and their projection dependencies, and
+    /// applies limits only where those residuals permit. On success the sink is
+    /// returned for final flushing or the next read; errors discard it.
+    fn read<S, C>(
+        backend: &S,
+        executor: &S::Executor,
+        prepared: &PreparedRead<Self::Table>,
+        sink: C,
+    ) -> Result<impl Future<Output = Result<ScanOutcome<C>>> + Send + 'static>
+    where
+        S: Scan + CursorScan<Self::Table>,
+        C: AsyncRowSink<Self::Schema>,
+        for<'a> <Self::Table as Table>::Record<'a>: Copy + Send,
+    {
+        let result = backend.scan::<Self::Table, _>(
+            executor,
+            Self::Schema::NAME,
+            Arc::clone(prepared.request()),
+            BindingConsumer::<Self, C>::new(sink),
+        )?;
+        Ok(async move {
+            result
+                .await
+                .map(|outcome| outcome.map(|consumer| consumer.sink))
+        })
+    }
+}
+
+/// Turns each borrowed physical record into logical rows, reserving output room
+/// before each materialization call and yielding even across record boundaries.
+struct BindingConsumer<B, C> {
+    sink: C,
+    /// Materialization calls left before the next cooperative yield, not rows.
+    until_yield: usize,
+    _binding: PhantomData<fn() -> B>,
+}
+
+impl<B, C> BindingConsumer<B, C> {
+    fn new(sink: C) -> Self {
+        Self {
+            sink,
+            until_yield: SCAN_SLICE,
+            _binding: PhantomData,
+        }
+    }
+}
+
+impl<B, C> RowConsumer for BindingConsumer<B, C>
+where
+    B: SchemaBinding,
+    C: AsyncRowSink<B::Schema>,
+    for<'a> <B::Table as Table>::Record<'a>: Copy + Send,
+{
+    type Item<'a> = <B::Table as Table>::Record<'a>;
+
+    async fn consume(&mut self, record: Self::Item<'_>) -> Result<ControlFlow<()>> {
+        let mut state = B::Materializer::default();
+        loop {
+            if self.sink.reserve().await?.is_break() {
+                return Ok(ControlFlow::Break(()));
+            }
+            let progress = B::materialize_next(record, &mut state, &mut self.sink)?;
+            self.until_yield -= 1;
+            if self.until_yield == 0 {
+                self.until_yield = SCAN_SLICE;
+                yield_now().await;
+            }
+            if progress == RecordProgress::Done {
+                return Ok(ControlFlow::Continue(()));
+            }
+        }
+    }
 }
 
 /// The result of writing the row reserved by [`SchemaBinding::materialize_next`]
@@ -197,5 +290,168 @@ impl<T: Table> Clone for PreparedRead<T> {
             request: Arc::clone(&self.request),
             precision: self.precision,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use futures::FutureExt;
+    use futures::channel::oneshot;
+
+    use super::*;
+    use fixture::{Expanded, ExpandedBatchBuilder, ExpandedRow};
+
+    // The declaration also generates selection and documentation helpers, which
+    // this materialization fixture does not use.
+    #[allow(dead_code)]
+    mod fixture {
+        use datafusion::arrow::datatypes::DataType;
+
+        use crate::{ShardingScheme, define_schema};
+
+        define_schema! {
+            expanded {
+                name: "expanded",
+                sharding: ShardingScheme::Unsharded(None),
+                columns { value: u32 => DataType::UInt32 }
+            }
+        }
+    }
+
+    struct Binding;
+
+    impl Table for Binding {
+        type Record<'a> = &'a [u32];
+        type Scan = ();
+    }
+
+    impl SchemaBinding for Binding {
+        type Schema = Expanded;
+        type Table = Self;
+        type Materializer = usize;
+
+        fn prepare(_: &Selection<Expanded>) -> Result<PreparedRead<Self>> {
+            Ok(PreparedRead::new((), SelectionPrecision::Exact))
+        }
+
+        fn materialize_next(
+            record: &[u32],
+            position: &mut usize,
+            emit: &mut impl RowSink<Expanded>,
+        ) -> Result<RecordProgress> {
+            let Some(&value) = record.get(*position) else {
+                return Ok(RecordProgress::Done);
+            };
+            row_written(emit.append(&ExpandedRow { value }))?;
+            *position += 1;
+            Ok(if *position == record.len() {
+                RecordProgress::Done
+            } else {
+                RecordProgress::More
+            })
+        }
+
+        fn materialize(
+            record: &[u32],
+            emit: &mut impl for<'a> FnMut(&'a ExpandedRow) -> ControlFlow<Result<()>>,
+        ) -> ControlFlow<Result<()>> {
+            for &value in record {
+                emit(&ExpandedRow { value })?;
+            }
+            ControlFlow::Continue(())
+        }
+    }
+
+    struct Sink {
+        builder: ExpandedBatchBuilder,
+        written: Arc<AtomicUsize>,
+        limit: usize,
+        wait: Option<oneshot::Receiver<()>>,
+        stop_in_append: bool,
+    }
+
+    impl AsyncRowSink<Expanded> for Sink {
+        async fn reserve(&mut self) -> Result<ControlFlow<()>> {
+            if let Some(wait) = self.wait.take() {
+                wait.await.unwrap();
+            }
+            Ok(if self.builder.num_rows() == self.limit {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            })
+        }
+    }
+
+    impl RowSink<Expanded> for Sink {
+        fn append_with(
+            &mut self,
+            write: impl FnOnce(&mut ExpandedBatchBuilder) -> Result<()>,
+        ) -> ControlFlow<Result<()>> {
+            if self.stop_in_append {
+                return ControlFlow::Break(Ok(()));
+            }
+            match write(&mut self.builder) {
+                Ok(()) => {
+                    self.written.fetch_add(1, Ordering::Relaxed);
+                    ControlFlow::Continue(())
+                }
+                Err(error) => ControlFlow::Break(Err(error)),
+            }
+        }
+    }
+
+    #[test]
+    fn expanding_records_yield_resume_and_stop_only_between_reserved_rows() {
+        let written = Arc::new(AtomicUsize::new(0));
+        let mut consumer = BindingConsumer::<Binding, _>::new(Sink {
+            builder: ExpandedBatchBuilder::new(Expanded::arrow_schema()),
+            written: Arc::clone(&written),
+            limit: usize::MAX,
+            wait: None,
+            stop_in_append: false,
+        });
+        // The logical budget survives record boundaries: 100 rows in the first
+        // record leave only 28 before the next yield in the second record.
+        let record: Vec<u32> = (0..200).collect();
+        assert!(
+            futures::executor::block_on(consumer.consume(&record[..100]))
+                .unwrap()
+                .is_continue()
+        );
+        let mut consume = Box::pin(consumer.consume(&record[100..]));
+        assert!(consume.as_mut().now_or_never().is_none());
+        assert_eq!(written.load(Ordering::Relaxed), SCAN_SLICE);
+        assert!(futures::executor::block_on(consume).unwrap().is_continue());
+        assert_eq!(written.load(Ordering::Relaxed), 200);
+
+        // Capacity can suspend while borrowing the record. Resumption writes
+        // exactly the reserved rows; a limit stops before the next reservation.
+        consumer.sink.limit = 202;
+        let (release, wait) = oneshot::channel();
+        consumer.sink.wait = Some(wait);
+        let mut consume = Box::pin(consumer.consume(&record));
+        assert!(consume.as_mut().now_or_never().is_none());
+        assert_eq!(written.load(Ordering::Relaxed), 200);
+        release.send(()).unwrap();
+        assert!(futures::executor::block_on(consume).unwrap().is_break());
+        assert_eq!(written.load(Ordering::Relaxed), 202);
+        let batch = consumer.sink.builder.finish().unwrap();
+        let values = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::UInt32Array>()
+            .unwrap();
+        assert_eq!(
+            values.values().as_ref(),
+            (0..200).chain([0, 1]).collect::<Vec<_>>()
+        );
+
+        // A sink violating the write-or-error contract must fail, not report
+        // progress or turn a partially written record into successful exhaustion.
+        consumer.sink.stop_in_append = true;
+        assert!(futures::executor::block_on(consumer.consume(&record)).is_err());
     }
 }
