@@ -55,7 +55,7 @@ mod backfill;
 mod reconcile;
 
 pub(crate) use active::{DEFINITIONS, Family, IndexDefinition, MaintainedIndexes};
-pub(crate) use backfill::IndexBackfill;
+pub(crate) use backfill::{IndexBackfill, start as start_backfill};
 pub(crate) use reconcile::{FAMILIES, FenceState, Requests, load_job_records};
 
 /// The first index ID the registry issues. Lower IDs belong to the static

@@ -83,12 +83,18 @@ pub enum FaultPoint {
     /// A walk's commit has completed, before the committed state is installed for the
     /// next writes.
     WalkPublication,
+    /// The background driver starts another pass of waiting build jobs, before it
+    /// stages anything. Can fail.
+    PassStart,
 }
 
 impl FaultPoint {
     /// Whether the work at this point can fail with an injected error.
     pub fn can_fail(self) -> bool {
-        matches!(self, Self::Open | Self::Delete | Self::RegistryFlush)
+        matches!(
+            self,
+            Self::Open | Self::Delete | Self::RegistryFlush | Self::PassStart
+        )
     }
 }
 

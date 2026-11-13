@@ -1022,7 +1022,7 @@ mod backfill_tests {
     use tokio_util::sync::CancellationToken;
     use zerocopy::IntoBytes;
 
-    use restate_rocksdb::RocksDbManager;
+    use restate_rocksdb::{RocksDbManager, RocksError};
     use restate_storage_api::invocation_status_table::{
         ReadInvocationStatusTable, WriteInvocationStatusTable,
     };
@@ -2585,6 +2585,187 @@ mod backfill_tests {
         })
         .unwrap();
         tx.commit().await.unwrap();
+    }
+
+    /// Rewrites entry `id` unchanged through `tx`, as a command does.
+    async fn rewrite_entry(
+        tx: &mut PartitionStoreTransaction<'_>,
+        db: &PartitionDb,
+        id: BaseEntryId,
+    ) {
+        let header = tx.get_vqueue_entry_status(&id).await.unwrap().unwrap();
+        with_entry_target(db, &id, header.vqueue_id(), header.seq(), |target| {
+            tx.update_vqueue_entry_status(
+                &EntryContext {
+                    qid: header.vqueue_id(),
+                    target,
+                },
+                StoredEntryRef::from_header(&header),
+                EntryStateRef::from_header(&header),
+            );
+            Ok(())
+        })
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    #[restate_core::test(start_paused = true)]
+    async fn the_driver_gives_walks_turns_and_starts_passes_when_due() {
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        let mut store = manager
+            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+            .await
+            .unwrap();
+        seed(&mut store).await;
+        let entries = read_chunk(&store, None, usize::MAX).unwrap();
+        // COUNT's walk starts at one open; ADOPTED's and PASSIVE's at the next.
+        let known: &[&'static IndexDefinition] = &[&COUNT, &ADOPTED, &PASSIVE];
+        try_reconcile(&mut store, known, maintain(&COUNT))
+            .await
+            .unwrap();
+        try_reconcile(&mut store, known, maintain_all(known))
+            .await
+            .unwrap();
+        let [count, adopted, passive] = [&COUNT, &ADOPTED, &PASSIVE]
+            .map(|definition| registry(&store).maintained(definition.name).unwrap().id);
+        let second = registry(&store).get(adopted).unwrap().walk.unwrap();
+        assert!(registry(&store).get(count).unwrap().walk < Some(second));
+
+        // The second walk passes entry 5; then the entry's target goes missing,
+        // so only the first walk, which still has to fill it, fails there.
+        fill(&mut store, second, 6).await;
+        let invocation = entries[5].1.to_invocation_id().unwrap();
+        let status = {
+            let mut tx = store.transaction();
+            let status = tx.get_invocation_status(&invocation).await.unwrap();
+            tx.delete_invocation_status(&invocation).unwrap();
+            tx.commit().await.unwrap();
+            status
+        };
+        let mut driver = store.walk_driver(&StorageOptions::default());
+        // Paused time makes every key look instant; small slices keep turns.
+        driver.tuning_mut().max_keys = 16;
+        let db = store.partition_db().clone();
+        let mut tx = store.transaction();
+        let state = |tx: &PartitionStoreTransaction<'_>, id| {
+            tx.maintained_indexes().registry().get(id).unwrap().state
+        };
+
+        // The walks take turns. The failing one waits out its backoff while the
+        // other finishes: ADOPTED is Ready and PASSIVE waits with gaps, while
+        // COUNT keeps failing.
+        for _ in 0..1_000 {
+            if state(&tx, adopted) == IndexStatus::Ready {
+                break;
+            }
+            drive(&mut driver, &mut tx, 1).await;
+        }
+        assert_eq!(state(&tx, adopted), IndexStatus::Ready);
+        assert!(published_job(&tx, count).failures > 0);
+        assert_eq!(state(&tx, count), IndexStatus::Backfilling);
+        assert_eq!(
+            published_job(&tx, passive).status,
+            MigrationJobStatus::Waiting
+        );
+
+        // The target comes back. Commands rewrite half the entries and delete
+        // the others, covering PASSIVE. With no reopen, COUNT's walk recovers,
+        // and once PASSIVE's wait is over the driver starts its next pass, which
+        // finds no gap.
+        tx.put_invocation_status(&invocation, &status).unwrap();
+        tx.commit().await.unwrap();
+        let mut kept = 0;
+        for (position, (_, id, _)) in entries.iter().enumerate() {
+            if position % 2 == 0 {
+                rewrite_entry(&mut tx, &db, *id).await;
+                kept += 1;
+            } else {
+                delete_entry(&mut tx, &db, *id).await;
+            }
+        }
+        drive(&mut driver, &mut tx, 10_000).await;
+        assert_eq!(driver.due(), None, "idle once everything is Ready");
+        drop(tx);
+        for id in [count, passive] {
+            assert_eq!(
+                (
+                    registry(&store).get(id).unwrap().state,
+                    self::count(&store, id)
+                ),
+                (IndexStatus::Ready, kept),
+                "{id}"
+            );
+        }
+        let done = finished_job(&store, passive);
+        assert_eq!((done.passes, done.rows_uncovered), (2, Some(0)));
+    }
+
+    #[restate_core::test(start_paused = true)]
+    async fn a_failed_pass_start_leaves_started_walks_their_turns() {
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
+        let mut store = manager.open(&partition, None).await.unwrap();
+        seed(&mut store).await;
+        // RESUMED's walk is near its end when ADOPTED joins it late; COUNT's walk,
+        // started at the next open, has all its work ahead.
+        reconcile(&mut store, maintain(&RESUMED)).await;
+        let resumed = registry(&store).maintained(RESUMED.name).unwrap().id;
+        let near = registry(&store).get(resumed).unwrap().walk.unwrap();
+        fill(&mut store, near, SEEDED as usize - 7).await;
+        let (mut joined, mut walks_now) = (registry(&store), walks(&store));
+        let adopted = joined.register(ADOPTED.name, ADOPTED.kind).unwrap();
+        joined.link(adopted, near).unwrap();
+        walks_now.join(near, adopted).unwrap();
+        write_state(&store, &joined, &walks_now);
+        reconcile(&mut store, maintain(&COUNT)).await;
+        let count = registry(&store).maintained(COUNT.name).unwrap().id;
+
+        let mut driver = store.walk_driver(&StorageOptions::default());
+        driver.tuning_mut().max_keys = 16;
+        let mut tx = store.transaction();
+        let rows = |tx: &PartitionStoreTransaction<'_>| published_job(tx, count).rows_examined;
+        let linked = |tx: &PartitionStoreTransaction<'_>| {
+            tx.maintained_indexes()
+                .registry()
+                .get(adopted)
+                .unwrap()
+                .walk
+        };
+
+        // The near walk ends: RESUMED is Ready and the late joiner ADOPTED waits,
+        // eligible at once. Starting its pass fails once.
+        manager
+            .faults(&partition)
+            .fail(FaultPoint::PassStart, RocksError::ReadOnly);
+        drive(&mut driver, &mut tx, 1).await;
+        assert_eq!(
+            published_job(&tx, adopted).status,
+            MigrationJobStatus::Waiting
+        );
+        drive(&mut driver, &mut tx, 1).await;
+        assert_eq!((linked(&tx), rows(&tx)), (None, 0), "the start failed");
+        // COUNT's walk takes the next turn while the start waits out its backoff;
+        // then the start succeeds, with no reopen.
+        drive(&mut driver, &mut tx, 1).await;
+        assert_eq!(
+            (linked(&tx), rows(&tx) > 0),
+            (None, true),
+            "a turn for COUNT"
+        );
+        drive(&mut driver, &mut tx, 10_000).await;
+        drop(tx);
+        for id in [resumed, adopted, count] {
+            assert_eq!(
+                (
+                    registry(&store).get(id).unwrap().state,
+                    self::count(&store, id)
+                ),
+                (IndexStatus::Ready, SEEDED),
+                "{id}"
+            );
+        }
     }
 
     #[restate_core::test]

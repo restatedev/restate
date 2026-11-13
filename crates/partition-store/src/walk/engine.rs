@@ -488,6 +488,49 @@ pub(crate) async fn record_failure(
     commit(tx, db, &active, registry, walks, jobs).await
 }
 
+/// Starts a pass for the waiting Backfilling indexes `ids` in one commit, as
+/// opening does for eligible ones (see `registry::backfill::start`): one walk over
+/// the entries that exist now, or completion at once without any. Commits and
+/// publishes like a slice, and returns the new walk, if any.
+pub(crate) async fn start_passes(
+    tx: &mut PartitionStoreTransaction<'_>,
+    db: &PartitionDb,
+    ids: &[u32],
+) -> Result<Option<u64>, SliceError> {
+    let fault = db.faults().take(crate::faults::FaultPoint::PassStart);
+    crate::faults::inject(fault)
+        .await
+        .map_err(|err| SliceError::Staging(StorageError::Generic(err.into())))?;
+    let active = tx.maintained_indexes();
+    let now = WallClock::now_ms().as_u64();
+    let (registry, walks, jobs, walk) = stage(tx, |tx| {
+        let mut registry = active.registry().clone();
+        let mut walks = active.walks().clone();
+        let mut jobs = active.jobs().clone();
+        let walk = crate::registry::start_backfill(
+            db,
+            &mut registry,
+            &mut walks,
+            &mut jobs,
+            ids,
+            now,
+            active.history_limit(),
+        )?;
+        let partition = db.partition().id();
+        put_registry(tx, partition, &registry)?;
+        put_walks(tx, partition, &walks)?;
+        for (state_id, list) in [
+            (fsm_variable::MIGRATION_JOBS, &jobs.unfinished),
+            (fsm_variable::MIGRATION_JOB_HISTORY, &*jobs.history),
+        ] {
+            put_migration_jobs(tx, partition, state_id, list)?;
+        }
+        Ok((registry, walks, jobs, walk))
+    })?;
+    commit(tx, db, &active, registry, walks, jobs).await?;
+    Ok(walk)
+}
+
 /// Runs `f` to stage writes into `tx`, which must have none pending, and clears
 /// them if it fails.
 pub(crate) fn stage<'a, T>(
