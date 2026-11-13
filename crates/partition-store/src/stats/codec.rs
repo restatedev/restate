@@ -8,19 +8,52 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::{Buf, BufMut};
+use std::marker::PhantomData;
+
+use bytes::{Buf, BufMut, Bytes};
 use zerocopy::{TryFromBytes, big_endian};
 
 use restate_storage_api::StorageError;
 use restate_types::sharding::PartitionId;
 
-use crate::keys::KeyKind;
+use crate::keys::header::{HeaderBounds, IndexScope, KeyHeader};
+use crate::keys::{KeyDecoder, KeyKind};
+use crate::registry::IndexKind;
+use crate::table::ReadMetadata;
 
-use super::StatKind;
+use super::{Stat, StatKind};
 
-/// Identity of one statistic index in one physical partition.
+/// The header of a registered statistic's keys: its index identity and the
+/// statistic's aggregation kind.
+pub const HEADER_LENGTH: usize = AggregateKeyPrefix::SERIALIZED_LENGTH + 1;
+
+/// Typed ownership metadata for the keys of statistic `S`. A read resolves the
+/// Ready index of `S`'s definition and fails with `IndexNotReady` when there is none.
+pub struct AggregateKeyHeader<S>(PhantomData<fn() -> S>);
+
+impl<S: Stat + 'static> KeyHeader for AggregateKeyHeader<S> {
+    type Scope = IndexScope;
+
+    const KEY_KIND: KeyKind = KeyKind::Stats;
+    const LENGTH: usize = HEADER_LENGTH;
+
+    fn scope(metadata: &ReadMetadata<'_>) -> crate::Result<IndexScope> {
+        Ok(IndexScope {
+            partition: metadata.partition.partition_id,
+            index: metadata.ready_index(S::DEFINITION, IndexKind::Aggregate)?,
+        })
+    }
+
+    fn bounds(scope: IndexScope) -> Option<HeaderBounds> {
+        let mut header = Vec::with_capacity(HEADER_LENGTH);
+        super::encode_header::<S, _>(scope, &mut header);
+        Some(HeaderBounds::prefix(Self::KEY_KIND, Bytes::from(header)))
+    }
+}
+
+/// Identity of one registered statistic index in one physical partition.
 ///
-/// Keys of statistics are
+/// Keys of registered statistics are
 /// `key kind (2) | partition padding (2) | partition id (2) | index id (4) |
 /// aggregation kind (1) | payload`. The ten-byte identity mirrors the secondary
 /// index prefix, with the registry's `u32` index ID; ranges over an index
@@ -79,6 +112,30 @@ impl AggregateKeyPrefix {
     }
 }
 
+/// Encodes the payload of a key for statistic `C`, without its header.
+/// Use [`Stat::encode_key`] to append a complete key.
+pub trait EncodeStatKey<C: Stat + ?Sized> {
+    fn encode<B: BufMut>(&self, bytes: &mut B);
+    fn serialized_length(&self) -> usize;
+}
+
+impl<T: EncodeStatKey<C>, C: Stat> EncodeStatKey<C> for &T {
+    fn encode<B: BufMut>(&self, scratch: &mut B) {
+        T::encode(*self, scratch)
+    }
+
+    fn serialized_length(&self) -> usize {
+        T::serialized_length(*self)
+    }
+}
+
+/// Decodes a key payload after its fixed prefix has been checked and removed.
+pub trait DecodeStatKey<C: Stat + ?Sized> {
+    fn decode(bytes: &mut &[u8]) -> crate::Result<Self>
+    where
+        Self: Sized;
+}
+
 /// Encoding of a materialized statistic value, distinct from a pending merge operand.
 pub trait StatValueCodec {
     fn serialized_len(&self) -> usize;
@@ -95,6 +152,20 @@ pub trait StatMergeValueCodec {
     fn deserialize_from(bytes: &[u8]) -> crate::Result<Self>
     where
         Self: Sized;
+}
+
+impl<'a, C> KeyDecoder<'a, C, 0> {
+    pub fn try_full_decode<S>(mut self) -> Result<C, StorageError>
+    where
+        C: DecodeStatKey<S>,
+        S: Stat,
+    {
+        let decoded = C::decode(&mut self.remaining)?;
+        if !self.remaining.is_empty() {
+            return Err(StorageError::DataIntegrityError);
+        }
+        Ok(decoded)
+    }
 }
 
 // ** Concrete Implementations for types **

@@ -34,6 +34,7 @@ use smallvec::SmallVec;
 use strum::{EnumCount, VariantArray};
 
 use restate_storage_api::StorageError;
+use restate_storage_api::vqueue_table::metadata::VQueueStatistics;
 use restate_storage_api::vqueue_table::{Stage, Status};
 
 use crate::stats::{StatKind, StatMergeValueCodec, StatValueCodec};
@@ -272,6 +273,15 @@ impl<B: Copy> BucketedGauge<B> {
     }
 }
 
+impl<B> IntoIterator for BucketedGauge<B> {
+    type Item = (B, u64);
+    type IntoIter = smallvec::IntoIter<[(B, u64); 6]>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.buckets.into_iter()
+    }
+}
+
 impl<B: GaugeBucket> StatValueCodec for BucketedGauge<B> {
     fn serialized_len(&self) -> usize {
         self.buckets.len() * (B::ENCODED_LEN + size_of::<u64>())
@@ -422,9 +432,77 @@ impl<B: GaugeBucket> Aggregate for BucketedGaugeAggregation<B> {
 }
 
 pub type StageCounts = BucketedGauge<Stage>;
+
+impl From<&VQueueStatistics> for StageCounts {
+    fn from(stats: &VQueueStatistics) -> Self {
+        Self {
+            buckets: [
+                (Stage::Inbox, stats.num_inbox()),
+                (Stage::Running, stats.num_running()),
+                (Stage::Suspended, stats.num_suspended()),
+                (Stage::Paused, stats.num_paused()),
+                (Stage::Finished, stats.num_finished()),
+            ]
+            .into_iter()
+            .filter(|(_, count)| *count != 0)
+            .collect(),
+        }
+    }
+}
+
 pub type StageStatusCounts = BucketedGauge<StageStatus>;
 pub type StageGauge = BucketedGaugeAggregation<Stage>;
 pub type StageStatusGauge = BucketedGaugeAggregation<StageStatus>;
+
+pub(crate) struct BucketedGaugeUpdate {
+    bytes: [u8; 2 * (StageStatus::ENCODED_LEN + size_of::<i64>())],
+    len: usize,
+}
+
+impl BucketedGaugeUpdate {
+    fn single<B: GaugeBucket>(bucket: B, delta: i64) -> Self {
+        let mut update = Self {
+            bytes: [0; 2 * (StageStatus::ENCODED_LEN + size_of::<i64>())],
+            len: 0,
+        };
+        update.push(bucket, delta);
+        update
+    }
+
+    fn transition<B: GaugeBucket>(old_bucket: B, new_bucket: B) -> Self {
+        debug_assert_ne!(old_bucket, new_bucket);
+        let mut update = Self::single(old_bucket, -1);
+        update.push(new_bucket, 1);
+        update
+    }
+
+    fn push<B: GaugeBucket>(&mut self, bucket: B, delta: i64) {
+        let mut target = &mut self.bytes[self.len..];
+        bucket.encode(&mut target);
+        target.put_i64(delta);
+        self.len += B::ENCODED_LEN + size_of::<i64>();
+    }
+}
+
+impl AsRef<[u8]> for BucketedGaugeUpdate {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
+impl<B: GaugeBucket> BucketedGaugeAggregation<B> {
+    pub(crate) fn increment(bucket: B) -> BucketedGaugeUpdate {
+        BucketedGaugeUpdate::single(bucket, 1)
+    }
+
+    pub(crate) fn decrement(bucket: B) -> BucketedGaugeUpdate {
+        BucketedGaugeUpdate::single(bucket, -1)
+    }
+
+    pub(crate) fn transition(old_bucket: B, new_bucket: B) -> BucketedGaugeUpdate {
+        BucketedGaugeUpdate::transition(old_bucket, new_bucket)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -571,5 +649,21 @@ mod tests {
                 .unwrap(),
             );
         }
+    }
+
+    #[test]
+    fn update_encoding_carries_both_sides_of_a_transition() {
+        let update = StageStatusGauge::transition(
+            StageStatus::new(Stage::Inbox, Status::New),
+            StageStatus::new(Stage::Running, Status::Started),
+        );
+        let decoded = BucketedGaugeOp::<StageStatus>::deserialize_from(update.as_ref()).unwrap();
+        assert_eq!(
+            decoded.buckets.as_slice(),
+            &[
+                (StageStatus::new(Stage::Inbox, Status::New), -1),
+                (StageStatus::new(Stage::Running, Status::Started), 1),
+            ]
+        );
     }
 }

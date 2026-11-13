@@ -50,6 +50,10 @@
 
 use restate_util_string::ReString;
 
+mod active;
+
+pub(crate) use active::{DEFINITIONS, Family, IndexDefinition, MaintainedIndexes};
+
 /// The first index ID the registry issues. Lower IDs belong to the static
 /// index (1–7) and statistic (1–3) identities that predate the registry.
 ///

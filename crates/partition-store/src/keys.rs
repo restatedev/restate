@@ -174,6 +174,7 @@ mod fields;
 // keys; until a table does, only its tests use parts of it.
 #[allow(dead_code)]
 pub mod header;
+mod index;
 mod key_decoder;
 mod legacy_codec;
 #[allow(unused_macros, unused_imports)]
@@ -201,6 +202,7 @@ pub mod codecs {
     };
 }
 
+pub use index::{IndexKeyHeader, IndexKeyPrefix};
 pub use key_decoder::KeyDecoder;
 
 use std::mem;
@@ -288,6 +290,10 @@ pub enum KeyKind {
     // the records referencing them
     Blob,
 
+    /// Secondary indexes
+    /// All secondary indexes are stored under a single key kind.
+    SecondaryIndex,
+
     /// Partition-level statistics: aggregate indexes keyed by the index registry's
     /// `u32` index ID (see `crate::stats`).
     Stats,
@@ -361,6 +367,9 @@ impl KeyKind {
             KeyKind::VQueueFinishedStage => b"qF",
             KeyKind::Blob => b"bl",
 
+            // xI prefix for secondary indexes
+            KeyKind::SecondaryIndex => b"xI",
+
             // Partition-level statistics; they are rebuilt on partition split.
             KeyKind::Stats => b"zR",
             KeyKind::LegacyStats => b"zS",
@@ -408,6 +417,7 @@ impl KeyKind {
             b"qS" => Some(KeyKind::VQueueSuspendedStage),
             b"qP" => Some(KeyKind::VQueuePausedStage),
             b"qF" => Some(KeyKind::VQueueFinishedStage),
+            b"xI" => Some(KeyKind::SecondaryIndex),
             b"zR" => Some(KeyKind::Stats),
             b"zS" => Some(KeyKind::LegacyStats),
             _ => None,

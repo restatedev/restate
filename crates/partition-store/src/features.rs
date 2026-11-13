@@ -10,6 +10,7 @@
 
 mod aggregated_status_stats;
 mod index_registry;
+mod indexes_v1;
 mod scoped_promise_migration;
 mod scoped_state_migration;
 mod state_promise_migration_combined;
@@ -98,6 +99,15 @@ storage_features! {
     ///
     /// Since v1.8.2
     pub TrackStatusGauges,
+
+    /// Maintains the busy-vqueue index in the same transaction as vqueue writes.
+    /// Queues written before the feature was enabled are not backfilled, so the
+    /// index can be incomplete. The entry indexes are registered instead
+    /// (`crate::vqueue_table::ENTRY_INDEXES`); keys under their static IDs from
+    /// before the registry are not read.
+    ///
+    /// Since v1.8.2
+    pub IndexesV1,
 
     /// The store holds the index and statistics registry (`crate::registry`): the
     /// tokens in entry-status headers and the keys of registered indexes. Persisted
@@ -220,7 +230,7 @@ impl LoadedStorageFeatures {
     /// entry and, when higher, the minimum Restate version. The registry state the
     /// fence protects must be written in the same batch. Call `mark_persisted`
     /// once the batch commits. Returns whether anything was added.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Consumed when the registry is reconciled at open.
     pub(crate) fn append_registry_fence(
         &mut self,
         current_version: &SemanticRestateVersion,
@@ -735,7 +745,7 @@ mod tests {
         let current_version = SemanticRestateVersion::new(2, 0, 0);
         let features =
             LoadedStorageFeatures::load(None, StorageVersion::V1_5, &current_version).unwrap();
-        let config = Configuration::default();
+        let mut config = Configuration::default();
 
         assert_eq!(
             features.automatic_changes(&config, &current_version, false),
@@ -751,7 +761,10 @@ mod tests {
             ]
         );
 
-        // The retired legacy feature never changes automatically.
+        // The status-gauge options control registered instances, not the
+        // retired legacy feature.
+        config.common.experimental.set_track_status_gauges(true);
+        config.common.experimental.set_status_gauges_reset(true);
         for empty in [false, true] {
             assert!(
                 !features
@@ -773,7 +786,8 @@ mod tests {
             LoadedStorageFeatures::load(Some(persisted), StorageVersion::V1_5, &version).unwrap();
         // Opening detects the marker, and deletes it with the legacy gauges.
         assert!(reloaded.enabled().is_track_status_gauges);
-        let config = Configuration::default();
+        let mut config = Configuration::default();
+        config.common.experimental.set_track_status_gauges(true);
         for (features, empty) in [(&features, true), (&reloaded, false)] {
             assert!(
                 !features
@@ -784,10 +798,35 @@ mod tests {
     }
 
     #[test]
+    fn indexes_v1_activation_respects_versions_and_opt_in() {
+        let mut config = Configuration::default();
+        for (version, opt_in, expected) in [
+            ("1.8.1", true, false),
+            ("1.8.2-dev", false, false),
+            ("1.8.2-dev", true, true),
+            ("1.8.2", true, true),
+            ("1.9.0", true, true),
+        ] {
+            let version = SemanticRestateVersion::parse(version).unwrap();
+            config.common.experimental.set_indexes_v1(opt_in);
+            let features =
+                LoadedStorageFeatures::load(None, StorageVersion::V1_5, &version).unwrap();
+            assert_eq!(
+                features
+                    .automatic_changes(&config, &version, false)
+                    .contains(&KnownStorageFeature::IndexesV1),
+                expected,
+                "version={version}, opt_in={opt_in}",
+            );
+        }
+    }
+
+    #[test]
     fn query_storage_floors_accept_release_candidates_and_preserve_higher_barriers() {
         let candidate = SemanticRestateVersion::parse("1.8.2-dev").unwrap();
         for feature in [
             KnownStorageFeature::TrackStatusGauges,
+            KnownStorageFeature::IndexesV1,
             KnownStorageFeature::IndexRegistry,
         ] {
             assert_eq!(feature.min_required_version(), &candidate);
@@ -796,6 +835,7 @@ mod tests {
         let mut features =
             LoadedStorageFeatures::load(None, StorageVersion::None, &candidate).unwrap();
         features.set_enabled::<TrackStatusGaugesFeature>(Some(&candidate));
+        features.set_enabled::<IndexesV1Feature>(Some(&candidate));
         features.set_enabled::<IndexRegistryFeature>(Some(&candidate));
         let persisted = features.ledger().clone();
         assert!(

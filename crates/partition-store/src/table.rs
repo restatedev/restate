@@ -52,37 +52,47 @@ use crate::keys::KeyDecoder;
 use crate::keys::header::{KeyHeader, KeySchema};
 use crate::keys::selection::{KeyMatch, KeySelection, KeySelectionCursor};
 use crate::query_read::SnapshotCursor;
-use crate::registry::IndexKind;
+use crate::registry::{IndexKind, IndexNotReady, MaintainedIndexes};
 use crate::{ReadSnapshot, Result};
 
 /// What a read may touch: the partition, the storage features in force and where
-/// the IDs of registered indexes are resolved, all as captured when the snapshot
-/// was admitted.
+/// the IDs of registered indexes are resolved. A snapshot read uses the features
+/// and the registry captured when the snapshot was admitted; a store read uses
+/// the features in force and the store's installed index set.
 pub struct ReadMetadata<'a> {
     pub(crate) partition: &'a Partition,
     pub(crate) features: StorageFeatures,
-    #[allow(dead_code)] // Read by `ready_index`.
     pub(crate) indexes: IndexSource<'a>,
 }
 
 /// Where a read resolves the index IDs of registered indexes.
-// Resolved by the key headers of registered indexes.
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(crate) enum IndexSource<'a> {
     /// The registry as of the read's snapshot, so the ID and readiness match the
     /// data it reads.
     Snapshot(&'a ReadSnapshot),
+    /// The store's installed indexes, for reads that are not snapshot-bound.
+    #[allow(dead_code)] // Used by reads that are not snapshot-bound.
+    Store(&'a MaintainedIndexes),
 }
 
 impl ReadMetadata<'_> {
     /// The index ID of the Ready index of `definition` this read may use.
     /// Anything else fails with [`crate::registry::IndexNotReady`]: an incomplete index is never
     /// read as complete.
-    #[allow(dead_code)] // Called by the key headers of registered indexes.
     pub(crate) fn ready_index(&self, definition: &str, kind: IndexKind) -> Result<u32> {
         match self.indexes {
             IndexSource::Snapshot(snapshot) => snapshot.ready_index(definition, kind),
+            IndexSource::Store(active) => active.ready_index(definition, kind).map_err(|reason| {
+                StorageError::Generic(
+                    IndexNotReady {
+                        definition: definition.into(),
+                        partition: self.partition.partition_id,
+                        reason,
+                    }
+                    .into(),
+                )
+            }),
         }
     }
 }

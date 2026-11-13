@@ -131,25 +131,25 @@ mod tests {
                 bytes.put_i64(delta);
                 bytes
             };
-            db.merge(&key, operand(3)).unwrap();
+            db.merge(key.as_slice(), operand(3)).unwrap();
             db.flush().unwrap();
-            db.merge(&key, operand(-1)).unwrap();
-            db.merge(&key, operand(1)).unwrap();
+            db.merge(key.as_slice(), operand(-1)).unwrap();
+            db.merge(key.as_slice(), operand(1)).unwrap();
             db.flush().unwrap();
             db.compact_range_opt(None::<&[u8]>, None::<&[u8]>, &compact);
 
-            assert_eq!(db.get(&key).unwrap().unwrap(), operand(3));
-            db.merge(&key, operand(-3)).unwrap();
+            assert_eq!(db.get(key.as_slice()).unwrap().unwrap(), operand(3));
+            db.merge(key.as_slice(), operand(-3)).unwrap();
             db.flush().unwrap();
             // One pass may materialize the merged zero; a later pass filters it.
             for _ in 0..2 {
                 db.compact_range_opt(None::<&[u8]>, None::<&[u8]>, &compact);
             }
-            assert!(db.get(&key).unwrap().is_none());
+            assert!(db.get(key.as_slice()).unwrap().is_none());
 
             // A reclaimed zero must behave like the default base for new updates.
-            db.merge(&key, operand(1)).unwrap();
-            assert_eq!(db.get(&key).unwrap().unwrap(), operand(1));
+            db.merge(key.as_slice(), operand(1)).unwrap();
+            assert_eq!(db.get(key.as_slice()).unwrap().unwrap(), operand(1));
         }
 
         // A retired statistics key with pending operands must not fail compaction:
