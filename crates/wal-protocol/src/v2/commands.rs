@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 
 pub use restate_storage_api::vqueue_table::scheduler::SchedulerDecisionsCommand;
 use restate_types::{
-    bilrost_storage_encode_decode, flexbuffers_storage_encode_decode,
+    bilrost_storage_encode_decode,
+    blob::BlobId,
+    flexbuffers_storage_encode_decode,
     identifiers::{EntryIndex, InvocationId, WithInvocationId, WithPartitionKey},
     invocation::{self, JournalCompletionTarget, ResponseResult},
     logs::{HasRecordKeys, Keys},
@@ -23,7 +25,10 @@ use restate_types::{
 use super::sealed::Sealed;
 use super::{Command, CommandKind};
 pub use crate::control::UpsertRuleBookCommand;
-use crate::{timer, v2::OutboxMessage};
+use crate::{
+    timer,
+    v2::outbox::{OutboxKind, OutboxMessage},
+};
 // Re-epxort vqueues commands
 pub use crate::invocation::PauseInvocationCommand;
 pub use crate::vqueues::{VQueuesPauseCommand, VQueuesResumeCommand};
@@ -80,6 +85,8 @@ impl WithPartitionKey for TerminateInvocationCommand {
 }
 
 impl OutboxMessage for TerminateInvocationCommand {
+    const KIND: OutboxKind = OutboxKind::TerminateInvocation;
+
     fn into_outbox_message(self) -> restate_storage_api::outbox_table::OutboxMessage {
         restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(self.0)
     }
@@ -149,6 +156,8 @@ impl WithPartitionKey for InvokeCommand {
     }
 }
 impl OutboxMessage for InvokeCommand {
+    const KIND: OutboxKind = OutboxKind::Invoke;
+
     fn into_outbox_message(self) -> restate_storage_api::outbox_table::OutboxMessage {
         restate_storage_api::outbox_table::OutboxMessage::ServiceInvocation(Box::new(self.0))
     }
@@ -162,6 +171,26 @@ pub struct TruncateOutboxCommand {
 }
 
 bilrost_storage_encode_decode!(TruncateOutboxCommand);
+
+/// A blob reference held by the outbox message at `index`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bilrost::Message)]
+pub struct OutboxBlobRelease {
+    #[bilrost(1)]
+    pub index: MessageIndex,
+    #[bilrost(2)]
+    pub blob: BlobId,
+}
+
+/// Releases the blob references of shuffled outbox messages. Releases are in ascending
+/// outbox index order; indexes at or below the last released index are ignored, which
+/// makes re-proposals by a new leader idempotent.
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct ReleaseOutboxBlobsCommand {
+    #[bilrost(1)]
+    pub releases: Vec<OutboxBlobRelease>,
+}
+
+bilrost_storage_encode_decode!(ReleaseOutboxBlobsCommand);
 
 #[derive(
     Clone,
@@ -190,6 +219,8 @@ impl WithPartitionKey for AttachInvocationCommand {
 }
 
 impl OutboxMessage for AttachInvocationCommand {
+    const KIND: OutboxKind = OutboxKind::AttachInvocation;
+
     fn into_outbox_message(self) -> restate_storage_api::outbox_table::OutboxMessage {
         restate_storage_api::outbox_table::OutboxMessage::AttachInvocation(self.0)
     }
@@ -315,6 +346,8 @@ impl WithPartitionKey for InvocationResponseCommand {
 }
 
 impl OutboxMessage for InvocationResponseCommand {
+    const KIND: OutboxKind = OutboxKind::InvocationResponse;
+
     fn into_outbox_message(self) -> restate_storage_api::outbox_table::OutboxMessage {
         restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(self.0)
     }
@@ -383,6 +416,8 @@ impl WithPartitionKey for NotifySignalCommand {
 }
 
 impl OutboxMessage for NotifySignalCommand {
+    const KIND: OutboxKind = OutboxKind::NotifySignal;
+
     fn into_outbox_message(self) -> restate_storage_api::outbox_table::OutboxMessage {
         restate_storage_api::outbox_table::OutboxMessage::NotifySignal(self.0)
     }
@@ -459,6 +494,11 @@ command! {
 command! {
     @kind=CommandKind::TruncateOutbox,
     @command=TruncateOutboxCommand
+}
+
+command! {
+    @kind=CommandKind::ReleaseOutboxBlobs,
+    @command=ReleaseOutboxBlobsCommand
 }
 
 command! {

@@ -33,9 +33,10 @@ use restate_types::vqueues::{Seq, VQueueId};
 use restate_types::{LimitKey, RestateVersion};
 use restate_util_string::ReString;
 
-use crate::Result;
+use crate::blob_table::ReadBlobTable;
 use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
+use crate::{Result, StorageError};
 
 /// Holds timestamps of the [`InvocationStatus`].
 #[derive(Debug, Clone, PartialEq)]
@@ -824,6 +825,19 @@ impl ResponseResultRef {
             Self::Success(_) => ExitStatus::Success,
             Self::Failure(err) => ExitStatus::Failure((err.code, Some(err.message.clone()))),
             Self::Completed(status) => ExitStatus::from(status),
+        }
+    }
+
+    pub async fn resolve<S: ReadBlobTable>(
+        &self,
+        storage: &mut S,
+    ) -> Result<Option<ResponseResult>, StorageError> {
+        match self {
+            Self::Success(bytes) => Ok(Some(ResponseResult::Success(bytes.clone()))),
+            Self::Failure(err) => Ok(Some(ResponseResult::Failure(err.clone()))),
+            Self::Completed(CompletedResult { blob_id, .. }) => {
+                storage.get_blob::<ResponseResult>(*blob_id).await
+            }
         }
     }
 }

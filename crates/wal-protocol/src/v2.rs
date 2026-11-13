@@ -10,7 +10,7 @@
 
 pub mod commands;
 mod compatibility;
-mod markers;
+pub mod outbox;
 
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -30,7 +30,6 @@ use restate_types::storage::{
 use restate_util_string::ReString;
 
 use crate::v1;
-pub use markers::OutboxMessage;
 
 mod sealed {
     pub trait Sealed {}
@@ -71,7 +70,8 @@ impl Header {
             | CommandKind::VersionBarrier
             | CommandKind::UpsertSchema
             | CommandKind::UpsertRuleBook
-            | CommandKind::TruncateOutbox => CommandScope::PartitionScoped,
+            | CommandKind::TruncateOutbox
+            | CommandKind::ReleaseOutboxBlobs => CommandScope::PartitionScoped,
             CommandKind::VQSchedulerDecisions
             | CommandKind::VQueuesPause
             | CommandKind::VQueuesResume
@@ -405,6 +405,11 @@ pub enum CommandKind {
     // * This command was _never_ produced by production code.
     //
     // __RESERVED__ PurgeVQueueMeta = 26,
+    /// Release the blob references held by outbox messages that have been
+    /// shuffled to their destination partitions.
+    /// payload is bilrost encoded [`commands::ReleaseOutboxBlobsCommand`]
+    /// *Since v1.8.0
+    ReleaseOutboxBlobs = 27,
 }
 
 impl From<CommandKind> for u16 {
@@ -443,6 +448,7 @@ impl TryFrom<u16> for CommandKind {
             23 => Self::VQueuesPause,
             24 => Self::VQueuesResume,
             25 => Self::PauseInvocation,
+            27 => Self::ReleaseOutboxBlobs,
             other => {
                 return Err(ConversionError::unexpected_enum_variant(
                     "CommandKind",

@@ -143,6 +143,12 @@ pub(crate) mod fsm_variable {
     ///
     /// *Since v1.8.2*
     pub(crate) const FSM_POSITION: u64 = 13;
+
+    /// The highest outbox message index whose blob reference has been released.
+    /// Used to deduplicate blob releases re-proposed after a leadership change.
+    ///
+    /// *Since v1.8.0*
+    pub(crate) const RELEASED_OUTBOX_BLOB_INDEX: u64 = 14;
 }
 
 fn get<T: PartitionStoreProtobufValue, S: StorageAccess>(
@@ -521,6 +527,14 @@ impl ReadFsmTable for PartitionDb {
             .map(|opt| opt.map(Into::into).unwrap_or_default())
     }
 
+    async fn get_released_outbox_blob_index(&mut self) -> Result<Option<MessageIndex>> {
+        get_proto_from_partition_db::<SequenceNumber>(
+            self,
+            fsm_variable::RELEASED_OUTBOX_BLOB_INDEX,
+        )
+        .map(|opt| opt.map(Into::into))
+    }
+
     async fn get_applied_lsn(&mut self) -> Result<Option<Lsn>> {
         read_applied_lsn(self, rocksdb::ReadTier::All)
     }
@@ -568,6 +582,15 @@ impl ReadFsmTable for PartitionStore {
     async fn get_outbox_seq_number(&mut self) -> Result<MessageIndex> {
         get::<SequenceNumber, _>(self, self.partition_id(), fsm_variable::OUTBOX_SEQ_NUMBER)
             .map(|opt| opt.map(Into::into).unwrap_or_default())
+    }
+
+    async fn get_released_outbox_blob_index(&mut self) -> Result<Option<MessageIndex>> {
+        get::<SequenceNumber, _>(
+            self,
+            self.partition_id(),
+            fsm_variable::RELEASED_OUTBOX_BLOB_INDEX,
+        )
+        .map(|opt| opt.map(Into::into))
     }
 
     async fn get_applied_lsn(&mut self) -> Result<Option<Lsn>> {
@@ -651,6 +674,15 @@ impl WriteFsmTable for PartitionStoreTransaction<'_> {
             self.partition_id(),
             fsm_variable::OUTBOX_SEQ_NUMBER,
             &SequenceNumber::from(seq_number),
+        )
+    }
+
+    fn put_released_outbox_blob_index(&mut self, index: MessageIndex) -> Result<()> {
+        put(
+            self,
+            self.partition_id(),
+            fsm_variable::RELEASED_OUTBOX_BLOB_INDEX,
+            &SequenceNumber::from(index),
         )
     }
 

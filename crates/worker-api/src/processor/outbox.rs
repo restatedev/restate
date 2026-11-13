@@ -9,8 +9,10 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::StorageError;
+use restate_storage_api::blob_table::WriteBlobTable;
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
+use restate_types::blob::BlobId;
 use restate_types::message::MessageIndex;
 
 /// Read access to the partition outbox — the queue of messages destined for other partitions
@@ -46,6 +48,16 @@ pub trait OutboxMut: OutboxAccess {
     fn enqueue<S>(&mut self, txn: &mut S, message: &OutboxMessage) -> Result<(), StorageError>
     where
         S: WriteOutboxTable + WriteFsmTable;
+
+    /// Release the blob references held by shuffled outbox messages. `releases` must be in
+    /// ascending index order. Releases at or below the last released index are ignored.
+    fn release_blobs<S>(
+        &mut self,
+        txn: &mut S,
+        releases: impl IntoIterator<Item = (MessageIndex, BlobId)>,
+    ) -> Result<(), StorageError>
+    where
+        S: WriteBlobTable + WriteFsmTable;
 }
 
 // -- Boilerplate --
@@ -101,5 +113,17 @@ impl<T: OutboxMut> OutboxMut for &mut T {
         S: WriteOutboxTable + WriteFsmTable,
     {
         (**self).enqueue(txn, message)
+    }
+
+    #[inline]
+    fn release_blobs<S>(
+        &mut self,
+        txn: &mut S,
+        releases: impl IntoIterator<Item = (MessageIndex, BlobId)>,
+    ) -> Result<(), StorageError>
+    where
+        S: WriteBlobTable + WriteFsmTable,
+    {
+        (**self).release_blobs(txn, releases)
     }
 }

@@ -279,7 +279,7 @@ message InvocationStatusV2 {
   // Reference to where the completed output is stored. Required when
   // completion_status is set; must be unset otherwise.
   oneof output_ref {
-    // Binary-encoded BaseBlobId
+    // Binary-encoded BlobId
     bytes blob_id = 39;
   }
 

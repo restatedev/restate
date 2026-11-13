@@ -119,6 +119,7 @@ fn cost_multiplier(flow: SelfProposerSchedulerFlow) -> u32 {
         SelfProposerSchedulerFlow::Invoker
         | SelfProposerSchedulerFlow::Timer
         | SelfProposerSchedulerFlow::Shuffle
+        | SelfProposerSchedulerFlow::ShuffleBlobRelease
         | SelfProposerSchedulerFlow::UpsertSchema
         | SelfProposerSchedulerFlow::UpsertRuleBook
         | SelfProposerSchedulerFlow::NetworkService
@@ -632,6 +633,7 @@ mod tests {
         // Consume the rest of the flows
         for expected_flow in [
             SelfProposerSchedulerFlow::Shuffle,
+            SelfProposerSchedulerFlow::ShuffleBlobRelease,
             SelfProposerSchedulerFlow::Cleaner,
             SelfProposerSchedulerFlow::UpsertSchema,
             SelfProposerSchedulerFlow::UpsertRuleBook,
@@ -700,6 +702,7 @@ mod tests {
         // Consume the rest of the flows
         for expected_flow in [
             SelfProposerSchedulerFlow::Shuffle,
+            SelfProposerSchedulerFlow::ShuffleBlobRelease,
             SelfProposerSchedulerFlow::Cleaner,
             SelfProposerSchedulerFlow::UpsertSchema,
             SelfProposerSchedulerFlow::UpsertRuleBook,

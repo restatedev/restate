@@ -1092,6 +1092,58 @@ async fn end_marker_on_kill_and_failure() -> TestResult {
     Ok(())
 }
 
+/// With the output table, an invocation without completion retention nor partition processor
+/// sinks doesn't store an output blob, but its ingress callers must still get the response.
+#[test(restate_core::test)]
+async fn ingress_response_without_retention_with_write_blob_table() -> TestResult {
+    let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+        PartitionFeatureChange::EnableWriteBlobTable,
+    ]))
+    .await;
+
+    let invocation_id = InvocationId::mock_generate(&InvocationTarget::mock_service());
+    let request_id = PartitionProcessorRpcRequestId::default();
+    let error = InvocationError::new(codes::INTERNAL, "boom");
+    let actions = test_env
+        .apply_multiple([
+            commands::InvokeCommand::test_envelope(ServiceInvocation {
+                invocation_id,
+                invocation_target: InvocationTarget::mock_service(),
+                response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
+                completion_retention_duration: Duration::ZERO,
+                journal_retention_duration: Duration::ZERO,
+                ..ServiceInvocation::mock()
+            }),
+            fixtures::pinned_deployment(invocation_id, ServiceProtocolVersion::V5),
+            commands::InvokerEffectCommand::test_envelope(Effect {
+                invocation_id,
+                kind: InvokerEffectKind::Failed(error.clone()),
+            }),
+        ])
+        .await;
+
+    assert_that!(
+        actions,
+        contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                request_id: eq(request_id),
+                response: eq(InvocationOutputResponse::Failure(error))
+            })))
+        }))
+    );
+    assert_that!(
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await?,
+        pat!(InvocationStatus::Free)
+    );
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
 #[test(restate_core::test)]
 async fn clear_all_user_states() -> anyhow::Result<()> {
     let mut test_env = TestEnv::create().await;
