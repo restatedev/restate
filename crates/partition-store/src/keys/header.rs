@@ -49,6 +49,7 @@ use restate_types::identifiers::PartitionKey;
 use restate_types::sharding::{KeyRange, PartitionId};
 
 use crate::scan::{PhysicalScan, TableScan};
+use crate::table::ReadMetadata;
 use crate::{Result, ScanMode};
 
 use super::selection::{KeySelection, OrderedKeySchema, PreparedFieldPredicate};
@@ -94,6 +95,10 @@ pub trait KeyHeader: 'static {
 
     const KEY_KIND: KeyKind;
     const LENGTH: usize;
+
+    /// The scope a read covers on its partition. Layouts keyed by a registered
+    /// index resolve it here and fail when the read must not use the index.
+    fn scope(metadata: &ReadMetadata<'_>) -> Result<Self::Scope>;
 
     /// The byte bounds of `scope`, in the header's on-disk layout; `None` means
     /// the scope is empty. A prefix fixes one complete header of exactly `LENGTH`
@@ -242,6 +247,10 @@ impl<K: EncodeTableKeyPrefix + 'static> KeyHeader for PartitionKeyHeader<K> {
 
     const KEY_KIND: KeyKind = K::KEY_KIND;
     const LENGTH: usize = KeyKind::SERIALIZED_LENGTH + size_of::<u64>();
+
+    fn scope(metadata: &ReadMetadata<'_>) -> Result<KeyRange> {
+        Ok(metadata.partition.key_range)
+    }
 
     fn bounds(scope: KeyRange) -> Option<HeaderBounds> {
         (scope.start() <= scope.end())
