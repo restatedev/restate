@@ -113,6 +113,10 @@ pub struct PhysicalPartition {
     durable_lsn: watch::Sender<Lsn>,
     archived_lsn: watch::Sender<Option<Lsn>>,
     notifications: Arc<DurableLsnSenders>,
+    /// The registry indexes maintained on entry writes, as reconciled when the
+    /// partition was opened. Shared by every session and clone, so no handle keeps
+    /// a stale set.
+    maintained_indexes: parking_lot::RwLock<Option<Arc<crate::registry::MaintainedIndexes>>>,
     // Looked up once, when the partition is first opened, and shared by every
     // session. Last, because it holds the keep-alive of the database.
     cfs: CfHandles<KeyKind>,
@@ -156,6 +160,7 @@ impl PartitionDb {
                 durable_lsn: watch::Sender::new(Lsn::INVALID),
                 archived_lsn,
                 notifications: database.notifications,
+                maintained_indexes: Default::default(),
                 cfs,
             },
         );
@@ -178,6 +183,29 @@ impl PartitionDb {
 
     pub fn partition(&self) -> &Arc<Partition> {
         &self.physical().meta
+    }
+
+    /// The installed maintained indexes; see [`Self::install_maintained_indexes`].
+    pub(crate) fn maintained_indexes(&self) -> Option<Arc<crate::registry::MaintainedIndexes>> {
+        self.physical().maintained_indexes.read().clone()
+    }
+
+    /// Installs the maintained indexes for every session and handle of this partition.
+    pub(crate) fn install_maintained_indexes(
+        &self,
+        maintained_indexes: Arc<crate::registry::MaintainedIndexes>,
+    ) {
+        *self.physical().maintained_indexes.write() = Some(maintained_indexes);
+    }
+
+    /// Puts back the maintained indexes read with [`Self::maintained_indexes`].
+    #[allow(dead_code)] // Consumed when the registry is reconciled at open.
+    #[cfg(test)]
+    pub(crate) fn restore_maintained_indexes(
+        &self,
+        maintained_indexes: Option<Arc<crate::registry::MaintainedIndexes>>,
+    ) {
+        *self.physical().maintained_indexes.write() = maintained_indexes;
     }
 
     pub fn rocksdb(&self) -> &Arc<RocksDb> {

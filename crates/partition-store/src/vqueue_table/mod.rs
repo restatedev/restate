@@ -11,34 +11,13 @@
 mod entry;
 mod inbox;
 mod inbox_reader;
+mod index;
 mod input;
 mod key_codec;
 mod metadata;
 mod reader;
 mod running_reader;
-impl crate::ReadSnapshot {
-    /// Reads queue metadata from the admitted snapshot on the caller's thread.
-    pub fn map_vqueue_meta_blocking<R>(
-        &self,
-        qid: &VQueueId,
-        f: impl FnOnce(&VQueueMetaRef<'_>) -> R,
-    ) -> Result<Option<R>> {
-        let mut key = [0u8; MetaKey::serialized_length_fixed()];
-        MetaKeyRef::builder()
-            .qid(qid)
-            .serialize_to(&mut key.as_mut());
-        self.check_active()?;
-        let reader = self.storage_snapshot().reader();
-        let Some(value) = reader
-            .get_pinned(KeyKind::VQueueMeta, &key)
-            .map_err(|error| StorageError::Generic(error.into()))?
-        else {
-            return Ok(None);
-        };
-        Ok(Some(f(&VQueueMetaRef::decode_borrowed(value.as_ref())?)))
-    }
-}
-
+mod stats;
 #[cfg(test)]
 mod touched_by_tests;
 
@@ -47,8 +26,15 @@ use std::pin::Pin;
 
 pub use entry::{EntryStatusKey, EntryStatusKeyRef};
 pub use inbox::InboxKey;
+#[allow(unused_imports)] // The families are registered when the store opens.
+pub(crate) use index::{
+    ENTRY_BY_STAGE, ENTRY_BY_STAGE_SERVICE, ENTRY_BY_VIRTUAL_OBJECT_STAGE, ENTRY_INDEXES,
+    ENTRY_NEXT_AT_BY_STAGE, ENTRY_NEXT_AT_BY_STAGE_SERVICE, ENTRY_NEXT_AT_BY_VIRTUAL_OBJECT_STAGE,
+};
 pub use input::InputPayloadKey;
 pub use metadata::*;
+#[allow(unused_imports)] // The families are registered when the store opens.
+pub(crate) use stats::{DEPLOYMENT_STATS, SERVICE_STATS, STATUS_GAUGES, VIRTUAL_OBJECT_STATS};
 
 use anyhow::Context;
 use bilrost::{BorrowedMessage, Message, OwnedMessage};
@@ -84,8 +70,8 @@ use crate::keys::{
 use crate::scan::TableScan;
 use crate::vqueue_table::input::InputPayloadKeyRef;
 use crate::{
-    PartitionDb, PartitionStore, PartitionStoreTransaction, Result, StorageAccess, StorageRead,
-    break_on_err,
+    PartitionDb, PartitionStore, PartitionStoreTransaction, ReadSnapshot, Result, StorageAccess,
+    StorageRead, break_on_err,
 };
 
 impl ScanVQueueTable for PartitionDb {
@@ -280,6 +266,15 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         };
 
         self.raw_put_cf(KeyKind::VQueueMeta, key_buffer, value_buf);
+        if self.storage_features().is_indexes_v1 {
+            index::on_vqueue_change(
+                self,
+                qid,
+                meta,
+                None,
+                Some(&index::VQueueIndexState::new(meta)),
+            );
+        }
     }
 
     fn update_vqueue(
@@ -297,11 +292,25 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
             (self.settings().vqueue_meta_full_write_probability * u64::MAX as f64) as u64;
 
         // Mutate the VQueue metadata
+        let old_index_state = self
+            .storage_features()
+            .is_indexes_v1
+            .then(|| index::VQueueIndexState::new(meta));
         let was_active_before = meta.is_active();
         let should_write_full = restate_util_random::pseudo_random() < full_write_threshold
             || update.ts.saturating_sub_ms(meta.stats().last_modified_at()) > HOUR_MS;
         meta.apply_update(update);
         let is_active_now = meta.is_active();
+
+        if let Some(old) = old_index_state {
+            index::on_vqueue_change(
+                self,
+                qid,
+                meta,
+                Some(&old),
+                Some(&index::VQueueIndexState::new(meta)),
+            );
+        }
 
         // Update active queue index
         match (was_active_before, is_active_now) {
@@ -315,7 +324,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         }
 
         if meta.is_obsolete() {
-            self.delete_vqueue(qid);
+            self.delete_vqueue(qid, meta);
             VQueueDisposition::Purged
         } else {
             let key_buffer = MetaKey::from(qid).to_bytes();
@@ -342,7 +351,16 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         }
     }
 
-    fn delete_vqueue(&mut self, qid: &VQueueId) {
+    fn delete_vqueue(&mut self, qid: &VQueueId, meta: &VQueueMeta) {
+        if self.storage_features().is_indexes_v1 {
+            index::on_vqueue_change(
+                self,
+                qid,
+                meta,
+                Some(&index::VQueueIndexState::new(meta)),
+                None,
+            );
+        }
         // Cannot use single delete: the meta key is written once with put and
         // updated many times with merge afterwards.
         self.raw_delete_cf(KeyKind::VQueueMeta, MetaKey::from(qid).to_bytes());
@@ -476,6 +494,7 @@ impl PartitionStoreTransaction<'_> {
             );
         }
 
+        let active = self.maintained_indexes();
         if let Some(after) = change.after() {
             let header = RawStatusHeaderRef {
                 qid: context.qid.into(),
@@ -486,11 +505,8 @@ impl PartitionStoreTransaction<'_> {
                 metadata: after.metadata.into(),
                 stats: after.stats.clone(),
                 status: after.status,
-                // An update keeps the stored tokens until the registry maintains
-                // indexes; an insertion starts without tokens.
-                touched_by: change
-                    .stored_before()
-                    .map_or(&[][..], |before| before.touched_by().as_bytes()),
+                // Every write adopts the entry into each maintained index.
+                touched_by: active.touched_by_on_write(),
             };
             let header_len = header.encoded_len();
             let value_buf = self.cleared_value_buffer_mut(
@@ -504,6 +520,8 @@ impl PartitionStoreTransaction<'_> {
             // The status key is overwritten on transitions, so SingleDelete is invalid.
             self.raw_delete_cf(KeyKind::VQueueEntryStatus, key_buffer);
         }
+
+        active.apply(self, context, change, &key_buffer);
     }
 }
 
@@ -526,6 +544,18 @@ impl PartitionStoreTransaction<'_> {
             .map_or(&[][..], |header| header.touched_by.as_slice())
             == touched_by.as_bytes()
     }
+}
+
+/// Decodes a stored entry status, validating its tokens.
+#[allow(dead_code)] // Consumed when the registry is reconciled at open.
+pub(crate) fn decode_entry_status(
+    id: &BaseEntryId,
+    value: &[u8],
+) -> Result<restate_storage_api::vqueue_table::OwnedEntryStatusHeader, StorageError> {
+    Ok(entry_status_header_from_raw(
+        id,
+        RawStatusHeader::decode_stored(value)?,
+    ))
 }
 
 impl<'txn> ReadVQueueTable for PartitionStoreTransaction<'txn> {
@@ -681,6 +711,29 @@ impl ScanVQueueMetaTable for PartitionStore {
             .map_err(|_| StorageError::OperationalError)?;
 
         Ok(scan_fut.boxed())
+    }
+}
+
+impl ReadSnapshot {
+    /// Reads queue metadata from the admitted snapshot on the caller's thread.
+    pub fn map_vqueue_meta_blocking<R>(
+        &self,
+        qid: &VQueueId,
+        f: impl FnOnce(&VQueueMetaRef<'_>) -> R,
+    ) -> Result<Option<R>> {
+        let mut key = [0u8; MetaKey::serialized_length_fixed()];
+        MetaKeyRef::builder()
+            .qid(qid)
+            .serialize_to(&mut key.as_mut());
+        self.check_active()?;
+        let reader = self.storage_snapshot().reader();
+        let Some(value) = reader
+            .get_pinned(KeyKind::VQueueMeta, &key)
+            .map_err(|error| StorageError::Generic(error.into()))?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(f(&VQueueMetaRef::decode_borrowed(value.as_ref())?)))
     }
 }
 

@@ -1200,6 +1200,50 @@ experimental! {
     /// Since v1.8.2
     vqueue_orphaned_active_marker_removal,
 
+    /// # Status Gauges For VQueue Entries
+    ///
+    /// Maintains current stage/status counts for VQueue entries by service,
+    /// deployment, and virtual object. Counts include invocations and state
+    /// mutations, retaining completed entries until deletion. Each partition
+    /// counts the entries written from then on and backfills the entries that
+    /// existed before in the background; until that backfill completes, queries
+    /// of the statistics tables fail on that partition.
+    ///
+    /// Maintenance persists across restarts even if this flag is removed, unless
+    /// status gauges are explicitly reset. Statistics-table visibility is controlled
+    /// separately on the query coordinator.
+    ///
+    /// Since v1.8.2
+    track_status_gauges,
+
+    /// # Reset status gauges
+    ///
+    /// Deletes the local service, deployment, and virtual-object status gauges and
+    /// stops maintaining them when each partition starts. While enabled, this takes
+    /// precedence over the other status-gauge options, and statistics queries fail
+    /// on the partition. Statistics-table visibility is controlled independently
+    /// on the query coordinator.
+    ///
+    /// To rebuild the counts from retained VQueue entries, turn this option off,
+    /// turn `experimental-enable-track-status-gauges` on, and restart the nodes:
+    /// the gauges are registered again and backfilled in the background.
+    /// Invocation and VQueue entry data are preserved during reset.
+    ///
+    /// Since v1.8.2
+    status_gauges_reset,
+
+    /// # [WIP] Secondary Indexes for vqueue entries
+    ///
+    /// Maintains the six secondary indexes of VQueue entries for the entries
+    /// written from then on; entries that existed before are added by a background
+    /// backfill, and until it completes, reads of the entry indexes fail on that
+    /// partition. Also maintains the busy-vqueue index, which is not backfilled:
+    /// queues written before this option was enabled are missing from it.
+    /// Maintenance persists across restarts even if this flag is removed.
+    ///
+    /// Since v1.8.2
+    indexes_v1,
+
     /// # Enables service protocol v8
     ///
     /// Set to `true` to enable the experimental service protocol v8,
