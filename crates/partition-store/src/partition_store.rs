@@ -357,11 +357,17 @@ impl PartitionStore {
                 )
             })
             .unwrap_or_default();
-        let maintained_indexes = Arc::new(MaintainedIndexes::new(
-            &registry,
-            &walks,
-            crate::registry::DEFINITIONS,
-        ));
+        let (jobs, _) =
+            crate::registry::load_job_records(self.partition_db()).unwrap_or_else(|err| {
+                panic!(
+                    "the job records of partition {} are unreadable: {err}",
+                    self.partition_id()
+                )
+            });
+        let maintained_indexes = Arc::new(
+            MaintainedIndexes::new(&registry, &walks, crate::registry::DEFINITIONS)
+                .with_jobs(jobs, crate::job::DEFAULT_HISTORY_LIMIT),
+        );
         self.db
             .install_maintained_indexes(Arc::clone(&maintained_indexes));
         maintained_indexes
