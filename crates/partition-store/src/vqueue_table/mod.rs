@@ -13,21 +13,33 @@ mod inbox;
 mod inbox_reader;
 mod input;
 mod key_codec;
+mod meta_binding;
 mod metadata;
+mod read_cursor;
 mod reader;
 mod running_reader;
+mod stage_index;
+mod stage_reads;
 mod stats;
 #[cfg(test)]
 mod touched_by_tests;
 
 use std::num::NonZeroUsize;
+use std::ops::ControlFlow;
 use std::pin::Pin;
 
 pub use entry::{EntryStatusKey, EntryStatusKeyRef};
 pub use inbox::InboxKey;
 pub use input::InputPayloadKey;
+pub use meta_binding::{VQueueMetaBinding, VQueueMetaTable};
 pub use metadata::*;
-#[allow(unused_imports)] // The families are registered when the store opens.
+pub use read_cursor::{EntryStatusCursor, EntryStatusKeys, EntryStatusRecords, EntryStatusScan};
+pub use stage_index::{
+    FinishedIndexBinding, FinishedIndexTable, InboxIndexBinding, InboxIndexTable,
+    PausedIndexBinding, PausedIndexTable, RunningIndexBinding, RunningIndexTable,
+    SuspendedIndexBinding, SuspendedIndexTable,
+};
+pub use stage_reads::{StageReadCounters, StageReads};
 pub(crate) use stats::{DEPLOYMENT_STATS, SERVICE_STATS, STATUS_GAUGES, VIRTUAL_OBJECT_STATS};
 
 use anyhow::Context;
@@ -509,7 +521,6 @@ impl PartitionStoreTransaction<'_> {
 }
 
 /// Decodes a stored entry status, validating its tokens.
-#[allow(dead_code)] // Consumed when the registry is reconciled at open.
 pub(crate) fn decode_entry_status(
     id: &BaseEntryId,
     value: &[u8],
@@ -696,6 +707,33 @@ impl ReadSnapshot {
             return Ok(None);
         };
         Ok(Some(f(&VQueueMetaRef::decode_borrowed(value.as_ref())?)))
+    }
+
+    /// Scans or looks up entry-status records on the caller's thread. All reads
+    /// use this snapshot, including auxiliary lookups performed by the callback.
+    pub fn for_each_vqueue_entry_status_blocking(
+        &self,
+        filter: ScanEntryIdFilter,
+        mut emit: impl for<'a> FnMut(
+            &'a BaseEntryId,
+            &'a RawStatusHeaderRef<'a>,
+        ) -> ControlFlow<Result<()>>,
+    ) -> Result<()> {
+        use restate_storage_query_api::scan::{CursorStep, ReadCursor};
+
+        let mut cursor = self.entry_status_cursor(filter)?;
+        loop {
+            match cursor.advance()? {
+                CursorStep::Done => return Ok(()),
+                CursorStep::Skipped => {}
+                CursorStep::Record => {
+                    let (id, header) = cursor.current()?;
+                    if let ControlFlow::Break(result) = emit(&id, &header) {
+                        return result;
+                    }
+                }
+            }
+        }
     }
 }
 

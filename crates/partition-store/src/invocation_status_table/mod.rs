@@ -61,6 +61,11 @@ impl FixedLengthTableKey<{ InvocationStatusKey::serialized_length_fixed() }>
 /// the output payload into invocation-status!
 const INVOCATION_STATUS_MULTI_GET_BATCH_SIZE: NonZeroUsize = NonZeroUsize::new(25).unwrap();
 
+mod read_cursor;
+pub use read_cursor::{
+    InvocationStatusCursor, InvocationStatusKeys, InvocationStatusRecords, InvocationStatusScan,
+};
+
 #[inline]
 fn create_invocation_status_key(invocation_id: &InvocationId) -> InvocationStatusKey {
     InvocationStatusKey {
@@ -69,7 +74,9 @@ fn create_invocation_status_key(invocation_id: &InvocationId) -> InvocationStatu
     }
 }
 
-fn decode_invocation_status_lazy(mut value: &[u8]) -> Result<InvocationStatusV2Lazy<'_>> {
+pub(super) fn decode_invocation_status_lazy(
+    mut value: &[u8],
+) -> Result<InvocationStatusV2Lazy<'_>> {
     if value.is_empty() {
         return Err(StorageError::Conversion(
             StorageDecodeError::ReadingCodec(format_restring!(

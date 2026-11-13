@@ -164,6 +164,23 @@ impl ReadJournalEventsTable for PartitionStore {
     }
 }
 
+/// Decodes one stored event. Unknown event types decode as [`EventType::Unknown`].
+pub fn decode_event(key: JournalEventKey, value: &mut &[u8]) -> Result<(InvocationId, EventView)> {
+    let (pk, inv_uuid, event_type, timestamp, _) = key.split();
+    let stored_event = EventWrapper::decode(value)?.0;
+    Ok((
+        InvocationId::from_parts(pk, inv_uuid),
+        EventView {
+            event: RawEvent::new(
+                EventType::from_repr(event_type).unwrap_or(EventType::Unknown),
+                stored_event.content,
+            ),
+            after_journal_entry_index: stored_event.after_journal_entry_index,
+            append_time: MillisSinceEpoch::new(timestamp),
+        },
+    ))
+}
+
 impl ScanJournalEventsTable for PartitionStore {
     fn for_each_journal_event<
         F: FnMut((InvocationId, EventView)) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
@@ -195,21 +212,7 @@ impl ScanJournalEventsTable for PartitionStore {
             scan,
             move |(mut key, mut value)| {
                 let event_key = break_on_err(JournalEventKey::deserialize_from(&mut key))?;
-                let (pk, inv_uuid, event_type, timestamp, _) = event_key.split();
-                let stored_event = break_on_err(EventWrapper::decode(&mut value))?.0;
-
-                f((
-                    InvocationId::from_parts(pk, inv_uuid),
-                    EventView {
-                        event: RawEvent::new(
-                            EventType::from_repr(event_type).unwrap_or(EventType::Unknown),
-                            stored_event.content,
-                        ),
-                        after_journal_entry_index: stored_event.after_journal_entry_index,
-                        append_time: MillisSinceEpoch::new(timestamp),
-                    },
-                ))
-                .map_break(Ok)
+                f(break_on_err(decode_event(event_key, &mut value))?).map_break(Ok)
             },
         )
         .map_err(|_| StorageError::OperationalError)
