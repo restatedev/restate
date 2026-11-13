@@ -15,6 +15,7 @@
 //!   view and sharding. [`define_schema!`] generates a schema from one column list.
 //! - [`selection`] states which rows of a schema a read must return, as typed
 //!   conditions on its columns, and derives candidate domains from SQL predicates.
+//! - [`tables`] holds the declarations of the SQL catalog's tables.
 //!
 //! Physical key layouts, encodings and scan bounds stay in storage crates.
 
@@ -23,6 +24,7 @@ mod engine;
 pub mod errors;
 pub mod schema;
 pub mod selection;
+pub mod tables;
 mod writer;
 
 pub use schema::{LogicalSchema, RowBuilder, SelectionSchema, ShardingScheme};
