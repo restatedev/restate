@@ -325,7 +325,7 @@ impl PartitionStore {
     }
 
     /// Overwrites the memoized storage features after their finalization batch commits.
-    fn set_storage_features(&mut self, features: StorageFeatures) {
+    pub(crate) fn set_storage_features(&mut self, features: StorageFeatures) {
         self.storage_features.take();
         let _ = self.storage_features.set(features);
     }
@@ -850,16 +850,22 @@ impl PartitionStore {
             ));
         }
 
+        // Registered indexes replace the legacy status gauges. Delete them once
+        // every compatibility check above passed, before any family can be
+        // activated below.
+        self.remove_legacy_status_gauges(&mut storage_features)
+            .await?;
+
         // Changes might be empty, but storage_features can still be dirty due to the automatic
         // convergence that happens based on storage-version or if the store is empty.
-        let features_to_enable =
+        let feature_changes =
             storage_features.automatic_changes(config, current_restate_version, is_store_empty);
 
         // Do we need to perform migrations or data movement for these features?
-        for feature in features_to_enable {
-            // Enable each feature independently
-            feature
-                .enable(
+        for change in feature_changes {
+            // Apply each feature's change independently.
+            change
+                .apply(
                     self,
                     current_restate_version,
                     &mut current_min_restate_version,
@@ -870,6 +876,7 @@ impl PartitionStore {
                     &mut storage_features,
                 )
                 .await?;
+            self.set_storage_features(*storage_features.enabled());
         }
 
         if storage_features.is_dirty() {
