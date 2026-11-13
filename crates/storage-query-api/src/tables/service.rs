@@ -15,7 +15,9 @@ use restate_util_string::ReString;
 use crate::{ShardingScheme, define_schema};
 
 define_schema! {
-    /// Registered user services and their latest deployments.
+    /// Registered services.
+    ///
+    /// One row per service, with its type, whether it is public, and the latest deployment serving it.
     service {
         name: "sys_service",
         sharding: ShardingScheme::Unsharded(None),
@@ -30,7 +32,7 @@ define_schema! {
             /// The service type. Either `service` or `virtual_object` or `workflow`.
             #[values(["service", "virtual_object", "workflow"].map(ReString::from_static))]
             ty: ReString => DataType::LargeUtf8,
-            /// The ID of the latest deployment.
+            /// The ID of the latest deployment
             deployment_id: ReString => DataType::LargeUtf8,
         }
     }
