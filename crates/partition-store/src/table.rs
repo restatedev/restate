@@ -64,6 +64,9 @@ use crate::query_read::SnapshotCursor;
 use crate::registry::{IndexKind, IndexNotReady, MaintainedIndexes};
 use crate::{ReadSnapshot, Result};
 
+#[cfg(test)]
+mod tests;
+
 /// What a read may touch: the partition, the storage features in force and where
 /// the IDs of registered indexes are resolved. A snapshot read uses the features
 /// and the registry captured when the snapshot was admitted; a store read uses
