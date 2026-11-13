@@ -29,6 +29,7 @@ pub mod errors;
 pub mod scan;
 pub mod schema;
 pub mod selection;
+pub mod table_docs;
 pub mod tables;
 mod writer;
 

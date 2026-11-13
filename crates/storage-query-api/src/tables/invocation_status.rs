@@ -33,83 +33,104 @@ define_schema! {
             )
         },
         columns {
-            /// Internal partitioning key.
+            /// Internal column that is used for partitioning the services invocations. Can be ignored.
             partition_key: PartitionKey => DataType::UInt64,
-            /// Invocation ID.
+            /// [Invocation ID](/services/invocation/managing-invocations#invocation-id).
             id: InvocationId => DataType::LargeUtf8,
-            /// Invocation ID and creation sequence; null when the sequence is unknown.
+            /// Canonical invocation ID: the invocation ID followed by the sequence number of the
+            /// record that created the invocation, e.g. `inv_..._42`. NULL if the sequence number
+            /// is unknown.
+            /// Since v1.8.1.
             canonical_id: Option<ReString> => DataType::LargeUtf8,
-            /// Assigned virtual queue; null before migration to vqueues.
+            /// The VQueue assigned to the the invocation. NULL if invocation was not migrated to vqueues.
+            /// Since v1.7.0.
             vqueue_id: Option<ReString> => DataType::LargeUtf8,
-            /// Persisted state: inboxed, scheduled, invoked, suspended, paused, or completed.
+            /// Either `inboxed` or `scheduled` or `invoked` or `suspended` or `paused` or `completed`
             status: ReString => DataType::LargeUtf8,
-            /// Success or failure for completed invocations.
+            /// If `status = 'completed'`, this contains either `success` or `failure`
             completion_result: Option<ReString> => DataType::LargeUtf8,
-            /// Completed invocation failure cause.
+            /// If `status = 'completed' AND completion_result = 'failure'`, this contains the error cause
             completion_failure: Option<ReString> => DataType::LargeUtf8,
-            /// Invocation target, including service, optional key, and handler.
+            /// Invocation Target. Format for plain services: `ServiceName/HandlerName`, e.g.
+            /// `Greeter/greet`. Format for virtual objects/workflows: `VirtualObjectName/Key/HandlerName`,
+            /// e.g. `Greeter/Francesco/greet`.
             target: ReString => DataType::LargeUtf8,
-            /// Invoked service name.
+            /// The name of the invoked service.
             target_service_name: ReString => DataType::LargeUtf8,
-            /// Virtual-object key or workflow ID; null for regular services.
+            /// The key of the virtual object or the workflow ID. Null for regular services.
             target_service_key: Option<ReString> => DataType::LargeUtf8,
-            /// Invoked handler name.
+            /// The invoked handler.
             target_handler_name: ReString => DataType::LargeUtf8,
-            /// Service type: service, virtual_object, or workflow.
+            /// The service type. Either `service` or `virtual_object` or `workflow`.
             target_service_ty: ReString => DataType::LargeUtf8,
-            /// Invocation scope, when scoped.
+            /// The scope of the invocation for vqueue partitioning, if scoped. NULL for unscoped invocations.
+            /// Since v1.7.0.
             scope: Option<ReString> => DataType::LargeUtf8,
-            /// Invocation limit key, when set.
+            /// The limit key that was used for the invocation. NULL if no limit key was set.
+            /// Since v1.7.0.
             limit_key: Option<ReString> => DataType::LargeUtf8,
-            /// Idempotency key, when set.
+            /// Idempotency key, if any.
             idempotency_key: Option<ReString> => DataType::LargeUtf8,
-            /// Source of the invocation.
+            /// Either:
+            /// * `ingress` if the invocation was created externally.
+            /// * `service` if the invocation was created by another Restate service.
+            /// * `subscription` if the invocation was created by a subscription (e.g. Kafka).
+            /// * `restart_as_new` if the invocation was created by restarting an old invocation as new.
+            /// * `ingress_ingestion` if the invocation was created by the ingestion API.
             invoked_by: ReString => DataType::LargeUtf8,
-            /// Caller invocation ID for service calls.
+            /// The caller [Invocation ID](/services/invocation/managing-invocations#invocation-id) if `invoked_by = 'service'`.
             invoked_by_id: Option<ReString> => DataType::LargeUtf8,
-            /// Subscription ID for subscription-triggered calls.
+            /// The subscription id if `invoked_by = 'subscription'`.
             invoked_by_subscription_id: Option<ReString> => DataType::LargeUtf8,
-            /// Caller service name for service calls.
+            /// The name of caller service if `invoked_by = 'service'`.
             invoked_by_service_name: Option<ReString> => DataType::LargeUtf8,
-            /// Caller invocation target for service calls.
+            /// The caller invocation target if `invoked_by = 'service'`.
             invoked_by_target: Option<ReString> => DataType::LargeUtf8,
-            /// Original invocation ID for restart-as-new calls.
+            /// The original invocation id if `invoked_by = 'restart_as_new'`.
             restarted_from: Option<ReString> => DataType::LargeUtf8,
-            /// Deployment pinned after the first journal entry is stored.
+            /// The ID of the service deployment that started processing this invocation, and will continue
+            /// to do so (e.g. for retries). This gets set after the first journal entry has been stored for
+            /// this invocation.
             pinned_deployment_id: Option<ReString> => DataType::LargeUtf8,
-            /// Negotiated service protocol version.
+            /// The negotiated protocol version used for this invocation.
+            /// This gets set after the first journal entry has been stored for this invocation.
             pinned_service_protocol_version: Option<u32> => DataType::UInt32,
-            /// Invocation trace ID, when tracing is enabled.
+            /// The ID of the trace that is assigned to this invocation. Only relevant when tracing is
+            /// enabled.
             trace_id: Option<ReString> => DataType::LargeUtf8,
-            /// Number of durable journal entries.
+            /// The number of journal entries durably logged for this invocation.
             journal_size: Option<u32> => DataType::UInt32,
-            /// Number of journal commands for protocol version 4 and later.
+            /// The number of commands generated by this invocation, stored in the journal.
+            /// Only relevant when pinned_service_protocol_version >= 4.
             journal_commands_size: Option<u32> => DataType::UInt32,
-            /// Invocation creation time.
+            /// Timestamp indicating the start of this invocation.
             created_at: MillisSinceEpoch => TimestampMillisecond,
-            /// Restate version used to create the invocation.
+            /// restate-server version in use when this invocation was created.
             created_using_restate_version: ReString => DataType::LargeUtf8,
-            /// Most recent persisted status transition time.
+            /// Timestamp indicating the last invocation status transition. For example, last time the
+            /// status changed from `invoked` to `suspended`.
             modified_at: MillisSinceEpoch => TimestampMillisecond,
-            /// Time of the inboxed transition, if any.
+            /// Timestamp indicating when the invocation was inboxed, if ever.
             inboxed_at: Option<MillisSinceEpoch> => TimestampMillisecond,
-            /// Time of the scheduled transition, if any.
+            /// Timestamp indicating when the invocation was scheduled, if ever.
             scheduled_at: Option<MillisSinceEpoch> => TimestampMillisecond,
-            /// Requested execution time for a scheduled invocation.
+            /// If the invocation was scheduled, indicates the timestamp when the invocation should start.
             scheduled_start_at: Option<MillisSinceEpoch> => TimestampMillisecond,
-            /// Time of the first running transition, if any.
+            /// Timestamp indicating when the invocation first transitioned to running, if ever.
             running_at: Option<MillisSinceEpoch> => TimestampMillisecond,
-            /// Completion time, if any.
+            /// Timestamp indicating when the invocation was completed, if ever.
             completed_at: Option<MillisSinceEpoch> => TimestampMillisecond,
-            /// Retention of invocation metadata and results after completion.
+            /// For how long the metadata of this invocation, including its result, is retained after completion.
             completion_retention: i64 => DataType::Duration,
-            /// Retention of the journal after completion.
+            /// For how long the journal is retained after completion.
             journal_retention: i64 => DataType::Duration,
-            /// Deprecated: awaited completion IDs; use suspended_waiting_future_json.
+            /// List of completion ids the invocation is awaiting on, if `status = suspended`.
+            /// DEPRECATED: use `suspended_waiting_future_json` instead.
             suspended_waiting_for_completions: Option<Vec<u32>> => UInt32List,
-            /// Deprecated: awaited signal indexes; use suspended_waiting_future_json.
+            /// List of signals the invocation is awaiting on, if `status = suspended`.
+            /// DEPRECATED: use `suspended_waiting_future_json` instead.
             suspended_waiting_for_signals: Option<Vec<u32>> => UInt32List,
-            /// Future tree on which the invocation is suspended.
+            /// Future tree the invocation is suspended on, if `status = suspended`.
             suspended_waiting_future_json: Option<ReString> => DataType::LargeUtf8,
         }
     }

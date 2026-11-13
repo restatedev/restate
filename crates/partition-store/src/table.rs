@@ -25,6 +25,8 @@
 //!   saw it, so that an index is only read in a state the snapshot saw as Ready.
 //! - **Record**: one key, handed to the caller as a decoder positioned after the
 //!   header plus the value bytes, undecoded.
+//! - **Multi-get cursor** ([`MultiGetCursor`]): the records of a finite ID set,
+//!   fetched by key in sorted batches instead of iterated ([`MultiGetTable`]).
 //!
 //! # The flow
 //!
@@ -40,17 +42,24 @@
 //! [`CursorScan`] hands out the [`TableCursor`] instead, so the caller can
 //! interleave steps with other work, pause, or move it between threads.
 
-use std::ops::ControlFlow;
+use std::collections::{BTreeSet, btree_set};
+use std::num::NonZeroUsize;
+use std::ops::{ControlFlow, RangeBounds};
 use std::sync::Arc;
 
+use bytes::BytesMut;
+
+use restate_rocksdb::reads::{OwnedPinnedBatch, ReadSnapshot as RocksReadSnapshot};
 use restate_storage_api::StorageError;
 use restate_storage_query_api::scan::{BlockingScan, CursorScan, CursorStep, ReadCursor, Table};
+use restate_types::identifiers::PartitionKey;
 use restate_types::partitions::Partition;
 
 use crate::features::StorageFeatures;
-use crate::keys::KeyDecoder;
 use crate::keys::header::{KeyHeader, KeySchema};
 use crate::keys::selection::{KeyMatch, KeySelection, KeySelectionCursor};
+use crate::keys::{EncodeTableKey, KeyDecoder};
+use crate::partition_db::PhysicalPartition;
 use crate::query_read::SnapshotCursor;
 use crate::registry::{IndexKind, IndexNotReady, MaintainedIndexes};
 use crate::{ReadSnapshot, Result};
@@ -119,6 +128,185 @@ pub trait PhysicalTable:
     fn owns_record(_key: KeyDecoder<'_, Self::Key>, _metadata: &ReadMetadata<'_>) -> Result<bool> {
         Ok(true)
     }
+}
+
+/// A table whose records a query fetches by ID: the IDs' order is the order of
+/// the keys they encode to, so a batch of IDs is one sorted multi-get.
+pub(crate) trait MultiGetTable: PhysicalTable<Key: EncodeTableKey> {
+    /// The ID of a record. Its `Ord` is the stored key order, which the sorted
+    /// multi-get relies on; the keys of the table have one fixed length.
+    type Id: Copy + Ord;
+
+    /// IDs per multi-get.
+    const BATCH_SIZE: NonZeroUsize;
+
+    /// The partition key `id` belongs to: an ID outside the snapshot's partition
+    /// has no record there and is not fetched.
+    fn partition_key(id: &Self::Id) -> PartitionKey;
+
+    /// The stored key of `id`'s record.
+    fn key(id: &Self::Id) -> Self::Key;
+}
+
+/// Fetches the records of an ID set in ID order, a bounded batch per multi-get:
+/// a step hands out the next ID that has a record ([`CursorStep::Record`]) or
+/// skips one that has none, and a batch is fetched when the steps reach it.
+pub(crate) struct MultiGetCursor<T: MultiGetTable> {
+    ids: btree_set::IntoIter<T::Id>,
+    /// The IDs of the fetched batch, in order; `key_buf` holds their keys.
+    batch_ids: Vec<T::Id>,
+    key_buf: BytesMut,
+    results: Option<OwnedPinnedBatch<RocksReadSnapshot<PhysicalPartition>>>,
+    /// The batch index the next step examines.
+    next: usize,
+    /// The batch index of the current record, if the last step produced one.
+    current: Option<usize>,
+    /// Last: the fetched batch above is dropped before the query snapshot, so
+    /// the read's completion is signalled only once the batch released its
+    /// storage, however the cursor ends.
+    snapshot: ReadSnapshot,
+}
+
+impl<T: MultiGetTable> MultiGetCursor<T> {
+    pub(crate) fn new(snapshot: ReadSnapshot, ids: BTreeSet<T::Id>) -> Self {
+        Self {
+            snapshot,
+            batch_ids: Vec::with_capacity(ids.len().min(T::BATCH_SIZE.get())),
+            ids: ids.into_iter(),
+            key_buf: BytesMut::new(),
+            results: None,
+            next: 0,
+            current: None,
+        }
+    }
+
+    pub(crate) fn advance(&mut self) -> Result<CursorStep> {
+        self.snapshot.check_active()?;
+        self.current = None;
+        if self.next == self.batch_ids.len() {
+            if self.ids.len() == 0 {
+                return Ok(CursorStep::Done);
+            }
+            self.refill()?;
+        }
+        if self.next == self.batch_ids.len() {
+            // Every ID of the batch lies outside the partition.
+            return Ok(CursorStep::Skipped);
+        }
+        let index = self.next;
+        self.next += 1;
+        let present = self
+            .results()?
+            .get(index)
+            .map_err(|error| StorageError::Generic(error.into()))?
+            .is_some();
+        self.current = present.then_some(index);
+        Ok(if present {
+            CursorStep::Record
+        } else {
+            CursorStep::Skipped
+        })
+    }
+
+    /// The current record: its ID and its stored value.
+    pub(crate) fn current(&self) -> Result<(T::Id, &[u8])> {
+        self.snapshot.check_active()?;
+        let index = self.current.ok_or(StorageError::DataIntegrityError)?;
+        let value = self
+            .results()?
+            .get(index)
+            .map_err(|error| StorageError::Generic(error.into()))?
+            .ok_or(StorageError::DataIntegrityError)?;
+        Ok((self.batch_ids[index], value))
+    }
+
+    fn results(&self) -> Result<&OwnedPinnedBatch<RocksReadSnapshot<PhysicalPartition>>> {
+        self.results
+            .as_ref()
+            .ok_or(StorageError::DataIntegrityError)
+    }
+
+    /// Fetches the next batch: the next `BATCH_SIZE` IDs, minus those outside the
+    /// partition.
+    fn refill(&mut self) -> Result<()> {
+        self.key_buf.clear();
+        self.batch_ids.clear();
+        self.results = None;
+        self.next = 0;
+        let partition = self.snapshot.partition_key_range();
+        let mut key_len = 0;
+        for id in self.ids.by_ref().take(T::BATCH_SIZE.get()) {
+            if partition.contains(&T::partition_key(&id)) {
+                let key = T::key(&id);
+                key_len = key.serialized_length();
+                key.serialize_to(&mut self.key_buf);
+                self.batch_ids.push(id);
+            }
+        }
+        if self.batch_ids.is_empty() {
+            return Ok(());
+        }
+        debug_assert_eq!(self.key_buf.len(), key_len * self.batch_ids.len());
+        let reader = self.snapshot.storage_snapshot().reader();
+        self.results = Some(
+            reader
+                .multi_get_pinned(T::Key::KEY_KIND, self.key_buf.chunks_exact(key_len), true)
+                .map_err(|error| StorageError::Generic(error.into()))?
+                .into_owned(),
+        );
+        Ok(())
+    }
+}
+
+/// Visits sorted full keys as the storage iterator does: in-bounds keys only, and
+/// a seek repositions at the first key at or after its target. Returns the indices
+/// of matching keys and the number of evaluated keys.
+#[cfg(test)]
+pub(crate) fn navigate<K: KeySchema>(
+    request: impl Into<Arc<KeySelection<K>>>,
+    scope: <K::Header as KeyHeader>::Scope,
+    keys: &[impl AsRef<[u8]>],
+) -> (Vec<usize>, usize) {
+    navigate_live(request, None, scope, keys)
+}
+
+/// [`navigate`] with an independently prepared live selection.
+#[cfg(test)]
+pub(crate) fn navigate_live<K: KeySchema>(
+    request: impl Into<Arc<KeySelection<K>>>,
+    live: Option<KeySelection<K>>,
+    scope: <K::Header as KeyHeader>::Scope,
+    keys: &[impl AsRef<[u8]>],
+) -> (Vec<usize>, usize) {
+    let Some(mut cursor) = request.into().cursor(scope).unwrap() else {
+        return (Vec::new(), 0);
+    };
+    if let Some(live) = live {
+        cursor.set_live(live);
+    }
+    let (mut matches, mut visited) = (Vec::new(), 0);
+    let mut position = keys
+        .iter()
+        .position(|key| cursor.scan().contains_key(key))
+        .unwrap_or(keys.len());
+    while let Some(key) = keys.get(position).map(AsRef::as_ref)
+        && cursor.scan().contains_key(key)
+    {
+        visited += 1;
+        match cursor.evaluate(key).unwrap() {
+            KeyMatch::Match => {
+                matches.push(position);
+                position += 1;
+            }
+            KeyMatch::Seek(target) => {
+                assert!(target.as_ref() > key);
+                position = keys.partition_point(|key| key.as_ref() < target.as_ref());
+            }
+            KeyMatch::Skip => position += 1,
+            KeyMatch::Done => break,
+        }
+    }
+    (matches, visited)
 }
 
 impl<T: PhysicalTable> BlockingScan<T> for ReadSnapshot {

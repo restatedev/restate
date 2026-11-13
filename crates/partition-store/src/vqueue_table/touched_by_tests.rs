@@ -13,6 +13,8 @@
 
 use std::cmp::Reverse;
 
+use tokio_util::sync::CancellationToken;
+
 use restate_clock::UniqueTimestamp;
 use restate_clock::time::MillisSinceEpoch;
 use restate_rocksdb::RocksDbManager;
@@ -22,6 +24,7 @@ use restate_storage_api::vqueue_table::{
     ReadVQueueTable, Stage, Status, StoredEntryRef, WriteVQueueTable,
 };
 use restate_storage_api::{StorageError, Transaction};
+use restate_storage_query_api::scan::ReadCursor;
 use restate_types::identifiers::{BaseEntryId, PartitionId};
 use restate_types::partitions::Partition;
 use restate_types::sharding::KeyRange;
@@ -30,7 +33,7 @@ use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, VQueueId};
 use crate::keys::codecs::{CanonicalEntryIdCodec, ReverseUniqueTimestampCodec, StageRankCodec};
 use crate::keys::{EncodeTableKeyPrefix, IndexKeyPrefix, KeyKind};
 use crate::registry::{IndexDefinition, IndexKind, IndexRegistry, MaintainedIndexes};
-use crate::vqueue_table::EntryStatusKey;
+use crate::vqueue_table::{EntryStatusKey, EntryStatusScan};
 use crate::{PartitionStore, PartitionStoreManager, PartitionStoreTransaction, StorageRead};
 
 crate::index::macros::define_secondary_index!(
@@ -463,6 +466,17 @@ async fn malformed_tokens_are_a_data_integrity_error() {
     drop(tx);
     assert!(matches!(
         store.transaction().get_vqueue_entry_status(&id).await,
+        Err(StorageError::DataIntegrityError)
+    ));
+    let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
+    let mut cursor = snapshot
+        .entry_status_cursor(EntryStatusScan::Filter(
+            restate_storage_api::vqueue_table::filters::ScanEntryIdFilter::EntryIdSet([id].into()),
+        ))
+        .unwrap();
+    cursor.advance().unwrap();
+    assert!(matches!(
+        cursor.current(),
         Err(StorageError::DataIntegrityError)
     ));
 }
