@@ -885,7 +885,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 0,
                 &StoredRawEntry::new(
                     StoredRawEntryHeader::new(self.record_created_at),
-                    vec![],
+                    None,
                     new_raw_entry,
                 ),
                 &[],
@@ -1396,7 +1396,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
             let stored_entry = StoredRawEntry::new(
                 StoredRawEntryHeader::new(self.record_created_at),
-                vec![],
+                None,
                 new_raw_entry,
             );
 
