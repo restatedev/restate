@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroU16;
 use std::pin::pin;
 use std::time::Duration;
 
@@ -17,9 +18,12 @@ use bytestring::ByteString;
 use futures_util::StreamExt;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::Transaction;
+use restate_storage_api::blob_table::{BlobBuilder, RawParts, ReadBlobTable, WriteBlobTable};
 use restate_storage_api::journal_table_v2::{
     NotificationEntryIndex, ReadJournalTable, WriteJournalTable,
 };
+use restate_types::blob::{BlobId, BlobKind, RelatedBlob};
+use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use restate_types::journal_v2::raw::{RawCommandSpecificMetadata, RawNotificationResultVariant};
@@ -29,6 +33,7 @@ use restate_types::journal_v2::{
 };
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
+use restate_types::vqueues::Seq;
 
 const MOCK_INVOCATION_ID_1: InvocationId =
     InvocationId::from_parts(1, InvocationUuid::from_u128(12345678900001));
@@ -101,6 +106,7 @@ fn populate_sleep_journal<T: WriteJournalTable>(txn: &mut T) {
             i,
             &StoredRawEntry::new(
                 StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+                None,
                 mock_sleep_command(i).encode::<ServiceProtocolV4Codec>(),
             ),
             &[i],
@@ -113,6 +119,7 @@ fn populate_sleep_journal<T: WriteJournalTable>(txn: &mut T) {
             i,
             &StoredRawEntry::new(
                 StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+                None,
                 mock_sleep_completion(i - 5).encode::<ServiceProtocolV4Codec>(),
             ),
             &[],
@@ -260,6 +267,7 @@ async fn call_journal() {
         0,
         &StoredRawEntry::new(
             StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+            None,
             mock_call_command(0, 1).encode::<ServiceProtocolV4Codec>(),
         ),
         &[0, 1],
@@ -270,6 +278,7 @@ async fn call_journal() {
         1,
         &StoredRawEntry::new(
             StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+            None,
             mock_one_way_call_command(2).encode::<ServiceProtocolV4Codec>(),
         ),
         &[2],
@@ -318,4 +327,72 @@ async fn call_journal() {
     );
 
     txn.commit().await.expect("should not fail");
+}
+
+#[restate_core::test]
+async fn delete_journal_decrements_related_blobs() {
+    let mut rocksdb = storage_test_environment().await;
+
+    let blob_id = |seq| BlobId::new(UniqueTimestamp::MIN, Seq::new(seq), 1, [0; 16]);
+    let single_ref = blob_id(1);
+    let double_ref = blob_id(2);
+
+    let mut txn = rocksdb.transaction();
+    txn.put_blob(
+        single_ref,
+        BlobBuilder::new(BlobKind::Generic).build(&b"single"[..]),
+    )
+    .unwrap();
+    txn.put_blob(
+        double_ref,
+        BlobBuilder::new(BlobKind::Generic)
+            .with_ref_count(NonZeroU16::new(2).unwrap())
+            .build(&b"double"[..]),
+    )
+    .unwrap();
+    let related = |id| Some(RelatedBlob { id, size: 6 });
+    for (index, related_blob) in [related(single_ref), None, related(double_ref)]
+        .into_iter()
+        .enumerate()
+    {
+        let index = index as u32;
+        txn.put_journal_entry(
+            &MOCK_INVOCATION_ID_1,
+            index,
+            &StoredRawEntry::new(
+                StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+                related_blob,
+                mock_sleep_command(index).encode::<ServiceProtocolV4Codec>(),
+            ),
+            &[index],
+        )
+        .unwrap();
+    }
+    txn.commit().await.unwrap();
+    drop(txn);
+
+    let mut txn = rocksdb.transaction();
+    // related blob round-trips through the stored entry
+    let entry = txn
+        .get_journal_entry(MOCK_INVOCATION_ID_1, 2)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.related_blob, related(double_ref));
+    txn.delete_journal(&MOCK_INVOCATION_ID_1, 3).unwrap();
+    txn.commit().await.unwrap();
+    drop(txn);
+
+    let mut txn = rocksdb.transaction();
+    verify_journal_deleted(&mut txn, 3).await;
+    // ref count dropped to 0, the blob is marked for deletion
+    assert!(
+        txn.get_blob::<RawParts>(single_ref)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let (_, ref_count, payload) = txn.get_blob::<RawParts>(double_ref).await.unwrap().unwrap();
+    assert_eq!(ref_count, 1);
+    assert_eq!(payload, b"double");
 }

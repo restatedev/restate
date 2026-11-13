@@ -11,6 +11,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use serde_with::{DisplayFromStr, serde_as};
+
 use restate_clock::UniqueTimestamp;
 use restate_sharding::{PartitionKey, WithPartitionKey};
 
@@ -127,6 +129,16 @@ impl BlobId {
         remainder.copy_from_slice(&self.remainder);
         buf
     }
+}
+
+/// A blob referenced by a journal entry.
+#[serde_as]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RelatedBlob {
+    #[serde_as(as = "DisplayFromStr")]
+    pub id: BlobId,
+    /// Size of the blob payload in bytes.
+    pub size: u64,
 }
 
 impl WithPartitionKey for BlobId {
