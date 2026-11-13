@@ -64,15 +64,18 @@ use crate::fsm_table::put_storage_version;
 use crate::fsm_table::seal_partition;
 use crate::fsm_table::{
     PartitionStateMachineKey, get_locally_durable_lsn, get_min_restate_version_from_partition_db,
-    get_state_machine_features_from_partition_db, get_storage_features_from_partition_db,
-    get_storage_version_from_partition_db, is_jc_orphan_cleanup_done, put_jc_orphan_cleanup_done,
+    get_registry_from_partition_db, get_state_machine_features_from_partition_db,
+    get_storage_features_from_partition_db, get_storage_version_from_partition_db,
+    is_jc_orphan_cleanup_done, put_jc_orphan_cleanup_done,
 };
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, FixedLengthTableKey, KeyKind};
 use crate::migrations::MigrationError;
 use crate::partition_db::PartitionDb;
+use crate::registry::MaintainedIndexes;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
 use crate::snapshots::{CaptureGuard, LocalPartitionSnapshot, SnapshotCompatibility, export_dir};
+use crate::stats::aggregated::AggregatedStatsMut;
 use crate::{configure_prefix_iterator_opts, configure_range_iterator_opts};
 
 pub type DB = rocksdb::DB;
@@ -193,6 +196,7 @@ pub enum TableKind {
     VQueue,
     Locks,
     Blob,
+    SecondaryIndex,
     Stats,
 }
 
@@ -229,6 +233,7 @@ impl TableKind {
             ],
             Self::Locks => &[KeyKind::Lock],
             Self::Blob => &[KeyKind::Blob],
+            Self::SecondaryIndex => &[KeyKind::SecondaryIndex],
             Self::Stats => &[KeyKind::Stats],
         }
     }
@@ -323,6 +328,52 @@ impl PartitionStore {
             .unwrap_or_default();
             *loaded.enabled()
         })
+    }
+
+    /// The indexes maintained on entry writes. Opening the partition reconciles
+    /// the registry and installs this set before the processor writes. A store
+    /// used without that (tools and tests) loads it from disk on first use. An
+    /// unreadable registry or walks record is a bug there, and panics: writing
+    /// with an empty set instead would skip the Ready indexes and clear the
+    /// entries' tokens, corrupting the indexes silently, and an open would have
+    /// failed on it.
+    pub(crate) fn maintained_indexes(&self) -> Arc<MaintainedIndexes> {
+        if let Some(maintained_indexes) = self.db.maintained_indexes() {
+            return maintained_indexes;
+        }
+        let registry = get_registry_from_partition_db(self.partition_db())
+            .unwrap_or_else(|err| {
+                panic!(
+                    "the index registry of partition {} is unreadable: {err}",
+                    self.partition_id()
+                )
+            })
+            .unwrap_or_default();
+        let walks = crate::fsm_table::get_walks_from_partition_db(self.partition_db())
+            .unwrap_or_else(|err| {
+                panic!(
+                    "the walks of partition {} are unreadable: {err}",
+                    self.partition_id()
+                )
+            })
+            .unwrap_or_default();
+        let maintained_indexes = Arc::new(MaintainedIndexes::new(
+            &registry,
+            &walks,
+            crate::registry::DEFINITIONS,
+        ));
+        self.db
+            .install_maintained_indexes(Arc::clone(&maintained_indexes));
+        maintained_indexes
+    }
+
+    /// Installs the maintained indexes for every handle of this partition, as opening does
+    /// after reconciling the registry. Tests install indexes of test definitions.
+    #[cfg(test)]
+    #[allow(dead_code)] // Consumed when the registry is reconciled at open.
+    pub(crate) fn set_maintained_indexes(&mut self, maintained_indexes: MaintainedIndexes) {
+        self.db
+            .install_maintained_indexes(Arc::new(maintained_indexes));
     }
 
     /// Overwrites the memoized storage features after their finalization batch commits.
@@ -659,6 +710,7 @@ impl PartitionStore {
         // If PartitionStore.storage_features() was never called before,
         // this will fetch the value and cache it.
         let storage_features = self.storage_features();
+        let maintained_indexes = self.maintained_indexes();
         let settings = TransactionSettings::from(&Configuration::pinned().worker.storage);
 
         PartitionStoreTransaction {
@@ -670,6 +722,7 @@ impl PartitionStore {
             value_buffer: &mut self.value_buffer,
             meta: self.db.partition(),
             storage_features,
+            maintained_indexes,
             settings,
             commit_fence: None,
             write_batch_size_histogram: None,
@@ -1083,6 +1136,7 @@ pub struct PartitionStoreTransaction<'a> {
     key_buffer: &'a mut BytesMut,
     value_buffer: &'a mut BytesMut,
     storage_features: StorageFeatures,
+    maintained_indexes: Arc<MaintainedIndexes>,
     settings: TransactionSettings,
     /// Resolves once the [`CommitFence`] holding back commits is dropped.
     commit_fence: Option<oneshot::Receiver<()>>,
@@ -1293,9 +1347,20 @@ impl<'a> PartitionStoreTransaction<'a> {
         self.storage_features
     }
 
+    pub(crate) fn maintained_indexes(&self) -> Arc<MaintainedIndexes> {
+        Arc::clone(&self.maintained_indexes)
+    }
+
     #[inline]
     pub(crate) fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) -> Result<()> {
         assert_partition_key_or_err(self.meta.key_range, partition_key)
+    }
+}
+
+impl<'a> PartitionStoreTransaction<'a> {
+    /// Merges into the statistic keys of index `id`.
+    pub(crate) fn aggregated_stats<'b>(&'b mut self, id: u32) -> AggregatedStatsMut<'b, 'a> {
+        AggregatedStatsMut::new(self, id)
     }
 }
 

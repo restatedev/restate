@@ -16,7 +16,7 @@ mod key_codec;
 mod metadata;
 mod reader;
 mod running_reader;
-
+mod stats;
 #[cfg(test)]
 mod touched_by_tests;
 
@@ -27,6 +27,8 @@ pub use entry::{EntryStatusKey, EntryStatusKeyRef};
 pub use inbox::InboxKey;
 pub use input::InputPayloadKey;
 pub use metadata::*;
+#[allow(unused_imports)] // The families are registered when the store opens.
+pub(crate) use stats::{DEPLOYMENT_STATS, SERVICE_STATS, STATUS_GAUGES, VIRTUAL_OBJECT_STATS};
 
 use anyhow::Context;
 use bilrost::{BorrowedMessage, Message, OwnedMessage};
@@ -454,6 +456,7 @@ impl PartitionStoreTransaction<'_> {
             );
         }
 
+        let active = self.maintained_indexes();
         if let Some(after) = change.after() {
             let header = RawStatusHeaderRef {
                 qid: context.qid.into(),
@@ -464,11 +467,8 @@ impl PartitionStoreTransaction<'_> {
                 metadata: after.metadata.into(),
                 stats: after.stats.clone(),
                 status: after.status,
-                // An update keeps the stored tokens until the registry maintains
-                // indexes; an insertion starts without tokens.
-                touched_by: change
-                    .stored_before()
-                    .map_or(&[][..], |before| before.touched_by().as_bytes()),
+                // Every write adopts the entry into each maintained index.
+                touched_by: active.touched_by_on_write(),
             };
             let header_len = header.encoded_len();
             let value_buf = self.cleared_value_buffer_mut(
@@ -482,6 +482,8 @@ impl PartitionStoreTransaction<'_> {
             // The status key is overwritten on transitions, so SingleDelete is invalid.
             self.raw_delete_cf(KeyKind::VQueueEntryStatus, key_buffer);
         }
+
+        active.apply(self, context, change, &key_buffer);
     }
 }
 
@@ -504,6 +506,18 @@ impl PartitionStoreTransaction<'_> {
             .map_or(&[][..], |header| header.touched_by.as_slice())
             == touched_by.as_bytes()
     }
+}
+
+/// Decodes a stored entry status, validating its tokens.
+#[allow(dead_code)] // Consumed when the registry is reconciled at open.
+pub(crate) fn decode_entry_status(
+    id: &BaseEntryId,
+    value: &[u8],
+) -> Result<restate_storage_api::vqueue_table::OwnedEntryStatusHeader, StorageError> {
+    Ok(entry_status_header_from_raw(
+        id,
+        RawStatusHeader::decode_stored(value)?,
+    ))
 }
 
 impl<'txn> ReadVQueueTable for PartitionStoreTransaction<'txn> {

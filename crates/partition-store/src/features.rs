@@ -220,7 +220,7 @@ impl LoadedStorageFeatures {
     /// entry and, when higher, the minimum Restate version. The registry state the
     /// fence protects must be written in the same batch. Call `mark_persisted`
     /// once the batch commits. Returns whether anything was added.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Consumed when the registry is reconciled at open.
     pub(crate) fn append_registry_fence(
         &mut self,
         current_version: &SemanticRestateVersion,
@@ -524,7 +524,6 @@ macro_rules! storage_features {
                 $visibility enum [<$feature:camel Feature>] {}
             )*
 
-
             impl StorageFeatures {
                 /// Returns the list of enabled features by name
                 pub fn into_names(self) -> Vec<ReString> {
@@ -735,7 +734,7 @@ mod tests {
         let current_version = SemanticRestateVersion::new(2, 0, 0);
         let features =
             LoadedStorageFeatures::load(None, StorageVersion::V1_5, &current_version).unwrap();
-        let config = Configuration::default();
+        let mut config = Configuration::default();
 
         assert_eq!(
             features.automatic_changes(&config, &current_version, false),
@@ -751,7 +750,10 @@ mod tests {
             ]
         );
 
-        // The retired legacy feature never changes automatically.
+        // The status-gauge options control registered instances, not the
+        // retired legacy feature.
+        config.common.experimental.set_track_status_gauges(true);
+        config.common.experimental.set_status_gauges_reset(true);
         for empty in [false, true] {
             assert!(
                 !features
@@ -773,7 +775,8 @@ mod tests {
             LoadedStorageFeatures::load(Some(persisted), StorageVersion::V1_5, &version).unwrap();
         // Opening detects the marker, and deletes it with the legacy gauges.
         assert!(reloaded.enabled().is_track_status_gauges);
-        let config = Configuration::default();
+        let mut config = Configuration::default();
+        config.common.experimental.set_track_status_gauges(true);
         for (features, empty) in [(&features, true), (&reloaded, false)] {
             assert!(
                 !features

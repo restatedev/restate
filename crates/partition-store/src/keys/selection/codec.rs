@@ -201,6 +201,7 @@ pub(crate) trait FieldPredicateCodec: OrderedFieldCodec + Sized {
 /// `IS NULL` becomes an empty IN list, NULL drops out of IN lists, and a range
 /// that ends at NULL is empty. Everything else goes to `C` unchanged, so `C`'s own
 /// translation applies.
+#[allow(dead_code)] // Used by index definitions that bind a nullable column to a non-NULL field.
 pub(crate) fn prepare_non_null<C: FieldPredicateCodec>(
     predicate: &ValuePredicate<Option<C::Literal>>,
     literals: &mut Vec<u8>,
