@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use axum::Json;
+use axum::http::StatusCode;
 use axum::routing::{MethodFilter, get, on};
 
 use restate_core::TaskCenter;
@@ -45,6 +46,8 @@ impl NetworkServer {
         // -- HTTP service (for prometheus et al.)
         let axum_router = axum::Router::new()
             .route("/health", get(report_health))
+            .route("/health/live", get(report_health))
+            .route("/health/ready", get(report_readiness))
             .route("/metrics", get(render_metrics))
             .route("/debug/pprof/heap", get(pprof::heap))
             .route(
@@ -98,6 +101,57 @@ impl NetworkServer {
     }
 }
 
+/// Always responds with `200 OK`. Also serves as liveness check (`/health/live`): a response means
+/// the process is up and serving requests, regardless of the node's status.
 pub async fn report_health() -> Json<Identification> {
     Json(Identification::get())
+}
+
+/// Readiness check (`/health/ready`): responds with `200 OK` if the node is alive, i.e. all of its
+/// roles have started, and with `503 Service Unavailable` otherwise (e.g. starting up or shutting
+/// down).
+pub async fn report_readiness() -> (StatusCode, Json<Identification>) {
+    let identification = Identification::get();
+    let status_code = if identification.status.is_alive() {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (status_code, Json(identification))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+
+    use restate_core::{TaskCenter, TestCoreEnvBuilder};
+    use restate_types::config::{Configuration, set_current_config};
+    use restate_types::health::NodeStatus;
+    use restate_types::net::listener::AddressBook;
+
+    use super::report_readiness;
+
+    #[restate_core::test]
+    async fn health_endpoints_status_codes() {
+        set_current_config(Configuration::new_unix_sockets());
+        assert!(TaskCenter::try_set_address_book(AddressBook::new(
+            restate_types::config::node_filepath("")
+        )));
+        let _env = TestCoreEnvBuilder::with_incoming_only_connector()
+            .build()
+            .await;
+
+        for (node_status, expected_readiness) in [
+            (NodeStatus::Unknown, StatusCode::SERVICE_UNAVAILABLE),
+            (NodeStatus::StartingUp, StatusCode::SERVICE_UNAVAILABLE),
+            (NodeStatus::Alive, StatusCode::OK),
+            (NodeStatus::ShuttingDown, StatusCode::SERVICE_UNAVAILABLE),
+        ] {
+            TaskCenter::with_current(|tc| tc.health().node_status().update(node_status));
+
+            let (readiness, body) = report_readiness().await;
+            assert_eq!(readiness, expected_readiness, "{node_status:?}");
+            assert_eq!(body.status, node_status);
+        }
+    }
 }
