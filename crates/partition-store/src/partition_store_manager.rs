@@ -39,7 +39,8 @@ use crate::partition_db::{
     RocksConfigurator, State,
 };
 use crate::snapshots::{
-    CommitFenceRequest, LocalPartitionSnapshot, PartitionSnapshotStatus, Snapshots,
+    CommitFenceRequest, GetSnapshotError, LocalPartitionSnapshot, PartitionSnapshotStatus,
+    RestoreSnapshot, Snapshots,
 };
 use crate::{BuildError, OpenError, PartitionStore, SnapshotErrorKind};
 
@@ -129,6 +130,43 @@ struct CachedDb {
     tracked: DbRef,
     rocksdb: Weak<RocksDb>,
     notifications: Arc<DurableLsnSenders>,
+}
+
+/// Restores a downloaded snapshot by importing it into the partition's database.
+struct ImportSnapshot<'a, 'g> {
+    cell: &'a PartitionCell,
+    state: &'a mut tokio::sync::RwLockWriteGuard<'g, State>,
+    database: PartitionStoreDb,
+    target_lsn: Option<Lsn>,
+}
+
+impl RestoreSnapshot for ImportSnapshot<'_, '_> {
+    type Output = PartitionDb;
+
+    fn restore<'a>(
+        &'a mut self,
+        snapshot: LocalPartitionSnapshot,
+    ) -> futures::future::BoxFuture<'a, Result<PartitionDb, GetSnapshotError>> {
+        Box::pin(async move {
+            let snapshot_lsn = snapshot.min_applied_lsn;
+            match self.target_lsn {
+                None => info!("Found partition snapshot, restoring it"),
+                Some(fast_forward_lsn) => {
+                    // The snapshot meets the target LSN requirement (filtered by candidate LSN
+                    // and re-verified against the downloaded metadata in `download_and_restore`).
+                    info!(
+                        snapshot_lsn = %snapshot_lsn,
+                        %fast_forward_lsn,
+                        "Found snapshot with LSN >= target LSN, dropping local partition store state",
+                    );
+                }
+            }
+            self.cell
+                .import_cf(self.state, snapshot, self.database.clone())
+                .await
+                .map_err(GetSnapshotError::from_import)
+        })
+    }
 }
 
 pub struct PartitionStoreManager {
@@ -361,33 +399,30 @@ impl PartitionStoreManager {
         // target-lsn target higher than our local state (probably due to seeing a log trim-gap).
         // **
 
-        // Attempt to get a suitable snapshot from the repository:
-        let snapshot_result = self
-            .snapshots
-            .download_snapshot(partition.partition_id, target_lsn, cancellation)
-            .await;
+        // Attempt to get a suitable snapshot from the repository and restore it. A snapshot whose
+        // data RocksDB rejects as corrupt is skipped in favour of an older retained one.
+        let snapshot_result = {
+            let mut restore = ImportSnapshot {
+                cell: &cell,
+                state: &mut state_guard,
+                database: database.clone(),
+                target_lsn,
+            };
+            self.snapshots
+                .download_and_restore(
+                    partition.partition_id,
+                    target_lsn,
+                    cancellation,
+                    &mut restore,
+                )
+                .await
+        };
         if snapshot_result.is_err() && cancellation.is_cancelled() {
             return Err(OpenError::Cancelled);
         }
 
         match (snapshot_result, target_lsn) {
-            (Ok(Some(snapshot)), None) => {
-                info!("Found partition snapshot, restoring it");
-                let db = cell.import_cf(&mut state_guard, snapshot, database).await?;
-                Ok(PartitionStore::from(db))
-            }
-
-            (Ok(Some(snapshot)), Some(fast_forward_lsn)) => {
-                // Got a snapshot that meets the target LSN requirement (filtered by candidate LSN
-                // and re-verified against the downloaded metadata in `download_snapshot`).
-                info!(
-                    snapshot_lsn = %snapshot.min_applied_lsn,
-                    %fast_forward_lsn,
-                    "Found snapshot with LSN >= target LSN, dropping local partition store state",
-                );
-                let db = cell.import_cf(&mut state_guard, snapshot, database).await?;
-                Ok(PartitionStore::from(db))
-            }
+            (Ok(Some(db)), _) => Ok(PartitionStore::from(db)),
 
             (Ok(None), None) => {
                 debug!("No snapshot found for partition, creating new partition store");
@@ -396,9 +431,10 @@ impl PartitionStoreManager {
             }
 
             (Err(err), _) => {
-                // A snapshot may well exist but we failed to fetch it (transient repository error,
-                // or every retained candidate failed to download). Do NOT provision an empty store
-                // and silently discard data; fail the open so the processor retries later.
+                // A snapshot may well exist but we failed to fetch or import it (transient
+                // repository error, or every retained candidate failed). Do NOT provision an
+                // empty store and silently discard data; fail the open so the processor retries
+                // later.
                 Err(OpenError::Snapshot(err))
             }
 

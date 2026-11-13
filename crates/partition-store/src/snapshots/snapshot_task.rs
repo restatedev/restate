@@ -166,6 +166,7 @@ impl SnapshotPartitionTask {
             log_byte_offset: snapshot.log_byte_offset,
             partition_store_byte_offset: snapshot.partition_store_byte_offset,
             files: snapshot.files.clone(),
+            file_keys: std::collections::BTreeMap::new(),
         }
     }
 }

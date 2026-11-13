@@ -34,6 +34,10 @@ pub(crate) const SNAPSHOT_DOWNLOAD_FALLBACK: &str =
     "restate.partition_store.snapshots.download.fallback.total";
 pub(crate) const SNAPSHOT_FAST_FORWARD_FAILED: &str =
     "restate.partition_store.snapshots.fast_forward.failed.total";
+pub(crate) const SNAPSHOT_UPLOAD_BYTES_DEDUPLICATED: &str =
+    "restate.partition_store.snapshots.upload.bytes.deduplicated.total";
+pub(crate) const SNAPSHOT_FINGERPRINT_FALLBACK: &str =
+    "restate.partition_store.snapshots.fingerprint.fallback.total";
 
 pub(crate) fn describe_metrics() {
     describe_counter!(
@@ -46,6 +50,18 @@ pub(crate) fn describe_metrics() {
         SNAPSHOT_UPLOAD_FAILED,
         Unit::Count,
         "Number of failed partition snapshot uploads"
+    );
+
+    describe_counter!(
+        SNAPSHOT_UPLOAD_BYTES_DEDUPLICATED,
+        Unit::Bytes,
+        "Total bytes deduplicated (not uploaded) for partition snapshots"
+    );
+
+    describe_counter!(
+        SNAPSHOT_FINGERPRINT_FALLBACK,
+        Unit::Count,
+        "SST fingerprints that fell back to hashing the whole file"
     );
 
     describe_histogram!(

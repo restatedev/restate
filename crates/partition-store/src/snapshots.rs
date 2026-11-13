@@ -12,11 +12,14 @@ mod leases;
 mod metadata;
 mod repository;
 mod snapshot_task;
+mod sst_fingerprint;
 
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use futures::future::BoxFuture;
 
 use crate::partition_db::State;
 use crate::{CommitFence, PartitionStore, SnapshotError, SnapshotErrorKind};
@@ -28,7 +31,7 @@ pub use self::leases::{
     SnapshotLeaseManager, SnapshotLeaseValue,
 };
 pub use self::metadata::*;
-use self::repository::GetSnapshotError;
+pub(crate) use self::repository::GetSnapshotError;
 pub use self::repository::{
     LeaseProvider, PartitionSnapshotStatus, SnapshotReference, SnapshotRepository,
 };
@@ -172,13 +175,32 @@ impl Snapshots {
             .await
     }
 
-    #[instrument(level = "error", skip_all, fields(partition_id = %partition_id))]
+    /// Downloads the newest usable retained snapshot of the partition, without restoring it. See
+    /// `download_and_restore` for how unusable snapshots are skipped.
     pub async fn download_snapshot(
         &self,
         partition_id: PartitionId,
         target_lsn: Option<Lsn>,
         cancellation: &CancellationToken,
     ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
+        self.download_and_restore(partition_id, target_lsn, cancellation, &mut DownloadOnly)
+            .await
+    }
+
+    /// Downloads the newest usable retained snapshot of the partition and passes it to `restore`.
+    ///
+    /// `restore` returns [`GetSnapshotError::Defective`] when the snapshot's data itself was
+    /// rejected, such as when RocksDB refuses to import its files; the next older retained snapshot
+    /// is then tried instead. Any other error, and every download failure that says nothing about
+    /// the snapshot, ends the restore, because an older snapshot would fail the same way.
+    #[instrument(level = "error", skip_all, fields(partition_id = %partition_id))]
+    pub(crate) async fn download_and_restore<R: RestoreSnapshot>(
+        &self,
+        partition_id: PartitionId,
+        target_lsn: Option<Lsn>,
+        cancellation: &CancellationToken,
+        restore: &mut R,
+    ) -> anyhow::Result<Option<R::Output>> {
         use crate::metric_definitions::{SNAPSHOT_DOWNLOAD_DURATION, SNAPSHOT_DOWNLOAD_FAILED};
 
         let Some(repository) = &self.repository else {
@@ -187,8 +209,14 @@ impl Snapshots {
         };
 
         let start = std::time::Instant::now();
-        let result =
-            Self::download_snapshot_inner(repository, partition_id, target_lsn, cancellation).await;
+        let result = Self::download_and_restore_inner(
+            repository,
+            partition_id,
+            target_lsn,
+            cancellation,
+            restore,
+        )
+        .await;
         metrics::histogram!(SNAPSHOT_DOWNLOAD_DURATION).record(start.elapsed().as_secs_f64());
         if result.is_err() && !cancellation.is_cancelled() {
             metrics::counter!(SNAPSHOT_DOWNLOAD_FAILED).increment(1);
@@ -196,12 +224,13 @@ impl Snapshots {
         result
     }
 
-    async fn download_snapshot_inner(
+    async fn download_and_restore_inner<R: RestoreSnapshot>(
         repository: &SnapshotRepository,
         partition_id: PartitionId,
         target_lsn: Option<Lsn>,
         cancellation: &CancellationToken,
-    ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
+        restore: &mut R,
+    ) -> anyhow::Result<Option<R::Output>> {
         use crate::metric_definitions::SNAPSHOT_DOWNLOAD_FALLBACK;
 
         // A transient error reading the latest-snapshot pointer is propagated as `Err` so the
@@ -264,18 +293,34 @@ impl Snapshots {
                         ));
                         continue;
                     }
-                    if i > 0 {
-                        metrics::counter!(SNAPSHOT_DOWNLOAD_FALLBACK).increment(1);
-                        info!(
-                            snapshot_id = %snapshot_ref.snapshot_id,
-                            attempt = i + 1,
-                            "Restored from fallback snapshot"
-                        );
+                    let snapshot_id = snapshot_ref.snapshot_id;
+                    match restore.restore(snapshot).await {
+                        Ok(value) => {
+                            if i > 0 {
+                                metrics::counter!(SNAPSHOT_DOWNLOAD_FALLBACK).increment(1);
+                                info!(
+                                    snapshot_id = %snapshot_id,
+                                    attempt = i + 1,
+                                    previous_error = %last_error.as_ref().map(|err| format!("{err:#}")).unwrap_or_default(),
+                                    "Restored from fallback snapshot"
+                                );
+                            }
+                            return Ok(Some(value));
+                        }
+                        // An older snapshot would fail the same way, so fail the open; the
+                        // processor retries it, starting again from the latest snapshot.
+                        Err(GetSnapshotError::Unavailable(err)) => return Err(err),
+                        Err(err @ GetSnapshotError::Defective(_)) => {
+                            warn!(
+                                snapshot_id = %snapshot_id,
+                                %err,
+                                remaining = candidate_count - i - 1,
+                                "Snapshot is unusable, trying the next older one"
+                            );
+                            last_error = Some(err.into());
+                        }
                     }
-                    return Ok(Some(snapshot));
                 }
-                // An older snapshot would fail the same way, so fail the open; the processor
-                // retries it, starting again from the latest snapshot.
                 Err(GetSnapshotError::Unavailable(err)) => return Err(err),
                 Err(err @ GetSnapshotError::Defective(_)) => {
                     warn!(
@@ -301,6 +346,37 @@ impl Snapshots {
             ));
         error!(%final_err, "Exhausted all snapshot candidates");
         Err(final_err)
+    }
+}
+
+/// Turns a downloaded snapshot into the value that ends the restore.
+///
+/// It is a trait rather than an async closure so that the future a restorer returns is a concrete
+/// [`BoxFuture`], which keeps the fallback loop's future `Send` without the compiler having to
+/// prove that of a caller-supplied closure.
+pub(crate) trait RestoreSnapshot {
+    /// What a successful restore yields, such as an opened partition store.
+    type Output;
+
+    /// Restores `snapshot`. Returning [`GetSnapshotError::Defective`] means the snapshot's data is
+    /// unusable, so the restore falls back to the next older retained snapshot.
+    fn restore<'a>(
+        &'a mut self,
+        snapshot: LocalPartitionSnapshot,
+    ) -> BoxFuture<'a, Result<Self::Output, GetSnapshotError>>;
+}
+
+/// The restorer of [`Snapshots::download_snapshot`], which only downloads.
+struct DownloadOnly;
+
+impl RestoreSnapshot for DownloadOnly {
+    type Output = LocalPartitionSnapshot;
+
+    fn restore<'a>(
+        &'a mut self,
+        snapshot: LocalPartitionSnapshot,
+    ) -> BoxFuture<'a, Result<Self::Output, GetSnapshotError>> {
+        Box::pin(async move { Ok(snapshot) })
     }
 }
 

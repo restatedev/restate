@@ -349,9 +349,20 @@ where
         let mut partition_table_version_watcher = metadata.watch(MetadataKind::PartitionTable);
         gauge!(NUM_PARTITIONS).set(self.partition_table.live_load().len() as f64);
 
+        let (check_interval, first_check_delay) = {
+            let snapshots = &self.updateable_config.pinned().worker.snapshots;
+            let check_interval = snapshots.check_interval().add_jitter(0.1);
+            // Delay scheduled snapshots on startup, unless the operator chose a check interval.
+            let first_check_delay = if snapshots.check_interval.is_some() {
+                check_interval
+            } else {
+                Duration::from_secs(rand::rng().random_range(30..60))
+            };
+            (check_interval, first_check_delay)
+        };
         let mut snapshot_check_interval = tokio::time::interval_at(
-            tokio::time::Instant::now() + Duration::from_secs(rand::rng().random_range(30..60)), // delay scheduled snapshots on startup
-            Duration::from_secs(1).add_jitter(0.1),
+            tokio::time::Instant::now() + first_check_delay,
+            check_interval,
         );
         snapshot_check_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
@@ -1269,7 +1280,11 @@ where
                 let jitter = if sender.is_some() {
                     Duration::ZERO
                 } else {
-                    Duration::from_millis(rand::rng().random_range(0..10_000))
+                    // Spread automatic snapshots so that partitions sharing a tick don't all start
+                    // uploading at once: up to 10s at the default 1s check interval.
+                    let max_jitter = (config.worker.snapshots.check_interval() * 10)
+                        .min(Duration::from_secs(10));
+                    rand::rng().random_range(Duration::ZERO..=max_jitter)
                 };
                 let spawn_task_result = TaskCenter::spawn_unmanaged_child(
                     TaskKind::PartitionSnapshotProducer,
@@ -1318,7 +1333,6 @@ where
         if !self.pending_snapshot_status_refreshes.insert(partition_id) {
             return;
         }
-
         let psm = self.partition_store_manager.clone();
         self.asynchronous_operations
             .build_task()

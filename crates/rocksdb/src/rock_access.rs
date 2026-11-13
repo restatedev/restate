@@ -311,7 +311,12 @@ impl RocksAccess {
         name: CfName,
         metadata: ExportImportFilesMetaData,
     ) -> Result<(), RocksError> {
-        let options = prepare_cf_options(&name, &self.db_spec, &self.db_env)?;
+        let mut options = prepare_cf_options(&name, &self.db_spec, &self.db_env)?;
+        // Compaction must not read the imported files before their caller has verified them: a
+        // corrupt block would stop the database with a background error, making it impossible to
+        // drop the column family and fall back to another snapshot. The caller re-enables
+        // automatic compactions once it accepted the imported data.
+        options.set_disable_auto_compactions(true);
 
         let mut import_opts = ImportColumnFamilyOptions::default();
         import_opts.set_move_files(true);

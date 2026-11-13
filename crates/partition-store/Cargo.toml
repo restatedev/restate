@@ -67,6 +67,7 @@ tracing = { workspace = true }
 ulid = { workspace = true }
 zerocopy = { workspace = true }
 url = { workspace = true }
+xxhash-rust = { workspace = true, features = ["xxh3"] }
 
 [dev-dependencies]
 restate-clock = { workspace = true, features = ["test-util"] }
