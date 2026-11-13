@@ -101,6 +101,7 @@ fn populate_sleep_journal<T: WriteJournalTable>(txn: &mut T) {
             i,
             &StoredRawEntry::new(
                 StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+                vec![],
                 mock_sleep_command(i).encode::<ServiceProtocolV4Codec>(),
             ),
             &[i],
@@ -113,6 +114,7 @@ fn populate_sleep_journal<T: WriteJournalTable>(txn: &mut T) {
             i,
             &StoredRawEntry::new(
                 StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+                vec![],
                 mock_sleep_completion(i - 5).encode::<ServiceProtocolV4Codec>(),
             ),
             &[],
@@ -260,6 +262,7 @@ async fn call_journal() {
         0,
         &StoredRawEntry::new(
             StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+            vec![],
             mock_call_command(0, 1).encode::<ServiceProtocolV4Codec>(),
         ),
         &[0, 1],
@@ -270,6 +273,7 @@ async fn call_journal() {
         1,
         &StoredRawEntry::new(
             StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+            vec![],
             mock_one_way_call_command(2).encode::<ServiceProtocolV4Codec>(),
         ),
         &[2],

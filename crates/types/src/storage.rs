@@ -27,7 +27,9 @@ use restate_encoding::BilrostAs;
 use restate_platform::memory::EstimatedMemorySize;
 use restate_util_bytecount::ByteCount;
 use restate_util_string::format_restring;
+use serde_with::{DisplayFromStr, serde_as};
 
+use crate::blob::BlobId;
 use crate::journal_v2::raw::{RawEntry, RawEntryError, TryFromEntry};
 use crate::journal_v2::{Decoder, EntryMetadata, EntryType};
 use crate::time::MillisSinceEpoch;
@@ -316,16 +318,24 @@ impl StoredRawEntryHeader {
 
 /// Container of the raw entry that is enriched with additional metadata derived from Bifrost before
 /// storing it in the partition processor storage.
+#[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StoredRawEntry {
     pub header: StoredRawEntryHeader,
+    #[serde_as(as = "Vec<DisplayFromStr>")]
+    pub related_blob_ids: Vec<BlobId>,
     pub inner: RawEntry,
 }
 
 impl StoredRawEntry {
-    pub fn new(header: StoredRawEntryHeader, inner: impl Into<RawEntry>) -> Self {
+    pub fn new(
+        header: StoredRawEntryHeader,
+        related_blob_ids: Vec<BlobId>,
+        inner: impl Into<RawEntry>,
+    ) -> Self {
         Self {
             header,
+            related_blob_ids,
             inner: inner.into(),
         }
     }

@@ -487,6 +487,7 @@ mod tests {
                     .map(|e| {
                         StoredRawEntry::new(
                             StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+                            vec![],
                             e.encode::<ServiceProtocolV4Codec>(),
                         )
                     })

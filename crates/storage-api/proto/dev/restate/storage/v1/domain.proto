@@ -648,6 +648,8 @@ message Entry {
   }
 
   NotificationResultVariant notification_result_variant = 12;
+
+  repeated string related_blob_ids = 13;
 }
 
 message ResponseResult {
