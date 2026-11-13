@@ -71,6 +71,7 @@ where
                     0,
                     &StoredRawEntry::new(
                         StoredRawEntryHeader::new(ctx.record_created_at),
+                        vec![],
                         new_raw_entry,
                     ),
                     &[],

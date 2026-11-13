@@ -94,6 +94,7 @@ pub mod v1 {
         use bytes::{Buf, Bytes};
         use bytestring::ByteString;
 
+        use restate_types::blob::BlobId;
         use restate_types::deployment::PinnedDeployment;
         use restate_types::errors::InvocationError;
         use restate_types::identifiers::{
@@ -3246,6 +3247,13 @@ pub mod v1 {
                 let header =
                     restate_types::storage::StoredRawEntryHeader::new(value.append_time.into());
 
+                let mut related_blob_ids = Vec::with_capacity(value.related_blob_ids.len());
+                for blob_id_str in value.related_blob_ids {
+                    let blob_id = BlobId::from_str(&blob_id_str)
+                        .map_err(|err| ConversionError::InvalidData(err.into()))?;
+                    related_blob_ids.push(blob_id);
+                }
+
                 Ok(crate::journal_table_v2::StoredEntry(
                     match EntryType::try_from(value.ty)
                         .map_err(|e| ConversionError::unexpected_enum_variant("ty", e.0))?
@@ -3279,6 +3287,7 @@ pub mod v1 {
 
                             restate_types::storage::StoredRawEntry::new(
                                 header,
+                                related_blob_ids,
                                 journal_v2::raw::RawNotification::new(
                                     notification_ty,
                                     notification_id,
@@ -3292,6 +3301,7 @@ pub mod v1 {
                             ct @ journal_v2::CommandType::OneWayCall,
                         ) => restate_types::storage::StoredRawEntry::new(
                             header,
+                            related_blob_ids,
                             journal_v2::raw::RawCommand::new(ct, value.content)
                                 .with_command_specific_metadata(
                                 journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(Box::new(
@@ -3308,6 +3318,7 @@ pub mod v1 {
                         journal_v2::EntryType::Command(ct) => {
                             restate_types::storage::StoredRawEntry::new(
                                 header,
+                                related_blob_ids,
                                 journal_v2::raw::RawCommand::new(ct, value.content),
                             )
                         }
@@ -3368,6 +3379,11 @@ pub mod v1 {
                     call_or_send_command_metadata,
                     notification_id,
                     notification_result_variant: notification_result_variant.into(),
+                    related_blob_ids: raw_entry
+                        .related_blob_ids
+                        .into_iter()
+                        .map(|b| b.to_string())
+                        .collect(),
                 }
             }
         }

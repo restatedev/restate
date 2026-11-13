@@ -404,7 +404,11 @@ where
                 // time. This ensures that the append time does not depend on the application time of
                 // the record and ensures that subsequent journal entries have monotonically increasing
                 // append times.
-                &StoredRawEntry::new(StoredRawEntryHeader::new(ctx.record_created_at), entry),
+                &StoredRawEntry::new(
+                    StoredRawEntryHeader::new(ctx.record_created_at),
+                    vec![],
+                    entry,
+                ),
                 &related_completion_ids,
             )?;
         }
