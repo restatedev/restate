@@ -170,19 +170,13 @@
 
 mod codec;
 mod fields;
-// The key-selection machinery is a library for the tables that declare ordered
-// keys; until a table does, only its tests use parts of it.
-#[allow(dead_code)]
 pub mod header;
 mod index;
 mod key_decoder;
 mod legacy_codec;
-#[allow(unused_macros, unused_imports)]
 pub(crate) mod macros;
 mod ordered_key_codec;
-#[allow(dead_code)]
 pub(crate) mod predicate;
-#[allow(dead_code)]
 pub mod selection;
 
 // Re-exports

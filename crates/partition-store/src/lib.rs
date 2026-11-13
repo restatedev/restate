@@ -22,6 +22,7 @@ pub mod inbox_table;
 pub mod index;
 pub mod invocation_status_table;
 pub mod journal_events;
+pub mod journal_scan;
 pub mod journal_table;
 pub mod journal_table_v2;
 pub mod keys;
