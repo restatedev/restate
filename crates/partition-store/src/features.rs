@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod aggregated_status_stats;
+mod index_registry;
 mod scoped_promise_migration;
 mod scoped_state_migration;
 mod state_promise_migration_combined;
@@ -89,6 +91,21 @@ storage_features! {
     ///
     /// *Since v1.7.10*
     pub VqueueMetadataCleanupV1,
+
+    /// Retired: marked a store whose status gauges were kept under static
+    /// statistic IDs. Registered instances replace them; opening a store deletes
+    /// the legacy gauges and this marker, and nothing enables it again.
+    ///
+    /// Since v1.8.2
+    pub TrackStatusGauges,
+
+    /// The store holds the index and statistics registry (`crate::registry`): the
+    /// tokens in entry-status headers and the keys of registered indexes. Persisted
+    /// together with the first registration, never automatically, and kept
+    /// afterwards, so that binaries without the registry cannot open the store.
+    ///
+    /// Since v1.8.2
+    pub IndexRegistry,
 }
 
 trait StorageFeature: Sized + 'static {
@@ -99,6 +116,7 @@ trait StorageFeature: Sized + 'static {
         _current_version: &SemanticRestateVersion,
         is_store_empty: bool,
     ) -> bool;
+
     fn is_enabled(features: &StorageFeatures) -> bool;
     fn set_enabled(features: &mut StorageFeatures);
 
@@ -198,6 +216,53 @@ impl LoadedStorageFeatures {
         &self.enabled
     }
 
+    /// Adds the registry fence to `batch` unless it is already enabled: its ledger
+    /// entry and, when higher, the minimum Restate version. The registry state the
+    /// fence protects must be written in the same batch. Call `mark_persisted`
+    /// once the batch commits. Returns whether anything was added.
+    #[allow(dead_code)]
+    pub(crate) fn append_registry_fence(
+        &mut self,
+        current_version: &SemanticRestateVersion,
+        current_min_restate_version: &mut SemanticRestateVersion,
+        cf_handle: &std::sync::Arc<rocksdb::BoundColumnFamily<'_>>,
+        batch: &mut WriteBatch,
+        partition_id: restate_types::identifiers::PartitionId,
+    ) -> Result<bool, StorageError> {
+        if !self.set_enabled::<IndexRegistryFeature>(Some(current_version)) {
+            return Ok(false);
+        }
+        append_storage_features_to_wb(cf_handle, batch, partition_id, self.ledger())?;
+        let min = IndexRegistryFeature::min_required_version();
+        if min.is_newer_than(current_min_restate_version) {
+            append_min_restate_version_to_wb(cf_handle, batch, partition_id, min.clone())?;
+            *current_min_restate_version = min.clone();
+        }
+        Ok(true)
+    }
+
+    /// Drops the retired status-gauge marker, adding the ledger without it to
+    /// `batch`. Call `mark_persisted` once the batch commits. Returns whether the
+    /// marker was present.
+    pub(crate) fn append_legacy_status_gauges_removal(
+        &mut self,
+        cf_handle: &std::sync::Arc<rocksdb::BoundColumnFamily<'_>>,
+        batch: &mut WriteBatch,
+        partition_id: restate_types::identifiers::PartitionId,
+    ) -> Result<bool, StorageError> {
+        if self
+            .persisted
+            .features
+            .remove(TrackStatusGaugesFeature::persisted_name())
+            .is_none()
+        {
+            return Ok(false);
+        }
+        self.enabled.is_track_status_gauges = false;
+        append_storage_features_to_wb(cf_handle, batch, partition_id, &self.persisted)?;
+        Ok(true)
+    }
+
     pub(crate) fn ledger(&self) -> &PersistedEnabledFeatures {
         &self.persisted
     }
@@ -218,11 +283,11 @@ impl LoadedStorageFeatures {
     ) -> Vec<KnownStorageFeature> {
         KnownStorageFeature::VARIANTS
             .iter()
-            .filter(|feature| !feature.is_enabled(self.enabled()))
             .filter(|feature| {
                 current_version.is_equal_or_newer_than(feature.min_required_version())
-                    && feature.should_enable(config, current_version, is_store_empty)
             })
+            .filter(|feature| !feature.is_enabled(self.enabled()))
+            .filter(|feature| feature.should_enable(config, current_version, is_store_empty))
             .copied()
             .collect()
     }
@@ -685,5 +750,91 @@ mod tests {
                 KnownStorageFeature::VqueueMetadataCleanupV1,
             ]
         );
+
+        // The retired legacy feature never changes automatically.
+        for empty in [false, true] {
+            assert!(
+                !features
+                    .automatic_changes(&config, &current_version, empty)
+                    .contains(&KnownStorageFeature::TrackStatusGauges)
+            );
+        }
+    }
+
+    #[test]
+    fn retired_status_gauge_markers_load_but_never_change_automatically() {
+        let version = SemanticRestateVersion::new(1, 8, 3);
+        let mut features =
+            LoadedStorageFeatures::load(None, StorageVersion::V1_5, &version).unwrap();
+        features.set_enabled::<TrackStatusGaugesFeature>(Some(&version));
+        let persisted =
+            serde_json::from_value(serde_json::to_value(features.ledger()).unwrap()).unwrap();
+        let reloaded =
+            LoadedStorageFeatures::load(Some(persisted), StorageVersion::V1_5, &version).unwrap();
+        // Opening detects the marker, and deletes it with the legacy gauges.
+        assert!(reloaded.enabled().is_track_status_gauges);
+        let config = Configuration::default();
+        for (features, empty) in [(&features, true), (&reloaded, false)] {
+            assert!(
+                !features
+                    .automatic_changes(&config, &version, empty)
+                    .contains(&KnownStorageFeature::TrackStatusGauges)
+            );
+        }
+    }
+
+    #[test]
+    fn query_storage_floors_accept_release_candidates_and_preserve_higher_barriers() {
+        let candidate = SemanticRestateVersion::parse("1.8.2-dev").unwrap();
+        for feature in [
+            KnownStorageFeature::TrackStatusGauges,
+            KnownStorageFeature::IndexRegistry,
+        ] {
+            assert_eq!(feature.min_required_version(), &candidate);
+        }
+
+        let mut features =
+            LoadedStorageFeatures::load(None, StorageVersion::None, &candidate).unwrap();
+        features.set_enabled::<TrackStatusGaugesFeature>(Some(&candidate));
+        features.set_enabled::<IndexRegistryFeature>(Some(&candidate));
+        let persisted = features.ledger().clone();
+        assert!(
+            LoadedStorageFeatures::load(
+                Some(persisted.clone()),
+                StorageVersion::None,
+                &SemanticRestateVersion::new(1, 8, 1),
+            )
+            .is_err()
+        );
+        for version in [&candidate, &SemanticRestateVersion::new(1, 8, 2)] {
+            LoadedStorageFeatures::load(Some(persisted.clone()), StorageVersion::None, version)
+                .unwrap();
+        }
+
+        // Historical prototype stores keep their recorded floor and metadata.
+        let mut encoded = serde_json::to_value(persisted).unwrap();
+        encoded["features"]["index-registry"]["min_required_version"] = "1.8.3-dev".into();
+        encoded["features"]["index-registry"]["enabled_by_version"] = "1.8.3-dev".into();
+        encoded["features"]["index-registry"]["future-metadata"] =
+            serde_json::json!({ "value": 1 });
+        let higher: PersistedEnabledFeatures = serde_json::from_value(encoded).unwrap();
+        for version in [&candidate, &SemanticRestateVersion::new(1, 8, 2)] {
+            let error =
+                LoadedStorageFeatures::load(Some(higher.clone()), StorageVersion::None, version)
+                    .unwrap_err();
+            assert_eq!(
+                error.required_min_version,
+                SemanticRestateVersion::parse("1.8.3-dev").unwrap()
+            );
+            assert_eq!(error.features, ["index-registry"]);
+        }
+        let mut reloaded = LoadedStorageFeatures::load(
+            Some(higher.clone()),
+            StorageVersion::None,
+            &SemanticRestateVersion::new(1, 9, 0),
+        )
+        .unwrap();
+        assert!(!reloaded.set_enabled::<IndexRegistryFeature>(Some(&candidate)));
+        assert_eq!(reloaded.ledger(), &higher);
     }
 }
