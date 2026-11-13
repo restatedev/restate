@@ -12,10 +12,10 @@
 //!
 //! **Coverage.** An index reflects an entry when its keys or counts match that
 //! entry's contribution, including an empty contribution outside its membership.
-//! A Ready index reflects every entry. For a Backfilling index, coverage is proved
-//! by either the entry's token for its build job (which has the index's ID) or the
-//! committed cursor of its walk: every entry-status key at or before the cursor
-//! is covered even without a token (see [`crate::walk`]).
+//! A Ready index reflects every entry. A Backfilling index reflects exactly the
+//! entries that list its build job's token (the job has the index's ID): the
+//! token is the only proof. A walk's cursor only records the walk's progress;
+//! no write consults it.
 //!
 //! A write treats an uncovered entry's before-image as absent (*adopt on write*):
 //! a secondary index adds its new key without deleting an old one; an aggregate
@@ -24,22 +24,21 @@
 //! the Backfilling indexes' IDs.
 //!
 //! For example, with index 64 Ready and 70 Backfilling, an entry stored with no
-//! list and beyond 70's cursor is reflected by 64 only. Updating it removes its
-//! old key from 64, adds its new keys to both, and stores the list `[70]`. Once 70
-//! is Ready too, its next write stores no list at all.
+//! list is reflected by 64 only. Updating it removes its old key from 64, adds
+//! its new keys to both, and stores the list `[70]`. Once 70 is Ready too, its
+//! next write stores no list at all.
 //!
-//! Inserts have no before-image, whatever their key. Backfill slices establish
-//! coverage through their cursor without rewriting entry headers.
-
-use bytes::Bytes;
+//! Inserts have no before-image. A backfill establishes coverage the same way: it
+//! applies an entry to its own indexes and adds their tokens to the entry, in one
+//! commit (see [`super::backfill`]).
 
 use restate_storage_api::StorageError;
 use restate_storage_api::migration_job::MigrationJobIds;
 use restate_storage_api::vqueue_table::{EntryChange, EntryContext, EntryStateRef};
-
 use restate_types::config::Configuration;
 
 use crate::PartitionStoreTransaction;
+use crate::job::{DEFAULT_HISTORY_LIMIT, MigrationJobRecords};
 use crate::walk::Walks;
 
 use super::{IndexKind, IndexRegistry};
@@ -85,9 +84,6 @@ struct Active {
     definition: &'static IndexDefinition,
     /// The walk backfilling this Backfilling index, once started.
     walk: Option<u64>,
-    /// The committed cursor of the walk backfilling this Backfilling index:
-    /// every entry at or before it is reflected, listed or not.
-    covered: Option<Bytes>,
 }
 
 /// The Backfilling and Ready indexes of known definitions, built from the
@@ -103,6 +99,10 @@ pub(crate) struct MaintainedIndexes {
     /// The committed records this set was built from.
     registry: IndexRegistry,
     walks: Walks,
+    /// The committed job records, which slices update, and how many finished
+    /// jobs their history keeps.
+    jobs: MigrationJobRecords,
+    history_limit: usize,
 }
 
 impl std::fmt::Debug for MaintainedIndexes {
@@ -118,22 +118,35 @@ impl std::fmt::Debug for MaintainedIndexes {
 }
 
 impl MaintainedIndexes {
-    /// Maintained indexes whose definition is in `known`, with a matching kind,
-    /// and the cursors of their walks. Others are not maintained; opening a store
-    /// retires them before writes.
+    /// Maintained indexes whose definition is in `known`, with a matching kind.
+    /// Others are not maintained; opening a store retires them before writes.
     pub(crate) fn new(
         registry: &IndexRegistry,
         walks: &Walks,
         known: &[&'static IndexDefinition],
     ) -> Self {
         Self::build(registry.clone(), walks.clone(), known)
+            .with_jobs(MigrationJobRecords::default(), DEFAULT_HISTORY_LIMIT)
     }
 
-    /// The set of the same definitions after a commit changed the registry or the
-    /// walks to `registry` and `walks`.
-    pub(crate) fn successor(&self, registry: IndexRegistry, walks: Walks) -> Self {
+    /// This set with the committed `jobs`, keeping at most `history_limit`
+    /// finished jobs.
+    pub(crate) fn with_jobs(mut self, jobs: MigrationJobRecords, history_limit: usize) -> Self {
+        self.jobs = jobs;
+        self.history_limit = history_limit;
+        self
+    }
+
+    /// The set of the same definitions after a commit changed the registry, the
+    /// walks or the jobs to `registry`, `walks` and `jobs`.
+    pub(crate) fn successor(
+        &self,
+        registry: IndexRegistry,
+        walks: Walks,
+        jobs: MigrationJobRecords,
+    ) -> Self {
         let known: Vec<_> = self.entries.iter().map(|entry| entry.definition).collect();
-        Self::build(registry, walks, &known)
+        Self::build(registry, walks, &known).with_jobs(jobs, self.history_limit)
     }
 
     fn build(registry: IndexRegistry, walks: Walks, known: &[&'static IndexDefinition]) -> Self {
@@ -152,10 +165,6 @@ impl MaintainedIndexes {
                         ready: index.state == super::IndexStatus::Ready,
                         definition,
                         walk: index.walk,
-                        covered: index
-                            .walk
-                            .and_then(|walk| walks.get(walk))
-                            .and_then(|walk| walk.cursor.clone()),
                     })
             })
             .collect();
@@ -170,6 +179,8 @@ impl MaintainedIndexes {
             maintaining,
             registry,
             walks,
+            jobs: MigrationJobRecords::default(),
+            history_limit: DEFAULT_HISTORY_LIMIT,
         }
     }
 
@@ -181,6 +192,16 @@ impl MaintainedIndexes {
     /// The committed walks.
     pub(crate) fn walks(&self) -> &Walks {
         &self.walks
+    }
+
+    /// The committed job records.
+    pub(crate) fn jobs(&self) -> &MigrationJobRecords {
+        &self.jobs
+    }
+
+    /// How many finished jobs the history keeps.
+    pub(crate) fn history_limit(&self) -> usize {
+        self.history_limit
     }
 
     /// The indexes walk `walk` backfills, or an error if a member's definition
@@ -219,25 +240,21 @@ impl MaintainedIndexes {
         &self.maintaining
     }
 
-    /// Applies `change`, of the entry whose entry-status key is `key`, to every
-    /// maintained index. The stored list and walk cursors are only consulted while
-    /// some index is Backfilling.
+    /// Applies `change` to every maintained index. The entry's stored list is only
+    /// consulted while some index is Backfilling.
     pub(crate) fn apply(
         &self,
         storage: &mut PartitionStoreTransaction<'_>,
         context: &EntryContext<'_>,
         change: &EntryChange<'_>,
-        key: &[u8],
     ) {
         let touched_by = change
             .stored_before()
             .map_or(MigrationJobIds::EMPTY, |before| before.touched_by());
         for entry in &self.entries {
-            let before = change.before().filter(|_| {
-                entry.ready
-                    || touched_by.contains(entry.id)
-                    || entry.covered.as_deref().is_some_and(|cursor| key <= cursor)
-            });
+            let before = change
+                .before()
+                .filter(|_| entry.ready || touched_by.contains(entry.id));
             (entry.definition.apply)(storage, entry.id, context, before, change.after());
         }
     }

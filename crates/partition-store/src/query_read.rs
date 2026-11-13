@@ -48,12 +48,12 @@ use restate_types::identifiers::PartitionId;
 use restate_types::sharding::KeyRange;
 
 use crate::features::StorageFeatures;
-use crate::fsm_table::{registry_key, walks_key};
+use crate::fsm_table::{fsm_variable, migration_jobs_key, registry_key};
+use crate::job::{MigrationJobId, MigrationJobs};
 use crate::keys::KeyKind;
 use crate::registry::{Index, IndexKind, IndexNotReady, IndexRegistry, IndexStatus};
 use crate::scan::PhysicalScan;
 use crate::table::{IndexSource, ReadMetadata};
-use crate::walk::Walks;
 use crate::{PartitionDb, PartitionReadSnapshot, PartitionSnapshotScan, Result};
 
 /// A read's view of one partition, admitted by its processor: the RocksDB
@@ -71,8 +71,8 @@ struct QuerySnapshot {
     features: StorageFeatures,
     /// The registry as of `snapshot`, decoded on first use.
     registry: OnceLock<std::result::Result<Option<IndexRegistry>, String>>,
-    /// The walks as of `snapshot`, decoded on first use.
-    walks: OnceLock<std::result::Result<Walks, String>>,
+    /// The unfinished jobs as of `snapshot`, decoded on first use.
+    jobs: OnceLock<std::result::Result<MigrationJobs, String>>,
     cancel: CancellationToken,
     completion: ReadCompletion,
 }
@@ -108,7 +108,7 @@ impl ReadSnapshot {
                 snapshot,
                 features,
                 registry: OnceLock::new(),
-                walks: OnceLock::new(),
+                jobs: OnceLock::new(),
                 cancel,
                 completion: ReadCompletion(completion),
             }),
@@ -186,34 +186,38 @@ impl ReadSnapshot {
         Ok(index.id)
     }
 
-    /// How far the backfill of the Backfilling `index` is in this snapshot.
+    /// How far the backfill of the Backfilling `index` is in this snapshot, from
+    /// its build job's record.
     fn backfill_status(&self, index: &Index) -> String {
-        let Some(id) = index.walk else {
+        let Some(walk) = index.walk else {
             return "its backfill has not started".to_owned();
         };
-        let walks = self.inner.walks.get_or_init(|| {
-            let key = walks_key(self.partition_id());
+        let jobs = self.inner.jobs.get_or_init(|| {
+            let key = migration_jobs_key(self.partition_id(), fsm_variable::MIGRATION_JOBS);
             self.inner
                 .snapshot
                 .reader()
                 .get_pinned(KeyKind::Fsm, &key)
                 .map_err(|err| err.to_string())?
-                .map(|value| Walks::decode(&value).map_err(|err| err.to_string()))
+                .map(|value| MigrationJobs::decode(&value).map_err(|err| err.to_string()))
                 .transpose()
                 .map(Option::unwrap_or_default)
         });
-        let walk = match walks {
-            Ok(walks) => walks.get(id),
-            Err(err) => return format!("unreadable walks: {err}"),
+        let job = match jobs {
+            Ok(jobs) => jobs.get(MigrationJobId::for_index(index.id)),
+            Err(err) => return format!("backfill walk {walk}; unreadable job records: {err}"),
         };
-        let Some(walk) = walk else {
-            return format!("its backfill walk {id} is missing");
+        let Some(job) = job else {
+            return format!("backfill walk {walk}; its job record is missing");
         };
-        let mut status = format!("backfill walk {id} has examined {} entries", walk.scanned);
-        if let Some(error) = &walk.last_error {
+        let mut status = format!(
+            "backfill walk {walk} has examined {} entries",
+            job.rows_examined
+        );
+        if let Some(error) = &job.last_error {
             status.push_str(&format!(
                 "; failed attempts: {}, the last with: {error}",
-                walk.failures
+                job.failures
             ));
         }
         status

@@ -53,10 +53,11 @@ a new ID; IDs are never reused.
   the old state yet, because the index is newer than the row, the write only
   adds. We call that *adopting* the row.
 - **A backfill walk.** A new index doesn't yet contain the rows that existed
-  before it. A **walk** visits those rows in key order and adds each one. It
-  runs in small **slices**, each inside one of the processor's own transactions,
-  between the processor's regular work, and remembers how far it got in a
-  **cursor** so it can resume after a restart.
+  before it. A **walk** visits those rows in key order, adds each one and records
+  the index's token on it (below). It runs in small **slices**, each inside one
+  of the processor's own transactions, between the processor's regular work, and
+  remembers how far it got in a **cursor** so it can resume after a restart. The
+  cursor is only a bookmark: no write consults it.
 
 **Status.** An index is `Backfilling` while its walk hasn't finished: writes keep
 it up to date, but it is incomplete, so queries must not read it. It becomes
@@ -66,10 +67,11 @@ it up to date, but it is incomplete, so queries must not read it. It becomes
 **Token.** For a write to know whether an index already contains a row's old
 state, the source row keeps a small list, `touched_by`: the IDs of the indexes
 still being built that already contain this row. (The list names the index's
-*build job*, which for now has the same ID as the index.) A row carries a token
-until that index is Ready or dropped; the next write then drops it. Each source table
-stores its tokens in its own rows; for the example, that is the `entry_status`
-header.
+*build job*, which for now has the same ID as the index.) Writes and walks are
+the only ways a row gets a token, and the token is the only proof that an index
+being built contains the row. A row carries a token until that index is Ready or
+dropped; the next write then drops it. Each source table stores its tokens in
+its own rows; for the example, that is the `entry_status` header.
 
 **Index registry.** The per-store record of which indexes exist, with their
 definition name, ID and status (`src/registry.rs`). An index being built points
@@ -81,10 +83,12 @@ replicas of one partition can be at different points, which is normal.
 **Definition families.** Definitions released together are grouped in a
 *family*, switched on by the same configuration options.
 
-**Migration job** *(planned)*. The general unit of maintenance work, building an
-index or migrating a table, with a status, timestamps and progress. For current
-index builds, the registry holds build identity and status; separate, possibly
-shared walks hold traversal progress.
+**Migration job.** The general unit of maintenance work, today building an
+index. Each index has a build job with the same ID, recorded next to the
+registry (`src/job.rs`): its status, when it started and finished, and what
+its slices did. The records are for operators only: the registry decides
+whether an index is Ready, and the walk where its work resumes. Finished jobs
+are kept up to `worker.storage.migration-job-history-limit`.
 
 ## The rules
 
@@ -99,28 +103,33 @@ are their foundation.
 2. **Index IDs are never reused**, so a stale token or a not-yet-deleted key can
    never be mistaken for a new build.
 3. **One decision per index per row change.** The index contains the row's old
-   state if the index is Ready, or the row holds the index's token, or today
-   also if the row's key is at or before the walk's cursor. Then remove old and
-   add new; otherwise only add. Never apply a change twice; never skip an index
-   that is being maintained.
+   state if the index is Ready or the row holds the index's token. Then remove
+   old and add new; otherwise only add. Never apply a change twice; never skip an
+   index that is being maintained.
 4. **Read the stored row in the same transaction before changing it.** A row
    remembered from an earlier transaction can be stale: a later write may have
-   changed its state and tokens, and a later slice may have moved the walk's
-   cursor past it, so rule 3 would decide wrongly and add the row twice or skip
-   it. For the `entry_status` example,
-   `StoredEntryRef` carries the stored tokens together with the row's old state
-   for this reason; it does not prove the row is current.
-5. **A slice commits its index writes, its cursor and, at the end, `Ready`
-   together.** A crash loses them together, which is why the store needs no
-   write-ahead log for this. The same holds for a write: the row change, its
-   index effects and its token change are one commit.
-6. **Queries read only Ready indexes, resolved in their own snapshot.** A read
+   changed its state and tokens, or a later slice may have filled it and added a
+   token, so rule 3 would decide wrongly and add the row twice or skip it. For
+   the `entry_status` example, `StoredEntryRef` carries the stored tokens
+   together with the row's old state for this reason; it does not prove the row
+   is current.
+5. **A slice commits its index writes, the tokens it adds to the rows it
+   filled, its cursor and, at the end, `Ready` together.** A crash loses them
+   together, which is why the store needs no write-ahead log for this. The same
+   holds for a write: the row change, its index effects and its token change are
+   one commit. A fill keeps the tokens the row already holds.
+6. **Only a full pass with no gap makes an index Ready.** A walk's indexes join
+   it when it starts, at the beginning of its source, and every definition today
+   can fill a row, so each row the walk passes holds the token or gets it before
+   the cursor moves on. An index that joins a walk late, or a definition that
+   can't fill, needs its own full pass before it is Ready.
+7. **Queries read only Ready indexes, resolved in their own snapshot.** A read
    finds the Ready index of a definition in the registry as it was when the read
    was admitted, or fails with `IndexNotReady`.
-7. **Persisted formats are append-only.** Bilrost tags, enum numbers and the keys
+8. **Persisted formats are append-only.** Bilrost tags, enum numbers and the keys
    under which the registry and walks are stored never change meaning. Rename
    in code freely; never renumber.
-8. **The `index-registry` storage feature fences older binaries.** It is set with
+9. **The `index-registry` storage feature fences older binaries.** It is set with
    the first registration and records a minimum Restate version, so an older
    binary, which doesn't know tokens and index keys, refuses to open the store
    because of that version floor rather than ignoring them.

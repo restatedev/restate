@@ -75,6 +75,10 @@ mod fsm_variable {
     pub const INDEX_REGISTRY: u64 = 14;
     /// *Since v1.8.2*
     pub const WALKS: u64 = 15;
+    /// *Since v1.8.2*
+    pub const MIGRATION_JOBS: u64 = 16;
+    /// *Since v1.8.2*
+    pub const MIGRATION_JOB_HISTORY: u64 = 17;
 }
 
 /// Result of decoding a value, including codec metadata
@@ -499,6 +503,12 @@ fn decode_fsm_value(key: &[u8], value: &[u8]) -> DecodedValue {
     if state_id == fsm_variable::WALKS {
         return decode_fsm_walks(value);
     }
+    if state_id == fsm_variable::MIGRATION_JOBS {
+        return decode_fsm_jobs("MigrationJobs", value);
+    }
+    if state_id == fsm_variable::MIGRATION_JOB_HISTORY {
+        return decode_fsm_jobs("MigrationJobHistory", value);
+    }
 
     // Read codec byte
     let codec_byte = value[0];
@@ -639,7 +649,15 @@ fn decode_fsm_registry(value: &[u8]) -> DecodedValue {
                 .walk
                 .map(|walk| format!(" walk={walk}"))
                 .unwrap_or_default();
-            format!("{} {} {:?} {:?}{walk}", r.id, r.definition, r.kind, r.state)
+            let timeline = if r.timeline == Default::default() {
+                String::new()
+            } else {
+                format!(" {:?}", r.timeline)
+            };
+            format!(
+                "{} {} {:?} {:?}{walk}{timeline}",
+                r.id, r.definition, r.kind, r.state
+            )
         })
         .collect::<Vec<_>>();
     DecodedValue::decoded(
@@ -675,7 +693,7 @@ fn decode_fsm_walks(value: &[u8]) -> DecodedValue {
         .iter()
         .map(|w| {
             format!(
-                "id={} job={}/{} end={} cursor={} scanned={} failures={} last_error={:?}",
+                "id={} job={}/{} end={} cursor={}",
                 w.id,
                 w.kind.name,
                 w.kind.version,
@@ -683,9 +701,6 @@ fn decode_fsm_walks(value: &[u8]) -> DecodedValue {
                 w.cursor
                     .as_deref()
                     .map_or_else(|| "-".to_owned(), super::hex_encode),
-                w.scanned,
-                w.failures,
-                w.last_error,
             )
         })
         .collect::<Vec<_>>();
@@ -699,6 +714,47 @@ fn decode_fsm_walks(value: &[u8]) -> DecodedValue {
                 .map(|reason| format!(" rejected: {reason}"))
                 .unwrap_or_default()
         ),
+    )
+}
+
+/// Decodes a list of migration jobs, the unfinished ones or the history, stored
+/// as plain bilrost.
+fn decode_fsm_jobs(label: &str, value: &[u8]) -> DecodedValue {
+    use restate_partition_store::job::MigrationJobs;
+
+    let payload_size = value.len();
+    let jobs = match MigrationJobs::decode(value) {
+        Ok(jobs) => jobs,
+        Err(err) => return DecodedValue::error(None, payload_size, err.to_string()),
+    };
+    let entries = jobs
+        .entries()
+        .iter()
+        .map(|j| {
+            format!(
+                "id={} {:?} {} {:?} walk={:?} created={:?} started={:?} finished={:?} \
+                 rows_examined={} rows_filled={} slices={} work_us={} failures={} last_error={:?}",
+                j.id(),
+                j.kind,
+                j.name,
+                j.status,
+                j.walk,
+                j.created_at,
+                j.started_at,
+                j.finished_at,
+                j.rows_examined,
+                j.rows_filled,
+                j.slices,
+                j.work_us,
+                j.failures,
+                j.last_error,
+            )
+        })
+        .collect::<Vec<_>>();
+    DecodedValue::decoded(
+        None,
+        payload_size,
+        format!("{label}([{}])", entries.join("; ")),
     )
 }
 
@@ -943,7 +999,7 @@ mod tests {
             "fsm position should decode, got: {decoded}"
         );
 
-        // Plain-bilrost registry/walk values have distinct IDs from the position.
+        // Plain-bilrost registry, walk and job values have distinct IDs from the position.
         assert_eq!(fsm_variable::FSM_POSITION, 13);
         for (id, value, expected) in [
             (
@@ -955,6 +1011,16 @@ mod tests {
                 15,
                 restate_partition_store::walk::Walks::default().encode(),
                 "Walks([])",
+            ),
+            (
+                16,
+                restate_partition_store::job::MigrationJobs::default().encode(),
+                "MigrationJobs([])",
+            ),
+            (
+                17,
+                restate_partition_store::job::MigrationJobs::default().encode(),
+                "MigrationJobHistory([])",
             ),
         ] {
             let decoded = decode_value(KeyKind::Fsm, &fsm_key(id), &value);
