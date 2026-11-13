@@ -36,6 +36,15 @@ pub struct KeyDecoder<'a, C, const FIELD: usize = 0> {
     pub _marker: std::marker::PhantomData<C>,
 }
 
+// Deriving Copy/Clone would constrain C, which is only a marker in PhantomData.
+impl<C, const FIELD: usize> Copy for KeyDecoder<'_, C, FIELD> {}
+
+impl<C, const FIELD: usize> Clone for KeyDecoder<'_, C, FIELD> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
 impl<'a, C: KeyDecode> KeyDecoder<'a, C> {
     /// Starts at the bytes expected by `C`'s codec. Ordered payloads start after
     /// their header; legacy full-key codecs may retain it. This constructor does

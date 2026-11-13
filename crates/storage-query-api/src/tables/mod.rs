@@ -21,11 +21,13 @@
 pub mod bifrost_read_streams;
 pub mod deployment;
 pub mod index;
+pub mod indexes;
 pub mod invocation_state;
 pub mod invocation_status;
 pub mod journal;
 pub mod journal_events;
 pub mod locks;
+pub mod migration_jobs;
 pub mod partition_state;
 pub mod promise;
 pub mod rules;

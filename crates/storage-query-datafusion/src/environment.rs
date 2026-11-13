@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use dashmap::{DashMap, mapref::entry::Entry};
@@ -22,6 +23,7 @@ use datafusion::logical_expr::registry::{ExtensionTypeRegistry, MemoryExtensionT
 use datafusion::prelude::SessionContext;
 
 use restate_clock::{AtomicStorage, HlcClock, UniqueTimestamp, WallClock};
+use restate_partition_store::QueryIoExecutor;
 use restate_storage_query_api::{QueryEngineTable, SessionOptions};
 use restate_types::config::QueryEngineOptions;
 use restate_util_string::ReString;
@@ -59,14 +61,16 @@ struct RegisteredTable {
 
 /// Shared DataFusion resources and defaults used to construct independent session state.
 ///
-/// Clones share the runtime, its memory pool, and the query HLC. Each call to [`Self::build_session_state`]
-/// creates a fresh session identity, configuration copy, and catalog container while reusing
-/// that runtime. Components populate the shared provider inventory as dependencies become
-/// available; sessions select and name providers in independent catalogs.
+/// Clones share the runtime, its memory pool, the query IO pool, and the query HLC.
+/// Each call to [`Self::build_session_state`] creates a fresh session identity,
+/// configuration copy, and catalog container while reusing that runtime. Components
+/// populate the shared provider inventory as dependencies become available;
+/// sessions select and name providers in independent catalogs.
 #[derive(Clone)]
 pub struct DataFusionEnv {
     runtime: Arc<RuntimeEnv>,
     query_clock: Arc<QueryClock>,
+    io_executor: QueryIoExecutor,
     config: SessionConfig,
     tables: Arc<DashMap<ReString, RegisteredTable>>,
 }
@@ -90,6 +94,13 @@ impl DataFusionEnv {
     /// Session defaults enable the information schema, use a batch size of 128, and resolve
     /// unqualified tables in `restate.public`. `datafusion_options` are applied last and may
     /// override these settings, including the target partition count.
+    ///
+    /// The query IO pool starts with that final target partition count as its
+    /// thread count. For example, parallelism 4 overridden by
+    /// `datafusion.execution.target_partitions = 2` starts two IO workers.
+    /// Share this pool with storage scanners and the V2 engine through
+    /// [`Self::io_executor`]. Environment clones and sessions reuse its workers.
+    ///
     /// Query execution requires the binary's [`restate_clock::ClockUpkeep`] to be running.
     ///
     /// # Errors
@@ -135,9 +146,19 @@ impl DataFusionEnv {
                 HlcClock::new(None, WallClock, AtomicStorage::default())
                     .map_err(|err| DataFusionError::External(Box::new(err)))?,
             )),
+            io_executor: QueryIoExecutor::new(
+                NonZeroUsize::new(config.target_partitions())
+                    .expect("DataFusion normalizes target partitions to a non-zero value"),
+            ),
             config,
             tables: Arc::new(DashMap::new()),
         })
+    }
+
+    /// The query service's storage IO pool, separate from the partition and
+    /// database IO pools; clones share its workers.
+    pub fn io_executor(&self) -> &QueryIoExecutor {
+        &self.io_executor
     }
 
     /// Shared across environment clones and sessions; query timestamps are allocated at execution.

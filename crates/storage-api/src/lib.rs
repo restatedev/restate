@@ -28,6 +28,8 @@ pub enum StorageError {
     DataIntegrityError,
     #[error("operational error that can be caused during a graceful shutdown")]
     OperationalError,
+    #[error("storage scan was interrupted")]
+    ScanInterrupted,
     #[error("snapshot export failed: {0}")]
     SnapshotExport(anyhow::Error),
     #[error("precondition failed: {0}")]
@@ -77,6 +79,7 @@ pub mod migration_job;
 pub mod outbox_table;
 pub mod promise_table;
 pub mod protobuf_types;
+pub mod scan;
 pub mod service_status_table;
 pub mod state_table;
 mod table;
