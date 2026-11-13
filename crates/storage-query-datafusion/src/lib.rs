@@ -45,8 +45,6 @@ mod scheduler_status;
 mod service;
 mod state;
 mod statistics;
-#[cfg(feature = "table_docs")]
-pub mod table_docs;
 mod table_macro;
 mod table_providers;
 mod user_limits;

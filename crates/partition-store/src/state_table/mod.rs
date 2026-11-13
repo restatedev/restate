@@ -15,8 +15,10 @@
 //! scoped keys also use the legacy optional-scope codec. The partition-key prefix
 //! supports range scans, but iteration does not imply lexicographic state-key order.
 
+mod binding;
 mod scan;
 
+pub use binding::{ScopedStateBinding, StateBinding};
 pub use scan::{ScopedStateTable, StateTable};
 
 use std::pin::Pin;

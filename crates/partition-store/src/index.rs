@@ -53,12 +53,14 @@ use crate::keys::header::KeyScope;
 use crate::keys::{IndexKeyPrefix, KeyEncode};
 use crate::table::ReadMetadata;
 
+mod binding;
 mod entry;
 mod macros;
 mod maintenance;
 mod virtual_object;
 mod vqueue;
 
+pub use binding::EntryByServiceBinding;
 pub use entry::{
     EntryByStage, EntryByStageKey, EntryByStageKeyView, EntryByStageService,
     EntryByStageServiceKey, EntryByStageServiceKeyView, EntryNextAtByStage, EntryNextAtByStageKey,
@@ -169,4 +171,42 @@ impl IndexId {
             _ => None,
         }
     }
+}
+
+/// Registers the entry indexes of `store` and runs their backfill to the end, as
+/// an open with `experimental-enable-indexes-v1` followed by the background
+/// driver does, without the open's other migrations.
+#[cfg(test)]
+pub(crate) async fn backfill_indexes(store: &mut crate::PartitionStore) {
+    use crate::fsm_table::{
+        get_min_restate_version_from_partition_db, get_storage_features_from_partition_db,
+        get_storage_version_from_partition_db,
+    };
+    use crate::registry::{DEFINITIONS, FenceState, Requests};
+
+    let db = store.partition_db().clone();
+    let current = restate_types::SemanticRestateVersion::current();
+    let mut features = crate::features::LoadedStorageFeatures::load(
+        get_storage_features_from_partition_db(&db).unwrap(),
+        get_storage_version_from_partition_db(&db).unwrap(),
+        current,
+    )
+    .unwrap();
+    let mut min_restate_version = get_min_restate_version_from_partition_db(&db).unwrap();
+    store
+        .reconcile_registry(
+            DEFINITIONS,
+            &Requests {
+                maintain: crate::vqueue_table::ENTRY_INDEXES.definitions.to_vec(),
+                ..Default::default()
+            },
+            FenceState {
+                features: &mut features,
+                current_version: current,
+                min_restate_version: &mut min_restate_version,
+            },
+        )
+        .await
+        .unwrap();
+    crate::walk::engine::run_all(store, 1_000).await.unwrap();
 }

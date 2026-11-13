@@ -20,7 +20,9 @@ use restate_util_string::ReString;
 use crate::{ShardingScheme, define_schema};
 
 define_schema! {
-    /// Current processing status and attempt statistics of vqueue entries.
+    /// Status of every vqueue entry.
+    ///
+    /// One row per entry (an invocation or a state mutation), with its stage, its attempts and how long it was blocked on each resource.
     vqueue_entry_status {
         name: "sys_vqueue_entry_status",
         sharding: ShardingScheme::ByPartitionKey { is_leader_required: false },
@@ -34,17 +36,22 @@ define_schema! {
         columns {
             /// Internal column that is used for partitioning. Can be ignored.
             partition_key: PartitionKey => DataType::UInt64,
-            /// Resource identifier of the entry, without its sequence number.
-            /// Use `canonical_id` to distinguish incarnations of the same resource.
-            /// Uses LargeUtf8 to match invocation IDs in SQL comparisons.
+            /// Resource identifier of the entry: an invocation ID or a state mutation
+            /// ID, without its sequence number. Use `canonical_id` to distinguish
+            /// incarnations of the same resource.
+            ///
+            /// Due to quirks in DataFusion, this should remain `LargeUtf8` to match
+            /// `id` in `sys_invocation_status` for dynamic filter pushdown.
             entry_id: BaseEntryId => DataType::LargeUtf8,
             /// The VQueue Identifier (vq_...).
             vqueue_id: VQueueId => DataType::LargeUtf8,
-            /// The stage this entry currently belongs to.
+            /// The stage this entry currently belongs to. Choices are 'inbox', 'running', 'paused',
+            /// 'suspended', and 'finished'.
             #[values(Stage::VARIANTS.iter().copied())]
             #[starts_with]
             stage: Stage => DataType::LargeUtf8,
-            /// The entry processing status.
+            /// The entry processing status. Examples are `new`, `scheduled`, `started`,
+            /// `backing-off`, `yielded`, `killed`, `cancelled`, `failed`, and `succeeded`.
             #[values(Status::VARIANTS.iter().copied())]
             status: Status => DataType::LargeUtf8,
             /// Whether this entry currently holds a lock.
@@ -112,8 +119,8 @@ define_schema! {
             total_blocked_on_lock: i64 => DataType::Duration,
             /// Total time spent blocked on deployment concurrency capacity across all attempts.
             total_blocked_on_deployment_concurrency: i64 => DataType::Duration,
-            /// Canonical identifier of the entry: its resource ID followed by `_`
-            /// and its sequence number.
+            /// Canonical identifier of the entry: its resource ID followed by `_` and
+            /// its sequence number.
             canonical_id: CanonicalEntryId => DataType::LargeUtf8,
         }
     }
