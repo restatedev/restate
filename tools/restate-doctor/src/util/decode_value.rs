@@ -71,6 +71,10 @@ mod fsm_variable {
     pub const STORAGE_FEATURES: u64 = 12;
     /// *Since v1.8.2*
     pub const FSM_POSITION: u64 = 13;
+    /// *Since v1.8.2*
+    pub const INDEX_REGISTRY: u64 = 14;
+    /// *Since v1.8.2*
+    pub const WALKS: u64 = 15;
 }
 
 /// Result of decoding a value, including codec metadata
@@ -250,18 +254,7 @@ fn decode_stat_value(kind: StatKind, value: &[u8]) -> DecodedValue {
                 format!("expected {} bytes for a gauge value", size_of::<u64>()),
             ),
         },
-        StatKind::StageBucketedGauge => match StageCounts::deserialize_from(value) {
-            Ok(value) => DecodedValue::decoded(
-                None,
-                value.serialized_len(),
-                format!("StageCounts({:?})", value.iter().collect::<Vec<_>>()),
-            ),
-            Err(_) => DecodedValue::error(
-                None,
-                value.len(),
-                "invalid stage-bucketed gauge value".to_owned(),
-            ),
-        },
+        StatKind::StageBucketedGauge => decode_stage_counts(value),
         StatKind::StageStatusBucketedGauge => match StageStatusCounts::deserialize_from(value) {
             Ok(value) => DecodedValue::decoded(
                 None,
@@ -500,6 +493,12 @@ fn decode_fsm_value(key: &[u8], value: &[u8]) -> DecodedValue {
     if state_id == fsm_variable::STORAGE_FEATURES {
         return decode_fsm_storage_features(value);
     }
+    if state_id == fsm_variable::INDEX_REGISTRY {
+        return decode_fsm_registry(value);
+    }
+    if state_id == fsm_variable::WALKS {
+        return decode_fsm_walks(value);
+    }
 
     // Read codec byte
     let codec_byte = value[0];
@@ -599,6 +598,108 @@ fn decode_fsm_storage_features(value: &[u8]) -> DecodedValue {
         }
         Err(err) => DecodedValue::error(None, payload_size, format!("{err}")),
     }
+}
+
+fn decode_stage_counts(value: &[u8]) -> DecodedValue {
+    match StageCounts::deserialize_from(value) {
+        Ok(value) => DecodedValue::decoded(
+            None,
+            value.serialized_len(),
+            format!("StageCounts({:?})", value.iter().collect::<Vec<_>>()),
+        ),
+        Err(_) => DecodedValue::error(
+            None,
+            value.len(),
+            "invalid stage-bucketed gauge value".to_owned(),
+        ),
+    }
+}
+
+/// Decodes the index and statistics registry, stored as plain bilrost. A record
+/// this binary rejects, because a newer binary wrote it or it breaks an
+/// invariant, is still shown from its raw fields, next to the reason: that is
+/// when an operator needs to see it most.
+fn decode_fsm_registry(value: &[u8]) -> DecodedValue {
+    use bilrost::OwnedMessage;
+    use restate_partition_store::registry::IndexRegistry;
+
+    let payload_size = value.len();
+    let (registry, rejected) = match IndexRegistry::decode(value) {
+        Ok(registry) => (registry, None),
+        Err(reason) => match <IndexRegistry as OwnedMessage>::decode(value) {
+            Ok(registry) => (registry, Some(reason)),
+            Err(_) => return DecodedValue::error(None, payload_size, reason.to_string()),
+        },
+    };
+    let entries = registry
+        .entries()
+        .iter()
+        .map(|r| {
+            let walk = r
+                .walk
+                .map(|walk| format!(" walk={walk}"))
+                .unwrap_or_default();
+            format!("{} {} {:?} {:?}{walk}", r.id, r.definition, r.kind, r.state)
+        })
+        .collect::<Vec<_>>();
+    DecodedValue::decoded(
+        None,
+        payload_size,
+        format!(
+            "IndexRegistry(format={}, [{}]){}",
+            registry.format(),
+            entries.join("; "),
+            rejected
+                .map(|reason| format!(" rejected: {reason}"))
+                .unwrap_or_default()
+        ),
+    )
+}
+
+/// Decodes the walks, stored as plain bilrost; a rejected record is shown from
+/// its raw fields next to the reason, as for the registry.
+fn decode_fsm_walks(value: &[u8]) -> DecodedValue {
+    use bilrost::OwnedMessage;
+    use restate_partition_store::walk::Walks;
+
+    let payload_size = value.len();
+    let (walks, rejected) = match Walks::decode(value) {
+        Ok(walks) => (walks, None),
+        Err(reason) => match <Walks as OwnedMessage>::decode(value) {
+            Ok(walks) => (walks, Some(reason)),
+            Err(_) => return DecodedValue::error(None, payload_size, reason.to_string()),
+        },
+    };
+    let entries = walks
+        .entries()
+        .iter()
+        .map(|w| {
+            format!(
+                "id={} job={}/{} end={} cursor={} scanned={} failures={} last_error={:?}",
+                w.id,
+                w.kind.name,
+                w.kind.version,
+                super::hex_encode(&w.end),
+                w.cursor
+                    .as_deref()
+                    .map_or_else(|| "-".to_owned(), super::hex_encode),
+                w.scanned,
+                w.failures,
+                w.last_error,
+            )
+        })
+        .collect::<Vec<_>>();
+    DecodedValue::decoded(
+        None,
+        payload_size,
+        format!(
+            "Walks([{}]){}",
+            entries.join("; "),
+            rejected
+                .map(|reason| format!(" rejected: {reason}"))
+                .unwrap_or_default()
+        ),
+    )
 }
 
 /// Decode a SequenceNumber FSM value with a descriptive label
@@ -711,8 +812,10 @@ mod tests {
     use restate_partition_store::PaddedPartitionId;
     use restate_partition_store::fsm_table::PartitionStateMachineKey;
     use restate_partition_store::keys::EncodeTableKeyPrefix;
+    use restate_types::identifiers::PartitionId;
     use restate_types::logs::Lsn;
     use restate_types::storage::StorageCodec;
+    use zerocopy::IntoBytes;
 
     use super::*;
 
@@ -722,6 +825,33 @@ mod tests {
             state_id,
         }
         .serialize()
+    }
+
+    /// A registry this binary rejects, here one of a newer format, is shown from its
+    /// raw fields together with the reason.
+    #[test]
+    fn rejected_registries_are_shown_with_their_reason() {
+        /// The persisted registry's layout, with a format this binary does not support.
+        #[derive(bilrost::Message)]
+        struct NewerRegistry {
+            #[bilrost(1)]
+            format: u32,
+            #[bilrost(2)]
+            next_id: u64,
+        }
+        let value = bilrost::Message::encode_to_vec(&NewerRegistry {
+            format: 2,
+            next_id: 64,
+        });
+        let decoded = decode_value(KeyKind::Fsm, &fsm_key(fsm_variable::INDEX_REGISTRY), &value);
+        let DecodedContent::Decoded(text) = &decoded.content else {
+            panic!("shown from its raw fields, got: {decoded}");
+        };
+        assert!(text.contains("IndexRegistry(format=2, [])"), "{text}");
+        assert!(
+            text.contains("rejected: unsupported registry format 2"),
+            "{text}"
+        );
     }
 
     /// The newer FSM variables (>= v1.6) must decode through their dedicated arms
@@ -812,5 +942,62 @@ mod tests {
             matches!(&decoded.content, DecodedContent::Decoded(s) if s.contains("log_byte_offset: 30")),
             "fsm position should decode, got: {decoded}"
         );
+
+        // Plain-bilrost registry/walk values have distinct IDs from the position.
+        assert_eq!(fsm_variable::FSM_POSITION, 13);
+        for (id, value, expected) in [
+            (
+                14,
+                restate_partition_store::registry::IndexRegistry::default().encode(),
+                "IndexRegistry(format=1, [])",
+            ),
+            (
+                15,
+                restate_partition_store::walk::Walks::default().encode(),
+                "Walks([])",
+            ),
+        ] {
+            let decoded = decode_value(KeyKind::Fsm, &fsm_key(id), &value);
+            assert_eq!(decoded.codec, None);
+            assert_eq!(decoded.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn decodes_bucketed_gauge_values() {
+        use restate_storage_api::vqueue_table::{Stage, Status};
+
+        let mut key = AggregateKeyPrefix::new(PartitionId::from(7), 70)
+            .as_bytes()
+            .to_vec();
+        key.push(StatKind::StageStatusBucketedGauge as u8);
+        key.extend_from_slice(b"payload");
+
+        let mut value = vec![Stage::Inbox as u8, Status::New as u8];
+        value.extend_from_slice(&42_u64.to_be_bytes());
+        let decoded = decode_value(KeyKind::Stats, &key, &value);
+        assert_eq!(decoded.codec, None);
+        assert_eq!(decoded.payload_size, 2 + size_of::<u64>());
+        assert!(
+            matches!(decoded.content, DecodedContent::Decoded(value) if value.contains("Inbox") && value.contains("New") && value.contains("42"))
+        );
+
+        let decoded = decode_value(KeyKind::Stats, &key, &[0; 7]);
+        assert!(
+            matches!(decoded.content, DecodedContent::Error(error) if error.contains("invalid stage/status-bucketed"))
+        );
+
+        let decoded = decode_value(KeyKind::Stats, &key, &[]);
+        assert!(
+            matches!(decoded.content, DecodedContent::Decoded(value) if value == "StageStatusCounts([])")
+        );
+
+        // A key without its aggregation kind cannot select a value codec.
+        let decoded = decode_value(
+            KeyKind::Stats,
+            &key[..AggregateKeyPrefix::SERIALIZED_LENGTH],
+            &value,
+        );
+        assert!(matches!(decoded.content, DecodedContent::Error(_)));
     }
 }
