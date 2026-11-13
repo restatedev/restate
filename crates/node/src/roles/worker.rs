@@ -16,7 +16,7 @@ use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
-use restate_core::{MetadataWriter, TaskCenter, TaskKind};
+use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_ingestion_client::IngestionClient;
 use restate_partition_store::{PartitionStoreManager, QueryIoExecutor};
 use restate_storage_query_datafusion::remote_query_scanner_manager::RemoteScannerManager;
@@ -75,6 +75,12 @@ where
         // the worker role.
         restate_storage_query_datafusion::local_scanners::register_partition_scanners(
             Arc::clone(&partition_store_manager),
+            io_executor.clone(),
+            remote_scanner_manager,
+        );
+        restate_storage_query_datafusion::local_scanners::register_cluster_scanners(
+            partition_store_manager,
+            Metadata::current(),
             io_executor,
             remote_scanner_manager,
         );
