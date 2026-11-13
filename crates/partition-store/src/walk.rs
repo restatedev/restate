@@ -13,9 +13,9 @@
 //! A **walk** applies one job's work to every key of its source that existed when
 //! it started. It records the source's last key at its start (`end`, inclusive)
 //! and a **cursor**, the last key it has processed (exclusive resume position).
-//! Every key at or before the cursor has been processed; a job that integrates
-//! with the source's write path treats those keys as covered by its walk. A walk
-//! is exhausted once no key of its source remains in `(cursor, end]`; keys
+//! The cursor is only a bookmark: what a job did to a key is recorded on the key
+//! itself, as for the index backfill's tokens, never inferred from the cursor. A
+//! walk is exhausted once no key of its source remains in `(cursor, end]`; keys
 //! inserted after `end` were written after the walk started, so the job's write
 //! path handles them.
 //!
@@ -23,14 +23,14 @@
 //! counter that is never reset, also when the last walk is removed.
 //!
 //! For example, an index backfill starting over entries `A..E` records `end = E`.
-//! After a slice over `A` and `B`, its cursor is `B`: a write to `A` sees `A` as
-//! covered, a write to `D` does not. Once a slice finds nothing after `E`, the
-//! walk is exhausted and removed, and its job publishes the result.
+//! After a slice over `A` and `B`, its cursor is `B`, and `A` and `B` carry the
+//! backfill's tokens. Once a slice finds nothing after `E`, the walk is exhausted
+//! and removed, and its job publishes the result.
 //!
 //! ```text
 //! source keys    A    B    C    D    E    F
 //!                ─────────┘              │    └─ written after the walk started:
-//!                  covered   cursor = B  end = E   the write path handles it
+//!                  processed  cursor = B  end = E   the write path handles it
 //! ```
 //!
 //! The `engine` runs walks a slice at a time, through the [`WalkDriver`], between
@@ -76,7 +76,8 @@ pub struct WalkKind {
 
 impl WalkKind {
     /// Backfills incomplete secondary and aggregate indexes; its members are the
-    /// indexes that link to the walk (see [`crate::registry`]).
+    /// indexes that link to the walk (see [`crate::registry`]). It records every
+    /// entry it fills with its members' tokens.
     pub(crate) fn index_backfill() -> Self {
         Self {
             name: ReString::from_static("index_backfill"),
@@ -113,13 +114,6 @@ pub struct Walk {
     /// Why the latest attempt failed, cleared by the next committed slice.
     #[bilrost(9)]
     pub last_error: Option<ReString>,
-}
-
-impl Walk {
-    /// Whether committed slices have processed `key`.
-    pub fn covers(&self, key: &[u8]) -> bool {
-        self.cursor.as_deref().is_some_and(|cursor| key <= cursor)
-    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -330,11 +324,13 @@ mod tests {
             .unwrap();
         assert_eq!((first, second), (1, 2));
         walks.advance(second, Bytes::from_static(b"b"), 2).unwrap();
-        assert!(walks.get(second).unwrap().covers(b"a"));
-        assert!(walks.get(second).unwrap().covers(b"b"));
-        assert!(!walks.get(second).unwrap().covers(b"c"));
-        assert!(
-            !walks.get(first).unwrap().covers(b"a"),
+        assert_eq!(
+            walks.get(second).unwrap().cursor.as_deref(),
+            Some(&b"b"[..])
+        );
+        assert_eq!(
+            walks.get(first).unwrap().cursor,
+            None,
             "nothing before the first slice"
         );
 

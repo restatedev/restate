@@ -470,32 +470,46 @@ impl PartitionStoreTransaction<'_> {
 
         let active = self.maintained_indexes();
         if let Some(after) = change.after() {
-            let header = RawStatusHeaderRef {
-                qid: context.qid.into(),
-                stage: after.stage,
-                has_lock: after.entry_key.has_lock(),
-                next_run_at: after.entry_key.run_at(),
-                seq: after.entry_key.seq(),
-                metadata: after.metadata.into(),
-                stats: after.stats.clone(),
-                status: after.status,
-                // Every write adopts the entry into each maintained index.
-                touched_by: active.touched_by_on_write(),
-            };
-            let header_len = header.encoded_len();
-            let value_buf = self.cleared_value_buffer_mut(
-                header_len + bilrost::encoding::encoded_len_varint(header_len as u64),
-            );
-            // The buffer has enough capacity for the length-delimited header.
-            header.encode_length_delimited(value_buf).unwrap();
-            let value_buf = value_buf.split();
-            self.raw_put_cf(KeyKind::VQueueEntryStatus, key_buffer, value_buf);
+            // Every write adopts the entry into each maintained index.
+            self.put_entry_status(key_buffer, context.qid, after, active.touched_by_on_write());
         } else {
             // The status key is overwritten on transitions, so SingleDelete is invalid.
             self.raw_delete_cf(KeyKind::VQueueEntryStatus, key_buffer);
         }
 
-        active.apply(self, context, change, &key_buffer);
+        active.apply(self, context, change);
+    }
+
+    /// Stores `state` as the status of the entry at `key`, listing the jobs in
+    /// `touched_by`. Index maintenance is the caller's: a write applies its change
+    /// to every maintained index ([`Self::apply_entry_change`]), and a backfill
+    /// applies the entry to its own indexes only.
+    pub(crate) fn put_entry_status(
+        &mut self,
+        key: [u8; EntryStatusKey::serialized_length_fixed()],
+        qid: &VQueueId,
+        state: &EntryStateRef<'_>,
+        touched_by: &[u8],
+    ) {
+        let header = RawStatusHeaderRef {
+            qid: qid.into(),
+            stage: state.stage,
+            has_lock: state.entry_key.has_lock(),
+            next_run_at: state.entry_key.run_at(),
+            seq: state.entry_key.seq(),
+            metadata: state.metadata.into(),
+            stats: state.stats.clone(),
+            status: state.status,
+            touched_by,
+        };
+        let header_len = header.encoded_len();
+        let value_buf = self.cleared_value_buffer_mut(
+            header_len + bilrost::encoding::encoded_len_varint(header_len as u64),
+        );
+        // The buffer has enough capacity for the length-delimited header.
+        header.encode_length_delimited(value_buf).unwrap();
+        let value_buf = value_buf.split();
+        self.raw_put_cf(KeyKind::VQueueEntryStatus, key, value_buf);
     }
 }
 

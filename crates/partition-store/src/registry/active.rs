@@ -12,10 +12,10 @@
 //!
 //! **Coverage.** An index reflects an entry when its keys or counts match that
 //! entry's contribution, including an empty contribution outside its membership.
-//! A Ready index reflects every entry. For a Backfilling index, coverage is proved
-//! by either the entry's token for its build job (which has the index's ID) or the
-//! committed cursor of its walk: every entry-status key at or before the cursor
-//! is covered even without a token (see [`crate::walk`]).
+//! A Ready index reflects every entry. A Backfilling index reflects exactly the
+//! entries that list its build job's token (the job has the index's ID): the
+//! token is the only proof. A walk's cursor only records the walk's progress;
+//! no write consults it.
 //!
 //! A write treats an uncovered entry's before-image as absent (*adopt on write*):
 //! a secondary index adds its new key without deleting an old one; an aggregate
@@ -24,19 +24,17 @@
 //! the Backfilling indexes' IDs.
 //!
 //! For example, with index 64 Ready and 70 Backfilling, an entry stored with no
-//! list and beyond 70's cursor is reflected by 64 only. Updating it removes its
-//! old key from 64, adds its new keys to both, and stores the list `[70]`. Once 70
-//! is Ready too, its next write stores no list at all.
+//! list is reflected by 64 only. Updating it removes its old key from 64, adds
+//! its new keys to both, and stores the list `[70]`. Once 70 is Ready too, its
+//! next write stores no list at all.
 //!
-//! Inserts have no before-image, whatever their key. Backfill slices establish
-//! coverage through their cursor without rewriting entry headers.
-
-use bytes::Bytes;
+//! Inserts have no before-image. A backfill establishes coverage the same way: it
+//! applies an entry to its own indexes and adds their tokens to the entry, in one
+//! commit (see [`super::backfill`]).
 
 use restate_storage_api::StorageError;
 use restate_storage_api::migration_job::MigrationJobIds;
 use restate_storage_api::vqueue_table::{EntryChange, EntryContext, EntryStateRef};
-
 use restate_types::config::Configuration;
 
 use crate::PartitionStoreTransaction;
@@ -85,9 +83,6 @@ struct Active {
     definition: &'static IndexDefinition,
     /// The walk backfilling this Backfilling index, once started.
     walk: Option<u64>,
-    /// The committed cursor of the walk backfilling this Backfilling index:
-    /// every entry at or before it is reflected, listed or not.
-    covered: Option<Bytes>,
 }
 
 /// The Backfilling and Ready indexes of known definitions, built from the
@@ -118,9 +113,8 @@ impl std::fmt::Debug for MaintainedIndexes {
 }
 
 impl MaintainedIndexes {
-    /// Maintained indexes whose definition is in `known`, with a matching kind,
-    /// and the cursors of their walks. Others are not maintained; opening a store
-    /// retires them before writes.
+    /// Maintained indexes whose definition is in `known`, with a matching kind.
+    /// Others are not maintained; opening a store retires them before writes.
     pub(crate) fn new(
         registry: &IndexRegistry,
         walks: &Walks,
@@ -152,10 +146,6 @@ impl MaintainedIndexes {
                         ready: index.state == super::IndexStatus::Ready,
                         definition,
                         walk: index.walk,
-                        covered: index
-                            .walk
-                            .and_then(|walk| walks.get(walk))
-                            .and_then(|walk| walk.cursor.clone()),
                     })
             })
             .collect();
@@ -219,25 +209,21 @@ impl MaintainedIndexes {
         &self.maintaining
     }
 
-    /// Applies `change`, of the entry whose entry-status key is `key`, to every
-    /// maintained index. The stored list and walk cursors are only consulted while
-    /// some index is Backfilling.
+    /// Applies `change` to every maintained index. The entry's stored list is only
+    /// consulted while some index is Backfilling.
     pub(crate) fn apply(
         &self,
         storage: &mut PartitionStoreTransaction<'_>,
         context: &EntryContext<'_>,
         change: &EntryChange<'_>,
-        key: &[u8],
     ) {
         let touched_by = change
             .stored_before()
             .map_or(MigrationJobIds::EMPTY, |before| before.touched_by());
         for entry in &self.entries {
-            let before = change.before().filter(|_| {
-                entry.ready
-                    || touched_by.contains(entry.id)
-                    || entry.covered.as_deref().is_some_and(|cursor| key <= cursor)
-            });
+            let before = change
+                .before()
+                .filter(|_| entry.ready || touched_by.contains(entry.id));
             (entry.definition.apply)(storage, entry.id, context, before, change.after());
         }
     }

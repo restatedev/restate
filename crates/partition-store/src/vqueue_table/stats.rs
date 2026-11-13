@@ -411,8 +411,6 @@ mod tests {
                 before: StoredEntryRef::from_header(&header),
                 after: newer,
             },
-            // The indexes are Ready, so no walk cursor is consulted.
-            &[],
         );
         assert_eq!(tx.estimated_size_in_bytes(), size);
 
