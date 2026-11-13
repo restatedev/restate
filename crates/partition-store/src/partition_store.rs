@@ -928,6 +928,10 @@ impl PartitionStore {
             ));
         }
 
+        // An unsupported or invalid registry fails the open before any migration
+        // below mutates the store.
+        self.validate_registry(storage_features.enabled())?;
+
         // Registered indexes replace the legacy status gauges. Delete them once
         // every compatibility check above passed, before any family can be
         // activated below.
@@ -962,6 +966,20 @@ impl PartitionStore {
             storage_features.mark_persisted();
         }
         self.set_storage_features(*storage_features.enabled());
+
+        // Before the processor starts writing: retire, reset and register
+        // indexes, start their walks, fence the store, and install the indexes
+        // maintained on writes.
+        self.reconcile_registry(
+            crate::registry::DEFINITIONS,
+            &crate::registry::Requests::from_config(crate::registry::FAMILIES, config),
+            crate::registry::FenceState {
+                features: &mut storage_features,
+                current_version: current_restate_version,
+                min_restate_version: &mut current_min_restate_version,
+            },
+        )
+        .await?;
 
         // Keep StorageVersion aligned for older binaries that used it as the sole signal for these
         // migrations. The combined variant is accurate only when both features are enabled; a
@@ -1353,6 +1371,37 @@ impl<'a> PartitionStoreTransaction<'a> {
 
     pub(crate) fn maintained_indexes(&self) -> Arc<MaintainedIndexes> {
         Arc::clone(&self.maintained_indexes)
+    }
+
+    /// Replaces the indexes maintained on writes, once a commit changed them.
+    pub(crate) fn set_maintained_indexes(&mut self, maintained_indexes: Arc<MaintainedIndexes>) {
+        self.maintained_indexes = maintained_indexes;
+    }
+
+    /// Marks the buffered writes, so that [`Self::rollback_to_save_point`] can drop
+    /// the ones that follow. Save points nest, and a commit or [`Self::clear`]
+    /// drops them.
+    pub(crate) fn set_save_point(&mut self) {
+        self.write_batch_with_index
+            .as_mut()
+            .expect("transaction valid")
+            .set_save_point();
+    }
+
+    /// Drops the writes buffered since the latest save point, and that save point.
+    pub(crate) fn rollback_to_save_point(&mut self) -> Result<()> {
+        self.write_batch_with_index
+            .as_mut()
+            .expect("transaction valid")
+            .rollback_to_save_point()
+            .map_err(|err| StorageError::Generic(err.into()))
+    }
+
+    /// Whether no write is buffered.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.write_batch_with_index
+            .as_ref()
+            .is_none_or(|batch| batch.is_empty())
     }
 
     #[inline]

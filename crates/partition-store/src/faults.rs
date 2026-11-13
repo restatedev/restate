@@ -71,12 +71,15 @@ pub enum FaultPoint {
     /// meanwhile, and, for an open partition, the processor's commit fence, so the
     /// processor's transaction cannot commit until the export releases it.
     SnapshotCapture,
+    /// Flushing the registry, the walks and the fence a reconciliation wrote, before
+    /// the reconciled indexes are installed for writes. Can fail.
+    RegistryFlush,
 }
 
 impl FaultPoint {
     /// Whether the work at this point can fail with an injected error.
     pub fn can_fail(self) -> bool {
-        matches!(self, Self::Open | Self::Delete)
+        matches!(self, Self::Open | Self::Delete | Self::RegistryFlush)
     }
 }
 

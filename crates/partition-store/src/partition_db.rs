@@ -202,16 +202,6 @@ impl PartitionDb {
         *self.physical().maintained_indexes.write() = Some(maintained_indexes);
     }
 
-    /// Puts back the maintained indexes read with [`Self::maintained_indexes`].
-    #[allow(dead_code)] // Consumed when the registry is reconciled at open.
-    #[cfg(test)]
-    pub(crate) fn restore_maintained_indexes(
-        &self,
-        maintained_indexes: Option<Arc<crate::registry::MaintainedIndexes>>,
-    ) {
-        *self.physical().maintained_indexes.write() = maintained_indexes;
-    }
-
     /// The faults armed for the partition.
     pub(crate) fn faults(&self) -> &Faults {
         &self.physical().faults
