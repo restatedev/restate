@@ -8633,6 +8633,7 @@ dependencies = [
  "enum-map",
  "futures",
  "futures-util",
+ "gardal",
  "googletest",
  "itertools 0.15.0",
  "jiff",

@@ -1391,6 +1391,21 @@ impl<'a> PartitionStoreTransaction<'a> {
         self.maintained_indexes = maintained_indexes;
     }
 
+    /// Whether a [`CommitFence`] currently holds back commits. Neither takes nor lifts a
+    /// fence; it only forgets one already released.
+    pub(crate) fn commits_held(&mut self) -> bool {
+        let held = self.commit_fence.as_mut().is_some_and(|released| {
+            matches!(
+                released.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            )
+        });
+        if !held {
+            self.commit_fence = None;
+        }
+        held
+    }
+
     /// Marks the buffered writes, so that [`Self::rollback_to_save_point`] can drop
     /// the ones that follow. Save points nest, and a commit or [`Self::clear`]
     /// drops them.
