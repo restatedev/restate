@@ -303,6 +303,13 @@ impl PartitionStoreManager {
         cell.get_partition_if_open().await
     }
 
+    /// The faults of `partition`, which all its openings share. Arming one before the
+    /// partition opens applies to its first opening.
+    #[cfg(any(test, feature = "faults"))]
+    pub fn faults(&self, partition: &Partition) -> crate::faults::Faults {
+        self.state.get_or_default(partition).faults.clone()
+    }
+
     /// Returns a partition store that's already open by a running partition processor
     pub async fn get_partition_store(&self, partition_id: PartitionId) -> Option<PartitionStore> {
         // note: we don't hold the map read lock while trying to acquire the partition cell's lock.
@@ -569,6 +576,7 @@ impl PartitionStoreManager {
             Arc::new(partition.clone()),
             watch::Sender::new(None),
             database,
+            Default::default(),
         ) else {
             return Ok(None);
         };

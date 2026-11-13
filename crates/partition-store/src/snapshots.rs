@@ -137,6 +137,11 @@ impl Snapshots {
             }
             None => None,
         };
+        partition_store
+            .partition_db()
+            .faults()
+            .reach(crate::faults::FaultPoint::SnapshotCapture)
+            .await;
 
         partition_store
             .create_local_snapshot(
