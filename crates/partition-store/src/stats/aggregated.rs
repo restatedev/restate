@@ -41,6 +41,8 @@ mod virtual_object_stats;
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util;
 
+pub(crate) mod backfill;
+
 /// Registers the status gauges as Ready, for tests that write every entry
 /// afterwards and therefore need no backfill.
 #[cfg(test)]

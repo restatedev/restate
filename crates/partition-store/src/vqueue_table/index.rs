@@ -198,7 +198,6 @@ entry_index!(
 );
 
 /// The entry indexes, released and controlled together.
-#[allow(dead_code)] // Consumed when the registry is reconciled at open.
 pub(crate) const ENTRY_INDEXES: Family = Family {
     definitions: &[
         &ENTRY_BY_STAGE_SERVICE,
@@ -212,13 +211,11 @@ pub(crate) const ENTRY_INDEXES: Family = Family {
     reset: no_reset,
 };
 
-#[allow(dead_code)] // Consumed when the registry is reconciled at open.
 fn indexes_v1(config: &Configuration) -> bool {
     config.common.experimental.is_indexes_v1_enabled()
 }
 
 /// Disabling the entry indexes has no option yet.
-#[allow(dead_code)] // Consumed when the registry is reconciled at open.
 fn no_reset(_: &Configuration) -> bool {
     false
 }
@@ -269,4 +266,174 @@ fn update_index<'a, P: Eq, K>(
     let old = old.and_then(|old| key(context, old));
     let new = new.and_then(|new| key(context, new));
     storage.update_secondary_index_with_id(id, old.as_ref(), new.as_ref());
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use restate_rocksdb::RocksDbManager;
+    use restate_storage_api::vqueue_table::{ReadVQueueTable, StoredEntryRef, WriteVQueueTable};
+    use restate_storage_api::{StorageError, Transaction};
+    use restate_storage_query_api::scan::BlockingScan;
+    use restate_types::identifiers::{BaseEntryId, WithPartitionKey};
+    use restate_types::partition_table::Partition;
+    use restate_types::sharding::{KeyRange, PartitionId};
+    use restate_types::vqueues::EntryTargetExt;
+
+    use crate::fsm_table::get_registry_from_partition_db;
+    use crate::keys::selection::KeySelection;
+    use crate::keys::{IndexKeyPrefix, KeyKind};
+    use crate::registry::{FIRST_INDEX_ID, IndexNotReady};
+    use crate::stats::aggregated::backfill::tests::seed;
+    use crate::{PartitionStore, PartitionStoreManager};
+
+    use super::*;
+
+    /// Every registered index key, by definition and payload: comparable across
+    /// replicas whatever index IDs their registries issued.
+    fn keys(store: &PartitionStore) -> BTreeMap<String, Vec<Vec<u8>>> {
+        let registry = get_registry_from_partition_db(store.partition_db())
+            .unwrap()
+            .unwrap_or_default();
+        let db = store.partition_db();
+        let mut options = rocksdb::ReadOptions::default();
+        options.set_total_order_seek(true);
+        options.set_iterate_range(rocksdb::PrefixRange(KeyKind::SecondaryIndex.as_bytes()));
+        let mut it = db
+            .rocksdb()
+            .inner()
+            .as_raw_db()
+            .raw_iterator_cf_opt(db.cf_handle(), options);
+        it.seek_to_first();
+        let mut keys = BTreeMap::<_, Vec<_>>::new();
+        while let Some(key) = it.key() {
+            let (prefix, _) = IndexKeyPrefix::decode_prefix(key).unwrap();
+            // The busy-vqueue index keeps its static ID.
+            if prefix.index_id_raw() >= FIRST_INDEX_ID {
+                let definition = registry
+                    .get(prefix.index_id_raw())
+                    .unwrap()
+                    .definition
+                    .to_string();
+                keys.entry(definition)
+                    .or_default()
+                    .push(key[IndexKeyPrefix::SERIALIZED_LENGTH..].to_vec());
+            }
+            it.next();
+        }
+        it.status().unwrap();
+        keys
+    }
+
+    /// The entries of the service index, as a query snapshot reads them.
+    fn indexed(store: &PartitionStore) -> crate::Result<usize> {
+        let (snapshot, _) = store.query_read(Default::default()).unwrap();
+        let mut count = 0;
+        <crate::ReadSnapshot as BlockingScan<EntryByStageService>>::scan_blocking(
+            &snapshot,
+            Arc::new(KeySelection::all()),
+            |_| {
+                count += 1;
+                std::ops::ControlFlow::Continue(())
+            },
+        )?;
+        Ok(count)
+    }
+
+    fn not_ready(result: crate::Result<usize>) -> bool {
+        matches!(result, Err(StorageError::Generic(err)) if err.downcast_ref::<IndexNotReady>().is_some())
+    }
+
+    /// Opens as a partition does, then runs the walks the open started to their
+    /// ends, as the background driver does in time.
+    async fn open(store: &mut PartitionStore, configure: impl Fn(&mut Configuration)) {
+        let mut config = Configuration::default();
+        configure(&mut config);
+        store
+            .verify_and_run_migrations(Default::default(), &config)
+            .await
+            .unwrap();
+        crate::walk::engine::run_all(store, 3).await.unwrap();
+    }
+
+    #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backfilled_indexes_match_live_maintenance() {
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        let mut store = manager
+            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+            .await
+            .unwrap();
+        let mut reference = manager
+            .open(&Partition::new(PartitionId::from(2), KeyRange::FULL), None)
+            .await
+            .unwrap();
+        // The reference maintains its indexes before any entry exists; the store
+        // backfills its indexes over existing entries.
+        open(&mut store, |_| {}).await;
+        open(&mut reference, |config| {
+            config.common.experimental.set_indexes_v1(true)
+        })
+        .await;
+        let (last_id, last_status) = seed(&mut store).await;
+        seed(&mut reference).await;
+        assert!(keys(&store).is_empty());
+        assert!(not_ready(indexed(&store)), "absent_indexes_are_not_ready");
+        // Registered before any entry existed, the reference's indexes had
+        // nothing to backfill and were Ready at once.
+        assert_eq!(
+            indexed(&reference).unwrap(),
+            147,
+            "indexes_of_an_empty_partition_are_ready_at_once"
+        );
+
+        for store in [&mut store, &mut reference] {
+            open(store, |config| {
+                config.common.experimental.set_indexes_v1(true)
+            })
+            .await;
+        }
+        let expected = keys(&reference);
+        assert_eq!(keys(&store), expected, "backfill_matches_maintenance");
+        // Every entry is in the four stage indexes; the 75 virtual-object
+        // entries (workflows excluded) are also in the two object indexes.
+        assert_eq!(
+            expected
+                .iter()
+                .map(|(definition, keys)| (definition.as_str(), keys.len()))
+                .collect::<Vec<_>>(),
+            [
+                ("entry_by_stage/1", 147),
+                ("entry_by_stage_service/1", 147),
+                ("entry_by_virtual_object_stage/1", 75),
+                ("entry_next_at_by_stage/1", 147),
+                ("entry_next_at_by_stage_service/1", 147),
+                ("entry_next_at_by_virtual_object_stage/1", 75),
+            ]
+        );
+        assert_eq!(indexed(&store).unwrap(), 147);
+
+        // A live delete removes the entry from the completed indexes.
+        for store in [&mut store, &mut reference] {
+            let mut tx = store.transaction();
+            let header = tx
+                .get_vqueue_entry_status(&BaseEntryId::from(last_id))
+                .await
+                .unwrap()
+                .unwrap();
+            let qid = VQueueId::custom(last_id.partition_key(), "backfill");
+            tx.delete_vqueue_entry_status(
+                &EntryContext {
+                    qid: &qid,
+                    target: &last_status.invocation_target().unwrap().entry_target_ref(),
+                },
+                StoredEntryRef::from_header(&header),
+            );
+            tx.commit().await.unwrap();
+        }
+        assert_eq!(keys(&store), keys(&reference));
+        assert_eq!(indexed(&store).unwrap(), 146);
+    }
 }
