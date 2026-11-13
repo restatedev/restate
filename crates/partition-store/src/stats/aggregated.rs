@@ -35,6 +35,8 @@ mod binding;
 mod bucketed_gauge;
 mod deployment_stats;
 mod gauge;
+#[cfg(test)]
+mod logical_scan_tests;
 mod service_stats;
 mod virtual_object_stats;
 
