@@ -64,6 +64,9 @@ use crate::query_read::SnapshotCursor;
 use crate::registry::{IndexKind, IndexNotReady, MaintainedIndexes};
 use crate::{ReadSnapshot, Result};
 
+#[cfg(test)]
+mod tests;
+
 /// What a read may touch: the partition, the storage features in force and where
 /// the IDs of registered indexes are resolved. A snapshot read uses the features
 /// and the registry captured when the snapshot was admitted; a store read uses
@@ -135,7 +138,7 @@ pub trait PhysicalTable:
 pub(crate) trait MultiGetTable: PhysicalTable<Key: EncodeTableKey> {
     /// The ID of a record. Its `Ord` is the stored key order, which the sorted
     /// multi-get relies on; the keys of the table have one fixed length.
-    type Id: Copy + Ord;
+    type Id: Clone + Ord;
 
     /// IDs per multi-get.
     const BATCH_SIZE: NonZeroUsize;
@@ -217,7 +220,7 @@ impl<T: MultiGetTable> MultiGetCursor<T> {
             .get(index)
             .map_err(|error| StorageError::Generic(error.into()))?
             .ok_or(StorageError::DataIntegrityError)?;
-        Ok((self.batch_ids[index], value))
+        Ok((self.batch_ids[index].clone(), value))
     }
 
     fn results(&self) -> Result<&OwnedPinnedBatch<RocksReadSnapshot<PhysicalPartition>>> {

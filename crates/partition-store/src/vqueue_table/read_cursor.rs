@@ -155,6 +155,7 @@ impl OrderedKeySchema for EntryStatusKey {
 }
 
 /// A prepared entry-status read.
+#[derive(Clone)]
 pub enum EntryStatusScan {
     /// A storage filter: a finite ID set uses multi-get, ranges iterate.
     Filter(ScanEntryIdFilter),
@@ -172,6 +173,8 @@ impl From<ScanEntryIdFilter> for EntryStatusScan {
 }
 
 /// Borrowed entry-status records, including the base identity used for lookup.
+/// Caller-driven cursors and cooperative query IO scans use the same bounded
+/// key navigation, primary lookups and stage-table reads.
 pub enum EntryStatusRecords {}
 
 impl Table for EntryStatusRecords {
@@ -238,6 +241,16 @@ impl ReadSnapshot {
             None => Mode::Empty,
         };
         Ok(EntryStatusCursor { mode, first: true })
+    }
+}
+
+impl CursorScan<EntryStatusRecords> for ReadSnapshot {
+    type Cursor = EntryStatusCursor;
+
+    fn scan_cursor(&self, request: Arc<EntryStatusScan>) -> Result<Self::Cursor> {
+        // Reusing a request gives each cursor its own ID traversal. An unshared
+        // request moves its IDs into the cursor without copying them.
+        self.entry_status_cursor(Arc::unwrap_or_clone(request))
     }
 }
 
@@ -363,9 +376,11 @@ mod tests {
         // Returns the records read and the cursor steps taken to read them.
         let read = |selection: Selection<VqueueEntryStatus>, header: KeyRange| {
             let request = EntryStatusKeys::prepare(&selection, Some(header)).unwrap();
-            let mut cursor = snapshot
-                .entry_status_cursor(EntryStatusScan::Keys(Arc::new(request)))
-                .unwrap();
+            let mut cursor = <ReadSnapshot as CursorScan<EntryStatusRecords>>::scan_cursor(
+                &snapshot,
+                Arc::new(EntryStatusScan::Keys(Arc::new(request))),
+            )
+            .unwrap();
             let (mut ids, mut steps) = (Vec::new(), 0);
             loop {
                 match cursor.advance().unwrap() {
