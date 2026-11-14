@@ -117,18 +117,6 @@ pub(crate) fn decode_expr(
     )
 }
 
-pub(crate) fn encode_record_batch(
-    schema: &Schema,
-    record_batch: RecordBatch,
-) -> Result<Vec<u8>, DataFusionError> {
-    let mut buf: Vec<u8> = vec![];
-    let mut writer = datafusion::arrow::ipc::writer::StreamWriter::try_new(&mut buf, schema)?;
-    writer.write(&record_batch)?;
-    writer.finish()?;
-    writer.flush()?;
-    Ok(buf)
-}
-
 pub(crate) fn decode_record_batch(bytes: &[u8]) -> Result<RecordBatch, DataFusionError> {
     let buffer = std::io::Cursor::new(bytes);
     let mut stream = datafusion::arrow::ipc::reader::StreamReader::try_new(buffer, None)?;
@@ -172,7 +160,8 @@ mod serde_tests {
         )
         .unwrap();
 
-        let buf = super::encode_record_batch(&batch.schema(), batch).expect("it to work");
+        let buf = restate_storage_query_api::encode_ipc_stream(&batch.schema(), &batch)
+            .expect("it to work");
         let batch = super::decode_record_batch(&buf).expect("to work");
 
         let int32array = batch
