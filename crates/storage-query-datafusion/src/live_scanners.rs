@@ -12,9 +12,9 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::DataFusionError;
+use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::metrics::Time;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use datafusion::physical_plan::{PhysicalExpr, SendableRecordBatchStream};
 use futures::{StreamExt, TryStreamExt};
 use tracing::debug;
 
@@ -22,7 +22,7 @@ use restate_types::identifiers::PartitionId;
 use restate_types::sharding::KeyRange;
 use restate_worker_api::{PartitionQueryAccess, PartitionQueryError, PartitionQueryStream};
 
-use crate::table_providers::ScanPartition;
+use crate::table_providers::{ScanPartition, ScanPredicate};
 use crate::table_util::Builder;
 
 /// Converts native, partition-scoped live rows into Arrow batches. Partition admission, range
@@ -57,7 +57,7 @@ impl<B: Builder + Send + 'static, R: Send + 'static> ScanPartition for LiveParti
         partition_id: PartitionId,
         range: KeyRange,
         projection: SchemaRef,
-        _predicate: Option<Arc<dyn PhysicalExpr>>,
+        _predicate: Option<ScanPredicate>,
         batch_size: usize,
         limit: Option<usize>,
         _elapsed_compute: Time,
