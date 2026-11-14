@@ -12,19 +12,21 @@
 //! transaction, the processor's own, between the commands it applies.
 //!
 //! A **slice** reads source keys after the walk's cursor through a fresh
-//! iterator, so no iterator or snapshot outlives it. The walk's job stages its
-//! work on them one at a time, and the engine stages the walk advanced over the
-//! keys whose work it took or, once no key remains up to the walk's end, the
-//! job's finish and the walk's removal. A [`SliceBudget`] bounds the keys read,
-//! their bytes, and the bytes of the staged batch with the records it commits
-//! with. One commit makes the work and the progress visible together. Only
-//! after it does the engine publish the committed records (the
-//! [`MaintainedIndexes`]) to the transaction and the partition, so the next slice
-//! resumes after the new cursor, the next write sees indexes the slice made
-//! Ready, and a failed commit never publishes. Recording a failure commits and publishes the
-//! same way. Starting a walk does not go through the engine: the open stages it
-//! in its registration batch and flushes that before publishing (see
-//! `registry::backfill::start`).
+//! iterator, so no iterator or snapshot outlives it. Neither that iterator nor
+//! the lookups of the job's work fill the block cache: a walk reads each key
+//! once, and caching it would push out the data the partition's commands read.
+//! The walk's job stages its work on them one at a time, and the engine stages
+//! the walk advanced over the keys whose work it took or, once no key remains
+//! up to the walk's end, the job's finish and the walk's removal. A
+//! [`SliceBudget`] bounds the keys read, their bytes, and the bytes of the
+//! staged batch with the records it commits with. One commit makes the work and
+//! the progress visible together. Only after it does the engine publish the
+//! committed records (the [`MaintainedIndexes`]) to the transaction and the
+//! partition, so the next slice resumes after the new cursor, the next write
+//! sees indexes the slice made Ready, and a failed commit never publishes.
+//! Recording a failure commits and publishes the same way. Starting a walk does
+//! not go through the engine: the open stages it in its registration batch and
+//! flushes that before publishing (see `registry::backfill::start`).
 //!
 //! For example, a walk over `A..E` with cursor `B` and a limit of two keys reads
 //! `C` and `D`, commits their work with cursor `D`, then publishes cursor `D`.
@@ -88,8 +90,7 @@ use super::{Walk, WalkError, Walks};
 /// An entry status a slice read: its key, ID and decoded header.
 pub(crate) type SourceEntry = (Vec<u8>, BaseEntryId, OwnedEntryStatusHeader);
 
-/// The bounds of one slice; see the module documentation. A key count alone
-/// keeps the default byte limits.
+/// The bounds of one slice; see the module documentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SliceBudget {
     /// Source keys read.
@@ -102,17 +103,30 @@ pub(crate) struct SliceBudget {
 }
 
 impl SliceBudget {
+    /// The source bytes a slice reads at most: a guard against a slice that reads
+    /// many large keys but writes little.
     pub(crate) const READ_BYTES: usize = 4 << 20;
-    pub(crate) const WRITE_BYTES: usize = 8 << 20;
-}
 
-impl From<usize> for SliceBudget {
-    fn from(keys: usize) -> Self {
+    /// At most `keys` source keys and `write_bytes` of staged batch, with the
+    /// read limit.
+    pub(crate) fn new(keys: usize, write_bytes: usize) -> Self {
         Self {
             keys,
             read_bytes: Self::READ_BYTES,
-            write_bytes: Self::WRITE_BYTES,
+            write_bytes,
         }
+    }
+}
+
+/// A key count alone, with the default write budget of command batches
+/// (`worker.max-command-batch-bytes`). Tests only.
+#[cfg(test)]
+impl From<usize> for SliceBudget {
+    fn from(keys: usize) -> Self {
+        let write_bytes = restate_types::config::WorkerOptions::default()
+            .max_command_batch_bytes
+            .as_usize();
+        Self::new(keys, write_bytes)
     }
 }
 

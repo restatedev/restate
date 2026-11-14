@@ -780,10 +780,11 @@ where
                     self.on_leader_query(leader_query_cmd);
                 }
                 // A slice of a backfill, paced to leave most of the time to the other arms: the
-                // record, RPC and query arms count as load, the timers do not. It commits through
-                // `txn` and installs what it committed in `txn`, so the next command batch
-                // maintains the indexes it changed. A failed commit stops the processor, like a
-                // failed command batch.
+                // record, RPC and query arms count as load, the timers do not. It stages at most
+                // `bytes_limit`, the command batches' write budget, apart from its first entry. It
+                // commits through `txn` and installs what it committed in `txn`, so the next
+                // command batch maintains the indexes it changed. A failed commit stops the
+                // processor, like a failed command batch.
                 () = walks.ready() => {
                     let _guard = SlowPartitionProcessorArmTracker::new(
                         partition_id,
@@ -803,7 +804,7 @@ where
                     // it out of the command batch histogram. The record arm sets the
                     // histogram again before its next batch.
                     txn.clear_write_batch_size_histogram();
-                    walks.step(&mut txn).await?;
+                    walks.step(&mut txn, bytes_limit).await?;
                     // A committed slice or failure record advanced the store byte offset.
                     self.ctx.refresh_fsm_position(&txn);
                 }
