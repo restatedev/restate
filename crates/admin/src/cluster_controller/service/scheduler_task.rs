@@ -12,7 +12,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use futures::future::OptionFuture;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
+use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{debug, trace, warn};
 
 use restate_core::network::TransportConnect;
@@ -21,6 +22,7 @@ use restate_core::{
     is_cancellation_requested,
 };
 use restate_metadata_store::MetadataStoreClient;
+use restate_types::PlainNodeId;
 use restate_types::cluster::cluster_state::LegacyClusterState;
 use restate_types::cluster_state::ClusterState;
 use restate_types::epoch::EpochMetadata;
@@ -32,7 +34,18 @@ use restate_types::partitions::PartitionTable;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 
 use crate::cluster_controller::cluster_state_refresher::ClusterStateWatcher;
+use crate::cluster_controller::safety_checker::{self, SafetyMetrics, SafetyReport};
 use crate::cluster_controller::service::scheduler::{self, Scheduler};
+
+/// How often the scheduler checks the safety of the cluster to export it as metrics.
+const SAFETY_CHECK_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Requests a safety check, assuming that `assume_dead` are dead.
+#[derive(Debug)]
+pub struct SafetyCheckRequest {
+    pub assume_dead: Vec<PlainNodeId>,
+    pub response_tx: oneshot::Sender<anyhow::Result<SafetyReport>>,
+}
 
 pub struct SchedulerTask<T> {
     cluster_state_watcher: ClusterStateWatcher,
@@ -40,6 +53,7 @@ pub struct SchedulerTask<T> {
     scheduler: Scheduler<T>,
     replica_set_states: PartitionReplicaSetStates,
     sync_epoch_metadata_rx: mpsc::Receiver<Vec<PartitionId>>,
+    safety_check_rx: mpsc::Receiver<SafetyCheckRequest>,
 }
 
 impl<T> SchedulerTask<T>
@@ -52,6 +66,7 @@ where
         replica_set_states: PartitionReplicaSetStates,
         metadata_client: MetadataStoreClient,
         sync_epoch_metadata_rx: mpsc::Receiver<Vec<PartitionId>>,
+        safety_check_rx: mpsc::Receiver<SafetyCheckRequest>,
     ) -> Self {
         Self {
             cluster_state_watcher,
@@ -59,6 +74,7 @@ where
             replica_set_states,
             metadata_client,
             sync_epoch_metadata_rx,
+            safety_check_rx,
         }
     }
 
@@ -92,6 +108,15 @@ where
         next_fetch_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // We've just scheduled a fetch, let's consume the initial tick from the interval which ticks immediately.
         next_fetch_interval.tick().await;
+
+        // Only the leader exports safety metrics, they are reset once it stops being the leader.
+        let safety_metrics = SafetyMetrics;
+        // Start after one interval to give the cluster state time to learn about alive nodes.
+        let mut safety_check_interval = tokio::time::interval_at(
+            Instant::now() + SAFETY_CHECK_INTERVAL,
+            SAFETY_CHECK_INTERVAL,
+        );
+        safety_check_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         loop {
             tokio::select! {
@@ -179,6 +204,14 @@ where
                         fetch_epoch_metadata_task = Some(self.spawn_fetch_epoch_metadata_task(stale_epoch_metadata)?);
                     }
                 }
+                _ = safety_check_interval.tick() => {
+                    let report = self.check_safety(&[]);
+                    debug!(?report, "Cluster safety check completed");
+                    safety_metrics.record(&report);
+                }
+                Some(request) = self.safety_check_rx.recv() => {
+                    let _ = request.response_tx.send(Ok(self.check_safety(&request.assume_dead)));
+                }
             }
         }
 
@@ -190,6 +223,14 @@ where
         }
 
         Ok(())
+    }
+
+    /// Checks the safety of the cluster using the scheduler's view of the partition placements.
+    fn check_safety(&self, assume_dead: &[PlainNodeId]) -> SafetyReport {
+        safety_checker::check_current_safety(
+            |partition_id| self.scheduler.partition_placement(partition_id),
+            assume_dead,
+        )
     }
 
     fn spawn_fetch_epoch_metadata_task(
