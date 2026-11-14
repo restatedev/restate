@@ -11,8 +11,9 @@ replica, and the background migrations that build them:
   was registered, became ready or was dropped, and why it was dropped.
 - `restate.cluster.migration_jobs`: one row per background migration on each
   replica, with its status (`pending`, `running`, `waiting`, `completed` or
-  `cancelled`), its progress, the rows it examined and filled, its work time,
-  and its failures with the last error. Finished migrations stay listed up to
+  `cancelled`), its progress and an estimate of when the current pass ends
+  (`eta`), the rows it examined and filled, its work time, and its failures
+  with the last error. Finished migrations stay listed up to
   `worker.storage.migration-job-history-limit`.
 
 Each worker node answers for the partition replicas it has open, so two
@@ -43,7 +44,7 @@ WHERE status <> 'ready';
 Backfills in progress, and whether they fail:
 
 ```sql
-SELECT partition_id, plain_node_id, name, status, progress_percent,
+SELECT partition_id, plain_node_id, name, status, progress_percent, eta,
        failures, last_error
 FROM restate.cluster.migration_jobs
 WHERE status IN ('pending', 'running', 'waiting');

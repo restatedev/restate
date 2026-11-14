@@ -82,7 +82,9 @@ fn with_invocation_target<R>(
 }
 
 /// Resolves the target of an entry with point lookups: its invocation status, or
-/// the input of a state mutation. Entries without one are errors.
+/// the input of a state mutation. Entries without one are errors. The lookups
+/// don't fill the block cache: a backfill looks each entry up once, and caching
+/// it would push out the data the partition's commands read.
 pub(crate) fn with_entry_target<R>(
     db: &PartitionDb,
     id: &restate_types::identifiers::BaseEntryId,
@@ -95,6 +97,8 @@ pub(crate) fn with_entry_target<R>(
         "entry and queue partition keys disagree"
     );
     let raw = db.rocksdb().inner().as_raw_db();
+    let mut options = rocksdb::ReadOptions::default();
+    options.fill_cache(false);
     let mut key = Vec::new();
     match id.kind() {
         EntryKind::Invocation => {
@@ -106,7 +110,7 @@ pub(crate) fn with_entry_target<R>(
                 .invocation_uuid(invocation_id.invocation_uuid())
                 .serialize_to(&mut key);
             let value = raw
-                .get_pinned_cf(db.cf_handle(), &key)?
+                .get_pinned_cf_opt(db.cf_handle(), &key, &options)?
                 .with_context(|| format!("missing invocation status for {id}"))?;
             with_invocation_target(&value, f)
         }
@@ -117,7 +121,7 @@ pub(crate) fn with_entry_target<R>(
                 .id(id.to_entry_id())
                 .serialize_to(&mut key);
             let value = raw
-                .get_pinned_cf(db.cf_handle(), &key)?
+                .get_pinned_cf_opt(db.cf_handle(), &key, &options)?
                 .context("missing state mutation input")?;
             let mutation = StateMutationTarget::decode(value.as_ref())?;
             f(&EntryTargetRef::VirtualObject {
