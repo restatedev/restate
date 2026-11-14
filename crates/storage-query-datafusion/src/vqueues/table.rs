@@ -9,23 +9,27 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::ops::ControlFlow;
 use std::sync::Arc;
 
+use bilrost::OwnedMessage;
 use datafusion::catalog::TableProvider;
-use futures::FutureExt;
 
-use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
-use restate_storage_api::vqueue_table::{
-    EntryKey, EntryValue, RawStatusHeaderRef, ScanVQueueEntries, ScanVQueueEntryStatusTable, Stage,
+use restate_partition_store::keys::selection::KeySelection;
+use restate_partition_store::keys::{KeyDecode, KeyDecoder, KeyKind};
+use restate_partition_store::vqueue_table::{
+    EntryStatusRecords, EntryStatusScan, FinishedIndexTable, InboxIndexTable, PausedIndexTable,
+    RunningIndexTable, SuspendedIndexTable,
 };
-use restate_types::vqueues::{CanonicalEntryId, VQueueId};
+use restate_partition_store::{PartitionStoreManager, QueryIoExecutor, ReadSnapshot};
+use restate_storage_api::StorageError;
+use restate_storage_api::scan::ScanOutcome;
+use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
+use restate_storage_api::vqueue_table::{EntryKey, EntryValue, Stage};
+use restate_types::vqueues::VQueueId;
 
 use crate::context::SelectPartitions;
 use crate::filter::{FirstMatchingPartitionKeyExtractor, VQueueFilter};
-use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
+use crate::partition_store_scanner::{LocalPartitionsScanner, Rows, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::statistics::{DEPLOYMENT_ROW_ESTIMATE, RowEstimate, TableStatisticsBuilder};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
@@ -63,78 +67,108 @@ impl SysVqueuesTable {
 
     pub(crate) fn create_local_scanner(
         partition_store_manager: Arc<PartitionStoreManager>,
+        io_executor: QueryIoExecutor,
     ) -> impl ScanPartition {
-        LocalPartitionsScanner::<VQueuesScanner>::new(partition_store_manager)
+        LocalPartitionsScanner::<VQueuesScanner>::new(partition_store_manager, io_executor)
     }
 }
 
 #[derive(Debug, Clone)]
 struct VQueuesScanner;
 
-enum VQueueRow<'a> {
-    Stage(&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue),
-    Status(&'a CanonicalEntryId, &'a RawStatusHeaderRef<'a>),
-}
-
 impl ScanLocalPartition for VQueuesScanner {
     type Builder = SysVqueuesBuilder;
-    type Item<'a> = VQueueRow<'a>;
-    type ConversionError = std::convert::Infallible;
     type Filter = VQueueFilter;
 
-    fn for_each_row<
-        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
-        partition_store: &PartitionStore,
+    async fn scan(
+        snapshot: &ReadSnapshot,
+        executor: &QueryIoExecutor,
         filter: VQueueFilter,
-        mut f: F,
-    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
+        mut rows: Rows<Self::Builder>,
+    ) -> restate_storage_api::Result<ScanOutcome<Rows<Self::Builder>>> {
         if let Some(entry_ids) = filter.entry_ids {
             let stages = filter.stages;
-            return partition_store
-                .for_each_vqueue_entry_status(
-                    ScanEntryIdFilter::EntryIdSet(entry_ids.ids),
-                    move |id, header| {
+            return rows
+                .read::<EntryStatusRecords>(
+                    snapshot,
+                    executor,
+                    "df-vqueues-status",
+                    Arc::new(EntryStatusScan::from(ScanEntryIdFilter::EntryIdSet(
+                        entry_ids.ids,
+                    ))),
+                    move |builder, (id, header)| {
                         if stages
                             .as_ref()
                             .is_some_and(|stages| !stages.contains(&header.stage))
                         {
-                            return ControlFlow::Continue(());
+                            return Ok(());
                         }
 
                         let canonical_id = id.canonicalize(header.seq);
-                        f(VQueueRow::Status(&canonical_id, header)).map_break(Result::unwrap)
+                        append_vqueues_status_row(builder, &canonical_id, &header);
+                        Ok(())
                     },
                 )
-                .map(FutureExt::boxed);
+                .await;
         }
 
-        partition_store
-            .for_each_vqueue_entry(
-                filter.partition_keys,
-                filter.stages.unwrap_or_default(),
-                move |(qid, stage, entry_key, entry)| {
-                    f(VQueueRow::Stage(qid, stage, entry_key, entry)).map_break(Result::unwrap)
-                },
-            )
-            .map(FutureExt::boxed)
-    }
-
-    fn append_row<'a>(
-        row_builder: &mut Self::Builder,
-        value: Self::Item<'a>,
-    ) -> Result<(), Self::ConversionError> {
-        match value {
-            VQueueRow::Stage(qid, stage, entry_key, entry) => {
-                append_vqueues_row(row_builder, qid, stage, entry_key, entry);
+        // Carry the same output and snapshot through the stages. A stop or error
+        // must not open the next stage, even when the output has a partial batch.
+        for stage in [
+            Stage::Inbox,
+            Stage::Running,
+            Stage::Suspended,
+            Stage::Paused,
+            Stage::Finished,
+        ] {
+            if filter
+                .stages
+                .as_ref()
+                .is_some_and(|stages| !stages.is_empty() && !stages.contains(&stage))
+            {
+                continue;
             }
-            VQueueRow::Status(id, header) => {
-                append_vqueues_status_row(row_builder, id, header);
+            macro_rules! read_stage {
+                ($table:ty) => {
+                    rows.read::<$table>(
+                        snapshot,
+                        executor,
+                        "df-vqueues",
+                        Arc::new(KeySelection::all().restrict_scope(filter.partition_keys)),
+                        move |builder, record| append_stage(builder, stage, record),
+                    )
+                    .await?
+                };
             }
+            let outcome = match stage {
+                Stage::Inbox => read_stage!(InboxIndexTable),
+                Stage::Running => read_stage!(RunningIndexTable),
+                Stage::Suspended => read_stage!(SuspendedIndexTable),
+                Stage::Paused => read_stage!(PausedIndexTable),
+                Stage::Finished => read_stage!(FinishedIndexTable),
+                Stage::Unknown => unreachable!("only stored stages are selected"),
+            };
+            rows = match outcome {
+                ScanOutcome::Exhausted(rows) => rows,
+                stopped => return Ok(stopped),
+            };
         }
-        Ok(())
+        Ok(ScanOutcome::Exhausted(rows))
     }
+}
+
+fn append_stage<K>(
+    builder: &mut SysVqueuesBuilder,
+    stage: Stage,
+    (key, value): (KeyDecoder<'_, K>, &[u8]),
+) -> restate_storage_api::Result<()> {
+    // The stage physical tables retain the full legacy key. Decode the same
+    // queue/entry tuple and transition-time value the V1 table has always shown.
+    let mut key = key.remaining;
+    KeyKind::deserialize(&mut key)?;
+    let qid = <VQueueId as KeyDecode>::decode(&mut key)?;
+    let entry_key = <EntryKey as KeyDecode>::decode(&mut key)?;
+    let entry = EntryValue::decode(value).map_err(StorageError::BilrostDecode)?;
+    append_vqueues_row(builder, &qid, stage, &entry_key, &entry);
+    Ok(())
 }

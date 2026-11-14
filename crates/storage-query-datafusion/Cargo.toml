@@ -34,6 +34,7 @@ restate-worker-api = { workspace = true, features = ["serde"] }
 ahash = { workspace = true }                                                    # Required to due a yanked version used by datafusion
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+bilrost = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
@@ -55,6 +56,7 @@ strum = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

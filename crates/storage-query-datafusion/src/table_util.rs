@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::mem::ManuallyDrop;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
@@ -67,8 +66,12 @@ pub trait Builder {
     fn finish_and_new(&mut self) -> datafusion::common::Result<RecordBatch>;
 }
 
+/// Builds Arrow batches from rows, applies the SQL filter, and sends each full
+/// batch to the query, waiting while the query isn't ready for more. Call
+/// `finish` only after a successful scan. Dropping it instead discards the
+/// buffered rows, which is what an error or a cancelled query needs.
 pub(crate) struct BatchSender<B: Builder> {
-    builder: ManuallyDrop<B>,
+    builder: B,
     tx: Sender<datafusion::error::Result<RecordBatch>>,
     predicate: Option<Arc<dyn PhysicalExpr>>,
     coalescer: LimitedBatchCoalescer,
@@ -87,7 +90,7 @@ impl<B: Builder> BatchSender<B> {
         let builder = B::new(projection.clone());
         let coalescer = LimitedBatchCoalescer::new(projection, batch_size, limit);
         Self {
-            builder: ManuallyDrop::new(builder),
+            builder,
             tx,
             predicate,
             coalescer,
@@ -100,56 +103,46 @@ impl<B: Builder> BatchSender<B> {
         &mut self.builder
     }
 
-    pub(crate) fn send_if_needed(&mut self) -> ControlFlow<()> {
+    pub(crate) async fn send_if_needed(&mut self) -> datafusion::common::Result<ControlFlow<()>> {
         if self.limit_reached {
-            ControlFlow::Break(())
-            // TOOD; this check could be based on selectivity metrics
-            // ie, we could finish the batch when we predict that post-filter it will be big enough to send
+            Ok(ControlFlow::Break(()))
         } else if self.builder.num_rows() >= self.batch_size {
-            let batch = match self.builder.finish_and_new() {
-                Ok(batch) => batch,
-                Err(e) => {
-                    let _ = self.tx.blocking_send(Err(e));
-                    return ControlFlow::Break(());
-                }
-            };
-
-            self.filter_coalesce_send(batch, false)
+            let batch = self.builder.finish_and_new()?;
+            self.filter_coalesce_send(batch, false).await
         } else {
-            ControlFlow::Continue(())
+            Ok(ControlFlow::Continue(()))
         }
     }
 
-    fn filter_coalesce_send(&mut self, batch: RecordBatch, last: bool) -> ControlFlow<()> {
-        // Apply predicate filter
-        let filtered = match self.apply_filter(batch) {
-            Ok(batch) => batch,
-            Err(e) => {
-                let _ = self.tx.blocking_send(Err(e));
-                return ControlFlow::Break(());
-            }
-        };
+    /// Sends the last, partly filled batch after a scan read everything. A scan
+    /// that reached its LIMIT has already sent its rows.
+    pub(crate) async fn finish(mut self) -> datafusion::common::Result<()> {
+        if !self.limit_reached {
+            let batch = self.builder.finish_and_new()?;
+            let _ = self.filter_coalesce_send(batch, true).await?;
+        }
+        Ok(())
+    }
 
-        match self.coalescer.push_batch(filtered) {
-            Ok(PushBatchStatus::Continue) => {}
-            Ok(PushBatchStatus::LimitReached) => {
+    async fn filter_coalesce_send(
+        &mut self,
+        batch: RecordBatch,
+        last: bool,
+    ) -> datafusion::common::Result<ControlFlow<()>> {
+        let filtered = self.apply_filter(batch)?;
+        match self.coalescer.push_batch(filtered)? {
+            PushBatchStatus::Continue => {}
+            PushBatchStatus::LimitReached => {
                 self.limit_reached = true;
-            }
-            Err(e) => {
-                let _ = self.tx.blocking_send(Err(e));
-                return ControlFlow::Break(());
             }
         }
 
         if last || self.limit_reached {
-            if let Err(e) = self.coalescer.finish() {
-                let _ = self.tx.blocking_send(Err(e));
-                return ControlFlow::Break(());
-            }
-            let _ = self.send_completed_batches();
-            ControlFlow::Break(())
+            self.coalescer.finish()?;
+            let _ = self.send_completed_batches().await;
+            Ok(ControlFlow::Break(()))
         } else {
-            self.send_completed_batches()
+            Ok(self.send_completed_batches().await)
         }
     }
 
@@ -169,34 +162,12 @@ impl<B: Builder> BatchSender<B> {
         Ok(filter_record_batch(&batch, filter_array)?)
     }
 
-    fn send_completed_batches(&mut self) -> ControlFlow<()> {
+    async fn send_completed_batches(&mut self) -> ControlFlow<()> {
         while let Some(batch) = self.coalescer.next_completed_batch() {
-            if self.tx.blocking_send(Ok(batch)).is_err() {
+            if self.tx.send(Ok(batch)).await.is_err() {
                 return ControlFlow::Break(());
             }
         }
         ControlFlow::Continue(())
-    }
-}
-
-impl<B: Builder> Drop for BatchSender<B> {
-    fn drop(&mut self) {
-        // Safety: self.builder is exclusively taken here and never accessed again.
-        let builder = unsafe { ManuallyDrop::take(&mut self.builder) };
-
-        if self.limit_reached {
-            // Already finished and sent when limit was reached
-            return;
-        }
-
-        let batch = match builder.finish() {
-            Ok(batch) => batch,
-            Err(e) => {
-                let _ = self.tx.blocking_send(Err(e));
-                return;
-            }
-        };
-
-        let _ = self.filter_coalesce_send(batch, true);
     }
 }
