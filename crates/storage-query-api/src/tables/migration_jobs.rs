@@ -63,6 +63,12 @@ define_schema! {
             /// NULL while progress or `pass_started_at` is unknown, or the cursor
             /// hasn't moved yet.
             eta: Option<MillisSinceEpoch> => TimestampMillisecond,
+            /// Why the job isn't progressing right now, as its replica's
+            /// background driver last observed: `background-migrations-disabled`,
+            /// `snapshot-export`, `failure-backoff` or `throttled`. Read live,
+            /// apart from the other columns. NULL when the driver reports no
+            /// reason, which doesn't prove progress, and for finished jobs.
+            blocked_by: Option<ReString> => DataType::Utf8,
             /// When the job was created; NULL if unknown.
             created_at: Option<MillisSinceEpoch> => TimestampMillisecond,
             /// The Restate version that created it; NULL if unknown.

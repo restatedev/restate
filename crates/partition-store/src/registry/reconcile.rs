@@ -1064,8 +1064,8 @@ mod backfill_tests {
     use crate::walk::engine::{Slice, SliceBudget};
     use crate::walk::{OnUnknown, Source, Walk, WalkKind, WalkMember, engine};
     use crate::{
-        PartitionStoreManager, PartitionStoreTransaction, QueryIoExecutor, ReadSnapshot,
-        ReplicaMigrations,
+        IndexSizes, PartitionStoreManager, PartitionStoreTransaction, QueryIoExecutor,
+        ReadSnapshot, ReplicaMigrations,
     };
 
     use super::super::backfill::read_chunk;
@@ -2611,6 +2611,31 @@ mod backfill_tests {
         }
     }
 
+    /// Why the job of index `id` isn't progressing at `now`, as `migration_jobs`
+    /// shows it: from `tx`'s records and what the driver of `db` published.
+    fn blocked_by(
+        db: &PartitionDb,
+        tx: &PartitionStoreTransaction<'_>,
+        id: u32,
+        now: Instant,
+    ) -> Option<&'static str> {
+        let active = tx.maintained_indexes();
+        let replica = ReplicaMigrations {
+            partition_id: db.partition().id(),
+            key_range: db.partition().key_range,
+            registry: active.registry().clone(),
+            walks: active.walks().clone(),
+            jobs: active.jobs().clone(),
+            index_sizes: Default::default(),
+            driver: db.driver_state().get(),
+        };
+        let job = active
+            .jobs()
+            .unfinished
+            .get(MigrationJobId::for_index(id))?;
+        replica.blocked_by(job, now)
+    }
+
     /// Deletes entry `id` through `tx`, as a command does.
     async fn delete_entry(
         tx: &mut PartitionStoreTransaction<'_>,
@@ -2766,6 +2791,8 @@ mod backfill_tests {
             .await
             .unwrap();
         let passive = registry(&store).maintained(PASSIVE.name).unwrap().id;
+        let count = registry(&store).maintained(COUNT.name).unwrap().id;
+        let db = store.partition_db().clone();
         // One key an hour after a burst of 16: COUNT's walk soon waits hours.
         let mut throttled = StorageOptions::default();
         throttled.background_migrations_throttling = Some(ThrottlingOptions {
@@ -2784,6 +2811,15 @@ mod backfill_tests {
             "{:?}",
             driver.due()
         );
+        // COUNT's job shows that it waits for tokens until they're due, without
+        // another step. PASSIVE, waiting for its pass, doesn't inherit it.
+        assert_eq!(
+            blocked_by(&db, &tx, count, Instant::now()),
+            Some("throttled")
+        );
+        assert_eq!(blocked_by(&db, &tx, passive, Instant::now()), None);
+        let refill = db.driver_state().get().unwrap().throttled_until.unwrap();
+        assert_eq!(blocked_by(&db, &tx, count, refill), None);
         drive(&mut driver, &mut tx, 1).await;
         assert!(
             tx.maintained_indexes()
@@ -2813,7 +2849,13 @@ mod backfill_tests {
             .map(|definition| registry(&store).maintained(definition.name).unwrap().id);
         let walk = registry(&store).get(active).unwrap().walk.unwrap();
         let executor = QueryIoExecutor::new(std::num::NonZeroUsize::new(1).unwrap());
-        let report = || async { manager.migration_report(&executor).unwrap().await.unwrap() };
+        let report = || async {
+            manager
+                .migration_report(&executor, IndexSizes::Estimate)
+                .unwrap()
+                .await
+                .unwrap()
+        };
 
         // Mid-build: both indexes Backfilling on the walk, their jobs running, and
         // the walk part of the way through the replica's key range.
@@ -2887,6 +2929,12 @@ mod backfill_tests {
         run_walks(&mut store).await;
         let after = report().await;
         let replica = &after.replicas[0];
+        // Each index has RocksDB's estimate of its keys: COUNT's grows with the
+        // rows it counted, and PASSIVE, which writes no keys, takes nothing.
+        let (sizes_mid, sizes) = (&mid.replicas[0].index_sizes, &replica.index_sizes);
+        assert!(sizes_mid[&active] > 0, "{sizes_mid:?}");
+        assert!(sizes[&active] > sizes_mid[&active], "{sizes:?}");
+        assert_eq!(sizes[&passive], 0);
         assert!(replica.walks.entries().is_empty());
         assert_eq!(
             replica
@@ -2906,6 +2954,38 @@ mod backfill_tests {
                 .status,
             MigrationJobStatus::Waiting
         );
+
+        // A flushed index is estimated from its table files: 1 MiB of
+        // incompressible values under COUNT's prefix, once flushed, counts at
+        // least half of that. A report that skips sizes estimates none.
+        let db = store.partition_db().clone();
+        let mut batch = WriteBatch::default();
+        let mut random = 0x9E37_79B9_7F4A_7C15_u64;
+        for i in 0..1024_u32 {
+            let mut key = count_key(db.partition().id(), active);
+            key.extend_from_slice(&i.to_be_bytes());
+            let value: Vec<u8> = (0..1024)
+                .map(|_| {
+                    random ^= random << 13;
+                    random ^= random >> 7;
+                    random ^= random << 17;
+                    random as u8
+                })
+                .collect();
+            batch.put_cf(db.cf_handle(), key, value);
+        }
+        db.rocksdb().inner().as_raw_db().write(&batch).unwrap();
+        db.flush_memtables(true).await.unwrap();
+        let flushed = report().await;
+        let sizes = &flushed.replicas[0].index_sizes;
+        assert!(sizes[&active] >= 512 * 1024, "{sizes:?}");
+        assert_eq!(sizes[&passive], 0);
+        let skipped = manager
+            .migration_report(&executor, IndexSizes::Skip)
+            .unwrap()
+            .await
+            .unwrap();
+        assert!(skipped.replicas[0].index_sizes.is_empty());
 
         // An unreadable record is reported with its replica, never as a replica
         // without indexes.
@@ -2981,6 +3061,7 @@ mod backfill_tests {
 
         let mut driver = store.walk_driver(&StorageOptions::default());
         driver.tuning_mut().max_keys = 16;
+        let db = store.partition_db().clone();
         let mut tx = store.transaction();
         let rows = |tx: &PartitionStoreTransaction<'_>| published_job(tx, count).rows_examined;
         let linked = |tx: &PartitionStoreTransaction<'_>| {
@@ -3009,6 +3090,15 @@ mod backfill_tests {
             "recorded on the job, like a failed slice"
         );
         assert!(failed.last_error.is_some());
+        // ADOPTED shows its start's backoff until it ends, without another step;
+        // COUNT, runnable, shows nothing.
+        assert_eq!(
+            blocked_by(&db, &tx, adopted, Instant::now()),
+            Some("failure-backoff")
+        );
+        assert_eq!(blocked_by(&db, &tx, count, Instant::now()), None);
+        let (_, retry) = db.driver_state().get().unwrap().backoff_starts[0];
+        assert_eq!(blocked_by(&db, &tx, adopted, retry), None);
         // COUNT's walk takes the next turn while the start waits out its backoff;
         // then the start succeeds, with no reopen.
         drive(&mut driver, &mut tx, 1).await;
@@ -3018,6 +3108,7 @@ mod backfill_tests {
             "a turn for COUNT"
         );
         drive(&mut driver, &mut tx, 10_000).await;
+        assert!(db.driver_state().get().unwrap().backoff_starts.is_empty());
         drop(tx);
         for id in [resumed, adopted, count] {
             assert_eq!(
@@ -3171,16 +3262,27 @@ mod backfill_tests {
         reconcile(&mut store, maintain(&COUNT)).await;
         let mut disabled = StorageOptions::default();
         disabled.disable_background_migrations = true;
-        let mut driver = store.walk_driver(&disabled);
-        assert_eq!(driver.due(), None);
-        assert!(driver.ready().now_or_never().is_none());
+        let mut idle = store.walk_driver(&disabled);
+        assert_eq!(idle.due(), None);
+        assert!(idle.ready().now_or_never().is_none());
         let id = registry(&store).maintained(COUNT.name).unwrap().id;
         let walk = registry(&store).get(id).unwrap().walk.unwrap();
         assert_eq!(walks(&store).get(walk).unwrap().cursor, None);
+        let db = store.partition_db().clone();
+        assert_eq!(
+            blocked_by(&db, &store.transaction(), id, Instant::now()),
+            Some("background-migrations-disabled")
+        );
 
-        // Enabled, it runs the walk. While a snapshot export holds commits back,
-        // it does nothing and checks again shortly.
+        // Enabled, it runs the walk. It replaces the disabled driver's state, and
+        // dropping that driver withdraws only its own. While a snapshot export
+        // holds commits back, it does nothing and checks again shortly.
         let mut driver = store.walk_driver(&StorageOptions::default());
+        drop(idle);
+        assert_eq!(
+            db.driver_state().get().map(|state| state.disabled),
+            Some(false)
+        );
         let recheck = driver.tuning_mut().fence_recheck;
         let mut tx = store.transaction();
         let progress = |tx: &PartitionStoreTransaction<'_>| {
@@ -3198,8 +3300,13 @@ mod backfill_tests {
         drive(&mut driver, &mut tx, 1).await;
         assert_eq!(progress(&tx).0, None);
         assert!(driver.due().unwrap() >= before + recheck);
+        assert_eq!(
+            blocked_by(&db, &tx, id, Instant::now()),
+            Some("snapshot-export")
+        );
         drop(fence);
         drive(&mut driver, &mut tx, 1).await;
+        assert_eq!(blocked_by(&db, &tx, id, Instant::now()), None);
         assert_eq!(
             progress(&tx).1.rows_examined,
             16,
@@ -3233,9 +3340,20 @@ mod backfill_tests {
             tx.maintained_indexes().registry().get(id).unwrap().state,
             IndexStatus::Backfilling
         );
+        // Its job shows the walk's backoff until it ends, without another step.
+        assert_eq!(
+            blocked_by(&db, &tx, id, Instant::now()),
+            Some("failure-backoff")
+        );
+        let (_, retry) = db.driver_state().get().unwrap().backoff_walks[0];
+        assert_eq!(blocked_by(&db, &tx, id, retry), None);
         tx.put_invocation_status(&invocation, &status).unwrap();
         tx.commit().await.unwrap();
         drive(&mut driver, &mut tx, 1_000).await;
+        // Recovered, nothing is reported; without a driver, nothing is either.
+        assert!(db.driver_state().get().unwrap().backoff_walks.is_empty());
+        drop(driver);
+        assert_eq!(db.driver_state().get(), None);
         drop(tx);
         assert_eq!(count(&store, id), SEEDED);
         assert_eq!(registry(&store).get(id).unwrap().state, IndexStatus::Ready);

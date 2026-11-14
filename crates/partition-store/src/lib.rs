@@ -62,7 +62,8 @@ pub use partition_store::*;
 pub use partition_store_manager::*;
 pub use partition_store_snapshot::PartitionStoreSnapshot;
 pub use query_read::{
-    MigrationReport, QueryIoExecutor, ReadSnapshot, ReplicaMigrations, UnreadableReplica,
+    IndexSizes, MigrationReport, QueryIoExecutor, ReadSnapshot, ReplicaMigrations,
+    UnreadableReplica,
 };
 pub use read_snapshot::{PartitionReadSnapshot, PartitionSnapshotReader, PartitionSnapshotScan};
 // re-export

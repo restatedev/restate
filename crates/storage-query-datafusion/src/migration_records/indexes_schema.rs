@@ -16,7 +16,8 @@ define_table!(
     /// The indexes and statistics of each partition replica on the worker nodes,
     /// with their status. Each replica keeps its own: two replicas of a partition
     /// can be at different points. A replica's rows come from one snapshot of it,
-    /// separate from the one `migration_jobs` reads.
+    /// separate from the one `migration_jobs` reads, except `approx_size_bytes`,
+    /// estimated over the replica's current data.
     indexes(
         /// The node holding the replica.
         plain_node_id: DataType::Utf8,
@@ -59,5 +60,13 @@ define_table!(
         /// Why it was dropped: `reset`, `unknown-definition`, or `unknown(N)` for a
         /// reason this binary doesn't know. NULL unless dropped.
         drop_reason: DataType::Utf8,
+
+        /// RocksDB's estimate of the storage the index's keys take on this replica,
+        /// including writes not flushed yet, over the replica's current data rather
+        /// than the rows' snapshot. Approximate: small indexes can show 0, and a
+        /// dropped index may still show bytes until compaction removes its keys.
+        /// NULL for an index of unknown kind, or when RocksDB's estimate returns an
+        /// error.
+        approx_size_bytes: DataType::UInt64,
     )
 );
