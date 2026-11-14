@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -23,6 +24,7 @@ use tracing::{debug, warn};
 
 use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{TaskCenter, TaskKind};
+use restate_storage_query_api::{encode_within, response_budget};
 use restate_types::GenerationalNodeId;
 use restate_types::net::remote_query_scanner::{
     RemoteQueryScannerNextResult, RemoteQueryScannerOpen, RemoteQueryScannerPredicate,
@@ -31,7 +33,7 @@ use restate_types::net::remote_query_scanner::{
 
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::remote_query_scanner_server::ScannerMap;
-use crate::{decode_expr, decode_schema, encode_record_batch};
+use crate::{decode_expr, decode_schema};
 
 const SCANNER_EXPIRATION: Duration = Duration::from_secs(60);
 
@@ -52,6 +54,12 @@ pub(crate) struct ScannerTask {
     ctx: Arc<TaskContext>,
     schema: SchemaRef,
     dynamic_filter: Option<Arc<DynamicFilterPhysicalExpr>>,
+    /// Encoded slices of a batch too large for one response, sent one per `next`.
+    /// A receiver rejects a larger message, which also drops its connection to
+    /// this node.
+    pending: VecDeque<Vec<u8>>,
+    /// The most bytes one response's batch may take; see [`response_budget`].
+    batch_budget: usize,
 }
 
 impl ScannerTask {
@@ -104,6 +112,8 @@ impl ScannerTask {
             ctx,
             schema,
             dynamic_filter,
+            pending: VecDeque::new(),
+            batch_budget: response_budget(),
         };
 
         scanners.insert(scanner_id, tx);
@@ -174,6 +184,17 @@ impl ScannerTask {
                 return;
             }
 
+            // Slices of a batch that was too large for one response go first.
+            if let Some(record_batch) = self.pending.pop_front() {
+                request
+                    .reciprocal
+                    .send(RemoteQueryScannerNextResult::NextBatch(ScannerBatch {
+                        scanner_id: self.scanner_id,
+                        record_batch,
+                    }));
+                continue;
+            }
+
             // The filtering is now done by FilterCoalesceStream inside scan_partition,
             // so we just need to get the next batch from the stream.
             let record_batch = match self.stream.next().await {
@@ -196,8 +217,21 @@ impl ScannerTask {
                 }
             };
 
-            match encode_record_batch(&self.stream.schema(), record_batch) {
-                Ok(record_batch) => {
+            let pending = &mut self.pending;
+            match encode_within(
+                &self.stream.schema(),
+                record_batch,
+                self.batch_budget,
+                &mut |_, encoded| {
+                    pending.push_back(encoded);
+                    Ok(())
+                },
+            ) {
+                Ok(()) => {
+                    let record_batch = self
+                        .pending
+                        .pop_front()
+                        .expect("a batch encodes to at least one message");
                     request
                         .reciprocal
                         .send(RemoteQueryScannerNextResult::NextBatch(ScannerBatch {

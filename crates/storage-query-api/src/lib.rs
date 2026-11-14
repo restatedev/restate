@@ -26,6 +26,7 @@
 mod diagnostics;
 mod engine;
 pub mod errors;
+mod message_size;
 pub mod scan;
 pub mod schema;
 pub mod selection;
@@ -58,6 +59,7 @@ pub use engine::{
     NodeWarning, NodeWarnings, QueryEngine, QueryEngineVersion, QueryOptions, QueryResult,
     QuerySession, SessionOptions, SessionTable,
 };
+pub use message_size::{encode_ipc_stream, encode_within, response_budget};
 pub use writer::{RecordBatchWriter, WriteRecordBatchStream};
 
 /// A marker identifying a query source independently of its session-local SQL name.
