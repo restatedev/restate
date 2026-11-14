@@ -14,6 +14,7 @@ mod inbox_reader;
 mod input;
 mod key_codec;
 mod meta_binding;
+mod meta_cursor;
 mod metadata;
 mod read_cursor;
 mod reader;
@@ -32,6 +33,7 @@ pub use entry::{EntryStatusKey, EntryStatusKeyRef};
 pub use inbox::InboxKey;
 pub use input::InputPayloadKey;
 pub use meta_binding::{VQueueMetaBinding, VQueueMetaTable};
+pub use meta_cursor::{VQueueMetaCursor, VQueueMetaRecords};
 pub use metadata::*;
 pub use read_cursor::{EntryStatusCursor, EntryStatusKeys, EntryStatusRecords, EntryStatusScan};
 pub use stage_index::{
