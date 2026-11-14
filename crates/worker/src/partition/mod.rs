@@ -21,6 +21,7 @@ pub mod invoker_storage_reader;
 mod leadership;
 pub mod node;
 mod processor;
+mod query_reads;
 mod rpc;
 pub mod shuffle;
 #[cfg(feature = "expose-internals")]
@@ -30,6 +31,7 @@ mod state_machine;
 pub mod types;
 
 pub use self::node::NodeContext;
+pub(crate) use self::query_reads::QueryReadiness;
 // Re-exported so external drivers (e.g. pp-bench) can build a context to drive `StateMachine::apply`.
 #[cfg(feature = "expose-internals")]
 pub use self::processor::ProcessorRawContext;
@@ -40,7 +42,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use bytes::BytesMut;
-use futures::{FutureExt, StreamExt};
+use futures::{FutureExt, StreamExt, TryStreamExt};
 use metrics::histogram;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant, MissedTickBehavior};
@@ -96,7 +98,10 @@ use restate_vqueues::context::HasVQueues;
 use restate_wal_protocol::control::{CurrentReplicaSetConfiguration, NextReplicaSetConfiguration};
 use restate_wal_protocol::v2::CommandScope;
 use restate_wal_protocol::{Envelope, v2};
-use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
+use restate_worker_api::{
+    LeaderQueryCommand, LeaderQueryReceiver, PartitionQueryAccess, PartitionReadError,
+    PartitionReadRequest,
+};
 
 use self::leadership::{CommitCallback, FromRpcReply, RpcProposalSender};
 use self::processor::commands::{
@@ -179,6 +184,7 @@ pub enum TargetLeaderState {
 }
 
 pub(super) struct PartitionProcessorBuilder {
+    query_reads: query_reads::QueryReads,
     target_leader_state_rx: watch::Receiver<TargetLeaderState>,
     network_svc_rx: ServiceStream<PartitionLeaderService>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
@@ -193,8 +199,11 @@ impl PartitionProcessorBuilder {
         status_watch_tx: watch::Sender<PartitionProcessorStatus>,
         commit_fence_rx: mpsc::Receiver<CommitFenceRequest>,
         node_ctx: NodeContext,
+        query_requests: mpsc::Receiver<PartitionReadRequest>,
+        query_ready: watch::Sender<QueryReadiness>,
     ) -> Self {
         Self {
+            query_reads: query_reads::QueryReads::new(query_requests, query_ready),
             target_leader_state_rx,
             network_svc_rx,
             status_watch_tx,
@@ -212,6 +221,7 @@ impl PartitionProcessorBuilder {
         T: TransportConnect,
     {
         let PartitionProcessorBuilder {
+            query_reads,
             target_leader_state_rx,
             network_svc_rx: rpc_rx,
             status_watch_tx,
@@ -256,6 +266,7 @@ impl PartitionProcessorBuilder {
             LeadershipState::new(ctx.partition_id(), ingestion_client, leader_query_tx);
 
         Ok(PartitionProcessor {
+            query_reads,
             partition_store,
             ctx,
             node_ctx,
@@ -272,6 +283,8 @@ impl PartitionProcessorBuilder {
 }
 
 pub struct PartitionProcessor<T> {
+    /// The query reads waiting for admission between turns.
+    query_reads: query_reads::QueryReads,
     partition_store: PartitionStore,
     ctx: ProcessorRawContext,
     node_ctx: NodeContext,
@@ -409,6 +422,10 @@ where
                 Ok(())
             }
         };
+
+        // Admit no more query reads, and cancel the admitted ones. Closing the
+        // partition store then waits for their snapshots to be released.
+        self.query_reads.shutdown().await;
 
         // clean up pending rpcs and stop child tasks
         self.leadership_state.step_down().await;
@@ -603,6 +620,8 @@ where
             old.updated_at = MillisSinceEpoch::now();
         });
 
+        self.query_reads.mark_ready();
+
         loop {
             let config = self.node_ctx.config.live_load();
             let max_batching_size = config.worker.max_command_batch_size();
@@ -610,6 +629,27 @@ where
             let rpc_proposal_sender = self.leadership_state.rpc_proposal_sender();
 
             tokio::select! {
+                // A query read, admitted between committed turns: the storage snapshot
+                // and the processor's own live state come from the same point.
+                Some(request) = self.query_reads.next() => {
+                    walks.note_foreground();
+                    let leader_hint = self.ctx.status().last_observed_leader_node()
+                        .filter(|node| node.is_valid() && *node != self.node_ctx.my_node_id());
+                    let partition = request.partition;
+                    let leadership = &self.leadership_state;
+                    let ctx = &self.ctx;
+                    let invoker = &self.node_ctx.leader_handles_registry;
+                    self.query_reads.admit(&self.partition_store, leadership.is_leader(), leader_hint, request, |requested| async move {
+                        let mut captured = leadership.capture_query_state(ctx.vqueues(), requested)
+                            .ok_or(PartitionReadError::NotLeader { partition, leader: leader_hint })?;
+                        if requested.invoker {
+                            captured.invoker = Some(invoker.scan_invoker_status(partition, restate_types::sharding::KeyRange::FULL)
+                                .try_collect::<Vec<_>>().await
+                                .map_err(|_| PartitionReadError::LiveCaptureUnavailable(partition))?.into());
+                        }
+                        Ok(captured)
+                    }).await;
+                }
                 _ = self.target_leader_state_rx.changed() => {
                     let _guard = SlowPartitionProcessorArmTracker::new(
                         partition_id,
@@ -796,7 +836,8 @@ where
                     // is enabled.
                     let waiting = record_stream.as_mut().peek().now_or_never().is_some_and(|next| next.is_some())
                         || (rpc_proposal_sender.is_some() && !self.network_leader_svc_rx.is_empty())
-                        || !self.leader_query_rx.is_empty();
+                        || !self.leader_query_rx.is_empty()
+                        || self.query_reads.has_pending();
                     if waiting {
                         walks.note_foreground();
                     }

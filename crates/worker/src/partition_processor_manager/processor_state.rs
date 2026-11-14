@@ -24,8 +24,9 @@ use restate_types::identifiers::LeaderEpoch;
 use restate_types::net::partition_processor::PartitionLeaderService;
 use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
+use restate_worker_api::{PartitionReadError, PartitionReadRequest};
 
-use crate::partition::{LeadershipInfo, TargetLeaderState};
+use crate::partition::{LeadershipInfo, QueryReadiness, TargetLeaderState};
 
 pub type LeaderEpochToken = Ulid;
 
@@ -62,6 +63,58 @@ pub enum ProcessorState {
 }
 
 impl ProcessorState {
+    /// Routes a query read to this partition's processor, without waiting: the
+    /// processor admits it between two committed turns. A processor that can't
+    /// take it answers at once: starting or not ready yet, stopping, broken, or
+    /// with a full or closed admission queue.
+    pub fn read_partition(&self, request: PartitionReadRequest) {
+        let processor = match self {
+            Self::Started {
+                processor: Some(processor),
+                ..
+            } => {
+                let readiness = *processor.query.ready.borrow();
+                if processor.cancellation_token.is_cancelled()
+                    || readiness == QueryReadiness::Stopping
+                {
+                    Err(PartitionReadError::Stopping(request.partition))
+                } else if processor.query.requests.is_closed() {
+                    Err(PartitionReadError::AdmissionClosed(request.partition))
+                } else if readiness == QueryReadiness::Initializing {
+                    Err(PartitionReadError::Initializing(request.partition))
+                } else {
+                    Ok(processor)
+                }
+            }
+            Self::Starting { .. }
+            | Self::Started {
+                processor: None, ..
+            } => Err(PartitionReadError::Initializing(request.partition)),
+            Self::Stopping { .. } => Err(PartitionReadError::Stopping(request.partition)),
+            Self::Broken { reason, .. } => Err(PartitionReadError::Broken {
+                partition: request.partition,
+                reason: format!("{reason:?}").into(),
+            }),
+        };
+        let processor = match processor {
+            Ok(processor) => processor,
+            Err(error) => {
+                let _ = request.response.send(Err(error));
+                return;
+            }
+        };
+        if let Err(error) = processor.query.requests.try_send(request) {
+            let full = matches!(error, mpsc::error::TrySendError::Full(_));
+            let request = error.into_inner();
+            let error = if full {
+                PartitionReadError::Busy(request.partition)
+            } else {
+                PartitionReadError::AdmissionClosed(request.partition)
+            };
+            let _ = request.response.send(Err(error));
+        }
+    }
+
     pub fn starting(target_run_mode: RunMode, delay: Option<Duration>) -> Self {
         Self::Starting {
             target_run_mode,
@@ -384,6 +437,15 @@ pub struct StartedProcessor {
     rpc_shard_tx: ShardSender<PartitionLeaderService>,
     watch_rx: watch::Receiver<PartitionProcessorStatus>,
     commit_fence_tx: mpsc::Sender<CommitFenceRequest>,
+    query: QueryAdmission,
+}
+
+/// The manager's side of a processor's query admission: the bounded queue of
+/// reads waiting for it, and whether it admits reads yet.
+#[derive(Debug)]
+pub struct QueryAdmission {
+    pub requests: mpsc::Sender<PartitionReadRequest>,
+    pub ready: watch::Receiver<QueryReadiness>,
 }
 
 impl StartedProcessor {
@@ -394,6 +456,7 @@ impl StartedProcessor {
         rpc_shard_tx: ShardSender<PartitionLeaderService>,
         watch_rx: watch::Receiver<PartitionProcessorStatus>,
         commit_fence_tx: mpsc::Sender<CommitFenceRequest>,
+        query: QueryAdmission,
     ) -> Self {
         Self {
             cancellation_token,
@@ -402,7 +465,14 @@ impl StartedProcessor {
             rpc_shard_tx,
             watch_rx,
             commit_fence_tx,
+            query,
         }
+    }
+
+    /// Whether the processor admits query reads yet. Tests only.
+    #[cfg(test)]
+    pub(super) fn query_ready(&self) -> watch::Receiver<QueryReadiness> {
+        self.query.ready.clone()
     }
 
     fn cancel(&self) {
@@ -449,5 +519,113 @@ impl StartedProcessor {
 
     pub fn rpc_shard_sender(&self) -> ShardSender<PartitionLeaderService> {
         self.rpc_shard_tx.clone()
+    }
+}
+
+#[cfg(test)]
+mod query_tests {
+    use std::sync::Arc;
+
+    use tokio::sync::oneshot;
+
+    use restate_clock::UniqueTimestamp;
+    use restate_storage_query_api::QueryMetadata;
+    use restate_types::identifiers::PartitionId;
+    use restate_worker_api::PartitionCaptureRequirements;
+
+    use super::*;
+
+    /// The manager routes a read to the processor's queue without waiting, and
+    /// answers itself when the processor can't take it: not ready, queue full or
+    /// closed, stopping, or broken. The read keeps its original metadata.
+    #[restate_core::test]
+    async fn routing_rejects_unready_full_closed_stopping_and_broken_processors() {
+        let metadata = Arc::new(QueryMetadata {
+            session_id: "routing-test".into(),
+            query_ts: UniqueTimestamp::MIN,
+            headers: Default::default(),
+            redacted_sql: "SELECT * FROM state".into(),
+            planning_duration: Duration::ZERO,
+        });
+        let request = || {
+            let (response, rx) = oneshot::channel();
+            let read = PartitionReadRequest {
+                partition: PartitionId::MIN,
+                require_leader: false,
+                metadata: Arc::clone(&metadata),
+                capture: PartitionCaptureRequirements {
+                    storage: true,
+                    ..Default::default()
+                },
+                response,
+            };
+            (read, rx)
+        };
+        let route = async |state: &ProcessorState| {
+            let (read, response) = request();
+            state.read_partition(read);
+            response.await.unwrap().map(|_| ())
+        };
+
+        let starting = ProcessorState::starting(RunMode::Follower, None);
+        assert_eq!(
+            route(&starting).await,
+            Err(PartitionReadError::Initializing(PartitionId::MIN))
+        );
+
+        // Started, but its loop isn't ready yet.
+        let (requests, mut queue) = mpsc::channel(1);
+        let (ready_tx, ready) = watch::channel(QueryReadiness::Initializing);
+        let processor = StartedProcessor::new(
+            CancellationToken::new(),
+            KeyRange::FULL,
+            watch::channel(TargetLeaderState::Follower).0,
+            ShardSender::new().0,
+            watch::channel(PartitionProcessorStatus::default()).1,
+            mpsc::channel(1).0,
+            QueryAdmission { requests, ready },
+        );
+        let mut state = ProcessorState::started(processor, Instant::now(), None);
+        assert_eq!(
+            route(&state).await,
+            Err(PartitionReadError::Initializing(PartitionId::MIN))
+        );
+
+        // Ready: the first read is queued as it is, the second finds the queue full.
+        ready_tx.send_replace(QueryReadiness::Ready);
+        let (read, _queued) = request();
+        state.read_partition(read);
+        assert_eq!(
+            route(&state).await,
+            Err(PartitionReadError::Busy(PartitionId::MIN))
+        );
+        assert!(Arc::ptr_eq(
+            &queue.recv().await.unwrap().metadata,
+            &metadata
+        ));
+
+        queue.close();
+        assert_eq!(
+            route(&state).await,
+            Err(PartitionReadError::AdmissionClosed(PartitionId::MIN))
+        );
+        ready_tx.send_replace(QueryReadiness::Stopping);
+        assert_eq!(
+            route(&state).await,
+            Err(PartitionReadError::Stopping(PartitionId::MIN))
+        );
+        state.stop();
+        assert_eq!(
+            route(&state).await,
+            Err(PartitionReadError::Stopping(PartitionId::MIN))
+        );
+        let broken = ProcessorState::broken(BrokenReason::AheadOfLog);
+        assert_eq!(
+            route(&broken).await,
+            Err(PartitionReadError::Broken {
+                partition: PartitionId::MIN,
+                reason: "AheadOfLog".into()
+            })
+        );
     }
 }

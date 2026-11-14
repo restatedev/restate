@@ -14,6 +14,7 @@ pub mod resources;
 
 mod leader_query;
 mod metric_definitions;
+mod partition_capture;
 mod partition_processor_manager;
 mod partition_processor_rpc_client;
 mod partition_query;
@@ -21,6 +22,7 @@ mod scheduler_status;
 mod user_limits;
 
 pub use leader_query::*;
+pub use partition_capture::*;
 pub use partition_processor_manager::*;
 pub use partition_processor_rpc_client::*;
 pub use partition_query::*;
