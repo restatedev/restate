@@ -9,16 +9,17 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
+use std::ops::Bound;
 use std::sync::Arc;
 
 use datafusion::catalog::TableProvider;
 
-use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_storage_api::StorageError;
-use restate_storage_api::journal_events::{
-    EventView, ScanJournalEventsTable, ScanJournalEventsTableRange,
-};
-use restate_types::identifiers::InvocationId;
+use restate_partition_store::journal_events::decode_event;
+use restate_partition_store::journal_scan::JournalEventsTable;
+use restate_partition_store::{PartitionStoreManager, QueryIoExecutor, ReadSnapshot};
+use restate_storage_api::scan::ScanOutcome;
+use restate_storage_query_api::selection::{Selection, ValuePredicate};
+use restate_storage_query_api::tables::journal_events::JournalEventsClause;
 
 use crate::context::SelectPartitions;
 use crate::filter::FirstMatchingPartitionKeyExtractor;
@@ -27,7 +28,7 @@ use crate::journal_events::row::append_journal_event_row;
 use crate::journal_events::schema::{
     SysJournalEventsBuilder, SysJournalEventsTable, sys_journal_events_sort_order,
 };
-use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
+use crate::partition_store_scanner::{LocalPartitionsScanner, Rows, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
@@ -48,8 +49,9 @@ impl SysJournalEventsTable {
 
     pub(crate) fn create_local_scanner(
         partition_store_manager: Arc<PartitionStoreManager>,
+        io_executor: QueryIoExecutor,
     ) -> impl ScanPartition {
-        LocalPartitionsScanner::<JournalEventsScanner>::new(partition_store_manager)
+        LocalPartitionsScanner::<JournalEventsScanner>::new(partition_store_manager, io_executor)
     }
 }
 
@@ -58,42 +60,35 @@ struct JournalEventsScanner;
 
 impl ScanLocalPartition for JournalEventsScanner {
     type Builder = SysJournalEventsBuilder;
-    type Item<'a> = (InvocationId, EventView);
-    type ConversionError = std::convert::Infallible;
     type Filter = InvocationIdFilter;
 
-    fn for_each_row<
-        F: for<'a> FnMut(
-                Self::Item<'a>,
-            ) -> std::ops::ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
-        partition_store: &PartitionStore,
-        range: InvocationIdFilter,
-        mut f: F,
-    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        partition_store
-            .for_each_journal_event(range.into(), move |item| f(item).map_break(Result::unwrap))
-    }
-
-    fn append_row<'a>(
-        row_builder: &mut Self::Builder,
-        value: Self::Item<'a>,
-    ) -> Result<(), Self::ConversionError> {
-        append_journal_event_row(row_builder, value.0, value.1);
-        Ok(())
-    }
-}
-
-impl From<InvocationIdFilter> for ScanJournalEventsTableRange {
-    fn from(value: InvocationIdFilter) -> Self {
-        if let Some(selection) = value.invocation_ids {
-            let (start, last) = selection.bounds();
-            ScanJournalEventsTableRange::InvocationId(start..=last)
-        } else {
-            ScanJournalEventsTableRange::PartitionKey(value.partition_keys)
-        }
+    async fn scan(
+        snapshot: &ReadSnapshot,
+        executor: &QueryIoExecutor,
+        filter: InvocationIdFilter,
+        rows: Rows<Self::Builder>,
+    ) -> restate_storage_api::Result<ScanOutcome<Rows<Self::Builder>>> {
+        let selection = match filter.invocation_ids {
+            Some(ids) => Selection::All.and(JournalEventsClause::Id(ValuePredicate::In(
+                ids.ids.into_iter().collect(),
+            ))),
+            None => Selection::All,
+        };
+        let selection = selection.and(JournalEventsClause::PartitionKey(ValuePredicate::Range {
+            lower: Bound::Included(filter.partition_keys.start()),
+            upper: Bound::Included(filter.partition_keys.end()),
+        }));
+        rows.read::<JournalEventsTable>(
+            snapshot,
+            executor,
+            "df-journal-events",
+            Arc::clone(JournalEventsTable::prepare(&selection)?.request()),
+            |builder, (key, mut value)| {
+                let (id, event) = decode_event(key.decode_all()?, &mut value)?;
+                append_journal_event_row(builder, id, event);
+                Ok(())
+            },
+        )
+        .await
     }
 }

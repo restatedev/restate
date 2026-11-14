@@ -342,7 +342,12 @@ async fn run(
 
     let remote_scanner_manager =
         RemoteScannerManager::local_only(restate_core::Metadata::current());
-    register_partition_scanners(Arc::clone(&manager), &remote_scanner_manager);
+    let env = DataFusionEnv::from_options(&config.admin.query_engine)?;
+    register_partition_scanners(
+        Arc::clone(&manager),
+        env.io_executor().clone(),
+        &remote_scanner_manager,
+    );
     register_live_scanners(
         Arc::new(OfflinePartitionQueryAccess::new(
             partitions
@@ -353,7 +358,6 @@ async fn run(
     );
 
     // TODO: Migrate snapshot tooling to v2 unconditionally in a separate commit.
-    let env = DataFusionEnv::from_options(&config.admin.query_engine)?;
     env.register_tables(UserTables::new(
         LocalPartitions(Arc::new(partitions)),
         remote_scanner_manager,

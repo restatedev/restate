@@ -14,6 +14,7 @@ mod inbox_reader;
 mod input;
 mod key_codec;
 mod meta_binding;
+mod meta_cursor;
 mod metadata;
 mod read_cursor;
 mod reader;
@@ -32,6 +33,7 @@ pub use entry::{EntryStatusKey, EntryStatusKeyRef};
 pub use inbox::InboxKey;
 pub use input::InputPayloadKey;
 pub use meta_binding::{VQueueMetaBinding, VQueueMetaTable};
+pub use meta_cursor::{VQueueMetaCursor, VQueueMetaRecords};
 pub use metadata::*;
 pub use read_cursor::{EntryStatusCursor, EntryStatusKeys, EntryStatusRecords, EntryStatusScan};
 pub use stage_index::{
@@ -840,13 +842,9 @@ where
         + Send
         + 'static,
 {
-    // Each stage holds its own Arc clone exclusively inside the iterator
-    // closure. Once iteration acquires the first row, the closure takes the
-    // Arc and converts it to an owned mutex guard that it holds for the rest
-    // of the scan; the guard (and thus the Arc) is dropped on the iterator's
-    // background thread. This keeps the wrapped callback off the tokio
-    // runtime, which is required because data-fusion's `BatchSender` performs
-    // blocking I/O during `Drop`.
+    // Submitted stage iterators share one callback. Acquire it on the first row
+    // and hold it until this iterator finishes, so stages cannot interleave
+    // callback calls. The owned guard stays with the iterator closure.
     let mut f_arc = Some(f);
     let mut f_guard: Option<tokio::sync::OwnedMutexGuard<F>> = None;
 
@@ -942,14 +940,9 @@ impl ScanVQueueEntries for PartitionStore {
             + 'static,
         S: IntoIterator<Item = Stage>,
     {
-        // The Arc must not outlive the iterator closures: BatchSender's Drop
-        // performs blocking I/O, so its final drop has to happen on a storage
-        // thread, not on a tokio worker. We achieve that by moving the *only*
-        // Arc handle through the loop — every stage but the last gets a clone,
-        // and the last stage consumes the remaining handle. Once this function
-        // returns, no Arc references survive outside the spawned iterator
-        // tasks, so the last task to finish runs the Drop on its storage
-        // thread. See also the comment in `scan_single_stage`.
+        // Give each iterator ownership of the shared callback, transferring the
+        // final handle to the last stage. The returned future only awaits the
+        // submitted scans; it does not retain another callback handle.
         let stages: Vec<Stage> = {
             let mut iter = stages.into_iter().peekable();
             if iter.peek().is_some() {
