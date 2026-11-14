@@ -50,6 +50,7 @@ pub enum StorageTaskKind {
     WriteBatch,
     OpenColumnFamily,
     ImportColumnFamily,
+    VerifyColumnFamily,
     DropColumnFamily,
     ExportColumnFamily,
     FlushWal,

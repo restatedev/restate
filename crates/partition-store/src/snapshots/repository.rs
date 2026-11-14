@@ -11,10 +11,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use ahash::{HashMap, HashMapExt};
+use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use anyhow::{Context, anyhow, bail};
 use bytes::BytesMut;
-use futures::TryStreamExt;
+use futures::{StreamExt, TryStreamExt};
 use metrics::Gauge;
 use object_store::path::Path as ObjectPath;
 use object_store::{
@@ -32,11 +32,12 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, Span, debug, info, instrument, warn};
 use url::Url;
 
-use restate_clock::WallClock;
+use restate_clock::{Clock, WallClock};
 use restate_core::Metadata;
 use restate_memory::ByteCount;
 use restate_metadata_store::MetadataStoreClient;
 use restate_object_store_util::create_object_store_client;
+use restate_rocksdb::RocksError;
 use restate_types::GenerationalNodeId;
 use restate_types::config::SnapshotsOptions;
 use restate_types::identifiers::{PartitionId, SnapshotId};
@@ -47,6 +48,7 @@ use restate_types::time::MillisSinceEpoch;
 #[cfg(any(test, feature = "test-util"))]
 use super::leases::NoOpLeaseManager;
 use super::leases::{LeaseError, SnapshotLeaseGuard, SnapshotLeaseManager};
+use super::sst_fingerprint::sst_fingerprint;
 use super::{
     LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotCompatibility, SnapshotDir,
     SnapshotFormatVersion,
@@ -86,9 +88,17 @@ impl LeaseProvider {
 /// A single top-level `latest.json` file is the only key which is repeatedly overwritten; all other
 /// data is immutable until the pruning policy allows for deletion.
 ///
+/// Bucket layout:
 /// - `[<prefix>/]<partition_id>/latest.json` - latest snapshot metadata for the partition
 /// - `[<prefix>/]<partition_id>/{lsn}_{snapshot_id}/metadata.json` - snapshot descriptor
-/// - `[<prefix>/]<partition_id>/{lsn}_{snapshot_id}/*.sst` - data files (explicitly named in `metadata.json`)
+/// - `[<prefix>/]<partition_id>/{lsn}_{snapshot_id}/*.sst` - data files for full snapshots
+/// - `[<prefix>/]<partition_id>/ssts/{fingerprint}.sst` - shared SST files for incremental
+///   snapshots
+///
+/// Incremental snapshots store each SST under a key derived from its fingerprint (see
+/// [`super::sst_fingerprint`]), a hash of the file's size and RocksDB table identity rather than
+/// of the whole file. An SST keeps its key in every snapshot that contains it, including after a
+/// restore on another node, so each SST is uploaded once.
 #[derive(Clone)]
 pub struct SnapshotRepository {
     object_store: Arc<dyn ObjectStore>,
@@ -98,6 +108,7 @@ pub struct SnapshotRepository {
     num_retained: std::num::NonZeroU8,
     upload_part_size: usize,
     upload_single_put_threshold: u64,
+    snapshot_type: restate_types::config::SnapshotType,
     lease_provider: Option<LeaseProvider>,
     #[cfg(any(test, feature = "test-util"))]
     enable_cleanup: bool,
@@ -105,6 +116,9 @@ pub struct SnapshotRepository {
 
 /// S3 and GCS reject multipart uploads with more parts than this.
 const MULTIPART_UPLOAD_MAX_PARTS: u64 = 10_000;
+
+/// Maximum number of keys per delete request; S3 DeleteObjects accepts up to 1000.
+const DELETE_BATCH_SIZE: usize = 1000;
 
 /// How long `acquire_lease` waits for a lease held by this same node before reporting it as held.
 const SAME_NODE_LEASE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -492,6 +506,7 @@ impl SnapshotRepository {
             num_retained: snapshots_options.num_retained,
             upload_part_size: snapshots_options.upload_part_size(),
             upload_single_put_threshold: snapshots_options.upload_single_put_threshold(),
+            snapshot_type: snapshots_options.experimental_snapshot_type,
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: snapshots_options.enable_cleanup,
             lease_provider,
@@ -600,7 +615,7 @@ impl SnapshotRepository {
         let _inflight = InflightGuard::new(metrics::gauge!(SNAPSHOT_UPLOAD_INFLIGHT));
         let start = tokio::time::Instant::now();
         let put_result = self
-            .put_snapshot_inner(snapshot, local_snapshot.path(), lease_guard)
+            .put_snapshot_inner(snapshot, local_snapshot.path(), Arc::clone(&lease_guard))
             .await;
 
         // We own the local snapshot directory; remove it asynchronously (it may hold large SST
@@ -619,32 +634,231 @@ impl SnapshotRepository {
                 // Not a failure: the repository already holds a snapshot at least this new, which
                 // is what the caller asked for. Report it so the caller sees the newest snapshot.
                 metrics::counter!(SNAPSHOT_UPLOAD_SUCCESS).increment(1);
-                self.discard_uploaded_files(
-                    discarded.snapshot_complete_path,
-                    discarded.uploaded_files,
-                )
-                .await;
+                self.discard_uploaded_files(discarded, &lease_guard).await;
                 Ok(latest)
             }
             Err(put_error) => {
                 metrics::counter!(SNAPSHOT_UPLOAD_FAILED).increment(1);
-                self.discard_uploaded_files(put_error.full_snapshot_path, put_error.uploaded_files)
+                self.discard_uploaded_files(put_error.progress, &lease_guard)
                     .await;
                 Err(put_error.error)
             }
         }
     }
 
-    /// Deletes the files of a snapshot that will not be published. Errors are only logged; the
+    /// Deletes the objects of a snapshot that will not be published. Errors are only logged; the
     /// orphan sweep catches anything left behind.
-    async fn discard_uploaded_files(&self, snapshot_path: ObjectPath, uploaded_files: Vec<String>) {
-        for filename in uploaded_files {
-            // Recorded names keep RocksDB's leading slash, which `join` would escape.
-            let path = snapshot_path.clone().join(strip_leading_slash(&filename));
+    ///
+    /// The snapshot's own objects are deleted unconditionally. Shared SSTs this upload created go
+    /// last, only after confirming the lease in the metadata store and never past the operation
+    /// deadline; whatever the lease refuses is left to the orphan sweep.
+    async fn discard_uploaded_files<C>(
+        &self,
+        progress: SnapshotUploadProgress,
+        lease_guard: &SnapshotLeaseGuard<C>,
+    ) where
+        C: Clock + Clone + Send + Sync + 'static,
+    {
+        for path in progress.own_objects {
             if let Err(err) = self.object_store.delete(&path).await {
-                info!(%err, "Failed to delete file from unpublished snapshot");
+                info!(%err, %path, "Failed to delete object of unpublished snapshot");
             }
         }
+
+        self.delete_under_lease(progress.created_shared_ssts, lease_guard)
+            .await;
+    }
+
+    /// Deletes `paths` in batches of up to [`DELETE_BATCH_SIZE`], each through
+    /// [`SnapshotLeaseGuard::fenced`] using [`ObjectStore::delete_stream`]. Returns how many
+    /// objects were deleted and whether all of them are gone. NotFound counts as gone; a batch the
+    /// lease refuses, or any other error, means not all objects are gone.
+    async fn delete_under_lease<C>(
+        &self,
+        paths: Vec<ObjectPath>,
+        lease_guard: &SnapshotLeaseGuard<C>,
+    ) -> (usize, bool)
+    where
+        C: Clock + Clone + Send + Sync + 'static,
+    {
+        let mut deleted = 0;
+        let mut all_gone = true;
+
+        for batch in paths.chunks(DELETE_BATCH_SIZE) {
+            let batch = batch.to_vec();
+            let results = lease_guard
+                .fenced(async {
+                    self.object_store
+                        .delete_stream(futures::stream::iter(batch.into_iter().map(Ok)).boxed())
+                        .collect::<Vec<_>>()
+                        .await
+                })
+                .await;
+
+            let Some(results) = results else {
+                debug!(
+                    "Snapshot lease no longer permits deletes; leaving the rest to the orphan sweep"
+                );
+                return (deleted, false);
+            };
+
+            for result in results {
+                match result {
+                    Ok(_) => deleted += 1,
+                    Err(object_store::Error::NotFound { .. }) => {}
+                    Err(err) => {
+                        warn!(%err, "Failed to delete snapshot object");
+                        all_gone = false;
+                    }
+                }
+            }
+        }
+
+        (deleted, all_gone)
+    }
+
+    /// If snapshot type is incremental, we will skip existing SST objects in the store based on
+    /// their fingerprint. Returns a LiveFile SST name to object key mapping, if SSTs are uploaded
+    /// to a path different from their original name (i.e. when part of incremental snapshots).
+    async fn upload_snapshot_with_dedup(
+        &self,
+        snapshot: &PartitionSnapshotMetadata,
+        local_snapshot_path: &Path,
+        buf: &mut BytesMut,
+        progress: &mut SnapshotUploadProgress,
+    ) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
+        use restate_types::config::SnapshotType;
+
+        let mut file_keys = std::collections::BTreeMap::new();
+        let mut total_size = 0usize;
+        let mut uploaded_size = 0usize;
+        let mut files_uploaded = 0usize;
+        let mut files_skipped = 0usize;
+
+        for file in &snapshot.files {
+            let filename = strip_leading_slash(&file.name);
+            let local_path = local_snapshot_path.join(filename);
+            total_size += file.size;
+
+            // `creates_shared` marks a shared SST that did not exist before this upload. Only those
+            // may be deleted if the snapshot is not published: any other shared key may be in use.
+            let (repository_key, relative_key, must_upload, creates_shared) = match self
+                .snapshot_type
+            {
+                SnapshotType::Full => {
+                    let key = self.snapshot_file_path(snapshot, filename);
+                    (key, None, true, false)
+                }
+                SnapshotType::Incremental => {
+                    // shared SSTs live in the shared ../ssts/ prefix
+                    // key format: {fingerprint}.sst - the same SST file maps to the same key
+                    let fingerprint = sst_fingerprint(&local_path).await?;
+                    let sst_name = format!("{fingerprint}.sst");
+                    let sst_key = self
+                        .partition_snapshots_prefix(snapshot.partition_id)
+                        .join("ssts")
+                        .join(sst_name.as_str());
+
+                    // Fingerprint dedup: if an object already exists at this key, it was uploaded
+                    // from this same SST file, so we skip the upload. We still verify the stored
+                    // object's size matches, which catches truncated/partial uploads from a prior
+                    // crashed put.
+                    let head = self.object_store.head(&sst_key).await;
+                    let creates_shared = matches!(head, Err(object_store::Error::NotFound { .. }));
+                    let must_upload = match head {
+                        Ok(meta) if meta.size as usize != file.size => {
+                            warn!(
+                                sst = %filename,
+                                fingerprint = %fingerprint,
+                                expected_size = file.size,
+                                actual_size = meta.size,
+                                "Existing object at fingerprint key has unexpected size; \
+                                re-uploading to overwrite the corrupt object"
+                            );
+                            true
+                        }
+                        Ok(_) => {
+                            debug!(
+                                sst = %filename,
+                                fingerprint = %fingerprint,
+                                size = file.size,
+                                "SST already exists in repository (same fingerprint), skipping"
+                            );
+                            files_skipped += 1;
+                            false
+                        }
+                        Err(object_store::Error::NotFound { .. }) => true,
+                        Err(e) => {
+                            warn!(
+                                sst = %filename,
+                                error = %e,
+                                "Failed to check if SST exists, uploading to be safe"
+                            );
+                            true
+                        }
+                    };
+
+                    let relative_key = format!("ssts/{sst_name}");
+                    (sst_key, Some(relative_key), must_upload, creates_shared)
+                }
+            };
+
+            if must_upload {
+                put_snapshot_object(
+                    &local_path,
+                    &repository_key,
+                    &self.object_store,
+                    buf,
+                    self.upload_part_size,
+                    self.upload_single_put_threshold,
+                )
+                .await?;
+                debug!(
+                    sst = %filename,
+                    size = file.size,
+                    repository_key = %repository_key,
+                    "Uploaded SST to repository"
+                );
+
+                files_uploaded += 1;
+                uploaded_size += file.size;
+                if relative_key.is_none() {
+                    progress.own_objects.push(repository_key);
+                } else if creates_shared {
+                    progress.created_shared_ssts.push(repository_key);
+                }
+            }
+
+            if let Some(key) = relative_key {
+                file_keys.insert(file.name.clone(), key);
+            }
+        }
+
+        if matches!(self.snapshot_type, SnapshotType::Incremental) {
+            use crate::metric_definitions::SNAPSHOT_UPLOAD_BYTES_DEDUPLICATED;
+
+            let bytes_saved = total_size - uploaded_size;
+            let dedup_rate = if total_size > 0 {
+                (bytes_saved as f64 / total_size as f64) * 100.0
+            } else {
+                0.0
+            };
+
+            metrics::counter!(SNAPSHOT_UPLOAD_BYTES_DEDUPLICATED).increment(bytes_saved as u64);
+
+            info!(
+                partition_id = %snapshot.partition_id,
+                snapshot_id = %snapshot.snapshot_id,
+                files_uploaded = files_uploaded,
+                files_skipped = files_skipped,
+                bytes_uploaded = %ByteCount::from(uploaded_size),
+                bytes_saved = %ByteCount::from(bytes_saved),
+                dedup_rate = format!("{dedup_rate:.1}%"),
+                "Snapshot SST upload completed"
+            );
+        }
+
+        Ok(file_keys)
     }
 
     // It is the outer put method's responsibility to clean up partial progress.
@@ -792,6 +1006,25 @@ impl SnapshotRepository {
         }
     }
 
+    /// Full snapshots keep format V1 so that released nodes can still restore from them;
+    /// incremental ones are V2, which those nodes reject up front instead of failing to find
+    /// the SSTs.
+    fn with_file_keys(
+        &self,
+        snapshot: &PartitionSnapshotMetadata,
+        file_keys: std::collections::BTreeMap<String, String>,
+    ) -> PartitionSnapshotMetadata {
+        use restate_types::config::SnapshotType;
+
+        let mut snapshot = snapshot.clone();
+        snapshot.version = match self.snapshot_type {
+            SnapshotType::Full => SnapshotFormatVersion::V1,
+            SnapshotType::Incremental => SnapshotFormatVersion::V2,
+        };
+        snapshot.file_keys = file_keys;
+        snapshot
+    }
+
     async fn upload_snapshot(
         &self,
         snapshot: &PartitionSnapshotMetadata,
@@ -799,28 +1032,17 @@ impl SnapshotRepository {
         progress: &mut SnapshotUploadProgress,
     ) -> Result<(), PutSnapshotError> {
         let mut buf = BytesMut::new();
-        for file in &snapshot.files {
-            let filename = strip_leading_slash(&file.name);
-            let key = self.snapshot_file_path(snapshot, filename);
 
-            let put_result = put_snapshot_object(
-                local_snapshot_path.join(filename).as_path(),
-                &key,
-                &self.object_store,
-                &mut buf,
-                self.upload_part_size,
-                self.upload_single_put_threshold,
-            )
+        let file_keys = self
+            .upload_snapshot_with_dedup(snapshot, local_snapshot_path, &mut buf, progress)
             .await
             .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
 
-            debug!(etag = %put_result.e_tag.unwrap_or_default(), %key, "Put snapshot object completed");
-            progress.push(file.name.clone());
-        }
+        let snapshot_with_keys = self.with_file_keys(snapshot, file_keys);
 
         let metadata_key = self.snapshot_file_path(snapshot, "metadata.json");
         let metadata_json_payload = PutPayload::from(
-            serde_json::to_string_pretty(snapshot).expect("Can always serialize JSON"),
+            serde_json::to_string_pretty(&snapshot_with_keys).expect("Can always serialize JSON"),
         );
 
         let put_result = self
@@ -828,7 +1050,7 @@ impl SnapshotRepository {
             .put(&metadata_key, metadata_json_payload)
             .await
             .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
-        progress.push("/metadata.json".to_owned());
+        progress.own_objects.push(metadata_key.clone());
 
         debug!(
             key = %metadata_key,
@@ -998,6 +1220,17 @@ impl SnapshotRepository {
             anyhow::bail!("Lease expired before cleanup could start");
         }
 
+        // Get currently retained snapshots to know which SSTs are still in use.
+        // Abort cleanup if we cannot determine this to avoid deleting shared SSTs.
+        let retained_snapshots = self
+            .get_current_retained_snapshots(partition_id)
+            .await
+            .context("Cannot proceed with cleanup; aborting to prevent potential data loss")?;
+
+        let referenced_sst_keys = self
+            .build_referenced_sst_keys(partition_id, &retained_snapshots)
+            .await?;
+
         for snapshot_ref in &evicted_snapshots {
             if !lease_guard.is_valid() {
                 debug!(
@@ -1009,18 +1242,72 @@ impl SnapshotRepository {
 
             // Errors are logged inside delete_snapshot_files; if cleanup fails,
             // these snapshots become orphans to be cleaned by future scan-sweep.
-            self.delete_snapshot_files(partition_id, snapshot_ref).await;
+            self.delete_snapshot_files(
+                partition_id,
+                snapshot_ref,
+                &referenced_sst_keys,
+                lease_guard,
+            )
+            .await;
         }
 
         Ok(())
     }
 
+    /// Get retained snapshots for cleanup coordination.
+    ///
+    /// Returns an error if latest.json exists but cannot be read or parsed, since we cannot
+    /// safely determine which SSTs are still referenced by retained snapshots. Cleanup must
+    /// abort in this case to avoid deleting shared SSTs that may still be in use.
+    async fn get_current_retained_snapshots(
+        &self,
+        partition_id: PartitionId,
+    ) -> anyhow::Result<Vec<SnapshotReference>> {
+        let latest_path = self.latest_snapshot_pointer_path(partition_id);
+        match self.object_store.get(&latest_path).await {
+            Ok(result) => {
+                let bytes = result.bytes().await.map_err(|e| {
+                    warn!(
+                        %partition_id,
+                        error = %e,
+                        "Failed to read latest.json bytes; cannot determine retained snapshots"
+                    );
+                    anyhow!("Failed to read latest.json bytes: {}", e)
+                })?;
+                let latest: LatestSnapshot = serde_json::from_slice(&bytes).map_err(|e| {
+                    warn!(
+                        %partition_id,
+                        error = %e,
+                        "Failed to parse latest.json; cannot determine retained snapshots"
+                    );
+                    anyhow!("Failed to parse latest.json: {}", e)
+                })?;
+                Ok(latest.effective_retained_snapshots())
+            }
+            Err(object_store::Error::NotFound { .. }) => {
+                // No latest.json means no snapshots exist yet, so no SSTs to protect
+                debug!(%partition_id, "No latest.json found; no retained snapshots to protect");
+                Ok(vec![])
+            }
+            Err(e) => {
+                warn!(
+                    %partition_id,
+                    error = %e,
+                    "Failed to fetch latest.json; cannot determine retained snapshots"
+                );
+                Err(anyhow!("Failed to fetch latest.json: {}", e))
+            }
+        }
+    }
+
     /// Best-effort deletion of snapshot files. Errors are logged but not propagated.
-    #[instrument(level = "warn", skip(self), fields(%partition_id, snapshot_id = %snapshot_ref.snapshot_id))]
+    #[instrument(level = "warn", skip(self, lease_guard), fields(%partition_id, snapshot_id = %snapshot_ref.snapshot_id))]
     async fn delete_snapshot_files(
         &self,
         partition_id: PartitionId,
         snapshot_ref: &SnapshotReference,
+        referenced_sst_keys: &HashSet<ObjectPath>,
+        lease_guard: &SnapshotLeaseGuard,
     ) {
         let metadata_path = self
             .prefix
@@ -1056,17 +1343,37 @@ impl SnapshotRepository {
             }
         };
 
-        let mut any_failed = false;
-        for path in metadata
-            .files
-            .iter()
-            .map(|filename| self.snapshot_file_path(&metadata, strip_leading_slash(&filename.name)))
-            .chain(std::iter::once(metadata_path))
-        {
-            if let Err(err) = self.object_store.delete(&path).await
-                && !matches!(err, object_store::Error::NotFound { .. })
-            {
-                warn!(%path, %err, "Failed to delete snapshot object");
+        let mut unreferenced = Vec::new();
+        for file in &metadata.files {
+            let filename = strip_leading_slash(&file.name);
+            let path = self.resolve_file_path(
+                partition_id,
+                metadata.file_keys.get(&file.name).map(|s| s.as_str()),
+                &snapshot_ref.path,
+                filename,
+            );
+
+            if referenced_sst_keys.contains(&path) {
+                debug!(%path, "Skipping deletion of SST file still referenced by retained snapshots");
+                continue;
+            }
+
+            unreferenced.push(path);
+        }
+
+        let (_, files_gone) = self.delete_under_lease(unreferenced, lease_guard).await;
+        let mut any_failed = !files_gone;
+
+        // Only delete metadata.json after all SST deletions succeed.
+        // This ensures retries can still identify which SSTs need to be deleted.
+        // If we deleted metadata while SSTs remain, subsequent retries would see
+        // NotFound for metadata.json and return Ok(()), leaving orphaned SSTs.
+        if files_gone {
+            let (_, metadata_gone) = self
+                .delete_under_lease(vec![metadata_path.clone()], lease_guard)
+                .await;
+            if !metadata_gone {
+                warn!(%metadata_path, "Failed to delete snapshot metadata");
                 any_failed = true;
             }
         }
@@ -1193,12 +1500,15 @@ impl SnapshotRepository {
         for file in &mut snapshot_metadata.files {
             let filename = strip_leading_slash(&file.name);
             let expected_size = file.size;
-            let key = self
-                .prefix
-                .clone()
-                .join(partition_id.to_string())
-                .join(snapshot_ref.path.as_str())
-                .join(filename);
+            let key = self.resolve_file_path(
+                partition_id,
+                snapshot_metadata
+                    .file_keys
+                    .get(&file.name)
+                    .map(String::as_str),
+                &snapshot_ref.path,
+                filename,
+            );
             let local_path = snapshot_dir.path().join(filename);
             let concurrency_limiter = Arc::clone(&concurrency_limiter);
             let object_store = Arc::clone(&self.object_store);
@@ -1380,6 +1690,106 @@ impl SnapshotRepository {
     ) -> ObjectPath {
         self.base_prefix(snapshot_metadata).join(filename)
     }
+
+    /// Resolves a file reference to its full object path.
+    ///
+    /// Handles two storage formats:
+    /// - Incremental snapshots: `relative_key` contains "ssts/{fingerprint}.sst"
+    /// - Legacy full snapshots: file is stored at `{snapshot_path}/{filename}`
+    fn resolve_file_path(
+        &self,
+        partition_id: PartitionId,
+        relative_key: Option<&str>,
+        snapshot_path: &str,
+        filename: &str,
+    ) -> ObjectPath {
+        if let Some(key) = relative_key {
+            // Incremental snapshot: the key is relative to the partition prefix, e.g.
+            // "ssts/{fingerprint}.sst". `join` escapes '/', so append it segment by segment.
+            key.split('/').fold(
+                self.prefix.clone().join(partition_id.to_string()),
+                |path, segment| path.join(segment),
+            )
+        } else {
+            // Legacy full snapshot: SST is in snapshot-specific directory
+            self.prefix
+                .clone()
+                .join(partition_id.to_string())
+                .join(snapshot_path)
+                .join(filename)
+        }
+    }
+
+    /// Builds the set of SST keys referenced by the given retained snapshots.
+    ///
+    /// Returns an error if any retained snapshot's metadata cannot be read or parsed
+    /// to prevent orphan cleanup from deleting SSTs that are still referenced.
+    async fn build_referenced_sst_keys(
+        &self,
+        partition_id: PartitionId,
+        retained_snapshots: &[SnapshotReference],
+    ) -> anyhow::Result<HashSet<ObjectPath>> {
+        let mut referenced_sst_keys = HashSet::new();
+
+        for retained_ref in retained_snapshots {
+            let retained_metadata_path = self
+                .prefix
+                .clone()
+                .join(partition_id.to_string())
+                .join(retained_ref.path.as_str())
+                .join("metadata.json");
+
+            let data = match self.object_store.get(&retained_metadata_path).await {
+                Ok(data) => data,
+                Err(object_store::Error::NotFound { .. }) => {
+                    // Metadata missing - could be race condition or transient failure.
+                    // Bail to prevent potential data loss as we can't know which SSTs are retained.
+                    warn!(
+                        path = %retained_ref.path,
+                        "Retained snapshot metadata not found - aborting to prevent data loss"
+                    );
+                    return Err(anyhow::anyhow!(
+                        "Cannot verify retained snapshot {}: metadata not found",
+                        retained_ref.path
+                    ));
+                }
+                Err(err) => {
+                    return Err(anyhow::anyhow!(
+                        "Failed to read metadata for retained snapshot {}: {}",
+                        retained_ref.path,
+                        err
+                    ));
+                }
+            };
+
+            let bytes = data.bytes().await.context(format!(
+                "Failed to read metadata bytes for retained snapshot {}",
+                retained_ref.path
+            ))?;
+
+            let retained_metadata: PartitionSnapshotMetadata = serde_json::from_slice(&bytes)
+                .context(format!(
+                    "Failed to parse metadata for retained snapshot {}",
+                    retained_ref.path
+                ))?;
+
+            for file in &retained_metadata.files {
+                let filename = strip_leading_slash(&file.name);
+                let sst_key = self.resolve_file_path(
+                    partition_id,
+                    retained_metadata
+                        .file_keys
+                        .get(&file.name)
+                        .map(|s| s.as_str()),
+                    &retained_ref.path,
+                    filename,
+                );
+                referenced_sst_keys.insert(sst_key);
+            }
+        }
+
+        Ok(referenced_sst_keys)
+    }
 }
 
 // Strip the leading "/" character from RocksDB LiveFile names
@@ -1387,22 +1797,23 @@ fn strip_leading_slash(name: &str) -> &str {
     name.trim_start_matches('/')
 }
 
+/// Objects written by a snapshot upload, for deleting them if the snapshot is not published.
 #[derive(Clone, Debug)]
 struct SnapshotUploadProgress {
     pub snapshot_complete_path: ObjectPath,
-    pub uploaded_files: Vec<String>,
+    /// Objects under the snapshot's own prefix; nothing else references them.
+    pub own_objects: Vec<ObjectPath>,
+    /// Shared SSTs in the `ssts/` prefix that this upload created.
+    pub created_shared_ssts: Vec<ObjectPath>,
 }
 
 impl SnapshotUploadProgress {
     fn with_snapshot_path(snapshot_complete_path: ObjectPath) -> Self {
         SnapshotUploadProgress {
             snapshot_complete_path,
-            uploaded_files: vec![],
+            own_objects: vec![],
+            created_shared_ssts: vec![],
         }
-    }
-
-    fn push(&mut self, filename: String) {
-        self.uploaded_files.push(filename);
     }
 }
 
@@ -1417,10 +1828,9 @@ enum PutOutcome {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("failed to upload snapshot to {full_snapshot_path}: {error}")]
+#[error("failed to upload snapshot to {}: {error}", progress.snapshot_complete_path)]
 struct PutSnapshotError {
-    pub full_snapshot_path: ObjectPath,
-    pub uploaded_files: Vec<String>,
+    pub progress: SnapshotUploadProgress,
     pub error: anyhow::Error,
 }
 
@@ -1431,14 +1841,15 @@ impl PutSnapshotError {
     {
         PutSnapshotError {
             error: error.into(),
-            full_snapshot_path: progress.snapshot_complete_path,
-            uploaded_files: progress.uploaded_files,
+            progress,
         }
     }
 }
 
 // The object_store `put_multipart` method does not currently support PutMode, so we cannot pass
-// a CAS condition here. Snapshots write to per-snapshot-id paths, so collisions are not expected.
+// a CAS condition here. Full snapshots write to per-snapshot-id paths, so collisions are not
+// expected. Incremental snapshots write SSTs to keys derived from their fingerprint, where a
+// concurrent writer of the same key writes identical bytes.
 async fn put_snapshot_object(
     file_path: &Path,
     key: &ObjectPath,
@@ -1521,6 +1932,25 @@ impl GetSnapshotError {
         Self::Unavailable(err.into())
     }
 
+    /// Classifies the failure to import a downloaded snapshot into RocksDB.
+    ///
+    /// RocksDB reports a corrupt SST -- a bad footer or magic number, a block checksum mismatch,
+    /// or corrupted keys -- as [`rocksdb::ErrorKind::Corruption`], which is the only import failure
+    /// that says the snapshot itself is unusable. RocksDB raises it while it prepares the import,
+    /// before it installs any of the snapshot's files, and drops the column family it created.
+    /// Every other failure (local I/O, no space, shutdown) would hit an older snapshot the same
+    /// way and still fails the restore.
+    pub(crate) fn from_import(error: RocksError) -> Self {
+        if matches!(&error, RocksError::Other(err) if err.kind() == rocksdb::ErrorKind::Corruption)
+        {
+            Self::Defective(
+                anyhow::Error::new(error).context("RocksDB rejected the snapshot's SST files"),
+            )
+        } else {
+            Self::unavailable(error)
+        }
+    }
+
     /// The object store has already retried transient failures, so only a missing object says
     /// something about the snapshot.
     fn from_object_store(err: object_store::Error, context: String) -> Self {
@@ -1536,12 +1966,6 @@ impl GetSnapshotError {
 /// Parses and validates a snapshot's `metadata.json`. Any error means the snapshot is unusable.
 fn parse_snapshot_metadata(bytes: &[u8]) -> anyhow::Result<PartitionSnapshotMetadata> {
     let snapshot_metadata: PartitionSnapshotMetadata = serde_json::from_slice(bytes)?;
-    if !matches!(snapshot_metadata.version, SnapshotFormatVersion::V1) {
-        bail!(
-            "Unsupported snapshot format version: {:?}",
-            snapshot_metadata.version
-        );
-    }
     Metadata::with_current(|m| {
         let nodes_config = m.nodes_config_ref();
         snapshot_metadata.validate(
@@ -1608,6 +2032,7 @@ mod tests {
     use url::Url;
 
     use restate_clock::time::MillisSinceEpoch;
+    use restate_clock::{Clock, MockClock};
     use restate_core::{Metadata, TestCoreEnv};
     use restate_object_store_util::create_object_store_client;
     use restate_test_util::tempdir;
@@ -1618,7 +2043,9 @@ mod tests {
     use restate_types::sharding::KeyRange;
     use restate_types::{GenerationalNodeId, SemanticRestateVersion};
 
+    use crate::snapshots::LEASE_DURATION;
     use crate::snapshots::SnapshotLeaseGuard;
+    use crate::snapshots::SnapshotLeaseManager;
     use crate::snapshots::repository::{LatestSnapshotVersion, SnapshotUploadProgress};
 
     use super::{
@@ -2224,6 +2651,92 @@ mod tests {
         Ok(())
     }
 
+    /// Shared SSTs are deleted only while the store confirms the lease; a stale guard may still
+    /// delete the unpublished snapshot's own files but must leave shared SSTs for the orphan sweep.
+    #[restate_core::test]
+    async fn discard_uploaded_files_fences_shared_ssts() -> anyhow::Result<()> {
+        let env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let repository = mock_repository(1);
+        let partition = repository.partition_snapshots_prefix(PartitionId::MIN);
+        let store = repository.object_store.clone();
+
+        let n1_clock = MockClock::new();
+        let n2_clock = MockClock::with_timestamp(n1_clock.recent());
+        let guard = SnapshotLeaseManager::new_with_clock(
+            env.metadata_store_client.clone(),
+            GenerationalNodeId::new(1, 1),
+            n1_clock,
+        )
+        .acquire(PartitionId::MIN)
+        .await?;
+        let lease_lost = guard.lease_lost();
+
+        let own = partition.clone().join("lsn_1-snap_1").join("data.sst");
+        let shared = partition.clone().join("ssts").join("shared.sst");
+        store.put(&own, PutPayload::from_static(b"own")).await?;
+        store
+            .put(&shared, PutPayload::from_static(b"shared"))
+            .await?;
+
+        // Another node takes over once its clock passes the expiry; the first guard's local clock
+        // still considers its lease valid.
+        n2_clock.advance(LEASE_DURATION + Duration::from_millis(1000));
+        let _n2_guard = SnapshotLeaseManager::new_with_clock(
+            env.metadata_store_client.clone(),
+            GenerationalNodeId::new(2, 1),
+            n2_clock,
+        )
+        .acquire(PartitionId::MIN)
+        .await?;
+        assert!(guard.is_valid());
+
+        repository
+            .discard_uploaded_files(
+                SnapshotUploadProgress {
+                    snapshot_complete_path: partition
+                        .clone()
+                        .join("lsn_1-snap_1")
+                        .join("snapshot.json"),
+                    own_objects: vec![own.clone()],
+                    created_shared_ssts: vec![shared.clone()],
+                },
+                &guard,
+            )
+            .await;
+
+        assert!(store.head(&own).await.is_err(), "own objects are deleted");
+        assert!(
+            store.head(&shared).await.is_ok(),
+            "shared SST must survive a stale guard"
+        );
+        assert!(
+            lease_lost.is_cancelled(),
+            "a store mismatch fires lease_lost"
+        );
+
+        // A held lease may delete the shared SST.
+        let shared_held = partition.clone().join("ssts").join("held.sst");
+        store
+            .put(&shared_held, PutPayload::from_static(b"held"))
+            .await?;
+        repository
+            .discard_uploaded_files(
+                SnapshotUploadProgress {
+                    snapshot_complete_path: partition.join("lsn_2-snap_2").join("snapshot.json"),
+                    own_objects: vec![],
+                    created_shared_ssts: vec![shared_held.clone()],
+                },
+                &SnapshotLeaseGuard::noop(),
+            )
+            .await;
+        assert!(
+            store.head(&shared_held).await.is_err(),
+            "held lease deletes shared SSTs"
+        );
+
+        Ok(())
+    }
+
     fn mock_repository(num_retained: u8) -> SnapshotRepository {
         SnapshotRepository {
             object_store: Arc::new(object_store::memory::InMemory::new()),
@@ -2233,6 +2746,7 @@ mod tests {
             num_retained: std::num::NonZeroU8::new(num_retained).unwrap(),
             upload_part_size: SnapshotsOptions::default().upload_part_size(),
             upload_single_put_threshold: SnapshotsOptions::default().upload_single_put_threshold(),
+            snapshot_type: restate_types::config::SnapshotType::default(),
             lease_provider: None,
             enable_cleanup: false,
         }
@@ -2306,6 +2820,7 @@ mod tests {
                 smallest_seqno: 0,
                 largest_seqno: 0,
             }],
+            file_keys: std::collections::BTreeMap::new(),
         }
     }
 
@@ -2825,6 +3340,114 @@ mod tests {
                 .filter(|p| !retained_snapshot_paths.contains(p.as_str()))
                 .collect::<Vec<_>>()
         );
+
+        Ok(())
+    }
+
+    /// If a retained snapshot's metadata cannot be read (missing or unparseable), cleanup cannot
+    /// tell which shared SSTs are live and must delete nothing.
+    #[restate_core::test]
+    async fn cleanup_aborts_if_retained_metadata_unreadable() -> anyhow::Result<()> {
+        let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let repository = mock_repository(1);
+        let store = &repository.object_store;
+        let partition = ObjectPath::from(PartitionId::MIN.to_string());
+
+        let snapshot_with_shared_sst = |lsn: u64| {
+            let mut s = mock_snapshot_metadata("/000001.sst".to_owned(), "/".to_owned(), 0);
+            s.min_applied_lsn = Lsn::new(lsn);
+            s.file_keys
+                .insert("/000001.sst".to_owned(), "ssts/shared.sst".to_owned());
+            s
+        };
+        let evicted = snapshot_with_shared_sst(1);
+        let retained = snapshot_with_shared_sst(2);
+        let evicted_ref = SnapshotReference::from_metadata(&evicted);
+        let retained_ref = SnapshotReference::from_metadata(&retained);
+        let evicted_metadata = partition
+            .clone()
+            .join(evicted_ref.path.as_str())
+            .join("metadata.json");
+        let retained_metadata = partition
+            .clone()
+            .join(retained_ref.path.as_str())
+            .join("metadata.json");
+        let sst = partition.join("ssts").join("shared.sst");
+
+        store.put(&sst, PutPayload::from_static(b"sst")).await?;
+        store
+            .put(
+                &evicted_metadata,
+                PutPayload::from(serde_json::to_vec(&evicted)?),
+            )
+            .await?;
+        store
+            .put(
+                &repository.latest_snapshot_pointer_path(PartitionId::MIN),
+                PutPayload::from(serde_json::to_vec(&mock_latest_snapshot(&retained_ref))?),
+            )
+            .await?;
+
+        let cleanup = || async {
+            repository
+                .cleanup_evicted_snapshots_inner(
+                    PartitionId::MIN,
+                    vec![evicted_ref.clone()],
+                    &Arc::new(SnapshotLeaseGuard::noop()),
+                )
+                .await
+        };
+
+        // Retained metadata.json missing, then corrupt: cleanup errors and deletes nothing.
+        for corrupt in [false, true] {
+            if corrupt {
+                store
+                    .put(&retained_metadata, PutPayload::from_static(b"not json"))
+                    .await?;
+            }
+            assert!(cleanup().await.is_err());
+            assert!(store.head(&sst).await.is_ok());
+            assert!(store.head(&evicted_metadata).await.is_ok());
+        }
+
+        // Once readable, the evicted snapshot's metadata goes but the SST the retained snapshot
+        // still references stays.
+        store
+            .put(
+                &retained_metadata,
+                PutPayload::from(serde_json::to_vec(&retained)?),
+            )
+            .await?;
+        cleanup().await?;
+        assert!(store.head(&sst).await.is_ok());
+        assert!(store.head(&evicted_metadata).await.is_err());
+
+        Ok(())
+    }
+
+    /// Full snapshots stay V1 so released nodes can restore from them; incremental ones are V2 so
+    /// those nodes reject them up front. New code reads both.
+    #[restate_core::test]
+    async fn snapshot_format_version_follows_snapshot_type() -> anyhow::Result<()> {
+        use restate_types::config::SnapshotType;
+
+        let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let mut repository = mock_repository(1);
+        let snapshot = mock_snapshot_metadata("/data.sst".to_owned(), "/".to_owned(), 0);
+        let keys = || {
+            std::collections::BTreeMap::from([("/data.sst".to_owned(), "ssts/x.sst".to_owned())])
+        };
+
+        for (snapshot_type, version, name) in [
+            (SnapshotType::Full, SnapshotFormatVersion::V1, "V1"),
+            (SnapshotType::Incremental, SnapshotFormatVersion::V2, "V2"),
+        ] {
+            repository.snapshot_type = snapshot_type;
+            let json = serde_json::to_string(&repository.with_file_keys(&snapshot, keys()))?;
+            assert!(json.contains(&format!("\"version\":\"{name}\"")), "{json}");
+            let parsed = super::parse_snapshot_metadata(json.as_bytes())?;
+            assert_eq!(parsed.version, version);
+        }
 
         Ok(())
     }

@@ -8623,6 +8623,7 @@ dependencies = [
  "tracing-subscriber",
  "ulid",
  "url",
+ "xxhash-rust",
  "zerocopy",
 ]
 
@@ -8725,6 +8726,7 @@ dependencies = [
  "restate-metadata-server",
  "restate-metadata-store",
  "restate-node",
+ "restate-object-store-util",
  "restate-rocksdb",
  "restate-service-client",
  "restate-test-util",

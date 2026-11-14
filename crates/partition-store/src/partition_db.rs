@@ -671,6 +671,7 @@ impl PartitionCell {
         // https://github.com/restatedev/restate/issues/4534
         self.drop_stale_cf(guard, rocksdb).await?;
 
+        let rocksdb = Arc::clone(&database.rocksdb);
         let cf_name = self.cf_name();
         self.start_open(
             guard,
@@ -686,7 +687,91 @@ impl PartitionCell {
             },
         );
         guard.finish_open().await??;
+
+        // The import only opens each SST's footer and metadata blocks, and reads the first and last
+        // data block to compute the file's bounds, so corruption in the middle of a file would go
+        // unnoticed until the partition reads it. Verify every block now, before the partition goes
+        // live; a snapshot that fails verification is dropped and treated like a failed import.
+        if let Err(error) = Self::verify_cf_checksums(rocksdb, &self.executor, self.cf_name()).await
+        {
+            error!(
+                cf_name = %self.cf_name(),
+                %error,
+                "The imported snapshot failed checksum verification; dropping its column family"
+            );
+            self.drop_cf(guard).await?;
+            return Err(error);
+        }
         Ok(guard.db().expect("adopted column family").clone())
+    }
+
+    /// Verifies the block checksums of `cf_name` by scanning it on `executor`, the pool the import
+    /// runs on: the scan is blocking I/O and must not run on an async worker. It reads only this
+    /// partition's column family, unlike [`rocksdb::DB::verify_checksum`], which reads every column
+    /// family of the database (a partition store may share its database with other partitions).
+    async fn verify_cf_checksums(
+        rocksdb: Arc<RocksDb>,
+        executor: &impl IoExecutor,
+        cf_name: CfName,
+    ) -> Result<(), RocksError> {
+        let task = rocksdb.prepare(
+            StorageTaskKind::VerifyColumnFamily,
+            move |rocksdb| -> Result<(), RocksError> {
+                let started = std::time::Instant::now();
+                Self::verify_cf_blocks(rocksdb.inner(), &cf_name)?;
+                debug!(
+                    cf_name = %cf_name,
+                    elapsed = ?started.elapsed(),
+                    "Verified the imported column family's block checksums"
+                );
+                Ok(())
+            },
+        );
+        executor
+            .spawn_detached(task)?
+            .await
+            .map_err(|_| ShutdownError)??;
+        Ok(())
+    }
+
+    /// Reads every key of `cf_name`, which makes RocksDB verify each block it reads against its
+    /// checksum. [Checksums] are verified on read, so the first corrupt block fails the scan.
+    ///
+    /// [Checksums]: rocksdb::ReadOptions::set_verify_checksums
+    fn verify_cf_blocks(rocksdb: &RocksAccess, cf_name: &CfName) -> Result<(), RocksError> {
+        let cf = rocksdb
+            .cf_handle(cf_name.as_ref())
+            .ok_or_else(|| RocksError::UnknownColumnFamily(cf_name.clone().into()))?;
+        let mut opts = ReadOptions::default();
+        opts.set_verify_checksums(true);
+        // The snapshot's data is unlikely to be read again soon; don't displace the block cache.
+        opts.fill_cache(false);
+        let mut iterator = rocksdb.as_raw_db().raw_iterator_cf_opt(&cf, opts);
+        iterator.seek_to_first();
+        while iterator.valid() {
+            iterator.next();
+        }
+        iterator.status()?;
+        // Compaction was disabled for the import so that it cannot read these files before they
+        // are verified; restore the configured setting now that they are.
+        drop(iterator);
+        let disable_auto_compactions = Configuration::pinned()
+            .worker
+            .storage
+            .rocksdb
+            .rocksdb_disable_auto_compactions();
+        rocksdb.as_raw_db().set_options_cf(
+            &cf,
+            &[(
+                "disable_auto_compactions",
+                if disable_auto_compactions {
+                    "true"
+                } else {
+                    "false"
+                },
+            )],
+        )?;
+        Ok(())
     }
 
     fn start_open(
