@@ -78,6 +78,21 @@ impl DataFusionQueryEngine {
         if Configuration::pinned().common.disable_config_sql_table {
             opts.excluded_tables.push(ConfigTable::identity());
         }
+        if !Configuration::pinned()
+            .common
+            .experimental
+            .is_query_stats_tables_enabled()
+        {
+            use crate::stats::{
+                SysDeploymentStatsTable, SysServiceStatsTable, SysVirtualObjectStatsTable,
+            };
+
+            opts.excluded_tables.extend([
+                SysServiceStatsTable::identity(),
+                SysDeploymentStatsTable::identity(),
+                SysVirtualObjectStatsTable::identity(),
+            ]);
+        }
         let ctx = self.env.create_session(&opts)?;
         Ok(Arc::new(RestateQuerySession {
             session_id: ctx.session_id().into(),

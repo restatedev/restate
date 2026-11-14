@@ -1221,6 +1221,24 @@ experimental! {
     /// Since v1.8.2
     track_status_gauges,
 
+    /// # Statistics query tables
+    ///
+    /// Shows the `sys_service_stats`, `sys_deployment_stats` and
+    /// `sys_virtual_object_stats` tables in SQL queries, with either query engine.
+    /// Off by default. Only new query sessions see a change; sessions already open
+    /// keep the tables they started with.
+    ///
+    /// The tables read statistics that workers keep only with
+    /// `experimental-enable-track-status-gauges`. Enable that first, and wait until
+    /// the statistics are Ready on every partition (see `restate.cluster.indexes`);
+    /// this option doesn't start that or wait for it. A query fails if a partition
+    /// it reads has missing or incomplete statistics, instead of returning a
+    /// partial total. Enable this only once all nodes are upgraded: an older node
+    /// can't serve the tables.
+    ///
+    /// Since v1.8.2
+    query_stats_tables,
+
     /// # Reset status gauges
     ///
     /// Deletes the local service, deployment, and virtual-object status gauges and

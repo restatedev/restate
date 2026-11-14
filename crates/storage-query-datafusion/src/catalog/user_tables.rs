@@ -33,6 +33,9 @@ use crate::rules::schema::SysRulesTable;
 use crate::scheduler_status::schema::SysSchedulerTable;
 use crate::service::schema::SysServiceTable;
 use crate::state::schema::StateTable;
+use crate::stats::{
+    StatTable, SysDeploymentStatsTable, SysServiceStatsTable, SysVirtualObjectStatsTable,
+};
 use crate::user_limits::schema::SysUserLimitsTable;
 use crate::vqueue_entry_status::schema::SysVqueueEntryStatusTable;
 use crate::vqueue_meta::schema::SysVqueueMetaTable;
@@ -213,6 +216,23 @@ where
             SysVqueueMetaTable,
             SysVqueueEntryStatusTable,
             SysVqueuesTable,
+        );
+        macro_rules! add_statistics {
+            ($($table:ty),+ $(,)?) => { $(
+                inventory.add::<$table>(
+                    "public",
+                    &<$table>::identity(),
+                    <$table>::create_provider(
+                        self.partition_selector.clone(),
+                        &self.remote_scanner_manager,
+                    )?,
+                )?;
+            )+ };
+        }
+        add_statistics!(
+            SysServiceStatsTable,
+            SysDeploymentStatsTable,
+            SysVirtualObjectStatsTable
         );
         inventory
             .add_view("sys_invocation", "public", SYS_INVOCATION_VIEW)
