@@ -57,6 +57,14 @@ define_table!(
         /// the first slice, or over a single partition key.
         progress_percent: DataType::UInt32,
 
+        /// When the current pass should end if it keeps its rate so far: the time
+        /// since `pass_started_at`, stretched by how much of the key range is still
+        /// ahead. Approximate like `progress_percent`, but from the exact cursor
+        /// position, so it can show while that still rounds to 0. NULL while
+        /// progress or `pass_started_at` is unknown, or the cursor hasn't moved
+        /// yet.
+        eta: TimestampMillisecond,
+
         /// When the job was created; NULL if unknown.
         created_at: TimestampMillisecond,
 
@@ -67,7 +75,8 @@ define_table!(
         /// (for a job rebuilt while running).
         started_at: TimestampMillisecond,
 
-        /// When the current or last full pass committed its first slice.
+        /// When the current or last full pass started its first slice; NULL if
+        /// unknown, for a job moved onto a pass already under way.
         pass_started_at: TimestampMillisecond,
 
         /// When the last full pass ended.

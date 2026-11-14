@@ -52,6 +52,33 @@ impl ReplicaMigrations {
     /// walk whose source isn't entry statuses, including a source this binary
     /// doesn't know, before the first slice, or when the range holds a single key.
     pub fn progress_percent(&self, walk: &Walk) -> Option<u32> {
+        let (done, span) = self.position(walk)?;
+        u32::try_from(done * 100 / span).ok()
+    }
+
+    /// When the current pass of `walk` should end if it keeps the rate it has had
+    /// since it started at `pass_started_at`: the time it has run so far, stretched
+    /// by how much of the key range it still has ahead. Times are milliseconds
+    /// since the Unix epoch. Approximate for the same reason as
+    /// [`Self::progress_percent`], but from the exact cursor position: a pass shown
+    /// at 0% because the percent rounds down can already have an estimate. `None`
+    /// while progress is unknown or the cursor hasn't moved past the range's first
+    /// partition key, or when `now` is before `pass_started_at`.
+    ///
+    /// For example, a pass that started at 10:00 and is 25% through at 10:15 should
+    /// end at 11:00.
+    pub fn eta(&self, walk: &Walk, pass_started_at: u64, now: u64) -> Option<u64> {
+        let (done, span) = self.position(walk)?;
+        if done == 0 {
+            return None;
+        }
+        let elapsed = u128::from(now.checked_sub(pass_started_at)?);
+        pass_started_at.checked_add(u64::try_from(elapsed * span / done).ok()?)
+    }
+
+    /// How many partition keys of this replica's range `walk`'s cursor is past, and
+    /// how many the range spans.
+    fn position(&self, walk: &Walk) -> Option<(u128, u128)> {
         if walk.source() != Some(Source::EntryStatus) {
             return None;
         }
@@ -60,7 +87,7 @@ impl ReplicaMigrations {
         let (start, end) = (self.key_range.start(), self.key_range.end());
         let span = u128::from(end.checked_sub(start).filter(|span| *span > 0)?);
         let done = u128::from(key.id.partition_key().checked_sub(start)?);
-        u32::try_from((done * 100 / span).min(100)).ok()
+        Some((done.min(span), span))
     }
 }
 

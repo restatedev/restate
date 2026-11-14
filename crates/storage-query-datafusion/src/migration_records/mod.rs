@@ -40,6 +40,7 @@ use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use futures::{StreamExt, stream};
 
+use restate_clock::WallClock;
 use restate_core::Metadata;
 use restate_partition_store::job::{MigrationJob, MigrationJobKind, MigrationJobStatus};
 use restate_partition_store::registry::{
@@ -150,6 +151,7 @@ impl Scan for ReportScanner {
                 .map_err(|err| DataFusionError::External(err.into()))?
                 .await
                 .map_err(|err| DataFusionError::External(err.into()))?;
+            let now = WallClock::now_ms().as_u64();
             let batches = match table {
                 Table::Indexes => batches::<IndexesBuilder, _>(
                     schema,
@@ -161,7 +163,7 @@ impl Scan for ReportScanner {
                     schema,
                     batch_size,
                     jobs(&report, limit),
-                    |builder, (replica, job)| append_job(builder, node, replica, job),
+                    |builder, (replica, job)| append_job(builder, node, replica, job, now),
                 )?,
             };
             Ok::<_, DataFusionError>((batches, unreadable(&report)))
@@ -307,11 +309,13 @@ fn jobs(
         .take(limit.unwrap_or(usize::MAX))
 }
 
+/// Appends `job`'s row; `now` is the scan's time, for `eta`.
 fn append_job(
     builder: &mut MigrationJobsBuilder,
     node: GenerationalNodeId,
     replica: &ReplicaMigrations,
     job: &MigrationJob,
+    now: u64,
 ) {
     let mut row = builder.row();
     row.fmt_plain_node_id(node.as_plain());
@@ -336,12 +340,15 @@ fn append_job(
         Some(false) => row.mode("passive"),
         None => {}
     }
-    if let Some(progress) = job
-        .walk
-        .and_then(|walk| replica.walks.get(walk))
-        .and_then(|walk| replica.progress_percent(walk))
-    {
+    let walk = job.walk.and_then(|walk| replica.walks.get(walk));
+    if let Some(progress) = walk.and_then(|walk| replica.progress_percent(walk)) {
         row.progress_percent(progress);
+    }
+    if let Some(eta) = walk
+        .zip(job.pass_started_at)
+        .and_then(|(walk, started)| replica.eta(walk, started, now))
+    {
+        row.eta(millis(eta));
     }
     if let Some(at) = job.created_at {
         row.created_at(millis(at));

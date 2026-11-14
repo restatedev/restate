@@ -56,6 +56,13 @@ define_schema! {
             /// Approximate, never evidence of completion; NULL between passes, before
             /// the first slice, or over a single partition key.
             progress_percent: Option<u32> => DataType::UInt32,
+            /// When the current pass should end if it keeps its rate so far: the
+            /// time since `pass_started_at`, stretched by how much of the key range
+            /// is still ahead. Approximate like `progress_percent`, but from the
+            /// exact cursor position, so it can show while that still rounds to 0.
+            /// NULL while progress or `pass_started_at` is unknown, or the cursor
+            /// hasn't moved yet.
+            eta: Option<MillisSinceEpoch> => TimestampMillisecond,
             /// When the job was created; NULL if unknown.
             created_at: Option<MillisSinceEpoch> => TimestampMillisecond,
             /// The Restate version that created it; NULL if unknown.
@@ -63,7 +70,8 @@ define_schema! {
             /// When its first slice committed; NULL while pending, or if unknown
             /// (for a job rebuilt while running).
             started_at: Option<MillisSinceEpoch> => TimestampMillisecond,
-            /// When the current or last full pass committed its first slice.
+            /// When the current or last full pass started its first slice; NULL if
+            /// unknown, for a job moved onto a pass already under way.
             pass_started_at: Option<MillisSinceEpoch> => TimestampMillisecond,
             /// When the last full pass ended.
             last_pass_finished_at: Option<MillisSinceEpoch> => TimestampMillisecond,

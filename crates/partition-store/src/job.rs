@@ -217,7 +217,8 @@ pub struct MigrationJob {
     /// slice commits, so `failures` keeps the time of its most recent one.
     #[bilrost(20)]
     pub last_error_at: Option<u64>,
-    /// When the current or last full pass committed its first slice.
+    /// When the current or last full pass started its first slice; `None` if
+    /// unknown, for a job moved onto a pass already under way.
     #[bilrost(21)]
     pub pass_started_at: Option<u64>,
     #[bilrost(22)]
@@ -281,8 +282,9 @@ impl MigrationJob {
 
     /// Records a slice that committed at `at`, examining `examined` rows and
     /// filling `filled` of them for this job in `work_us`; `pass_start` when it is
-    /// the first slice of a full pass. Only a pending job's first slice sets its
-    /// start: a job rebuilt while running keeps its start unknown.
+    /// the first slice of a full pass, which then started when this slice did,
+    /// `work_us` before `at`. Only a pending job's first slice sets its start: a
+    /// job rebuilt while running keeps its start unknown.
     pub(crate) fn record_slice(
         &mut self,
         at: u64,
@@ -295,7 +297,7 @@ impl MigrationJob {
             self.started_at = Some(at);
         }
         if pass_start {
-            self.pass_started_at = Some(at);
+            self.pass_started_at = Some(at.saturating_sub(work_us / 1_000));
         }
         self.status = MigrationJobStatus::Running;
         self.rows_examined = self.rows_examined.saturating_add(examined);
@@ -535,6 +537,11 @@ mod tests {
             ),
             (Some(1_100), Some(1_100), 0, 1, None)
         );
+        // A pass starts when its first slice started: one that committed at 1,602
+        // after 2.5 ms of work started the pass at 1,600.
+        let mut timed = job.clone();
+        timed.record_slice(1_602, 1, 1, 2_500, true);
+        assert_eq!(timed.pass_started_at, Some(1_600));
         // A job rebuilt while running keeps its start unknown.
         let mut rebuilt = MigrationJob {
             status: MigrationJobStatus::Running,
