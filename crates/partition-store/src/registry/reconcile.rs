@@ -1064,8 +1064,8 @@ mod backfill_tests {
     use crate::walk::engine::{Slice, SliceBudget};
     use crate::walk::{OnUnknown, Source, Walk, WalkKind, WalkMember, engine};
     use crate::{
-        PartitionStoreManager, PartitionStoreTransaction, QueryIoExecutor, ReadSnapshot,
-        ReplicaMigrations,
+        IndexSizes, PartitionStoreManager, PartitionStoreTransaction, QueryIoExecutor,
+        ReadSnapshot, ReplicaMigrations,
     };
 
     use super::super::backfill::read_chunk;
@@ -2813,7 +2813,13 @@ mod backfill_tests {
             .map(|definition| registry(&store).maintained(definition.name).unwrap().id);
         let walk = registry(&store).get(active).unwrap().walk.unwrap();
         let executor = QueryIoExecutor::new(std::num::NonZeroUsize::new(1).unwrap());
-        let report = || async { manager.migration_report(&executor).unwrap().await.unwrap() };
+        let report = || async {
+            manager
+                .migration_report(&executor, IndexSizes::Estimate)
+                .unwrap()
+                .await
+                .unwrap()
+        };
 
         // Mid-build: both indexes Backfilling on the walk, their jobs running, and
         // the walk part of the way through the replica's key range.
@@ -2887,6 +2893,12 @@ mod backfill_tests {
         run_walks(&mut store).await;
         let after = report().await;
         let replica = &after.replicas[0];
+        // Each index has RocksDB's estimate of its keys: COUNT's grows with the
+        // rows it counted, and PASSIVE, which writes no keys, takes nothing.
+        let (sizes_mid, sizes) = (&mid.replicas[0].index_sizes, &replica.index_sizes);
+        assert!(sizes_mid[&active] > 0, "{sizes_mid:?}");
+        assert!(sizes[&active] > sizes_mid[&active], "{sizes:?}");
+        assert_eq!(sizes[&passive], 0);
         assert!(replica.walks.entries().is_empty());
         assert_eq!(
             replica
@@ -2906,6 +2918,38 @@ mod backfill_tests {
                 .status,
             MigrationJobStatus::Waiting
         );
+
+        // A flushed index is estimated from its table files: 1 MiB of
+        // incompressible values under COUNT's prefix, once flushed, counts at
+        // least half of that. A report that skips sizes estimates none.
+        let db = store.partition_db().clone();
+        let mut batch = WriteBatch::default();
+        let mut random = 0x9E37_79B9_7F4A_7C15_u64;
+        for i in 0..1024_u32 {
+            let mut key = count_key(db.partition().id(), active);
+            key.extend_from_slice(&i.to_be_bytes());
+            let value: Vec<u8> = (0..1024)
+                .map(|_| {
+                    random ^= random << 13;
+                    random ^= random >> 7;
+                    random ^= random << 17;
+                    random as u8
+                })
+                .collect();
+            batch.put_cf(db.cf_handle(), key, value);
+        }
+        db.rocksdb().inner().as_raw_db().write(&batch).unwrap();
+        db.flush_memtables(true).await.unwrap();
+        let flushed = report().await;
+        let sizes = &flushed.replicas[0].index_sizes;
+        assert!(sizes[&active] >= 512 * 1024, "{sizes:?}");
+        assert_eq!(sizes[&passive], 0);
+        let skipped = manager
+            .migration_report(&executor, IndexSizes::Skip)
+            .unwrap()
+            .await
+            .unwrap();
+        assert!(skipped.replicas[0].index_sizes.is_empty());
 
         // An unreadable record is reported with its replica, never as a replica
         // without indexes.

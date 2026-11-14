@@ -113,7 +113,8 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
             "SELECT count(*) FROM indexes
              WHERE plain_node_id = 'N1' AND gen_node_id = 'N1:1'
                AND kind = 'aggregate' AND status = 'ready' AND job_id IS NULL
-               AND registered_at IS NOT NULL AND registered_by_version IS NOT NULL"
+               AND registered_at IS NOT NULL AND registered_by_version IS NOT NULL
+               AND approx_size_bytes IS NOT NULL"
         )
         .await,
         6
@@ -134,6 +135,25 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         .await,
         6
     );
+    // Without sizes, every index renders NULL: a report that skips them has
+    // none, as one for a query that doesn't select the column.
+    let report = manager
+        .migration_report(&QueryIoExecutor::new(NonZeroUsize::MIN), IndexSizes::Skip)
+        .unwrap()
+        .await
+        .unwrap();
+    let rendered = batches::<IndexesBuilder, _>(
+        IndexesBuilder::schema(),
+        16,
+        super::indexes(&report, None),
+        |builder, (replica, index)| {
+            append_index(builder, GenerationalNodeId::new(1, 1), replica, index)
+        },
+    )
+    .unwrap();
+    let sizes = rendered[0].column_by_name("approx_size_bytes").unwrap();
+    assert_eq!((sizes.len(), sizes.null_count()), (6, 6));
+
     let partitions = ctx
         .sql("SELECT DISTINCT partition_id FROM indexes ORDER BY partition_id")
         .await
