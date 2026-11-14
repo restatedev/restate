@@ -48,6 +48,18 @@
 //!
 //! **Snapshots.** While a snapshot export holds the transaction's commits back,
 //! the driver does nothing and checks again shortly after.
+//!
+//! **What it waits for.** The driver publishes the scheduling constraints it
+//! last observed (a [`DriverState`]) on the physical partition, where
+//! `restate.cluster.migration_jobs` reads them as `blocked_by`, separately from
+//! the records. A backoff or the throttling carries its end, on this process's
+//! monotonic clock, so it disappears once over, even before the driver's next
+//! step. A snapshot export is only
+//! observed at a due step: it shows from the step that found commits held back
+//! until the next one that doesn't. Dropping the driver withdraws its state, so
+//! a partition without a running processor shows none; a driver never withdraws
+//! another's. The driver publishes only when a constraint changed, so slices
+//! that change nothing take no lock.
 
 use std::collections::HashMap;
 use std::num::{NonZeroU32, NonZeroUsize};
@@ -123,6 +135,57 @@ fn nanos(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
+/// The scheduling constraints a partition's walk driver last observed; see the
+/// module documentation. Times are on the driver's monotonic clock.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DriverState {
+    /// The driver runs no walks: `disable-background-migrations` is set.
+    pub disabled: bool,
+    /// The driver's latest due step found commits held back for a snapshot
+    /// export.
+    pub snapshot_export: bool,
+    /// Until when the throttling's token bucket can't cover the next slice.
+    pub throttled_until: Option<Instant>,
+    /// The walks waiting out a retry backoff after failed slices, by ID, with
+    /// when it ends.
+    pub backoff_walks: Vec<(u64, Instant)>,
+    /// The indexes whose next pass start waits out a backoff after a failed
+    /// start, by ID, with when it ends.
+    pub backoff_starts: Vec<(u32, Instant)>,
+    /// When each waiting job, by index ID, may start its next pass, as the
+    /// driver scheduled it.
+    pub eligible_at: Vec<(u32, Instant)>,
+}
+
+/// The [`DriverState`] published on a physical partition, with the driver that
+/// published it: a driver only withdraws its own.
+#[derive(Debug, Default)]
+pub(crate) struct PublishedDriverState(parking_lot::Mutex<Option<(u64, DriverState)>>);
+
+impl PublishedDriverState {
+    /// The state of the running driver, if any.
+    pub(crate) fn get(&self) -> Option<DriverState> {
+        self.0.lock().as_ref().map(|(_, state)| state.clone())
+    }
+
+    fn publish(&self, driver: u64, state: DriverState) {
+        *self.0.lock() = Some((driver, state));
+    }
+
+    fn withdraw(&self, driver: u64) {
+        let mut published = self.0.lock();
+        if published
+            .as_ref()
+            .is_some_and(|(owner, _)| *owner == driver)
+        {
+            *published = None;
+        }
+    }
+}
+
+/// Identifies each driver of this process, for [`PublishedDriverState`].
+static NEXT_DRIVER: AtomicU64 = AtomicU64::new(0);
+
 /// The driver's constants.
 #[derive(Debug, Clone)]
 pub(crate) struct Tuning {
@@ -192,9 +255,27 @@ pub struct WalkDriver {
     eligible_at: HashMap<u32, Instant>,
     /// Consecutive failed pass starts, for their backoff.
     start_failures: u32,
+    /// The indexes whose latest pass start failed.
+    failed_starts: Vec<u32>,
     busy: bool,
     /// The resumption of a step paused at [`FaultPoint::WalkStep`].
     held: Option<faults::Resume>,
+    /// This driver's identity, for the state it publishes.
+    id: u64,
+    /// Whether `disable-background-migrations` is set.
+    disabled: bool,
+    /// Whether the latest due step found commits held back.
+    fenced: bool,
+    /// When the token bucket covers the next slice, while it can't yet.
+    throttled_until: Option<Instant>,
+    /// Whether a constraint changed since the driver last published them.
+    dirty: bool,
+}
+
+impl Drop for WalkDriver {
+    fn drop(&mut self) {
+        self.db.driver_state().withdraw(self.id);
+    }
 }
 
 impl PartitionStore {
@@ -228,7 +309,7 @@ impl PartitionStore {
             );
         }
         let now = Instant::now();
-        WalkDriver {
+        let mut driver = WalkDriver {
             db,
             due: (pending && !options.disable_background_migrations).then_some(now),
             rested: now,
@@ -244,9 +325,17 @@ impl PartitionStore {
             backoffs: HashMap::new(),
             eligible_at: HashMap::new(),
             start_failures: 0,
+            failed_starts: Vec::new(),
             busy: false,
             held: None,
-        }
+            id: NEXT_DRIVER.fetch_add(1, Ordering::Relaxed),
+            disabled: options.disable_background_migrations,
+            fenced: false,
+            throttled_until: None,
+            dirty: true,
+        };
+        driver.publish();
+        driver
     }
 }
 
@@ -301,11 +390,26 @@ impl WalkDriver {
         tx: &mut PartitionStoreTransaction<'_>,
         write_bytes: usize,
     ) -> Result<(), StorageError> {
+        let result = self.do_step(tx, write_bytes).await;
+        self.publish();
+        result
+    }
+
+    async fn do_step(
+        &mut self,
+        tx: &mut PartitionStoreTransaction<'_>,
+        write_bytes: usize,
+    ) -> Result<(), StorageError> {
         let started = Instant::now();
         if self.due.is_none_or(|due| due > started) {
             return Ok(());
         }
-        if tx.commits_held() {
+        let fenced = tx.commits_held();
+        if fenced != self.fenced {
+            self.fenced = fenced;
+            self.dirty = true;
+        }
+        if fenced {
             add(&self.db.walk_stats().fence_skips, 1);
             self.due = Some(started + self.pacing.tuning.fence_recheck);
             return Ok(());
@@ -345,14 +449,18 @@ impl WalkDriver {
             })
             .map(|job| (job.id().as_u32(), job.next_eligible_at))
             .collect();
+        let known = self.eligible_at.len();
         self.eligible_at
             .retain(|id, _| waiting.iter().any(|(waiting, _)| waiting == id));
+        let mut changed = self.eligible_at.len() != known;
         for (id, at) in &waiting {
             self.eligible_at.entry(*id).or_insert_with(|| {
+                changed = true;
                 let wait = at.map_or(0, |at| at.saturating_sub(wall).min(RECHECK_CAP_MS));
                 now + Duration::from_millis(wait)
             });
         }
+        self.dirty |= changed;
         waiting
             .into_iter()
             .map(|(id, _)| id)
@@ -360,12 +468,44 @@ impl WalkDriver {
             .collect()
     }
 
+    /// Publishes the constraints observed so far, if any changed since the last
+    /// time.
+    fn publish(&mut self) {
+        if !std::mem::take(&mut self.dirty) {
+            return;
+        }
+        let mut backoff_walks: Vec<_> = self
+            .backoffs
+            .iter()
+            .map(|(walk, (_, retry))| (*walk, *retry))
+            .collect();
+        backoff_walks.sort_unstable();
+        let backoff_starts = self
+            .failed_starts
+            .iter()
+            .filter_map(|id| Some((*id, *self.eligible_at.get(id)?)))
+            .collect();
+        let mut eligible_at: Vec<_> = self.eligible_at.iter().map(|(id, at)| (*id, *at)).collect();
+        eligible_at.sort_unstable();
+        let state = DriverState {
+            disabled: self.disabled,
+            snapshot_export: self.fenced,
+            throttled_until: self.throttled_until,
+            backoff_walks,
+            backoff_starts,
+            eligible_at,
+        };
+        self.db.driver_state().publish(self.id, state);
+    }
+
     /// The next walk to take a slice at `now`: the lowest started walk after the
     /// latest one, or else the lowest, skipping those in backoff.
     fn next_walk(&mut self, active: &MaintainedIndexes, now: Instant) -> Option<u64> {
         let walks = active.walks().entries();
+        let backoffs = self.backoffs.len();
         self.backoffs
             .retain(|id, _| walks.iter().any(|walk| walk.id == *id));
+        self.dirty |= self.backoffs.len() != backoffs;
         let mut runnable: Vec<_> = walks
             .iter()
             .map(|walk| walk.id)
@@ -402,6 +542,10 @@ impl WalkDriver {
             Ok(walk) => {
                 info!(?walk, indexes = ?ids, "Started another backfill pass of indexes");
                 self.start_failures = 0;
+                if !self.failed_starts.is_empty() {
+                    self.failed_starts.clear();
+                    self.dirty = true;
+                }
             }
             Err(SliceError::Commit(err)) => return Err(err),
             Err(SliceError::Staging(err)) => {
@@ -411,6 +555,8 @@ impl WalkDriver {
                 for id in ids {
                     self.eligible_at.insert(*id, retry);
                 }
+                self.failed_starts = ids.to_vec();
+                self.dirty = true;
                 // Like a failed slice, the failed start shows on the jobs.
                 let error = engine::describe(&err);
                 let work = started.elapsed();
@@ -435,8 +581,15 @@ impl WalkDriver {
         write_bytes: usize,
     ) -> Result<(), StorageError> {
         let keys = match self.pacing.keys(started) {
-            Ok(keys) => keys,
+            Ok(keys) => {
+                if self.throttled_until.take().is_some() {
+                    self.dirty = true;
+                }
+                keys
+            }
             Err(refilled) => {
+                self.throttled_until = Some(refilled);
+                self.dirty = true;
                 // A waiting job may become eligible before the bucket refills;
                 // starting its pass needs no tokens.
                 let refilled = refilled.max(self.rested);
@@ -508,7 +661,9 @@ impl WalkDriver {
         self.last_walk = Some(walk);
         match failure {
             None => {
-                self.backoffs.remove(&walk);
+                if self.backoffs.remove(&walk).is_some() {
+                    self.dirty = true;
+                }
             }
             Some(error) => {
                 warn!(
@@ -522,6 +677,7 @@ impl WalkDriver {
                 let retry = self.pacing.retry(ended, failures);
                 self.backoffs
                     .insert(walk, (failures.saturating_add(1), retry));
+                self.dirty = true;
             }
         }
         self.due = Some(self.rested);

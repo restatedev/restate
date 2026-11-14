@@ -44,8 +44,8 @@ use restate_util_string::ReString;
 mod driver;
 pub(crate) mod engine;
 
-pub(crate) use driver::WalkStats;
-pub use driver::{WalkDriver, WalkStatsSnapshot};
+pub use driver::{DriverState, WalkDriver, WalkStatsSnapshot};
+pub(crate) use driver::{PublishedDriverState, WalkStats};
 
 /// The persisted format this binary reads and writes.
 const FORMAT: u32 = 1;

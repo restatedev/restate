@@ -20,6 +20,7 @@ use futures::StreamExt;
 use restate_core::TestCoreEnvBuilder;
 use restate_partition_store::fsm_table::PartitionStateMachineKey;
 use restate_partition_store::keys::{EncodeTableKey, KeyKind};
+use restate_partition_store::walk::DriverState;
 use restate_partition_store::{PartitionStoreManager, QueryIoExecutor};
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
@@ -153,6 +154,35 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
     .unwrap();
     let sizes = rendered[0].column_by_name("approx_size_bytes").unwrap();
     assert_eq!((sizes.len(), sizes.null_count()), (6, 6));
+
+    // `blocked_by` renders the reason the replica's driver reports for an
+    // unfinished job, and NULL for a finished one.
+    let mut replica = report.replicas[0].clone();
+    replica.driver = Some(DriverState {
+        disabled: true,
+        ..DriverState::default()
+    });
+    let finished = replica.jobs.history.entries()[0].clone();
+    let mut running = finished.clone();
+    running.status = MigrationJobStatus::Running;
+    let rendered = batches::<MigrationJobsBuilder, _>(
+        MigrationJobsBuilder::schema(),
+        16,
+        [(&replica, &running), (&replica, &finished)].into_iter(),
+        |builder, (replica, job)| {
+            let now = tokio::time::Instant::now();
+            append_job(builder, GenerationalNodeId::new(1, 1), replica, job, 0, now)
+        },
+    )
+    .unwrap();
+    let reasons = rendered[0]
+        .column_by_name("blocked_by")
+        .unwrap()
+        .as_string::<i32>();
+    assert_eq!(
+        (reasons.value(0), reasons.is_null(1)),
+        ("background-migrations-disabled", true)
+    );
 
     let partitions = ctx
         .sql("SELECT DISTINCT partition_id FROM indexes ORDER BY partition_id")

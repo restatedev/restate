@@ -120,6 +120,8 @@ pub struct PhysicalPartition {
     maintained_indexes: parking_lot::RwLock<Option<Arc<crate::registry::MaintainedIndexes>>>,
     /// What the background walk drivers did, across sessions.
     walk_stats: crate::walk::WalkStats,
+    /// Why the running walk driver's walks aren't progressing, if one runs.
+    driver_state: crate::walk::PublishedDriverState,
     /// The faults armed for the partition, shared with its cell.
     faults: Faults,
     // Looked up once, when the partition is first opened, and shared by every
@@ -168,6 +170,7 @@ impl PartitionDb {
                 notifications: database.notifications,
                 maintained_indexes: Default::default(),
                 walk_stats: Default::default(),
+                driver_state: Default::default(),
                 faults,
                 cfs,
             },
@@ -209,6 +212,11 @@ impl PartitionDb {
     /// What the background walk drivers of this partition did.
     pub(crate) fn walk_stats(&self) -> &crate::walk::WalkStats {
         &self.physical().walk_stats
+    }
+
+    /// Why the walks of this partition's running driver aren't progressing.
+    pub(crate) fn driver_state(&self) -> &crate::walk::PublishedDriverState {
+        &self.physical().driver_state
     }
 
     /// The faults armed for the partition.

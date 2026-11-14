@@ -65,6 +65,13 @@ define_table!(
         /// yet.
         eta: TimestampMillisecond,
 
+        /// Why the job isn't progressing right now, as its replica's background
+        /// driver last observed: `background-migrations-disabled`,
+        /// `snapshot-export`, `failure-backoff` or `throttled`. Read live, apart
+        /// from the other columns. NULL when the driver reports no reason, which
+        /// doesn't prove progress, and for finished jobs.
+        blocked_by: DataType::Utf8,
+
         /// When the job was created; NULL if unknown.
         created_at: TimestampMillisecond,
 
