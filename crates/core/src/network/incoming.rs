@@ -34,6 +34,11 @@ pub struct Incoming<M> {
 }
 
 impl<M> Incoming<M> {
+    /// The network protocol negotiated for the connection carrying this message.
+    pub fn protocol_version(&self) -> ProtocolVersion {
+        self.protocol_version
+    }
+
     pub(crate) fn new(
         protocol_version: ProtocolVersion,
         inner: M,

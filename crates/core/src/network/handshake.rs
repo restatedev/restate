@@ -147,6 +147,7 @@ mod tests {
             (3, 3, ProtocolVersion::V3),
             (2, 4, ProtocolVersion::V4),
             (3, 6, ProtocolVersion::V6),
+            (3, 7, ProtocolVersion::V7),
             (3, i32::MAX, CURRENT_PROTOCOL_VERSION),
         ] {
             hello.min_protocol_version = min;
