@@ -1018,6 +1018,7 @@ mod tests {
 
 #[cfg(test)]
 mod backfill_tests {
+    use std::num::NonZeroUsize;
     use std::ops::ControlFlow;
     use std::time::Duration;
 
@@ -1037,7 +1038,7 @@ mod backfill_tests {
     };
     use restate_storage_api::{StorageError, Transaction};
     use restate_storage_query_api::scan::{BlockingScan, Table};
-    use restate_types::config::{StorageOptions, ThrottlingOptions};
+    use restate_types::config::{StorageOptions, ThrottlingOptions, WorkerOptions};
     use restate_types::identifiers::{BaseEntryId, PartitionId, PartitionKey, SnapshotId};
     use restate_types::logs::LogId;
     use restate_types::partition_table::Partition;
@@ -2605,7 +2606,8 @@ mod backfill_tests {
                 return;
             }
             driver.ready().await;
-            driver.step(tx).await.unwrap();
+            let write_bytes = WorkerOptions::default().max_command_batch_bytes.as_usize();
+            driver.step(tx, write_bytes).await.unwrap();
         }
     }
 
@@ -2928,6 +2930,32 @@ mod backfill_tests {
                 .collect::<Vec<_>>(),
             [(PartitionId::MIN, "job history")]
         );
+    }
+
+    #[restate_core::test(start_paused = true)]
+    async fn slices_follow_the_entry_cap_and_the_write_budget() {
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
+        let mut store = manager.open(&partition, None).await.unwrap();
+        seed(&mut store).await;
+        reconcile(&mut store, maintain(&COUNT)).await;
+        let count = registry(&store).maintained(COUNT.name).unwrap().id;
+        let mut options = StorageOptions::default();
+        options.background_migrations_max_slice_entries = NonZeroUsize::new(4).unwrap();
+        let mut driver = store.walk_driver(&options);
+        let mut tx = store.transaction();
+
+        // Slices take at most four entries, below the usual lower bound of 16.
+        // Without any write budget, a slice still takes its first entry. The
+        // budget can change between slices: the processor reads it live.
+        let mut taken = Vec::new();
+        for write_bytes in [usize::MAX, usize::MAX, 0, usize::MAX] {
+            driver.ready().await;
+            driver.step(&mut tx, write_bytes).await.unwrap();
+            taken.push(published_job(&tx, count).rows_examined);
+        }
+        assert_eq!(taken, [4, 8, 9, 13]);
     }
 
     #[restate_core::test(start_paused = true)]

@@ -21,18 +21,22 @@
 //! runnable, the driver sleeps until the earliest retry or eligibility, and idles
 //! when there is neither.
 //!
-//! **Pacing.** A slice occupies the processor while it runs, so the driver limits
-//! the share of time slices take: a slice that occupied `d` defers the next by
-//! `d * (1 - share) / share`, with a share of 10% when the processor had other
-//! work since the previous slice and 50% otherwise. A slice that overran its
-//! target therefore defers the next one in proportion. The keys per slice adapt
-//! to the time a key took, aiming at a target duration between fixed bounds, and
-//! the slices' byte limits always apply. The optional throttling caps the keys
-//! examined with a token bucket, one token per key: a slice waits until the
-//! bucket holds all its keys, up to the burst. For example, with a 2 ms target
-//! and keys taking 8 µs each, slices take 250 keys; under load, one runs every
-//! 20 ms or so. Rests shorter than the timer's millisecond resolution round up,
-//! which only lowers the share.
+//! **Pacing.** A slice occupies the processor while it runs, so the driver
+//! limits the share of time slices take: a slice that occupied `d` defers the
+//! next by `d * (1 - share) / share`, with a share of 10% when the processor
+//! had other work since the previous slice and 50% otherwise. A slice that
+//! overran its target therefore defers the next one in proportion. The keys a
+//! slice aims at adapt to the time a key took, aiming at a target duration,
+//! between 16 keys and `worker.storage.background-migrations-max-slice-entries`
+//! (1,000 by default); with a cap below 16, slices aim at the cap. A slice can
+//! take fewer: it reads at most 4 MiB of source and stages at most the command
+//! batches' write budget, `worker.max-command-batch-bytes`, apart from its
+//! first key, which always goes in, and the walk can run out of keys. The
+//! optional throttling caps the keys examined with a token bucket, one token
+//! per key: a slice waits until the bucket holds all its keys, up to the burst.
+//! For example, with a 2 ms target and keys taking 8 µs each, slices take 250
+//! keys; under load, one runs every 20 ms or so. Rests shorter than the timer's
+//! millisecond resolution round up, which only lowers the share.
 //!
 //! **Failures.** A slice that fails before its commit is recorded on its walk's
 //! jobs, and that walk retries after its own exponential backoff while the other
@@ -46,7 +50,7 @@
 //! the driver does nothing and checks again shortly after.
 
 use std::collections::HashMap;
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -138,6 +142,19 @@ pub(crate) struct Tuning {
     pub(crate) fence_recheck: Duration,
 }
 
+impl Tuning {
+    /// The default tuning with at most `max_keys` keys per slice. The adaptive
+    /// size stays between 16 keys, or `max_keys` if that is lower, and `max_keys`.
+    fn with_max_keys(max_keys: NonZeroUsize) -> Self {
+        let defaults = Self::default();
+        Self {
+            min_keys: defaults.min_keys.min(max_keys.get()),
+            max_keys: max_keys.get(),
+            ..defaults
+        }
+    }
+}
+
 impl Default for Tuning {
     fn default() -> Self {
         Self {
@@ -217,7 +234,7 @@ impl PartitionStore {
             rested: now,
             sleep: Box::pin(tokio::time::sleep_until(now)),
             pacing: Pacing::new(
-                Tuning::default(),
+                Tuning::with_max_keys(options.background_migrations_max_slice_entries),
                 options
                     .background_migrations_throttling
                     .clone()
@@ -269,8 +286,10 @@ impl WalkDriver {
 
     /// Does what is due, if anything: starting the passes whose wait is over, or
     /// else a slice of the next walk (see the module documentation). `tx` must have
-    /// no pending writes. Fails only with a failed commit, after which the
-    /// processor must stop.
+    /// no pending writes. A slice stages at most `write_bytes`, apart from its
+    /// first key; the processor passes its command batches' write budget,
+    /// `worker.max-command-batch-bytes`. Fails only with a failed commit, after
+    /// which the processor must stop.
     ///
     /// Not cancellation safe: a step dropped during its commit or before its
     /// publication may have committed its native write while `tx` still carries
@@ -280,6 +299,7 @@ impl WalkDriver {
     pub async fn step(
         &mut self,
         tx: &mut PartitionStoreTransaction<'_>,
+        write_bytes: usize,
     ) -> Result<(), StorageError> {
         let started = Instant::now();
         if self.due.is_none_or(|due| due > started) {
@@ -296,7 +316,7 @@ impl WalkDriver {
             return self.start_passes(tx, &eligible, started).await;
         }
         match self.next_walk(&active, started) {
-            Some(walk) => self.slice(tx, walk, started).await,
+            Some(walk) => self.slice(tx, walk, started, write_bytes).await,
             None => {
                 self.due = self.wake_up();
                 Ok(())
@@ -412,6 +432,7 @@ impl WalkDriver {
         tx: &mut PartitionStoreTransaction<'_>,
         walk: u64,
         started: Instant,
+        write_bytes: usize,
     ) -> Result<(), StorageError> {
         let keys = match self.pacing.keys(started) {
             Ok(keys) => keys,
@@ -428,7 +449,8 @@ impl WalkDriver {
                 return Ok(());
             }
         };
-        let result = engine::run_counted_slice(tx, &self.db, walk, SliceBudget::from(keys)).await;
+        let budget = SliceBudget::new(keys, write_bytes);
+        let result = engine::run_counted_slice(tx, &self.db, walk, budget).await;
         let (examined, failure) = match result {
             Ok((slice, examined)) => {
                 if slice == Slice::Exhausted {
@@ -639,6 +661,17 @@ mod tests {
         // Work that examined nothing still rests, and adapts nothing.
         assert_eq!(fast.charge(t0, at(1_000), 0, false), at(2_000));
         assert_eq!(fast.keys(t0), Ok(1_000));
+        // The configured cap bounds the adaptation: below 16, slices aim at exactly
+        // the cap, also when keys are slow; above 1,000, fast keys reach it.
+        let cap = |keys| Tuning::with_max_keys(NonZeroUsize::new(keys).unwrap());
+        let mut small = Pacing::new(cap(4), None);
+        assert_eq!(small.keys(t0), Ok(4));
+        small.charge(t0, at(1_000_000), 4, true);
+        assert_eq!(small.keys(t0), Ok(4));
+        let mut large = Pacing::new(cap(5_000), None);
+        assert_eq!(large.keys(t0), Ok(16));
+        large.charge(t0, at(1), 1_000, false);
+        assert_eq!(large.keys(t0), Ok(5_000));
         // Retries wait from the end of the failed work: 1 s, doubling, up to 5 min.
         assert_eq!(pacing.retry(at(300), 0), at(300) + Duration::from_secs(1));
         assert_eq!(pacing.retry(at(300), 3), at(300) + Duration::from_secs(8));

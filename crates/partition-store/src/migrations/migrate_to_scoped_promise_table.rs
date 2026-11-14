@@ -37,9 +37,13 @@ pub fn migrate_to_scoped_promise_table(
     let key_range = ctx.key_range;
     let mut counter = 0;
 
+    // A one-time scan: caching what it reads would only push out the data the
+    // partition's commands read.
+    let mut read_options = rocksdb::ReadOptions::default();
+    read_options.fill_cache(false);
     let mut iterator = ctx.partition_db.scan(
         TableScan::ScanPartitionKeyRange::<PromiseKey>(key_range).encode(&mut ctx.arena),
-        rocksdb::ReadOptions::default(),
+        read_options,
     )?;
     iterator.seek_to_first();
 

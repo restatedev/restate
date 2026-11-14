@@ -121,6 +121,9 @@ pub struct WorkerOptions {
     /// the limit. This works in conjunction with `max-command-batch-size` which caps the number of
     /// records. The processor will process the batch when whichever limit is hit first.
     ///
+    /// Background migrations, such as backfilling query indexes and statistics, keep the writes of
+    /// each slice within the same budget (see `worker.storage.background-migrations-max-slice-entries`).
+    ///
     /// Default: 1 MiB
     ///
     /// Since v1.7.1
@@ -1133,6 +1136,27 @@ pub struct StorageOptions {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub background_migrations_throttling: Option<ThrottlingOptions>,
 
+    /// # Background migration slice entries
+    ///
+    /// The most existing entries one slice of a background migration processes. Background
+    /// migrations, such as backfilling query indexes and statistics, run in slices between the
+    /// partition's commands, and the commands wait while a slice runs. Slices aim at about 2 ms
+    /// each: the number of entries they aim at adapts to how long entries take, between 16 (or
+    /// this limit, if lower) and this limit. A lower limit keeps slices shorter; a higher one lets
+    /// fast entries go in fewer, larger slices.
+    ///
+    /// A slice can process fewer entries: its writes stay within `worker.max-command-batch-bytes`,
+    /// the budget of a batch of commands, though its first entry always goes in, however large.
+    ///
+    /// Takes effect when partition processors start.
+    ///
+    /// Since v1.8.2
+    #[serde(
+        default = "serde_helpers::default_background_migrations_max_slice_entries",
+        skip_serializing_if = "serde_helpers::is_default_background_migrations_max_slice_entries"
+    )]
+    pub background_migrations_max_slice_entries: NonZeroUsize,
+
     /// # Migration job history limit
     ///
     /// How many finished background migrations, such as index and statistic
@@ -1251,6 +1275,8 @@ impl Default for StorageOptions {
                 serde_helpers::default_vqueue_meta_full_write_probability(),
             disable_background_migrations: false,
             background_migrations_throttling: None,
+            background_migrations_max_slice_entries:
+                serde_helpers::default_background_migrations_max_slice_entries(),
             migration_job_history_limit: serde_helpers::default_migration_job_history_limit(),
         }
     }
@@ -1618,6 +1644,14 @@ mod serde_helpers {
         *v == default_migration_job_history_limit()
     }
 
+    pub const fn default_background_migrations_max_slice_entries() -> NonZeroUsize {
+        NonZeroUsize::new(1000).unwrap()
+    }
+
+    pub fn is_default_background_migrations_max_slice_entries(v: &NonZeroUsize) -> bool {
+        *v == default_background_migrations_max_slice_entries()
+    }
+
     pub const fn default_vqueue_meta_full_write_probability() -> f64 {
         1.0
     }
@@ -1643,6 +1677,26 @@ mod tests {
 
         let options: WorkerOptions = serde_json::from_value(value).unwrap();
         assert!(options.disable_scheduler);
+    }
+
+    #[test]
+    fn background_migration_slices_take_at_most_a_thousand_entries_by_default() {
+        let options = StorageOptions::default();
+        assert_eq!(1000, options.background_migrations_max_slice_entries.get());
+
+        let mut value = serde_json::to_value(options).unwrap();
+        assert!(
+            value
+                .get("background-migrations-max-slice-entries")
+                .is_none(),
+            "the default isn't written out"
+        );
+        value["background-migrations-max-slice-entries"] = 200.into();
+        let options: StorageOptions = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(200, options.background_migrations_max_slice_entries.get());
+
+        value["background-migrations-max-slice-entries"] = 0.into();
+        assert!(serde_json::from_value::<StorageOptions>(value).is_err());
     }
 
     #[test]
