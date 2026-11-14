@@ -20,6 +20,8 @@ use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr};
 use datafusion::physical_plan::coalesce::{LimitedBatchCoalescer, PushBatchStatus};
 use tokio::sync::mpsc::Sender;
 
+use restate_storage_query_api::{LogicalSchema, RowBuilder};
+
 #[macro_export]
 macro_rules! log_data_corruption_error {
     ($table_name:expr, $key:expr, $field_name:expr, $err:expr) => {
@@ -64,6 +66,33 @@ pub trait Builder {
     fn finish(self) -> datafusion::common::Result<RecordBatch>;
 
     fn finish_and_new(&mut self) -> datafusion::common::Result<RecordBatch>;
+}
+
+/// Builds V1 batches with the row builder of a table schema that V1 and V2
+/// share (a [`LogicalSchema`]), so both engines return the same columns. Like
+/// V1's other builders, it builds only the columns the query selects.
+pub(crate) struct SchemaBuilder<S: LogicalSchema>(pub(crate) S::RowBuilder);
+
+impl<S: LogicalSchema> Builder for SchemaBuilder<S> {
+    fn new(schema: SchemaRef) -> Self {
+        Self(S::RowBuilder::new(schema))
+    }
+
+    fn num_rows(&self) -> usize {
+        self.0.num_rows()
+    }
+
+    fn empty(&self) -> bool {
+        self.num_rows() == 0
+    }
+
+    fn finish(self) -> datafusion::common::Result<RecordBatch> {
+        self.0.into_batch()
+    }
+
+    fn finish_and_new(&mut self) -> datafusion::common::Result<RecordBatch> {
+        self.0.finish()
+    }
 }
 
 /// Builds Arrow batches from rows, applies the SQL filter, and sends each full

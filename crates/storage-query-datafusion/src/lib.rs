@@ -46,6 +46,7 @@ mod scheduler_status;
 mod service;
 mod state;
 mod statistics;
+mod stats;
 mod table_macro;
 mod table_providers;
 mod user_limits;

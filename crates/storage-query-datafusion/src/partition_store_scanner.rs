@@ -48,11 +48,14 @@ use restate_partition_store::{PartitionStoreManager, QueryIoExecutor, ReadSnapsh
 use restate_storage_api::StorageError;
 use restate_storage_api::scan::{RowConsumer, ScanOutcome};
 use restate_storage_query_api::scan::{CursorScan, Scan, Table};
+use restate_storage_query_api::{
+    AsyncRowSink, LogicalSchema, PreparedRead, RowSink, SchemaBinding,
+};
 use restate_types::identifiers::PartitionId;
 use restate_types::sharding::KeyRange;
 
 use crate::table_providers::{ScanPartition, ScanPredicate};
-use crate::table_util::{BatchSender, Builder};
+use crate::table_util::{BatchSender, Builder, SchemaBuilder};
 
 #[cfg(test)]
 mod tests;
@@ -120,6 +123,49 @@ impl<B: Builder + Send + 'static> Rows<B> {
             )?
             .await?;
         Ok(outcome.map(|consumer| consumer.rows))
+    }
+}
+
+impl<S: LogicalSchema> Rows<SchemaBuilder<S>> {
+    /// Reads `prepared` from `snapshot` with binding `B` and sends the rows on in
+    /// batches. One stored record can make several rows. Before each row, a full
+    /// batch is sent, waiting until the query takes it, and the read stops once
+    /// the query has enough rows.
+    pub(crate) async fn read_binding<B: SchemaBinding<Schema = S>>(
+        self,
+        snapshot: &ReadSnapshot,
+        executor: &QueryIoExecutor,
+        prepared: &PreparedRead<B::Table>,
+    ) -> restate_storage_api::Result<ScanOutcome<Self>>
+    where
+        ReadSnapshot: CursorScan<B::Table>,
+        for<'a> <B::Table as Table>::Record<'a>: Copy + Send,
+    {
+        B::read(snapshot, executor, prepared, self)?.await
+    }
+}
+
+impl<S: LogicalSchema> AsyncRowSink<S> for Rows<SchemaBuilder<S>> {
+    async fn reserve(&mut self) -> restate_storage_api::Result<ControlFlow<()>> {
+        self.output
+            .send_if_needed()
+            .await
+            .map_err(|err| StorageError::Generic(err.into()))
+    }
+}
+
+impl<S: LogicalSchema> RowSink<S> for Rows<SchemaBuilder<S>> {
+    fn append_with(
+        &mut self,
+        write: impl FnOnce(&mut S::RowBuilder) -> restate_storage_api::Result<()>,
+    ) -> ControlFlow<restate_storage_api::Result<()>> {
+        self.elapsed.start();
+        // `reserve` already made room for this row and decided that the scan goes
+        // on, so the row is either written here or the scan fails.
+        match write(&mut self.output.builder_mut().0) {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(err) => ControlFlow::Break(Err(err)),
+        }
     }
 }
 
