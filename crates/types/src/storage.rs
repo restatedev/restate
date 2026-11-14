@@ -28,6 +28,7 @@ use restate_platform::memory::EstimatedMemorySize;
 use restate_util_bytecount::ByteCount;
 use restate_util_string::format_restring;
 
+use crate::blob::RelatedBlob;
 use crate::journal_v2::raw::{RawEntry, RawEntryError, TryFromEntry};
 use crate::journal_v2::{Decoder, EntryMetadata, EntryType};
 use crate::time::MillisSinceEpoch;
@@ -319,13 +320,19 @@ impl StoredRawEntryHeader {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StoredRawEntry {
     pub header: StoredRawEntryHeader,
+    pub related_blob: Option<RelatedBlob>,
     pub inner: RawEntry,
 }
 
 impl StoredRawEntry {
-    pub fn new(header: StoredRawEntryHeader, inner: impl Into<RawEntry>) -> Self {
+    pub fn new(
+        header: StoredRawEntryHeader,
+        related_blob: Option<RelatedBlob>,
+        inner: impl Into<RawEntry>,
+    ) -> Self {
         Self {
             header,
+            related_blob,
             inner: inner.into(),
         }
     }

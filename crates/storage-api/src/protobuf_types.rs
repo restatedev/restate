@@ -94,6 +94,7 @@ pub mod v1 {
         use bytes::{Buf, Bytes};
         use bytestring::ByteString;
 
+        use restate_types::blob::BlobId;
         use restate_types::deployment::PinnedDeployment;
         use restate_types::errors::InvocationError;
         use restate_types::identifiers::{
@@ -128,16 +129,17 @@ pub mod v1 {
         use super::service_invocation_response_sink::{Ingress, PartitionProcessor, ResponseSink};
         use super::{
             BackgroundCallResolutionResult, DedupSequenceNumber, Duration, EnrichedEntryHeader,
-            Entry, EntryResult, EpochSequenceNumber, FailureMetadata, Header, IdempotencyId,
-            InboxEntry, InvocationId, InvocationResolutionResult, InvocationStatusV2,
-            InvocationTarget, InvocationV2Lite, JournalCompletionTarget, JournalEntry,
-            JournalEntryIndex, JournalMeta, KvPair, OutboxMessage, PartitionDurability, Promise,
-            ResponseResult, RestateVersion, SequenceNumber, ServiceId, ServiceInvocation,
-            ServiceInvocationResponseSink, Source, SpanContext, SpanRelation, StateMutation,
-            SubmitNotificationSink, Timer, VirtualObjectStatus, enriched_entry_header, entry,
-            entry_result, inbox_entry, invocation_resolution_result, invocation_status_v2,
-            invocation_target, journal_entry, outbox_message, promise, response_result, source,
-            span_relation, submit_notification_sink, timer, virtual_object_status,
+            Entry, EntryLite, EntryResult, EpochSequenceNumber, FailureMetadata, Header,
+            IdempotencyId, InboxEntry, InvocationId, InvocationResolutionResult,
+            InvocationStatusV2, InvocationTarget, InvocationV2Lite, JournalCompletionTarget,
+            JournalEntry, JournalEntryIndex, JournalMeta, KvPair, OutboxMessage,
+            PartitionDurability, Promise, RelatedBlob, ResponseResult, RestateVersion,
+            SequenceNumber, ServiceId, ServiceInvocation, ServiceInvocationResponseSink, Source,
+            SpanContext, SpanRelation, StateMutation, SubmitNotificationSink, Timer,
+            VirtualObjectStatus, enriched_entry_header, entry, entry_result, inbox_entry,
+            invocation_resolution_result, invocation_status_v2, invocation_target, journal_entry,
+            outbox_message, promise, response_result, source, span_relation,
+            submit_notification_sink, timer, virtual_object_status,
         };
         use crate::invocation_status_table::{
             PreFlightInvocationArgument, PreFlightInvocationInput, PreFlightInvocationJournal,
@@ -3239,12 +3241,53 @@ pub mod v1 {
             }
         }
 
+        impl TryFrom<RelatedBlob> for restate_types::blob::RelatedBlob {
+            type Error = ConversionError;
+
+            fn try_from(value: RelatedBlob) -> Result<Self, Self::Error> {
+                Ok(Self {
+                    id: BlobId::from_slice(&value.id)
+                        .map_err(|err| ConversionError::InvalidData(err.into()))?,
+                    size: value.size,
+                })
+            }
+        }
+
+        impl From<restate_types::blob::RelatedBlob> for RelatedBlob {
+            fn from(value: restate_types::blob::RelatedBlob) -> Self {
+                RelatedBlob {
+                    id: Bytes::copy_from_slice(&value.id.to_bytes()),
+                    size: value.size,
+                }
+            }
+        }
+
+        impl TryFrom<EntryLite> for crate::journal_table_v2::StoredEntryLite {
+            type Error = ConversionError;
+
+            fn try_from(value: EntryLite) -> Result<Self, Self::Error> {
+                Ok(Self {
+                    related_blob: value.related_blob.map(TryInto::try_into).transpose()?,
+                })
+            }
+        }
+
+        impl From<crate::journal_table_v2::StoredEntryLite> for EntryLite {
+            fn from(value: crate::journal_table_v2::StoredEntryLite) -> Self {
+                EntryLite {
+                    related_blob: value.related_blob.map(Into::into),
+                }
+            }
+        }
+
         impl TryFrom<Entry> for crate::journal_table_v2::StoredEntry {
             type Error = ConversionError;
 
             fn try_from(value: Entry) -> Result<Self, Self::Error> {
                 let header =
                     restate_types::storage::StoredRawEntryHeader::new(value.append_time.into());
+
+                let related_blob = value.related_blob.map(TryInto::try_into).transpose()?;
 
                 Ok(crate::journal_table_v2::StoredEntry(
                     match EntryType::try_from(value.ty)
@@ -3279,6 +3322,7 @@ pub mod v1 {
 
                             restate_types::storage::StoredRawEntry::new(
                                 header,
+                                related_blob,
                                 journal_v2::raw::RawNotification::new(
                                     notification_ty,
                                     notification_id,
@@ -3292,6 +3336,7 @@ pub mod v1 {
                             ct @ journal_v2::CommandType::OneWayCall,
                         ) => restate_types::storage::StoredRawEntry::new(
                             header,
+                            related_blob,
                             journal_v2::raw::RawCommand::new(ct, value.content)
                                 .with_command_specific_metadata(
                                 journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(Box::new(
@@ -3308,6 +3353,7 @@ pub mod v1 {
                         journal_v2::EntryType::Command(ct) => {
                             restate_types::storage::StoredRawEntry::new(
                                 header,
+                                related_blob,
                                 journal_v2::raw::RawCommand::new(ct, value.content),
                             )
                         }
@@ -3368,6 +3414,7 @@ pub mod v1 {
                     call_or_send_command_metadata,
                     notification_id,
                     notification_result_variant: notification_result_variant.into(),
+                    related_blob: raw_entry.related_blob.map(Into::into),
                 }
             }
         }

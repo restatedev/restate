@@ -27,7 +27,8 @@ pub trait ReadBlobTable {
 }
 
 pub trait WriteBlobTable {
-    fn put_blob<B: BlobEncode>(&mut self, blob_id: BlobId, blob: Blob<B>) -> Result<()>;
+    /// Returns the size in bytes of the stored blob payload, excluding the blob header.
+    fn put_blob<B: BlobEncode>(&mut self, blob_id: BlobId, blob: Blob<B>) -> Result<u64>;
 
     /// Once a blob's ref count reaches 0 it is marked for deletion and later
     /// ref count updates on it are no-ops.
