@@ -2611,6 +2611,31 @@ mod backfill_tests {
         }
     }
 
+    /// Why the job of index `id` isn't progressing at `now`, as `migration_jobs`
+    /// shows it: from `tx`'s records and what the driver of `db` published.
+    fn blocked_by(
+        db: &PartitionDb,
+        tx: &PartitionStoreTransaction<'_>,
+        id: u32,
+        now: Instant,
+    ) -> Option<&'static str> {
+        let active = tx.maintained_indexes();
+        let replica = ReplicaMigrations {
+            partition_id: db.partition().id(),
+            key_range: db.partition().key_range,
+            registry: active.registry().clone(),
+            walks: active.walks().clone(),
+            jobs: active.jobs().clone(),
+            index_sizes: Default::default(),
+            driver: db.driver_state().get(),
+        };
+        let job = active
+            .jobs()
+            .unfinished
+            .get(MigrationJobId::for_index(id))?;
+        replica.blocked_by(job, now)
+    }
+
     /// Deletes entry `id` through `tx`, as a command does.
     async fn delete_entry(
         tx: &mut PartitionStoreTransaction<'_>,
@@ -2766,6 +2791,8 @@ mod backfill_tests {
             .await
             .unwrap();
         let passive = registry(&store).maintained(PASSIVE.name).unwrap().id;
+        let count = registry(&store).maintained(COUNT.name).unwrap().id;
+        let db = store.partition_db().clone();
         // One key an hour after a burst of 16: COUNT's walk soon waits hours.
         let mut throttled = StorageOptions::default();
         throttled.background_migrations_throttling = Some(ThrottlingOptions {
@@ -2784,6 +2811,15 @@ mod backfill_tests {
             "{:?}",
             driver.due()
         );
+        // COUNT's job shows that it waits for tokens until they're due, without
+        // another step. PASSIVE, waiting for its pass, doesn't inherit it.
+        assert_eq!(
+            blocked_by(&db, &tx, count, Instant::now()),
+            Some("throttled")
+        );
+        assert_eq!(blocked_by(&db, &tx, passive, Instant::now()), None);
+        let refill = db.driver_state().get().unwrap().throttled_until.unwrap();
+        assert_eq!(blocked_by(&db, &tx, count, refill), None);
         drive(&mut driver, &mut tx, 1).await;
         assert!(
             tx.maintained_indexes()
@@ -3002,6 +3038,149 @@ mod backfill_tests {
         assert_eq!(taken, [4, 8, 9, 13]);
     }
 
+    /// Two passive indexes waiting for their next pass after a real first one:
+    /// the first may start now, the second 10 seconds later.
+    async fn waiting_pair(store: &mut PartitionStore) -> [u32; 2] {
+        static PEER: IndexDefinition = IndexDefinition {
+            name: "passive_peer/1",
+            kind: IndexKind::Aggregate,
+            apply: apply_count,
+            can_fill: false,
+        };
+        let known: &[&'static IndexDefinition] = &[&PASSIVE, &PEER];
+        seed(store).await;
+        try_reconcile(store, known, maintain_all(known))
+            .await
+            .unwrap();
+        run_walks(store).await;
+        let active = store.maintained_indexes();
+        let ids = [&PASSIVE, &PEER]
+            .map(|definition| active.registry().maintained(definition.name).unwrap().id);
+        let mut jobs = active.jobs().clone();
+        let later = WallClock::now_ms().as_u64() + 10_000;
+        for (id, at) in [(ids[0], None), (ids[1], Some(later))] {
+            let job = jobs
+                .unfinished
+                .get_mut(MigrationJobId::for_index(id))
+                .unwrap();
+            assert_eq!(job.status, MigrationJobStatus::Waiting);
+            job.wait(None, at);
+        }
+        let db = store.partition_db();
+        let mut batch = WriteBatch::default();
+        append_migration_jobs_to_wb(
+            db.cf_handle(),
+            &mut batch,
+            db.partition().id(),
+            fsm_variable::MIGRATION_JOBS,
+            &jobs.unfinished,
+        );
+        db.rocksdb().inner().as_raw_db().write(&batch).unwrap();
+        db.install_maintained_indexes(Arc::new(active.successor(
+            active.registry().clone(),
+            active.walks().clone(),
+            jobs,
+        )));
+        ids
+    }
+
+    #[restate_core::test(start_paused = true)]
+    async fn waiting_jobs_report_their_own_start_backoff_and_held_exports() {
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+
+        // The first job's start fails and retries in a minute. Before that, the
+        // second becomes eligible and starts, or fails, on its own: the first
+        // keeps its reason either way.
+        for (partition, second_fails) in [(1, false), (2, true)] {
+            let partition = Partition::new(PartitionId::from(partition), KeyRange::FULL);
+            let mut store = manager.open(&partition, None).await.unwrap();
+            let [first, second] = waiting_pair(&mut store).await;
+            let db = store.partition_db().clone();
+            let mut driver = store.walk_driver(&StorageOptions::default());
+            driver.tuning_mut().backoff = Duration::from_secs(60);
+            let mut tx = store.transaction();
+            let faults = manager.faults(&partition);
+            faults.fail(FaultPoint::PassStart, RocksError::ReadOnly);
+            drive(&mut driver, &mut tx, 1).await;
+            let state = db.driver_state().get().unwrap();
+            let retry = state
+                .backoff_starts
+                .iter()
+                .find(|(id, _)| *id == first)
+                .unwrap()
+                .1;
+            if second_fails {
+                faults.fail(FaultPoint::PassStart, RocksError::ReadOnly);
+            }
+            drive(&mut driver, &mut tx, 2).await;
+            assert!(
+                Instant::now() < retry,
+                "the first job's retry is still ahead"
+            );
+            let started = tx.maintained_indexes().registry().get(second).unwrap().walk;
+            assert_eq!(started.is_some(), !second_fails);
+            assert_eq!(
+                [first, second].map(|id| blocked_by(&db, &tx, id, Instant::now())),
+                [
+                    Some("failure-backoff"),
+                    second_fails.then_some("failure-backoff")
+                ],
+                "second fails: {second_fails}"
+            );
+        }
+
+        // A snapshot export holds a fresh driver from its first step: the job
+        // that may start now shows it at once, the other once it's due, while
+        // the export still holds. The report shows it too.
+        let partition = Partition::new(PartitionId::from(3), KeyRange::FULL);
+        let mut store = manager.open(&partition, None).await.unwrap();
+        let [first, second] = waiting_pair(&mut store).await;
+        let db = store.partition_db().clone();
+        let mut driver = store.walk_driver(&StorageOptions::default());
+        let mut tx = store.transaction();
+        let fence = tx.fence_commits().unwrap();
+        drive(&mut driver, &mut tx, 1).await;
+        assert_eq!(
+            [first, second].map(|id| blocked_by(&db, &tx, id, Instant::now())),
+            [Some("snapshot-export"), None]
+        );
+        let state = db.driver_state().get().unwrap();
+        let due = state
+            .eligible_at
+            .iter()
+            .find(|(id, _)| *id == second)
+            .unwrap()
+            .1;
+        while Instant::now() < due {
+            drive(&mut driver, &mut tx, 1).await;
+        }
+        assert_eq!(
+            blocked_by(&db, &tx, second, Instant::now()),
+            Some("snapshot-export")
+        );
+        let report = manager
+            .migration_report(&QueryIoExecutor::new(NonZeroUsize::MIN), IndexSizes::Skip)
+            .unwrap()
+            .await
+            .unwrap();
+        let replica = report
+            .replicas
+            .iter()
+            .find(|replica| replica.partition_id == partition.id())
+            .unwrap();
+        let job = replica
+            .jobs
+            .unfinished
+            .get(MigrationJobId::for_index(first))
+            .unwrap();
+        assert_eq!(
+            replica.blocked_by(job, Instant::now()),
+            Some("snapshot-export")
+        );
+        drop(fence);
+    }
+
     #[restate_core::test(start_paused = true)]
     async fn a_failed_pass_start_leaves_started_walks_their_turns() {
         RocksDbManager::init();
@@ -3025,6 +3204,7 @@ mod backfill_tests {
 
         let mut driver = store.walk_driver(&StorageOptions::default());
         driver.tuning_mut().max_keys = 16;
+        let db = store.partition_db().clone();
         let mut tx = store.transaction();
         let rows = |tx: &PartitionStoreTransaction<'_>| published_job(tx, count).rows_examined;
         let linked = |tx: &PartitionStoreTransaction<'_>| {
@@ -3053,6 +3233,15 @@ mod backfill_tests {
             "recorded on the job, like a failed slice"
         );
         assert!(failed.last_error.is_some());
+        // ADOPTED shows its start's backoff until it ends, without another step;
+        // COUNT, runnable, shows nothing.
+        assert_eq!(
+            blocked_by(&db, &tx, adopted, Instant::now()),
+            Some("failure-backoff")
+        );
+        assert_eq!(blocked_by(&db, &tx, count, Instant::now()), None);
+        let (_, retry) = db.driver_state().get().unwrap().backoff_starts[0];
+        assert_eq!(blocked_by(&db, &tx, adopted, retry), None);
         // COUNT's walk takes the next turn while the start waits out its backoff;
         // then the start succeeds, with no reopen.
         drive(&mut driver, &mut tx, 1).await;
@@ -3062,6 +3251,7 @@ mod backfill_tests {
             "a turn for COUNT"
         );
         drive(&mut driver, &mut tx, 10_000).await;
+        assert!(db.driver_state().get().unwrap().backoff_starts.is_empty());
         drop(tx);
         for id in [resumed, adopted, count] {
             assert_eq!(
@@ -3215,16 +3405,27 @@ mod backfill_tests {
         reconcile(&mut store, maintain(&COUNT)).await;
         let mut disabled = StorageOptions::default();
         disabled.disable_background_migrations = true;
-        let mut driver = store.walk_driver(&disabled);
-        assert_eq!(driver.due(), None);
-        assert!(driver.ready().now_or_never().is_none());
+        let mut idle = store.walk_driver(&disabled);
+        assert_eq!(idle.due(), None);
+        assert!(idle.ready().now_or_never().is_none());
         let id = registry(&store).maintained(COUNT.name).unwrap().id;
         let walk = registry(&store).get(id).unwrap().walk.unwrap();
         assert_eq!(walks(&store).get(walk).unwrap().cursor, None);
+        let db = store.partition_db().clone();
+        assert_eq!(
+            blocked_by(&db, &store.transaction(), id, Instant::now()),
+            Some("background-migrations-disabled")
+        );
 
-        // Enabled, it runs the walk. While a snapshot export holds commits back,
-        // it does nothing and checks again shortly.
+        // Enabled, it runs the walk. It replaces the disabled driver's state, and
+        // dropping that driver withdraws only its own. While a snapshot export
+        // holds commits back, it does nothing and checks again shortly.
         let mut driver = store.walk_driver(&StorageOptions::default());
+        drop(idle);
+        assert_eq!(
+            db.driver_state().get().map(|state| state.disabled),
+            Some(false)
+        );
         let recheck = driver.tuning_mut().fence_recheck;
         let mut tx = store.transaction();
         let progress = |tx: &PartitionStoreTransaction<'_>| {
@@ -3242,8 +3443,13 @@ mod backfill_tests {
         drive(&mut driver, &mut tx, 1).await;
         assert_eq!(progress(&tx).0, None);
         assert!(driver.due().unwrap() >= before + recheck);
+        assert_eq!(
+            blocked_by(&db, &tx, id, Instant::now()),
+            Some("snapshot-export")
+        );
         drop(fence);
         drive(&mut driver, &mut tx, 1).await;
+        assert_eq!(blocked_by(&db, &tx, id, Instant::now()), None);
         assert_eq!(
             progress(&tx).1.rows_examined,
             16,
@@ -3277,9 +3483,20 @@ mod backfill_tests {
             tx.maintained_indexes().registry().get(id).unwrap().state,
             IndexStatus::Backfilling
         );
+        // Its job shows the walk's backoff until it ends, without another step.
+        assert_eq!(
+            blocked_by(&db, &tx, id, Instant::now()),
+            Some("failure-backoff")
+        );
+        let (_, retry) = db.driver_state().get().unwrap().backoff_walks[0];
+        assert_eq!(blocked_by(&db, &tx, id, retry), None);
         tx.put_invocation_status(&invocation, &status).unwrap();
         tx.commit().await.unwrap();
         drive(&mut driver, &mut tx, 1_000).await;
+        // Recovered, nothing is reported; without a driver, nothing is either.
+        assert!(db.driver_state().get().unwrap().backoff_walks.is_empty());
+        drop(driver);
+        assert_eq!(db.driver_state().get(), None);
         drop(tx);
         assert_eq!(count(&store, id), SEEDED);
         assert_eq!(registry(&store).get(id).unwrap().state, IndexStatus::Ready);

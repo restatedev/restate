@@ -39,6 +39,7 @@ use datafusion::execution::SendableRecordBatchStream;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use futures::{StreamExt, stream};
+use tokio::time::Instant;
 
 use restate_clock::WallClock;
 use restate_core::Metadata;
@@ -158,7 +159,9 @@ impl Scan for ReportScanner {
                 .map_err(|err| DataFusionError::External(err.into()))?
                 .await
                 .map_err(|err| DataFusionError::External(err.into()))?;
-            let now = WallClock::now_ms().as_u64();
+            // The wall clock for the estimates, the driver's monotonic clock for
+            // the deadlines of what blocks a job.
+            let (now, instant) = (WallClock::now_ms().as_u64(), Instant::now());
             let batches = match table {
                 Table::Indexes => batches::<IndexesBuilder, _>(
                     schema,
@@ -170,7 +173,7 @@ impl Scan for ReportScanner {
                     schema,
                     batch_size,
                     jobs(&report, limit),
-                    |builder, (replica, job)| append_job(builder, node, replica, job, now),
+                    |builder, (replica, job)| append_job(builder, node, replica, job, now, instant),
                 )?,
             };
             Ok::<_, DataFusionError>((batches, unreadable(&report)))
@@ -326,6 +329,7 @@ fn append_job(
     replica: &ReplicaMigrations,
     job: &MigrationJob,
     now: u64,
+    instant: Instant,
 ) {
     let mut row = builder.row();
     row.fmt_plain_node_id(node.as_plain());
@@ -359,6 +363,9 @@ fn append_job(
         .and_then(|(walk, started)| replica.eta(walk, started, now))
     {
         row.eta(millis(eta));
+    }
+    if let Some(reason) = replica.blocked_by(job, instant) {
+        row.blocked_by(reason);
     }
     if let Some(at) = job.created_at {
         row.created_at(millis(at));

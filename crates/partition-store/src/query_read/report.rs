@@ -17,7 +17,11 @@
 //! replica whose records can't be read is reported as such, never as a replica
 //! without indexes.
 //!
-//! Index sizes are the exception: when a report asks for them ([`IndexSizes`]),
+//! The constraints the replica's walk driver last observed come with it, read
+//! from the driver's published state rather than the snapshot; see
+//! [`ReplicaMigrations::blocked_by`].
+//!
+//! Index sizes are the exception too: when a report asks for them ([`IndexSizes`]),
 //! they are RocksDB's estimate over the replica's current memtables and files,
 //! not over its snapshot, so they can be a little newer than the records. The
 //! estimate visits the table files whose key ranges cover the index, so a report
@@ -27,6 +31,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use rocksdb::{Range, SizeApproximationOptions};
+use tokio::time::Instant;
 use zerocopy::IntoBytes;
 
 use restate_storage_api::Result;
@@ -34,13 +39,13 @@ use restate_types::identifiers::PartitionId;
 use restate_types::sharding::KeyRange;
 
 use crate::fsm_table::{fsm_variable, migration_jobs_key, registry_key, walks_key};
-use crate::job::{MigrationJobRecords, MigrationJobs};
+use crate::job::{MigrationJob, MigrationJobRecords, MigrationJobStatus, MigrationJobs};
 use crate::keys::{DecodeTableKey, IndexKeyPrefix, KeyKind};
 use crate::read_snapshot::PartitionSnapshotReader;
 use crate::registry::{IndexKind, IndexRegistry};
 use crate::stats::AggregateKeyPrefix;
 use crate::vqueue_table::EntryStatusKey;
-use crate::walk::{Source, Walk, Walks};
+use crate::walk::{DriverState, Source, Walk, Walks};
 use crate::{PartitionDb, PartitionStoreManager};
 
 use super::QueryIoExecutor;
@@ -60,6 +65,9 @@ pub struct ReplicaMigrations {
     /// sizes; an index of unknown kind, or whose estimate returned an error, has
     /// none.
     pub index_sizes: HashMap<u32, u64>,
+    /// The scheduling constraints the replica's walk driver last observed, read
+    /// next to the snapshot; `None` without a running driver.
+    pub driver: Option<DriverState>,
 }
 
 impl ReplicaMigrations {
@@ -91,6 +99,61 @@ impl ReplicaMigrations {
         }
         let elapsed = u128::from(now.checked_sub(pass_started_at)?);
         pass_started_at.checked_add(u64::try_from(elapsed * span / done).ok()?)
+    }
+
+    /// Why `job` isn't progressing at `now`, according to the constraints the
+    /// replica's walk driver last observed: `None` when it reported none that
+    /// applies, which doesn't prove progress (the driver may be resting between
+    /// slices, or not running). In this order:
+    ///
+    /// - `background-migrations-disabled`, for every unfinished job;
+    /// - `snapshot-export`, for a job with a walk, or one waiting for a pass it
+    ///   may start now;
+    /// - `failure-backoff`, for a job whose walk retries after failed slices, or
+    ///   whose next pass start retries after a failed one;
+    /// - `throttled`, for a job with a walk, while the token bucket can't cover
+    ///   the next slice.
+    ///
+    /// Backoffs and throttling end at their deadline, and a waiting job may start
+    /// its pass once the driver scheduled it, both compared to `now` on the
+    /// driver's monotonic clock. Finished jobs have none.
+    pub fn blocked_by(&self, job: &MigrationJob, now: Instant) -> Option<&'static str> {
+        use MigrationJobStatus::*;
+        if !matches!(job.status, Pending | Running | Waiting) {
+            return None;
+        }
+        let driver = self.driver.as_ref()?;
+        if driver.disabled {
+            return Some("background-migrations-disabled");
+        }
+        let id = job.id().as_u32();
+        let walk = self.registry.get(id).and_then(|index| index.walk);
+        let may_start = job.status == Waiting
+            && driver
+                .eligible_at
+                .iter()
+                .any(|(of, at)| *of == id && *at <= now);
+        if driver.snapshot_export && (walk.is_some() || may_start) {
+            return Some("snapshot-export");
+        }
+        let walk_backoff = walk.is_some_and(|walk| {
+            driver
+                .backoff_walks
+                .iter()
+                .any(|(of, until)| *of == walk && *until > now)
+        });
+        let start_backoff = job.status == Waiting
+            && driver
+                .backoff_starts
+                .iter()
+                .any(|(of, until)| *of == id && *until > now);
+        if walk_backoff || start_backoff {
+            return Some("failure-backoff");
+        }
+        if walk.is_some() && driver.throttled_until.is_some_and(|until| until > now) {
+            return Some("throttled");
+        }
+        None
     }
 
     /// How many partition keys of this replica's range `walk`'s cursor is past, and
@@ -158,6 +221,7 @@ impl PartitionStoreManager {
                 let partition = db.partition();
                 match read_replica(&snapshot.reader(), partition.id(), partition.key_range) {
                     Ok(mut replica) => {
+                        replica.driver = db.driver_state().get();
                         // While the snapshot keeps the replica admitted.
                         if sizes == IndexSizes::Estimate {
                             replica.index_sizes = index_sizes(&db, &replica.registry);
@@ -205,6 +269,7 @@ fn read_replica(
             history: Arc::new(jobs(fsm_variable::MIGRATION_JOB_HISTORY, "job history")?),
         },
         index_sizes: HashMap::new(),
+        driver: None,
     })
 }
 

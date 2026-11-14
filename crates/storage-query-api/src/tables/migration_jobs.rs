@@ -21,7 +21,8 @@ define_schema! {
     /// nodes, such as the build of an index: unfinished ones, and finished ones
     /// up to `worker.storage.migration-job-history-limit`. Each replica keeps its
     /// own; a replica's rows come from one snapshot of it, separate from the one
-    /// `indexes` reads.
+    /// `indexes` reads, except `blocked_by`, which its background driver reports
+    /// apart from the snapshot.
     ///
     /// Jobs that share a walk are each charged the walk's rows examined, slices
     /// and work time, so those columns don't add up across jobs; `rows_filled`
@@ -63,6 +64,12 @@ define_schema! {
             /// NULL while progress or `pass_started_at` is unknown, or the cursor
             /// hasn't moved yet.
             eta: Option<MillisSinceEpoch> => TimestampMillisecond,
+            /// Why the job isn't progressing right now, as its replica's
+            /// background driver last observed: `background-migrations-disabled`,
+            /// `snapshot-export`, `failure-backoff` or `throttled`. Read live,
+            /// apart from the other columns. NULL when the driver reports no
+            /// reason, which doesn't prove progress, and for finished jobs.
+            blocked_by: Option<ReString> => DataType::Utf8,
             /// When the job was created; NULL if unknown.
             created_at: Option<MillisSinceEpoch> => TimestampMillisecond,
             /// The Restate version that created it; NULL if unknown.
