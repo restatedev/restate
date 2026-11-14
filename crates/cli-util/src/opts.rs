@@ -15,7 +15,6 @@ use clap::{Args, ValueEnum};
 use clap_verbosity_flag::{LogLevel, VerbosityFilter};
 use cling::Collect;
 
-use restate_types::config::DEFAULT_MESSAGE_SIZE_LIMIT;
 use restate_types::net::connect_opts::{
     CommonClientConnectionOptions, GrpcConnectionOptions, Http2FlowControl, MESSAGE_SIZE_OVERHEAD,
 };
@@ -125,10 +124,15 @@ pub struct NetworkOpts {
     /// insecure
     #[arg[long = "insecure-skip-tls-verify", default_value_t = false, global = true]]
     pub insecure_skip_tls_verify: bool,
-    /// Sets the maximum size of a network messages.
-    #[arg[long, default_value_t = DEFAULT_MESSAGE_SIZE_LIMIT, global = true, hide = true]]
-    pub message_size_limit: NonZeroUsize,
+    /// Caps the size of a message accepted from a server. Unset, any message
+    /// gRPC can carry is accepted; memory is only allocated for each message as
+    /// it arrives.
+    #[arg[long, global = true, hide = true]]
+    pub message_size_limit: Option<NonZeroUsize>,
 }
+
+/// The largest message gRPC can carry: its length prefix has 32 bits.
+const GRPC_MAX_MESSAGE_SIZE: NonZeroUsize = NonZeroUsize::new(u32::MAX as usize).unwrap();
 
 impl Default for NetworkOpts {
     fn default() -> Self {
@@ -136,7 +140,7 @@ impl Default for NetworkOpts {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             insecure_skip_tls_verify: false,
-            message_size_limit: DEFAULT_MESSAGE_SIZE_LIMIT,
+            message_size_limit: None,
         }
     }
 }
@@ -144,7 +148,9 @@ impl Default for NetworkOpts {
 impl GrpcConnectionOptions for NetworkOpts {
     fn message_size_limit(&self) -> NonZeroUsize {
         self.message_size_limit
-            .saturating_add(MESSAGE_SIZE_OVERHEAD)
+            .map_or(GRPC_MAX_MESSAGE_SIZE, |limit| {
+                limit.saturating_add(MESSAGE_SIZE_OVERHEAD)
+            })
     }
 }
 
