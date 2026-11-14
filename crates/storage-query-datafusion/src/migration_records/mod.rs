@@ -47,7 +47,7 @@ use restate_partition_store::registry::{
     DropReason, Index, IndexKind, IndexStatus, fill_capability,
 };
 use restate_partition_store::{
-    MigrationReport, PartitionStoreManager, QueryIoExecutor, ReplicaMigrations,
+    IndexSizes, MigrationReport, PartitionStoreManager, QueryIoExecutor, ReplicaMigrations,
 };
 use restate_storage_query_api::QueryEngineTable;
 use restate_types::GenerationalNodeId;
@@ -143,7 +143,14 @@ impl Scan for ReportScanner {
         batch_size: usize,
         limit: Option<usize>,
     ) -> SendableRecordBatchStream {
-        let report = self.manager.migration_report(&self.executor);
+        // Index sizes cost a RocksDB estimate per replica: only when selected.
+        let sizes = match self.table {
+            Table::Indexes if projection.field_with_name("approx_size_bytes").is_ok() => {
+                IndexSizes::Estimate
+            }
+            _ => IndexSizes::Skip,
+        };
+        let report = self.manager.migration_report(&self.executor, sizes);
         let node = self.metadata.my_node_id();
         let (table, schema) = (self.table, projection.clone());
         let read = async move {
@@ -286,6 +293,9 @@ fn append_index(
         (_, Some(DropReason::Reset)) => row.drop_reason("reset"),
         (_, Some(DropReason::UnknownDefinition)) => row.drop_reason("unknown-definition"),
         (number, None) => row.fmt_drop_reason(format_args!("unknown({number})")),
+    }
+    if let Some(size) = replica.index_sizes.get(&index.id) {
+        row.approx_size_bytes(*size);
     }
 }
 

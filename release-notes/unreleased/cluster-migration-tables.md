@@ -8,7 +8,9 @@ replica, and the background migrations that build them:
 
 - `restate.cluster.indexes`: one row per index or statistic on each replica,
   with its definition, its status (`backfilling`, `ready` or `dropped`), when it
-  was registered, became ready or was dropped, and why it was dropped.
+  was registered, became ready or was dropped, why it was dropped, and an
+  estimate of the storage it takes, including writes not yet flushed
+  (`approx_size_bytes`).
 - `restate.cluster.migration_jobs`: one row per background migration on each
   replica, with its status (`pending`, `running`, `waiting`, `completed` or
   `cancelled`), its progress and an estimate of when the current pass ends
@@ -38,7 +40,17 @@ Indexes not yet usable everywhere:
 ```sql
 SELECT partition_id, plain_node_id, definition, status
 FROM restate.cluster.indexes
-WHERE status <> 'ready';
+WHERE status = 'backfilling';
+```
+
+The largest indexes. A dropped index may still show bytes until compaction
+removes its data:
+
+```sql
+SELECT partition_id, plain_node_id, definition, status, approx_size_bytes
+FROM restate.cluster.indexes
+ORDER BY approx_size_bytes DESC NULLS LAST
+LIMIT 10;
 ```
 
 Backfills in progress, and whether they fail:
