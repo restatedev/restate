@@ -2806,6 +2806,43 @@ mod backfill_tests {
         };
         assert_eq!(single.progress_percent(running), None);
 
+        // `eta` stretches the time a pass has run by the key range still ahead: a
+        // pass 25% through after 15 minutes ends after an hour. It's unknown with
+        // unknown or zero progress, or with a clock before the pass started.
+        let mut cursor = running.cursor.as_deref().unwrap();
+        let key = EntryStatusKey::deserialize_from(&mut cursor)
+            .unwrap()
+            .id
+            .partition_key();
+        let quarter = ReplicaMigrations {
+            key_range: KeyRange::new(key - 5, key + 15),
+            ..replica.clone()
+        };
+        let (start, minute) = (1_700_000_000_000, 60_000);
+        assert_eq!(quarter.progress_percent(running), Some(25));
+        assert_eq!(
+            quarter.eta(running, start, start + 15 * minute),
+            Some(start + 60 * minute)
+        );
+        assert_eq!(quarter.eta(&unstarted, start, start + 15 * minute), None);
+        assert_eq!(quarter.eta(running, start, start - 1), None);
+        let at_start = ReplicaMigrations {
+            key_range: KeyRange::new(key, key + 20),
+            ..replica.clone()
+        };
+        assert_eq!(at_start.eta(running, start, start + 15 * minute), None);
+        // 1 of 200 keys: the percent rounds down to 0, but the estimate uses the
+        // exact position.
+        let early = ReplicaMigrations {
+            key_range: KeyRange::new(key - 1, key + 199),
+            ..replica.clone()
+        };
+        assert_eq!(early.progress_percent(running), Some(0));
+        assert_eq!(
+            early.eta(running, start, start + 15 * minute),
+            Some(start + 200 * 15 * minute)
+        );
+
         // Cursor bytes alone do not identify their source's key format.
         let unknown_source = Walk {
             source: u32::MAX,
