@@ -19,7 +19,6 @@ use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
-use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::metrics::Time;
 use parking_lot::Mutex;
 
@@ -35,7 +34,7 @@ use restate_util_string::ReString;
 use crate::remote_query_scanner_client::{
     RemoteScanner, RemoteScannerService, remote_scan_as_datafusion_stream,
 };
-use crate::table_providers::{Scan, ScanPartition};
+use crate::table_providers::{Scan, ScanPartition, ScanPredicate};
 
 // A global scanner sequence generate shared across all RemoteScannerManager
 // instances to avoid scanner-id conflicts
@@ -263,7 +262,7 @@ impl ScanPartition for ScanToScanPartitionAdapter {
         _partition_id: PartitionId,
         _range: KeyRange,
         projection: SchemaRef,
-        _predicate: Option<Arc<dyn PhysicalExpr>>,
+        _predicate: Option<ScanPredicate>,
         batch_size: usize,
         limit: Option<usize>,
         _elapsed_compute: Time,
@@ -279,7 +278,7 @@ impl<T: QueryEngineTable> ScanPartition for RemotePartitionsScanner<T> {
         partition_id: PartitionId,
         range: KeyRange,
         projection: SchemaRef,
-        predicate: Option<Arc<dyn PhysicalExpr>>,
+        predicate: Option<ScanPredicate>,
         batch_size: usize,
         limit: Option<usize>,
         elapsed_compute: Time,
@@ -309,7 +308,7 @@ impl<T: QueryEngineTable> ScanPartition for RemotePartitionsScanner<T> {
                     range,
                     T::identity(),
                     projection,
-                    predicate,
+                    predicate.map(ScanPredicate::into_initial),
                     batch_size,
                     limit,
                 ))

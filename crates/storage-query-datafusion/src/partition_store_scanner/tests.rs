@@ -16,6 +16,7 @@ use std::num::NonZeroUsize;
 
 use bytes::Bytes;
 use datafusion::arrow::datatypes::DataType;
+use datafusion::common::ScalarValue;
 use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::expressions::{BinaryExpr, CastExpr, col, lit};
 use futures::StreamExt;
@@ -128,7 +129,7 @@ async fn journal_stops_before_the_next_layout_and_flushes_only_success() {
                 PartitionId::MIN,
                 KeyRange::FULL,
                 Arc::clone(&schema),
-                Some(Arc::clone(&failing)),
+                Some(ScanPredicate::fixed(Arc::clone(&failing))),
                 batch_size,
                 None,
                 Time::new(),
@@ -145,6 +146,57 @@ async fn journal_stops_before_the_next_layout_and_flushes_only_success() {
             error.contains("Cast error") && !error.contains("generic storage error"),
             "batch size {batch_size}: {error}"
         );
+    }
+
+    // Contract test for initial vs live expressions: even replacing the entire
+    // live expression with false must keep the initial ID selection for storage,
+    // avoiding this unrelated corrupt record. Today's client preserves static
+    // conjuncts in its updates; this exercises the stronger scan contract.
+    corrupt.clear();
+    JournalKey {
+        partition_key: invocation.partition_key().wrapping_add(1),
+        invocation_uuid: invocation.invocation_uuid(),
+        journal_index: 0,
+    }
+    .serialize_to(&mut corrupt);
+    let mut tx = store.transaction();
+    tx.raw_put_cf(KeyKind::JournalV2, &corrupt, b"\xff");
+    tx.commit().await.unwrap();
+    drop(tx);
+    let initial: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+        col("id", &schema).unwrap(),
+        Operator::Eq,
+        lit(ScalarValue::LargeUtf8(Some(invocation.to_string()))),
+    ));
+    let (predicate, live) = ScanPredicate::updatable(Arc::clone(&initial));
+    let whole_expression: Arc<dyn PhysicalExpr> =
+        Arc::new(BinaryExpr::new(initial, Operator::And, lit(false)));
+    for (next, expected_rows) in [
+        (None, 1),
+        (Some(whole_expression), 0),
+        (Some(lit(false)), 0),
+    ] {
+        if let Some(next) = next {
+            live.update(next).unwrap();
+        }
+        let batches = scanner
+            .scan_partition(
+                PartitionId::MIN,
+                KeyRange::FULL,
+                Arc::clone(&schema),
+                Some(predicate.clone()),
+                1,
+                None,
+                Time::new(),
+            )
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+        let rows: usize = batches
+            .into_iter()
+            .map(|batch| batch.unwrap().num_rows())
+            .sum();
+        assert_eq!(rows, expected_rows);
     }
 }
 

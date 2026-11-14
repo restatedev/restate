@@ -51,18 +51,18 @@ use restate_storage_query_api::scan::{CursorScan, Scan, Table};
 use restate_types::identifiers::PartitionId;
 use restate_types::sharding::KeyRange;
 
-use crate::table_providers::ScanPartition;
+use crate::table_providers::{ScanPartition, ScanPredicate};
 use crate::table_util::{BatchSender, Builder};
 
 #[cfg(test)]
 mod tests;
 
 pub trait ScanLocalPartitionFilter {
-    fn new(range: KeyRange, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self;
+    fn new(range: KeyRange, initial: Option<Arc<dyn PhysicalExpr>>) -> Self;
 }
 
 impl ScanLocalPartitionFilter for KeyRange {
-    fn new(range: KeyRange, _predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
+    fn new(range: KeyRange, _initial: Option<Arc<dyn PhysicalExpr>>) -> Self {
         range
     }
 }
@@ -188,7 +188,7 @@ where
         partition_id: PartitionId,
         range: KeyRange,
         projection: SchemaRef,
-        predicate: Option<Arc<dyn PhysicalExpr>>,
+        predicate: Option<ScanPredicate>,
         batch_size: usize,
         limit: Option<usize>,
         elapsed_compute: Time,
@@ -197,6 +197,7 @@ where
         let io_executor = self.io_executor.clone();
         let mut stream_builder = RecordBatchReceiverStream::builder(projection.clone(), 1);
         let tx = stream_builder.tx();
+        let (initial, live) = predicate.map(ScanPredicate::into_parts).unzip();
 
         let background_task = async move {
             // LIMIT 0 reads nothing.
@@ -217,13 +218,13 @@ where
                 .query_read(cancel)
                 .map_err(|err| DataFusionError::External(err.into()))?;
             let rows = Rows {
-                output: BatchSender::new(projection, tx, predicate.clone(), batch_size, limit),
+                output: BatchSender::new(projection, tx, live, batch_size, limit),
                 elapsed: ElapsedCompute::new(elapsed_compute),
             };
             let outcome = S::scan(
                 &snapshot,
                 &io_executor,
-                S::Filter::new(range, predicate),
+                S::Filter::new(range, initial),
                 rows,
             )
             .await
@@ -267,7 +268,7 @@ where
         partition_id: PartitionId,
         range: KeyRange,
         projection: SchemaRef,
-        predicate: Option<Arc<dyn PhysicalExpr>>,
+        predicate: Option<ScanPredicate>,
         batch_size: usize,
         limit: Option<usize>,
         elapsed_compute: Time,

@@ -17,7 +17,6 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
-use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::metrics::Time;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt as TokioStreamExt;
@@ -34,6 +33,7 @@ use restate_types::net::remote_query_scanner::{
 
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::remote_query_scanner_server::ScannerMap;
+use crate::table_providers::ScanPredicate;
 use crate::{decode_expr, decode_schema, encode_next};
 
 const SCANNER_EXPIRATION: Duration = Duration::from_secs(60);
@@ -93,24 +93,20 @@ impl ScannerTask {
             .context("not registered scanner for a table")?;
         let schema = decode_schema(&request.projection_schema_bytes).context("bad schema bytes")?;
 
-        let predicate = request
+        let initial = request
             .predicate
             .map(|predicate| decode_expr(&ctx, &schema, &predicate.serialized_physical_expression))
             .transpose()?;
 
         let schema = Arc::new(schema);
 
-        let dynamic_filter = predicate
-            .as_ref()
-            .map(|pred| Arc::new(DynamicFilterPhysicalExpr::new(Vec::new(), Arc::clone(pred))));
+        let (predicate, dynamic_filter) = initial.map(ScanPredicate::updatable).unzip();
 
         let stream = scanner.scan_partition(
             request.partition_id,
             request.range,
             schema.clone(),
-            dynamic_filter
-                .as_ref()
-                .map(|filter| filter.clone() as Arc<dyn PhysicalExpr>),
+            predicate,
             usize::try_from(request.batch_size).expect("batch_size to fit in a usize"),
             request
                 .limit

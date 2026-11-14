@@ -20,6 +20,7 @@ use datafusion::datasource::{TableProvider, TableType};
 use datafusion::execution::context::TaskContext;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::filter_pushdown::{
     FilterPushdownPhase, FilterPushdownPropagation, PushedDown,
@@ -43,14 +44,62 @@ use crate::context::SelectPartitions;
 use crate::filter::{FirstMatchingPartitionKeyExtractor, PointReadFanout};
 use crate::table_util::{find_sort_columns, make_ordering};
 
+/// The initial expression for storage planning and the live expression for row filtering.
+/// Remote workers retain the initial expression when replacing the live wrapper's contents.
+#[derive(Clone, Debug)]
+pub struct ScanPredicate {
+    initial: Arc<dyn PhysicalExpr>,
+    live: Arc<dyn PhysicalExpr>,
+}
+
+impl ScanPredicate {
+    /// Uses one expression for both purposes, without a remote update wrapper.
+    /// Dynamic children of the expression can still change.
+    pub fn fixed(initial: Arc<dyn PhysicalExpr>) -> Self {
+        Self {
+            live: Arc::clone(&initial),
+            initial,
+        }
+    }
+
+    /// Creates a live wrapper from the initial expression and returns its update handle.
+    pub(crate) fn updatable(
+        initial: Arc<dyn PhysicalExpr>,
+    ) -> (Self, Arc<DynamicFilterPhysicalExpr>) {
+        let live = Arc::new(DynamicFilterPhysicalExpr::new(
+            Vec::new(),
+            Arc::clone(&initial),
+        ));
+        (
+            Self {
+                initial,
+                live: live.clone(),
+            },
+            live,
+        )
+    }
+
+    pub(crate) fn into_initial(self) -> Arc<dyn PhysicalExpr> {
+        self.initial
+    }
+
+    pub(crate) fn into_parts(self) -> (Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>) {
+        (self.initial, self.live)
+    }
+}
+
 pub trait ScanPartition: Send + Sync + Debug + 'static {
+    /// Starts one physical-partition scan.
+    ///
+    /// Coordinators pass a [`ScanPredicate::fixed`] expression. Remote workers use
+    /// [`ScanPredicate::updatable`] to keep the initial expression separate from live updates.
     #[allow(clippy::too_many_arguments)]
     fn scan_partition(
         &self,
         partition_id: PartitionId,
         range: KeyRange,
         projection: SchemaRef,
-        predicate: Option<Arc<dyn PhysicalExpr>>,
+        predicate: Option<ScanPredicate>,
         batch_size: usize,
         limit: Option<usize>,
         elapsed_compute: Time,
@@ -375,7 +424,7 @@ where
                             partition_id,
                             partition.key_range,
                             schema.clone(),
-                            predicate.clone(),
+                            predicate.clone().map(ScanPredicate::fixed),
                             batch_size,
                             limit,
                             elapsed_compute.clone(),
