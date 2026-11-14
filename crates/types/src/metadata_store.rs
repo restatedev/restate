@@ -28,4 +28,11 @@ pub mod keys {
     pub fn partition_processor_epoch_key(partition_id: PartitionId) -> ByteString {
         ByteString::from(format!("{PARTITION_PROCESSOR_EPOCH_PREFIX}_{partition_id}"))
     }
+
+    /// Lease that lets a single node at a time write a partition's snapshots.
+    /// *Since v1.8.2*
+    pub static SNAPSHOT_LEASE_PREFIX: &str = "snapshot_lease";
+    pub fn snapshot_lease_key(partition_id: PartitionId) -> ByteString {
+        ByteString::from(format!("{SNAPSHOT_LEASE_PREFIX}_{partition_id}"))
+    }
 }
