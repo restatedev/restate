@@ -55,6 +55,7 @@ mod vqueues;
 pub use table_providers::Scan;
 pub mod table_util;
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 pub use context::BuildError;
@@ -66,6 +67,8 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::PhysicalExpr;
 use prost::Message;
+
+use restate_types::memory::ByteCount;
 
 #[cfg(test)]
 pub(crate) mod mocks;
@@ -129,6 +132,48 @@ pub(crate) fn encode_record_batch(
     Ok(buf)
 }
 
+/// Encodes `batch` into remote-scan messages of at most `budget` bytes each, in
+/// row order, and appends them to `out`.
+///
+/// Each message is a complete Arrow IPC stream (schema, one batch, end marker),
+/// so a receiver decodes each one on its own. A batch that fits goes out as one
+/// message, unchanged. A larger one is cut into row slices sized from how far it
+/// overshoots, and each slice is checked again. Slicing copies no data, and the
+/// IPC writer encodes only a slice's own rows.
+///
+/// For example, with a 32 MiB budget, 128 state rows of 1 MiB each (about
+/// 128 MiB encoded) go out as four messages of 26 rows and one of 24.
+///
+/// A single row larger than `budget` can't be sent: the error names the setting
+/// that raises the limit.
+pub(crate) fn encode_record_batch_within(
+    schema: &Schema,
+    batch: RecordBatch,
+    budget: usize,
+    out: &mut VecDeque<Vec<u8>>,
+) -> Result<(), DataFusionError> {
+    let encoded = encode_record_batch(schema, batch.clone())?;
+    if encoded.len() <= budget {
+        out.push_back(encoded);
+        return Ok(());
+    }
+    let rows = batch.num_rows();
+    if rows <= 1 {
+        return Err(DataFusionError::ResourcesExhausted(format!(
+            "a row encodes to {}, more than a remote-scan message can carry ({}); \
+             raise `networking.message-size-limit` on all nodes to read it",
+            ByteCount::from(encoded.len()),
+            ByteCount::from(budget),
+        )));
+    }
+    let rows_per_slice = rows.div_ceil(encoded.len().div_ceil(budget));
+    for offset in (0..rows).step_by(rows_per_slice) {
+        let slice = batch.slice(offset, rows_per_slice.min(rows - offset));
+        encode_record_batch_within(schema, slice, budget, out)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn decode_record_batch(bytes: &[u8]) -> Result<RecordBatch, DataFusionError> {
     let buffer = std::io::Cursor::new(bytes);
     let mut stream = datafusion::arrow::ipc::reader::StreamReader::try_new(buffer, None)?;
@@ -144,7 +189,13 @@ pub(crate) fn decode_record_batch(bytes: &[u8]) -> Result<RecordBatch, DataFusio
 
 #[cfg(test)]
 mod serde_tests {
-    use datafusion::arrow::array::{Int32Array, RecordBatch};
+    use std::collections::VecDeque;
+
+    use datafusion::arrow::array::{
+        BooleanArray, Int32Array, LargeBinaryArray, LargeStringArray, ListBuilder, RecordBatch,
+        StringBuilder, UInt64Array,
+    };
+    use datafusion::arrow::compute::concat_batches;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::execution::TaskContext;
     use datafusion::logical_expr::Operator;
@@ -205,5 +256,71 @@ mod serde_tests {
         let decoded = super::decode_expr(&TaskContext::default(), &schema, &buf).expect("to work");
 
         assert_eq!(&physical_expr, &decoded);
+    }
+
+    #[test]
+    fn oversized_batches_split_into_messages_within_the_budget() {
+        let item = Arc::new(Field::new("item", DataType::Utf8, true));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("name", DataType::LargeUtf8, true),
+            Field::new("value", DataType::LargeBinary, false),
+            Field::new("count", DataType::UInt64, false),
+            Field::new("done", DataType::Boolean, false),
+            Field::new("tags", DataType::List(item), false),
+        ]));
+        let rows = 100u64;
+        let mut tags = ListBuilder::new(StringBuilder::new());
+        for row in 0..rows {
+            tags.append_value([Some(format!("tag-{row}")), None]);
+        }
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(LargeStringArray::from_iter(
+                    (0..rows).map(|row| (row % 3 != 0).then(|| format!("row-{row}"))),
+                )),
+                Arc::new(LargeBinaryArray::from_iter_values(
+                    (0..rows).map(|row| vec![row as u8; 1024]),
+                )),
+                Arc::new(UInt64Array::from_iter_values(0..rows)),
+                Arc::new(BooleanArray::from_iter(
+                    (0..rows).map(|row| Some(row % 2 == 0)),
+                )),
+                Arc::new(tags.finish()),
+            ],
+        )
+        .unwrap();
+        let encode =
+            |batch: &RecordBatch| super::encode_record_batch(&schema, batch.clone()).unwrap();
+        let within = |batch: &RecordBatch, budget| {
+            let mut messages = VecDeque::new();
+            super::encode_record_batch_within(&schema, batch.clone(), budget, &mut messages)
+                .map(|()| messages)
+        };
+        let budget = 16 * 1024;
+
+        // A batch that fits goes out unchanged, as one message.
+        let small = batch.slice(0, 2);
+        assert_eq!(within(&small, budget).unwrap(), [encode(&small)]);
+
+        // A larger one is cut into messages that fit, which decode back to the
+        // whole batch, in order.
+        let messages = within(&batch, budget).unwrap();
+        assert!(messages.len() > 1);
+        assert!(messages.iter().all(|message| message.len() <= budget));
+        let decoded: Vec<_> = messages
+            .iter()
+            .map(|message| super::decode_record_batch(message).unwrap())
+            .collect();
+        assert_eq!(concat_batches(&schema, &decoded).unwrap(), batch);
+
+        // Each message carries only its own rows. If slices carried their
+        // parent's buffers, the messages would add up to several whole batches.
+        let total: usize = messages.iter().map(Vec::len).sum();
+        assert!(total < 2 * encode(&batch).len(), "{total}");
+
+        // A single row larger than the budget can't be sent.
+        let error = within(&batch, 512).unwrap_err().to_string();
+        assert!(error.contains("networking.message-size-limit"), "{error}");
     }
 }
