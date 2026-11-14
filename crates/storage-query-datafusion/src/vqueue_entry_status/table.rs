@@ -9,21 +9,19 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use datafusion::catalog::TableProvider;
 
-use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_storage_api::StorageError;
+use restate_partition_store::vqueue_table::{EntryStatusRecords, EntryStatusScan};
+use restate_partition_store::{PartitionStoreManager, QueryIoExecutor, ReadSnapshot};
+use restate_storage_api::scan::ScanOutcome;
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
-use restate_storage_api::vqueue_table::{RawStatusHeaderRef, ScanVQueueEntryStatusTable};
-use restate_types::identifiers::BaseEntryId;
 use restate_types::vqueues::VQueueId;
 
 use crate::context::SelectPartitions;
 use crate::filter::{FirstMatchingPartitionKeyExtractor, VQueueEntryIdFilter};
-use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
+use crate::partition_store_scanner::{LocalPartitionsScanner, Rows, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::statistics::{DEPLOYMENT_ROW_ESTIMATE, RowEstimate, TableStatisticsBuilder};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
@@ -66,8 +64,12 @@ impl SysVqueueEntryStatusTable {
 
     pub(crate) fn create_local_scanner(
         partition_store_manager: Arc<PartitionStoreManager>,
+        io_executor: QueryIoExecutor,
     ) -> impl ScanPartition {
-        LocalPartitionsScanner::<VQueueEntryStatusScanner>::new(partition_store_manager)
+        LocalPartitionsScanner::<VQueueEntryStatusScanner>::new(
+            partition_store_manager,
+            io_executor,
+        )
     }
 }
 
@@ -76,31 +78,25 @@ struct VQueueEntryStatusScanner;
 
 impl ScanLocalPartition for VQueueEntryStatusScanner {
     type Builder = SysVqueueEntryStatusBuilder;
-    type Item<'a> = (&'a BaseEntryId, &'a RawStatusHeaderRef<'a>);
-    type ConversionError = std::convert::Infallible;
     type Filter = VQueueEntryIdFilter;
 
-    fn for_each_row<
-        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
-        partition_store: &PartitionStore,
+    async fn scan(
+        snapshot: &ReadSnapshot,
+        executor: &QueryIoExecutor,
         filter: VQueueEntryIdFilter,
-        mut f: F,
-    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        partition_store.for_each_vqueue_entry_status(filter.into(), move |id, header| {
-            f((id, header)).map_break(Result::unwrap)
-        })
-    }
-
-    fn append_row<'a>(
-        row_builder: &mut Self::Builder,
-        (id, header): Self::Item<'a>,
-    ) -> Result<(), Self::ConversionError> {
-        append_vqueue_entry_status_row(row_builder, id, header);
-        Ok(())
+        rows: Rows<Self::Builder>,
+    ) -> restate_storage_api::Result<ScanOutcome<Rows<Self::Builder>>> {
+        rows.read::<EntryStatusRecords>(
+            snapshot,
+            executor,
+            "df-vqueue-entry-status",
+            Arc::new(EntryStatusScan::from(ScanEntryIdFilter::from(filter))),
+            |builder, (id, header)| {
+                append_vqueue_entry_status_row(builder, &id, &header);
+                Ok(())
+            },
+        )
+        .await
     }
 }
 

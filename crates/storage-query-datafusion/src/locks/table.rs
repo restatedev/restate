@@ -9,23 +9,24 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::ops::ControlFlow;
 use std::sync::Arc;
 
+use bilrost::OwnedMessage;
 use datafusion::catalog::TableProvider;
 
-use restate_partition_store::{PartitionStore, PartitionStoreManager};
+use restate_partition_store::keys::selection::KeySelection;
+use restate_partition_store::locks_table::LocksTable;
+use restate_partition_store::{PartitionStoreManager, QueryIoExecutor, ReadSnapshot};
 use restate_storage_api::StorageError;
-use restate_storage_api::lock_table::{LockState, ScanLocksTable};
-use restate_types::identifiers::PartitionKey;
+use restate_storage_api::lock_table::LockState;
+use restate_storage_api::scan::ScanOutcome;
 use restate_types::sharding::KeyRange;
-use restate_types::{LockName, Scope};
 
 use crate::context::SelectPartitions;
 use crate::filter::FirstMatchingPartitionKeyExtractor;
 use crate::locks::row::append_lock_row;
 use crate::locks::schema::{SysLocksBuilder, SysLocksTable, sys_locks_sort_order};
-use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
+use crate::partition_store_scanner::{LocalPartitionsScanner, Rows, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 impl SysLocksTable {
@@ -48,8 +49,9 @@ impl SysLocksTable {
 
     pub(crate) fn create_local_scanner(
         partition_store_manager: Arc<PartitionStoreManager>,
+        io_executor: QueryIoExecutor,
     ) -> impl ScanPartition {
-        LocalPartitionsScanner::<LocksScanner>::new(partition_store_manager)
+        LocalPartitionsScanner::<LocksScanner>::new(partition_store_manager, io_executor)
     }
 }
 
@@ -58,28 +60,26 @@ struct LocksScanner;
 
 impl ScanLocalPartition for LocksScanner {
     type Builder = SysLocksBuilder;
-    type Item<'a> = (PartitionKey, Option<Scope>, LockName, LockState);
-    type ConversionError = std::convert::Infallible;
     type Filter = KeyRange;
 
-    fn for_each_row<
-        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
-        partition_store: &PartitionStore,
+    async fn scan(
+        snapshot: &ReadSnapshot,
+        executor: &QueryIoExecutor,
         range: KeyRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        partition_store.for_each_lock(range, move |item| f(item).map_break(Result::unwrap))
-    }
-
-    fn append_row<'a>(
-        row_builder: &mut Self::Builder,
-        value: Self::Item<'a>,
-    ) -> Result<(), Self::ConversionError> {
-        append_lock_row(row_builder, value.0, value.1, value.2, value.3);
-        Ok(())
+        rows: Rows<Self::Builder>,
+    ) -> restate_storage_api::Result<ScanOutcome<Rows<Self::Builder>>> {
+        rows.read::<LocksTable>(
+            snapshot,
+            executor,
+            "df-locks",
+            Arc::new(KeySelection::all().restrict_scope(range)),
+            |builder, (key, value)| {
+                let (partition_key, scope, name) = key.decode_all()?.split();
+                let state = LockState::decode(value).map_err(StorageError::BilrostDecode)?;
+                append_lock_row(builder, partition_key, scope, name, state);
+                Ok(())
+            },
+        )
+        .await
     }
 }
