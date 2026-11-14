@@ -534,7 +534,9 @@ fn drop_and_record(
 ///   time.
 /// - A job follows its index's walk: `Running` once that walk has a cursor,
 ///   keeping an unknown start if it was still `Pending`; a running job whose
-///   index lost its walk waits, eligible now.
+///   index lost its walk waits, eligible now. A job moved onto a walk that has
+///   already advanced gets an unknown pass start: the one it had belongs to an
+///   earlier pass.
 /// - A Backfilling index without a job gets one, with unknown times: following
 ///   its walk, or waiting and eligible now without one.
 ///
@@ -562,6 +564,9 @@ fn settle_jobs(
         {
             Some((IndexStatus::Backfilling, walk)) => {
                 if let Some(job) = jobs.unfinished.get_mut(id) {
+                    if job.walk != walk && started(walk) {
+                        job.pass_started_at = None;
+                    }
                     job.walk = walk;
                     match job.status {
                         MigrationJobStatus::Pending if started(walk) => {
@@ -1648,6 +1653,32 @@ mod backfill_tests {
             }
             db.rocksdb().inner().as_raw_db().write(&batch).unwrap();
         };
+        // A waiting job moved onto a walk that has already advanced can't know
+        // when that pass started. The start it had is from its previous pass, and
+        // would stretch `eta` by the wait between passes, so it becomes unknown.
+        // A job that stays on its walk keeps its start.
+        let (mut moved, _) = load_job_records(&db).unwrap();
+        let job_id = MigrationJobId::for_index(count);
+        moved.unfinished.get_mut(job_id).unwrap().pass_started_at = Some(1);
+        let mut stayed = moved.clone();
+        let job = moved.unfinished.get_mut(job_id).unwrap();
+        (job.status, job.walk) = (MigrationJobStatus::Waiting, None);
+        for jobs in [&mut moved, &mut stayed] {
+            settle_jobs(&registry(&store), &walks(&store), jobs, 100);
+        }
+        let settled = |jobs: &MigrationJobRecords| {
+            let job = jobs.unfinished.get(job_id).unwrap();
+            (job.status, job.walk, job.pass_started_at)
+        };
+        assert_eq!(
+            settled(&moved),
+            (MigrationJobStatus::Running, Some(walk), None)
+        );
+        assert_eq!(
+            settled(&stayed),
+            (MigrationJobStatus::Running, Some(walk), Some(1))
+        );
+
         let (before, _) = load_job_records(&db).unwrap();
         corrupt(&[fsm_variable::MIGRATION_JOB_HISTORY]);
         reconcile(&mut store, Requests::default()).await;
@@ -2805,6 +2836,43 @@ mod backfill_tests {
             ..replica.clone()
         };
         assert_eq!(single.progress_percent(running), None);
+
+        // `eta` stretches the time a pass has run by the key range still ahead: a
+        // pass 25% through after 15 minutes ends after an hour. It's unknown with
+        // unknown or zero progress, or with a clock before the pass started.
+        let mut cursor = running.cursor.as_deref().unwrap();
+        let key = EntryStatusKey::deserialize_from(&mut cursor)
+            .unwrap()
+            .id
+            .partition_key();
+        let quarter = ReplicaMigrations {
+            key_range: KeyRange::new(key - 5, key + 15),
+            ..replica.clone()
+        };
+        let (start, minute) = (1_700_000_000_000, 60_000);
+        assert_eq!(quarter.progress_percent(running), Some(25));
+        assert_eq!(
+            quarter.eta(running, start, start + 15 * minute),
+            Some(start + 60 * minute)
+        );
+        assert_eq!(quarter.eta(&unstarted, start, start + 15 * minute), None);
+        assert_eq!(quarter.eta(running, start, start - 1), None);
+        let at_start = ReplicaMigrations {
+            key_range: KeyRange::new(key, key + 20),
+            ..replica.clone()
+        };
+        assert_eq!(at_start.eta(running, start, start + 15 * minute), None);
+        // 1 of 200 keys: the percent rounds down to 0, but the estimate uses the
+        // exact position.
+        let early = ReplicaMigrations {
+            key_range: KeyRange::new(key - 1, key + 199),
+            ..replica.clone()
+        };
+        assert_eq!(early.progress_percent(running), Some(0));
+        assert_eq!(
+            early.eta(running, start, start + 15 * minute),
+            Some(start + 200 * 15 * minute)
+        );
 
         // Cursor bytes alone do not identify their source's key format.
         let unknown_source = Walk {
