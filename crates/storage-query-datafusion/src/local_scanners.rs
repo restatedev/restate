@@ -25,6 +25,9 @@ use crate::promise::schema::SysPromiseTable;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::scheduler_status::schema::SysSchedulerTable;
 use crate::state::schema::StateTable;
+use crate::stats::{
+    StatTable, SysDeploymentStatsTable, SysServiceStatsTable, SysVirtualObjectStatsTable,
+};
 use crate::user_limits::schema::SysUserLimitsTable;
 use crate::vqueue_entry_status::schema::SysVqueueEntryStatusTable;
 use crate::vqueue_meta::schema::SysVqueueMetaTable;
@@ -53,6 +56,21 @@ pub fn register_partition_scanners(
     io_executor: QueryIoExecutor,
     remote_scanner_manager: &RemoteScannerManager,
 ) {
+    macro_rules! register_statistics {
+        ($($table:ty),+ $(,)?) => { $(
+            remote_scanner_manager.register_partition_scanner::<$table>(Arc::new(
+                <$table>::create_local_scanner(
+                    Arc::clone(&partition_store_manager),
+                    io_executor.clone(),
+                ),
+            ));
+        )+ };
+    }
+    register_statistics!(
+        SysServiceStatsTable,
+        SysDeploymentStatsTable,
+        SysVirtualObjectStatsTable
+    );
     remote_scanner_manager.register_partition_scanner::<StateTable>(Arc::new(
         StateTable::create_local_scanner(Arc::clone(&partition_store_manager), io_executor.clone()),
     ));
