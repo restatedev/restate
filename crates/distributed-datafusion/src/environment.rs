@@ -104,6 +104,14 @@ impl DataFusionEnv {
         self
     }
 
+    /// Runs on `runtime`, and so its memory pool and spill files, instead of this
+    /// environment's own. Node setup passes V1's runtime, so both engines draw on
+    /// one `memory-size` budget.
+    pub fn with_runtime(mut self, runtime: Arc<RuntimeEnv>) -> Self {
+        self.runtime = runtime;
+        self
+    }
+
     pub fn from_options(options: &QueryEngineOptions) -> Result<Self, DataFusionError> {
         Self::new(
             options.memory_size.get(),
@@ -404,6 +412,64 @@ mod tests {
         }
     }
     crate::tables::table_adapter!(TestTable, InventoryTest);
+
+    /// Node setup gives V2 the default engine's runtime and rate limiter: both
+    /// engines draw on one memory pool and one `/query` budget.
+    #[restate_core::test]
+    async fn engines_share_the_node_query_memory_and_rate_limit() {
+        use datafusion::execution::memory_pool::MemoryConsumer;
+        use restate_storage_query_api::errors::SessionError;
+        use restate_storage_query_api::{QueryEngineVersion, SessionOptions};
+        use restate_storage_query_datafusion as v1;
+        use restate_types::config::ThrottlingOptions;
+
+        const MIB: usize = 1024 * 1024;
+        let v1_env = v1::DataFusionEnv::new(MIB, None, Some(1), &HashMap::new())
+            .unwrap()
+            .with_mock_clock(restate_clock::MockClock::new())
+            .unwrap();
+        let v2_env = DataFusionEnv::new(MIB, None, Some(1), &HashMap::new())
+            .unwrap()
+            .with_mock_clock(restate_clock::MockClock::new())
+            .unwrap()
+            .with_runtime(Arc::clone(v1_env.runtime()));
+        let v1_query = MemoryConsumer::new("v1-query").register(&v1_env.runtime().memory_pool);
+        v1_query.try_grow(MIB).unwrap();
+        assert!(
+            MemoryConsumer::new("v2-query")
+                .register(&v2_env.runtime.memory_pool)
+                .try_grow(1)
+                .is_err(),
+            "one_memory_pool"
+        );
+        drop(v1_query);
+
+        let limiter = v1::context::query_rate_limiter(Some(&ThrottlingOptions {
+            rate: "1/h".parse().unwrap(),
+            capacity: std::num::NonZeroU32::new(1),
+        }));
+        let engine = v1::context::DataFusionQueryEngine::with_rate_limiter(v1_env, limiter.clone())
+            .with_engine(crate::context::DataFusionQueryEngine::with_rate_limiter(
+                v2_env, limiter,
+            ));
+        let options = |version| SessionOptions {
+            engine_version: Some(version),
+            apply_rate_limit: true,
+            ..Default::default()
+        };
+        assert!(
+            engine
+                .create_session(options(QueryEngineVersion::V1))
+                .is_ok()
+        );
+        assert!(
+            matches!(
+                engine.create_session(options(QueryEngineVersion::V2)),
+                Err(SessionError::RateLimited(_))
+            ),
+            "one_rate_limit"
+        );
+    }
 
     #[tokio::test]
     async fn catalogs_share_providers_but_isolate_names_and_late_registration() {

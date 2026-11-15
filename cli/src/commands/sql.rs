@@ -30,6 +30,7 @@ use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::ui::watcher::Watch;
 
 use crate::cli_env::CliEnv;
+use crate::clients::{DataFusionHttpClient, QueryEngine};
 use crate::error::RestateCliError;
 use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 
@@ -64,6 +65,12 @@ pub struct Sql {
     /// Unlike --json, works with -w
     #[arg(long, alias = "ldjson")]
     pub jsonl: bool,
+
+    /// Query engine to run the query on. Defaults to the server's default engine; the
+    /// engine that served the query is reported with the row count. Fails if the
+    /// server doesn't confirm that it ran the query on the requested engine.
+    #[arg(long, value_enum)]
+    pub engine: Option<QueryEngine>,
 }
 
 /// Examples and docs link, plus the list of tables in the long help.
@@ -73,6 +80,8 @@ fn sql_after_help(long: bool) -> String {
             "restate sql \"SELECT id, target FROM sys_invocation ORDER BY created_at DESC LIMIT 10\" --json",
             "# State of the Cart virtual object: service_key is the object key, key the state key",
             "restate sql \"SELECT service_key, key, value_utf8 FROM state WHERE service_name = 'Cart'\"",
+            "# Compare the experimental distributed query engine against the default one",
+            "restate sql \"SELECT status, COUNT(*) FROM sys_vqueue_entry_status GROUP BY status\" --engine v2",
             "restate sql describe sys_invocation",
         ],
         learn_more: "https://docs.restate.dev/references/sql-introspection",
@@ -142,10 +151,30 @@ async fn run_sql(State(env): State<CliEnv>, opts: &Sql) -> Result<()> {
     }
 }
 
+/// Fails unless the server reports that it ran the query on the `requested`
+/// engine. A server older than v1.8.2 ignores the selection and runs the query on
+/// its only engine; an A/B comparison mustn't silently compare V1 with V1.
+fn ensure_engine(requested: Option<QueryEngine>, reported: Option<&str>) -> Result<()> {
+    let Some(requested) = requested else {
+        return Ok(());
+    };
+    if reported != Some(requested.as_header_value()) {
+        bail!(
+            "the server didn't run this query on query engine {}: it reported {}. Selecting the engine needs a server on v1.8.2 or newer, with that engine enabled",
+            requested.as_header_value(),
+            reported.unwrap_or("no engine")
+        );
+    }
+    Ok(())
+}
+
 async fn run_query(env: &CliEnv, sql_opts: &Sql, query: &str) -> Result<()> {
-    let client = crate::clients::DataFusionHttpClient::new(env).await?;
+    let client = DataFusionHttpClient::new(env)
+        .await?
+        .with_query_engine(sql_opts.engine);
     let start_time = Instant::now();
     let resp = client.run_arrow_query(query.to_owned()).await?;
+    ensure_engine(sql_opts.engine, resp.engine.as_deref())?;
 
     let json_output = CliContext::get().json_output();
     let mut row_count: usize = 0;
@@ -205,10 +234,16 @@ async fn run_query(env: &CliEnv, sql_opts: &Sql, query: &str) -> Result<()> {
         }
     }
 
+    let engine = resp
+        .engine
+        .as_deref()
+        .map(|engine| format!(" on query engine {engine}"))
+        .unwrap_or_default();
     c_eprintln!(
-        "{} rows. Query took {:?}",
+        "{} rows. Query took {:?}{}",
         row_count,
-        Styled(Style::Notice, start_time.elapsed())
+        Styled(Style::Notice, start_time.elapsed()),
+        Styled(Style::Notice, engine)
     );
     Ok(())
 }
@@ -258,4 +293,23 @@ fn run_describe(table_name: &str) -> Result<()> {
         IncludeFormatting::Yes,
     );
     f.finish()
+}
+
+#[cfg(test)]
+mod engine_tests {
+    use super::*;
+
+    #[test]
+    fn a_selected_engine_must_be_confirmed() {
+        assert!(
+            ensure_engine(None, None).is_ok(),
+            "no selection, nothing to check"
+        );
+        assert!(ensure_engine(Some(QueryEngine::V2), Some("v2")).is_ok());
+        // An older server doesn't report an engine; another one ran it on V1.
+        for reported in [None, Some("v1")] {
+            let error = ensure_engine(Some(QueryEngine::V2), reported).unwrap_err();
+            assert!(error.to_string().contains("v1.8.2"), "{error}");
+        }
+    }
 }

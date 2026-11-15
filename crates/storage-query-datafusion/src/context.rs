@@ -38,7 +38,15 @@ use crate::config::ConfigTable;
 use crate::diagnostics::QueryDiagnosticStream;
 use crate::environment::{DataFusionEnv, QueryClock};
 
-type RateLimiter = gardal::SharedTokenBucket<gardal::TokioClock>;
+/// A node's `/query` rate limiter. Clones share one bucket, so the engines of a
+/// node that get clones of it share one budget.
+pub type QueryRateLimiter = gardal::SharedTokenBucket<gardal::TokioClock>;
+type RateLimiter = QueryRateLimiter;
+
+/// The `/query` rate limiter for `rate_limit`, if configured.
+pub fn query_rate_limiter(rate_limit: Option<&ThrottlingOptions>) -> Option<QueryRateLimiter> {
+    rate_limit.map(|limit| RateLimiter::new(gardal::Limit::from(limit.clone()), gardal::TokioClock))
+}
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum BuildError {
@@ -174,8 +182,15 @@ impl DataFusionQueryEngine {
     /// Creates an engine over the environment's shared inventory.
     /// Table registration is independent; each session selects its own SQL exposure.
     pub fn from_env(env: DataFusionEnv, rate_limit: Option<&ThrottlingOptions>) -> QueryEngine {
-        let rate_limiter = rate_limit
-            .map(|limit| RateLimiter::new(gardal::Limit::from(limit.clone()), gardal::TokioClock));
+        Self::with_rate_limiter(env, query_rate_limiter(rate_limit))
+    }
+
+    /// The engine over `env`, admitting sessions through `rate_limiter`, which
+    /// other engines of the node may share.
+    pub fn with_rate_limiter(
+        env: DataFusionEnv,
+        rate_limiter: Option<QueryRateLimiter>,
+    ) -> QueryEngine {
         let engine = Self { env, rate_limiter };
         QueryEngine::new(QueryEngineVersion::V1, move |opts| {
             engine.create_session(opts)

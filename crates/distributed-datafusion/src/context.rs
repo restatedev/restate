@@ -207,6 +207,15 @@ impl DataFusionQueryEngine {
     pub fn from_env(env: DataFusionEnv, rate_limit: Option<&ThrottlingOptions>) -> QueryEngine {
         let rate_limiter = rate_limit
             .map(|limit| RateLimiter::new(gardal::Limit::from(limit.clone()), gardal::TokioClock));
+        Self::with_rate_limiter(env, rate_limiter)
+    }
+
+    /// The engine over `env`, admitting sessions through `rate_limiter`. Node setup
+    /// passes V1's limiter, so both engines share one `/query` budget.
+    pub fn with_rate_limiter(
+        env: DataFusionEnv,
+        rate_limiter: Option<gardal::SharedTokenBucket<gardal::TokioClock>>,
+    ) -> QueryEngine {
         let engine = Self { env, rate_limiter };
         QueryEngine::new(QueryEngineVersion::V2, move |opts| {
             engine.create_session(opts)
