@@ -34,6 +34,31 @@ use restate_util_string::ReString;
 
 use crate::{decode_record_batch, encode_expr, encode_schema};
 
+/// A remote scan that failed for a reason outside DataFusion: the remote node
+/// reported an error, or couldn't serve the scanner. Surfaced as
+/// [`DataFusionError::External`], because [`DataFusionError::Internal`] reads as
+/// a DataFusion bug and asks users to report it to DataFusion.
+#[derive(Debug, thiserror::Error)]
+pub enum RemoteScanError {
+    /// The scan failed on the remote node, with its error message.
+    #[error("scan on {peer} failed: {message}")]
+    Failed { peer: NodeId, message: String },
+    #[error("{peer} could not open a remote scanner")]
+    OpenFailed { peer: NodeId },
+    #[error(
+        "scanner {scanner_id} no longer exists on {peer}; it may have expired after a long period of inactivity"
+    )]
+    NoSuchScanner { peer: NodeId, scanner_id: ScannerId },
+    #[error("{peer} sent a remote scanner reply this node doesn't understand")]
+    UnknownReply { peer: NodeId },
+}
+
+impl From<RemoteScanError> for DataFusionError {
+    fn from(err: RemoteScanError) -> Self {
+        DataFusionError::External(Box::new(err))
+    }
+}
+
 #[derive(derive_more::Debug)]
 pub struct RemoteScanner {
     scanner_id: ScannerId,
@@ -81,7 +106,7 @@ impl RemoteScanner {
                 },
                 None,
             )
-            .map_err(|e| DataFusionError::Internal(e.to_string()))?;
+            .map_err(|e| DataFusionError::External(e.into()))?;
 
         reply.await.map_err(|e| DataFusionError::External(e.into()))
     }
@@ -200,9 +225,10 @@ pub fn remote_scan_as_datafusion_stream(
                     return Err(e);
                 }
                 Ok(RemoteQueryScannerNextResult::Unknown) => {
-                    return Err(DataFusionError::Internal(
-                        "Received unknown scanner result".to_owned(),
-                    ));
+                    return Err(RemoteScanError::UnknownReply {
+                        peer: target_node_id,
+                    }
+                    .into());
                 }
                 Ok(RemoteQueryScannerNextResult::NextBatch(ScannerBatch {
                     record_batch, ..
@@ -210,16 +236,24 @@ pub fn remote_scan_as_datafusion_stream(
                 Ok(RemoteQueryScannerNextResult::Failure(ScannerFailure { message, .. })) => {
                     // assume server closed the scanner before responding
                     remote_scanner.forget();
-                    return Err(DataFusionError::Internal(message));
+                    return Err(RemoteScanError::Failed {
+                        peer: target_node_id,
+                        message,
+                    }
+                    .into());
                 }
                 Ok(RemoteQueryScannerNextResult::NoMoreRecords(_)) => {
                     // assume server closed the scanner before responding
                     remote_scanner.forget();
                     return Ok(());
                 }
-                Ok(RemoteQueryScannerNextResult::NoSuchScanner(_)) => {
+                Ok(RemoteQueryScannerNextResult::NoSuchScanner(scanner_id)) => {
                     remote_scanner.forget();
-                    return Err(DataFusionError::Internal("No such scanner. It could have expired due to a long period of inactivity.".to_string()));
+                    return Err(RemoteScanError::NoSuchScanner {
+                        peer: target_node_id,
+                        scanner_id,
+                    }
+                    .into());
                 }
             };
 
@@ -315,7 +349,7 @@ impl<T: TransportConnect> RemoteScannerService for RemoteScannerServiceProxy<T> 
         })?;
         let open_reply = open_permit
             .send_rpc(req, None)
-            .map_err(|e| DataFusionError::Internal(e.to_string()))?;
+            .map_err(|e| DataFusionError::External(e.into()))?;
 
         // From here on we must guarantee a `Close` reaches the server if we
         // don't hand a `RemoteScanner` back to the caller — otherwise the
@@ -338,9 +372,7 @@ impl<T: TransportConnect> RemoteScannerService for RemoteScannerServiceProxy<T> 
             }
             Ok(RemoteQueryScannerOpened::Failure) => {
                 remote_scanner.forget();
-                Err(DataFusionError::Internal(
-                    "Unable to open a remote scanner".to_string(),
-                ))
+                Err(RemoteScanError::OpenFailed { peer }.into())
             }
             Err(e) => Err(DataFusionError::External(e.into())),
         }
