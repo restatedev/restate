@@ -9,7 +9,7 @@ workflows:
         - 'actions/download-artifact@v8.0.2'
         - 'actions/upload-artifact@v4.6.2'
         - 'docker/setup-docker-action@v4.7.0'
-        - 'dtolnay/rust-toolchain@stable'
+        - 'dtolnay/rust-toolchain@master'
         - 'extractions/setup-just@v3.1.0'
         - 'restatedev/e2e@main'
         - 'taiki-e/install-action@v2.88.0'
@@ -190,9 +190,9 @@ dependencies:
         commit: 'sha1-e43656e248c0bd0647d3f5c195d116aacf6fcaf4'
         owner_id: 5429470
         repo_id: 398780917
-    'dtolnay/rust-toolchain@stable':
-        ref: 'stable'
-        commit: 'sha1-b725eda525362e7cf34af9a7243cac1e3f01a7ec'
+    'dtolnay/rust-toolchain@master':
+        ref: 'master'
+        commit: 'sha1-df2a88e9fe4098bad09cb42c3dec7187f15861fc'
         owner_id: 1940490
         repo_id: 260749683
     'embarkstudios/cargo-deny-action@v2.1.1':
