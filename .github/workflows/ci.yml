@@ -34,7 +34,10 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v4.4.0
-      - uses: dtolnay/rust-toolchain@stable
+      # Lock a commit from master; toolchain branches are regenerated upstream.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
       - name: Install cargo-hakari
         uses: taiki-e/install-action@v2.88.0
         with:
