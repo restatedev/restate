@@ -1,0 +1,23 @@
+CREATE VIEW restate.public.sys_vqueues AS SELECT
+    es.partition_key,
+    es.vqueue_id AS id,
+    es.stage,
+    es.status,
+    es.has_lock,
+    CASE WHEN es.stage = 'inbox' THEN es.next_at END AS run_at,
+    es.sequence_number,
+    es.entry_id,
+    es.entry_kind,
+    es.created_at,
+    es.transitioned_at,
+    es.num_attempts,
+    es.num_errors,
+    es.num_pauses,
+    es.num_suspensions,
+    es.num_yields,
+    es.first_attempt_at,
+    es.latest_attempt_at,
+    es.first_runnable_at,
+    es.deployment,
+    es.canonical_id
+FROM restate.public.sys_vqueue_entry_status AS es

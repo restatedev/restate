@@ -100,6 +100,15 @@ pub trait AsyncRowSink<S: LogicalSchema>: RowSink<S> + Send + 'static {
     /// Waits for room for one row, or stops before reserving it. Successful stops
     /// belong here, between calls to [`SchemaBinding::materialize_next`].
     fn reserve(&mut self) -> impl Future<Output = Result<ControlFlow<()>>>;
+
+    /// Runs after the last row of each record, before the reader moves to the
+    /// next record. A sink can pass on what it completed and stop here, so that
+    /// neither waits for the next storage step, which may fail. For example, a
+    /// sink whose row limit was just reached stops here instead of letting the
+    /// reader advance the cursor once more. The default does nothing.
+    fn record_done(&mut self) -> impl Future<Output = Result<ControlFlow<()>>> {
+        async { Ok(ControlFlow::Continue(())) }
+    }
 }
 
 /// Whether the current physical record has more logical rows to materialize.
@@ -240,7 +249,7 @@ where
                 yield_now().await;
             }
             if progress == RecordProgress::Done {
-                return Ok(ControlFlow::Continue(()));
+                return self.sink.record_done().await;
             }
         }
     }

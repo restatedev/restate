@@ -1257,6 +1257,28 @@ experimental! {
     /// Since v1.8.2
     status_gauges_reset,
 
+    /// # Index query tables in V2
+    ///
+    /// Shows the index tables, such as the entry-by-queue index, in query sessions
+    /// of the V2 engine. Off by default; evaluated for each new session on the
+    /// query coordinator. Tables of indexes whose definitions aren't available yet,
+    /// such as the entry-by-service index, stay hidden.
+    ///
+    /// Since v1.8.2
+    query_index_tables,
+
+    /// # Index access in V2 query plans
+    ///
+    /// Lets the V2 query planner read a table through a complete index when a query
+    /// restricts the indexed columns, for example `sys_vqueues` and
+    /// `sys_vqueue_entry_status` through the scheduler's queue stages when filtering
+    /// by queue or by active stages. Off by default; evaluated for each new session
+    /// on the query coordinator. Enable only once every node runs v1.8.2 or newer:
+    /// older nodes reject distributed queries.
+    ///
+    /// Since v1.8.2
+    query_index_access,
+
     /// # Enables service protocol v8
     ///
     /// Set to `true` to enable the experimental service protocol v8,
