@@ -15,6 +15,7 @@ use std::time::Duration;
 use anyhow::Context;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::metrics::Time;
@@ -209,7 +210,7 @@ impl ScannerTask {
                             .reciprocal
                             .send(RemoteQueryScannerNextResult::Failure(ScannerFailure {
                                 scanner_id: self.scanner_id,
-                                message: e.to_string(),
+                                message: failure_message(&e),
                             }));
                         return;
                     }
@@ -242,7 +243,7 @@ impl ScannerTask {
                         .reciprocal
                         .send(RemoteQueryScannerNextResult::Failure(ScannerFailure {
                             scanner_id: self.scanner_id,
-                            message: e.to_string(),
+                            message: failure_message(&e),
                         }));
                     return;
                 }
@@ -251,10 +252,55 @@ impl ScannerTask {
     }
 }
 
+/// The message of a failed scan for the client, which reports it as a
+/// [`RemoteScanError::Failed`]. An error from outside DataFusion, such as a
+/// storage error, goes without DataFusion's `External error: ` prefix, which the
+/// client adds back once.
+///
+/// [`RemoteScanError::Failed`]: crate::remote_query_scanner_client::RemoteScanError::Failed
+fn failure_message(err: &DataFusionError) -> String {
+    match err {
+        DataFusionError::External(err) => err.to_string(),
+        err => err.to_string(),
+    }
+}
+
 impl Drop for ScannerTask {
     fn drop(&mut self) {
         if let Some(scanners) = self.scanners.upgrade() {
             let _ = scanners.remove(&self.scanner_id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use datafusion::error::DataFusionError;
+
+    use restate_types::NodeId;
+
+    use super::failure_message;
+    use crate::remote_query_scanner_client::RemoteScanError;
+
+    #[test]
+    fn remote_scan_failures_are_not_reported_as_datafusion_bugs() {
+        let not_ready = "'service_stats/1' is not ready on partition 12: no maintained index";
+        let storage = DataFusionError::External(anyhow::anyhow!(not_ready).into());
+        assert_eq!(failure_message(&storage), not_ready);
+
+        // The coordinator reports it as external once, and names the node.
+        let reported: DataFusionError = RemoteScanError::Failed {
+            peer: NodeId::new_plain(3),
+            message: failure_message(&storage),
+        }
+        .into();
+        assert_eq!(
+            reported.to_string(),
+            format!("External error: scan on N3 failed: {not_ready}")
+        );
+
+        // A DataFusion bug on the remote node keeps DataFusion's report.
+        let bug = DataFusionError::Internal("unexpected plan".to_owned());
+        assert!(failure_message(&bug).contains("bug in DataFusion"));
     }
 }
