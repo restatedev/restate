@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use restate_core::Metadata;
 use restate_limiter::rule_book::RuleBookObserver;
 use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::{PartitionStoreManager, QueryIoExecutor};
@@ -26,6 +27,7 @@ use crate::tables::invocation_status::SysInvocationStatusTable;
 use crate::tables::journal::SysJournalTable;
 use crate::tables::journal_events::SysJournalEventsTable;
 use crate::tables::locks::SysLocksTable;
+use crate::tables::migration_records::{IndexesTable, MigrationJobsTable};
 use crate::tables::promise::SysPromiseTable;
 use crate::tables::rules::schema::SysRulesTable;
 use crate::tables::scheduler_status::schema::SysSchedulerTable;
@@ -134,4 +136,24 @@ fn register_storage_sources(sources: &SourceRegistry) {
     sources.register_declared_scanner::<VirtualObjectStatsSource>(Arc::new(
         SysVirtualObjectStatsTable::create_local_scanner(),
     ));
+}
+
+/// Registers this worker node's scanners of the cluster tables `indexes` and
+/// `migration_jobs`: the default engine's, which read the partition replicas
+/// `partition_store_manager` has open on `query_io`. Register them before the
+/// cluster tables.
+pub fn register_cluster_scanners(
+    partition_store_manager: Arc<PartitionStoreManager>,
+    metadata: Metadata,
+    query_io: QueryIoExecutor,
+    sources: &SourceRegistry,
+) {
+    let (indexes, jobs) =
+        restate_storage_query_datafusion::migration_records::create_local_scanners(
+            partition_store_manager,
+            metadata,
+            query_io,
+        );
+    sources.register_node_scanner::<IndexesTable>(indexes);
+    sources.register_node_scanner::<MigrationJobsTable>(jobs);
 }

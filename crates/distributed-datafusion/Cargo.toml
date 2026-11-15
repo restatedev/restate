@@ -29,6 +29,8 @@ restate-service-protocol-v4 = { workspace = true, features = ["entry-codec"] }
 restate-sharding = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-storage-query-api = { workspace = true }
+# The cluster tables `indexes` and `migration_jobs` reuse its scanners.
+restate-storage-query-datafusion = { workspace = true }
 restate-types = { workspace = true }
 restate-util-sql = { workspace = true }
 restate-util-string = { workspace = true }
