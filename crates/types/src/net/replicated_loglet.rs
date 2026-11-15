@@ -155,9 +155,10 @@ impl WireEncode for Append {
                 min_required: ProtocolVersion::V3,
                 actual: protocol_version,
             }),
-            ProtocolVersion::V3 | ProtocolVersion::V4 | ProtocolVersion::V6 => {
-                Ok(encode_as_bilrost(self))
-            }
+            ProtocolVersion::V3
+            | ProtocolVersion::V4
+            | ProtocolVersion::V6
+            | ProtocolVersion::V7 => Ok(encode_as_bilrost(self)),
         }
     }
 }
@@ -177,9 +178,10 @@ impl WireDecode for Append {
                 "Append requires at least protocol version V3, got {:?}",
                 protocol_version
             )),
-            ProtocolVersion::V3 | ProtocolVersion::V4 | ProtocolVersion::V6 => {
-                crate::net::codec::decode_as_bilrost(buf, protocol_version)
-            }
+            ProtocolVersion::V3
+            | ProtocolVersion::V4
+            | ProtocolVersion::V6
+            | ProtocolVersion::V7 => crate::net::codec::decode_as_bilrost(buf, protocol_version),
         }
     }
 }

@@ -33,6 +33,9 @@ enum ProtocolVersion {
   // Release in v1.8. Support custom MetadataUpdate encoding that uses
   // ZstdBilrost for schema metadata
   V6 = 6;
+
+  // Released in v1.8.2. Distributed query tasks and typed query errors.
+  V7 = 7;
 }
 
 message NodeId {
@@ -75,6 +78,7 @@ enum ServiceTag {
 
   // Data fusion
   REMOTE_DATA_FUSION_SERVICE = 86;
+  DISTRIBUTED_QUERY_SERVICE = 87;
 
   // Metadata management
   METADATA_MANAGER_SERVICE = 100;
