@@ -1224,9 +1224,9 @@ experimental! {
     /// # Statistics query tables
     ///
     /// Shows the `sys_service_stats`, `sys_deployment_stats` and
-    /// `sys_virtual_object_stats` tables in SQL queries of the default (V1) query
-    /// engine. Off by default. Only new query sessions see a change; sessions
-    /// already open keep the tables they started with.
+    /// `sys_virtual_object_stats` tables in SQL queries, in both query engines
+    /// (V1 and V2). Off by default. Only new query sessions see a change;
+    /// sessions already open keep the tables they started with.
     ///
     /// To build these statistics, first enable
     /// `experimental-enable-track-status-gauges` on workers, and wait until the
