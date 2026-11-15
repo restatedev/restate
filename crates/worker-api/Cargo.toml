@@ -20,7 +20,9 @@ restate-errors = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-limiter = { workspace = true }
 restate-memory = { workspace = true }
+restate-partition-store = { workspace = true }
 restate-storage-api = { workspace = true }
+restate-storage-query-api = { workspace = true }
 restate-types = { workspace = true }
 restate-util-string = { workspace = true }
 

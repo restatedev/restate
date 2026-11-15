@@ -26,8 +26,11 @@ use restate_wal_protocol::v2::{Envelope, Raw};
 
 use crate::PartitionProcessorBuilder;
 use crate::partition::NodeContext;
-use crate::partition::{ProcessorError, TargetLeaderState};
-use crate::partition_processor_manager::processor_state::StartedProcessor;
+use crate::partition::{ProcessorError, QueryReadiness, TargetLeaderState};
+use crate::partition_processor_manager::processor_state::{QueryAdmission, StartedProcessor};
+
+/// Query reads waiting for one processor's admission at most; more get `Busy`.
+const QUERY_ADMISSION_QUEUE: usize = 32;
 
 /// The commit fence sender of a processor that started.
 #[cfg(test)]
@@ -41,6 +44,20 @@ pub(super) type FenceSender = (
 #[cfg(test)]
 pub(super) static FENCE_TAP: parking_lot::Mutex<
     Option<tokio::sync::mpsc::UnboundedSender<FenceSender>>,
+> = parking_lot::Mutex::new(None);
+
+/// The query readiness of a processor the manager recorded as started.
+#[cfg(test)]
+pub(super) type StartedSender = (
+    restate_types::identifiers::PartitionId,
+    watch::Receiver<QueryReadiness>,
+);
+
+/// Receives the query readiness of every processor once the manager recorded it
+/// as started, so that tests can wait until it admits reads, without polling.
+#[cfg(test)]
+pub(super) static STARTED_TAP: parking_lot::Mutex<
+    Option<tokio::sync::mpsc::UnboundedSender<StartedSender>>,
 > = parking_lot::Mutex::new(None);
 
 pub struct SpawnPartitionProcessorTask<T> {
@@ -107,6 +124,8 @@ where
         if let Some(tap) = FENCE_TAP.lock().as_ref() {
             let _ = tap.send((partition.partition_id, commit_fence_tx.clone()));
         }
+        let (query_tx, query_rx) = mpsc::channel(QUERY_ADMISSION_QUEUE);
+        let (query_ready_tx, query_ready_rx) = watch::channel(QueryReadiness::Initializing);
 
         let key_range = partition.key_range;
 
@@ -219,6 +238,8 @@ where
                         watch_tx,
                         commit_fence_rx,
                         node_ctx,
+                        query_rx,
+                        query_ready_tx,
                     );
 
                     let run_result = async move {
@@ -244,6 +265,10 @@ where
             net_tx,
             watch_rx,
             commit_fence_tx,
+            QueryAdmission {
+                requests: query_tx,
+                ready: query_ready_rx,
+            },
         );
 
         Ok((state, root_task_handle))

@@ -1035,6 +1035,42 @@ macro_rules! experimental {
 // `is_<name>_enabled()` / `set_<name>()` accessors, and the entry exposed (under the bare
 // name, without the `experimental_enable_` prefix) by the admin `/version` API.
 experimental! {
+    /// # Query engine V2
+    ///
+    /// Runs the experimental distributed query engine (V2) next to the default
+    /// one (V1): starts the query task service, and lets admin `/query` requests
+    /// select V2 with the header `X-Restate-Query-Engine: v2`. Off by default.
+    /// Enable it on every node that coordinates or serves queries, once all nodes
+    /// run v1.8.2 or newer, and restart them.
+    ///
+    /// V2 serves most but not all of V1's tables; query the others with
+    /// `X-Restate-Query-Engine: v1`. V2 doesn't bound the bytes of a batch yet: a
+    /// query over large rows, such as big journal entries or state values, can
+    /// fail when a batch exceeds `networking.message-size-limit`.
+    ///
+    /// Since v1.8.2
+    query_engine_v2,
+
+    /// # Default to query engine V2
+    ///
+    /// Uses V2 for admin `/query` requests without an `X-Restate-Query-Engine`
+    /// header; an explicit `v1` or `v2` header still wins. Requires
+    /// `experimental-enable-query-engine-v2`. Read when the admin service starts;
+    /// restart to change it.
+    ///
+    /// Since v1.8.2
+    query_engine_v2_default,
+
+    /// # Operator-level query tables
+    ///
+    /// Lets admin `/query` requests with the header `X-Restate-Query-Level:
+    /// operator` query the cluster tables, except `config`. Off by default; while
+    /// off, the header is ignored. Applies to both query engines. Read when the
+    /// admin service starts; restart to change it.
+    ///
+    /// Since v1.8.2
+    query_operator_tables,
+
     /// # AWS-to-GCP workload identity federation
     ///
     /// Allows registering deployments that authenticate through a Google workload identity
@@ -1224,9 +1260,9 @@ experimental! {
     /// # Statistics query tables
     ///
     /// Shows the `sys_service_stats`, `sys_deployment_stats` and
-    /// `sys_virtual_object_stats` tables in SQL queries of the default (V1) query
-    /// engine. Off by default. Only new query sessions see a change; sessions
-    /// already open keep the tables they started with.
+    /// `sys_virtual_object_stats` tables in SQL queries, in both query engines
+    /// (V1 and V2). Off by default. Only new query sessions see a change;
+    /// sessions already open keep the tables they started with.
     ///
     /// To build these statistics, first enable
     /// `experimental-enable-track-status-gauges` on workers, and wait until the
@@ -1256,6 +1292,28 @@ experimental! {
     ///
     /// Since v1.8.2
     status_gauges_reset,
+
+    /// # Index query tables in V2
+    ///
+    /// Shows the index tables, such as the entry-by-queue index, in query sessions
+    /// of the V2 engine. Off by default; evaluated for each new session on the
+    /// query coordinator. Tables of indexes whose definitions aren't available yet,
+    /// such as the entry-by-service index, stay hidden.
+    ///
+    /// Since v1.8.2
+    query_index_tables,
+
+    /// # Index access in V2 query plans
+    ///
+    /// Lets the V2 query planner read a table through a complete index when a query
+    /// restricts the indexed columns, for example `sys_vqueues` and
+    /// `sys_vqueue_entry_status` through the scheduler's queue stages when filtering
+    /// by queue or by active stages. Off by default; evaluated for each new session
+    /// on the query coordinator. Enable only once every node runs v1.8.2 or newer:
+    /// older nodes reject distributed queries.
+    ///
+    /// Since v1.8.2
+    query_index_access,
 
     /// # Enables service protocol v8
     ///

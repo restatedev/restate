@@ -125,6 +125,7 @@ pub mod test_util {
     pub struct MockConnector<F> {
         inner: Arc<Mutex<MockConnectorInner<F>>>,
         new_connection_sender: mpsc::UnboundedSender<MockPeerConnection>,
+        max_protocol_version: restate_types::net::ProtocolVersion,
     }
 
     impl<F> Clone for MockConnector<F> {
@@ -132,6 +133,7 @@ pub mod test_util {
             Self {
                 inner: Arc::clone(&self.inner),
                 new_connection_sender: self.new_connection_sender.clone(),
+                max_protocol_version: self.max_protocol_version,
             }
         }
     }
@@ -155,9 +157,19 @@ pub mod test_util {
                         router_factory,
                     })),
                     new_connection_sender: sender,
+                    max_protocol_version: restate_types::net::CURRENT_PROTOCOL_VERSION,
                 },
                 receiver,
             )
+        }
+
+        /// Emulates a peer whose newest supported fabric protocol is `version`.
+        pub fn with_max_protocol_version(
+            mut self,
+            version: restate_types::net::ProtocolVersion,
+        ) -> Self {
+            self.max_protocol_version = version;
+            self
         }
     }
 
@@ -214,7 +226,15 @@ pub mod test_util {
             }
             let peer_metadata = PeerMetadataVersion::from(header);
 
-            let selected_protocol_version = negotiate_protocol_version(&hello)?;
+            // An emulated older peer selects no more than its newest version, and
+            // still no less than the dialing node's oldest.
+            let selected_protocol_version =
+                negotiate_protocol_version(&hello)?.min(self.max_protocol_version);
+            if (selected_protocol_version as i32) < hello.min_protocol_version {
+                return Err(
+                    HandshakeError::UnsupportedVersion(selected_protocol_version as i32).into(),
+                );
+            }
 
             // Enqueue the welcome message
             let welcome = Welcome::new(peer_node_id, selected_protocol_version, hello.direction());
