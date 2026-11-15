@@ -233,6 +233,17 @@ where
         matches!(self.state, State::Leader(_) | State::BecomingLeader { .. })
     }
 
+    /// Whether query reads that need the leader can be admitted: only once this
+    /// processor is the leader, since live state exists only then.
+    pub(crate) fn query_leading(&self) -> crate::partition::query_reads::Leading {
+        use crate::partition::query_reads::Leading;
+        match self.state {
+            State::Leader(_) => Leading::Yes,
+            State::BecomingLeader { .. } => Leading::Becoming,
+            State::Follower | State::Candidate { .. } => Leading::No,
+        }
+    }
+
     /// Returns the [`LeaderContext`] if this processor is the (becoming) leader.
     pub(crate) fn leader_context(&self) -> Option<LeaderContext> {
         match &self.state {
@@ -923,6 +934,38 @@ where
 }
 
 impl<T> LeadershipState<T> {
+    /// Copies the processor's own live query state: the scheduler's and the user
+    /// limits' rows, as requested. It reads them directly, without sending a
+    /// request back into the processor's event loop, which is the caller. `None`
+    /// unless this processor leads.
+    pub fn capture_query_state(
+        &self,
+        metas: VQueuesMeta<'_>,
+        requested: restate_worker_api::PartitionCaptureRequirements,
+    ) -> Option<restate_worker_api::CapturedPartitionState> {
+        let State::Leader(leader) = &self.state else {
+            return None;
+        };
+        Some(restate_worker_api::CapturedPartitionState {
+            scheduler: requested.scheduler.then(|| {
+                let mut rows =
+                    leader.read_scheduler_status(metas, restate_types::sharding::KeyRange::FULL);
+                // Preserve the ordering of the direct scheduler query reader.
+                rows.sort_by(|(a, _), (b, _)| a.cmp(b));
+                rows.into()
+            }),
+            user_limits: requested.user_limits.then(|| {
+                let mut rows =
+                    leader.read_user_limit_counters(restate_types::sharding::KeyRange::FULL);
+                // Preserve the ordering of the direct user-limit query reader.
+                rows.sort_by_key(|row| row.partition_key);
+                rows.into()
+            }),
+            // Read by the manager's handle after admission.
+            invoker: None,
+        })
+    }
+
     pub fn contains_vqueue(&self, handle: VQueueHandle) -> bool {
         match &self.state {
             State::Leader(leader_state) => leader_state.contains_vqueue(handle),

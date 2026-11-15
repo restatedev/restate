@@ -85,7 +85,7 @@ use restate_util_string::format_restring;
 use restate_util_time::DurationExt;
 use restate_wal_protocol::v2::{Envelope, Raw};
 use restate_worker_api::invoker::capacity::InvokerCapacity;
-use restate_worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
+use restate_worker_api::{PartitionReadError, ProcessorsManagerCommand, ProcessorsManagerHandle};
 
 use crate::metric_definitions::{
     ERROR_STOP, FLARE_REASON_AHEAD_OF_LOG, FLARE_REASON_MIGRATION_BARRIER,
@@ -579,6 +579,13 @@ where
                                             started_processor.rpc_shard_sender(),
                                         );
 
+                                    #[cfg(test)]
+                                    if let Some(tap) =
+                                        spawn_processor_task::STARTED_TAP.lock().as_ref()
+                                    {
+                                        let _ = tap
+                                            .send((partition_id, started_processor.query_ready()));
+                                    }
                                     let mut new_state = ProcessorState::started(
                                         started_processor,
                                         *start_time,
@@ -1002,6 +1009,16 @@ where
         match command {
             ProcessorsManagerCommand::GetState(sender) => {
                 let _ = sender.send(self.get_state());
+            }
+            ProcessorsManagerCommand::ReadPartition(request) => {
+                match self.processor_states.get(&request.partition) {
+                    Some(processor) => processor.read_partition(request),
+                    None => {
+                        let _ = request
+                            .response
+                            .send(Err(PartitionReadError::NotHosted(request.partition)));
+                    }
+                }
             }
         }
     }
@@ -2121,6 +2138,7 @@ mod tests {
     use restate_partition_store::{PartitionStoreManager, ReadSnapshot};
     use restate_rocksdb::RocksDbManager;
     use restate_storage_api::fsm_table::{FsmPosition, ReadFsmTable};
+    use restate_storage_query_api::QueryMetadata;
     use restate_types::cluster::cluster_state::PartitionProcessorStatus;
     use restate_types::config::{AutomaticSnapshots, Configuration, ThrottlingOptions};
     use restate_types::health::HealthStatus;
@@ -2138,8 +2156,9 @@ mod tests {
     use restate_types::rate::Rate;
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, RestateVersion, Version};
-    use restate_worker_api::ProcessorsManagerHandle;
+    use restate_worker_api::{PartitionReadError, ProcessorsManagerHandle};
 
+    use crate::partition::QueryReadiness;
     use crate::partition_processor_manager::spawn_processor_task;
     use crate::partition_processor_manager::{PartitionProcessorManager, is_snapshot_due};
 
@@ -2545,6 +2564,24 @@ mod tests {
             PartitionStoreManager::create(multi_db).await?,
         )
         .await?;
+        let (started_tx, mut started) = tokio::sync::mpsc::unbounded_channel();
+        *spawn_processor_task::STARTED_TAP.lock() = Some(started_tx);
+        let query = Arc::new(QueryMetadata {
+            session_id: "processor-lifecycle".into(),
+            query_ts: UniqueTimestamp::MIN,
+            headers: Default::default(),
+            redacted_sql: "SELECT * FROM state".into(),
+            planning_duration: Duration::ZERO,
+        });
+        let mut admitted: Option<ReadSnapshot> = None;
+        assert_eq!(
+            processors_manager_handle
+                .read_partition(PartitionId::MIN, false, Arc::clone(&query))
+                .await
+                .unwrap_err(),
+            PartitionReadError::NotHosted(PartitionId::MIN),
+            "a partition without a processor isn't hosted here"
+        );
 
         let mut current_replica_set_node = ReplicaSetState {
             version: Version::MIN,
@@ -2580,6 +2617,24 @@ mod tests {
                 &None,
             );
 
+            if !has_node {
+                // Stopping the processor cancels the read it admitted and refuses
+                // new ones. Once released, the read no longer holds the partition.
+                let read = admitted
+                    .take()
+                    .expect("the previous processor admitted a read");
+                read.cancellation_token().cancelled().await;
+                assert!(matches!(
+                    processors_manager_handle
+                        .read_partition(PartitionId::MIN, false, Arc::clone(&query))
+                        .await,
+                    Err(PartitionReadError::Stopping(_))
+                ));
+                let closed = read.closed();
+                drop(read);
+                closed.await;
+            }
+
             loop {
                 let current_state = processors_manager_handle.get_state().await?;
 
@@ -2590,9 +2645,28 @@ mod tests {
                 }
             }
 
+            if has_node {
+                // A started processor admits reads once its loop is ready, each one
+                // a fresh, uncancelled snapshot of its own.
+                let (_, mut ready) = started.recv().await.unwrap();
+                ready
+                    .wait_for(|readiness| *readiness == QueryReadiness::Ready)
+                    .await
+                    .unwrap();
+                let read = processors_manager_handle
+                    .read_partition(PartitionId::MIN, false, Arc::clone(&query))
+                    .await
+                    .expect("the new processor admits a read");
+                assert_eq!(read.partition_id(), PartitionId::MIN);
+                assert!(!read.cancellation_token().is_cancelled());
+                admitted = Some(read);
+            }
+
             version = version.next();
         }
 
+        drop(admitted);
+        *spawn_processor_task::STARTED_TAP.lock() = None;
         TaskCenter::shutdown_node("test completed", 0).await;
         Ok(())
     }
@@ -2750,7 +2824,8 @@ mod tests {
     /// Statistics backfill in a real processor: opening registers the
     /// gauges and starts their walk, and the processor's backfill arm
     /// runs it step by step while the processor serves. This fixture's processor
-    /// applies no record and serves no RPC, so every step counts as quiet. The
+    /// applies no record and serves no RPC, so a step counts as quiet unless a
+    /// query read was admitted while it waited, which the test does once. The
     /// test holds every step at its pause point, so nothing depends on timing.
     #[test(restate_core::test(flavor = "multi_thread", worker_threads = 4))]
     async fn background_backfill_progresses_step_by_step_and_publishes_ready()
@@ -2783,17 +2858,43 @@ mod tests {
         }
         assert!(!ready(&store));
 
-        // Unheld, the backfill runs to its end: Ready, each entry counted once.
+        // A query read admitted while a step waits makes that step busy; the next
+        // one is quiet again.
+        let query = Arc::new(QueryMetadata {
+            session_id: "backfill-load".into(),
+            query_ts: UniqueTimestamp::MIN,
+            headers: Default::default(),
+            redacted_sql: "SELECT * FROM sys_service_stats".into(),
+            planning_duration: Duration::ZERO,
+        });
+        let read = || {
+            processors
+                .handle
+                .read_partition(PartitionId::MIN, false, Arc::clone(&query))
+        };
+        drop(read().await.unwrap());
+        for (quiet, busy) in [(3, 1), (4, 1)] {
+            next_step(&faults, &mut resume).await;
+            let stats = store.walk_stats();
+            assert_eq!(
+                (stats.quiet_steps, stats.busy_steps),
+                (quiet, busy),
+                "{stats:?}"
+            );
+        }
+
+        // Unheld, the backfill runs to its end: Ready, each entry counted once, as
+        // a read admitted by the processor shows.
         let (idle, _) = faults.pause(FaultPoint::WalksIdle);
         drop(resume);
         idle.await.unwrap();
         assert!(ready(&store));
-        let snapshot = store.query_read(Default::default()).unwrap().0;
+        let snapshot = read().await.unwrap();
         assert_eq!(service_total(&snapshot), 300);
         let done = store.walk_stats();
         assert_eq!(
             (done.examined, done.busy_steps, done.failures),
-            (300, 0, 0),
+            (300, 1, 0),
             "{done:?}"
         );
         drop((snapshot, store));
