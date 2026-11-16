@@ -111,7 +111,8 @@ pub enum PartitionFeatureChange {
 /// command other than `AnnounceLeader` or `VersionBarrier` before then.
 ///
 /// A release may only add a feature here once the previous release enables it on every
-/// partition, so that a rolling upgrade or a rollback never runs a partition without it.
+/// partition, so that a rolling upgrade or a rollback never runs a partition without it. Only
+/// features that nothing disables again can be required.
 ///
 /// *Since v1.8.2*
 pub const REQUIRED_PARTITION_FEATURES: &[PartitionFeatureChange] = &[];
