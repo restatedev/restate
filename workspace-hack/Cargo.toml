@@ -48,7 +48,7 @@ criterion = { version = "0.8", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
 crossbeam-utils = { version = "0.8" }
 dashmap = { version = "6", default-features = false, features = ["inline"] }
-datafusion = { version = "55", default-features = false, features = ["crypto_expressions", "encoding_expressions", "nested_expressions", "recursive_protection", "regex_expressions", "sql", "unicode_expressions"] }
+datafusion = { version = "55", default-features = false, features = ["crypto_expressions", "datetime_expressions", "encoding_expressions", "nested_expressions", "recursive_protection", "regex_expressions", "sql", "unicode_expressions"] }
 datafusion-common = { version = "55", default-features = false, features = ["object_store", "recursive_protection", "sql"] }
 datafusion-datasource = { version = "55", default-features = false, features = ["proto"] }
 datafusion-datasource-arrow = { version = "55", default-features = false, features = ["proto"] }
@@ -132,6 +132,7 @@ serde_core = { version = "1", features = ["alloc", "rc"] }
 serde_json = { version = "1", features = ["alloc", "float_roundtrip", "preserve_order", "raw_value", "unbounded_depth"] }
 serde_with = { version = "3", features = ["base64", "hex", "json"] }
 simd-adler32 = { version = "0.3", default-features = false, features = ["std"] }
+sketches-ddsketch = { version = "0.3", default-features = false, features = ["use_serde"] }
 slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde", "union"] }
 sqlparser = { version = "0.62", default-features = false, features = ["recursive-protection", "visitor"] }
@@ -164,6 +165,8 @@ xxhash-rust = { version = "0.8", default-features = false, features = ["std", "x
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 zeroize = { version = "1", features = ["derive"] }
 zlib-rs = { version = "0.6", default-features = false, features = ["std"] }
+zstd = { version = "0.13" }
+zstd-safe = { version = "7", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
 zstd-sys = { version = "2", features = ["experimental", "std"] }
 
 [build-dependencies]

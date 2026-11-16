@@ -54,6 +54,7 @@ restate-clock = { path = "crates/clock" }
 restate-cloud-tunnel-client = { path = "crates/cloud-tunnel-client" }
 restate-core = { path = "crates/core" }
 restate-core-derive = { path = "crates/core/derive" }
+restate-distributed-datafusion = { path = "crates/distributed-datafusion" }
 restate-encoding = { path = "crates/encoding" }
 restate-errors = { path = "crates/errors" }
 restate-fs-util = { path = "crates/fs-util" }
@@ -160,6 +161,9 @@ datafusion = { version = "55.1.0", default-features = false, features = [
     "recursive_protection",
 ] }
 datafusion-functions-json = { version = "0.55.2" }
+# Temporary fork for terminal-error ordering; switch back to upstream after
+# https://github.com/datafusion-contrib/datafusion-distributed/pull/893 merges.
+datafusion-distributed = { git = "https://github.com/restatedev/datafusion-distributed", rev = "cbd361d25d1d3eb78c6d952e5e6f93526ddeb7f0", default-features = false }
 datafusion-proto = { version = "55.1.0", default-features = false }
 datafusion-sql = { version = "55.2.0", default-features = false }
 derive_builder = "0.20.2"

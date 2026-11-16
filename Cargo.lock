@@ -1863,6 +1863,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
+name = "cobs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fa961b519f0b462e3a3b4a34b64d119eeaca1d59af726fe450bbba07a9fc0a1"
+dependencies = [
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "codederror"
 version = "1.8.2-dev"
 dependencies = [
@@ -2257,6 +2266,15 @@ name = "crossbeam-epoch"
 version = "0.9.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc74980687109a3b14c72fd458107bf0baa1da1a1a805e178d15501ba9b86d9d"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-queue"
+version = "0.3.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03e8bd762f7479489c70ed6c768ddca99d7296857de437a68dcb2a94365b3fae"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -2734,6 +2752,39 @@ dependencies = [
  "object_store 0.13.2",
  "tokio",
  "tokio-stream",
+]
+
+[[package]]
+name = "datafusion-distributed"
+version = "4.0.0"
+source = "git+https://github.com/restatedev/datafusion-distributed?rev=cbd361d25d1d3eb78c6d952e5e6f93526ddeb7f0#cbd361d25d1d3eb78c6d952e5e6f93526ddeb7f0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "crossbeam-queue",
+ "dashmap",
+ "datafusion",
+ "datafusion-proto",
+ "delegate",
+ "futures",
+ "http",
+ "itertools 0.14.0",
+ "moka",
+ "num-traits",
+ "pin-project",
+ "postcard",
+ "prost",
+ "rand 0.9.5",
+ "sketches-ddsketch",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tonic-prost",
+ "url",
+ "uuid",
+ "zstd 0.13.4",
 ]
 
 [[package]]
@@ -3235,6 +3286,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "delegate"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "780eb241654bf097afb00fc5f054a09b687dad862e485fdcf8399bb056565370"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "der-parser"
 version = "10.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3462,6 +3524,18 @@ checksum = "e079f19b08ca6239f47f8ba8509c11cf3ea30095831f7fed61441475edd8c449"
 dependencies = [
  "serde",
 ]
+
+[[package]]
+name = "embedded-io"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef1a6892d9eef45c8fa6b9e0086428a2cca8491aca8f787c534a3d6d0bcb3ced"
+
+[[package]]
+name = "embedded-io"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
 name = "encode_unicode"
@@ -6526,6 +6600,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "postcard"
+version = "1.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6764c3b5dd454e283a30e6dfe78e9b31096d9e32036b5d1eaac7a6119ccb9a24"
+dependencies = [
+ "cobs",
+ "embedded-io 0.4.0",
+ "embedded-io 0.6.1",
+ "serde",
+]
+
+[[package]]
 name = "potential_utf"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7548,6 +7634,7 @@ dependencies = [
  "restate-admin-rest-model",
  "restate-bifrost",
  "restate-core",
+ "restate-distributed-datafusion",
  "restate-errors",
  "restate-ingestion-client",
  "restate-limiter",
@@ -7907,6 +7994,58 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "restate-distributed-datafusion"
+version = "1.8.2-dev"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "async-trait",
+ "bilrost",
+ "bytes",
+ "codederror",
+ "dashmap",
+ "datafusion",
+ "datafusion-distributed",
+ "datafusion-functions-json",
+ "datafusion-proto",
+ "derive_more",
+ "futures",
+ "gardal",
+ "googletest",
+ "http",
+ "prost",
+ "restate-clock",
+ "restate-core",
+ "restate-encoding",
+ "restate-limiter",
+ "restate-memory",
+ "restate-metadata-store",
+ "restate-partition-store",
+ "restate-platform",
+ "restate-rocksdb",
+ "restate-service-protocol",
+ "restate-service-protocol-v4",
+ "restate-sharding",
+ "restate-storage-api",
+ "restate-storage-query-api",
+ "restate-storage-query-datafusion",
+ "restate-types",
+ "restate-util-sql",
+ "restate-util-string",
+ "restate-worker-api",
+ "restate-workspace-hack",
+ "schemars 1.2.2",
+ "serde_json",
+ "strum",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -8504,6 +8643,7 @@ dependencies = [
  "restate-admin",
  "restate-bifrost",
  "restate-core",
+ "restate-distributed-datafusion",
  "restate-futures-util",
  "restate-ingestion-client",
  "restate-ingress-http",
@@ -9556,6 +9696,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "simd-adler32",
+ "sketches-ddsketch",
  "slab",
  "smallvec",
  "sqlparser",
@@ -9593,6 +9734,8 @@ dependencies = [
  "zerocopy",
  "zeroize",
  "zlib-rs",
+ "zstd 0.13.4",
+ "zstd-safe 7.4.0",
  "zstd-sys",
 ]
 
@@ -10404,6 +10547,9 @@ name = "sketches-ddsketch"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c6f73aeb92d671e0cc4dca167e59b2deb6387c375391bc99ee743f326994a2b"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "slab"
