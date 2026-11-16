@@ -87,6 +87,14 @@ impl RegisterTable for ClusterTables {
             "logs",
             LogsTable::create_provider(Metadata::current()),
         )?;
+        // Each log's last segment, as in V1.
+        inventory
+            .add_view(
+                "logs_tail_segments",
+                "cluster",
+                include_str!("logs_tail_segments.sql"),
+            )
+            .await?;
         inventory.add::<PartitionStateTable>(
             "cluster",
             "partition_state",

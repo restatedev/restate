@@ -402,9 +402,10 @@ async fn partitions_and_replica_sets_match_the_default_engine() {
 
 /// `logs` reads the coordinator's logs metadata through the default engine's
 /// scanner, so both engines return the same rows: the bootstrapped in-memory logs
-/// and a replicated log with two segments.
+/// and a replicated log with two segments. `logs_tail_segments` keeps each log's
+/// last segment in both.
 #[restate_core::test]
-async fn logs_match_the_default_engine() {
+async fn logs_and_tail_segments_match_the_default_engine() {
     use std::num::NonZeroU8;
 
     use restate_types::logs::builder::LogsBuilder;
@@ -489,6 +490,7 @@ async fn logs_match_the_default_engine() {
         "SELECT segment_index, base_lsn, loglet_id, sequencer, replication, nodeset \
          FROM cluster.logs WHERE log_id = 100 ORDER BY segment_index",
         "SELECT log_id FROM cluster.logs WHERE loglet_id IS NULL ORDER BY log_id LIMIT 1",
+        "SELECT * FROM cluster.logs_tail_segments ORDER BY log_id",
     ] {
         assert_eq!(
             rows(new.as_ref(), sql).await,
@@ -530,6 +532,15 @@ async fn logs_match_the_default_engine() {
             "SELECT COUNT(*) FROM cluster.logs WHERE log_id <> 100"
         )
         .await
+    );
+    // The replicated log's tail is its second segment, from LSN 50.
+    assert_eq!(
+        rows(
+            new.as_ref(),
+            "SELECT segment_index, base_lsn FROM cluster.logs_tail_segments WHERE log_id = 100"
+        )
+        .await,
+        [["1", "50"]]
     );
 }
 
@@ -715,6 +726,7 @@ async fn shared_tables_preserve_v1_column_contracts() {
         "partition_replica_set",
         "partition_state",
         "logs",
+        "logs_tail_segments",
     ] {
         // V1 identifies some tables by their declaration name.
         let legacy_name = match name {
