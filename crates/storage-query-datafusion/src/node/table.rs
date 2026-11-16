@@ -35,13 +35,19 @@ impl NodeTable {
     ) -> Arc<dyn TableProvider> {
         let nodes_table = GenericTableProvider::new(
             NodeBuilder::schema(),
-            Arc::new(NodesScanner {
-                metadata,
-                cluster_state,
-            }),
+            create_scanner(metadata, cluster_state),
         );
         Arc::new(nodes_table)
     }
+}
+
+/// The scanner of `nodes`: one row per node in this node's nodes configuration,
+/// with the node's state as this node's gossip sees it. Shared with the V2 engine.
+pub fn create_scanner(metadata: Metadata, cluster_state: ClusterState) -> Arc<dyn Scan> {
+    Arc::new(NodesScanner {
+        metadata,
+        cluster_state,
+    })
 }
 
 #[derive(Clone, derive_more::Debug)]

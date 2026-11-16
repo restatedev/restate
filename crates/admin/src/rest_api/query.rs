@@ -747,6 +747,7 @@ mod tests {
                         {"table_name": "bifrost_read_streams"},
                         {"table_name": "indexes"},
                         {"table_name": "migration_jobs"},
+                        {"table_name": "nodes"},
                         {"table_name": "partition_state"}
                     ]})
                 }

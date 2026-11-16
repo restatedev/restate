@@ -169,6 +169,83 @@ async fn partition_state_preserves_local_watcher_rows_and_empty_fallback() {
     drop(tx);
 }
 
+/// `nodes` reads the coordinator's nodes configuration and gossip view through
+/// the default engine's scanner, so both engines return the same rows, including
+/// the states that only some roles have.
+#[restate_core::test]
+async fn nodes_match_the_default_engine() {
+    use restate_core::test_env::{TestCoreEnvBuilder, create_mock_nodes_config};
+    use restate_types::nodes_config::{NodeConfig, Role};
+    use restate_types::{GenerationalNodeId, RestateVersion};
+
+    let mut nodes = create_mock_nodes_config(1, 1);
+    let mut log_server = NodeConfig::builder()
+        .name("log-2".to_owned())
+        .current_generation(GenerationalNodeId::new(2, 3))
+        .address(Default::default())
+        .roles(Role::LogServer | Role::MetadataServer)
+        .binary_version(RestateVersion::current())
+        .build();
+    // A node from before v1.6.0, which didn't report its version.
+    log_server.binary_version = None;
+    nodes.upsert_node(log_server);
+    let core = TestCoreEnvBuilder::with_incoming_only_connector()
+        .set_nodes_config(nodes)
+        .build()
+        .await;
+    let options = HashMap::from([("datafusion.execution.batch_size".to_owned(), "1".to_owned())]);
+    let legacy = v1::DataFusionEnv::new(64 * 1024 * 1024, None, Some(1), &options)
+        .unwrap()
+        .with_mock_clock(MockClock::new())
+        .unwrap();
+    legacy
+        .register_tables(v1::ClusterTables::new(
+            Default::default(),
+            None,
+            v1::remote_query_scanner_manager::RemoteScannerManager::local_only(
+                core.metadata.clone(),
+            ),
+        ))
+        .await
+        .unwrap();
+    let current = DataFusionEnv::new(64 * 1024 * 1024, None, Some(1), &options)
+        .unwrap()
+        .with_mock_clock(MockClock::new())
+        .unwrap();
+    current
+        .register_tables(ClusterTables::new(SourceRegistry::local_only(
+            core.metadata.clone(),
+        )))
+        .await
+        .unwrap();
+    let cluster = || SessionOptions {
+        schemas: vec!["cluster".into()],
+        ..Default::default()
+    };
+    let old = v1::context::DataFusionQueryEngine::from_env(legacy, None)
+        .create_session(cluster())
+        .unwrap();
+    let new = DataFusionQueryEngine::from_env(current, None)
+        .create_session(cluster())
+        .unwrap();
+    for sql in [
+        "SELECT * FROM cluster.nodes ORDER BY plain_node_id",
+        "SELECT plain_node_id, worker_state, storage_state, metadata_server_state, binary_version \
+         FROM cluster.nodes WHERE has_log_server_role",
+        "SELECT name FROM cluster.nodes WHERE has_worker_role LIMIT 1",
+    ] {
+        assert_eq!(
+            rows(new.as_ref(), sql).await,
+            rows(old.as_ref(), sql).await,
+            "{sql}"
+        );
+    }
+    assert_eq!(
+        rows(new.as_ref(), "SELECT COUNT(*) FROM cluster.nodes").await,
+        [["2"]]
+    );
+}
+
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn migration_tables_serve_the_default_engine_rows() {
     use restate_partition_store::PartitionStoreManager;
@@ -346,10 +423,16 @@ async fn shared_tables_preserve_v1_column_contracts() {
         "sys_deployment",
         "sys_rules",
         "bifrost_read_streams",
+        "nodes",
         "partition_state",
     ] {
+        // V1 identifies some tables by their declaration name.
+        let legacy_name = match name {
+            "nodes" => "node",
+            name => name,
+        };
         let expected = legacy
-            .table_provider(name)
+            .table_provider(legacy_name)
             .unwrap()
             .schema()
             .fields()

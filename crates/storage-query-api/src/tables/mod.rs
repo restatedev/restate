@@ -28,6 +28,7 @@ pub mod journal;
 pub mod journal_events;
 pub mod locks;
 pub mod migration_jobs;
+pub mod nodes;
 pub mod partition_state;
 pub mod promise;
 pub mod rules;

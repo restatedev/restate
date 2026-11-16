@@ -33,7 +33,7 @@ mod live_scanners;
 mod locks;
 mod log;
 pub mod loglet_worker;
-mod node;
+pub mod node;
 pub mod node_fan_out;
 mod partition;
 mod partition_replica_set;

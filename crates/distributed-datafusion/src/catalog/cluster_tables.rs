@@ -12,13 +12,15 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
-use restate_core::Metadata;
+use restate_core::{Metadata, TaskCenter};
 use restate_types::cluster::cluster_state::LegacyClusterState;
+use restate_types::cluster_state::ClusterState;
 
 use crate::BuildError;
 use crate::source_registry::SourceRegistry;
 use crate::tables::bifrost_read_stream::BifrostReadStreamsTable;
 use crate::tables::migration_records::{IndexesTable, MigrationJobsTable};
+use crate::tables::nodes::NodesTable;
 use crate::tables::partition_state::PartitionStateTable;
 
 use super::{RegisterTable, TableInventoryBuilder};
@@ -26,6 +28,8 @@ use super::{RegisterTable, TableInventoryBuilder};
 /// Registers V2's cluster tables, including coordinator-local observations.
 pub struct ClusterTables {
     sources: SourceRegistry,
+    /// This node's gossip view of the cluster.
+    cluster_state: ClusterState,
     cluster_state_watch: Option<watch::Receiver<Arc<LegacyClusterState>>>,
 }
 
@@ -33,6 +37,7 @@ impl ClusterTables {
     pub fn new(sources: SourceRegistry) -> Self {
         Self {
             sources,
+            cluster_state: TaskCenter::with_current(|tc| tc.cluster_state().clone()),
             cluster_state_watch: None,
         }
     }
@@ -49,6 +54,11 @@ impl ClusterTables {
 
 impl RegisterTable for ClusterTables {
     async fn register(&self, inventory: &mut TableInventoryBuilder<'_>) -> Result<(), BuildError> {
+        inventory.add::<NodesTable>(
+            "cluster",
+            "nodes",
+            NodesTable::create_provider(Metadata::current(), self.cluster_state.clone()),
+        )?;
         inventory.add::<PartitionStateTable>(
             "cluster",
             "partition_state",
