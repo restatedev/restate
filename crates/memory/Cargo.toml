@@ -25,7 +25,12 @@ tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "time", "test-util"] }
+
+[[bench]]
+name = "quota"
+harness = false
 
 [lints]
 workspace = true
