@@ -1358,6 +1358,7 @@ mod tests {
     use restate_types::config::{ObjectStoreOptions, SnapshotsOptions};
     use restate_types::identifiers::{PartitionId, SnapshotId};
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
+    use restate_types::partitions::PartitionFeatureChange;
     use restate_types::retries::RetryPolicy;
     use restate_types::sharding::KeyRange;
     use restate_types::{GenerationalNodeId, SemanticRestateVersion};
@@ -1923,7 +1924,7 @@ mod tests {
         // An empty repository is "no snapshot present", not an error.
         assert!(
             snapshots
-                .download_snapshot(PartitionId::MIN, None, &CancellationToken::new())
+                .download_snapshot(PartitionId::MIN, None, &[], &CancellationToken::new())
                 .await?
                 .is_none()
         );
@@ -1931,7 +1932,14 @@ mod tests {
         // Older snapshot A (LSN 2000) then latest B (LSN 3000).
         let (snapshot_a, dir_a) = mock_snapshot(b"snapshot-A", Lsn::new(2000)).await?;
         repository.put(&snapshot_a, SnapshotDir::new(dir_a)).await?;
-        let (snapshot_b, dir_b) = mock_snapshot(b"snapshot-B", Lsn::new(3000)).await?;
+        // B doesn't have the partition feature journal_v2, unlike A.
+        let (mut snapshot_b, dir_b) = mock_snapshot(b"snapshot-B", Lsn::new(3000)).await?;
+        snapshot_b
+            .compatibility
+            .as_mut()
+            .expect("mock snapshots record their compatibility")
+            .partition_features
+            .clear();
         repository.put(&snapshot_b, SnapshotDir::new(dir_b)).await?;
         let sst_path = |snapshot: &PartitionSnapshotMetadata| {
             snapshots_destination
@@ -1943,7 +1951,7 @@ mod tests {
 
         // Happy path: the latest snapshot is restored.
         let restored = snapshots
-            .download_snapshot(PartitionId::MIN, None, &CancellationToken::new())
+            .download_snapshot(PartitionId::MIN, None, &[], &CancellationToken::new())
             .await?
             .expect("a snapshot is available");
         assert_eq!(restored.min_applied_lsn, Lsn::new(3000));
@@ -1953,11 +1961,35 @@ mod tests {
             .download_snapshot(
                 PartitionId::MIN,
                 Some(Lsn::new(2500)),
+                &[],
                 &CancellationToken::new(),
             )
             .await?
             .expect("latest snapshot satisfies the target LSN");
         assert_eq!(restored.min_applied_lsn, Lsn::new(3000));
+
+        // Required partition features select only snapshots known to have them.
+        let restored = snapshots
+            .download_snapshot(
+                PartitionId::MIN,
+                None,
+                &[PartitionFeatureChange::EnableJournalV2],
+                &CancellationToken::new(),
+            )
+            .await?
+            .expect("snapshot A has journal_v2");
+        assert_eq!(restored.min_applied_lsn, Lsn::new(2000));
+        assert!(
+            snapshots
+                .download_snapshot(
+                    PartitionId::MIN,
+                    None,
+                    &[PartitionFeatureChange::EnableByteOffsets],
+                    &CancellationToken::new(),
+                )
+                .await?
+                .is_none()
+        );
 
         // A target above every retained snapshot yields no suitable candidate (Ok(None)).
         assert!(
@@ -1965,6 +1997,7 @@ mod tests {
                 .download_snapshot(
                     PartitionId::MIN,
                     Some(Lsn::new(5000)),
+                    &[],
                     &CancellationToken::new()
                 )
                 .await?
@@ -1981,7 +2014,7 @@ mod tests {
             std::os::unix::fs::symlink(&sst, &sst)?;
             assert!(
                 snapshots
-                    .download_snapshot(PartitionId::MIN, None, &CancellationToken::new())
+                    .download_snapshot(PartitionId::MIN, None, &[], &CancellationToken::new())
                     .await
                     .is_err()
             );
@@ -1992,7 +2025,7 @@ mod tests {
         // Corrupt the latest by removing its data file; the download must fall back to A.
         std::fs::remove_file(sst_path(&snapshot_b))?;
         let restored = snapshots
-            .download_snapshot(PartitionId::MIN, None, &CancellationToken::new())
+            .download_snapshot(PartitionId::MIN, None, &[], &CancellationToken::new())
             .await?
             .expect("falls back to the older snapshot");
         assert_eq!(restored.min_applied_lsn, Lsn::new(2000));
@@ -2001,7 +2034,7 @@ mod tests {
         std::fs::remove_file(sst_path(&snapshot_a))?;
         assert!(
             snapshots
-                .download_snapshot(PartitionId::MIN, None, &CancellationToken::new())
+                .download_snapshot(PartitionId::MIN, None, &[], &CancellationToken::new())
                 .await
                 .is_err()
         );

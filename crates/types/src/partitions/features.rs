@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use bytes::BytesMut;
+use strum::IntoEnumIterator;
 
 use restate_encoding::NetSerde;
 
@@ -41,6 +42,7 @@ use crate::{
     Eq,
     Hash,
     strum::FromRepr,
+    strum::EnumIter,
     strum::EnumString,
     strum::IntoStaticStr,
     strum::Display,
@@ -162,6 +164,28 @@ impl PartitionFeatureChange {
         }
     }
 
+    /// The name of the feature that this change enables, as [`PersistedFeatures::enabled_names`]
+    /// lists it.
+    ///
+    /// Snapshots record these names to tell which features their data has, so a name must never
+    /// change.
+    pub fn enabled_name(self) -> &'static str {
+        match self {
+            Self::EnableJournalV2 => "journal_v2",
+            Self::EnableVqueues => "vqueues",
+            Self::EnableUniqueRandomSeeds => "unique_random_seeds",
+            Self::EnableVqueuesSkipCompleted => "vqueues_skip_completed",
+            Self::EnablePreflightInvocationTerminationRetention => {
+                "preflight_invocation_termination_retention"
+            }
+            Self::EnableInconsistentStateMutationCleanup => "inconsistent_state_mutation_cleanup",
+            Self::EnablePreflightSignalRecording => "preflight_signal_recording",
+            Self::EnableByteOffsets => "byte_offsets",
+            Self::EnableVqLifecycleRefined => "vq_lifecycle_refined",
+            Self::EnableInvocationStatusOutputBlob => "invocation_status_output_blob",
+        }
+    }
+
     /// Apply this change to the persisted feature set. Returns true if the feature
     /// change had an effect on the state machine features.
     pub fn apply_to(self, features: &mut PersistedFeatures) -> bool {
@@ -208,8 +232,7 @@ impl PartitionFeatureChange {
 /// `false`).
 ///
 /// # Important
-/// When adding new fields to this struct, update [`PersistedFeatures::enabled_names`]
-/// accordingly.
+/// When adding new fields to this struct, add the [`PartitionFeatureChange`] that enables them.
 ///
 /// *Since v1.7.0*
 #[derive(
@@ -291,29 +314,36 @@ pub struct PersistedFeatures {
 }
 
 impl PersistedFeatures {
+    /// Whether the feature that `change` enables is enabled.
+    #[inline]
+    pub fn is_enabled(&self, change: PartitionFeatureChange) -> bool {
+        match change {
+            PartitionFeatureChange::EnableJournalV2 => self.journal_v2,
+            PartitionFeatureChange::EnableVqueues => self.vqueues,
+            PartitionFeatureChange::EnableUniqueRandomSeeds => self.unique_random_seeds,
+            PartitionFeatureChange::EnableVqueuesSkipCompleted => self.vqueues_skip_completed,
+            PartitionFeatureChange::EnablePreflightInvocationTerminationRetention => {
+                self.preflight_invocation_termination_retention
+            }
+            PartitionFeatureChange::EnableInconsistentStateMutationCleanup => {
+                self.inconsistent_state_mutation_cleanup
+            }
+            PartitionFeatureChange::EnablePreflightSignalRecording => {
+                self.preflight_signal_recording
+            }
+            PartitionFeatureChange::EnableByteOffsets => self.byte_offsets,
+            PartitionFeatureChange::EnableVqLifecycleRefined => self.vq_lifecycle_refined,
+            PartitionFeatureChange::EnableInvocationStatusOutputBlob => {
+                self.invocation_status_output_blob
+            }
+        }
+    }
+
     /// Names of features currently enabled, in declaration order.
-    ///
-    /// Adding a new feature requires adding one entry here.
     pub fn enabled_names(&self) -> impl Iterator<Item = &'static str> + '_ {
-        [
-            self.journal_v2.then_some("journal_v2"),
-            self.vqueues.then_some("vqueues"),
-            self.unique_random_seeds.then_some("unique_random_seeds"),
-            self.vqueues_skip_completed
-                .then_some("vqueues_skip_completed"),
-            self.preflight_invocation_termination_retention
-                .then_some("preflight_invocation_termination_retention"),
-            self.inconsistent_state_mutation_cleanup
-                .then_some("inconsistent_state_mutation_cleanup"),
-            self.preflight_signal_recording
-                .then_some("preflight_signal_recording"),
-            self.byte_offsets.then_some("byte_offsets"),
-            self.vq_lifecycle_refined.then_some("vq_lifecycle_refined"),
-            self.invocation_status_output_blob
-                .then_some("invocation_status_output_blob"),
-        ]
-        .into_iter()
-        .flatten()
+        PartitionFeatureChange::iter()
+            .filter(move |change| self.is_enabled(*change))
+            .map(PartitionFeatureChange::enabled_name)
     }
 }
 
