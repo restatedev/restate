@@ -1035,6 +1035,42 @@ macro_rules! experimental {
 // `is_<name>_enabled()` / `set_<name>()` accessors, and the entry exposed (under the bare
 // name, without the `experimental_enable_` prefix) by the admin `/version` API.
 experimental! {
+    /// # Query engine V2
+    ///
+    /// Runs the experimental distributed query engine (V2) next to the default
+    /// one (V1): starts the query task service, and lets admin `/query` requests
+    /// select V2 with the header `X-Restate-Query-Engine: v2`. Off by default.
+    /// Enable it on every node that coordinates or serves queries, once all nodes
+    /// run v1.8.2 or newer, and restart them.
+    ///
+    /// V2 serves most but not all of V1's tables; query the others with
+    /// `X-Restate-Query-Engine: v1`. V2 doesn't bound the bytes of a batch yet: a
+    /// query over large rows, such as big journal entries or state values, can
+    /// fail when a batch exceeds `networking.message-size-limit`.
+    ///
+    /// Since v1.8.2
+    query_engine_v2,
+
+    /// # Default to query engine V2
+    ///
+    /// Uses V2 for admin `/query` requests without an `X-Restate-Query-Engine`
+    /// header; an explicit `v1` or `v2` header still wins. Also enables V2 on the
+    /// node, as `experimental-enable-query-engine-v2` does. Read when the node
+    /// starts; restart to change it.
+    ///
+    /// Since v1.8.2
+    query_engine_v2_default,
+
+    /// # Operator-level query tables
+    ///
+    /// Lets admin `/query` requests with the header `X-Restate-Query-Level:
+    /// operator` query the cluster tables, except `config`. Off by default; while
+    /// off, the header is ignored. Applies to both query engines. Read when the
+    /// admin service starts; restart to change it.
+    ///
+    /// Since v1.8.2
+    query_operator_tables,
+
     /// # AWS-to-GCP workload identity federation
     ///
     /// Allows registering deployments that authenticate through a Google workload identity
@@ -1283,6 +1319,14 @@ experimental! {
     ///
     /// Since v1.8.2
     protocol_v8,
+}
+
+impl Experimental {
+    /// Whether this node runs query engine V2: enabled directly, or by making it
+    /// the default for admin queries, which implies it.
+    pub fn is_query_engine_v2_running(&self) -> bool {
+        self.is_query_engine_v2_enabled() || self.is_query_engine_v2_default_enabled()
+    }
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");

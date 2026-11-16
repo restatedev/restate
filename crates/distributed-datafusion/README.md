@@ -17,18 +17,25 @@ Distributed query tasks require network protocol V7 or later. The network fabric
 negotiates compatibility; the coordinator rejects an unsupported node before
 sending tasks, and workers reject tasks arriving on older connections. Installation
 also checks the output schema. Rejection fails the query and leaves the connection
-between the nodes open. Once the engine can be selected, keep it off during
-upgrades from older custom builds, and turn it on after all participating nodes
-have been upgraded.
+between the nodes open. Keep the engine off during upgrades, and turn it on after
+all participating nodes have been upgraded.
 
-Nothing selects this engine yet: nodes and the admin `POST /query` endpoint run
-the existing engine. Wiring the engine into node setup, and the options that
-select it, come in a later change; until then, it runs in this crate's tests
-only. Use `EXPLAIN VERBOSE` and `EXPLAIN ANALYZE VERBOSE` to inspect plans and
-execution.
+For staging A/B requests, start participating nodes with
+`experimental-enable-query-engine-v2 = true`, then select the engine on
+`POST /query` with `X-Restate-Query-Engine: v1` or `v2` (or
+`restate sql --engine v2`). Set `experimental-enable-query-engine-v2-default =
+true` on admin nodes to use V2 for requests without the header; it enables V2 on
+the node too, and an explicit header still wins. Both engines share the node's
+query memory pool and `/query` rate limit. Responses name the engine that served the query in the same
+header, and the planning time in `Server-Timing`. Use `EXPLAIN VERBOSE` and
+`EXPLAIN ANALYZE VERBOSE` to inspect plans and execution.
 
-Storage reads run on the query IO pool that the existing engine uses too. Pass
-it to `register_partition_scanners` or `register_worker_partition_scanners`.
+V2 doesn't bound the bytes of a batch yet: a query over large rows can fail
+when a batch exceeds `networking.message-size-limit`.
+
+Storage reads run on the query IO pool. Node setup (`restate-node`,
+`query.rs`) passes V1's pool to `register_worker_partition_scanners` and
+`register_cluster_scanners`, so both engines share one pool per node.
 
 Run the crate's baseline tests with:
 

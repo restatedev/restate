@@ -155,6 +155,13 @@ impl DataFusionEnv {
         })
     }
 
+    /// The DataFusion runtime, with the memory pool of `memory-size` and the spill
+    /// files; clones share it. Hand it to the node's other query engine so both
+    /// draw on one memory budget.
+    pub fn runtime(&self) -> &Arc<RuntimeEnv> {
+        &self.runtime
+    }
+
     /// The query service's storage IO pool, separate from the partition and
     /// database IO pools; clones share its workers.
     pub fn io_executor(&self) -> &QueryIoExecutor {
