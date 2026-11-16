@@ -36,6 +36,7 @@ pub(crate) mod invocation_status;
 pub(crate) mod journal;
 pub(crate) mod journal_events;
 pub(crate) mod locks;
+pub(crate) mod logs;
 pub(crate) mod migration_records;
 pub(crate) mod nodes;
 pub(crate) mod partition_replica_set;
