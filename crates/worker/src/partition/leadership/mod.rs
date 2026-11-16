@@ -37,6 +37,7 @@ use restate_invoker_impl::Service as InvokerService;
 use restate_memory::MemoryLease;
 use restate_partition_store::PartitionStore;
 use restate_storage_api::StorageError;
+use restate_storage_api::blob_table::ReadBlobTable;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
 use restate_storage_api::outbox_table::{OutboxMessage, ReadOutboxTable};
 use restate_storage_api::timer_table::{ReadTimerTable, TimerKey};
@@ -1055,6 +1056,16 @@ impl shuffle::OutboxReader for OutboxReader {
         };
 
         Ok(result)
+    }
+
+    async fn get_response_result(
+        &mut self,
+        blob: restate_types::blob::BlobId,
+    ) -> Result<Option<restate_types::invocation::ResponseResult>, OutboxReaderError> {
+        self.0
+            .get_blob::<crate::OutputBlob>(blob)
+            .await
+            .map_err(OutboxReaderError::Storage)
     }
 }
 

@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::StorageError;
+use restate_storage_api::blob_table::WriteBlobTable;
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
 use restate_types::message::MessageIndex;
@@ -35,14 +36,14 @@ pub trait OutboxAccess {
 
 /// Mutable view of the outbox: append new messages and truncate delivered ones.
 pub trait OutboxMut: OutboxAccess {
-    /// Truncate the outbox to the given sequence number (inclusive).
-    fn truncate_outbox_to(
-        &mut self,
-        txn: &mut impl WriteOutboxTable,
-        to: MessageIndex,
-    ) -> Result<(), StorageError>;
+    /// Truncate the outbox to the given sequence number (inclusive), releasing the blob
+    /// references held by the truncated messages.
+    fn truncate_outbox_to<S>(&mut self, txn: &mut S, to: MessageIndex) -> Result<(), StorageError>
+    where
+        S: WriteOutboxTable + WriteBlobTable;
 
-    /// Enqueue a message to the outbox of this processor.
+    /// Enqueue a message to the outbox of this processor. If the message references a blob,
+    /// the outbox releases one reference on it once the message is truncated.
     fn enqueue<S>(&mut self, txn: &mut S, message: &OutboxMessage) -> Result<(), StorageError>
     where
         S: WriteOutboxTable + WriteFsmTable;
@@ -87,11 +88,10 @@ impl<T: OutboxAccess> OutboxAccess for &mut T {
 
 impl<T: OutboxMut> OutboxMut for &mut T {
     #[inline]
-    fn truncate_outbox_to(
-        &mut self,
-        txn: &mut impl WriteOutboxTable,
-        to: MessageIndex,
-    ) -> Result<(), StorageError> {
+    fn truncate_outbox_to<S>(&mut self, txn: &mut S, to: MessageIndex) -> Result<(), StorageError>
+    where
+        S: WriteOutboxTable + WriteBlobTable,
+    {
         (**self).truncate_outbox_to(txn, to)
     }
 

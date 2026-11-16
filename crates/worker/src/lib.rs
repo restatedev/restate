@@ -293,7 +293,7 @@ impl ResolveResponseResult for ResponseResultRef {
 }
 
 /// The output blob holds the content of the Output entry, shared with the journal.
-struct OutputBlob;
+pub(crate) struct OutputBlob;
 
 impl BlobDecoder for OutputBlob {
     type Type = ResponseResult;

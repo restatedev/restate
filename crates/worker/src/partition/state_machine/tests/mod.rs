@@ -1644,6 +1644,142 @@ async fn output_blob_outlives_dropped_journal() -> TestResult {
     Ok(())
 }
 
+/// A large output is sent to partition processor callers through the outbox, which shares the
+/// output blob: each outbox message holds a reference, released when it's truncated. That
+/// includes the response to a caller attaching after the invocation completed.
+#[test(restate_core::test)]
+async fn outbox_responses_share_output_blob() -> TestResult {
+    let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+        PartitionFeatureChange::EnableInvocationStatusOutputBlob,
+    ]))
+    .await;
+
+    let invocation_id = InvocationId::mock_generate(&InvocationTarget::mock_service());
+    let result = Bytes::from(vec![7; 5000]);
+    test_env
+        .apply_multiple([
+            commands::InvokeCommand::test_envelope(ServiceInvocation {
+                invocation_id,
+                invocation_target: InvocationTarget::mock_service(),
+                response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor(
+                    JournalCompletionTarget::from_parts(InvocationId::mock_random(), 1),
+                )),
+                completion_retention_duration: Duration::from_secs(120),
+                journal_retention_duration: Duration::from_secs(120),
+                ..ServiceInvocation::mock()
+            }),
+            fixtures::pinned_deployment(invocation_id, ServiceProtocolVersion::V5),
+            fixtures::invoker_entry_effect(
+                invocation_id,
+                OutputCommand {
+                    result: OutputResult::Success(result.clone()),
+                    name: Default::default(),
+                },
+            ),
+        ])
+        .await;
+
+    let InvocationStatus::Completed(CompletedInvocation {
+        response_result: ResponseResultRef::Completed(CompletedResult { blob_id, .. }),
+        ..
+    }) = test_env
+        .storage
+        .get_invocation_status(&invocation_id)
+        .await?
+    else {
+        panic!("expected a completed invocation with its output in a blob");
+    };
+    // The journal, the completed status and the outbox message
+    let (_, ref_count, _) = test_env
+        .storage
+        .get_blob::<RawParts>(blob_id)
+        .await?
+        .expect("output blob");
+    assert_eq!(ref_count, 3);
+    // The outbox reads the response from the blob
+    assert_eq!(
+        test_env
+            .storage
+            .get_blob::<crate::OutputBlob>(blob_id)
+            .await?,
+        Some(ResponseResult::Success(result))
+    );
+
+    test_env
+        .apply(commands::AttachInvocationCommand::test_envelope(
+            AttachInvocationRequest {
+                invocation_query: InvocationQuery::Invocation(invocation_id),
+                block_on_inflight: false,
+                response_sink: ServiceInvocationResponseSink::PartitionProcessor(
+                    JournalCompletionTarget::from_parts(InvocationId::mock_random(), 1),
+                ),
+            },
+        ))
+        .await;
+    let (_, ref_count, _) = test_env
+        .storage
+        .get_blob::<RawParts>(blob_id)
+        .await?
+        .expect("output blob");
+    assert_eq!(ref_count, 4);
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
+/// With the output table, an invocation without completion retention nor partition processor
+/// sinks doesn't store an output blob, but its ingress callers must still get the response.
+#[test(restate_core::test)]
+async fn ingress_response_without_retention_with_write_blob_table() -> TestResult {
+    let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+        PartitionFeatureChange::EnableInvocationStatusOutputBlob,
+    ]))
+    .await;
+
+    let invocation_id = InvocationId::mock_generate(&InvocationTarget::mock_service());
+    let request_id = PartitionProcessorRpcRequestId::default();
+    let error = InvocationError::new(codes::INTERNAL, "boom");
+    let actions = test_env
+        .apply_multiple([
+            commands::InvokeCommand::test_envelope(ServiceInvocation {
+                invocation_id,
+                invocation_target: InvocationTarget::mock_service(),
+                response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
+                completion_retention_duration: Duration::ZERO,
+                journal_retention_duration: Duration::ZERO,
+                ..ServiceInvocation::mock()
+            }),
+            fixtures::pinned_deployment(invocation_id, ServiceProtocolVersion::V5),
+            commands::InvokerEffectCommand::test_envelope(Effect {
+                invocation_id,
+                kind: InvokerEffectKind::Failed(error.clone()),
+            }),
+        ])
+        .await;
+
+    assert_that!(
+        actions,
+        contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                request_id: eq(request_id),
+                response: eq(InvocationOutputResponse::Failure(error))
+            })))
+        }))
+    );
+    assert_that!(
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await?,
+        pat!(InvocationStatus::Free)
+    );
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
 #[test(restate_core::test)]
 async fn clear_all_user_states() -> anyhow::Result<()> {
     let mut test_env = TestEnv::create().await;
