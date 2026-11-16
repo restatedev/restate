@@ -25,7 +25,9 @@ use serde_json::Value;
 use tonic::transport::Channel;
 
 use restate_cli_util::CliContext;
-use restate_core::protobuf::cluster_ctrl_svc::{QueryRequest, new_cluster_ctrl_client};
+use restate_core::protobuf::cluster_ctrl_svc::{
+    QueryRequest, QueryWarning, new_cluster_ctrl_client,
+};
 
 use crate::commands::sql::RecordBatchStream;
 
@@ -39,17 +41,54 @@ pub const DUMPED: &[&str] = &["nodes", "logs", "partition_state", "partition_rep
 /// Tables by name: their rows, or why they couldn't be read.
 pub type Tables = BTreeMap<String, Result<Vec<Value>, String>>;
 
-/// Reads `tables` concurrently from the node behind `channel`.
-pub async fn fetch(channel: &Channel, tables: &[&str]) -> Tables {
-    join_all(tables.iter().map(|table| async move {
-        let rows = query(channel.clone(), &format!("SELECT * FROM {table}"))
-            .await
-            .map_err(|err| format!("{err:#}"));
-        ((*table).to_owned(), rows)
+/// Reads `tables` concurrently from the node behind `channel`, with the server's default query
+/// engine, and warns about each table some node couldn't answer for.
+pub async fn fetch(channel: &Channel, tables: &[&str]) -> (Tables, Vec<String>) {
+    let results = join_all(tables.iter().map(|table| async move {
+        let result = query(channel.clone(), &format!("SELECT * FROM {table}")).await;
+        (*table, result)
     }))
-    .await
-    .into_iter()
-    .collect()
+    .await;
+    let mut warnings = Vec::new();
+    let tables = results
+        .into_iter()
+        .map(|(table, result)| {
+            let rows = result
+                .map(|(rows, node_warnings)| {
+                    warnings.extend(incomplete(table, &node_warnings));
+                    rows
+                })
+                .map_err(|err| format!("{err:#}"));
+            (table.to_owned(), rows)
+        })
+        .collect();
+    (tables, warnings)
+}
+
+/// A warning per node whose rows of `table` are missing from the result: it couldn't be asked,
+/// or failed while answering.
+fn incomplete<'a>(
+    table: &'a str,
+    node_warnings: &'a [QueryWarning],
+) -> impl Iterator<Item = String> + 'a {
+    node_warnings.iter().map(move |warning| {
+        format!(
+            "{} incomplete: node {}: {}",
+            label(table),
+            warning.node_id,
+            warning.message
+        )
+    })
+}
+
+/// What `table` holds, for warnings.
+fn label(table: &str) -> &str {
+    match table {
+        "partitions" => "partition replica sets",
+        "loglet_workers" => "log tails and trim points",
+        "bifrost_read_streams" => "read streams",
+        other => other,
+    }
 }
 
 /// A partition's replica set as observed by the queried node (`partitions` table).
@@ -148,18 +187,13 @@ fn rows<T: DeserializeOwned>(
                 .map(|row| T::deserialize(row).map_err(|err| err.to_string()))
                 .collect()
         });
-    let what = match table {
-        "partitions" => "partition replica sets",
-        "loglet_workers" => "log tails and trim points",
-        "bifrost_read_streams" => "read streams",
-        other => other,
-    };
-    rows.inspect_err(|err| warnings.push(format!("{what} unavailable: {err}")))
+    rows.inspect_err(|err| warnings.push(format!("{} unavailable: {err}", label(table))))
         .ok()
 }
 
-/// Runs `sql` on the cluster's query engine.
-async fn query(channel: Channel, sql: &str) -> anyhow::Result<Vec<Value>> {
+/// Runs `sql` on the cluster's default query engine, and returns its rows and the warnings
+/// about nodes whose rows are missing.
+async fn query(channel: Channel, sql: &str) -> anyhow::Result<(Vec<Value>, Vec<QueryWarning>)> {
     let response = new_cluster_ctrl_client(channel, &CliContext::get().network)
         .query(QueryRequest {
             query: sql.to_owned(),
@@ -179,5 +213,34 @@ async fn query(channel: Channel, sql: &str) -> anyhow::Result<Vec<Value>> {
         writer.finish()?;
         rows.extend(serde_json::from_slice::<Vec<Value>>(&writer.into_inner())?);
     }
-    Ok(rows)
+    Ok((rows, stream.warnings().to_vec()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Nodes missing from a table's result become one warning each, naming what's incomplete.
+    #[test]
+    fn node_warnings_say_what_is_incomplete() {
+        let warning = |node: &str, message: &str| QueryWarning {
+            node_id: node.to_owned(),
+            message: message.to_owned(),
+        };
+        let warnings = [
+            warning("N2", "node source requires distributed execution"),
+            warning("N3", "connection lost"),
+        ];
+        assert_eq!(
+            incomplete("loglet_workers", &warnings).collect::<Vec<_>>(),
+            [
+                "log tails and trim points incomplete: node N2: node source requires distributed execution",
+                "log tails and trim points incomplete: node N3: connection lost",
+            ]
+        );
+        assert_eq!(
+            incomplete("nodes", &warnings[1..]).collect::<Vec<_>>(),
+            ["nodes incomplete: node N3: connection lost"]
+        );
+    }
 }

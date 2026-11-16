@@ -19,6 +19,7 @@ use datafusion::error::DataFusionError;
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
 use tonic::codec::CompressionEncoding;
+use tonic::metadata::{MetadataMap, MetadataValue};
 use tonic::{Request, Response, Status, async_trait};
 use tracing::{debug, info, warn};
 
@@ -42,7 +43,8 @@ use restate_core::{Metadata, MetadataWriter};
 use restate_metadata_store::WriteError;
 use restate_storage_query_api::errors::{QueryExecutionError, SessionError};
 use restate_storage_query_api::{
-    QueryDiagnostics, QueryEngine, QueryOptions, SessionOptions, WriteRecordBatchStream,
+    QueryDiagnostics, QueryEngine, QueryEngineVersion, QueryOptions, SessionOptions,
+    WriteRecordBatchStream,
 };
 use restate_types::config::{MetadataClientKind, MetadataClientOptions, NetworkingOptions};
 use restate_types::identifiers::PartitionId;
@@ -66,14 +68,51 @@ use restate_types::{NodeId, PlainNodeId, Version, Versioned};
 use super::ClusterControllerHandle;
 use super::safety_checker;
 use super::service::{ChainExtension, DropPartitionStoreRequestError};
-use crate::query_context::collect_query_headers;
+use crate::query_context::{
+    QUERY_ENGINE_HEADER, collect_query_headers, engine_version_from_headers,
+};
 
 pub(crate) struct ClusterCtrlSvcHandler {
     controller_handle: ClusterControllerHandle,
     bifrost: Bifrost,
     metadata_writer: MetadataWriter,
     cluster_query_engine: Arc<QueryEngine>,
+    /// Whether queries that don't select an engine run on V2
+    /// (`experimental-enable-query-engine-v2-default`), read at startup as for
+    /// admin `/query` requests.
+    query_engine_v2_default: bool,
     _replica_set_states: PartitionReplicaSetStates,
+}
+
+/// Session options for a cluster query: the `cluster` schema, no rate limit,
+/// and the engine the request selects with the `x-restate-query-engine`
+/// metadata, else the node's default. This is the rule admin `/query` requests
+/// follow too.
+fn cluster_query_options(
+    metadata: &MetadataMap,
+    v2_default: bool,
+) -> Result<(QueryEngineVersion, SessionOptions), Status> {
+    let default = if v2_default {
+        QueryEngineVersion::V2
+    } else {
+        QueryEngineVersion::V1
+    };
+    let engine = engine_version_from_headers(metadata.as_ref(), default).ok_or_else(|| {
+        Status::invalid_argument(format!(
+            "{QUERY_ENGINE_HEADER} must be `v1` or `v2`, sent at most once"
+        ))
+    })?;
+    Ok((
+        engine,
+        SessionOptions {
+            engine_version: Some(engine),
+            apply_rate_limit: false,
+            schemas: vec!["cluster".into()],
+            default_schema: Some("cluster".into()),
+            headers: collect_query_headers(metadata.as_ref()),
+            ..Default::default()
+        },
+    ))
 }
 
 impl ClusterCtrlSvcHandler {
@@ -82,6 +121,7 @@ impl ClusterCtrlSvcHandler {
         bifrost: Bifrost,
         metadata_writer: MetadataWriter,
         cluster_query_engine: Arc<QueryEngine>,
+        query_engine_v2_default: bool,
         replica_set_states: PartitionReplicaSetStates,
     ) -> Self {
         Self {
@@ -89,6 +129,7 @@ impl ClusterCtrlSvcHandler {
             bifrost,
             metadata_writer,
             cluster_query_engine,
+            query_engine_v2_default,
             _replica_set_states: replica_set_states,
         }
     }
@@ -519,13 +560,8 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         &self,
         request: Request<QueryRequest>,
     ) -> std::result::Result<Response<Self::QueryStream>, tonic::Status> {
-        let options = SessionOptions {
-            apply_rate_limit: false,
-            schemas: vec!["cluster".into()],
-            default_schema: Some("cluster".into()),
-            headers: collect_query_headers(request.metadata().as_ref()),
-            ..Default::default()
-        };
+        let (engine, options) =
+            cluster_query_options(request.metadata(), self.query_engine_v2_default)?;
         let request = request.into_inner();
         let session = match self.cluster_query_engine.create_session(options) {
             Ok(session) => session,
@@ -579,6 +615,10 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         response
             .metadata_mut()
             .insert("x-restate-query-session-id", session_id);
+        response.metadata_mut().insert(
+            QUERY_ENGINE_HEADER,
+            MetadataValue::from_static(engine.as_str()),
+        );
         Ok(response)
     }
 
@@ -951,5 +991,53 @@ mod drop_partition_store_tests {
             .code(),
             tonic::Code::FailedPrecondition
         );
+    }
+}
+
+#[cfg(test)]
+mod query_engine_tests {
+    use tonic::Code;
+    use tonic::metadata::{MetadataMap, MetadataValue};
+
+    use restate_storage_query_api::QueryEngineVersion::{V1, V2};
+
+    use super::*;
+
+    /// `restatectl sql` selects the engine like an admin `/query` request: the
+    /// `x-restate-query-engine` metadata if sent, else the node's default.
+    #[test]
+    fn cluster_queries_select_the_engine_like_admin_queries() {
+        let metadata = |values: &[&'static str]| {
+            let mut metadata = MetadataMap::new();
+            for value in values {
+                metadata.append(QUERY_ENGINE_HEADER, MetadataValue::from_static(value));
+            }
+            metadata
+        };
+        for (v2_default, selection, expected) in [
+            (false, &[][..], V1),
+            (true, &[][..], V2),
+            (true, &["v1"][..], V1),
+            (false, &["v2"][..], V2),
+        ] {
+            let (engine, options) =
+                cluster_query_options(&metadata(selection), v2_default).unwrap();
+            assert_eq!(
+                (engine, options.engine_version),
+                (expected, Some(expected)),
+                "default_v2={v2_default} selection={selection:?}"
+            );
+            // The selector isn't forwarded as a diagnostic header.
+            assert!(!options.headers.contains_key(QUERY_ENGINE_HEADER));
+        }
+        for selection in [&["v3"][..], &["v1", "v2"][..]] {
+            assert_eq!(
+                cluster_query_options(&metadata(selection), false)
+                    .unwrap_err()
+                    .code(),
+                Code::InvalidArgument,
+                "{selection:?}"
+            );
+        }
     }
 }

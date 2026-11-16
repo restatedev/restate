@@ -12,27 +12,42 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
-use restate_core::Metadata;
+use restate_core::{Metadata, TaskCenter};
 use restate_types::cluster::cluster_state::LegacyClusterState;
+use restate_types::cluster_state::ClusterState;
+use restate_types::partitions::state::PartitionReplicaSetStates;
 
 use crate::BuildError;
 use crate::source_registry::SourceRegistry;
 use crate::tables::bifrost_read_stream::BifrostReadStreamsTable;
+use crate::tables::loglet_workers::LogletWorkersTable;
+use crate::tables::logs::LogsTable;
 use crate::tables::migration_records::{IndexesTable, MigrationJobsTable};
+use crate::tables::nodes::NodesTable;
+use crate::tables::partition_replica_set::PartitionReplicaSetTable;
 use crate::tables::partition_state::PartitionStateTable;
+use crate::tables::partitions::PartitionsTable;
 
 use super::{RegisterTable, TableInventoryBuilder};
 
 /// Registers V2's cluster tables, including coordinator-local observations.
 pub struct ClusterTables {
     sources: SourceRegistry,
+    /// This node's gossip view of the cluster.
+    cluster_state: ClusterState,
+    /// The partition memberships and leaders this node has observed.
+    replica_set_states: PartitionReplicaSetStates,
     cluster_state_watch: Option<watch::Receiver<Arc<LegacyClusterState>>>,
 }
 
 impl ClusterTables {
-    pub fn new(sources: SourceRegistry) -> Self {
+    /// `replica_set_states` are this node's observed partition memberships, the
+    /// same the default engine's cluster tables read.
+    pub fn new(sources: SourceRegistry, replica_set_states: PartitionReplicaSetStates) -> Self {
         Self {
             sources,
+            cluster_state: TaskCenter::with_current(|tc| tc.cluster_state().clone()),
+            replica_set_states,
             cluster_state_watch: None,
         }
     }
@@ -49,10 +64,51 @@ impl ClusterTables {
 
 impl RegisterTable for ClusterTables {
     async fn register(&self, inventory: &mut TableInventoryBuilder<'_>) -> Result<(), BuildError> {
+        inventory.add::<NodesTable>(
+            "cluster",
+            "nodes",
+            NodesTable::create_provider(Metadata::current(), self.cluster_state.clone()),
+        )?;
+        inventory.add::<PartitionsTable>(
+            "cluster",
+            "partitions",
+            PartitionsTable::create_provider(Metadata::current(), self.replica_set_states.clone()),
+        )?;
+        inventory.add::<PartitionReplicaSetTable>(
+            "cluster",
+            "partition_replica_set",
+            PartitionReplicaSetTable::create_provider(
+                Metadata::current(),
+                self.cluster_state.clone(),
+                self.replica_set_states.clone(),
+            ),
+        )?;
+        inventory.add::<LogsTable>(
+            "cluster",
+            "logs",
+            LogsTable::create_provider(Metadata::current()),
+        )?;
+        // Each log's last segment, as in V1.
+        inventory
+            .add_view(
+                "logs_tail_segments",
+                "cluster",
+                include_str!("logs_tail_segments.sql"),
+            )
+            .await?;
         inventory.add::<PartitionStateTable>(
             "cluster",
             "partition_state",
             PartitionStateTable::create_provider(self.cluster_state_watch.clone()),
+        )?;
+        inventory.add::<LogletWorkersTable>(
+            "cluster",
+            "loglet_workers",
+            LogletWorkersTable::create_provider(
+                Metadata::current(),
+                self.sources.clone(),
+                None, // Log servers register their local scanner separately.
+            ),
         )?;
         inventory.add::<BifrostReadStreamsTable>(
             "cluster",

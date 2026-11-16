@@ -320,7 +320,10 @@ mod tests {
     /// newer format, or that aren't dumps, are refused.
     #[test]
     fn dumps_read_back_as_written() {
-        let dump = dump_of_large_cluster();
+        let mut dump = dump_of_large_cluster();
+        // a node that didn't answer for one sample's read streams
+        let incomplete = "read streams incomplete: node N2: connection lost";
+        dump.later[2].warnings.push(incomplete.to_owned());
         let dir = restate_test_util::tempdir().unwrap();
         let json = |views: Vec<ClusterView>| serde_json::to_value(views).unwrap();
         let written = json(dump.views());
@@ -333,6 +336,12 @@ mod tests {
         assert_eq!(views[0].file.as_deref(), path.to_str());
         // the log tails moved between the samples
         assert!(views[4].logs[0].tail_lsn > views[0].logs[0].tail_lsn);
+        // the warning stays with its sample
+        let warned: Vec<_> = views
+            .iter()
+            .map(|view| view.warnings.iter().any(|w| w == incomplete))
+            .collect();
+        assert_eq!(warned, [false, false, false, true, false]);
 
         let plain = dir.path().join("status.json");
         let mut file = serde_json::to_value(File::from(&dump)).unwrap();

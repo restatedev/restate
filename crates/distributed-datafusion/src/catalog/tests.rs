@@ -133,8 +133,11 @@ async fn partition_state_preserves_local_watcher_rows_and_empty_fallback() {
             .unwrap();
         current
             .register_tables(
-                ClusterTables::new(SourceRegistry::local_only(core.metadata.clone()))
-                    .with_cluster_state_watch(watcher.clone()),
+                ClusterTables::new(
+                    SourceRegistry::local_only(core.metadata.clone()),
+                    Default::default(),
+                )
+                .with_cluster_state_watch(watcher.clone()),
             )
             .await
             .unwrap();
@@ -167,6 +170,540 @@ async fn partition_state_preserves_local_watcher_rows_and_empty_fallback() {
         }
     }
     drop(tx);
+}
+
+/// `nodes` reads the coordinator's nodes configuration and gossip view through
+/// the default engine's scanner, so both engines return the same rows, including
+/// the states that only some roles have.
+#[restate_core::test]
+async fn nodes_match_the_default_engine() {
+    use restate_core::test_env::{TestCoreEnvBuilder, create_mock_nodes_config};
+    use restate_types::nodes_config::{NodeConfig, Role};
+    use restate_types::{GenerationalNodeId, RestateVersion};
+
+    let mut nodes = create_mock_nodes_config(1, 1);
+    let mut log_server = NodeConfig::builder()
+        .name("log-2".to_owned())
+        .current_generation(GenerationalNodeId::new(2, 3))
+        .address(Default::default())
+        .roles(Role::LogServer | Role::MetadataServer)
+        .binary_version(RestateVersion::current())
+        .build();
+    // A node from before v1.6.0, which didn't report its version.
+    log_server.binary_version = None;
+    nodes.upsert_node(log_server);
+    let core = TestCoreEnvBuilder::with_incoming_only_connector()
+        .set_nodes_config(nodes)
+        .build()
+        .await;
+    let options = HashMap::from([("datafusion.execution.batch_size".to_owned(), "1".to_owned())]);
+    let legacy = v1::DataFusionEnv::new(64 * 1024 * 1024, None, Some(1), &options)
+        .unwrap()
+        .with_mock_clock(MockClock::new())
+        .unwrap();
+    legacy
+        .register_tables(v1::ClusterTables::new(
+            Default::default(),
+            None,
+            v1::remote_query_scanner_manager::RemoteScannerManager::local_only(
+                core.metadata.clone(),
+            ),
+        ))
+        .await
+        .unwrap();
+    let current = DataFusionEnv::new(64 * 1024 * 1024, None, Some(1), &options)
+        .unwrap()
+        .with_mock_clock(MockClock::new())
+        .unwrap();
+    current
+        .register_tables(ClusterTables::new(
+            SourceRegistry::local_only(core.metadata.clone()),
+            Default::default(),
+        ))
+        .await
+        .unwrap();
+    let cluster = || SessionOptions {
+        schemas: vec!["cluster".into()],
+        ..Default::default()
+    };
+    let old = v1::context::DataFusionQueryEngine::from_env(legacy, None)
+        .create_session(cluster())
+        .unwrap();
+    let new = DataFusionQueryEngine::from_env(current, None)
+        .create_session(cluster())
+        .unwrap();
+    for sql in [
+        "SELECT * FROM cluster.nodes ORDER BY plain_node_id",
+        "SELECT plain_node_id, worker_state, storage_state, metadata_server_state, binary_version \
+         FROM cluster.nodes WHERE has_log_server_role",
+        "SELECT name FROM cluster.nodes WHERE has_worker_role LIMIT 1",
+    ] {
+        assert_eq!(
+            rows(new.as_ref(), sql).await,
+            rows(old.as_ref(), sql).await,
+            "{sql}"
+        );
+    }
+    assert_eq!(
+        rows(new.as_ref(), "SELECT COUNT(*) FROM cluster.nodes").await,
+        [["2"]]
+    );
+}
+
+/// `partitions` and `partition_replica_set` read the coordinator's partition table
+/// and the memberships it has observed through the default engine's scanners, so
+/// both engines return the same rows: a settled partition, one being reconfigured
+/// and one never observed.
+#[restate_core::test]
+async fn partitions_and_replica_sets_match_the_default_engine() {
+    use restate_core::TaskCenter;
+    use restate_core::test_env::{TestCoreEnvBuilder, create_mock_nodes_config};
+    use restate_types::cluster_state::NodeState;
+    use restate_types::identifiers::{LeaderEpoch, PartitionId};
+    use restate_types::logs::{Lsn, SequenceNumber};
+    use restate_types::partition_table::PartitionTable;
+    use restate_types::partitions::state::{
+        LeadershipState, MemberState, PartitionReplicaSetStates, ReplicaSetState,
+    };
+    use restate_types::{GenerationalNodeId, PlainNodeId, Version};
+
+    let core = TestCoreEnvBuilder::with_incoming_only_connector()
+        .set_nodes_config(create_mock_nodes_config(1, 1))
+        .set_partition_table(PartitionTable::with_equally_sized_partitions(
+            Version::MIN,
+            3,
+        ))
+        .build()
+        .await;
+    // Gossip sees N1:1 alive; N2 stays unobserved.
+    TaskCenter::current()
+        .cluster_state()
+        .clone()
+        .updater()
+        .upsert_node_state(GenerationalNodeId::new(1, 1), NodeState::Alive);
+    let members = |nodes: &[u32], version: Version| ReplicaSetState {
+        version,
+        members: nodes
+            .iter()
+            .map(|&node| MemberState {
+                node_id: PlainNodeId::new(node),
+                durable_lsn: Lsn::INVALID,
+            })
+            .collect(),
+    };
+    let states = PartitionReplicaSetStates::default();
+    // Partition 0: settled on N1 and N2, led by N1; N2 reported a durable LSN.
+    states.note_observed_membership(
+        PartitionId::from(0),
+        LeadershipState {
+            current_leader_epoch: LeaderEpoch::from(3),
+            current_leader: GenerationalNodeId::new(1, 1),
+        },
+        &members(&[1, 2], Version::MIN),
+        &None,
+    );
+    states.note_durable_lsn(PartitionId::from(0), PlainNodeId::new(2), Lsn::new(10));
+    // Partition 1: moving from N1 to N1 and N2, with no known leader.
+    states.note_observed_membership(
+        PartitionId::from(1),
+        Default::default(),
+        &members(&[1], Version::MIN),
+        &Some(members(&[1, 2], Version::MIN.next())),
+    );
+    // Partition 2: never observed.
+
+    let options = HashMap::from([("datafusion.execution.batch_size".to_owned(), "1".to_owned())]);
+    let legacy = v1::DataFusionEnv::new(64 * 1024 * 1024, None, Some(1), &options)
+        .unwrap()
+        .with_mock_clock(MockClock::new())
+        .unwrap();
+    legacy
+        .register_tables(v1::ClusterTables::new(
+            states.clone(),
+            None,
+            v1::remote_query_scanner_manager::RemoteScannerManager::local_only(
+                core.metadata.clone(),
+            ),
+        ))
+        .await
+        .unwrap();
+    let current = DataFusionEnv::new(64 * 1024 * 1024, None, Some(1), &options)
+        .unwrap()
+        .with_mock_clock(MockClock::new())
+        .unwrap();
+    current
+        .register_tables(ClusterTables::new(
+            SourceRegistry::local_only(core.metadata.clone()),
+            states,
+        ))
+        .await
+        .unwrap();
+    let cluster = || SessionOptions {
+        schemas: vec!["cluster".into()],
+        ..Default::default()
+    };
+    let old = v1::context::DataFusionQueryEngine::from_env(legacy, None)
+        .create_session(cluster())
+        .unwrap();
+    let new = DataFusionQueryEngine::from_env(current, None)
+        .create_session(cluster())
+        .unwrap();
+    for sql in [
+        "SELECT * FROM cluster.partitions ORDER BY partition_id",
+        "SELECT partition_id, next_replica_set FROM cluster.partitions WHERE v_next IS NOT NULL",
+        "SELECT partition_id FROM cluster.partitions WHERE leader_plain_node_id IS NULL \
+         ORDER BY partition_id LIMIT 1",
+        "SELECT * FROM cluster.partition_replica_set \
+         ORDER BY partition_id, membership, plain_node_id",
+        "SELECT partition_id, plain_node_id, membership_version FROM cluster.partition_replica_set \
+         WHERE membership = 'next' ORDER BY plain_node_id",
+        "SELECT partition_id, plain_node_id, leader_epoch FROM cluster.partition_replica_set \
+         WHERE is_leader",
+    ] {
+        assert_eq!(
+            rows(new.as_ref(), sql).await,
+            rows(old.as_ref(), sql).await,
+            "{sql}"
+        );
+    }
+    // Every partition has a row; members of both memberships have one for each.
+    // N1's three rows carry its live generation; N2's two don't.
+    for (sql, count) in [
+        ("SELECT COUNT(*) FROM cluster.partitions", "3"),
+        ("SELECT COUNT(*) FROM cluster.partition_replica_set", "5"),
+        (
+            "SELECT COUNT(*) FROM cluster.partition_replica_set WHERE durable_lsn = 10",
+            "1",
+        ),
+        (
+            "SELECT COUNT(*) FROM cluster.partition_replica_set \
+             WHERE alive_gen_node_id = 'N1:1'",
+            "3",
+        ),
+        (
+            "SELECT COUNT(*) FROM cluster.partition_replica_set \
+             WHERE plain_node_id = 'N2' AND alive_gen_node_id IS NULL",
+            "2",
+        ),
+    ] {
+        assert_eq!(rows(new.as_ref(), sql).await, [[count]], "{sql}");
+    }
+    // The observed leader, alive in gossip, is the one leader row.
+    assert_eq!(
+        rows(
+            new.as_ref(),
+            "SELECT partition_id, plain_node_id, leader_epoch FROM cluster.partition_replica_set \
+             WHERE is_leader"
+        )
+        .await,
+        [["0", "N1", "e3"]]
+    );
+}
+
+/// `logs` reads the coordinator's logs metadata through the default engine's
+/// scanner, so both engines return the same rows: the bootstrapped in-memory logs
+/// and a replicated log with two segments. `logs_tail_segments` keeps each log's
+/// last segment in both.
+#[restate_core::test]
+async fn logs_and_tail_segments_match_the_default_engine() {
+    use std::num::NonZeroU8;
+
+    use restate_types::logs::builder::LogsBuilder;
+    use restate_types::logs::metadata::{Chain, LogletParams, ProviderKind, SegmentIndex};
+    use restate_types::logs::{LogId, LogletId, Lsn};
+    use restate_types::net::metadata::MetadataKind;
+    use restate_types::replicated_loglet::ReplicatedLogletParams;
+    use restate_types::replication::{NodeSet, ReplicationProperty};
+    use restate_types::{GenerationalNodeId, Versioned};
+
+    let core = TestCoreEnv::create_with_single_node(1, 1).await;
+    // The scanner looks a segment's loglet up by the ID derived from the log and
+    // the segment index, so the fixture uses those IDs.
+    let replicated = |segment: u32| {
+        LogletParams::from(
+            ReplicatedLogletParams {
+                loglet_id: LogletId::new(LogId::new(100), SegmentIndex::from(segment)),
+                sequencer: GenerationalNodeId::new(1, 1),
+                replication: ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
+                nodeset: NodeSet::from_iter([1, 2, 3]),
+            }
+            .serialize()
+            .unwrap(),
+        )
+    };
+    let mut builder =
+        LogsBuilder::try_from(core.metadata.logs_snapshot().as_ref().clone()).unwrap();
+    builder
+        .add_log(
+            LogId::new(100),
+            Chain::new(ProviderKind::Replicated, replicated(0)),
+        )
+        .unwrap()
+        .append_segment(Lsn::new(50), ProviderKind::Replicated, replicated(1))
+        .unwrap();
+    let logs = builder.build();
+    let version = logs.version();
+    core.metadata_writer.submit(Arc::new(logs));
+    core.metadata
+        .wait_for_version(MetadataKind::Logs, version)
+        .await
+        .unwrap();
+
+    let options = HashMap::from([("datafusion.execution.batch_size".to_owned(), "1".to_owned())]);
+    let legacy = v1::DataFusionEnv::new(64 * 1024 * 1024, None, Some(1), &options)
+        .unwrap()
+        .with_mock_clock(MockClock::new())
+        .unwrap();
+    legacy
+        .register_tables(v1::ClusterTables::new(
+            Default::default(),
+            None,
+            v1::remote_query_scanner_manager::RemoteScannerManager::local_only(
+                core.metadata.clone(),
+            ),
+        ))
+        .await
+        .unwrap();
+    let current = DataFusionEnv::new(64 * 1024 * 1024, None, Some(1), &options)
+        .unwrap()
+        .with_mock_clock(MockClock::new())
+        .unwrap();
+    current
+        .register_tables(ClusterTables::new(
+            SourceRegistry::local_only(core.metadata.clone()),
+            Default::default(),
+        ))
+        .await
+        .unwrap();
+    let cluster = || SessionOptions {
+        schemas: vec!["cluster".into()],
+        ..Default::default()
+    };
+    let old = v1::context::DataFusionQueryEngine::from_env(legacy, None)
+        .create_session(cluster())
+        .unwrap();
+    let new = DataFusionQueryEngine::from_env(current, None)
+        .create_session(cluster())
+        .unwrap();
+    for sql in [
+        "SELECT * FROM cluster.logs ORDER BY log_id, segment_index",
+        "SELECT segment_index, base_lsn, loglet_id, sequencer, replication, nodeset \
+         FROM cluster.logs WHERE log_id = 100 ORDER BY segment_index",
+        "SELECT log_id FROM cluster.logs WHERE loglet_id IS NULL ORDER BY log_id LIMIT 1",
+        "SELECT * FROM cluster.logs_tail_segments ORDER BY log_id",
+    ] {
+        assert_eq!(
+            rows(new.as_ref(), sql).await,
+            rows(old.as_ref(), sql).await,
+            "{sql}"
+        );
+    }
+    // The replicated segments show their loglet; the in-memory ones don't.
+    assert_eq!(
+        rows(
+            new.as_ref(),
+            "SELECT segment_index, kind, loglet_id, sequencer FROM cluster.logs \
+             WHERE log_id = 100 ORDER BY segment_index"
+        )
+        .await,
+        [
+            ["0", "replicated", "100_0", "N1:1"],
+            ["1", "replicated", "100_1", "N1:1"]
+        ]
+    );
+    assert_eq!(
+        rows(
+            new.as_ref(),
+            "SELECT COUNT(*) FROM cluster.logs \
+             WHERE log_id = 100 AND replication = '{node: 2}' AND nodeset IS NOT NULL"
+        )
+        .await,
+        [["2"]]
+    );
+    assert_eq!(
+        rows(
+            new.as_ref(),
+            "SELECT COUNT(*) FROM cluster.logs WHERE loglet_id IS NULL AND sequencer IS NULL \
+             AND replication IS NULL AND nodeset IS NULL"
+        )
+        .await,
+        rows(
+            new.as_ref(),
+            "SELECT COUNT(*) FROM cluster.logs WHERE log_id <> 100"
+        )
+        .await
+    );
+    // The replicated log's tail is its second segment, from LSN 50.
+    assert_eq!(
+        rows(
+            new.as_ref(),
+            "SELECT segment_index, base_lsn FROM cluster.logs_tail_segments WHERE log_id = 100"
+        )
+        .await,
+        [["1", "50"]]
+    );
+}
+
+/// `loglet_workers` asks each log server for its loglets, and each answers with the
+/// local scanner the default engine uses too. V2 returns that scanner's rows,
+/// including the worker columns only active loglets have, and asks only log
+/// servers.
+#[restate_core::test]
+async fn loglet_workers_serve_the_shared_scanner_rows() {
+    use datafusion::arrow::datatypes::SchemaRef;
+    use datafusion::physical_plan::SendableRecordBatchStream;
+    use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+    use restate_core::test_env::{TestCoreEnvBuilder, create_mock_nodes_config};
+    use restate_storage_query_api::Scan;
+    use restate_storage_query_api::tables::loglet_workers::LogletWorkers;
+    use restate_types::GenerationalNodeId;
+    use restate_types::nodes_config::Role;
+    use v1::table_util::Builder;
+
+    use crate::tables::loglet_workers::LogletWorkersTable;
+
+    /// Two loglets on this log server: one with a running worker, one without and
+    /// with no known sequencer. Rows are written by the default engine's builder,
+    /// as the node's real scanner does.
+    #[derive(Debug)]
+    struct Loglets(GenerationalNodeId);
+    impl Scan for Loglets {
+        fn scan(
+            &self,
+            projection: SchemaRef,
+            _: &[datafusion::logical_expr::Expr],
+            _: usize,
+            _: Option<usize>,
+        ) -> SendableRecordBatchStream {
+            let mut builder = v1::loglet_worker::LogletWorkersBuilder::new(Arc::clone(&projection));
+            for (loglet_id, segment, active) in [("100_0", 0, true), ("100_1", 1, false)] {
+                let mut row = builder.row();
+                row.fmt_plain_node_id(self.0.as_plain());
+                row.fmt_gen_node_id(self.0);
+                row.loglet_id(loglet_id);
+                row.log_id(100);
+                row.segment_index(segment);
+                row.local_tail(10 + segment);
+                row.is_sealed(!active);
+                row.trim_point(segment);
+                row.known_global_tail(10);
+                row.is_active(active);
+                if active {
+                    row.fmt_sequencer(self.0);
+                    row.staging_local_tail(12);
+                    row.seal_enqueued(false);
+                    row.accepting_writes(true);
+                    row.pending_seals(0);
+                    row.pending_tail_waiters(2);
+                    row.last_request_at(1_700_000_000_000);
+                }
+            }
+            Box::pin(RecordBatchStreamAdapter::new(
+                projection,
+                futures::stream::iter([builder.finish()]),
+            ))
+        }
+    }
+
+    // This node is a log server; N2 isn't, so it isn't asked.
+    let mut nodes = create_mock_nodes_config(1, 1);
+    let mut node = nodes
+        .find_node_by_id(GenerationalNodeId::new(1, 1))
+        .unwrap()
+        .clone();
+    node.roles |= Role::LogServer;
+    nodes.upsert_node(node);
+    nodes.upsert_node(
+        create_mock_nodes_config(2, 1)
+            .find_node_by_id(GenerationalNodeId::new(2, 1))
+            .unwrap()
+            .clone(),
+    );
+    let core = TestCoreEnvBuilder::with_incoming_only_connector()
+        .set_nodes_config(nodes)
+        .build()
+        .await;
+    let me = core.metadata.my_node_id();
+
+    // The rows the shared scanner produces on this node: what the default engine
+    // serves through its remote-scanner service.
+    let batches: Vec<_> = Loglets(me)
+        .scan(LogletWorkers::arrow_schema(), &[], 128, None)
+        .try_collect()
+        .await
+        .unwrap();
+    let mut expected: Vec<Vec<String>> = batches
+        .iter()
+        .flat_map(|batch| {
+            (0..batch.num_rows()).map(|row| {
+                batch
+                    .columns()
+                    .iter()
+                    .map(|column| array_value_to_string(column, row).unwrap())
+                    .collect()
+            })
+        })
+        .collect();
+    expected.sort();
+
+    let sources = SourceRegistry::local_only(core.metadata.clone());
+    sources.register_node_scanner::<LogletWorkersTable>(Arc::new(Loglets(me)));
+    let env = DataFusionEnv::new(64 * 1024 * 1024, None, Some(1), &HashMap::new())
+        .unwrap()
+        .with_mock_clock(MockClock::new())
+        .unwrap();
+    env.register_tables(ClusterTables::new(sources, Default::default()))
+        .await
+        .unwrap();
+    let session = DataFusionQueryEngine::from_env(env, None)
+        .create_session(SessionOptions {
+            schemas: vec!["cluster".into()],
+            ..Default::default()
+        })
+        .unwrap();
+    let query = |sql: &'static str| {
+        let session = Arc::clone(&session);
+        async move {
+            let result = session.execute(sql, QueryOptions {}).await.unwrap();
+            let diagnostics = Arc::clone(&result.diagnostics);
+            let batches: Vec<_> = result.stream.try_collect().await.unwrap();
+            // Warnings accumulate while the stream runs: read them after it ends.
+            let warnings = diagnostics.warnings();
+            assert!(warnings.is_empty(), "{sql}: {warnings:?}");
+            batches
+                .iter()
+                .flat_map(|batch| {
+                    (0..batch.num_rows()).map(|row| {
+                        batch
+                            .columns()
+                            .iter()
+                            .map(|column| array_value_to_string(column, row).unwrap())
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(
+        query("SELECT * FROM cluster.loglet_workers ORDER BY loglet_id").await,
+        expected
+    );
+    assert_eq!(
+        query(
+            "SELECT loglet_id, sequencer, staging_local_tail, pending_tail_waiters \
+             FROM cluster.loglet_workers WHERE is_active"
+        )
+        .await,
+        [["100_0", "N1:1", "12", "2"]]
+    );
+    assert_eq!(
+        query(
+            "SELECT loglet_id FROM cluster.loglet_workers \
+             WHERE sequencer IS NULL AND staging_local_tail IS NULL AND last_request_at IS NULL"
+        )
+        .await,
+        [["100_1"]]
+    );
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
@@ -247,7 +784,7 @@ async fn migration_tables_serve_the_default_engine_rows() {
         .unwrap()
         .with_mock_clock(MockClock::new())
         .unwrap();
-    env.register_tables(ClusterTables::new(sources))
+    env.register_tables(ClusterTables::new(sources, Default::default()))
         .await
         .unwrap();
     let session = DataFusionQueryEngine::from_env(env, None)
@@ -322,7 +859,7 @@ async fn shared_tables_preserve_v1_column_contracts() {
         .await
         .unwrap();
     current
-        .register_tables(ClusterTables::new(sources))
+        .register_tables(ClusterTables::new(sources, Default::default()))
         .await
         .unwrap();
 
@@ -346,10 +883,23 @@ async fn shared_tables_preserve_v1_column_contracts() {
         "sys_deployment",
         "sys_rules",
         "bifrost_read_streams",
+        "nodes",
+        "partitions",
+        "partition_replica_set",
         "partition_state",
+        "logs",
+        "logs_tail_segments",
+        "loglet_workers",
     ] {
+        // V1 identifies some tables by their declaration name.
+        let legacy_name = match name {
+            "nodes" => "node",
+            "partitions" => "partition",
+            "logs" => "log",
+            name => name,
+        };
         let expected = legacy
-            .table_provider(name)
+            .table_provider(legacy_name)
             .unwrap()
             .schema()
             .fields()
@@ -844,7 +1394,7 @@ async fn config_reload_is_preserved_in_v1_and_absent_from_v2() {
         ))
         .await
         .unwrap();
-    env.register_tables(ClusterTables::new(scanners))
+    env.register_tables(ClusterTables::new(scanners, Default::default()))
         .await
         .unwrap();
     assert!(
@@ -891,7 +1441,8 @@ async fn config_reload_is_preserved_in_v1_and_absent_from_v2() {
                         engine_version: Some(version),
                         schemas: vec!["cluster".into()],
                         tables,
-                        excluded_tables: vec!["partition".into()],
+                        // V1 identifies `partitions` as `partition`; V2 by its name.
+                        excluded_tables: vec!["partition".into(), "partitions".into()],
                         ..Default::default()
                     })
                     .unwrap();
