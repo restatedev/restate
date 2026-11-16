@@ -13,11 +13,16 @@
 
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::num::NonZeroUsize;
+use std::ops::RangeBounds;
 use std::sync::Arc;
 
 use datafusion::physical_plan::PhysicalExpr;
 
+use restate_partition_store::lookup::{LookupBinding, LookupKeys, LookupTable};
 use restate_storage_query_api::schema::index::{IndexSchema, PrimarySchema, index_restriction};
+use restate_storage_query_api::selection::domain::Domain;
+use restate_storage_query_api::selection::static_conjuncts;
 use restate_storage_query_api::{LogicalSchema, SelectionSchema};
 use restate_types::sharding::KeyRange;
 use restate_util_string::ReString;
@@ -191,6 +196,42 @@ pub(crate) trait PrimarySelection: Debug + Send + Sync {
     fn within(&self, ownership: KeyRange) -> Option<PrimaryKeys>;
 }
 
+/// Complete-key lookups for a binding that supports them: the IDs a query can
+/// match, when they form a finite set across all of its alternatives. Otherwise
+/// (`into_values` is `None`, as for a surviving range) the source is scanned.
+/// Dynamic filters change during execution, so only static conjuncts count.
+pub(crate) fn select_lookup<B: LookupBinding>(
+    filters: &[Arc<dyn PhysicalExpr>],
+) -> anyhow::Result<Option<Box<dyn PrimarySelection>>> {
+    let filters = static_conjuncts(filters);
+    let ids = <B::Schema as SelectionSchema>::analyze(&filters, NonZeroUsize::new(16).unwrap())?
+        .iter()
+        .map(B::lookup_ids)
+        .fold(Domain::empty(), Domain::union)
+        .into_values();
+    Ok(ids.map(|ids| Box::new(KeyLookup::<B::Table>(ids)) as Box<dyn PrimarySelection>))
+}
+
+/// The IDs of a lookup, ascending and distinct.
+#[derive(derive_more::Debug)]
+#[debug("KeyLookup({})", _0.len())]
+struct KeyLookup<T: LookupTable>(Vec<T::Id>);
+
+impl<T: LookupTable> PrimarySelection for KeyLookup<T> {
+    fn within(&self, ownership: KeyRange) -> Option<PrimaryKeys> {
+        // Filters by each ID's partition key rather than relying on ID order.
+        let ids: Vec<_> = self
+            .0
+            .iter()
+            .filter(|id| ownership.contains(&T::partition_key(id)))
+            .collect();
+        (!ids.is_empty()).then(|| PrimaryKeys {
+            count: ids.len() as u64,
+            encoded: LookupKeys::<T>::encode(ids),
+        })
+    }
+}
+
 /// Source-specific encoded keys. Workers validate the payload and cardinality
 /// against the addressed source before installing a read.
 #[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
@@ -224,4 +265,32 @@ pub enum PrimaryRead {
     Scan,
     MultiGet(Arc<PrimaryKeys>),
     Index(ReString),
+}
+
+#[cfg(test)]
+mod tests {
+    use restate_partition_store::vqueue_table::VQueueMetaTable;
+    use restate_types::vqueues::VQueueId;
+
+    use super::*;
+
+    /// Each partition is sent its own keys and nothing else, whatever their
+    /// order; a partition without keys is sent nothing.
+    #[test]
+    fn lookups_send_each_partition_its_own_keys() {
+        let ids: Vec<_> = [5, 50, 500].map(|key| VQueueId::custom(key, "q")).into();
+        let lookup = KeyLookup::<VQueueMetaTable>(ids.clone());
+        let sent = |range| {
+            lookup.within(range).map(|keys| {
+                let decoded =
+                    LookupKeys::<VQueueMetaTable>::decode(keys.len(), &keys.encoded).unwrap();
+                (keys.len(), decoded.outside(range))
+            })
+        };
+        assert_eq!(sent(KeyRange::new(0, 99)), Some((2, false)));
+        assert_eq!(sent(KeyRange::new(100, 1000)), Some((1, false)));
+        assert_eq!(sent(KeyRange::new(1001, 2000)), None);
+        let all = lookup.within(KeyRange::FULL).unwrap();
+        assert_eq!(all.encoded, LookupKeys::<VQueueMetaTable>::encode(&ids));
+    }
 }
