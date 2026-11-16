@@ -138,26 +138,7 @@ pub trait PartitionFeatures {
 impl PartitionFeatures for PersistedFeatures {
     #[inline]
     fn has_feature(&self, feature: PartitionFeatureChange) -> bool {
-        match feature {
-            PartitionFeatureChange::EnableJournalV2 => self.journal_v2,
-            PartitionFeatureChange::EnableVqueues => self.vqueues,
-            PartitionFeatureChange::EnableUniqueRandomSeeds => self.unique_random_seeds,
-            PartitionFeatureChange::EnableVqueuesSkipCompleted => self.vqueues_skip_completed,
-            PartitionFeatureChange::EnablePreflightInvocationTerminationRetention => {
-                self.preflight_invocation_termination_retention
-            }
-            PartitionFeatureChange::EnableInconsistentStateMutationCleanup => {
-                self.inconsistent_state_mutation_cleanup
-            }
-            PartitionFeatureChange::EnablePreflightSignalRecording => {
-                self.preflight_signal_recording
-            }
-            PartitionFeatureChange::EnableByteOffsets => self.byte_offsets,
-            PartitionFeatureChange::EnableVqLifecycleRefined => self.vq_lifecycle_refined,
-            PartitionFeatureChange::EnableInvocationStatusOutputBlob => {
-                self.invocation_status_output_blob
-            }
-        }
+        self.is_enabled(feature)
     }
 
     #[inline]

@@ -20,6 +20,7 @@ use restate_memory::ByteCount;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::{LogId, Lsn};
 use restate_types::nodes_config::ClusterFingerprint;
+use restate_types::partitions::PartitionFeatureChange;
 use restate_types::sharding::KeyRange;
 use restate_types::{GenerationalNodeId, SemanticRestateVersion};
 use restate_util_string::ReString;
@@ -46,6 +47,17 @@ pub struct SnapshotCompatibility {
     /// Names of the partition (state machine) features enabled on the data. Only features known
     /// to the server that created the snapshot are listed.
     pub partition_features: Vec<ReString>,
+}
+
+impl SnapshotCompatibility {
+    /// Whether the snapshot's data has all of `features` enabled.
+    pub fn has_partition_features(&self, features: &[PartitionFeatureChange]) -> bool {
+        features.iter().all(|feature| {
+            self.partition_features
+                .iter()
+                .any(|name| name.as_str() == feature.enabled_name())
+        })
+    }
 }
 
 /// A partition store snapshot. Metadata object which is published alongside with the partition
