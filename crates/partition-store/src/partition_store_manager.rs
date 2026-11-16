@@ -25,7 +25,7 @@ use restate_rocksdb::{
     CfPrefixPattern, DbRef, DbSpecBuilder, RocksDb, RocksDbManager, RocksError, SinglePoolExecutor,
 };
 use restate_storage_api::fsm_table::ReadFsmTable;
-use restate_types::config::Configuration;
+use restate_types::config::{Configuration, RocksDbCompaction};
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::partitions::Partition;
@@ -137,6 +137,8 @@ pub struct PartitionStoreManager {
     db_cache: AsyncMutex<HashMap<restate_rocksdb::DbName, CachedDb>>,
     memory_controller: MemoryController,
     use_multi_db_layout: bool,
+    /// Read once, when the node starts: changing the compaction takes a restart.
+    compaction: RocksDbCompaction,
 }
 
 impl PartitionStoreManager {
@@ -147,7 +149,8 @@ impl PartitionStoreManager {
         // Partition creation, import, and deletion share the RocksDB lifecycle pool.
         let executor = RocksDbManager::get().lifecycle_executor().clone();
         let state = Arc::new(SharedState::new(executor));
-        let memory_controller = MemoryController::start(state.clone())?;
+        let compaction = Configuration::pinned().worker.storage.rocksdb_compaction();
+        let memory_controller = MemoryController::start(state.clone(), compaction)?;
 
         let psm = Arc::new(Self {
             state: state.clone(),
@@ -157,6 +160,7 @@ impl PartitionStoreManager {
             db_cache: Default::default(),
             memory_controller,
             use_multi_db_layout,
+            compaction,
         });
 
         Ok(psm)
@@ -199,6 +203,7 @@ impl PartitionStoreManager {
             self.memory_controller.memory_budget.clone(),
             &notifications,
             self.use_multi_db_layout,
+            self.compaction,
         );
 
         let db_spec = DbSpecBuilder::new(

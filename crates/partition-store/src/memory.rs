@@ -17,7 +17,7 @@ use metrics::{counter, gauge};
 use tracing::{info, trace, warn};
 
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
-use restate_types::config::{Configuration, StorageOptions};
+use restate_types::config::{Configuration, RocksDbCompaction, StorageOptions};
 use restate_types::identifiers::PartitionId;
 use restate_util_bytecount::ByteCount;
 
@@ -47,11 +47,17 @@ pub struct PartitionDbMemoryConfig {
 }
 
 impl PartitionDbMemoryConfig {
-    pub fn calculate(memory_budget: usize, opts: &StorageOptions) -> Self {
+    /// `compaction` is the one the partition store was opened with.
+    pub fn calculate(
+        memory_budget: usize,
+        opts: &StorageOptions,
+        compaction: &RocksDbCompaction,
+    ) -> Self {
         Self {
             memory_budget,
-            l0_num_compaction_trigger: opts
-                .rocksdb_l0_num_compaction_trigger
+            // With universal compaction this counts sorted runs instead of L0 files.
+            l0_num_compaction_trigger: compaction
+                .compaction_trigger(opts.rocksdb_l0_num_compaction_trigger)
                 .get()
                 .min(i32::MAX as u32),
             max_file_size: MIN_FILE_SIZE.max(opts.rocksdb_max_file_size.as_usize()),
@@ -107,6 +113,8 @@ impl PartitionDbMemoryConfig {
 mod tests {
     use std::num::NonZeroU32;
 
+    use restate_types::config::UniversalCompactionOptions;
+
     use super::*;
 
     #[test]
@@ -114,7 +122,8 @@ mod tests {
         let mut options = StorageOptions::default();
         options.rocksdb_l0_num_compaction_trigger = NonZeroU32::MAX;
 
-        let config = PartitionDbMemoryConfig::calculate(1, &options);
+        let level = RocksDbCompaction::Level;
+        let config = PartitionDbMemoryConfig::calculate(1, &options, &level);
         assert_eq!(config.write_buffer_size(), MIN_WRITE_BUFFER_SIZE);
         assert_eq!(
             config.level_zero_file_num_compaction_trigger(),
@@ -122,14 +131,28 @@ mod tests {
         );
 
         options.rocksdb_l0_num_compaction_trigger = NonZeroU32::MIN;
-        let config = PartitionDbMemoryConfig::calculate(usize::MAX, &options);
+        let config = PartitionDbMemoryConfig::calculate(usize::MAX, &options, &level);
         assert_eq!(config.num_write_buffers(), i32::MAX as u32);
 
         options.rocksdb_max_file_size =
             restate_util_bytecount::NonZeroByteCount::new(std::num::NonZeroUsize::MAX);
         options.rocksdb_l0_num_compaction_trigger = NonZeroU32::MAX;
-        let config = PartitionDbMemoryConfig::calculate(usize::MAX, &options);
+        let config = PartitionDbMemoryConfig::calculate(usize::MAX, &options, &level);
         assert_eq!(config.max_bytes_for_level_base(), usize::MAX);
+
+        // Universal compaction triggers on its own number of sorted runs, whatever the
+        // configuration says now.
+        let universal = UniversalCompactionOptions::default();
+        options.rocksdb_compaction = Some(RocksDbCompaction::Level);
+        let config = PartitionDbMemoryConfig::calculate(
+            1,
+            &options,
+            &RocksDbCompaction::Universal(universal),
+        );
+        assert_eq!(
+            config.level_zero_file_num_compaction_trigger(),
+            universal.sorted_runs_compaction_trigger.get()
+        );
         assert_eq!(config.max_compaction_bytes(), usize::MAX);
     }
 }
@@ -177,14 +200,17 @@ pub struct MemoryController {
 }
 
 impl MemoryController {
-    pub fn start(psm_state: Arc<SharedState>) -> Result<MemoryController, ShutdownError> {
+    pub fn start(
+        psm_state: Arc<SharedState>,
+        compaction: RocksDbCompaction,
+    ) -> Result<MemoryController, ShutdownError> {
         let memory_budget = MemoryBudget::new();
         // this task will not run in tests to avoid interfering with the test environment
         if cfg!(not(test)) {
             TaskCenter::spawn(
                 TaskKind::Background,
                 "partition-memory-controller",
-                memory_controller_task(memory_budget.clone(), psm_state),
+                memory_controller_task(memory_budget.clone(), psm_state, compaction),
             )?;
         } else {
             info!("Memory controller is disabled in tests");
@@ -197,6 +223,7 @@ impl MemoryController {
 async fn memory_controller_task(
     memory_budget: Arc<MemoryBudget>,
     psm_state: Arc<SharedState>,
+    compaction: RocksDbCompaction,
 ) -> anyhow::Result<()> {
     let mut cancel = std::pin::pin!(cancellation_watcher());
     let mut interval = tokio::time::interval(Duration::from_secs(5));
@@ -210,7 +237,7 @@ async fn memory_controller_task(
                 break;
             }
             _ = interval.tick() => {
-                if let Err(e) = rebalance_memory(&memory_budget, &psm_state).await {
+                if let Err(e) = rebalance_memory(&memory_budget, &psm_state, compaction).await {
                     warn!("Failed to rebalance partition stores memory: {}", e);
                 }
             }
@@ -309,6 +336,7 @@ async fn collect_memory_usage(
 async fn rebalance_memory(
     memory_budget: &MemoryBudget,
     psm_state: &SharedState,
+    compaction: RocksDbCompaction,
 ) -> anyhow::Result<()> {
     // If system is shutting down, do not rebalance memory.
     if TaskCenter::is_shutdown_requested() {
@@ -352,7 +380,7 @@ async fn rebalance_memory(
                 // latest budget anyway and we'll be able to flush it prematurely if it exceeds the
                 // per-partition budget. This or WBM might hit it first.
                 partition_db
-                    .update_memory_budget(new_partition_budget)
+                    .update_memory_budget(new_partition_budget, compaction)
                     .await;
             }
         }
