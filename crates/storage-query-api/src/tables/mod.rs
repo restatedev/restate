@@ -30,6 +30,7 @@ pub mod locks;
 pub mod migration_jobs;
 pub mod nodes;
 pub mod partition_state;
+pub mod partitions;
 pub mod promise;
 pub mod rules;
 pub mod scheduler;

@@ -35,7 +35,7 @@ mod log;
 pub mod loglet_worker;
 pub mod node;
 pub mod node_fan_out;
-mod partition;
+pub mod partition;
 mod partition_replica_set;
 mod partition_state;
 mod partition_store_scanner;

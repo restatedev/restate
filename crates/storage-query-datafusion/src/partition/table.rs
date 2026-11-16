@@ -35,13 +35,23 @@ impl PartitionQueryTable {
     ) -> Arc<dyn TableProvider> {
         let partitions_table = GenericTableProvider::new(
             PartitionBuilder::schema(),
-            Arc::new(PartitionScanner {
-                metadata,
-                replica_set_states,
-            }),
+            create_scanner(metadata, replica_set_states),
         );
         Arc::new(partitions_table)
     }
+}
+
+/// The scanner of `partitions`: one row per partition in this node's partition
+/// table, with the leader and memberships this node has observed. Shared with
+/// the V2 engine.
+pub fn create_scanner(
+    metadata: Metadata,
+    replica_set_states: PartitionReplicaSetStates,
+) -> Arc<dyn Scan> {
+    Arc::new(PartitionScanner {
+        metadata,
+        replica_set_states,
+    })
 }
 
 #[derive(Clone, derive_more::Debug)]

@@ -133,8 +133,11 @@ async fn partition_state_preserves_local_watcher_rows_and_empty_fallback() {
             .unwrap();
         current
             .register_tables(
-                ClusterTables::new(SourceRegistry::local_only(core.metadata.clone()))
-                    .with_cluster_state_watch(watcher.clone()),
+                ClusterTables::new(
+                    SourceRegistry::local_only(core.metadata.clone()),
+                    Default::default(),
+                )
+                .with_cluster_state_watch(watcher.clone()),
             )
             .await
             .unwrap();
@@ -213,9 +216,10 @@ async fn nodes_match_the_default_engine() {
         .with_mock_clock(MockClock::new())
         .unwrap();
     current
-        .register_tables(ClusterTables::new(SourceRegistry::local_only(
-            core.metadata.clone(),
-        )))
+        .register_tables(ClusterTables::new(
+            SourceRegistry::local_only(core.metadata.clone()),
+            Default::default(),
+        ))
         .await
         .unwrap();
     let cluster = || SessionOptions {
@@ -243,6 +247,113 @@ async fn nodes_match_the_default_engine() {
     assert_eq!(
         rows(new.as_ref(), "SELECT COUNT(*) FROM cluster.nodes").await,
         [["2"]]
+    );
+}
+
+/// `partitions` reads the coordinator's partition table and the memberships it has
+/// observed through the default engine's scanner, so both engines return the same
+/// rows: a settled partition, one being reconfigured and one never observed.
+#[restate_core::test]
+async fn partitions_match_the_default_engine() {
+    use restate_core::test_env::{TestCoreEnvBuilder, create_mock_nodes_config};
+    use restate_types::identifiers::{LeaderEpoch, PartitionId};
+    use restate_types::logs::{Lsn, SequenceNumber};
+    use restate_types::partition_table::PartitionTable;
+    use restate_types::partitions::state::{
+        LeadershipState, MemberState, PartitionReplicaSetStates, ReplicaSetState,
+    };
+    use restate_types::{GenerationalNodeId, PlainNodeId, Version};
+
+    let core = TestCoreEnvBuilder::with_incoming_only_connector()
+        .set_nodes_config(create_mock_nodes_config(1, 1))
+        .set_partition_table(PartitionTable::with_equally_sized_partitions(
+            Version::MIN,
+            3,
+        ))
+        .build()
+        .await;
+    let members = |nodes: &[u32], version: Version| ReplicaSetState {
+        version,
+        members: nodes
+            .iter()
+            .map(|&node| MemberState {
+                node_id: PlainNodeId::new(node),
+                durable_lsn: Lsn::INVALID,
+            })
+            .collect(),
+    };
+    let states = PartitionReplicaSetStates::default();
+    // Partition 0: settled on N1 and N2, led by N1.
+    states.note_observed_membership(
+        PartitionId::from(0),
+        LeadershipState {
+            current_leader_epoch: LeaderEpoch::from(3),
+            current_leader: GenerationalNodeId::new(1, 1),
+        },
+        &members(&[1, 2], Version::MIN),
+        &None,
+    );
+    // Partition 1: moving from N1 to N1 and N2, with no known leader.
+    states.note_observed_membership(
+        PartitionId::from(1),
+        Default::default(),
+        &members(&[1], Version::MIN),
+        &Some(members(&[1, 2], Version::MIN.next())),
+    );
+    // Partition 2: never observed.
+
+    let options = HashMap::from([("datafusion.execution.batch_size".to_owned(), "1".to_owned())]);
+    let legacy = v1::DataFusionEnv::new(64 * 1024 * 1024, None, Some(1), &options)
+        .unwrap()
+        .with_mock_clock(MockClock::new())
+        .unwrap();
+    legacy
+        .register_tables(v1::ClusterTables::new(
+            states.clone(),
+            None,
+            v1::remote_query_scanner_manager::RemoteScannerManager::local_only(
+                core.metadata.clone(),
+            ),
+        ))
+        .await
+        .unwrap();
+    let current = DataFusionEnv::new(64 * 1024 * 1024, None, Some(1), &options)
+        .unwrap()
+        .with_mock_clock(MockClock::new())
+        .unwrap();
+    current
+        .register_tables(ClusterTables::new(
+            SourceRegistry::local_only(core.metadata.clone()),
+            states,
+        ))
+        .await
+        .unwrap();
+    let cluster = || SessionOptions {
+        schemas: vec!["cluster".into()],
+        ..Default::default()
+    };
+    let old = v1::context::DataFusionQueryEngine::from_env(legacy, None)
+        .create_session(cluster())
+        .unwrap();
+    let new = DataFusionQueryEngine::from_env(current, None)
+        .create_session(cluster())
+        .unwrap();
+    for sql in [
+        "SELECT * FROM cluster.partitions ORDER BY partition_id",
+        "SELECT partition_id, next_replica_set FROM cluster.partitions WHERE v_next IS NOT NULL",
+        "SELECT partition_id FROM cluster.partitions WHERE leader_plain_node_id IS NULL \
+         ORDER BY partition_id LIMIT 1",
+    ] {
+        assert_eq!(
+            rows(new.as_ref(), sql).await,
+            rows(old.as_ref(), sql).await,
+            "{sql}"
+        );
+    }
+    // Every partition has a row, observed or not.
+    assert_eq!(
+        rows(new.as_ref(), "SELECT COUNT(*) FROM cluster.partitions").await,
+        [["3"]]
     );
 }
 
@@ -324,7 +435,7 @@ async fn migration_tables_serve_the_default_engine_rows() {
         .unwrap()
         .with_mock_clock(MockClock::new())
         .unwrap();
-    env.register_tables(ClusterTables::new(sources))
+    env.register_tables(ClusterTables::new(sources, Default::default()))
         .await
         .unwrap();
     let session = DataFusionQueryEngine::from_env(env, None)
@@ -399,7 +510,7 @@ async fn shared_tables_preserve_v1_column_contracts() {
         .await
         .unwrap();
     current
-        .register_tables(ClusterTables::new(sources))
+        .register_tables(ClusterTables::new(sources, Default::default()))
         .await
         .unwrap();
 
@@ -424,11 +535,13 @@ async fn shared_tables_preserve_v1_column_contracts() {
         "sys_rules",
         "bifrost_read_streams",
         "nodes",
+        "partitions",
         "partition_state",
     ] {
         // V1 identifies some tables by their declaration name.
         let legacy_name = match name {
             "nodes" => "node",
+            "partitions" => "partition",
             name => name,
         };
         let expected = legacy
@@ -927,7 +1040,7 @@ async fn config_reload_is_preserved_in_v1_and_absent_from_v2() {
         ))
         .await
         .unwrap();
-    env.register_tables(ClusterTables::new(scanners))
+    env.register_tables(ClusterTables::new(scanners, Default::default()))
         .await
         .unwrap();
     assert!(
@@ -974,7 +1087,8 @@ async fn config_reload_is_preserved_in_v1_and_absent_from_v2() {
                         engine_version: Some(version),
                         schemas: vec!["cluster".into()],
                         tables,
-                        excluded_tables: vec!["partition".into()],
+                        // V1 identifies `partitions` as `partition`; V2 by its name.
+                        excluded_tables: vec!["partition".into(), "partitions".into()],
                         ..Default::default()
                     })
                     .unwrap();
