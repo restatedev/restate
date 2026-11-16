@@ -29,7 +29,7 @@ use restate_storage_query_api::scan::{CursorScan, CursorStep, ReadCursor, Table}
 use restate_types::identifiers::PartitionKey;
 use restate_types::vqueues::VQueueId;
 
-use crate::keys::DecodeTableKey;
+use crate::keys::{DecodeTableKey, FixedLengthTableKey};
 use crate::lookup::LookupTable;
 use crate::query_read::SnapshotCursor;
 use crate::scan::{PhysicalScan, TableScan};
@@ -52,10 +52,30 @@ impl MultiGetTable for VQueueMetaTable {
 }
 
 impl LookupTable for VQueueMetaTable {
-    const KEY_LENGTH: usize = MetaKey::serialized_length_fixed();
+    type Id = VQueueId;
+    const BATCH_SIZE: NonZeroUsize = VQUEUE_META_MULTI_GET_BATCH_SIZE;
 
-    fn id(key: MetaKey) -> VQueueId {
-        VQueueId::from(key)
+    fn key(id: &VQueueId) -> Option<MetaKey> {
+        Some(MetaKey::from(id))
+    }
+
+    /// A metadata key has a fixed length and no text: its length is checked
+    /// before the ID is copied out of it, which assumes a complete ID.
+    fn check_key(bytes: &[u8]) -> anyhow::Result<PartitionKey> {
+        anyhow::ensure!(
+            bytes.len() == MetaKey::serialized_length_fixed(),
+            "lookup key has {} bytes, expected {}",
+            bytes.len(),
+            MetaKey::serialized_length_fixed()
+        );
+        let mut remaining = bytes;
+        let id = VQueueId::from(MetaKey::deserialize_from(&mut remaining)?);
+        anyhow::ensure!(remaining.is_empty(), "trailing bytes after a lookup key");
+        anyhow::ensure!(
+            MetaKey::from(&id).to_bytes() == bytes,
+            "lookup key doesn't encode its own ID"
+        );
+        Ok(id.partition_key())
     }
 }
 
