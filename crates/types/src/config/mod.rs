@@ -419,6 +419,8 @@ impl Configuration {
         self.bifrost.set_derived_values(&self.networking);
         self.metadata_server.apply_common(&self.common);
         self.log_server.apply_common(&self.common);
+        // After the sections, which need to tell a deprecated `true` from `rocksdb-l0-compression`.
+        self.common.rocksdb.fold_deprecated_l0_l1_compression();
 
         // Compute and apply role-aware background work budgets for all databases.
         let budgets = compute_background_work_budgets(

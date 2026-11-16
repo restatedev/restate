@@ -124,15 +124,47 @@ pub struct RocksDbOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     rocksdb_disable_wal_compression: Option<bool>,
 
-    /// # Disable L0/L1 SST compression
+    /// # SST compression
     ///
-    /// When false (the default), L0 and L1 SST files are compressed with Lz4.
-    /// Higher levels (L2+) always use Zstd regardless of this setting.
-    /// Set to true to disable compression for L0/L1, which can improve write
-    /// throughput at the cost of higher disk usage since these files are
-    /// short-lived and frequently compacted.
+    /// Compression of SST files on every level: `lz4`, `zstd` or `none`. `rocksdb-l0-compression`
+    /// and `rocksdb-bottommost-compression` override it for L0 and for the last level that holds
+    /// data. Lz4 uses little CPU; Zstd writes smaller files at a higher CPU cost.
     ///
-    /// Default: false (L0/L1 compression enabled)
+    /// Unset by default, which uses Lz4 for every level except the bottommost one, which uses Zstd.
+    /// Setting it applies it to every level that has no override.
+    ///
+    /// Takes effect on restart and applies to SST files written from then on: existing files keep
+    /// their compression until compaction rewrites them.
+    ///
+    /// Since v1.8.2
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rocksdb_compression: Option<RocksDbCompressionType>,
+
+    /// # L0 SST compression
+    ///
+    /// Compression of SST files in L0, written by flushes: `lz4`, `zstd` or `none`. Unset by
+    /// default, which uses `rocksdb-compression`, or Lz4 if that is unset too.
+    ///
+    /// Since v1.8.2
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rocksdb_l0_compression: Option<RocksDbCompressionType>,
+
+    /// # Bottommost SST compression
+    ///
+    /// Compression of SST files in the last level that holds data, which holds most of a
+    /// database's data: `lz4`, `zstd` or `none`. In a small database whose data fits in one level,
+    /// that level is the bottommost one. Unset by default, which uses `rocksdb-compression`, or
+    /// Zstd if that is unset too.
+    ///
+    /// Since v1.8.2
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rocksdb_bottommost_compression: Option<RocksDbCompressionType>,
+
+    // -- Deprecated options (not exposed in the schema)
+    /// Deprecated since v1.8.2: use `rocksdb-l0-compression = "none"` instead, which `true` maps
+    /// to unless `rocksdb-l0-compression` is set in the same section. In a database's section,
+    /// `false` overrides a `true` in the common options.
+    #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "Option::is_none")]
     rocksdb_disable_l0_l1_compression: Option<bool>,
 }
@@ -197,10 +229,26 @@ impl RocksDbOptions {
         if self.rocksdb_disable_wal_compression.is_none() {
             self.rocksdb_disable_wal_compression = Some(common.rocksdb_disable_wal_compression());
         }
-        if self.rocksdb_disable_l0_l1_compression.is_none() {
-            self.rocksdb_disable_l0_l1_compression =
-                Some(common.rocksdb_disable_l0_l1_compression());
+        // A section's `false` for the deprecated option still overrides a `true` in the common
+        // options, as it did before the deprecation; otherwise `false` changes nothing.
+        let keeps_l0_compression = self.rocksdb_disable_l0_l1_compression == Some(false)
+            && common.rocksdb_disable_l0_l1_compression == Some(true)
+            && common.rocksdb_l0_compression.is_none();
+        // Fold the deprecated option before inheriting, so that a section's own setting wins over
+        // the common one whichever of the two options each of them uses.
+        self.fold_deprecated_l0_l1_compression();
+        self.rocksdb_compression = self.rocksdb_compression.or(common.rocksdb_compression);
+        if keeps_l0_compression && self.rocksdb_l0_compression.is_none() {
+            self.rocksdb_l0_compression = Some(self.rocksdb_compression());
         }
+        let common_l0 = common.rocksdb_l0_compression.or_else(|| {
+            (common.rocksdb_disable_l0_l1_compression == Some(true))
+                .then_some(RocksDbCompressionType::None)
+        });
+        self.rocksdb_l0_compression = self.rocksdb_l0_compression.or(common_l0);
+        self.rocksdb_bottommost_compression = self
+            .rocksdb_bottommost_compression
+            .or(common.rocksdb_bottommost_compression);
     }
 
     pub fn rocksdb_disable_direct_io_for_reads(&self) -> bool {
@@ -258,8 +306,50 @@ impl RocksDbOptions {
         self.rocksdb_disable_wal_compression.unwrap_or(false)
     }
 
-    pub fn rocksdb_disable_l0_l1_compression(&self) -> bool {
-        self.rocksdb_disable_l0_l1_compression.unwrap_or(false)
+    /// Compression of every level without an override.
+    pub fn rocksdb_compression(&self) -> RocksDbCompressionType {
+        self.rocksdb_compression
+            .unwrap_or(RocksDbCompressionType::Lz4)
+    }
+
+    /// Compression of L0. The deprecated `rocksdb-disable-l0-l1-compression = true` counts as
+    /// `none` unless `rocksdb-l0-compression` is set.
+    pub fn rocksdb_l0_compression(&self) -> RocksDbCompressionType {
+        self.rocksdb_l0_compression
+            .or_else(|| {
+                (self.rocksdb_disable_l0_l1_compression == Some(true))
+                    .then_some(RocksDbCompressionType::None)
+            })
+            .unwrap_or_else(|| self.rocksdb_compression())
+    }
+
+    /// Compression of the last level that holds data.
+    pub fn rocksdb_bottommost_compression(&self) -> RocksDbCompressionType {
+        self.rocksdb_bottommost_compression
+            .or(self.rocksdb_compression)
+            .unwrap_or(RocksDbCompressionType::Zstd)
+    }
+
+    /// Replaces the deprecated `rocksdb-disable-l0-l1-compression` with `rocksdb-l0-compression`
+    /// and warns about it.
+    pub(super) fn fold_deprecated_l0_l1_compression(&mut self) {
+        if self.rocksdb_disable_l0_l1_compression.take() != Some(true) {
+            return;
+        }
+        if self.rocksdb_l0_compression.is_some() {
+            // we can't use tracing since config loading happens before tracing is initialized
+            eprintln!(
+                "Both the deprecated config option 'rocksdb-disable-l0-l1-compression' and \
+                 'rocksdb-l0-compression' are set; 'rocksdb-l0-compression' takes precedence. \
+                 Please remove 'rocksdb-disable-l0-l1-compression'."
+            );
+        } else {
+            super::print_warning_deprecated_config_option(
+                "rocksdb-disable-l0-l1-compression",
+                Some("rocksdb-l0-compression = \"none\""),
+            );
+            self.rocksdb_l0_compression = Some(RocksDbCompressionType::None);
+        }
     }
 }
 
@@ -304,6 +394,19 @@ pub enum PerfStatsLevel {
     EnableTime,
 }
 
+/// # SST compression
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum RocksDbCompressionType {
+    /// No compression.
+    None,
+    /// LZ4: fast, with a moderate compression ratio.
+    Lz4,
+    /// Zstandard: slower, with a higher compression ratio.
+    Zstd,
+}
+
 /// # RocksDB compaction
 ///
 /// How RocksDB merges a database's files in the background, selected with `style`:
@@ -315,6 +418,12 @@ pub enum PerfStatsLevel {
 ///   merged. Newer runs pile up next to the oldest and largest run until they reach
 ///   `max-size-amplification-percent` of its size, and then every run is merged into one. Values
 ///   are rewritten far less often, but the database takes more disk space.
+///
+/// With universal compaction, the oldest sorted run uses `rocksdb-bottommost-compression` (Zstd by
+/// default) and the newer runs `rocksdb-compression` (Lz4 by default), except flushed files in L0,
+/// which use `rocksdb-l0-compression`. Lz4 runs take more space, so full merges come sooner.
+/// Setting `rocksdb-compression = "zstd"` and `rocksdb-l0-compression = "lz4"` keeps the newer
+/// runs smaller, at a higher CPU cost per compaction.
 ///
 /// Switching an existing database from `level` to `universal` needs no migration: every non-empty
 /// level becomes one sorted run. Switching back works too, after which compaction moves the data
@@ -467,6 +576,178 @@ impl UniversalCompactionOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sst_compression_config() {
+        use RocksDbCompressionType::{Lz4, None as Off, Zstd};
+        let parse = |toml: &str| toml::from_str::<RocksDbOptions>(toml).unwrap();
+        // (L0, every other level, bottommost) of a section after inheriting from common.
+        let resolve = |common: &str, section: &str| {
+            let mut section = parse(section);
+            section.apply_common(&parse(common));
+            (
+                section.rocksdb_l0_compression(),
+                section.rocksdb_compression(),
+                section.rocksdb_bottommost_compression(),
+            )
+        };
+        let deprecated = "rocksdb-disable-l0-l1-compression = true";
+
+        assert_eq!(resolve("", ""), (Lz4, Lz4, Zstd));
+        assert!(toml::from_str::<RocksDbOptions>(r#"rocksdb-compression = "snappy""#).is_err());
+        // `rocksdb-compression` applies to every level without an override.
+        assert_eq!(
+            resolve(r#"rocksdb-compression = "none""#, ""),
+            (Off, Off, Off)
+        );
+        assert_eq!(
+            resolve(
+                r#"rocksdb-compression = "zstd""#,
+                r#"rocksdb-l0-compression = "lz4""#
+            ),
+            (Lz4, Zstd, Zstd)
+        );
+        // Overrides inherited from common apply to their level.
+        assert_eq!(
+            resolve(
+                r#"rocksdb-bottommost-compression = "lz4""#,
+                r#"rocksdb-compression = "zstd""#
+            ),
+            (Zstd, Zstd, Lz4)
+        );
+        // The deprecated option means `rocksdb-l0-compression = "none"`, whichever side sets it,
+        // and the more specific side wins.
+        assert_eq!(resolve(deprecated, ""), (Off, Lz4, Zstd));
+        assert_eq!(
+            resolve(r#"rocksdb-l0-compression = "zstd""#, deprecated),
+            (Off, Lz4, Zstd)
+        );
+        assert_eq!(
+            resolve(deprecated, r#"rocksdb-l0-compression = "zstd""#),
+            (Zstd, Lz4, Zstd)
+        );
+        // A section's `false` only cancels a `true` in the common options.
+        assert_eq!(
+            resolve(deprecated, "rocksdb-disable-l0-l1-compression = false"),
+            (Lz4, Lz4, Zstd)
+        );
+        assert_eq!(
+            resolve(
+                r#"rocksdb-l0-compression = "zstd""#,
+                "rocksdb-disable-l0-l1-compression = false"
+            ),
+            (Zstd, Lz4, Zstd)
+        );
+        // Within one section, the new option wins.
+        assert_eq!(
+            resolve(
+                "",
+                &format!("{deprecated}\nrocksdb-l0-compression = \"zstd\"")
+            ),
+            (Zstd, Lz4, Zstd)
+        );
+        assert_eq!(parse(deprecated).rocksdb_l0_compression(), Off);
+    }
+
+    /// Each database section inherits the common compression settings it doesn't set, after
+    /// the deprecated `rocksdb-disable-l0-l1-compression` is folded in at its own level.
+    #[test]
+    fn sst_compression_inheritance_across_sections() -> anyhow::Result<()> {
+        use RocksDbCompressionType::{Lz4, None as Off, Zstd};
+
+        use crate::config_loader::ConfigLoaderBuilder;
+
+        const DEFAULT: (
+            RocksDbCompressionType,
+            RocksDbCompressionType,
+            RocksDbCompressionType,
+        ) = (Lz4, Lz4, Zstd);
+        // config file, expected (L0, other levels, bottommost) for worker.storage, log-server,
+        // metadata-server and bifrost.local
+        let cases = [
+            ("", [DEFAULT; 4]),
+            ("rocksdb-compression = \"zstd\"", [(Zstd, Zstd, Zstd); 4]),
+            (
+                "rocksdb-compression = \"lz4\"\nrocksdb-bottommost-compression = \"lz4\"\n\
+                 [worker.storage]\nrocksdb-compression = \"zstd\"",
+                [
+                    (Zstd, Zstd, Lz4),
+                    (Lz4, Lz4, Lz4),
+                    (Lz4, Lz4, Lz4),
+                    (Lz4, Lz4, Lz4),
+                ],
+            ),
+            (
+                "rocksdb-disable-l0-l1-compression = true\n\
+                 [log-server]\nrocksdb-l0-compression = \"zstd\"",
+                [
+                    (Off, Lz4, Zstd),
+                    (Zstd, Lz4, Zstd),
+                    (Off, Lz4, Zstd),
+                    (Off, Lz4, Zstd),
+                ],
+            ),
+            (
+                "rocksdb-l0-compression = \"zstd\"\n\
+                 [worker.storage]\nrocksdb-bottommost-compression = \"lz4\"\n\
+                 [log-server]\nrocksdb-disable-l0-l1-compression = true",
+                [
+                    (Zstd, Lz4, Lz4),
+                    (Off, Lz4, Zstd),
+                    (Zstd, Lz4, Zstd),
+                    (Zstd, Lz4, Zstd),
+                ],
+            ),
+            (
+                "rocksdb-disable-l0-l1-compression = true\n\
+                 [log-server]\nrocksdb-disable-l0-l1-compression = false\n\
+                 rocksdb-compression = \"zstd\"",
+                [
+                    (Off, Lz4, Zstd),
+                    (Zstd, Zstd, Zstd),
+                    (Off, Lz4, Zstd),
+                    (Off, Lz4, Zstd),
+                ],
+            ),
+            (
+                "rocksdb-compression = \"none\"\n\
+                 [worker.storage]\nrocksdb-disable-l0-l1-compression = true\n\
+                 rocksdb-l0-compression = \"lz4\"",
+                [
+                    (Lz4, Off, Off),
+                    (Off, Off, Off),
+                    (Off, Off, Off),
+                    (Off, Off, Off),
+                ],
+            ),
+        ];
+
+        let dir = restate_test_util::tempdir()?;
+        for (i, (file, expected)) in cases.into_iter().enumerate() {
+            let path = dir.path().join(format!("config-{i}.toml"));
+            std::fs::write(&path, file)?;
+            let config = ConfigLoaderBuilder::default()
+                .path(Some(path))
+                .build()?
+                .load_once()?;
+            let resolved = [
+                &config.worker.storage.rocksdb,
+                &config.log_server.rocksdb,
+                &config.metadata_server.rocksdb,
+                &config.bifrost.local.rocksdb,
+            ]
+            .map(|rocksdb| {
+                (
+                    rocksdb.rocksdb_l0_compression(),
+                    rocksdb.rocksdb_compression(),
+                    rocksdb.rocksdb_bottommost_compression(),
+                )
+            });
+            assert_eq!(resolved, expected, "config:\n{file}");
+        }
+
+        Ok(())
+    }
 
     #[test]
     fn rocksdb_compaction_config() {

@@ -1346,17 +1346,7 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
 
         cf_options.set_num_levels(7);
         restate_rocksdb::configuration::set_compaction(&mut cf_options, &self.compaction);
-        let l0_l1 = if config.rocksdb.rocksdb_disable_l0_l1_compression() {
-            rocksdb::DBCompressionType::None
-        } else {
-            rocksdb::DBCompressionType::Lz4
-        };
-        let levels = restate_rocksdb::configuration::build_compression_per_level(
-            7,
-            l0_l1,
-            rocksdb::DBCompressionType::Zstd,
-        );
-        cf_options.set_compression_per_level(&levels);
+        restate_rocksdb::configuration::set_compression(&mut cf_options, &config.rocksdb);
 
         // Always collect applied LSN table properties in partition store CFs
         cf_options.add_table_properties_collector_factory(AppliedLsnCollectorFactory);
