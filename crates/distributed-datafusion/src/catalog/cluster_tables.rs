@@ -8,12 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-
-use tokio::sync::watch;
-
 use restate_core::{Metadata, TaskCenter};
-use restate_types::cluster::cluster_state::LegacyClusterState;
 use restate_types::cluster_state::ClusterState;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 
@@ -38,7 +33,6 @@ pub struct ClusterTables {
     cluster_state: ClusterState,
     /// The partition memberships and leaders this node has observed.
     replica_set_states: PartitionReplicaSetStates,
-    cluster_state_watch: Option<watch::Receiver<Arc<LegacyClusterState>>>,
 }
 
 impl ClusterTables {
@@ -49,17 +43,7 @@ impl ClusterTables {
             sources,
             cluster_state: TaskCenter::with_current(|tc| tc.cluster_state().clone()),
             replica_set_states,
-            cluster_state_watch: None,
         }
-    }
-
-    /// Supplies the coordinator's local controller view, when available.
-    pub fn with_cluster_state_watch(
-        mut self,
-        watch: Option<watch::Receiver<Arc<LegacyClusterState>>>,
-    ) -> Self {
-        self.cluster_state_watch = watch;
-        self
     }
 }
 
@@ -97,10 +81,17 @@ impl RegisterTable for ClusterTables {
                 include_str!("logs_tail_segments.sql"),
             )
             .await?;
+        // Workers register their reports separately
+        // (`local_scanners::register_partition_state_reports`).
         inventory.add::<PartitionStateTable>(
             "cluster",
             "partition_state",
-            PartitionStateTable::create_provider(self.cluster_state_watch.clone()),
+            PartitionStateTable::create_provider(
+                Metadata::current(),
+                self.sources.clone(),
+                self.cluster_state.clone(),
+                self.replica_set_states.clone(),
+            ),
         )?;
         inventory.add::<LogletWorkersTable>(
             "cluster",

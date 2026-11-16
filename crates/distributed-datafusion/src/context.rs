@@ -228,11 +228,14 @@ impl DataFusionQueryEngine {
 
 fn collect_node_warnings(plan: &Arc<dyn ExecutionPlan>) -> Vec<NodeWarnings> {
     use crate::node_fan_out::NodeFanOutExecutionPlan;
+    use crate::tables::partition_state::PartitionStateExec;
     let mut warnings = Vec::new();
     let mut stack = vec![Arc::clone(plan)];
     while let Some(node) = stack.pop() {
         if let Some(fan_out) = node.downcast_ref::<NodeFanOutExecutionPlan>() {
             warnings.push(fan_out.node_warnings().clone());
+        } else if let Some(partition_state) = node.downcast_ref::<PartitionStateExec>() {
+            warnings.push(partition_state.node_warnings().clone());
         }
         for child in node.children() {
             stack.push(Arc::clone(child));

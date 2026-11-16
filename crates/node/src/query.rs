@@ -123,6 +123,11 @@ impl QueryEngineBuilder {
                     io.clone(),
                     scanners,
                 );
+                v2::local_scanners::register_partition_state_reports(
+                    processor_manager.clone(),
+                    self.metadata.clone(),
+                    scanners,
+                );
                 v2::local_scanners::register_cluster_scanners(
                     Arc::clone(partition_store_manager),
                     self.metadata.clone(),
@@ -194,7 +199,7 @@ impl QueryEngineBuilder {
         self.env
             .register_tables(v1::ClusterTables::new(
                 self.replica_set_states.clone(),
-                cluster_state_watch.clone(),
+                cluster_state_watch,
                 self.scanners.clone(),
             ))
             .await?;
@@ -213,10 +218,10 @@ impl QueryEngineBuilder {
         let mut engine =
             v1::context::DataFusionQueryEngine::with_rate_limiter(self.env, rate_limiter.clone());
         if let Some((env, scanners)) = self.distributed {
-            env.register_tables(
-                v2::ClusterTables::new(scanners.clone(), self.replica_set_states)
-                    .with_cluster_state_watch(cluster_state_watch),
-            )
+            env.register_tables(v2::ClusterTables::new(
+                scanners.clone(),
+                self.replica_set_states,
+            ))
             .await?;
             env.register_tables(
                 v2::UserTables::new(v2::context::SelectPartitionsFromMetadata, scanners)

@@ -57,6 +57,23 @@ once with `v1` and once with `v2`, should return the same rows.
   secret-looking values redacted, to `restatectl sql` only. The admin `/query`
   API never shows it, not even at the operator level, and
   `disable-config-sql-table` hides it in both engines.
+- **V2's `partition_state` asks the workers.** V1 shows the cluster
+  controller's view, so it's empty on nodes that don't run the controller. V2
+  asks every worker for its partition processors' state and works on every
+  node. It has a row for every replica the node expects, even when no answer
+  came back, and a new last column, `report`, says what each row is:
+  - `reported`: the worker's answer;
+  - `node_unavailable`: no complete answer from that node. It wasn't asked
+    (gossip sees it as dead, or it isn't a worker), or it failed, or it didn't
+    answer within `networking.http2-keep-alive-timeout` (3 seconds by
+    default);
+  - `not_reported`: the worker answered, but had nothing for this partition;
+  - `no_known_replicas`: the node knows no replica of the partition.
+
+  Only `reported` rows have processor values, such as `effective_mode` or
+  `applied_log_lsn`; the others have NULL there. To compare the
+  engines, select `WHERE report = 'reported'` in V2. `restatectl sql` prints a
+  warning for each node without a complete answer.
 - **V2 doesn't bound the bytes of a batch yet.** A query over large rows, such
   as big journal entries or state values, can fail when a batch exceeds
   `networking.message-size-limit` (32 MiB by default). Bounding this is

@@ -440,6 +440,27 @@ impl NodeFanOutExecutionPlan {
         ))
     }
 
+    /// Scans `table` on exactly `nodes`, for a node source that no SQL table
+    /// exposes, such as the worker reports `partition_state` reconciles.
+    pub(crate) fn for_nodes(
+        schema: SchemaRef,
+        table: ReString,
+        nodes: Vec<TargetNode>,
+        sources: &SourceRegistry,
+        distributed: bool,
+    ) -> datafusion::common::Result<Self> {
+        let scan = NodeScan {
+            local_scanner: sources.local_node_scanner(&table),
+            table_name: table,
+            filters: Vec::new(),
+            limit: None,
+            sharding_columns: Vec::new(),
+            distributed,
+        };
+        let statistics = Statistics::new_unknown(&schema);
+        Self::for_scan(schema, nodes, scan, statistics)
+    }
+
     /// One task per node, such as a shard-local JOIN of two node tables, described
     /// by `task` in plans.
     pub(crate) fn for_tasks(
@@ -493,6 +514,52 @@ impl NodeFanOutExecutionPlan {
     pub fn node_warnings(&self) -> &NodeWarnings {
         &self.node_warnings
     }
+
+    /// The stream of one target node, with its errors: [`ExecutionPlan::execute`]
+    /// turns them into node warnings instead. Callers that need each node's
+    /// outcome themselves, such as `partition_state`, use this.
+    pub(crate) fn execute_node(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> datafusion::common::Result<SendableRecordBatchStream> {
+        if partition >= self.target_nodes.len() {
+            return Err(DataFusionError::Internal(format!(
+                "NodeFanOutExecutionPlan: partition {} out of range ({})",
+                partition,
+                self.target_nodes.len()
+            )));
+        }
+        Ok(match &self.tasks[partition] {
+            Some(task) => {
+                // Defer even synchronous runtime failures into the warning boundary.
+                let task = Arc::clone(task);
+                let stream =
+                    futures::TryStreamExt::try_flatten(futures::stream::once(async move {
+                        task.execute(0, context)
+                    }));
+                Box::pin(
+                    datafusion::physical_plan::stream::RecordBatchStreamAdapter::new(
+                        self.schema(),
+                        MeteredStream {
+                            inner: stream.boxed(),
+                            baseline_metrics: BaselineMetrics::new(&self.metrics, partition),
+                        },
+                    ),
+                )
+            }
+            None => Box::pin(
+                datafusion::physical_plan::stream::RecordBatchStreamAdapter::new(
+                    self.schema(),
+                    futures::stream::once(async {
+                        datafusion::common::exec_err!(
+                            "node source requires distributed execution or a registered local scanner"
+                        )
+                    }),
+                ),
+            ),
+        })
+    }
 }
 
 impl ExecutionPlan for NodeFanOutExecutionPlan {
@@ -537,44 +604,8 @@ impl ExecutionPlan for NodeFanOutExecutionPlan {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
-        let target = self.target_nodes.get(partition).ok_or_else(|| {
-            DataFusionError::Internal(format!(
-                "NodeFanOutExecutionPlan: partition {} out of range ({})",
-                partition,
-                self.target_nodes.len()
-            ))
-        })?;
-        let node_label = target.plain_node_id.to_string();
-        let inner: SendableRecordBatchStream = match &self.tasks[partition] {
-            Some(task) => {
-                // Defer even synchronous runtime failures into the warning boundary.
-                let task = Arc::clone(task);
-                let stream =
-                    futures::TryStreamExt::try_flatten(futures::stream::once(async move {
-                        task.execute(0, context)
-                    }));
-                Box::pin(
-                    datafusion::physical_plan::stream::RecordBatchStreamAdapter::new(
-                        self.schema(),
-                        MeteredStream {
-                            inner: stream.boxed(),
-                            baseline_metrics: BaselineMetrics::new(&self.metrics, partition),
-                        },
-                    ),
-                )
-            }
-            None => Box::pin(
-                datafusion::physical_plan::stream::RecordBatchStreamAdapter::new(
-                    self.schema(),
-                    futures::stream::once(async {
-                        datafusion::common::exec_err!(
-                            "node source requires distributed execution or a registered local scanner"
-                        )
-                    }),
-                ),
-            ),
-        };
-
+        let inner = self.execute_node(partition, context)?;
+        let node_label = self.target_nodes[partition].plain_node_id.to_string();
         Ok(Box::pin(ErrorCatchingStream::new(
             inner,
             node_label.into(),

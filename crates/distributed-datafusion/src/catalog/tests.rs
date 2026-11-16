@@ -71,107 +71,6 @@ async fn table_names(session: &dyn QuerySession, schema: &str) -> BTreeSet<Strin
         .collect()
 }
 
-#[restate_core::test]
-async fn partition_state_preserves_local_watcher_rows_and_empty_fallback() {
-    use restate_types::cluster::cluster_state::{
-        AliveNode, BrokenReason, LegacyClusterState, NodeState, PartitionProcessorStatus,
-    };
-    use restate_types::identifiers::PartitionId;
-
-    let core = TestCoreEnv::create_with_single_node(1, 1).await;
-    let mut state = LegacyClusterState::empty();
-    let node = core.metadata.my_node_id();
-    state.nodes.insert(
-        node.as_plain(),
-        NodeState::Alive(AliveNode {
-            last_heartbeat_at: restate_clock::time::MillisSinceEpoch::new(1_700_000_000_000),
-            generational_node_id: node,
-            partitions: [
-                (
-                    PartitionId::from(1),
-                    PartitionProcessorStatus {
-                        last_observed_leader_node: Some(node),
-                        enabled_storage_features: vec!["scoped-tables".into()],
-                        byte_offsets_base_lsn: Some(restate_types::logs::Lsn::new(42)),
-                        log_byte_offset: Some(1024),
-                        partition_store_byte_offset: Some(2048),
-                        ..Default::default()
-                    },
-                ),
-                (
-                    PartitionId::from(2),
-                    PartitionProcessorStatus {
-                        broken_reason: BrokenReason::AheadOfLog,
-                        ..Default::default()
-                    },
-                ),
-            ]
-            .into(),
-            uptime: Default::default(),
-        }),
-    );
-    let (tx, watch) = tokio::sync::watch::channel(Arc::new(state));
-    let options = HashMap::from([("datafusion.execution.batch_size".to_owned(), "1".to_owned())]);
-    for watcher in [Some(watch), None] {
-        let legacy = v1::DataFusionEnv::new(64 * 1024 * 1024, None, Some(1), &options)
-            .unwrap()
-            .with_mock_clock(MockClock::new())
-            .unwrap();
-        legacy
-            .register_tables(v1::ClusterTables::new(
-                Default::default(),
-                watcher.clone(),
-                v1::remote_query_scanner_manager::RemoteScannerManager::local_only(
-                    core.metadata.clone(),
-                ),
-            ))
-            .await
-            .unwrap();
-        let current = DataFusionEnv::new(64 * 1024 * 1024, None, Some(1), &options)
-            .unwrap()
-            .with_mock_clock(MockClock::new())
-            .unwrap();
-        current
-            .register_tables(
-                ClusterTables::new(
-                    SourceRegistry::local_only(core.metadata.clone()),
-                    Default::default(),
-                )
-                .with_cluster_state_watch(watcher.clone()),
-            )
-            .await
-            .unwrap();
-        let old = v1::context::DataFusionQueryEngine::from_env(legacy, None)
-            .create_session(SessionOptions {
-                schemas: vec!["cluster".into()],
-                ..Default::default()
-            })
-            .unwrap();
-        let new = DataFusionQueryEngine::from_env(current, None)
-            .create_session(SessionOptions {
-                schemas: vec!["cluster".into()],
-                ..Default::default()
-            })
-            .unwrap();
-        for sql in [
-            "SELECT * FROM cluster.partition_state ORDER BY partition_id",
-            "SELECT COUNT(*) FROM cluster.partition_state",
-            "SELECT gen_node_id, partition_id FROM cluster.partition_state WHERE partition_id = 2 LIMIT 1",
-            "SELECT enabled_features, enabled_storage_features FROM cluster.partition_state LIMIT 1",
-        ] {
-            let results = [rows(old.as_ref(), sql).await, rows(new.as_ref(), sql).await];
-            assert_eq!(results[0], results[1], "{sql}");
-            if sql.contains("COUNT(*)") {
-                assert_eq!(
-                    results[1],
-                    vec![vec![if watcher.is_some() { "2" } else { "0" }.to_owned()]]
-                );
-            }
-        }
-    }
-    drop(tx);
-}
-
 /// `nodes` reads the coordinator's nodes configuration and gossip view through
 /// the default engine's scanner, so both engines return the same rows, including
 /// the states that only some roles have.
@@ -905,14 +804,18 @@ async fn shared_tables_preserve_v1_column_contracts() {
             .schema()
             .fields()
             .to_vec();
+        let mut actual = current
+            .table_provider(name)
+            .unwrap()
+            .schema()
+            .fields()
+            .to_vec();
+        // V2's `partition_state` adds `report` after V1's columns.
+        if name == "partition_state" {
+            assert_eq!(actual.pop().unwrap().name(), "report");
+        }
         assert_eq!(
-            current
-                .table_provider(name)
-                .unwrap()
-                .schema()
-                .fields()
-                .as_ref(),
-            expected.as_slice(),
+            actual, expected,
             "shared_columns_preserve_names_types_nullability_and_order: {name}"
         );
     }

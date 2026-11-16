@@ -22,6 +22,9 @@ mod tests;
 #[cfg(test)]
 mod multi_owner_tests;
 
+#[cfg(test)]
+mod partition_state_tests;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;

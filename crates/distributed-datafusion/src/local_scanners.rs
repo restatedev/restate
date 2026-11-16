@@ -28,6 +28,7 @@ use crate::tables::journal::SysJournalTable;
 use crate::tables::journal_events::SysJournalEventsTable;
 use crate::tables::locks::SysLocksTable;
 use crate::tables::migration_records::{IndexesTable, MigrationJobsTable};
+use crate::tables::partition_state::{PartitionStateReports, PartitionStateTable};
 use crate::tables::promise::SysPromiseTable;
 use crate::tables::rules::schema::SysRulesTable;
 use crate::tables::scheduler_status::schema::SysSchedulerTable;
@@ -102,6 +103,18 @@ pub fn register_worker_partition_scanners(
 ) {
     sources.register_processor_reads(processors, query_io);
     register_storage_sources(sources);
+}
+
+/// The worker's report for `cluster.partition_state`, which coordinators ask
+/// every worker for.
+pub fn register_partition_state_reports(
+    processors: ProcessorsManagerHandle,
+    metadata: Metadata,
+    sources: &SourceRegistry,
+) {
+    sources.register_node_scanner::<PartitionStateReports>(
+        PartitionStateTable::create_reports_scanner(processors, metadata),
+    );
 }
 
 fn register_storage_sources(sources: &SourceRegistry) {

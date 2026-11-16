@@ -16,23 +16,26 @@ use restate_util_string::ReString;
 use crate::{ShardingScheme, define_schema};
 
 define_schema! {
-    /// Partition state observed by this coordinator's local controller.
+    /// Each partition processor's state as its worker reports it, with one row for
+    /// every replica this coordinator expects even when no report came back: the
+    /// `report` column says which rows are reports, and the other rows have no
+    /// processor values.
     partition_state {
         name: "partition_state",
         sharding: ShardingScheme::Coordinator,
         columns {
             /// Partition ID.
             partition_id: u32 => DataType::UInt32,
-            /// Node ID where the partition is running.
-            plain_node_id: ReString => DataType::Utf8,
-            /// Node generation.
-            gen_node_id: ReString => DataType::Utf8,
-            /// Observed target run mode (leader, follower).
-            target_mode: ReString => DataType::Utf8,
-            /// Effective partition run mode.
-            effective_mode: ReString => DataType::Utf8,
-            /// Last updated.
-            updated_at: MillisSinceEpoch => TimestampMillisecond,
+            /// Node ID of the replica; NULL for a partition with no known replicas.
+            plain_node_id: Option<ReString> => DataType::Utf8,
+            /// Generation of the node that reported; NULL unless reported.
+            gen_node_id: Option<ReString> => DataType::Utf8,
+            /// Observed target run mode (leader, follower); NULL unless reported.
+            target_mode: Option<ReString> => DataType::Utf8,
+            /// Effective partition run mode; NULL unless reported.
+            effective_mode: Option<ReString> => DataType::Utf8,
+            /// When the processor last updated its state; NULL unless reported.
+            updated_at: Option<MillisSinceEpoch> => TimestampMillisecond,
             /// Last observed leader epoch.
             leader_epoch: Option<u64> => DataType::UInt64,
             /// Last observed leader node ID.
@@ -53,12 +56,12 @@ define_schema! {
             applied_rule_book_version: Option<u32> => DataType::UInt32,
             /// Applied schema version.
             applied_schema_version: Option<u32> => DataType::UInt32,
-            /// Enabled state-machine features.
-            enabled_features: Vec<Option<ReString>> => Utf8List,
+            /// Enabled state-machine features; NULL unless reported.
+            enabled_features: Option<Vec<Option<ReString>>> => Utf8List,
             /// Why the processor stopped running, absent while healthy.
             broken_reason: Option<ReString> => DataType::Utf8,
-            /// Enabled partition-store features.
-            enabled_storage_features: Vec<Option<ReString>> => Utf8List,
+            /// Enabled partition-store features; NULL unless reported.
+            enabled_storage_features: Option<Vec<Option<ReString>>> => Utf8List,
             /// LSN of the record that turned byte offsets on for the partition, which
             /// they count from. NULL while the partition doesn't track byte offsets.
             byte_offsets_base_lsn: Option<u64> => DataType::UInt64,
@@ -74,6 +77,12 @@ define_schema! {
             /// and a replica restored from a snapshot continues from the snapshot's.
             /// NULL while the partition doesn't track byte offsets.
             partition_store_byte_offset: Option<u64> => DataType::UInt64,
+            /// Whether the row is a report: `reported` (the worker's own report),
+            /// `node_unavailable` (no complete report from the node: it wasn't asked, or
+            /// its request failed, timed out or broke off), `not_reported` (the node's
+            /// complete report has no entry for this partition) or `no_known_replicas`
+            /// (the partition has no known replicas and no report).
+            report: ReString => DataType::Utf8,
         }
     }
 }
