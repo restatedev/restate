@@ -1206,6 +1206,22 @@ experimental! {
     /// Since v1.8.2
     byte_offsets,
 
+    /// # Retire journal v1
+    ///
+    /// When enabled, partitions remove all data stored in journal v1, the journal format of
+    /// deployments that use a service protocol version older than V4. Invocations that are pinned
+    /// to such a deployment and haven't completed yet are **killed**; completed invocations keep
+    /// their result but lose their journal. A partition retires journal v1 the next time a leader
+    /// is elected on a node with this option.
+    ///
+    /// Only enable once all nodes run v1.8.2 or newer. Once a partition has retired journal v1,
+    /// it stays retired even if this option is removed.
+    ///
+    /// Once enabled, you **cannot** roll back to a Restate-server version older than v1.8.2.
+    ///
+    /// Since v1.8.2
+    retire_journal_v1,
+
     /// # Evenly spaced partition-key buckets for unscoped services
     ///
     /// When enabled while the cluster is provisioned, idempotent invocations of unscoped

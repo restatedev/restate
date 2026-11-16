@@ -630,6 +630,14 @@ where
                 feature_changes.push(PartitionFeatureChange::EnableByteOffsets);
             }
 
+            // Retiring journal v1 kills the invocations that still use it, so it is opt-in for
+            // now. Its barrier arm runs after the ones above, such as the vqueues migration.
+            if config.common.experimental.is_retire_journal_v1_enabled()
+                && !processor.fsm().features().is_journal_v1_retired()
+            {
+                feature_changes.push(PartitionFeatureChange::RetireJournalV1);
+            }
+
             if !feature_changes.is_empty() {
                 // Smallest version that supports every listed feature, but never below
                 // the partition's current min_restate_version.
