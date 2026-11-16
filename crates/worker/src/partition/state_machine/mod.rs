@@ -4057,6 +4057,18 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteLockTable
             + ReadVQueueTable,
     {
+        // Completions that end up here go to journal v1. Once it is retired, no journal is stored
+        // there: the invocation isn't pinned to a deployment yet, so none of its entries can
+        // wait for this completion, and storing it would leave journal v1 data behind.
+        if self.processor.fsm().features().is_journal_v1_retired() {
+            debug!(
+                restate.invocation.id = %invocation_id,
+                ?completion,
+                "Ignoring completion for an invocation that has no journal entry waiting for it."
+            );
+            return Ok(());
+        }
+
         match status {
             InvocationStatus::Invoked(_) => {
                 self.handle_completion_for_invoked(invocation_id, completion).await?;
