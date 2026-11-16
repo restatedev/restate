@@ -36,7 +36,7 @@ pub mod loglet_worker;
 pub mod node;
 pub mod node_fan_out;
 pub mod partition;
-mod partition_replica_set;
+pub mod partition_replica_set;
 mod partition_state;
 mod partition_store_scanner;
 mod promise;

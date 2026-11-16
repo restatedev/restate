@@ -22,6 +22,7 @@ use crate::source_registry::SourceRegistry;
 use crate::tables::bifrost_read_stream::BifrostReadStreamsTable;
 use crate::tables::migration_records::{IndexesTable, MigrationJobsTable};
 use crate::tables::nodes::NodesTable;
+use crate::tables::partition_replica_set::PartitionReplicaSetTable;
 use crate::tables::partition_state::PartitionStateTable;
 use crate::tables::partitions::PartitionsTable;
 
@@ -70,6 +71,15 @@ impl RegisterTable for ClusterTables {
             "cluster",
             "partitions",
             PartitionsTable::create_provider(Metadata::current(), self.replica_set_states.clone()),
+        )?;
+        inventory.add::<PartitionReplicaSetTable>(
+            "cluster",
+            "partition_replica_set",
+            PartitionReplicaSetTable::create_provider(
+                Metadata::current(),
+                self.cluster_state.clone(),
+                self.replica_set_states.clone(),
+            ),
         )?;
         inventory.add::<PartitionStateTable>(
             "cluster",

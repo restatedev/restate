@@ -37,14 +37,25 @@ impl PartitionReplicaSetTable {
     ) -> Arc<dyn TableProvider> {
         let replica_set_table = GenericTableProvider::new(
             PartitionReplicaSetBuilder::schema(),
-            Arc::new(ReplicaSetScanner {
-                metadata,
-                replica_set_states,
-                cluster_state,
-            }),
+            create_scanner(metadata, cluster_state, replica_set_states),
         );
         Arc::new(replica_set_table)
     }
+}
+
+/// The scanner of `partition_replica_set`: one row per member of each partition's
+/// current and next membership, as this node has observed them, with each
+/// member's liveness from this node's gossip view. Shared with the V2 engine.
+pub fn create_scanner(
+    metadata: Metadata,
+    cluster_state: ClusterState,
+    replica_set_states: PartitionReplicaSetStates,
+) -> Arc<dyn Scan> {
+    Arc::new(ReplicaSetScanner {
+        metadata,
+        replica_set_states,
+        cluster_state,
+    })
 }
 
 #[derive(Clone, derive_more::Debug)]

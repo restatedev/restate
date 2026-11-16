@@ -38,6 +38,7 @@ pub(crate) mod journal_events;
 pub(crate) mod locks;
 pub(crate) mod migration_records;
 pub(crate) mod nodes;
+pub(crate) mod partition_replica_set;
 pub(crate) mod partition_state;
 pub(crate) mod partitions;
 pub(crate) mod promise;

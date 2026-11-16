@@ -751,6 +751,7 @@ mod tests {
                         {"table_name": "indexes"},
                         {"table_name": "migration_jobs"},
                         {"table_name": "nodes"},
+                        {"table_name": "partition_replica_set"},
                         {"table_name": "partition_state"},
                         {"table_name": "partitions"}
                     ]})
