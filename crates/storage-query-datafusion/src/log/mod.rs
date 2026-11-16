@@ -11,3 +11,6 @@
 mod row;
 pub(crate) mod schema;
 mod table;
+
+pub use schema::LogBuilder;
+pub use table::create_scanner;

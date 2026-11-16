@@ -527,7 +527,7 @@ mod tests {
             ),
         );
         let before_registration = engine.create_session(SessionOptions::default()).unwrap();
-        env.register_tables(ClusterTables::new(scanners.clone()))
+        env.register_tables(ClusterTables::new(scanners.clone(), Default::default()))
             .await
             .unwrap();
         register_metadata_scanners(

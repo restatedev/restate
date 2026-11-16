@@ -31,10 +31,15 @@ use super::schema::{LogBuilder, LogTable};
 
 impl LogTable {
     pub(crate) fn create_provider(metadata: Metadata) -> Arc<dyn TableProvider> {
-        let logs_table =
-            GenericTableProvider::new(LogBuilder::schema(), Arc::new(LogScanner(metadata)));
+        let logs_table = GenericTableProvider::new(LogBuilder::schema(), create_scanner(metadata));
         Arc::new(logs_table)
     }
+}
+
+/// The scanner of `logs`: one row per segment of each log in this node's logs
+/// metadata. Shared with the V2 engine.
+pub fn create_scanner(metadata: Metadata) -> Arc<dyn Scan> {
+    Arc::new(LogScanner(metadata))
 }
 
 #[derive(Clone, derive_more::Debug)]

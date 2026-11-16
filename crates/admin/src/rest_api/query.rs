@@ -40,31 +40,14 @@ use restate_storage_query_datafusion::config::ConfigTable;
 use restate_types::invocation::client::InvocationClient;
 use restate_types::schema::registry::{DiscoveryClient, MetadataService, TelemetryClient};
 
-use crate::query_context::collect_query_headers;
+use crate::query_context::{
+    QUERY_ENGINE_HEADER, collect_query_headers, engine_version_from_headers,
+};
 use crate::state::AdminServiceState;
 
 const RETRY_AFTER_HEADER: &str = "Retry-After";
 const QUERY_SESSION_HEADER: &str = "x-restate-query-session-id";
-// Internal staging selector, consumed before diagnostic-context header collection.
-const QUERY_ENGINE_HEADER: &str = "x-restate-query-engine";
 const QUERY_LEVEL_HEADER: &str = "x-restate-query-level";
-
-fn engine_version_from_headers(
-    headers: &HeaderMap,
-    default: QueryEngineVersion,
-) -> Result<QueryEngineVersion, QueryError> {
-    let mut values = headers.get_all(QUERY_ENGINE_HEADER).iter();
-    let version = match values.next().map(HeaderValue::as_bytes) {
-        None => default,
-        Some(b"v1") => QueryEngineVersion::V1,
-        Some(b"v2") => QueryEngineVersion::V2,
-        _ => return Err(QueryError::InvalidEngineSelection),
-    };
-    if values.next().is_some() {
-        return Err(QueryError::InvalidEngineSelection);
-    }
-    Ok(version)
-}
 
 fn operator_level_from_headers(headers: &HeaderMap) -> bool {
     let mut values = headers.get_all(QUERY_LEVEL_HEADER).iter();
@@ -209,7 +192,8 @@ async fn query_with_engine(
     headers: &HeaderMap,
     payload: QueryRequest,
 ) -> Result<Response, QueryError> {
-    let version = engine_version_from_headers(headers, default)?;
+    let version =
+        engine_version_from_headers(headers, default).ok_or(QueryError::InvalidEngineSelection)?;
     let mut options = SessionOptions {
         engine_version: Some(version),
         headers: collect_query_headers(headers),
@@ -620,7 +604,10 @@ mod tests {
             .unwrap();
         assert!(env.table_provider(&ConfigTable::identity()).is_some());
         distributed_env
-            .register_tables(v2::ClusterTables::new(distributed_scanners.clone()))
+            .register_tables(v2::ClusterTables::new(
+                distributed_scanners.clone(),
+                Default::default(),
+            ))
             .await
             .unwrap();
         distributed_env
@@ -746,8 +733,14 @@ mod tests {
                     serde_json::json!({"rows": [
                         {"table_name": "bifrost_read_streams"},
                         {"table_name": "indexes"},
+                        {"table_name": "loglet_workers"},
+                        {"table_name": "logs"},
+                        {"table_name": "logs_tail_segments"},
                         {"table_name": "migration_jobs"},
-                        {"table_name": "partition_state"}
+                        {"table_name": "nodes"},
+                        {"table_name": "partition_replica_set"},
+                        {"table_name": "partition_state"},
+                        {"table_name": "partitions"}
                     ]})
                 }
             };

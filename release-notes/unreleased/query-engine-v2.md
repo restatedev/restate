@@ -15,14 +15,17 @@ engine with a header:
 - the response carries the same header with the engine that served the query,
   and a `Server-Timing` header with the planning time;
 - `restate sql --engine v2` sends the header from the CLI and reports the
-  engine with the row count.
+  engine with the row count;
+- `restatectl sql --engine v2` does the same for the operator-level `cluster`
+  tables, and reports the engine too.
 
 New options, all off by default:
 
 - `experimental-enable-query-engine-v2` starts V2's query task service and
   allows selecting it;
 - `experimental-enable-query-engine-v2-default` makes V2 the engine for
-  requests without the header, and enables V2 on the node too;
+  queries that don't select one, from the admin API, `restate sql` and
+  `restatectl sql`, and enables V2 on the node too;
 - `experimental-enable-query-operator-tables` lets requests with
   `X-Restate-Query-Level: operator` query the cluster tables, except
   `config`, in both engines;
@@ -43,9 +46,10 @@ once with `v1` and once with `v2`, should return the same rows.
   `experimental-enable-query-index-tables`: for example, `sys_vqueues` filtered
   by a queue reads only that queue's entries.
 - V2 doesn't serve every table yet. It has no `sys_inbox`, and in the
-  operator-level `cluster` schema it serves only `partition_state`,
-  `bifrost_read_streams`, `indexes` and `migration_jobs`. Query the others
-  with `v1`.
+  operator-level `cluster` schema it serves only `nodes`, `partitions`,
+  `partition_replica_set`, `partition_state`, `logs`, `logs_tail_segments`,
+  `loglet_workers`, `bifrost_read_streams`, `indexes` and `migration_jobs`.
+  Query the others with `v1`.
 - **V2 doesn't bound the bytes of a batch yet.** A query over large rows, such
   as big journal entries or state values, can fail when a batch exceeds
   `networking.message-size-limit` (32 MiB by default). Bounding this is
@@ -53,9 +57,9 @@ once with `v1` and once with `v2`, should return the same rows.
 - Both engines share the node's query limits: one memory pool of
   `admin.query-engine.memory-size`, and one `/query` rate limit
   (`admin.query-engine.rate-limiting`).
-- `restate sql --engine v2` fails when the server doesn't confirm that V2
-  served the query, for example a server older than v1.8.2, which ignores the
-  selection.
+- `restate sql --engine v2` and `restatectl sql --engine v2` fail when the
+  server doesn't confirm that V2 served the query, for example a server older
+  than v1.8.2, which ignores the selection.
 - V2 needs every participating node on v1.8.2 or newer. A node that runs an
   older version rejects V2's query tasks: the query fails, and the nodes'
   connection stays up.

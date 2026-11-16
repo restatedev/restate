@@ -119,6 +119,10 @@ where
                     bifrost.clone(),
                     metadata_writer.clone(),
                     query_engine,
+                    options
+                        .common
+                        .experimental
+                        .is_query_engine_v2_default_enabled(),
                     replica_set_states.clone(),
                 )
                 .into_server(&configuration.live_load().networking),

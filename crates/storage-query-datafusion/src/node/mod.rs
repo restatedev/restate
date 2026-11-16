@@ -11,3 +11,6 @@
 mod row;
 pub(crate) mod schema;
 mod table;
+
+pub use schema::NodeBuilder;
+pub use table::create_scanner;

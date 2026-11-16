@@ -133,14 +133,20 @@ impl QueryEngineBuilder {
             }
         }
         if let Some(log_server) = log_server {
+            let scanner = introspection::loglet_workers::create_local_scanner(
+                log_server.state_map().clone(),
+                log_server.active_worker_map().clone(),
+                self.metadata.clone(),
+            );
             self.scanners
-                .register_node_scanner::<v1::loglet_worker::LogletWorkersTable>(
-                    introspection::loglet_workers::create_local_scanner(
-                        log_server.state_map().clone(),
-                        log_server.active_worker_map().clone(),
-                        self.metadata.clone(),
-                    ),
+                .register_node_scanner::<v1::loglet_worker::LogletWorkersTable>(Arc::clone(
+                    &scanner,
+                ));
+            if let Some((_, scanners)) = &self.distributed {
+                scanners.register_node_scanner::<v2::tables::loglet_workers::LogletWorkersTable>(
+                    scanner,
                 );
+            }
         }
         let scanner = introspection::bifrost_read_streams::create_local_scanner(
             bifrost.read_stream_registry().clone(),
@@ -185,7 +191,7 @@ impl QueryEngineBuilder {
     ) -> Result<Arc<QueryEngine>, BuildError> {
         self.env
             .register_tables(v1::ClusterTables::new(
-                self.replica_set_states,
+                self.replica_set_states.clone(),
                 cluster_state_watch.clone(),
                 self.scanners.clone(),
             ))
@@ -206,7 +212,7 @@ impl QueryEngineBuilder {
             v1::context::DataFusionQueryEngine::with_rate_limiter(self.env, rate_limiter.clone());
         if let Some((env, scanners)) = self.distributed {
             env.register_tables(
-                v2::ClusterTables::new(scanners.clone())
+                v2::ClusterTables::new(scanners.clone(), self.replica_set_states)
                     .with_cluster_state_watch(cluster_state_watch),
             )
             .await?;

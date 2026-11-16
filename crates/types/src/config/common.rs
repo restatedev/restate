@@ -1053,8 +1053,9 @@ experimental! {
 
     /// # Default to query engine V2
     ///
-    /// Uses V2 for admin `/query` requests without an `X-Restate-Query-Engine`
-    /// header; an explicit `v1` or `v2` header still wins. Also enables V2 on the
+    /// Uses V2 for queries that don't select an engine: admin `/query` requests
+    /// without an `X-Restate-Query-Engine` header, and `restatectl sql` without
+    /// `--engine`. An explicit `v1` or `v2` still wins. Also enables V2 on the
     /// node, as `experimental-enable-query-engine-v2` does. Read when the node
     /// starts; restart to change it.
     ///
