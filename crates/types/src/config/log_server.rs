@@ -17,7 +17,7 @@ use tracing::warn;
 
 use restate_util_bytecount::NonZeroByteCount;
 
-use super::{BackgroundWorkBudget, CommonOptions, RocksDbOptions};
+use super::{BackgroundWorkBudget, CommonOptions, RocksDbCompaction, RocksDbOptions};
 
 const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
     NonZeroByteCount::new(NonZeroUsize::new(32 * 1024 * 1024).unwrap());
@@ -199,12 +199,41 @@ pub struct LogServerOptions {
 
     /// # Number of L0 files to trigger compaction
     ///
-    /// Sets the number of files to trigger level-0 compaction.
+    /// Sets the number of files to trigger level-0 compaction. Applies to leveled compaction only;
+    /// see `rocksdb-compaction`.
     ///
     /// [default] is 8
     ///
     /// Since v1.7.7
     pub rocksdb_l0_num_compaction_trigger: NonZeroU32,
+
+    /// # Compaction
+    ///
+    /// How RocksDB compacts the log-server's records: `style = "level"` (default) or
+    /// `style = "universal"`, which also takes `sorted-runs-compaction-trigger` and
+    /// `max-size-amplification-percent`.
+    ///
+    /// Universal compaction rewrites records far less often than leveled compaction, which saves
+    /// disk bandwidth and CPU, at the cost of disk space:
+    ///
+    /// - Trimmed records keep taking disk space until a merge rewrites the sorted runs that hold
+    ///   them.
+    /// - With the default `max-size-amplification-percent` of 100, the data grows to up to about
+    ///   twice its live size before its sorted runs are merged into one.
+    /// - The merge writes a new copy of the live data before it deletes the old files, so the data
+    ///   briefly takes up to about three times its live size.
+    ///
+    /// ```toml
+    /// [log-server.rocksdb-compaction]
+    /// style = "universal"
+    /// max-size-amplification-percent = 100
+    /// ```
+    ///
+    /// Switching styles needs no migration. Takes effect on restart.
+    ///
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rocksdb_compaction: Option<RocksDbCompaction>,
 
     /// # Max open files
     ///
@@ -383,20 +412,29 @@ impl LogServerOptions {
         )
     }
 
-    pub fn level_zero_file_num_compaction_trigger(&self) -> u32 {
-        self.rocksdb_l0_num_compaction_trigger
+    /// The configured compaction, leveled if unset. The log-server reads it once, when it opens
+    /// its database: a change takes a restart.
+    pub fn rocksdb_compaction(&self) -> RocksDbCompaction {
+        self.rocksdb_compaction.unwrap_or_default()
+    }
+
+    /// Number of L0 files (leveled compaction) or sorted runs (universal compaction) that
+    /// triggers a compaction of the data column family, for a database opened with `compaction`.
+    pub fn level_zero_file_num_compaction_trigger(&self, compaction: &RocksDbCompaction) -> u32 {
+        compaction
+            .compaction_trigger(self.rocksdb_l0_num_compaction_trigger)
             .get()
             .min(i32::MAX as u32)
     }
 
-    pub fn max_bytes_for_level_base(&self) -> usize {
+    pub fn max_bytes_for_level_base(&self, compaction: &RocksDbCompaction) -> usize {
         if self.rocksdb_enable_blob_separation {
             // See performance tuning remarks https://github.com/facebook/rocksdb/wiki/BlobDB#performance-tuning
             self.target_file_size_base().saturating_mul(10)
         } else {
             self.write_buffer_size()
                 .saturating_mul(self.min_write_buffer_number_to_merge() as usize)
-                .saturating_mul(self.level_zero_file_num_compaction_trigger() as usize)
+                .saturating_mul(self.level_zero_file_num_compaction_trigger(compaction) as usize)
         }
     }
 
@@ -461,6 +499,7 @@ impl Default for LogServerOptions {
                 NonZeroUsize::new(1024 * 1024).unwrap(),
             ),
             rocksdb_l0_num_compaction_trigger: NonZeroU32::new(8).unwrap(),
+            rocksdb_compaction: None,
             rocksdb_max_open_files: None,
             rocksdb_partition_sst_by_log: true,
             rocksdb_partition_sst_by_loglet: false,
@@ -482,7 +521,7 @@ mod tests {
 
         assert_eq!(options.rocksdb_memory_budget(), MIN_ROCKSDB_MEMORY);
         assert_eq!(
-            options.level_zero_file_num_compaction_trigger(),
+            options.level_zero_file_num_compaction_trigger(&RocksDbCompaction::Level),
             i32::MAX as u32
         );
 
