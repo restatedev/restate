@@ -19,6 +19,7 @@
 //! storage crate that holds them.
 
 pub mod bifrost_read_streams;
+pub mod config;
 pub mod deployment;
 pub mod index;
 pub mod indexes;

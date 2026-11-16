@@ -567,6 +567,8 @@ mod tests {
             Configuration::live(),
         );
         scanners.register_node_scanner::<ConfigTable>(Arc::clone(&scanner));
+        distributed_scanners
+            .register_node_scanner::<v2::tables::config::ConfigTable>(Arc::clone(&scanner));
         let node_reads = Arc::new(AtomicUsize::new(0));
         distributed_scanners
             .register_node_scanner::<v2::tables::bifrost_read_stream::BifrostReadStreamsTable>(
@@ -646,30 +648,36 @@ mod tests {
         }
 
         for version in [QueryEngineVersion::V1, QueryEngineVersion::V2] {
-            // Exercise each engine's node transport before applying HTTP exposure rules.
-            let session = engine
-                .create_session(SessionOptions {
-                    engine_version: Some(version),
-                    schemas: vec!["cluster".into()],
-                    ..Default::default()
-                })
-                .unwrap();
-            let (sql, expected_rows) = match version {
-                QueryEngineVersion::V1 => ("SELECT * FROM cluster.config LIMIT 1", 1),
-                QueryEngineVersion::V2 => ("SELECT * FROM cluster.bifrost_read_streams", 0),
-            };
-            let result = session.execute(sql, QueryOptions {}).await.unwrap();
-            let batches: Vec<_> = result.stream.try_collect().await.unwrap();
-            assert!(
-                result.diagnostics.warnings().is_empty(),
-                "{version}: {:?}",
-                result.diagnostics.warnings()
+            // Exercise each engine's node transport before applying HTTP exposure
+            // rules, in a `restatectl sql` (gRPC) session, which serves `config`.
+            let mut metadata = tonic::metadata::MetadataMap::new();
+            metadata.insert(
+                QUERY_ENGINE_HEADER,
+                tonic::metadata::MetadataValue::from_static(version.as_str()),
             );
-            assert_eq!(
-                batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
-                expected_rows,
-                "{version}"
-            );
+            let (_, options) = crate::cluster_controller::grpc_svc_handler::cluster_query_options(
+                &metadata, false,
+            )
+            .unwrap();
+            let session = engine.create_session(options).unwrap();
+            let mut queries = vec![("SELECT * FROM config LIMIT 1", 1)];
+            if version == QueryEngineVersion::V2 {
+                queries.push(("SELECT * FROM cluster.bifrost_read_streams", 0));
+            }
+            for (sql, expected_rows) in queries {
+                let result = session.execute(sql, QueryOptions {}).await.unwrap();
+                let batches: Vec<_> = result.stream.try_collect().await.unwrap();
+                assert!(
+                    result.diagnostics.warnings().is_empty(),
+                    "{version}: {:?}",
+                    result.diagnostics.warnings()
+                );
+                assert_eq!(
+                    batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+                    expected_rows,
+                    "{version}: {sql}"
+                );
+            }
             if version == QueryEngineVersion::V2 {
                 assert!(
                     node_reads.load(Ordering::Relaxed) > 0,
@@ -769,6 +777,8 @@ mod tests {
                     )
                 );
             }
+            // Both engines register `config`, yet `/query` never shows it, not even at
+            // the operator level.
             for table in ["config", "cluster.config", "restate.cluster.config"] {
                 let (status, body) = request(
                     &engine,

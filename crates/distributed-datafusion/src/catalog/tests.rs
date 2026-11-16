@@ -883,6 +883,7 @@ async fn shared_tables_preserve_v1_column_contracts() {
         "sys_deployment",
         "sys_rules",
         "bifrost_read_streams",
+        "config",
         "nodes",
         "partitions",
         "partition_replica_set",
@@ -1358,8 +1359,11 @@ async fn experimental_table_visibility_is_fixed_at_session_creation_in_both_engi
     Configuration::set(previous_config);
 }
 
+/// Both engines serve `config` from the scanner every node registers, which
+/// redacts values that may be secret, and both hide it from sessions created
+/// while `disable-config-sql-table` is set.
 #[restate_core::test]
-async fn config_reload_is_preserved_in_v1_and_absent_from_v2() {
+async fn config_reload_applies_to_both_engines() {
     use restate_storage_query_api::QueryEngineTable;
     use restate_storage_query_datafusion as v1;
     use restate_types::config::Configuration;
@@ -1370,6 +1374,7 @@ async fn config_reload_is_preserved_in_v1_and_absent_from_v2() {
     let original = Configuration::pinned().clone();
     let mut config = original.clone();
     config.common.disable_config_sql_table = true;
+    config.worker.snapshots.object_store.aws_secret_access_key = Some("hunter2".into());
     Configuration::set(config.clone());
 
     let options = HashMap::from([("datafusion.execution.target_partitions".into(), "1".into())]);
@@ -1386,6 +1391,7 @@ async fn config_reload_is_preserved_in_v1_and_absent_from_v2() {
     let scanners = SourceRegistry::local_only(core.metadata.clone());
     let scanner = v1::config::create_scanner(core.metadata.clone(), Configuration::live());
     legacy_scanners.register_node_scanner::<ConfigTable>(Arc::clone(&scanner));
+    scanners.register_node_scanner::<crate::tables::config::ConfigTable>(Arc::clone(&scanner));
     legacy_env
         .register_tables(v1::ClusterTables::new(
             Default::default(),
@@ -1402,7 +1408,12 @@ async fn config_reload_is_preserved_in_v1_and_absent_from_v2() {
             .table_provider(&ConfigTable::identity())
             .is_some()
     );
-    assert!(env.table_provider(&ConfigTable::identity()).is_none());
+    // Both engines identify the table as `config`, which is what Admin `/query` excludes.
+    assert_eq!(
+        <crate::tables::config::ConfigTable as crate::QuerySource>::identity(),
+        ConfigTable::identity()
+    );
+    assert!(env.table_provider(&ConfigTable::identity()).is_some());
     // The scanner still serves rows while SQL exposure is disabled. ClusterTables uses
     // RPC even for node-local scans, so exercise it directly in this local-only fixture.
     let batches: Vec<_> = scanner
@@ -1449,7 +1460,7 @@ async fn config_reload_is_preserved_in_v1_and_absent_from_v2() {
                 let result = session
                     .execute(&format!("SELECT * FROM {name} LIMIT 0"), QueryOptions {})
                     .await;
-                let hidden = disabled || version == QueryEngineVersion::V2;
+                let hidden = disabled;
                 if hidden {
                     assert!(result.is_err(), "{version}: {name}");
                 } else {
@@ -1459,6 +1470,22 @@ async fn config_reload_is_preserved_in_v1_and_absent_from_v2() {
                         .try_collect::<Vec<_>>()
                         .await
                         .unwrap();
+                }
+                // V2 reaches this node's scanner directly; V1 needs its remote-scanner
+                // service even locally, which this fixture doesn't run.
+                if !hidden && version == QueryEngineVersion::V2 {
+                    assert_eq!(
+                        rows(
+                            session.as_ref(),
+                            &format!(
+                                "SELECT plain_node_id, value FROM {name} \
+                                 WHERE key = 'worker.snapshots.aws-secret-access-key'"
+                            ),
+                        )
+                        .await,
+                        [["N1", "<REDACTED>"]],
+                        "{name}"
+                    );
                 }
                 sessions.push((session, hidden));
             }

@@ -88,7 +88,7 @@ pub(crate) struct ClusterCtrlSvcHandler {
 /// and the engine the request selects with the `x-restate-query-engine`
 /// metadata, else the node's default. This is the rule admin `/query` requests
 /// follow too.
-fn cluster_query_options(
+pub(crate) fn cluster_query_options(
     metadata: &MetadataMap,
     v2_default: bool,
 ) -> Result<(QueryEngineVersion, SessionOptions), Status> {

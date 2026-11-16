@@ -29,6 +29,7 @@ macro_rules! table_adapter {
 pub(crate) use table_adapter;
 
 pub mod bifrost_read_stream;
+pub mod config;
 pub(crate) mod deployment;
 pub(crate) mod index;
 pub(crate) mod invocation_state;

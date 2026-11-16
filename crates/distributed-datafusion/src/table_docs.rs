@@ -15,6 +15,7 @@ use restate_storage_query_api::tables::stats::{
 };
 use restate_storage_query_api::tables::{
     bifrost_read_streams::BifrostReadStreams,
+    config::Config,
     deployment::Deployment,
     index::{EntryByQueue, EntryByService},
     indexes::Indexes,
@@ -61,6 +62,7 @@ pub const ALL_TABLE_DOCS: &[StaticTableDocs] = &[
     table_docs!(restate_storage_query_api::tables::user_limits::UserLimits),
     table_docs!(restate_storage_query_api::tables::invocation_status::InvocationStatus),
     table_docs!(BifrostReadStreams),
+    table_docs!(Config),
     table_docs!(Deployment),
     table_docs!(EntryByService),
     table_docs!(EntryByQueue),

@@ -162,11 +162,13 @@ impl QueryEngineBuilder {
                     scanner,
                 );
         }
+        // One scanner for both engines; it redacts values that may be secret.
+        let scanner = v1::config::create_scanner(self.metadata.clone(), Configuration::live());
         self.scanners
-            .register_node_scanner::<v1::config::ConfigTable>(v1::config::create_scanner(
-                self.metadata.clone(),
-                Configuration::live(),
-            ));
+            .register_node_scanner::<v1::config::ConfigTable>(Arc::clone(&scanner));
+        if let Some((_, scanners)) = &self.distributed {
+            scanners.register_node_scanner::<v2::tables::config::ConfigTable>(scanner);
+        }
     }
 
     pub(crate) fn create_services(&self, router: &mut MessageRouterBuilder) -> QueryServices {

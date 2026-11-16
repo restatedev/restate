@@ -20,6 +20,7 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use crate::BuildError;
 use crate::source_registry::SourceRegistry;
 use crate::tables::bifrost_read_stream::BifrostReadStreamsTable;
+use crate::tables::config::ConfigTable;
 use crate::tables::loglet_workers::LogletWorkersTable;
 use crate::tables::logs::LogsTable;
 use crate::tables::migration_records::{IndexesTable, MigrationJobsTable};
@@ -114,6 +115,16 @@ impl RegisterTable for ClusterTables {
             "cluster",
             "bifrost_read_streams",
             BifrostReadStreamsTable::create_provider(
+                Metadata::current(),
+                self.sources.clone(),
+                None, // The node registers its local scanner separately.
+            ),
+        )?;
+        // Admin `/query` sessions exclude `config`; `restatectl sql` (gRPC) serves it.
+        inventory.add::<ConfigTable>(
+            "cluster",
+            "config",
+            ConfigTable::create_provider(
                 Metadata::current(),
                 self.sources.clone(),
                 None, // The node registers its local scanner separately.

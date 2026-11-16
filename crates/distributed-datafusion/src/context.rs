@@ -78,6 +78,10 @@ impl DataFusionQueryEngine {
             limiter.try_consume_one()?;
         }
         let config = Configuration::pinned();
+        if config.common.disable_config_sql_table {
+            opts.excluded_tables
+                .push(crate::tables::config::ConfigTable::identity());
+        }
         // The service index's definition isn't in this build yet (#5856).
         opts.excluded_tables
             .push(crate::tables::index::EntryByServiceTable::identity());

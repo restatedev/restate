@@ -53,6 +53,10 @@ once with `v1` and once with `v2`, should return the same rows.
   `partition_replica_set`, `partition_state`, `logs`, `logs_tail_segments`,
   `loglet_workers`, `bifrost_read_streams`, `indexes` and `migration_jobs`.
   Query the others with `v1`.
+- Both engines serve `config`, each node's running configuration with
+  secret-looking values redacted, to `restatectl sql` only. The admin `/query`
+  API never shows it, not even at the operator level, and
+  `disable-config-sql-table` hides it in both engines.
 - **V2 doesn't bound the bytes of a batch yet.** A query over large rows, such
   as big journal entries or state values, can fail when a batch exceeds
   `networking.message-size-limit` (32 MiB by default). Bounding this is
