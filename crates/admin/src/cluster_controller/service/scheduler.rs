@@ -46,7 +46,9 @@ use restate_types::replication::balanced_spread_selector::{
     BalancedSpreadSelector, SelectorOptions,
 };
 use restate_types::replication::{NodeSet, ReplicationProperty};
-use restate_types::{NodeId, PlainNodeId, Version, Versioned};
+use restate_types::{GenerationalNodeId, NodeId, PlainNodeId, Version, Versioned};
+
+use crate::cluster_controller::safety_checker::PartitionPlacement;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -331,6 +333,65 @@ impl<T: TransportConnect> Scheduler<T> {
             let mut batch = self.replica_set_states.membership_update_batch();
             Self::note_observed_membership_update(partition_id, occupied_entry.get(), &mut batch);
         }
+    }
+
+    /// The placement of the partition as last known to the scheduler, `None` if it hasn't been
+    /// loaded yet or if its leadership is frozen and its leader isn't known.
+    pub fn partition_placement(
+        &self,
+        partition_id: PartitionId,
+        legacy_cluster_state: &LegacyClusterState,
+    ) -> Option<PartitionPlacement> {
+        let state = self.partitions.get(&partition_id)?;
+        let frozen_leader = match (&state.leadership_policy.freeze, state.target_leader) {
+            (None, _) => None,
+            (Some(_), Some(leader)) => Some(NodeId::from(leader)),
+            // no leader gets selected while frozen, e.g. after a cluster controller failover, so
+            // rely on the leader that the replicas have observed
+            (Some(_), None) => Some(NodeId::from(Self::observed_leader(
+                partition_id,
+                state,
+                legacy_cluster_state,
+            )?)),
+        };
+        Some(PartitionPlacement::new(
+            partition_id,
+            &state.current,
+            state.next.as_ref(),
+            state.placement_policy.is_frozen(),
+            frozen_leader,
+        ))
+    }
+
+    /// The latest leader that the alive replicas of the partition have observed, `None` if no
+    /// replica reports one or if the cluster state is stale.
+    fn observed_leader(
+        partition_id: PartitionId,
+        state: &PartitionState,
+        legacy_cluster_state: &LegacyClusterState,
+    ) -> Option<GenerationalNodeId> {
+        if !legacy_cluster_state.is_reliable() {
+            return None;
+        }
+        let is_replica = |node_id| {
+            state.current.replica_set().contains(node_id)
+                || state
+                    .next
+                    .as_ref()
+                    .is_some_and(|next| next.replica_set().contains(node_id))
+        };
+        legacy_cluster_state
+            .alive_nodes()
+            .filter(|node| is_replica(node.generational_node_id.as_plain()))
+            .filter_map(|node| {
+                let status = node.partitions.get(&partition_id)?;
+                Some((
+                    status.last_observed_leader_epoch?,
+                    status.last_observed_leader_node?,
+                ))
+            })
+            .max_by_key(|(leader_epoch, _)| *leader_epoch)
+            .map(|(_, leader)| leader)
     }
 
     fn note_observed_membership_update(
