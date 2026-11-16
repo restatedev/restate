@@ -644,6 +644,13 @@ where
                 feature_changes.push(PartitionFeatureChange::EnableInvocationStatusOutputBlob);
             }
 
+            // Its barrier arm runs after the ones above, such as the vqueues migration.
+            if (on_by_default_from_1_9 || config.common.experimental.is_retire_journal_v1_enabled())
+                && !processor.fsm().features().is_journal_v1_retired()
+            {
+                feature_changes.push(PartitionFeatureChange::RetireJournalV1);
+            }
+
             // Changes that cost no rollback ride along once every replica is held to their
             // minimum version: by the changes enabled before, or by the barrier this round
             // proposes anyway, which also holds the replicas to the partition's current minimum.
