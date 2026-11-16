@@ -29,6 +29,7 @@ pub mod journal_events;
 pub mod locks;
 pub mod migration_jobs;
 pub mod nodes;
+pub mod partition_replica_set;
 pub mod partition_state;
 pub mod partitions;
 pub mod promise;

@@ -44,8 +44,8 @@ once with `v1` and once with `v2`, should return the same rows.
   by a queue reads only that queue's entries.
 - V2 doesn't serve every table yet. It has no `sys_inbox`, and in the
   operator-level `cluster` schema it serves only `nodes`, `partitions`,
-  `partition_state`, `bifrost_read_streams`, `indexes` and `migration_jobs`.
-  Query the others with `v1`.
+  `partition_replica_set`, `partition_state`, `bifrost_read_streams`, `indexes`
+  and `migration_jobs`. Query the others with `v1`.
 - **V2 doesn't bound the bytes of a batch yet.** A query over large rows, such
   as big journal entries or state values, can fail when a batch exceeds
   `networking.message-size-limit` (32 MiB by default). Bounding this is

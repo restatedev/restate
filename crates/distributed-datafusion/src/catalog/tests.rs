@@ -250,12 +250,15 @@ async fn nodes_match_the_default_engine() {
     );
 }
 
-/// `partitions` reads the coordinator's partition table and the memberships it has
-/// observed through the default engine's scanner, so both engines return the same
-/// rows: a settled partition, one being reconfigured and one never observed.
+/// `partitions` and `partition_replica_set` read the coordinator's partition table
+/// and the memberships it has observed through the default engine's scanners, so
+/// both engines return the same rows: a settled partition, one being reconfigured
+/// and one never observed.
 #[restate_core::test]
-async fn partitions_match_the_default_engine() {
+async fn partitions_and_replica_sets_match_the_default_engine() {
+    use restate_core::TaskCenter;
     use restate_core::test_env::{TestCoreEnvBuilder, create_mock_nodes_config};
+    use restate_types::cluster_state::NodeState;
     use restate_types::identifiers::{LeaderEpoch, PartitionId};
     use restate_types::logs::{Lsn, SequenceNumber};
     use restate_types::partition_table::PartitionTable;
@@ -272,6 +275,12 @@ async fn partitions_match_the_default_engine() {
         ))
         .build()
         .await;
+    // Gossip sees N1:1 alive; N2 stays unobserved.
+    TaskCenter::current()
+        .cluster_state()
+        .clone()
+        .updater()
+        .upsert_node_state(GenerationalNodeId::new(1, 1), NodeState::Alive);
     let members = |nodes: &[u32], version: Version| ReplicaSetState {
         version,
         members: nodes
@@ -283,7 +292,7 @@ async fn partitions_match_the_default_engine() {
             .collect(),
     };
     let states = PartitionReplicaSetStates::default();
-    // Partition 0: settled on N1 and N2, led by N1.
+    // Partition 0: settled on N1 and N2, led by N1; N2 reported a durable LSN.
     states.note_observed_membership(
         PartitionId::from(0),
         LeadershipState {
@@ -293,6 +302,7 @@ async fn partitions_match_the_default_engine() {
         &members(&[1, 2], Version::MIN),
         &None,
     );
+    states.note_durable_lsn(PartitionId::from(0), PlainNodeId::new(2), Lsn::new(10));
     // Partition 1: moving from N1 to N1 and N2, with no known leader.
     states.note_observed_membership(
         PartitionId::from(1),
@@ -343,6 +353,12 @@ async fn partitions_match_the_default_engine() {
         "SELECT partition_id, next_replica_set FROM cluster.partitions WHERE v_next IS NOT NULL",
         "SELECT partition_id FROM cluster.partitions WHERE leader_plain_node_id IS NULL \
          ORDER BY partition_id LIMIT 1",
+        "SELECT * FROM cluster.partition_replica_set \
+         ORDER BY partition_id, membership, plain_node_id",
+        "SELECT partition_id, plain_node_id, membership_version FROM cluster.partition_replica_set \
+         WHERE membership = 'next' ORDER BY plain_node_id",
+        "SELECT partition_id, plain_node_id, leader_epoch FROM cluster.partition_replica_set \
+         WHERE is_leader",
     ] {
         assert_eq!(
             rows(new.as_ref(), sql).await,
@@ -350,10 +366,37 @@ async fn partitions_match_the_default_engine() {
             "{sql}"
         );
     }
-    // Every partition has a row, observed or not.
+    // Every partition has a row; members of both memberships have one for each.
+    // N1's three rows carry its live generation; N2's two don't.
+    for (sql, count) in [
+        ("SELECT COUNT(*) FROM cluster.partitions", "3"),
+        ("SELECT COUNT(*) FROM cluster.partition_replica_set", "5"),
+        (
+            "SELECT COUNT(*) FROM cluster.partition_replica_set WHERE durable_lsn = 10",
+            "1",
+        ),
+        (
+            "SELECT COUNT(*) FROM cluster.partition_replica_set \
+             WHERE alive_gen_node_id = 'N1:1'",
+            "3",
+        ),
+        (
+            "SELECT COUNT(*) FROM cluster.partition_replica_set \
+             WHERE plain_node_id = 'N2' AND alive_gen_node_id IS NULL",
+            "2",
+        ),
+    ] {
+        assert_eq!(rows(new.as_ref(), sql).await, [[count]], "{sql}");
+    }
+    // The observed leader, alive in gossip, is the one leader row.
     assert_eq!(
-        rows(new.as_ref(), "SELECT COUNT(*) FROM cluster.partitions").await,
-        [["3"]]
+        rows(
+            new.as_ref(),
+            "SELECT partition_id, plain_node_id, leader_epoch FROM cluster.partition_replica_set \
+             WHERE is_leader"
+        )
+        .await,
+        [["0", "N1", "e3"]]
     );
 }
 
@@ -536,6 +579,7 @@ async fn shared_tables_preserve_v1_column_contracts() {
         "bifrost_read_streams",
         "nodes",
         "partitions",
+        "partition_replica_set",
         "partition_state",
     ] {
         // V1 identifies some tables by their declaration name.
