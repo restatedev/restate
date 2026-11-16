@@ -231,12 +231,15 @@ pub fn group_findings(findings: &[Finding], expand_limit: usize) -> Vec<FindingL
 
 /// The findings as plain text lines.
 pub fn findings_list(findings: &[Finding], expand_limit: usize) -> String {
-    let mut out = String::new();
     if findings.is_empty() {
-        let _ = writeln!(out, " {}", paint("✓ No issues found", Color::Green));
-        return out;
+        return format!(" {}\n", paint("✓ No issues found", Color::Green));
     }
-    let lines = group_findings(findings, expand_limit);
+    finding_lines_text(group_findings(findings, expand_limit))
+}
+
+/// The finding lines as plain text lines.
+pub fn finding_lines_text(lines: Vec<FindingLine>) -> String {
+    let mut out = String::new();
     let subject_width = lines.iter().map(|l| l.subject.len()).max().unwrap_or(0);
     for line in lines {
         let color = severity_color(line.severity);
@@ -255,7 +258,7 @@ pub fn findings_list(findings: &[Finding], expand_limit: usize) -> String {
     out
 }
 
-fn truncate(text: &str, max: usize) -> String {
+pub fn truncate(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_owned();
     }
