@@ -1231,6 +1231,25 @@ experimental! {
     /// Since v1.8.2
     vq_lifecycle_refined,
 
+    /// # Retire journal v1
+    ///
+    /// When enabled, partitions remove all data stored in journal v1, the journal format of
+    /// deployments that use a service protocol version older than V4. Invocations that haven't
+    /// completed yet are **killed** if they are pinned to such a deployment, or if they still
+    /// store their input in journal v1 because they were started before v1.7.0 and haven't run on
+    /// a deployment since. Completed invocations keep their result but lose their journal. A
+    /// partition retires journal v1 the next time a leader is elected on a node with this option.
+    /// Leaders running v1.9.0 or newer retire it regardless of this option, once every worker
+    /// node in the cluster runs v1.9.0 or newer.
+    ///
+    /// Only enable once all nodes run v1.8.2 or newer. Once a partition has retired journal v1,
+    /// it stays retired even if this option is removed.
+    ///
+    /// Once enabled, you **cannot** roll back to a Restate-server version older than v1.8.2.
+    ///
+    /// Since v1.8.2
+    retire_journal_v1,
+
     /// # Evenly spaced partition-key buckets for unscoped services
     ///
     /// When enabled while the cluster is provisioned, idempotent invocations of unscoped
