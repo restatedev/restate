@@ -46,21 +46,26 @@ impl<P: HasOutboxMut> ApplyPartitionCommand<TruncateOutboxCommand>
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
+    use std::num::NonZeroU64;
     use std::ops::RangeInclusive;
 
     use restate_bifrost::DataRecord;
     use restate_partition_store::{PartitionStore, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
     use restate_storage_api::Transaction;
+    use restate_storage_api::blob_table::{BlobBuilder, RawParts, ReadBlobTable, WriteBlobTable};
     use restate_storage_api::fsm_table::WriteFsmTable;
     use restate_storage_api::outbox_table::{OutboxMessage, ReadOutboxTable, WriteOutboxTable};
     use restate_types::SemanticRestateVersion;
-    use restate_types::invocation::ServiceInvocation;
+    use restate_types::blob::{BlobId, BlobKind};
+    use restate_types::identifiers::InvocationId;
+    use restate_types::invocation::{JournalCompletionTarget, ServiceInvocation};
     use restate_types::logs::{Keys, Lsn, SequenceNumber};
     use restate_types::message::MessageIndex;
     use restate_types::partitions::Partition;
     use restate_types::sharding::{KeyRange, PartitionId};
-    use restate_types::time::NanosSinceEpoch;
+    use restate_types::time::{MillisSinceEpoch, NanosSinceEpoch};
+    use restate_wal_protocol::v2::outbox::{InvocationResponseFromBlobCommand, OutboxMessage as _};
     use restate_wal_protocol::v2::{self, Command};
 
     use super::{ApplyPartitionCommand, TruncateOutboxCommand, TruncateOutboxContext};
@@ -206,5 +211,55 @@ mod tests {
         truncate(&mut processor, &mut storage, 7).await;
         assert_matches!(storage.get_outbox_message(7).await, Ok(None));
         assert_eq!(processor.outbox().outbox_tail(), 8);
+    }
+
+    async fn ref_count(storage: &mut PartitionStore, blob: BlobId) -> Option<u64> {
+        storage
+            .get_blob::<RawParts>(blob)
+            .await
+            .unwrap()
+            .map(|(_, ref_count, _)| ref_count)
+    }
+
+    #[restate_core::test]
+    async fn truncation_releases_outbox_blobs() {
+        let mut storage = open_store().await;
+        let blob = BlobId::generate_journal_entry_blob_id(
+            MillisSinceEpoch::now(),
+            1,
+            &InvocationId::mock_random(),
+        );
+        let blob_message = InvocationResponseFromBlobCommand {
+            target: JournalCompletionTarget::for_v3_completions(InvocationId::mock_random(), 1),
+            blob,
+        }
+        .into_outbox_message();
+
+        let mut processor = create_processor(&mut storage).await;
+        let mut txn = storage.transaction();
+        txn.put_blob(
+            blob,
+            BlobBuilder::new(BlobKind::Journal)
+                .with_ref_count(NonZeroU64::new(2).unwrap())
+                .build(&b"payload"[..]),
+        )
+        .unwrap();
+        for message in [mock_outbox_message(), blob_message.clone(), blob_message] {
+            processor.outbox_mut().enqueue(&mut txn, &message).unwrap();
+        }
+        txn.commit().await.unwrap();
+        drop(txn);
+
+        truncate(&mut processor, &mut storage, 1).await;
+        assert_eq!(ref_count(&mut storage, blob).await, Some(1));
+
+        // Simulating a restart: the referenced blobs are rebuilt from the outbox
+        let mut processor = create_processor(&mut storage).await;
+        // Already truncated, must not release again
+        truncate(&mut processor, &mut storage, 1).await;
+        assert_eq!(ref_count(&mut storage, blob).await, Some(1));
+
+        truncate(&mut processor, &mut storage, 2).await;
+        assert_eq!(ref_count(&mut storage, blob).await, None);
     }
 }

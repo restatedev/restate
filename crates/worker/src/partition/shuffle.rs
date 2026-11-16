@@ -10,7 +10,6 @@
 
 use std::future::Future;
 
-use anyhow::Context;
 use async_channel::{TryRecvError, TrySendError};
 use metrics::{counter, gauge};
 use tokio::sync::watch;
@@ -20,13 +19,11 @@ use restate_core::cancellation_token;
 use restate_core::network::TransportConnect;
 use restate_ingestion_client::IngestionClient;
 use restate_storage_api::outbox_table::OutboxMessage;
+use restate_types::blob::BlobId;
 use restate_types::identifiers::PartitionId;
+use restate_types::invocation::ResponseResult;
 use restate_types::message::MessageIndex;
-use restate_wal_protocol::v2::commands::{
-    AttachInvocationCommand, InvocationResponseCommand, InvokeCommand, NotifySignalCommand,
-    TerminateInvocationCommand,
-};
-use restate_wal_protocol::v2::{CommandKind, Dedup, Envelope, Raw};
+use restate_wal_protocol::v2::{Envelope, Raw};
 
 use crate::metric_definitions::{
     PARTITION_LABEL, PARTITION_SHUFFLE_INFLIGHT_RECORDS, PARTITION_SHUFFLE_MESSAGE_COUNT,
@@ -60,48 +57,6 @@ impl OutboxTruncation {
     }
 }
 
-pub(crate) fn wrap_outbox_message_in_envelope(
-    message: OutboxMessage,
-    seq_number: MessageIndex,
-    shuffle_metadata: &ShuffleMetadata,
-) -> anyhow::Result<Envelope<Raw>> {
-    let dedup = create_dedup(seq_number, shuffle_metadata);
-
-    let envelope = match message {
-        OutboxMessage::AttachInvocation(payload) => {
-            Envelope::new(dedup, AttachInvocationCommand::from(payload)).into_raw()
-        }
-        OutboxMessage::InvocationTermination(payload) => {
-            Envelope::new(dedup, TerminateInvocationCommand::from(payload)).into_raw()
-        }
-        OutboxMessage::ServiceInvocation(payload) => {
-            Envelope::new(dedup, InvokeCommand::from(*payload)).into_raw()
-        }
-        OutboxMessage::NotifySignal(payload) => {
-            Envelope::new(dedup, NotifySignalCommand::from(payload)).into_raw()
-        }
-        OutboxMessage::ServiceResponse(payload) => {
-            Envelope::new(dedup, InvocationResponseCommand::from(payload)).into_raw()
-        }
-        OutboxMessage::Opaque(opaque) => {
-            let kind: CommandKind = opaque
-                .kind
-                .try_into()
-                .context("Opaque outbox message has unknown command kind")?;
-            Envelope::from_bytes_unchecked(kind, opaque.codec, dedup, opaque.message)
-        }
-    };
-
-    Ok(envelope)
-}
-
-fn create_dedup(seq_number: MessageIndex, shuffle_metadata: &ShuffleMetadata) -> Dedup {
-    Dedup::ForeignPartition {
-        partition: shuffle_metadata.partition_id,
-        seq: seq_number,
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum OutboxReaderError {
     #[error(transparent)]
@@ -113,6 +68,11 @@ pub(crate) trait OutboxReader {
         &mut self,
         next_sequence_number: MessageIndex,
     ) -> impl Future<Output = Result<Option<(MessageIndex, OutboxMessage)>, OutboxReaderError>> + Send;
+
+    fn get_response_result(
+        &mut self,
+        blob: BlobId,
+    ) -> impl Future<Output = Result<Option<ResponseResult>, OutboxReaderError>> + Send;
 }
 
 /// The hint sender allows to send hints to the shuffle service. If more hints are sent than the
@@ -282,20 +242,31 @@ where
 mod state_machine {
     use std::cmp::Ordering;
 
+    use anyhow::Context;
     use tokio_util::sync::ReusableBoxFuture;
 
     use restate_core::network::TransportConnect;
     use restate_ingestion_client::{IngestFuture, Ingestion, IngestionClient, RecordCommit};
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_types::{
+        errors::GONE_INVOCATION_ERROR,
         identifiers::WithPartitionKey,
+        invocation,
         logs::{BodyWithKeys, Keys},
         message::MessageIndex,
+        storage::StorageDecode,
     };
-    use restate_wal_protocol::v2::{Envelope, Raw};
+    use restate_wal_protocol::v2::{
+        Dedup, Envelope, Raw,
+        commands::{
+            AttachInvocationCommand, InvocationResponseCommand, InvokeCommand, NotifySignalCommand,
+            TerminateInvocationCommand,
+        },
+        outbox::{InvocationResponseFromBlobCommand, OutboxKind},
+    };
 
     use crate::partition::shuffle::{
-        NewOutboxMessage, OutboxReaderError, ShuffleMetadata, wrap_outbox_message_in_envelope,
+        NewOutboxMessage, OutboxReader, OutboxReaderError, ShuffleMetadata,
     };
 
     type ReadFuture<OutboxReader> = ReusableBoxFuture<
@@ -371,8 +342,13 @@ mod state_machine {
                         match sn.cmp(&self.next_sequence_number) {
                             Ordering::Equal => {
                                 let partition_key = message.partition_key();
-                                let envelope =
-                                    wrap_outbox_message_in_envelope(message, sn, &self.metadata)?;
+                                let envelope = create_envelope(
+                                    self.reader.as_mut().unwrap(),
+                                    message,
+                                    sn,
+                                    &self.metadata,
+                                )
+                                .await?;
 
                                 self.state = State::Ingesting {
                                     ingest: self.ingestion.ingest(
@@ -423,8 +399,13 @@ mod state_machine {
                                     "message sequence numbers must not decrease"
                                 );
                                 let partition_key = message.partition_key();
-                                let envelope =
-                                    wrap_outbox_message_in_envelope(message, sn, &self.metadata)?;
+                                let envelope = create_envelope(
+                                    self.reader.as_mut().unwrap(),
+                                    message,
+                                    sn,
+                                    &self.metadata,
+                                )
+                                .await?;
 
                                 self.state = State::Ingesting {
                                     ingest: self.ingestion.ingest(
@@ -440,6 +421,89 @@ mod state_machine {
             }
         }
     }
+
+    pub async fn create_envelope<R: OutboxReader>(
+        reader: &mut R,
+        message: OutboxMessage,
+        seq_number: MessageIndex,
+        shuffle_metadata: &ShuffleMetadata,
+    ) -> anyhow::Result<Envelope<Raw>> {
+        let dedup = create_dedup(seq_number, shuffle_metadata);
+
+        let envelope = match message {
+            OutboxMessage::AttachInvocation(payload) => {
+                Envelope::new(dedup, AttachInvocationCommand::from(payload)).into_raw()
+            }
+            OutboxMessage::InvocationTermination(payload) => {
+                Envelope::new(dedup, TerminateInvocationCommand::from(payload)).into_raw()
+            }
+            OutboxMessage::ServiceInvocation(payload) => {
+                Envelope::new(dedup, InvokeCommand::from(*payload)).into_raw()
+            }
+            OutboxMessage::NotifySignal(payload) => {
+                Envelope::new(dedup, NotifySignalCommand::from(payload)).into_raw()
+            }
+            OutboxMessage::ServiceResponse(payload) => {
+                Envelope::new(dedup, InvocationResponseCommand::from(payload)).into_raw()
+            }
+            OutboxMessage::Opaque(opaque) => {
+                let kind: OutboxKind = opaque
+                    .kind
+                    .try_into()
+                    .context("Opaque outbox message has unknown outbox kind")?;
+
+                match kind.try_into_command_kind() {
+                    // forward directly to remote partition
+                    Ok(cmd_kind) => Envelope::from_bytes_unchecked(
+                        cmd_kind,
+                        opaque.codec,
+                        dedup,
+                        opaque.message,
+                    ),
+                    // this is not an opaque command and need to be translated
+                    Err(outbox_kind) => match outbox_kind {
+                        OutboxKind::TerminateInvocation
+                        | OutboxKind::Invoke
+                        | OutboxKind::AttachInvocation
+                        | OutboxKind::NotifySignal
+                        | OutboxKind::InvocationResponse => {
+                            unreachable!("handled above");
+                        }
+                        OutboxKind::InvocationResponseFromBlob => {
+                            let msg = InvocationResponseFromBlobCommand::decode(
+                                opaque.message,
+                                opaque.codec,
+                            )?;
+
+                            // The outbox holds a reference on the blob until it's truncated
+                            let result = reader
+                                .get_response_result(msg.blob)
+                                .await?
+                                .unwrap_or_else(|| GONE_INVOCATION_ERROR.into());
+
+                            Envelope::new(
+                                dedup,
+                                InvocationResponseCommand::from(invocation::InvocationResponse {
+                                    result,
+                                    target: msg.target,
+                                }),
+                            )
+                            .into_raw()
+                        }
+                    },
+                }
+            }
+        };
+
+        Ok(envelope)
+    }
+
+    fn create_dedup(seq_number: MessageIndex, shuffle_metadata: &ShuffleMetadata) -> Dedup {
+        Dedup::ForeignPartition {
+            partition: shuffle_metadata.partition_id,
+            seq: seq_number,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -450,7 +514,9 @@ mod ingestion_client_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use anyhow::{Context, anyhow};
+    use bytes::Bytes;
     use futures::StreamExt;
+    use restate_clock::time::MillisSinceEpoch;
     use restate_core::partitions::PartitionRouting;
     use restate_ingestion_client::{IngestionClient, SessionOptions};
     use restate_types::net::RpcRequest;
@@ -458,7 +524,8 @@ mod ingestion_client_tests {
     use restate_types::net::partition_processor::PartitionLeaderService;
     use restate_types::partitions::state::{LeadershipState, PartitionReplicaSetStates};
     use restate_types::storage::StorageCodec;
-    use restate_wal_protocol::v2::commands::InvokeCommand;
+    use restate_wal_protocol::v2::commands::{InvocationResponseCommand, InvokeCommand};
+    use restate_wal_protocol::v2::outbox::{InvocationResponseFromBlobCommand, OutboxMessage as _};
     use restate_wal_protocol::v2::{CommandKind, Envelope, Raw};
     use test_log::test;
     use tokio::sync::watch;
@@ -471,8 +538,9 @@ mod ingestion_client_tests {
     use restate_storage_api::StorageError;
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_types::Version;
+    use restate_types::blob::BlobId;
     use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionId};
-    use restate_types::invocation::ServiceInvocation;
+    use restate_types::invocation::{JournalCompletionTarget, ResponseResult, ServiceInvocation};
     use restate_types::message::MessageIndex;
     use restate_types::partition_table::PartitionTable;
 
@@ -529,6 +597,12 @@ mod ingestion_client_tests {
                 )
             }))
         }
+        async fn get_response_result(
+            &mut self,
+            _blob: restate_types::blob::BlobId,
+        ) -> Result<Option<restate_types::invocation::ResponseResult>, OutboxReaderError> {
+            unimplemented!()
+        }
     }
 
     /// Outbox reader which is used to let the shuffler fail in a controlled manner so that we
@@ -580,6 +654,37 @@ mod ingestion_client_tests {
                     ),
                 )
             }))
+        }
+
+        async fn get_response_result(
+            &mut self,
+            _blob: restate_types::blob::BlobId,
+        ) -> Result<Option<restate_types::invocation::ResponseResult>, OutboxReaderError> {
+            unimplemented!();
+        }
+    }
+
+    /// Outbox reader serving a single [`InvocationResponseFromBlobCommand`] at `index`.
+    struct BlobOutboxReader {
+        index: MessageIndex,
+        command: InvocationResponseFromBlobCommand,
+    }
+
+    impl OutboxReader for BlobOutboxReader {
+        async fn get_next_message(
+            &mut self,
+            next_sequence_number: MessageIndex,
+        ) -> Result<Option<(MessageIndex, OutboxMessage)>, OutboxReaderError> {
+            Ok((next_sequence_number <= self.index)
+                .then(|| (self.index, self.command.clone().into_outbox_message())))
+        }
+
+        async fn get_response_result(
+            &mut self,
+            blob: BlobId,
+        ) -> Result<Option<ResponseResult>, OutboxReaderError> {
+            assert_eq!(blob, self.command.blob);
+            Ok(Some(ResponseResult::Success(Bytes::from_static(b"result"))))
         }
     }
 
@@ -829,6 +934,38 @@ mod ingestion_client_tests {
         assert!(
             total_restarts.load(Ordering::Relaxed) > 0,
             "expecting the shuffle to be restarted a couple of times"
+        );
+
+        Ok(())
+    }
+
+    #[test(restate_core::test)]
+    async fn shuffle_hydrates_response_from_blob() -> anyhow::Result<()> {
+        let caller_id = InvocationId::mock_random();
+        let command = InvocationResponseFromBlobCommand {
+            target: JournalCompletionTarget::for_v3_completions(caller_id, 1),
+            blob: BlobId::generate_journal_entry_blob_id(
+                MillisSinceEpoch::now(),
+                1,
+                &InvocationId::mock_random(),
+            ),
+        };
+        let mut shuffle_env = create_shuffle_env(BlobOutboxReader { index: 7, command }).await;
+
+        TaskCenter::spawn_child(TaskKind::Shuffle, "shuffle", shuffle_env.shuffle.run())?;
+
+        let Some(ServiceMessage::Rpc(incoming)) = shuffle_env.stream.next().await else {
+            panic!("expected ingest request");
+        };
+        let (_, mut body) = incoming.into_typed::<ReceivedIngestRequest>().split();
+        let envelope = StorageCodec::decode::<Envelope<Raw>, _>(&mut body.records[0].record)?;
+        assert_eq!(envelope.kind(), CommandKind::InvocationResponse);
+        let response: Envelope<InvocationResponseCommand> = envelope.into_typed();
+        let response = response.into_inner()?;
+        assert_eq!(response.target.caller_id, caller_id);
+        assert_eq!(
+            response.result,
+            ResponseResult::Success(Bytes::from_static(b"result"))
         );
 
         Ok(())

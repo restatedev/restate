@@ -13,7 +13,7 @@ use tracing::warn;
 
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
-use restate_storage_api::blob_table::WriteBlobTable;
+use restate_storage_api::blob_table::{ReadBlobTable, WriteBlobTable};
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
@@ -183,7 +183,8 @@ where
         + WriteTimerTable
         + ReadPromiseTable
         + WritePromiseTable
-        + WriteBlobTable,
+        + WriteBlobTable
+        + ReadBlobTable,
     P: ProcessorContext,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
@@ -330,16 +331,19 @@ where
             };
 
             let response_result_ref = match output_blob_id {
-                Some(blob_id) if !completion_retention.is_zero() => {
-                    // The completed status shares the blob, released when it's purged
-                    ctx.storage.increment_ref_count(blob_id, 1);
+                Some(blob_id) => {
+                    // The completed status shares the blob, released when it's purged. Responses
+                    // sent through the outbox take their own reference.
+                    if !completion_retention.is_zero() {
+                        ctx.storage.increment_ref_count(blob_id, 1);
+                    }
                     let status = match &output {
                         ResponseResult::Success(_) => CompletionStatus::Success,
                         ResponseResult::Failure(err) => CompletionStatus::failure(err),
                     };
                     ResponseResultRef::Completed(CompletedResult { blob_id, status })
                 }
-                _ => match reason {
+                None => match reason {
                     EndInvocationReason::Killed => {
                         ResponseResultRef::Failure(KILLED_INVOCATION_ERROR)
                     }
@@ -368,14 +372,16 @@ where
             );
 
             // Send responses out
-            ctx.send_response_to_sinks(
-                invocation_metadata.response_sinks.clone(),
-                output,
-                Some(invocation_id),
-                None,
-                Some(&invocation_metadata.invocation_target),
-            )?;
-
+            if !invocation_metadata.response_sinks.is_empty() {
+                ctx.send_response_to_sinks(
+                    invocation_metadata.response_sinks.clone(),
+                    response_result_ref.clone(),
+                    Some(invocation_id),
+                    None,
+                    Some(&invocation_metadata.invocation_target),
+                )
+                .await?;
+            }
             // Store the completed status, if needed
             if !completion_retention.is_zero() {
                 let completed_invocation = CompletedInvocation::from_in_flight_invocation_metadata(
