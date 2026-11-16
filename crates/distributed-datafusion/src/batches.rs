@@ -23,12 +23,13 @@ use datafusion::common::{DataFusionError, Result};
 use datafusion::physical_plan::metrics::Time;
 use tokio::sync::mpsc;
 
+use restate_partition_store::lookup::{LookupBinding, LookupKeys};
 use restate_partition_store::{QueryIoExecutor, ReadSnapshot};
 use restate_storage_api::StorageError;
 use restate_storage_api::scan::{RowConsumer, ScanOutcome};
 use restate_storage_query_api::scan::{CursorScan, Scan, Table};
 use restate_storage_query_api::{
-    AsyncRowSink, LogicalSchema, PreparedRead, RowBuilder, RowSink, SchemaBinding,
+    AsyncRowSink, LogicalSchema, PreparedRead, RecordsOf, RowBuilder, RowSink, SchemaBinding,
 };
 
 pub(crate) struct Batches<S: LogicalSchema> {
@@ -251,6 +252,37 @@ where
     let tx = sink.tx.clone();
     let read = B::read(&snapshot, executor, prepared, sink);
     drop(snapshot);
+    deliver(tx, read).await
+}
+
+/// Like [`read_binding_into`], for the records of a set of complete keys.
+pub(crate) async fn read_lookup_into<B>(
+    snapshot: ReadSnapshot,
+    executor: &QueryIoExecutor,
+    keys: Arc<LookupKeys<B::Table>>,
+    sink: BatchSink<B::Schema>,
+) -> Result<()>
+where
+    B: LookupBinding,
+    ReadSnapshot: CursorScan<RecordsOf<B::Table, LookupKeys<B::Table>>>,
+    for<'a> <B::Table as Table>::Record<'a>: Copy + Send,
+{
+    let tx = sink.tx.clone();
+    let read = B::read_records(&snapshot, executor, keys, sink);
+    drop(snapshot);
+    deliver(tx, read).await
+}
+
+/// Awaits a binding's read and sends what's left, or its error, to the receiver.
+/// The caller drops its snapshot first, so storage can close as soon as the read
+/// releases it.
+async fn deliver<S: LogicalSchema>(
+    tx: mpsc::Sender<Result<RecordBatch>>,
+    read: std::result::Result<
+        impl Future<Output = std::result::Result<ScanOutcome<BatchSink<S>>, StorageError>>,
+        StorageError,
+    >,
+) -> Result<()> {
     let outcome = match read {
         Ok(read) => read.await,
         Err(error) => Err(error),
