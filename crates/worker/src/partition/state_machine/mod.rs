@@ -11,6 +11,7 @@
 mod actions;
 mod entries;
 mod lifecycle;
+mod retire_journal_v1;
 mod utils;
 
 pub use actions::{Action, ActionCollector, RpcReply};

@@ -105,6 +105,12 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.8.2*
     EnableInvocationStatusOutputBlob = 10,
+    /// Retire journal v1: kill the invocations whose journal is still stored in journal v1, and
+    /// delete the journal v1 table. Afterwards, the partition holds no journal v1 data, and stores
+    /// the journal of new invocations in journal v2.
+    ///
+    /// *Since v1.8.2*
+    RetireJournalV1 = 11,
 }
 
 /// The partition features this server requires. Each one retires logic this server no longer
@@ -140,6 +146,7 @@ impl PartitionFeatureChange {
             Self::EnableByteOffsets => &RESTATE_VERSION_1_8_2,
             Self::EnableVqLifecycleRefined => &RESTATE_VERSION_1_8_2,
             Self::EnableInvocationStatusOutputBlob => &RESTATE_VERSION_1_8_2,
+            Self::RetireJournalV1 => &RESTATE_VERSION_1_8_2,
         }
     }
 
@@ -160,7 +167,8 @@ impl PartitionFeatureChange {
             | Self::EnableInconsistentStateMutationCleanup
             | Self::EnablePreflightSignalRecording
             | Self::EnableByteOffsets
-            | Self::EnableInvocationStatusOutputBlob => false,
+            | Self::EnableInvocationStatusOutputBlob
+            | Self::RetireJournalV1 => false,
         }
     }
 
@@ -183,6 +191,7 @@ impl PartitionFeatureChange {
             Self::EnableByteOffsets => "byte_offsets",
             Self::EnableVqLifecycleRefined => "vq_lifecycle_refined",
             Self::EnableInvocationStatusOutputBlob => "invocation_status_output_blob",
+            Self::RetireJournalV1 => "journal_v1_retired",
         }
     }
 
@@ -220,6 +229,7 @@ impl PartitionFeatureChange {
             Self::EnableInvocationStatusOutputBlob => {
                 !std::mem::replace(&mut features.invocation_status_output_blob, true)
             }
+            Self::RetireJournalV1 => !std::mem::replace(&mut features.journal_v1_retired, true),
         }
     }
 }
@@ -311,6 +321,11 @@ pub struct PersistedFeatures {
     /// *Since v1.8.2*
     #[bilrost(tag(10))]
     pub invocation_status_output_blob: bool,
+    /// The partition holds no journal v1 data, and creates none.
+    ///
+    /// *Since v1.8.2*
+    #[bilrost(tag(11))]
+    pub journal_v1_retired: bool,
 }
 
 impl PersistedFeatures {
@@ -336,6 +351,7 @@ impl PersistedFeatures {
             PartitionFeatureChange::EnableInvocationStatusOutputBlob => {
                 self.invocation_status_output_blob
             }
+            PartitionFeatureChange::RetireJournalV1 => self.journal_v1_retired,
         }
     }
 

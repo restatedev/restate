@@ -1446,6 +1446,7 @@ mod tests {
                 byte_offsets: true,
                 vq_lifecycle_refined: true,
                 invocation_status_output_blob: true,
+                journal_v1_retired: true,
             },
         );
         let (leader_query_tx, _leader_query_rx) = restate_worker_api::channel();
