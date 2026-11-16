@@ -557,7 +557,7 @@ async fn final_output_waits_without_holding_the_snapshot() {
 async fn dropping_lookup_output_releases_the_snapshot_and_storage_worker() {
     use restate_clock::UniqueTimestamp;
     use restate_limiter::LimitKey;
-    use restate_partition_store::lookup::LookupKeys;
+    use restate_partition_store::lookup::{LookupCandidates, LookupKeys};
     use restate_partition_store::vqueue_table::{VQueueMetaBinding, VQueueMetaTable};
     use restate_storage_api::Transaction;
     use restate_storage_api::vqueue_table::WriteVQueueTable;
@@ -587,13 +587,11 @@ async fn dropping_lookup_output_releases_the_snapshot_and_storage_worker() {
     }
     tx.commit().await.unwrap();
     drop(tx);
-    let keys = Arc::new(
-        LookupKeys::<VQueueMetaTable>::decode(
-            ids.len(),
-            &LookupKeys::<VQueueMetaTable>::encode(&ids),
-        )
-        .unwrap(),
-    );
+    let (count, encoded) = LookupCandidates::<VQueueMetaTable>::prepare(&ids)
+        .unwrap()
+        .within(KeyRange::FULL)
+        .unwrap();
+    let keys = Arc::new(LookupKeys::<VQueueMetaTable>::decode(count, &encoded).unwrap());
     let executor = QueryIoExecutor::new(NonZeroUsize::MIN);
     // One row per batch into a one-batch channel: the producer waits for room.
     let lookup = |snapshot: ReadSnapshot| {
