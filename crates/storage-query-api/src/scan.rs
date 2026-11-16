@@ -44,6 +44,7 @@
 //! [`Scan`] submits that work with the backend's admission and query IO executor.
 
 use std::fmt::Debug;
+use std::marker::PhantomData;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::task::Poll;
@@ -63,6 +64,16 @@ pub trait Table: 'static {
     /// Immutable preparation shared by independent executions. Cursor state is
     /// local to each execution, so reusing a request never reuses its position.
     type Scan: Send + Sync + 'static;
+}
+
+/// The records of `T`, requested by `R` instead of `T`'s own request: for
+/// example, a set of complete keys fetched by multi-get. A binding of `T` turns
+/// them into rows unchanged ([`crate::SchemaBinding::read_records`]).
+pub struct RecordsOf<T, R>(PhantomData<fn() -> (T, R)>);
+
+impl<T: Table, R: Send + Sync + 'static> Table for RecordsOf<T, R> {
+    type Record<'a> = T::Record<'a>;
+    type Scan = R;
 }
 
 /// Executes a prepared read on the caller's thread, including blocking storage

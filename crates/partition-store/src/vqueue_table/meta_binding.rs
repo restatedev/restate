@@ -26,16 +26,18 @@ use restate_storage_query_api::schema::{RecordProgress, row_written};
 use restate_storage_query_api::selection::Selection;
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::tables::vqueue_meta::{
-    VQueueMetaView, VqueueMeta, VqueueMetaClause, VqueueMetaColumn,
+    VQueueMetaView, VqueueMeta, VqueueMetaClause, VqueueMetaColumn, VqueueMetaDomains,
 };
 use restate_storage_query_api::{PreparedRead, RowSink, SchemaBinding, Table};
 use restate_types::identifiers::partitioner::HashPartitioner;
+use restate_types::vqueues::VQueueId;
 
 use crate::keys::codecs::VQueueIdSuffixCodec;
 use crate::keys::header::{KeySchema, PartitionKeyHeader, prepare_partition_keyed};
 use crate::keys::selection::codec::FieldPredicateCodec;
 use crate::keys::selection::{KeySelection, OrderedKeyField, OrderedKeySchema};
 use crate::keys::{DecodeTableKey, KeyDecode, KeyDecoder, KeyKind};
+use crate::lookup::LookupBinding;
 use crate::table::PhysicalTable;
 use crate::{Result, break_on_err};
 
@@ -74,6 +76,13 @@ impl KeyDecode for MetaKey {
 }
 
 pub enum VQueueMetaBinding {}
+
+/// A queue's ID is the metadata table's complete key.
+impl LookupBinding for VQueueMetaBinding {
+    fn lookup_ids(domains: &VqueueMetaDomains) -> Domain<VQueueId> {
+        domains.id.clone()
+    }
+}
 
 impl SchemaBinding for VQueueMetaBinding {
     type Schema = VqueueMeta;

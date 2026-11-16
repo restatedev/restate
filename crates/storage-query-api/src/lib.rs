@@ -36,7 +36,7 @@ mod writer;
 #[cfg(feature = "test-util")]
 pub mod test_util;
 
-pub use scan::Table;
+pub use scan::{RecordsOf, Table};
 pub use schema::{
     AsyncRowSink, LogicalSchema, PreparedRead, RowBuilder, RowSink, SchemaBinding, SelectionSchema,
     ShardingScheme,
