@@ -414,6 +414,9 @@ impl Configuration {
     }
 
     pub fn apply_cascading_values(mut self) -> Self {
+        self.common
+            .rocksdb
+            .fold_deprecated_l0_l1_compression(RocksDbCompression::default());
         self.worker.storage.apply_common(&self.common);
         self.bifrost.apply_common(&self.common);
         self.bifrost.set_derived_values(&self.networking);
