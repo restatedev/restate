@@ -168,7 +168,7 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
         crate::distributed::tests::TestInvokers::empty(),
     );
     let sources = SourceRegistry::local_only(core.metadata);
-    sources.register_processor_reads(processors, crate::mocks::query_io());
+    sources.register_processor_reads(processors.clone(), crate::mocks::query_io());
     sources.register_declared_scanner::<LegacyStateSource>(Arc::new(CaptureSource {
         inner: Arc::new(crate::schema_scan::SchemaScanner::<
             restate_partition_store::state_table::StateBinding,
@@ -198,8 +198,13 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
         async move {
             let mut active = Vec::new();
             while let Some(command) = receiver.recv().await {
-                let ProcessorsManagerCommand::ReadPartition(request) = command else {
-                    panic!("expected partition admission")
+                let request = match command {
+                    ProcessorsManagerCommand::ReadPartition(request) => request,
+                    // A barrier: it is answered after every read queued before it.
+                    ProcessorsManagerCommand::GetState(reply) => {
+                        let _ = reply.send(Default::default());
+                        continue;
+                    }
                 };
                 let store = stores.get_partition_store(request.partition).await.unwrap();
                 assert!(
@@ -282,7 +287,18 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
                 "both_layouts_and_every_partition_are_covered"
             );
         }
-        let admitted = std::mem::take(&mut *admissions.lock());
+        // A query that stops early can leave reads queued at the processors; the
+        // barrier queues behind them, so all of this query's reads are counted.
+        // A late read of an earlier query is released here, not counted again.
+        processors.get_state().await.unwrap();
+        let (admitted, late): (Vec<_>, Vec<_>) = std::mem::take(&mut *admissions.lock())
+            .into_iter()
+            .partition(|read| read.metadata.redacted_sql == metadata.redacted_sql);
+        for read in late {
+            tokio::time::timeout(Duration::from_secs(5), read.closed)
+                .await
+                .unwrap();
+        }
         assert!(
             admitted.len() <= max_scopes,
             "limit_avoids_opening_later_partitions: {sql}: {}",
