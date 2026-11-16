@@ -51,12 +51,7 @@ impl ObjectStoreVersionRepository {
             .inspect(|params| info!("Metadata path parameters ignored: {params}"));
         url.set_query(None);
 
-        // Other schemes may also support conditional writes, but only these are tested.
-        if !matches!(url.scheme(), "s3" | "gs") {
-            anyhow::bail!(
-                "Only the `s3://` and `gs://` protocols are supported for the metadata path, got `{url}`"
-            );
-        }
+        validate_metadata_path_scheme(&url)?;
         let prefix = Path::from(url.path());
 
         let object_store =
@@ -133,6 +128,18 @@ impl ObjectStoreVersionRepository {
                 e => VersionRepositoryError::Network(e.into()),
             })
     }
+}
+
+fn validate_metadata_path_scheme(url: &Url) -> anyhow::Result<()> {
+    // Metadata updates use conditional puts; the ignored integration test below can exercise
+    // these operations against the configured provider.
+    if !matches!(url.scheme(), "s3" | "gs" | "az" | "azure") {
+        anyhow::bail!(
+            "Only the `s3://`, `gs://`, `az://`, and `azure://` protocols are supported for the metadata path, got `{url}`"
+        );
+    }
+
+    Ok(())
 }
 
 const EXISTS_HEADER: Bytes = Bytes::from_static(b"e");
@@ -548,18 +555,45 @@ mod tests {
     async fn rejects_unsupported_metadata_scheme() {
         let err =
             ObjectStoreVersionRepository::from_configuration(MetadataClientKind::ObjectStore {
-                path: "az://bucket/prefix".into(),
+                path: "file:///bucket/prefix".into(),
                 object_store: Default::default(),
                 object_store_retry_policy: Default::default(),
             })
             .await
             .unwrap_err();
 
-        assert!(err.to_string().contains("`s3://` and `gs://`"));
+        assert!(
+            err.to_string()
+                .contains("`s3://`, `gs://`, `az://`, and `azure://`")
+        );
+    }
+
+    #[test]
+    fn accepts_supported_metadata_schemes() {
+        for path in [
+            "s3://bucket/prefix",
+            "gs://bucket/prefix",
+            "az://container/prefix",
+            "azure://container/prefix",
+        ] {
+            let url = Url::parse(path).unwrap();
+            validate_metadata_path_scheme(&url).unwrap();
+
+            let scheme = object_store::ObjectStoreScheme::parse(&url).unwrap().0;
+            assert!(match url.scheme() {
+                "s3" => matches!(scheme, object_store::ObjectStoreScheme::AmazonS3),
+                "gs" => matches!(scheme, object_store::ObjectStoreScheme::GoogleCloudStorage),
+                "az" | "azure" => {
+                    matches!(scheme, object_store::ObjectStoreScheme::MicrosoftAzure)
+                }
+                _ => false,
+            });
+        }
     }
 
     /// Runs the conditional-write sequence the metadata store relies on against a real object
-    /// store, such as `gs://bucket/prefix` with credentials in `GOOGLE_APPLICATION_CREDENTIALS`.
+    /// store, such as `gs://bucket/prefix` with credentials in `GOOGLE_APPLICATION_CREDENTIALS`
+    /// or `az://container/prefix` with Azure credentials in the environment.
     #[ignore = "requires RESTATE_METADATA_TEST_OBJECT_STORE_PATH and credentials for it"]
     #[test_log::test(tokio::test)]
     async fn conditional_writes_against_real_object_store() {
