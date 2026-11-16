@@ -31,7 +31,7 @@ use restate_rocksdb::{
     RocksDbReadPerfGuard, RocksError, SinglePoolExecutor, StorageOp, StorageTaskKind,
 };
 use restate_storage_api::StorageError;
-use restate_types::config::Configuration;
+use restate_types::config::{Configuration, RocksDbCompaction};
 use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::partitions::{CfName, Partition};
 use restate_util_bytecount::ByteCount;
@@ -450,7 +450,12 @@ impl PartitionDb {
         );
     }
 
-    pub(crate) async fn update_memory_budget(&self, memory_budget: usize) {
+    /// `compaction` is the one the partition store was opened with.
+    pub(crate) async fn update_memory_budget(
+        &self,
+        memory_budget: usize,
+        compaction: RocksDbCompaction,
+    ) {
         // impacts only this partition's column-families
         let physical = self.physical_scope().clone();
 
@@ -462,7 +467,7 @@ impl PartitionDb {
             let partition = physical.payload();
             let rocksdb = partition.cfs.database();
             let opts = &Configuration::pinned().worker.storage;
-            let mem_config = PartitionDbMemoryConfig::calculate(memory_budget, opts);
+            let mem_config = PartitionDbMemoryConfig::calculate(memory_budget, opts, &compaction);
             let max_bytes_for_level_base_str = mem_config.max_bytes_for_level_base().to_restring();
             let write_buffer_size_str = mem_config.write_buffer_size().to_restring();
             let max_write_buffer_number_str = mem_config.num_write_buffers().to_restring();
@@ -1182,6 +1187,8 @@ pub struct RocksConfigurator<T> {
     memory_budget: Arc<MemoryBudget>,
     durable_lsn_notifications: Arc<DurableLsnSenders>,
     use_multi_db_layout: bool,
+    /// Read when the node started, not from the current configuration.
+    compaction: RocksDbCompaction,
     _marker: PhantomData<T>,
 }
 
@@ -1191,6 +1198,7 @@ impl<T> Clone for RocksConfigurator<T> {
             memory_budget: self.memory_budget.clone(),
             durable_lsn_notifications: self.durable_lsn_notifications.clone(),
             use_multi_db_layout: self.use_multi_db_layout,
+            compaction: self.compaction,
             _marker: PhantomData,
         }
     }
@@ -1201,11 +1209,13 @@ impl<T> RocksConfigurator<T> {
         memory_budget: Arc<MemoryBudget>,
         notifications: &Arc<DurableLsnSenders>,
         use_multi_db_layout: bool,
+        compaction: RocksDbCompaction,
     ) -> Self {
         Self {
             memory_budget,
             durable_lsn_notifications: notifications.clone(),
             use_multi_db_layout,
+            compaction,
             _marker: PhantomData,
         }
     }
@@ -1335,6 +1345,7 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         cf_options.set_memtable_whole_key_filtering(whole_key_filtering);
 
         cf_options.set_num_levels(7);
+        restate_rocksdb::configuration::set_compaction(&mut cf_options, &self.compaction);
         let l0_l1 = if config.rocksdb.rocksdb_disable_l0_l1_compression() {
             rocksdb::DBCompressionType::None
         } else {
@@ -1354,6 +1365,7 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         let mem_config = PartitionDbMemoryConfig::calculate(
             self.memory_budget.current_per_partition_budget(),
             config,
+            &self.compaction,
         );
         tracing::debug!(
             "Configured {db_name}/{cf_name} with memtable budget={}",

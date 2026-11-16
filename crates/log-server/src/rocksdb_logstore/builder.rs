@@ -20,7 +20,7 @@ use restate_rocksdb::configuration::create_empty_db_options;
 use restate_rocksdb::{
     CfExactPattern, CfName, DbEnv, DbName, DbSpecBuilder, OpenMode, RocksDb, RocksDbManager,
 };
-use restate_types::config::{Configuration, LogServerOptions};
+use restate_types::config::{Configuration, LogServerOptions, RocksDbCompaction};
 use restate_types::health::HealthStatus;
 use restate_types::logs::LogId;
 use restate_types::protobuf::common::{DatabaseKind, LogServerStatus};
@@ -49,9 +49,9 @@ impl RocksDbLogStoreBuilder {
         let db_manager = RocksDbManager::get();
         let cfs = vec![CfName::new(DATA_CF), CfName::new(METADATA_CF)];
 
-        let (in_memory, path) = {
+        let (in_memory, path, compaction) = {
             let opts = &Configuration::pinned().log_server;
-            (opts.in_memory, opts.data_dir())
+            (opts.in_memory, opts.data_dir(), opts.rocksdb_compaction())
         };
         let env = db_manager.db_env().clone();
         let env = if in_memory {
@@ -59,9 +59,15 @@ impl RocksDbLogStoreBuilder {
         } else {
             env
         };
-        let db_spec = DbSpecBuilder::new(db_name, kind, path, RocksDbConfigurator)
-            .add_cf_pattern(CfExactPattern::new(DATA_CF), RocksCfConfigurator)
-            .add_cf_pattern(CfExactPattern::new(METADATA_CF), RocksCfConfigurator)
+        let db_spec = DbSpecBuilder::new(db_name, kind, path, RocksDbConfigurator { compaction })
+            .add_cf_pattern(
+                CfExactPattern::new(DATA_CF),
+                RocksCfConfigurator { compaction },
+            )
+            .add_cf_pattern(
+                CfExactPattern::new(METADATA_CF),
+                RocksCfConfigurator { compaction },
+            )
             // not very important but it's to reduce the number of merges by flushing.
             // it's also a small cf so it should be quick.
             .add_to_flush_on_shutdown(CfExactPattern::new(METADATA_CF))
@@ -92,9 +98,15 @@ impl RocksDbLogStoreBuilder {
     }
 }
 
-struct RocksCfConfigurator;
+/// The compaction of both configurators is the one read when the database opened: changing it
+/// takes a restart.
+struct RocksCfConfigurator {
+    compaction: RocksDbCompaction,
+}
 
-struct RocksDbConfigurator;
+struct RocksDbConfigurator {
+    compaction: RocksDbCompaction,
+}
 
 impl restate_rocksdb::configuration::DbConfigurator for RocksDbConfigurator {
     fn get_db_open_mode(&self) -> OpenMode {
@@ -212,7 +224,7 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksDbConfigurator {
 
     fn note_config_update(&self, db: &restate_rocksdb::RocksAccess) {
         let config = &Configuration::pinned().log_server;
-        if let Err(err) = update_data_cf_options(db, config) {
+        if let Err(err) = update_data_cf_options(db, config, &self.compaction) {
             warn!(
                 "Failed to update data CF options for {}/{DATA_CF}: {err}",
                 db.name(),
@@ -248,18 +260,22 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksDbConfigurator {
     }
 }
 
-/// Dynamically updates the mutable data CF options from configuration.
+/// Dynamically updates the mutable data CF options from configuration. `compaction` is the one the
+/// database was opened with, whatever the configuration says now.
 fn update_data_cf_options(
     db: &restate_rocksdb::RocksAccess,
     opts: &LogServerOptions,
+    compaction: &RocksDbCompaction,
 ) -> Result<(), restate_rocksdb::RocksError> {
-    let max_bytes_for_level_base_str = opts.max_bytes_for_level_base().to_restring();
+    warn_if_blob_gc_not_forced(opts, compaction);
+    let max_bytes_for_level_base_str = opts.max_bytes_for_level_base(compaction).to_restring();
     let write_buffer_size_str = opts.write_buffer_size().to_restring();
     let max_write_buffer_number_str = opts.num_write_buffers().to_restring();
     let target_file_size_base_str = opts.target_file_size_base().to_restring();
     let max_compaction_bytes = opts.max_compaction_bytes().to_restring();
-    let level_zero_file_num_compaction_trigger =
-        opts.level_zero_file_num_compaction_trigger().to_restring();
+    let level_zero_file_num_compaction_trigger = opts
+        .level_zero_file_num_compaction_trigger(compaction)
+        .to_restring();
     let blob_separation_enabled = opts.rocksdb_enable_blob_separation.to_restring();
     let min_blob_size = opts.rocksdb_blob_min_size().as_u64().to_restring();
     let blob_compression_type = if opts.rocksdb_disable_blob_compression {
@@ -304,6 +320,19 @@ fn update_data_cf_options(
     )
 }
 
+/// RocksDB forces blob garbage collection (`blob_garbage_collection_force_threshold`) with leveled
+/// compaction only, so universal compaction reclaims trimmed blob data later.
+fn warn_if_blob_gc_not_forced(opts: &LogServerOptions, compaction: &RocksDbCompaction) {
+    if opts.rocksdb_enable_blob_separation && matches!(compaction, RocksDbCompaction::Universal(_))
+    {
+        warn!(
+            "Blob separation is enabled with universal compaction, which doesn't force blob garbage \
+             collection: trimmed records in blob files keep taking disk space until compactions \
+             rewrite the SST files that point to them"
+        );
+    }
+}
+
 /// Keeps the metadata CF write_buffer_size in sync with the data CF so that
 /// the metadata CF never independently triggers a flush under atomic_flush.
 fn update_metadata_cf_write_buffer_size(
@@ -336,7 +365,7 @@ impl restate_rocksdb::configuration::CfConfigurator for RocksCfConfigurator {
                 &config.rocksdb,
                 env.cache.as_ref(),
             );
-            cf_data_options(&mut cf_options, block_options, config);
+            cf_data_options(&mut cf_options, block_options, config, &self.compaction);
         } else if cf_name == METADATA_CF {
             let block_options = metadata_block_options(&config.rocksdb, env.cache.as_ref());
             cf_metadata_options(&mut cf_options, block_options, config);
@@ -370,6 +399,7 @@ fn cf_data_options(
     opts: &mut rocksdb::Options,
     mut block_options: BlockBasedOptions,
     log_server_config: &LogServerOptions,
+    compaction: &RocksDbCompaction,
 ) {
     // To reduce memory usage of L6 filters we choose ribbon filters instead of bloom
     // and let bloom handle the higher levels.
@@ -392,14 +422,14 @@ fn cf_data_options(
     opts.set_max_write_buffer_number(log_server_config.num_write_buffers() as i32);
     opts.set_target_file_size_base(log_server_config.target_file_size_base() as u64);
     opts.set_max_compaction_bytes(log_server_config.max_compaction_bytes() as u64);
-    opts.set_max_bytes_for_level_base(log_server_config.max_bytes_for_level_base() as u64);
+    opts.set_max_bytes_for_level_base(log_server_config.max_bytes_for_level_base(compaction) as u64);
 
     opts.set_level_zero_file_num_compaction_trigger(
-        log_server_config.level_zero_file_num_compaction_trigger() as i32,
+        log_server_config.level_zero_file_num_compaction_trigger(compaction) as i32,
     );
 
-    opts.set_compaction_style(rocksdb::DBCompactionStyle::Level);
     opts.set_num_levels(7);
+    restate_rocksdb::configuration::set_compaction(opts, compaction);
 
     let l0_l1 = if log_server_config
         .rocksdb
@@ -424,6 +454,7 @@ fn cf_data_options(
     opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(KeyPrefix::size()));
     opts.set_memtable_prefix_bloom_ratio(0.2);
 
+    warn_if_blob_gc_not_forced(log_server_config, compaction);
     if log_server_config.rocksdb_enable_blob_separation {
         opts.set_enable_blob_files(true);
         opts.set_min_blob_size(log_server_config.rocksdb_blob_min_size().as_u64());
@@ -512,10 +543,14 @@ fn cf_metadata_options(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use test_log::test;
 
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::{Configuration, node_dir, set_current_config};
+    use restate_types::config::{
+        Configuration, RocksDbCompaction, UniversalCompactionOptions, node_dir, set_current_config,
+    };
     use restate_types::logs::metadata::SegmentIndex;
     use restate_types::logs::{LogletId, LogletOffset};
 
@@ -546,7 +581,12 @@ mod tests {
             let block_options =
                 restate_rocksdb::configuration::create_default_block_options(&config.rocksdb, None);
             let mut options = restate_rocksdb::configuration::create_default_cf_options(None);
-            cf_data_options(&mut options, block_options, &config);
+            cf_data_options(
+                &mut options,
+                block_options,
+                &config,
+                &RocksDbCompaction::Level,
+            );
             options.create_if_missing(true);
             // Only the manual compaction below should determine the resulting file layout.
             options.set_disable_auto_compactions(true);
@@ -611,22 +651,95 @@ mod tests {
         Ok(())
     }
 
+    /// The data column family keeps the compaction it was opened with. Configuration updates apply
+    /// the new L0 trigger and blob options, but a new compaction only takes effect on restart: the
+    /// compaction trigger stays the one of the opening style, L0 files for leveled and sorted runs
+    /// for universal.
     #[test(restate_core::test(start_paused = true))]
     async fn dynamically_update_blob_and_l0_options() -> anyhow::Result<()> {
-        let config = Configuration::default();
-        set_current_config(config.clone());
-
         RocksDbManager::init();
-        let builder = RocksDbLogStoreBuilder::create().await?;
-        let mut log_server_options = config.log_server;
-        log_server_options.rocksdb_enable_blob_separation = true;
-        log_server_options.rocksdb_l0_num_compaction_trigger = NonZeroU32::new(3).unwrap();
-        update_data_cf_options(builder.rocksdb.inner(), &log_server_options)?;
+        let universal = UniversalCompactionOptions {
+            sorted_runs_compaction_trigger: NonZeroU32::new(6).unwrap(),
+            allow_trivial_move: true,
+            max_read_amp: Some(10),
+            ..Default::default()
+        };
+        // RocksDB would reject its trigger above the `max_read_amp` of `universal`.
+        let updated_compaction = RocksDbCompaction::Universal(UniversalCompactionOptions {
+            sorted_runs_compaction_trigger: NonZeroU32::new(12).unwrap(),
+            ..Default::default()
+        });
+        for (compaction, style, trigger, universal_options) in [
+            (
+                RocksDbCompaction::Level,
+                "kCompactionStyleLevel",
+                "3",
+                ["allow_trivial_move=false", "max_read_amp=-1"],
+            ),
+            (
+                RocksDbCompaction::Universal(universal),
+                "kCompactionStyleUniversal",
+                "6",
+                ["allow_trivial_move=true", "max_read_amp=10"],
+            ),
+        ] {
+            let mut config = Configuration::default();
+            config.log_server.rocksdb_compaction = Some(compaction);
+            set_current_config(config.clone());
+            let builder = RocksDbLogStoreBuilder::create().await?;
 
-        log_server_options.rocksdb_enable_blob_separation = false;
-        update_data_cf_options(builder.rocksdb.inner(), &log_server_options)?;
+            config.log_server.rocksdb_compaction = Some(updated_compaction);
+            config.log_server.rocksdb_l0_num_compaction_trigger = NonZeroU32::new(3).unwrap();
+            for blob_separation in [true, false] {
+                config.log_server.rocksdb_enable_blob_separation = blob_separation;
+                set_current_config(config.clone());
+                // Let the database manager apply the update.
+                tokio::time::sleep(Duration::from_secs(1)).await;
 
-        drop(builder);
+                let data_cf = data_cf_options(&builder)?;
+                for option in [
+                    format!("enable_blob_files={blob_separation}"),
+                    format!("compaction_style={style}"),
+                    format!("level0_file_num_compaction_trigger={trigger}"),
+                ] {
+                    assert!(data_cf.contains(&option), "{option} not in {data_cf:?}");
+                }
+                let universal_line = data_cf
+                    .iter()
+                    .find(|line| line.starts_with("compaction_options_universal="))
+                    .expect("universal compaction options are recorded");
+                for option in universal_options {
+                    assert!(
+                        universal_line.contains(&format!("{option};")),
+                        "{universal_line}"
+                    );
+                }
+            }
+
+            // Reopen the same database with the next style.
+            builder
+                .rocksdb
+                .close()
+                .await
+                .map_err(|_| anyhow::anyhow!("log-server database is still in use"))?;
+        }
         Ok(())
+    }
+
+    /// The data column family's options in the database's latest OPTIONS file.
+    fn data_cf_options(builder: &RocksDbLogStoreBuilder) -> anyhow::Result<Vec<String>> {
+        let dir = builder.rocksdb.inner().path().clone();
+        let latest_options = std::fs::read_dir(&dir)?
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .filter(|name| name.starts_with("OPTIONS-"))
+            .max_by_key(|name| name["OPTIONS-".len()..].parse::<u64>().unwrap_or(0))
+            .expect("database has an OPTIONS file");
+        Ok(std::fs::read_to_string(dir.join(latest_options))?
+            .lines()
+            .skip_while(|line| *line != format!("[CFOptions \"{DATA_CF}\"]"))
+            .skip(1)
+            .take_while(|line| !line.starts_with('['))
+            .map(|line| line.trim().to_owned())
+            .collect())
     }
 }

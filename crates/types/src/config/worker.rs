@@ -22,7 +22,7 @@ use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 
 use super::{
     BackgroundWorkBudget, CommonOptions, DEFAULT_MESSAGE_SIZE_LIMIT, NetworkingOptions,
-    ObjectStoreOptions, RocksDbOptions, SelfProposerCongestionControl,
+    ObjectStoreOptions, RocksDbCompaction, RocksDbOptions, SelfProposerCongestionControl,
 };
 use crate::config::throttling::ThrottlingOptions;
 use crate::config::{
@@ -1057,12 +1057,39 @@ pub struct StorageOptions {
 
     /// # Number of L0 files to trigger compaction
     ///
-    /// Sets the number of files to trigger level-0 compaction.
+    /// Sets the number of files to trigger level-0 compaction. Applies to leveled compaction only;
+    /// see `rocksdb-compaction`.
     ///
     /// [default] is 2
     ///
     /// Since v1.7.7
     pub rocksdb_l0_num_compaction_trigger: NonZeroU32,
+
+    /// # Compaction
+    ///
+    /// How RocksDB compacts the partition stores: `style = "level"` (default) or
+    /// `style = "universal"`, which also takes `sorted-runs-compaction-trigger` and
+    /// `max-size-amplification-percent`.
+    ///
+    /// Universal compaction rewrites data far less often than leveled compaction, which saves disk
+    /// bandwidth and CPU, at the cost of disk space. With the default
+    /// `max-size-amplification-percent` of 100, a partition store grows to up to about twice its
+    /// live data before its sorted runs are merged into one. The merge writes a new copy of the
+    /// live data before it deletes the old files, so the partition store briefly takes up to about
+    /// three times its live data. Each partition store is merged on its own, but partition stores
+    /// that grow at the same pace merge at about the same time.
+    ///
+    /// ```toml
+    /// [worker.storage.rocksdb-compaction]
+    /// style = "universal"
+    /// max-size-amplification-percent = 100
+    /// ```
+    ///
+    /// Switching styles needs no migration. Takes effect on restart.
+    ///
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rocksdb_compaction: Option<RocksDbCompaction>,
 
     /// # Max open files
     ///
@@ -1227,6 +1254,12 @@ impl StorageOptions {
             })
     }
 
+    /// The configured compaction, leveled if unset. A node reads it once, when it starts: a change
+    /// takes a restart.
+    pub fn rocksdb_compaction(&self) -> RocksDbCompaction {
+        self.rocksdb_compaction.unwrap_or_default()
+    }
+
     pub fn set_rocksdb_memory_budget(&mut self, budget: NonZeroByteCount) {
         self.rocksdb_memory_budget = Some(budget);
     }
@@ -1269,6 +1302,7 @@ impl Default for StorageOptions {
                 NonZeroUsize::new(1024 * 1024).unwrap(),
             ),
             rocksdb_l0_num_compaction_trigger: NonZeroU32::new(2).unwrap(),
+            rocksdb_compaction: None,
             rocksdb_max_open_files: None,
             rocksdb_max_successive_merges: DEFAULT_MAX_SUCCESSIVE_MERGES,
             vqueue_meta_full_write_probability:
