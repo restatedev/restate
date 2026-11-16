@@ -43,7 +43,7 @@ once with `v1` and once with `v2`, should return the same rows.
   `experimental-enable-query-index-tables`: for example, `sys_vqueues` filtered
   by a queue reads only that queue's entries.
 - V2 doesn't serve every table yet. It has no `sys_inbox`, and in the
-  operator-level `cluster` schema it serves only `partition_state`,
+  operator-level `cluster` schema it serves only `nodes`, `partition_state`,
   `bifrost_read_streams`, `indexes` and `migration_jobs`. Query the others
   with `v1`.
 - **V2 doesn't bound the bytes of a batch yet.** A query over large rows, such
