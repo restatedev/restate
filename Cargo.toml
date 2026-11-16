@@ -161,7 +161,9 @@ datafusion = { version = "55.1.0", default-features = false, features = [
     "recursive_protection",
 ] }
 datafusion-functions-json = { version = "0.55.2" }
-datafusion-distributed = { git = "https://github.com/datafusion-contrib/datafusion-distributed", rev = "1222c063f293167e64b9d8e9ee21b6af7bf0390b", default-features = false }
+# Temporary fork for terminal-error ordering; switch back to upstream after
+# https://github.com/datafusion-contrib/datafusion-distributed/pull/893 merges.
+datafusion-distributed = { git = "https://github.com/restatedev/datafusion-distributed", rev = "cbd361d25d1d3eb78c6d952e5e6f93526ddeb7f0", default-features = false }
 datafusion-proto = { version = "55.1.0", default-features = false }
 datafusion-sql = { version = "55.2.0", default-features = false }
 derive_builder = "0.20.2"
