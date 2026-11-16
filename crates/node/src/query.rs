@@ -133,14 +133,20 @@ impl QueryEngineBuilder {
             }
         }
         if let Some(log_server) = log_server {
+            let scanner = introspection::loglet_workers::create_local_scanner(
+                log_server.state_map().clone(),
+                log_server.active_worker_map().clone(),
+                self.metadata.clone(),
+            );
             self.scanners
-                .register_node_scanner::<v1::loglet_worker::LogletWorkersTable>(
-                    introspection::loglet_workers::create_local_scanner(
-                        log_server.state_map().clone(),
-                        log_server.active_worker_map().clone(),
-                        self.metadata.clone(),
-                    ),
+                .register_node_scanner::<v1::loglet_worker::LogletWorkersTable>(Arc::clone(
+                    &scanner,
+                ));
+            if let Some((_, scanners)) = &self.distributed {
+                scanners.register_node_scanner::<v2::tables::loglet_workers::LogletWorkersTable>(
+                    scanner,
                 );
+            }
         }
         let scanner = introspection::bifrost_read_streams::create_local_scanner(
             bifrost.read_stream_registry().clone(),

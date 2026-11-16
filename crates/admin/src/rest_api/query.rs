@@ -749,6 +749,7 @@ mod tests {
                     serde_json::json!({"rows": [
                         {"table_name": "bifrost_read_streams"},
                         {"table_name": "indexes"},
+                        {"table_name": "loglet_workers"},
                         {"table_name": "logs"},
                         {"table_name": "logs_tail_segments"},
                         {"table_name": "migration_jobs"},

@@ -1,0 +1,38 @@
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+use std::sync::Arc;
+
+use datafusion::catalog::TableProvider;
+
+use restate_core::Metadata;
+use restate_storage_query_api::tables::loglet_workers::LogletWorkers;
+
+use crate::node_fan_out::NodeFanOutTableProvider;
+use crate::source_registry::SourceRegistry;
+use crate::table_providers::Scan;
+
+crate::tables::table_adapter!(pub LogletWorkersTable, LogletWorkers);
+
+impl LogletWorkersTable {
+    /// Asks every log server for its loglets. Each log server answers with the
+    /// local scanner it registers, the same one the default engine uses.
+    pub(crate) fn create_provider(
+        metadata: Metadata,
+        sources: SourceRegistry,
+        local_scanner: Option<Arc<dyn Scan>>,
+    ) -> Arc<dyn TableProvider> {
+        Arc::new(NodeFanOutTableProvider::declared::<Self>(
+            metadata,
+            sources,
+            local_scanner,
+        ))
+    }
+}
