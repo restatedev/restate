@@ -366,6 +366,15 @@ pub enum ProcessorError {
         "partition is blocked; restate-server cannot perform data migration. reason='{reason}'"
     )]
     MigrationBarrier { reason: String },
+    /// *Since v1.8.2*
+    #[error(
+        "partition is blocked; restate-server requires partition features {missing:?} that the \
+         partition has not enabled; restore the partition from a snapshot that has them, or run \
+         the previous restate-server version until it has enabled them"
+    )]
+    MissingRequiredFeatures {
+        missing: Vec<PartitionFeatureChange>,
+    },
     #[error(transparent)]
     Leadership(#[from] leadership::Error),
     #[error(transparent)]
