@@ -31,7 +31,7 @@ mod journal;
 mod journal_events;
 mod live_scanners;
 mod locks;
-mod log;
+pub mod log;
 pub mod loglet_worker;
 pub mod node;
 pub mod node_fan_out;

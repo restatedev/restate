@@ -749,6 +749,7 @@ mod tests {
                     serde_json::json!({"rows": [
                         {"table_name": "bifrost_read_streams"},
                         {"table_name": "indexes"},
+                        {"table_name": "logs"},
                         {"table_name": "migration_jobs"},
                         {"table_name": "nodes"},
                         {"table_name": "partition_replica_set"},

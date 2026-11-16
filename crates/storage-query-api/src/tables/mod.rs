@@ -27,6 +27,7 @@ pub mod invocation_status;
 pub mod journal;
 pub mod journal_events;
 pub mod locks;
+pub mod logs;
 pub mod migration_jobs;
 pub mod nodes;
 pub mod partition_replica_set;

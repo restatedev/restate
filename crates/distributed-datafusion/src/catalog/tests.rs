@@ -400,6 +400,139 @@ async fn partitions_and_replica_sets_match_the_default_engine() {
     );
 }
 
+/// `logs` reads the coordinator's logs metadata through the default engine's
+/// scanner, so both engines return the same rows: the bootstrapped in-memory logs
+/// and a replicated log with two segments.
+#[restate_core::test]
+async fn logs_match_the_default_engine() {
+    use std::num::NonZeroU8;
+
+    use restate_types::logs::builder::LogsBuilder;
+    use restate_types::logs::metadata::{Chain, LogletParams, ProviderKind, SegmentIndex};
+    use restate_types::logs::{LogId, LogletId, Lsn};
+    use restate_types::net::metadata::MetadataKind;
+    use restate_types::replicated_loglet::ReplicatedLogletParams;
+    use restate_types::replication::{NodeSet, ReplicationProperty};
+    use restate_types::{GenerationalNodeId, Versioned};
+
+    let core = TestCoreEnv::create_with_single_node(1, 1).await;
+    // The scanner looks a segment's loglet up by the ID derived from the log and
+    // the segment index, so the fixture uses those IDs.
+    let replicated = |segment: u32| {
+        LogletParams::from(
+            ReplicatedLogletParams {
+                loglet_id: LogletId::new(LogId::new(100), SegmentIndex::from(segment)),
+                sequencer: GenerationalNodeId::new(1, 1),
+                replication: ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
+                nodeset: NodeSet::from_iter([1, 2, 3]),
+            }
+            .serialize()
+            .unwrap(),
+        )
+    };
+    let mut builder =
+        LogsBuilder::try_from(core.metadata.logs_snapshot().as_ref().clone()).unwrap();
+    builder
+        .add_log(
+            LogId::new(100),
+            Chain::new(ProviderKind::Replicated, replicated(0)),
+        )
+        .unwrap()
+        .append_segment(Lsn::new(50), ProviderKind::Replicated, replicated(1))
+        .unwrap();
+    let logs = builder.build();
+    let version = logs.version();
+    core.metadata_writer.submit(Arc::new(logs));
+    core.metadata
+        .wait_for_version(MetadataKind::Logs, version)
+        .await
+        .unwrap();
+
+    let options = HashMap::from([("datafusion.execution.batch_size".to_owned(), "1".to_owned())]);
+    let legacy = v1::DataFusionEnv::new(64 * 1024 * 1024, None, Some(1), &options)
+        .unwrap()
+        .with_mock_clock(MockClock::new())
+        .unwrap();
+    legacy
+        .register_tables(v1::ClusterTables::new(
+            Default::default(),
+            None,
+            v1::remote_query_scanner_manager::RemoteScannerManager::local_only(
+                core.metadata.clone(),
+            ),
+        ))
+        .await
+        .unwrap();
+    let current = DataFusionEnv::new(64 * 1024 * 1024, None, Some(1), &options)
+        .unwrap()
+        .with_mock_clock(MockClock::new())
+        .unwrap();
+    current
+        .register_tables(ClusterTables::new(
+            SourceRegistry::local_only(core.metadata.clone()),
+            Default::default(),
+        ))
+        .await
+        .unwrap();
+    let cluster = || SessionOptions {
+        schemas: vec!["cluster".into()],
+        ..Default::default()
+    };
+    let old = v1::context::DataFusionQueryEngine::from_env(legacy, None)
+        .create_session(cluster())
+        .unwrap();
+    let new = DataFusionQueryEngine::from_env(current, None)
+        .create_session(cluster())
+        .unwrap();
+    for sql in [
+        "SELECT * FROM cluster.logs ORDER BY log_id, segment_index",
+        "SELECT segment_index, base_lsn, loglet_id, sequencer, replication, nodeset \
+         FROM cluster.logs WHERE log_id = 100 ORDER BY segment_index",
+        "SELECT log_id FROM cluster.logs WHERE loglet_id IS NULL ORDER BY log_id LIMIT 1",
+    ] {
+        assert_eq!(
+            rows(new.as_ref(), sql).await,
+            rows(old.as_ref(), sql).await,
+            "{sql}"
+        );
+    }
+    // The replicated segments show their loglet; the in-memory ones don't.
+    assert_eq!(
+        rows(
+            new.as_ref(),
+            "SELECT segment_index, kind, loglet_id, sequencer FROM cluster.logs \
+             WHERE log_id = 100 ORDER BY segment_index"
+        )
+        .await,
+        [
+            ["0", "replicated", "100_0", "N1:1"],
+            ["1", "replicated", "100_1", "N1:1"]
+        ]
+    );
+    assert_eq!(
+        rows(
+            new.as_ref(),
+            "SELECT COUNT(*) FROM cluster.logs \
+             WHERE log_id = 100 AND replication = '{node: 2}' AND nodeset IS NOT NULL"
+        )
+        .await,
+        [["2"]]
+    );
+    assert_eq!(
+        rows(
+            new.as_ref(),
+            "SELECT COUNT(*) FROM cluster.logs WHERE loglet_id IS NULL AND sequencer IS NULL \
+             AND replication IS NULL AND nodeset IS NULL"
+        )
+        .await,
+        rows(
+            new.as_ref(),
+            "SELECT COUNT(*) FROM cluster.logs WHERE log_id <> 100"
+        )
+        .await
+    );
+}
+
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn migration_tables_serve_the_default_engine_rows() {
     use restate_partition_store::PartitionStoreManager;
@@ -581,11 +714,13 @@ async fn shared_tables_preserve_v1_column_contracts() {
         "partitions",
         "partition_replica_set",
         "partition_state",
+        "logs",
     ] {
         // V1 identifies some tables by their declaration name.
         let legacy_name = match name {
             "nodes" => "node",
             "partitions" => "partition",
+            "logs" => "log",
             name => name,
         };
         let expected = legacy
