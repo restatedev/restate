@@ -32,11 +32,7 @@ use crate::{
 define_table_key!(
     Journal,
     KeyKind::Journal,
-    JournalKey(
-        partition_key: PartitionKey,
-        invocation_uuid: InvocationUuid,
-        journal_index: u32
-    )
+    JournalKey(partition_key: PartitionKey, invocation_uuid: InvocationUuid, journal_index: u32)
 );
 
 /// Lazy iterator over journal entries. Exposes [`peek_item`](Self::peek_item)

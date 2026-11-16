@@ -36,11 +36,7 @@ use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
 mod header;
 pub use header::*;
 
-define_table_key!(
-    TableKind::Blob,
-    KeyKind::Blob,
-    BlobKey(blob_id: BlobId)
-);
+define_table_key!(TableKind::Blob, KeyKind::Blob, BlobKey(blob_id: BlobId));
 
 impl BlobKey {
     pub const fn serialized_length_fixed() -> usize {

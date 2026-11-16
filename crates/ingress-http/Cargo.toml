@@ -9,7 +9,6 @@ publish = false
 
 [features]
 default = []
-options_schema = []
 
 [dependencies]
 restate-workspace-hack = { workspace = true }

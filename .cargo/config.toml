@@ -7,6 +7,14 @@ VERGEN_DEFAULT_ON_ERROR = "1"
 [alias]
 xtask = "run --package xtask --"
 
+[registry]
+# Dependency cooldown: the resolver ignores crate versions published less than 7 days ago
+# (unless they are already in Cargo.lock). This gives the ecosystem time to detect and yank
+# compromised or broken releases before they reach us. To pull in an urgent fix (e.g. a
+# security patch) earlier, run:
+#   CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE=allow cargo update -p <crate> --precise <version>
+global-min-publish-age = "7 days"
+
 [build]
 # when changing these please also change .github/workflows/steps/release-build-setup.yml
 rustflags = [

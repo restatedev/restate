@@ -12,6 +12,9 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 use std::time::SystemTime;
 
+// Only linked so hakari can unify features across the workspace.
+use restate_workspace_hack as _;
+
 #[derive(Debug)]
 pub struct Timer<T> {
     sleep_until: SystemTime,

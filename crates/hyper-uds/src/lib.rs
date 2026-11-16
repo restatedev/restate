@@ -21,6 +21,9 @@ use pin_project::pin_project;
 use tokio::net::UnixStream;
 use tower::Service;
 
+// Only linked so hakari can unify features across the workspace.
+use restate_workspace_hack as _;
+
 /// Unix domain socket connector for Hyper.
 ///
 /// Can be used to create hyper clients that channel requests to the underlying unix-domain socket

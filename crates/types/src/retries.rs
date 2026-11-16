@@ -889,7 +889,7 @@ mod tests {
                 Some(Duration::from_secs(10)),
             );
             // Both replay path and iterator path must complete without panic.
-            let _ = policy.clone().iter_after(3);
+            let _ = policy.iter_after(3);
             let _ = policy.into_iter().collect::<Vec<_>>();
         }
     }

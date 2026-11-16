@@ -20,9 +20,7 @@ use crate::keys::{FixedLengthTableKey, KeyKind, define_table_key};
 define_table_key!(
     TableKind::VQueue,
     KeyKind::VQueueEntryStatus,
-    EntryStatusKey(
-        id: BaseEntryId,
-    )
+    EntryStatusKey(id: BaseEntryId)
 );
 
 impl EntryStatusKey {

@@ -15,22 +15,10 @@ use crate::TableKind::VQueue;
 use crate::keys::{FixedLengthTableKey, KeyKind, define_table_key};
 
 // 'qm' | QID
-define_table_key!(
-    VQueue,
-    KeyKind::VQueueMeta,
-    MetaKey(
-        qid: VQueueId,
-    )
-);
+define_table_key!(VQueue, KeyKind::VQueueMeta, MetaKey(qid: VQueueId));
 
 // 'qa' | QID (QID is prefixed by PartitionKey internally)
-define_table_key!(
-    VQueue,
-    KeyKind::VQueueActive,
-    ActiveKey(
-        qid: VQueueId,
-    )
-);
+define_table_key!(VQueue, KeyKind::VQueueActive, ActiveKey(qid: VQueueId));
 
 static_assertions::const_assert_eq!(ActiveKey::serialized_length_fixed(), 27);
 

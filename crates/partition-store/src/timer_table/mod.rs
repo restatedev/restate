@@ -30,11 +30,7 @@ use crate::{
 define_table_key!(
     Timers,
     KeyKind::Timers,
-    TimersKey(
-        partition_id: PaddedPartitionId,
-        timestamp: u64,
-        kind: TimerKeyKind,
-    )
+    TimersKey(partition_id: PaddedPartitionId, timestamp: u64, kind: TimerKeyKind)
 );
 
 #[inline]

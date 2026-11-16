@@ -10,7 +10,7 @@ publish = false
 [features]
 default = []
 codec = ["dep:restate-types", "dep:paste"]
-message = ["dep:restate-types", "dep:bytes-utils", "dep:codederror", "dep:restate-errors", "dep:tracing"]
+message = ["dep:restate-types", "dep:codederror", "dep:restate-errors", "dep:tracing"]
 test-util = ["restate-types/test-util"]
 
 [dependencies]
@@ -21,7 +21,6 @@ restate-util-bytecount = { workspace = true, features = ["serde"] }
 restate-types = { workspace = true, optional = true }
 
 bytes = { workspace = true }
-bytes-utils = { workspace = true, optional = true }
 codederror = { workspace = true, optional = true }
 paste = { workspace = true, optional = true }
 prost = { workspace = true }

@@ -138,7 +138,7 @@ impl MemoryPool {
             Some(ref inner) => {
                 inner
                     .used
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
                         let capacity = inner.capacity.load(Ordering::Relaxed);
                         let new_used = used.checked_add(size)?;
                         (new_used <= capacity).then_some(new_used)
@@ -223,7 +223,7 @@ impl MemoryPool {
             Some(inner) => {
                 inner
                     .used
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
                         used.checked_add(size)
                     })
                     .expect("MemoryPool used counter overflowed");
@@ -280,7 +280,7 @@ impl MemoryPool {
         match &self.inner {
             Some(inner) => inner
                 .used
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
                     let capacity = inner.capacity.load(Ordering::Relaxed);
                     let new_used = used.checked_add(amount)?;
                     (new_used <= capacity).then_some(new_used)

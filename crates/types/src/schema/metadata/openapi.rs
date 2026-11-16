@@ -126,7 +126,7 @@ impl ServiceOpenAPI {
                 .operation(
                     HttpMethod::Post,
                     Operation::builder()
-                        .summary(summary.clone())
+                        .summary(summary)
                         .operation_id(Some(format!("{operation_id}Send")))
                         .description(Some(
                             handler_schemas
@@ -167,7 +167,7 @@ impl ServiceOpenAPI {
                         })))
                         .parameters(Some(scoped_call_parameters.clone()))
                         .request_body(request_body.clone())
-                        .response("200", response.clone())
+                        .response("200", response)
                         .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
                         .extensions(extensions.clone())
                         .build(),
@@ -182,7 +182,7 @@ impl ServiceOpenAPI {
                 .operation(
                     HttpMethod::Post,
                     Operation::builder()
-                        .summary(scoped_summary.clone())
+                        .summary(scoped_summary)
                         .operation_id(Some(format!("{operation_id}SendScoped")))
                         .description(Some(handler_schemas.documentation.as_ref().cloned().unwrap_or_else(|| {
                             format!("Send request to {service_name} handler {handler_name} within the concurrency scope")
@@ -193,7 +193,7 @@ impl ServiceOpenAPI {
                         .request_body(request_body)
                         .response("202", responses_ref(SEND_RESPONSE_REF_NAME))
                         .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
-                        .extensions(extensions.clone())
+                        .extensions(extensions)
                         .build(),
                 )
                 .build();

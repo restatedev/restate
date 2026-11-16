@@ -17,6 +17,9 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+// Only linked so hakari can unify features across the workspace.
+use restate_workspace_hack as _;
+
 /// Based on [Fisher–Yates shuffle].
 ///
 /// [Fisher–Yates shuffle]: https://en.wikipedia.org/wiki/Fisher–Yates_shuffle

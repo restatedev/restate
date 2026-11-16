@@ -7818,7 +7818,6 @@ dependencies = [
  "indoc",
  "itertools 0.15.0",
  "json-patch",
- "mock-service-endpoint",
  "open",
  "rand 0.10.2",
  "reqwest",
@@ -8140,16 +8139,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate-fs-util"
-version = "1.8.2-dev"
-dependencies = [
- "restate-workspace-hack",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "restate-futures-util"
 version = "1.8.2-dev"
 dependencies = [
@@ -8402,7 +8391,6 @@ dependencies = [
  "reqwest",
  "restate-clock",
  "restate-core",
- "restate-metadata-providers",
  "restate-metadata-server-grpc",
  "restate-metadata-store",
  "restate-test-util",
@@ -8951,7 +8939,6 @@ name = "restate-service-protocol"
 version = "1.8.2-dev"
 dependencies = [
  "bytes",
- "bytes-utils",
  "codederror",
  "googletest",
  "paste",
@@ -9356,7 +9343,6 @@ dependencies = [
 name = "restate-util-string"
 version = "1.8.2-dev"
 dependencies = [
- "ahash",
  "bilrost",
  "bytes",
  "bytestring",
@@ -9492,7 +9478,6 @@ dependencies = [
  "restate-errors",
  "restate-futures-util",
  "restate-ingestion-client",
- "restate-ingress-http",
  "restate-ingress-kafka",
  "restate-invoker-impl",
  "restate-limiter",
@@ -9731,7 +9716,6 @@ dependencies = [
  "uuid",
  "winnow 1.0.4",
  "xxhash-rust",
- "zerocopy",
  "zeroize",
  "zlib-rs",
  "zstd 0.13.4",
@@ -9758,7 +9742,6 @@ dependencies = [
  "ctrlc",
  "diff",
  "futures",
- "futures-util",
  "googletest",
  "humantime",
  "itertools 0.15.0",
@@ -9767,7 +9750,6 @@ dependencies = [
  "prost-types",
  "rand 0.10.2",
  "ratatui",
- "restate-bifrost",
  "restate-cli-util",
  "restate-clock",
  "restate-core",
@@ -9775,20 +9757,15 @@ dependencies = [
  "restate-local-cluster-runner",
  "restate-log-server-grpc",
  "restate-memory",
- "restate-metadata-server",
  "restate-metadata-server-grpc",
  "restate-metadata-store",
- "restate-rocksdb",
  "restate-test-util",
  "restate-types",
  "restate-util-time",
- "restate-wal-protocol",
  "restate-workspace-hack",
- "rlimit",
  "rustls",
  "serde",
  "serde_json",
- "tempfile",
  "test-log",
  "thiserror 2.0.20",
  "tokio",

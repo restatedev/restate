@@ -45,7 +45,7 @@ The Rust build is configured through several files. When making changes, be awar
 |------|---------|-------------------|
 | `Cargo.toml` | Workspace members, shared package metadata (version, edition, rust-version), centralized dependencies, release profile settings | `workspace.package.version` updated for releases; `rust-version` must match `rust-toolchain.toml` |
 | `rust-toolchain.toml` | Pins Rust version and components (rustfmt, clippy) for local development | Must match dev-tools image Rust version |
-| `.cargo/config.toml` | Cargo behavior: `RUST_TEST_THREADS=1`, `xtask` alias, per-target RUSTFLAGS (unwind tables, `uuid_unstable`, `tokio_unstable`, frame pointers, static linking) | RUSTFLAGS must be duplicated in `release-build-setup.yml` ([cargo-dist#1571](https://github.com/axodotdev/cargo-dist/issues/1571)) |
+| `.cargo/config.toml` | Cargo behavior: `RUST_TEST_THREADS=1`, `xtask` alias, 7-day dependency cooldown (`registry.global-min-publish-age`), per-target RUSTFLAGS (unwind tables, `uuid_unstable`, `tokio_unstable`, frame pointers, static linking) | RUSTFLAGS must be duplicated in `release-build-setup.yml` ([cargo-dist#1571](https://github.com/axodotdev/cargo-dist/issues/1571)) |
 | `.config/hakari.toml` | cargo-hakari configuration for workspace-hack generation | See [cargo-hakari section](#cargo-hakari-workspace-hack) |
 | `.config/nextest.toml` | cargo-nextest test runner configuration (timeouts) | — |
 | `deny.toml` | cargo-deny: license allowlist, advisory checks, dependency bans, source restrictions | Update when adding deps with new licenses or Git sources |
@@ -56,6 +56,18 @@ The Rust build is configured through several files. When making changes, be awar
 2. Update `workspace.package.rust-version` in `Cargo.toml`
 3. Update the Rust version in the dev-tools Dockerfile
 4. Release a new dev-tools image and update pins in `docker/Dockerfile` and `dist-workspace.toml`
+
+### Dependency cooldown
+
+`.cargo/config.toml` sets `registry.global-min-publish-age = "7 days"`, so the resolver ignores crate versions published less than a week ago unless they are already in `Cargo.lock`. This guards against freshly published malicious or broken releases. To pull in an urgent fix (e.g. a security patch) sooner:
+
+```bash
+CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE=allow cargo update -p <crate> --precise <version>
+```
+
+### Unused dependencies
+
+Cargo's `unused_dependencies` lint reports `[dependencies]`/`[build-dependencies]` entries that no target uses (it does not check `[dev-dependencies]`; use `just udeps` for that). CI denies Cargo lint warnings via `CARGO_BUILD_WARNINGS=deny`. Crates that do not use any code from `restate-workspace-hack` need `use restate_workspace_hack as _;` in their `lib.rs` to keep the lint quiet.
 
 ## cargo-hakari (workspace-hack)
 

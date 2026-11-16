@@ -11,6 +11,9 @@
 use base64::alphabet;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 
+// Only linked so hakari can unify features across the workspace.
+use restate_workspace_hack as _;
+
 // We have this custom configuration for padding because Node's base64url implementation will omit padding,
 // but the spec https://datatracker.ietf.org/doc/html/rfc4648#section-5 doesn't specify that padding MUST be omitted.
 // Hence, Other implementations might include it, so we keep this relaxed.

@@ -49,6 +49,9 @@
 use core::fmt;
 use core::ops::{Deref, DerefMut};
 
+// Only linked so hakari can unify features across the workspace.
+use restate_workspace_hack as _;
+
 /// `T`, aligned and padded to [`Self::ALIGN`] bytes: see the crate docs.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(
