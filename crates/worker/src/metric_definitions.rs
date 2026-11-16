@@ -31,6 +31,7 @@ pub const FLARE_REASON_VERSION_BARRIER: &str = "version_barrier";
 pub const FLARE_REASON_AHEAD_OF_LOG: &str = "ahead_of_log";
 pub const FLARE_REASON_MIGRATION_BARRIER: &str = "migration_barrier";
 pub const FLARE_REASON_SNAPSHOT_UNAVAILABLE: &str = "snapshot-unavailable";
+pub const FLARE_REASON_MISSING_REQUIRED_FEATURES: &str = "missing_required_features";
 
 pub const PARTITION_APPLY_COMMAND: &str = "restate.partition.apply_command_duration.seconds";
 pub const PARTITION_WRITE_BATCH_SIZE_BYTES: &str = "restate.partition.write_batch_size.bytes";

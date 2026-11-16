@@ -28,6 +28,7 @@ mod dedup;
 mod fsm;
 pub mod leadership;
 mod outbox;
+pub mod required_features;
 mod status;
 
 // Re-exports
