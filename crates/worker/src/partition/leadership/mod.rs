@@ -1310,6 +1310,7 @@ mod tests {
                 inconsistent_state_mutation_cleanup: true,
                 preflight_signal_recording: true,
                 byte_offsets: true,
+                journal_v1_retired: true,
             },
         );
         let (leader_query_tx, _leader_query_rx) = restate_worker_api::channel();

@@ -14,7 +14,8 @@ use futures_util::stream;
 use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
 use restate_storage_api::journal_table::{
-    JournalEntry, ReadJournalTable, ScanJournalTable, ScanJournalTableRange, WriteJournalTable,
+    JournalEntry, ReadJournalTable, RetireJournalTable, ScanJournalTable, ScanJournalTableRange,
+    WriteJournalTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{BudgetedReadError, Result, StorageError};
@@ -515,6 +516,64 @@ impl WriteJournalTable for PartitionStoreTransaction<'_> {
         self.assert_partition_key(invocation_id)?;
         let _x = RocksDbReadPerfGuard::new("delete-journal");
         delete_journal(self, invocation_id, journal_length)
+    }
+}
+
+impl RetireJournalTable for PartitionStoreTransaction<'_> {
+    fn next_invocation_with_journal(
+        &mut self,
+        after: Option<&InvocationId>,
+    ) -> Result<Option<InvocationId>> {
+        let key_range = self.partition_key_range();
+        let scan = match after {
+            None => TableScan::ScanPartitionKeyRange::<JournalKeyBuilder>(key_range),
+            Some(after) => {
+                self.assert_partition_key(after)?;
+                // Starts at the last key the invocation can have, to skip its entries.
+                TableScan::RangeInclusive(
+                    JournalKey::builder()
+                        .partition_key(after.partition_key())
+                        .invocation_uuid(after.invocation_uuid())
+                        .journal_index(u32::MAX),
+                    JournalKey::builder().partition_key(key_range.end()),
+                )
+            }
+        };
+
+        let mut iterator = self.iterator_from(scan)?;
+        while let Some((mut key, _)) = StorageIterator::item(&iterator)? {
+            let (partition_key, invocation_uuid, _) =
+                JournalKey::deserialize_from(&mut key)?.split();
+            let invocation_id = InvocationId::from_parts(partition_key, invocation_uuid);
+            if Some(&invocation_id) != after {
+                return Ok(Some(invocation_id));
+            }
+            iterator.next();
+        }
+        Ok(None)
+    }
+
+    fn delete_all_journal_entries(&mut self, invocation_id: &InvocationId) -> Result<()> {
+        self.assert_partition_key(invocation_id)?;
+        let prefix = JournalKey::builder()
+            .partition_key(invocation_id.partition_key())
+            .invocation_uuid(invocation_id.invocation_uuid());
+
+        // The iterator borrows the transaction, so collect the entries before deleting them.
+        let mut journal_indexes = Vec::new();
+        let mut iterator = self.iterator_from(TableScan::Prefix(prefix))?;
+        while let Some((mut key, _)) = StorageIterator::item(&iterator)? {
+            journal_indexes.push(JournalKey::deserialize_from(&mut key)?.journal_index);
+            iterator.next();
+        }
+        drop(iterator);
+
+        let mut key = write_journal_entry_key(invocation_id, 0);
+        for journal_index in journal_indexes {
+            key.journal_index = journal_index;
+            self.delete_key(&key)?;
+        }
+        Ok(())
     }
 }
 
