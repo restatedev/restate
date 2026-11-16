@@ -58,7 +58,7 @@ use std::sync::Arc;
 use restate_storage_api::scan::{RowConsumer, ScanOutcome};
 use restate_storage_api::{Result, StorageError};
 
-use crate::scan::{CursorScan, SCAN_SLICE, Scan, Table, yield_now};
+use crate::scan::{CursorScan, RecordsOf, SCAN_SLICE, Scan, Table, yield_now};
 use crate::selection::{Selection, SelectionPrecision};
 
 use super::{LogicalSchema, RowBuilder};
@@ -199,6 +199,34 @@ pub trait SchemaBinding: Sized + 'static {
             executor,
             Self::Schema::NAME,
             Arc::clone(prepared.request()),
+            BindingConsumer::<Self, C>::new(sink),
+        )?;
+        Ok(async move {
+            result
+                .await
+                .map(|outcome| outcome.map(|consumer| consumer.sink))
+        })
+    }
+
+    /// Like [`Self::read`], over the same records requested another way, such as
+    /// a set of complete keys: rows are built from them exactly as [`Self::read`]
+    /// builds them.
+    fn read_records<R, S, C>(
+        backend: &S,
+        executor: &S::Executor,
+        request: Arc<R>,
+        sink: C,
+    ) -> Result<impl Future<Output = Result<ScanOutcome<C>>> + Send + 'static>
+    where
+        R: Send + Sync + 'static,
+        S: Scan + CursorScan<RecordsOf<Self::Table, R>>,
+        C: AsyncRowSink<Self::Schema>,
+        for<'a> <Self::Table as Table>::Record<'a>: Copy + Send,
+    {
+        let result = backend.scan::<RecordsOf<Self::Table, R>, _>(
+            executor,
+            Self::Schema::NAME,
+            request,
             BindingConsumer::<Self, C>::new(sink),
         )?;
         Ok(async move {

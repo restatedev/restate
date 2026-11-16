@@ -30,6 +30,7 @@ use restate_types::identifiers::PartitionKey;
 use restate_types::vqueues::VQueueId;
 
 use crate::keys::DecodeTableKey;
+use crate::lookup::LookupTable;
 use crate::query_read::SnapshotCursor;
 use crate::scan::{PhysicalScan, TableScan};
 use crate::table::{MultiGetCursor, MultiGetTable};
@@ -47,6 +48,14 @@ impl MultiGetTable for VQueueMetaTable {
 
     fn key(id: &VQueueId) -> MetaKey {
         MetaKey::from(id)
+    }
+}
+
+impl LookupTable for VQueueMetaTable {
+    const KEY_LENGTH: usize = MetaKey::serialized_length_fixed();
+
+    fn id(key: MetaKey) -> VQueueId {
+        VQueueId::from(key)
     }
 }
 
