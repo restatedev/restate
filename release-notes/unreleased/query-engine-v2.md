@@ -48,6 +48,9 @@ once with `v1` and once with `v2`, should return the same rows.
 - V2 uses indexes on its own, with or without
   `experimental-enable-query-index-tables`: for example, `sys_vqueues` filtered
   by a queue reads only that queue's entries.
+- A query that names specific queues, such as
+  `SELECT * FROM sys_vqueue_meta WHERE id IN (…)`, makes V2 read those queues'
+  metadata directly instead of scanning the metadata stored between them.
 - V2 doesn't serve every table yet. It has no `sys_inbox`, and in the
   operator-level `cluster` schema it serves only `nodes`, `partitions`,
   `partition_replica_set`, `partition_state`, `logs`, `logs_tail_segments`,
