@@ -14,12 +14,17 @@ use std::sync::Arc;
 use dashmap::{DashMap, mapref::entry::Entry};
 use datafusion::catalog::{MemoryCatalogProvider, MemorySchemaProvider, TableProvider};
 use datafusion::common::TableReference;
+use datafusion::common::config::ConfigOptions;
+use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::error::DataFusionError;
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
 use datafusion::execution::{SessionState, SessionStateBuilder, SessionStateDefaults};
 use datafusion::logical_expr::registry::{ExtensionTypeRegistry, MemoryExtensionTypeRegistry};
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::filter::FilterExec;
 use datafusion::prelude::SessionContext;
 
 use restate_clock::{AtomicStorage, HlcClock, UniqueTimestamp, WallClock};
@@ -318,6 +323,8 @@ impl DataFusionEnv {
     pub fn build_session_state(&self) -> Result<SessionState, DataFusionError> {
         let mut physical_rules = PhysicalOptimizer::new().rules;
         physical_rules.insert(0, Arc::new(crate::distributed::source::PrimaryAccessRule));
+        // After the rules that create filters, before distribution ships them.
+        physical_rules.push(Arc::new(FilterBatchSize));
         let builder = SessionStateBuilder::new()
             .with_config(self.config.clone())
             .with_physical_optimizer_rules(physical_rules)
@@ -376,6 +383,48 @@ fn apply_default_features(builder: SessionStateBuilder) -> SessionStateBuilder {
         ))
 }
 
+/// Gives every filter the session's batch size.
+///
+/// DataFusion's planner does, but its filter pushdown through a union doesn't:
+/// when a union's inputs can't take a filter, it wraps each input in a new
+/// filter with the default batch size of 8192 rows
+/// (`UnionExec::handle_child_pushdown_result`). V2 plans a query over several
+/// owners' partitions as such a union.
+///
+/// A filter holds the rows it matched until it has a batch, reaches its fetch
+/// (from a LIMIT) or its input ends. So under `… LIMIT 250`, each owner's filter
+/// emitted nothing until it had all 250 matches or ran out of input. With the
+/// session's 128 it emits its first 128 matches as soon as it has them, and the
+/// limit can be met from several owners.
+#[derive(Debug)]
+pub(crate) struct FilterBatchSize;
+
+impl PhysicalOptimizerRule for FilterBatchSize {
+    fn optimize(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        config: &ConfigOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+        let batch_size = usize::from(config.execution.batch_size);
+        Ok(plan
+            .transform_up(|node| match node.downcast_ref::<FilterExec>() {
+                Some(filter) if filter.batch_size() != batch_size => Ok(Transformed::yes(
+                    Arc::new(filter.with_batch_size(batch_size)?) as Arc<dyn ExecutionPlan>,
+                )),
+                _ => Ok(Transformed::no(node)),
+            })?
+            .data)
+    }
+
+    fn name(&self) -> &str {
+        "restate_filter_batch_size"
+    }
+
+    fn schema_check(&self) -> bool {
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use datafusion::arrow::datatypes::DataType;
@@ -392,6 +441,174 @@ mod tests {
         }
     }
     crate::tables::table_adapter!(TestTable, InventoryTest);
+
+    /// A filter pushed through a union keeps the session's batch size, which
+    /// DataFusion's union pushdown alone replaces with its default, and keeps
+    /// the fetch a LIMIT gives it. The rows are the same either way; only the
+    /// batches the inputs' filters emit differ.
+    #[tokio::test]
+    async fn filters_keep_the_session_batch_size_through_union_pushdown() {
+        use datafusion::arrow::array::{Int32Array, RecordBatch};
+        use datafusion::arrow::datatypes::{Field, Schema};
+        use datafusion::common::tree_node::TreeNodeRecursion;
+        use datafusion::datasource::memory::MemorySourceConfig;
+        use datafusion::logical_expr::Operator;
+        use datafusion::physical_expr::expressions::{binary, col, lit};
+        use datafusion::physical_plan::empty::EmptyExec;
+        use datafusion::physical_plan::filter::FilterExecBuilder;
+        use datafusion::physical_plan::limit::GlobalLimitExec;
+        use datafusion::physical_plan::union::UnionExec;
+        use datafusion::physical_plan::{collect, execute_stream};
+        use datafusion_proto::bytes::{physical_plan_from_bytes, physical_plan_to_bytes};
+        use futures::TryStreamExt;
+
+        let options = HashMap::from([(
+            "datafusion.execution.batch_size".to_owned(),
+            "128".to_owned(),
+        )]);
+        let state = DataFusionEnv::new(64 * 1024 * 1024, None, Some(1), &options)
+            .unwrap()
+            .build_session_state()
+            .unwrap();
+        let task = state.task_ctx();
+        // Two inputs (like two owners' partitions) of 1,000 rows each, read in
+        // batches of 100, of which every fourth row matches `a % 4 = 0`.
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+        let input = || {
+            let batches = (0..10)
+                .map(|n| {
+                    let values = Int32Array::from_iter_values(n * 100..(n + 1) * 100);
+                    RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(values)]).unwrap()
+                })
+                .collect();
+            MemorySourceConfig::try_new_exec(&[batches], Arc::clone(&schema), None).unwrap()
+                as Arc<dyn ExecutionPlan>
+        };
+        let predicate = binary(
+            binary(
+                col("a", &schema).unwrap(),
+                Operator::Modulo,
+                lit(4),
+                &schema,
+            )
+            .unwrap(),
+            Operator::Eq,
+            lit(0),
+            &schema,
+        )
+        .unwrap();
+        // `SELECT a FROM (input UNION ALL input) WHERE a % 4 = 0 LIMIT 250`. The
+        // optimizer turns the limit into the fetch of a `CoalescePartitionsExec`
+        // above the union, and gives each input's filter that fetch too.
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(
+            Arc::new(
+                FilterExecBuilder::new(
+                    predicate,
+                    UnionExec::try_new(vec![input(), input()]).unwrap(),
+                )
+                .with_batch_size(128)
+                .build()
+                .unwrap(),
+            ),
+            0,
+            Some(250),
+        ));
+        let optimize = |rules: &[Arc<dyn PhysicalOptimizerRule + Send + Sync>]| {
+            rules.iter().fold(Arc::clone(&plan), |plan, rule| {
+                rule.optimize(plan, state.config_options()).unwrap()
+            })
+        };
+        let filters = |plan: &Arc<dyn ExecutionPlan>| {
+            let mut filters = Vec::new();
+            plan.apply(|node| {
+                if node.is::<FilterExec>() {
+                    filters.push(Arc::clone(node));
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })
+            .unwrap();
+            filters
+        };
+        let rules = state.physical_optimizers();
+        let without: Vec<_> = rules
+            .iter()
+            .filter(|rule| rule.name() != FilterBatchSize.name())
+            .cloned()
+            .collect();
+        let mut outcomes = Vec::new();
+        for plan in [optimize(&without), optimize(rules)] {
+            let mut targets = Vec::new();
+            let mut emitted = Vec::new();
+            for filter in filters(&plan) {
+                let exec = filter.downcast_ref::<FilterExec>().unwrap();
+                targets.push((exec.batch_size(), filter.fetch()));
+                let batches: Vec<RecordBatch> = execute_stream(filter, Arc::clone(&task))
+                    .unwrap()
+                    .try_collect()
+                    .await
+                    .unwrap();
+                emitted.push(
+                    batches
+                        .iter()
+                        .map(RecordBatch::num_rows)
+                        .collect::<Vec<_>>(),
+                );
+            }
+            let mut rows: Vec<i32> = collect(plan, Arc::clone(&task))
+                .await
+                .unwrap()
+                .iter()
+                .flat_map(|batch| {
+                    batch
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<Int32Array>()
+                        .unwrap()
+                        .values()
+                        .to_vec()
+                })
+                .collect();
+            rows.sort_unstable();
+            outcomes.push((targets, emitted, rows));
+        }
+        let [
+            (old_targets, old_emitted, old_rows),
+            (targets, emitted, rows),
+        ] = <[_; 2]>::try_from(outcomes).unwrap();
+        // DataFusion's union pushdown gives each input a filter with the default
+        // target; LIMIT gives it fetch 250, which bounds what it collects.
+        assert_eq!(old_targets, [(8192, Some(250)), (8192, Some(250))]);
+        assert_eq!(targets, [(128, Some(250)), (128, Some(250))]);
+        // With the default target, each input's filter holds its rows until it
+        // has 250; with the session's, it emits the first 128 as soon as it has
+        // them.
+        assert_eq!(old_emitted, [vec![250], vec![250]]);
+        assert_eq!(emitted, [vec![128, 122], vec![128, 122]]);
+        // The whole query returns its LIMIT of matching rows either way; which
+        // matches it picks may differ, since unordered LIMIT keeps any 250.
+        for rows in [&old_rows, &rows] {
+            assert_eq!(rows.len(), 250);
+            assert!(rows.iter().all(|a| a % 4 == 0 && (0..1000).contains(a)));
+        }
+
+        // The plan codec carries both to the workers.
+        let filter: Arc<dyn ExecutionPlan> = Arc::new(
+            FilterExecBuilder::new(lit(true), Arc::new(EmptyExec::new(Arc::clone(&schema))))
+                .with_batch_size(128)
+                .with_fetch(Some(250))
+                .build()
+                .unwrap(),
+        );
+        let decoded =
+            physical_plan_from_bytes(&physical_plan_to_bytes(filter).unwrap(), &task).unwrap();
+        assert_eq!(
+            (
+                decoded.downcast_ref::<FilterExec>().unwrap().batch_size(),
+                decoded.fetch()
+            ),
+            (128, Some(250))
+        );
+    }
 
     /// Node setup gives V2 the default engine's runtime and rate limiter: both
     /// engines draw on one memory pool and one `/query` budget.
