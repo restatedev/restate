@@ -14,7 +14,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::Context as AnyhowContext;
+use anyhow::{Context as AnyhowContext, bail};
 use arrow::ipc::reader::StreamDecoder;
 use arrow::{
     array::RecordBatch,
@@ -35,6 +35,7 @@ use restate_cli_util::{
 use restate_core::protobuf::cluster_ctrl_svc::{
     QueryRequest, QueryResponse, QueryWarning, new_cluster_ctrl_client,
 };
+use tonic::metadata::MetadataValue;
 use tonic::{Status, Streaming};
 
 use crate::connection::ConnectionInfo;
@@ -52,6 +53,51 @@ pub struct SqlOpts {
     /// Print result as json array instead of using the tabular format
     #[arg(long)]
     pub json: bool,
+
+    /// Query engine to run the query on. Defaults to the server's default engine; the
+    /// engine that served the query is reported with the row count. Fails if the
+    /// server doesn't confirm that it ran the query on the requested engine.
+    #[arg(long, value_enum)]
+    pub engine: Option<QueryEngine>,
+}
+
+/// A query engine of the server.
+#[derive(ValueEnum, Collect, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueryEngine {
+    /// The default engine.
+    V1,
+    /// The experimental distributed engine.
+    V2,
+}
+
+impl QueryEngine {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::V1 => "v1",
+            Self::V2 => "v2",
+        }
+    }
+}
+
+/// Selects the engine for one query, and names the engine that served it in the
+/// response.
+const QUERY_ENGINE_HEADER: &str = "x-restate-query-engine";
+
+/// Fails unless the server reports that it ran the query on the `requested`
+/// engine. A server older than v1.8.2 ignores the selection and runs the query
+/// on V1; an A/B comparison mustn't silently compare V1 with V1.
+fn ensure_engine(requested: Option<QueryEngine>, reported: Option<&str>) -> anyhow::Result<()> {
+    let Some(requested) = requested else {
+        return Ok(());
+    };
+    if reported != Some(requested.as_str()) {
+        bail!(
+            "the server didn't run this query on query engine {}: it reported {}. Selecting the engine needs a server on v1.8.2 or newer, with that engine enabled",
+            requested.as_str(),
+            reported.unwrap_or("no engine")
+        );
+    }
+    Ok(())
 }
 
 async fn query(connection: &ConnectionInfo, args: &SqlOpts) -> anyhow::Result<()> {
@@ -63,13 +109,23 @@ async fn query(connection: &ConnectionInfo, args: &SqlOpts) -> anyhow::Result<()
     let start_time = Instant::now();
     let mut client = new_cluster_ctrl_client(channel, &CliContext::get().network);
 
-    let response = client
-        .query(QueryRequest {
-            query: args.query.clone(),
-        })
-        .await
-        .context("Failed to run query")?
-        .into_inner();
+    let mut request = tonic::Request::new(QueryRequest {
+        query: args.query.clone(),
+    });
+    if let Some(engine) = args.engine {
+        request.metadata_mut().insert(
+            QUERY_ENGINE_HEADER,
+            MetadataValue::from_static(engine.as_str()),
+        );
+    }
+    let response = client.query(request).await.context("Failed to run query")?;
+    let served_engine = response
+        .metadata()
+        .get(QUERY_ENGINE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    ensure_engine(args.engine, served_engine.as_deref())?;
+    let response = response.into_inner();
 
     let mut stream = RecordBatchStream::from(response);
 
@@ -138,10 +194,14 @@ async fn query(connection: &ConnectionInfo, args: &SqlOpts) -> anyhow::Result<()
         );
     }
 
+    let engine = served_engine
+        .map(|engine| format!(" on query engine {engine}"))
+        .unwrap_or_default();
     c_eprintln!(
-        "{} rows. Query took {:?}",
+        "{} rows. Query took {:?}{}",
         row_count,
-        Styled(Style::Notice, start_time.elapsed())
+        Styled(Style::Notice, start_time.elapsed()),
+        Styled(Style::Notice, engine)
     );
 
     Ok(())
@@ -236,4 +296,23 @@ pub enum RecordBatchStreamError {
     Remote(#[from] Status),
     #[error(transparent)]
     Arrow(#[from] ArrowError),
+}
+
+#[cfg(test)]
+mod engine_tests {
+    use super::*;
+
+    #[test]
+    fn a_selected_engine_must_be_confirmed() {
+        assert!(
+            ensure_engine(None, None).is_ok(),
+            "no selection, nothing to check"
+        );
+        assert!(ensure_engine(Some(QueryEngine::V2), Some("v2")).is_ok());
+        // An older server doesn't report an engine; another one ran it on V1.
+        for reported in [None, Some("v1")] {
+            let error = ensure_engine(Some(QueryEngine::V2), reported).unwrap_err();
+            assert!(error.to_string().contains("v1.8.2"), "{error}");
+        }
+    }
 }

@@ -15,14 +15,20 @@ engine with a header:
 - the response carries the same header with the engine that served the query,
   and a `Server-Timing` header with the planning time;
 - `restate sql --engine v2` sends the header from the CLI and reports the
-  engine with the row count.
+  engine with the row count;
+- `restatectl sql --engine v2` does the same for the operator-level `cluster`
+  tables, and reports the engine too.
 
 New options, all off by default:
 
 - `experimental-enable-query-engine-v2` starts V2's query task service and
   allows selecting it;
 - `experimental-enable-query-engine-v2-default` makes V2 the engine for
-  requests without the header, and enables V2 on the node too;
+  queries that don't select one, and enables V2 on the node too. That covers
+  the admin API, `restate sql` and `restatectl sql` without `--engine`, the
+  other `restate` commands, and the `restatectl` commands that read the
+  cluster's tables, such as `status`, `partitions list` and `logs list` with
+  `--preview`. Those commands show a warning when a node couldn't answer;
 - `experimental-enable-query-operator-tables` lets requests with
   `X-Restate-Query-Level: operator` query the cluster tables, except
   `config`, in both engines;
@@ -54,9 +60,9 @@ once with `v1` and once with `v2`, should return the same rows.
 - Both engines share the node's query limits: one memory pool of
   `admin.query-engine.memory-size`, and one `/query` rate limit
   (`admin.query-engine.rate-limiting`).
-- `restate sql --engine v2` fails when the server doesn't confirm that V2
-  served the query, for example a server older than v1.8.2, which ignores the
-  selection.
+- `restate sql --engine v2` and `restatectl sql --engine v2` fail when the
+  server doesn't confirm that V2 served the query, for example a server older
+  than v1.8.2, which ignores the selection.
 - V2 needs every participating node on v1.8.2 or newer. A node that runs an
   older version rejects V2's query tasks: the query fails, and the nodes'
   connection stays up.

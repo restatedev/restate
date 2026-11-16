@@ -102,12 +102,12 @@ impl Sample {
             .await;
         match admin {
             Ok((channel, cluster_state)) => {
-                let tables = sql::fetch(&channel, sql::SAMPLED).await;
+                let (tables, warnings) = sql::fetch(&channel, sql::SAMPLED).await;
                 let sample = Self {
                     captured_at,
                     cluster_state,
                     tables,
-                    warnings: Vec::new(),
+                    warnings,
                 };
                 (sample, Some(channel))
             }
@@ -220,11 +220,12 @@ impl Snapshot {
             let tables: Vec<&str> = [sql::SETTLED, more_tables].concat();
             match &admin {
                 Some(channel) => sql::fetch(channel, &tables).await,
-                None => sql::Tables::new(),
+                None => (sql::Tables::new(), Vec::new()),
             }
         };
 
-        let (probes, tables) = tokio::join!(join_all(probes), tables);
+        let (probes, (tables, table_warnings)) = tokio::join!(join_all(probes), tables);
+        warnings.extend(table_warnings);
 
         let mut idents = HashMap::new();
         let mut metadata_servers = BTreeMap::new();

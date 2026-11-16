@@ -1053,10 +1053,14 @@ experimental! {
 
     /// # Default to query engine V2
     ///
-    /// Uses V2 for admin `/query` requests without an `X-Restate-Query-Engine`
-    /// header; an explicit `v1` or `v2` header still wins. Also enables V2 on the
-    /// node, as `experimental-enable-query-engine-v2` does. Read when the node
-    /// starts; restart to change it.
+    /// Uses V2 for queries that don't select an engine: admin `/query` requests
+    /// without an `X-Restate-Query-Engine` header, which includes the `restate`
+    /// CLI's commands, and the queries `restatectl` sends to the cluster
+    /// controller, from `restatectl sql` without `--engine` and from its preview
+    /// `status`, `partitions list` and `logs list`. An explicit `v1` or `v2`
+    /// still wins. Also enables V2 on the node, as
+    /// `experimental-enable-query-engine-v2` does. Read when the node starts;
+    /// restart to change it.
     ///
     /// Since v1.8.2
     query_engine_v2_default,
