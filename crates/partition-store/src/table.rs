@@ -135,7 +135,7 @@ pub trait PhysicalTable:
 
 /// A table whose records a query fetches by ID: the IDs' order is the order of
 /// the keys they encode to, so a batch of IDs is one sorted multi-get.
-pub(crate) trait MultiGetTable: PhysicalTable<Key: EncodeTableKey> {
+pub trait MultiGetTable: PhysicalTable<Key: EncodeTableKey> {
     /// The ID of a record. Its `Ord` is the stored key order, which the sorted
     /// multi-get relies on; the keys of the table have one fixed length.
     type Id: Clone + Ord;
@@ -156,9 +156,11 @@ pub(crate) trait MultiGetTable: PhysicalTable<Key: EncodeTableKey> {
 /// skips one that has none, and a batch is fetched when the steps reach it.
 pub(crate) struct MultiGetCursor<T: MultiGetTable> {
     ids: btree_set::IntoIter<T::Id>,
-    /// The IDs of the fetched batch, in order; `key_buf` holds their keys.
+    /// The IDs of the fetched batch, in order; `key_buf` holds their keys, each
+    /// `key_len` bytes long.
     batch_ids: Vec<T::Id>,
     key_buf: BytesMut,
+    key_len: usize,
     results: Option<OwnedPinnedBatch<RocksReadSnapshot<PhysicalPartition>>>,
     /// The batch index the next step examines.
     next: usize,
@@ -177,6 +179,7 @@ impl<T: MultiGetTable> MultiGetCursor<T> {
             batch_ids: Vec::with_capacity(ids.len().min(T::BATCH_SIZE.get())),
             ids: ids.into_iter(),
             key_buf: BytesMut::new(),
+            key_len: 0,
             results: None,
             next: 0,
             current: None,
@@ -209,6 +212,24 @@ impl<T: MultiGetTable> MultiGetCursor<T> {
         } else {
             CursorStep::Skipped
         })
+    }
+
+    /// The snapshot the cursor reads.
+    pub(crate) fn snapshot(&self) -> &ReadSnapshot {
+        &self.snapshot
+    }
+
+    /// The current record's stored key and value.
+    pub(crate) fn current_key(&self) -> Result<(&[u8], &[u8])> {
+        self.snapshot.check_active()?;
+        let index = self.current.ok_or(StorageError::DataIntegrityError)?;
+        let value = self
+            .results()?
+            .get(index)
+            .map_err(|error| StorageError::Generic(error.into()))?
+            .ok_or(StorageError::DataIntegrityError)?;
+        let start = index * self.key_len;
+        Ok((&self.key_buf[start..start + self.key_len], value))
     }
 
     /// The current record: its ID and its stored value.
@@ -250,6 +271,7 @@ impl<T: MultiGetTable> MultiGetCursor<T> {
             return Ok(());
         }
         debug_assert_eq!(self.key_buf.len(), key_len * self.batch_ids.len());
+        self.key_len = key_len;
         let reader = self.snapshot.storage_snapshot().reader();
         self.results = Some(
             reader
