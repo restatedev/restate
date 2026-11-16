@@ -33,7 +33,7 @@ define_table_key!(
     ServiceStatusKey(
         partition_key: PartitionKey,
         service_name: ByteString,
-        service_key: ByteString
+        service_key: ByteString,
     )
 );
 

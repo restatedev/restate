@@ -48,11 +48,7 @@ use crate::{
 define_table_key!(
     Journal,
     KeyKind::JournalV2,
-    JournalKey(
-        partition_key: PartitionKey,
-        invocation_uuid: InvocationUuid,
-        journal_index: u32
-    )
+    JournalKey(partition_key: PartitionKey, invocation_uuid: InvocationUuid, journal_index: u32)
 );
 
 define_table_key!(
@@ -61,7 +57,7 @@ define_table_key!(
     JournalCompletionIdToCommandIndexKey(
         partition_key: PartitionKey,
         invocation_uuid: InvocationUuid,
-        completion_id: CompletionId
+        completion_id: CompletionId,
     )
 );
 
@@ -71,7 +67,7 @@ define_table_key!(
     JournalNotificationIdToNotificationIndexKey(
         partition_key: PartitionKey,
         invocation_uuid: InvocationUuid,
-        notification_id: NotificationId
+        notification_id: NotificationId,
     )
 );
 

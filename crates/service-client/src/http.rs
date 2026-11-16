@@ -300,8 +300,8 @@ pub(crate) fn join_path(
     };
     let joined = format!(
         "{}/{}",
-        base.path().strip_suffix('/').unwrap_or_else(|| base.path()),
-        path.path().strip_prefix('/').unwrap_or_else(|| path.path()),
+        base.path().trim_suffix('/'),
+        path.path().trim_prefix('/'),
     );
     match base.query() {
         Some(query) => format!("{joined}?{query}").try_into(),

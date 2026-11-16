@@ -476,22 +476,20 @@ impl TryInto<OsString> for BinarySource {
                 Ok(bin.into())
             }
             BinarySource::CargoTest => {
-                // Cargo puts the test binary in target/debug/deps
-                let test_bin_dir = std::env::current_exe()
-                    .ok()
-                    .and_then(|d| {
-                        d.parent() // deps
-                            .and_then(|d| d.parent()) // debug
-                            .map(|d| d.to_owned())
-                    })
-                    .ok_or(BinarySourceError::NotACargoTest)?;
+                // Test binaries live somewhere below target/debug (e.g. target/debug/deps or,
+                // since Cargo 1.100, target/debug/build/<pkg>/<hash>/out), whereas restate-server
+                // is uplifted to target/debug. The build-dir layout is not stable, so search
+                // upwards instead of assuming a fixed depth.
+                let test_exe =
+                    std::env::current_exe().map_err(|_| BinarySourceError::NotACargoTest)?;
 
-                let bin = test_bin_dir.join("restate-server");
-                if !bin.exists() {
-                    return Err(BinarySourceError::NotACargoTest);
-                }
-
-                Ok(bin.into())
+                test_exe
+                    .ancestors()
+                    .skip(1)
+                    .map(|dir| dir.join("restate-server"))
+                    .find(|bin| bin.is_file())
+                    .map(Into::into)
+                    .ok_or(BinarySourceError::NotACargoTest)
             }
         }
     }

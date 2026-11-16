@@ -13,4 +13,7 @@
 // Allow those clippy warnings since this crate is a fork
 #![allow(clippy::derivable_impls)]
 
+// Only linked so hakari can unify features across the workspace.
+use restate_workspace_hack as _;
+
 pub mod openapi;

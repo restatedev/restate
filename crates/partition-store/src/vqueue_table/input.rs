@@ -22,11 +22,7 @@ use crate::keys::{KeyKind, define_table_key};
 define_table_key!(
     VQueue,
     KeyKind::VQueueInput,
-    InputPayloadKey (
-        qid: VQueueId,
-        seq: Seq,
-        id: EntryId,
-    )
+    InputPayloadKey(qid: VQueueId, seq: Seq, id: EntryId)
 );
 
 impl InputPayloadKey {

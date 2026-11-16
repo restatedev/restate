@@ -20,7 +20,6 @@ mem-comparable = ["bytes", "dep:zerocopy"]
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
-ahash = { workspace = true }
 bilrost = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 bytestring = { workspace = true, optional = true }

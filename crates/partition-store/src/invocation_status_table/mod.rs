@@ -36,10 +36,7 @@ use crate::{
 define_table_key!(
     TableKind::InvocationStatus,
     KeyKind::InvocationStatus,
-    InvocationStatusKey(
-        partition_key: PartitionKey,
-        invocation_uuid: InvocationUuid
-    )
+    InvocationStatusKey(partition_key: PartitionKey, invocation_uuid: InvocationUuid)
 );
 
 impl InvocationStatusKey {

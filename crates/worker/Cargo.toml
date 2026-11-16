@@ -12,7 +12,6 @@ default = []
 expose-internals = []
 test-util = ["expose-internals", "restate-partition-store/test-util"]
 options_schema = [
-  "restate-ingress-http/options_schema",
   "restate-ingress-kafka/options_schema",
   "restate-invoker-impl/options_schema",
   "restate-storage-query-datafusion/options_schema",
@@ -29,7 +28,6 @@ restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-ingestion-client = { workspace = true }
-restate-ingress-http = { workspace = true }
 restate-ingress-kafka = { workspace = true }
 restate-invoker-impl = { workspace = true }
 restate-limiter = { workspace = true, features = ["rule-book"] }

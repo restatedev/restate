@@ -122,7 +122,7 @@ pub fn parse_librdkafka_properties(s: &str) -> Result<HashMap<String, String>> {
         }
         // Strip a single leading space so `key = value` works as well as
         // `key=value`. Trailing whitespace (including \r from CRLF) is dropped.
-        let value = v.strip_prefix(' ').unwrap_or(v).trim_end().to_string();
+        let value = v.trim_prefix(' ').trim_end().to_string();
         if out.insert(key.clone(), value).is_some() {
             bail!(
                 "line {}: property `{}` is defined more than once",

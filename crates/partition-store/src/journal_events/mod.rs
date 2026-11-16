@@ -39,7 +39,7 @@ define_table_key!(
         invocation_uuid: InvocationUuid,
         event_type: u8,
         timestamp: u64,
-        lsn: u64
+        lsn: u64,
     )
 );
 

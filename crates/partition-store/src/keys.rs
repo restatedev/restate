@@ -1599,7 +1599,11 @@ mod tests {
         assert_eq!(uuid, got);
     }
 
-    define_table_key!(TableKind::Deduplication, KeyKind::Deduplication, DeduplicationTestKey(value: u64));
+    define_table_key!(
+        TableKind::Deduplication,
+        KeyKind::Deduplication,
+        DeduplicationTestKey(value: u64)
+    );
 
     #[test]
     fn key_prefix_mismatch() {

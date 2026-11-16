@@ -95,6 +95,9 @@ use std::fmt;
 use std::fmt::{Debug, Display};
 use std::ops::Deref;
 
+// Only linked so hakari can unify features across the workspace.
+use restate_workspace_hack as _;
+
 pub use codederror_derive::*;
 
 /// This macro provides constructors for error codes, to be used in the [`CodedError`] derive macro.

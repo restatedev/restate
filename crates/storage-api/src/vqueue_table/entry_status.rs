@@ -336,10 +336,7 @@ pub trait EntryStatusHeader: std::fmt::Debug {
     /// Returns true if this entry is in the terminal state and cannot transition
     /// out of it.
     fn is_terminal(&self) -> bool {
-        if matches!(self.stage(), Stage::Finished) {
-            return true;
-        }
-        false
+        matches!(self.stage(), Stage::Finished)
     }
 }
 

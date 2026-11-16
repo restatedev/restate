@@ -16,6 +16,9 @@
 //!
 //! Note: You cannot import them with a glob import, as the compiler won't be able to distinguish our imports and the stdlib imports.
 
+// Only linked so hakari can unify features across the workspace.
+use restate_workspace_hack as _;
+
 /// Macro to assert no message is received.
 ///
 /// Note: this check is based on a timeout, hence based on the context it might not be enough to use

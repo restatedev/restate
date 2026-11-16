@@ -438,34 +438,34 @@ macro_rules! _gecho {
 #[macro_export]
 macro_rules! c_println {
     () => {
-        $crate::ui::console::_gecho!(@empty_line, stdout);
+        $crate::ui::console::_gecho!(@empty_line, stdout)
     };
     ($($arg:tt)*) => {
-        $crate::ui::console::_gecho!(@newline, stdout, $($arg)*);
+        $crate::ui::console::_gecho!(@newline, stdout, $($arg)*)
     };
 }
 
 #[macro_export]
 macro_rules! c_print {
     ($($arg:tt)*) => {
-        $crate::ui::console::_gecho!(@bare, stdout, $($arg)*);
+        $crate::ui::console::_gecho!(@bare, stdout, $($arg)*)
     };
 }
 
 #[macro_export]
 macro_rules! c_eprintln {
     () => {
-        $crate::ui::console::_gecho!(@empty_line, stderr);
+        $crate::ui::console::_gecho!(@empty_line, stderr)
     };
     ($($arg:tt)*) => {
-        $crate::ui::console::_gecho!(@newline, stderr, $($arg)*);
+        $crate::ui::console::_gecho!(@newline, stderr, $($arg)*)
     };
 }
 
 #[macro_export]
 macro_rules! c_eprint {
     ($($arg:tt)*) => {
-        $crate::ui::console::_gecho!(@bare, stderr, $($arg)*);
+        $crate::ui::console::_gecho!(@bare, stderr, $($arg)*)
     };
 }
 
@@ -473,7 +473,7 @@ macro_rules! c_eprint {
 #[macro_export]
 macro_rules! c_success {
     ($($arg:tt)*) => {
-        $crate::ui::console::_gecho!(@nl_with_prefix, ($crate::ui::stylesheet::SUCCESS_ICON), stdout, $($arg)*);
+        $crate::ui::console::_gecho!(@nl_with_prefix, ($crate::ui::stylesheet::SUCCESS_ICON), stdout, $($arg)*)
     };
 }
 
@@ -481,14 +481,14 @@ macro_rules! c_success {
 #[macro_export]
 macro_rules! c_noop {
     ($($arg:tt)*) => {
-        $crate::ui::console::_gecho!(@nl_with_prefix, ($crate::ui::stylesheet::NOOP_ICON), stdout, $($arg)*);
+        $crate::ui::console::_gecho!(@nl_with_prefix, ($crate::ui::stylesheet::NOOP_ICON), stdout, $($arg)*)
     };
 }
 
 #[macro_export]
 macro_rules! c_error {
     ($($arg:tt)*) => {
-        $crate::ui::console::_gecho!(@nl_with_prefix, ($crate::ui::stylesheet::ERR_ICON), stderr, $($arg)*);
+        $crate::ui::console::_gecho!(@nl_with_prefix, ($crate::ui::stylesheet::ERR_ICON), stderr, $($arg)*)
     };
 }
 
@@ -547,7 +547,7 @@ macro_rules! c_tip {
 #[macro_export]
 macro_rules! c_title {
     ($icon:expr, $($arg:tt)*) => {
-        $crate::ui::console::_gecho!(@title, ($icon), stdout, $($arg)*);
+        $crate::ui::console::_gecho!(@title, ($icon), stdout, $($arg)*)
     };
 }
 
@@ -555,14 +555,14 @@ macro_rules! c_title {
 #[macro_export]
 macro_rules! c_indent {
     ($indent:expr, $($arg:tt)*) => {
-        $crate::ui::console::_gecho!(@indented, ($indent), stdout, $($arg)*);
+        $crate::ui::console::_gecho!(@indented, ($indent), stdout, $($arg)*)
     };
 }
 
 #[macro_export]
 macro_rules! c_indentln {
     ($indent:expr, $($arg:tt)*) => {
-        $crate::ui::console::_gecho!(@indented_newline, ($indent), stdout, $($arg)*);
+        $crate::ui::console::_gecho!(@indented_newline, ($indent), stdout, $($arg)*)
     };
 }
 

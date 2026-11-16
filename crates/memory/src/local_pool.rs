@@ -144,7 +144,7 @@ impl SharedState {
     fn return_memory(&self, amount: usize) {
         let result = self
             .in_flight
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 // Only subtract if the budget is alive (dead bit not set).
                 // If dead, return None to signal the CAS should fail.
                 (current & DEAD_BIT == 0).then_some(current - amount)

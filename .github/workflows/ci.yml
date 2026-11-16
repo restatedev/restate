@@ -130,6 +130,9 @@ jobs:
 
       - name: Run lint
         run: just lint
+        env:
+          # Also fail on Cargo's own lints (e.g. cargo::unused_dependencies)
+          CARGO_BUILD_WARNINGS: deny
 
       - name: Disk usage after lint
         run: df -h / && du -sh target/ 2>/dev/null || true

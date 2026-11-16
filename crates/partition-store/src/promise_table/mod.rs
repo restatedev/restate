@@ -51,7 +51,7 @@ define_table_key!(
         partition_key: PartitionKey,
         service_name: ByteString,
         service_key: Bytes,
-        key: ByteString
+        key: ByteString,
     )
 );
 
