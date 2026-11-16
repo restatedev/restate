@@ -28,6 +28,7 @@ pub mod journal_table;
 pub mod journal_table_v2;
 pub mod keys;
 pub mod locks_table;
+pub mod lookup;
 mod memory;
 mod metric_definitions;
 pub mod migrations;
