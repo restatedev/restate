@@ -18,6 +18,7 @@ use restate_types::cluster::cluster_state::LegacyClusterState;
 use crate::BuildError;
 use crate::source_registry::SourceRegistry;
 use crate::tables::bifrost_read_stream::BifrostReadStreamsTable;
+use crate::tables::migration_records::{IndexesTable, MigrationJobsTable};
 use crate::tables::partition_state::PartitionStateTable;
 
 use super::{RegisterTable, TableInventoryBuilder};
@@ -61,6 +62,18 @@ impl RegisterTable for ClusterTables {
                 self.sources.clone(),
                 None, // The node registers its local scanner separately.
             ),
+        )?;
+        // Worker nodes register their scanners of these separately
+        // (`local_scanners::register_cluster_scanners`).
+        inventory.add::<IndexesTable>(
+            "cluster",
+            "indexes",
+            IndexesTable::create_provider(Metadata::current(), self.sources.clone()),
+        )?;
+        inventory.add::<MigrationJobsTable>(
+            "cluster",
+            "migration_jobs",
+            MigrationJobsTable::create_provider(Metadata::current(), self.sources.clone()),
         )
     }
 }

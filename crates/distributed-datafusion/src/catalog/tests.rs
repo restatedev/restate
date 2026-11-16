@@ -169,6 +169,114 @@ async fn partition_state_preserves_local_watcher_rows_and_empty_fallback() {
     drop(tx);
 }
 
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn migration_tables_serve_the_default_engine_rows() {
+    use restate_partition_store::PartitionStoreManager;
+    use restate_rocksdb::RocksDbManager;
+    use restate_storage_query_api::tables::{indexes::Indexes, migration_jobs::MigrationJobs};
+    use restate_types::identifiers::PartitionId;
+    use restate_types::partition_table::Partition;
+    use restate_types::sharding::KeyRange;
+
+    use crate::local_scanners::register_cluster_scanners;
+
+    // Both engines decode the same batches, so the shared declarations must
+    // match the default engine's schemas exactly.
+    assert_eq!(
+        v1::migration_records::IndexesBuilder::schema(),
+        Indexes::arrow_schema()
+    );
+    assert_eq!(
+        v1::migration_records::MigrationJobsBuilder::schema(),
+        MigrationJobs::arrow_schema()
+    );
+
+    let core = TestCoreEnv::create_with_single_node(1, 1).await;
+    RocksDbManager::init();
+    let manager = PartitionStoreManager::create(true).await.unwrap();
+    // Two replicas track the status gauges: three statistics each, Ready at once
+    // over empty partitions, their jobs completed.
+    let mut config = Configuration::pinned().as_ref().clone();
+    config.common.experimental.set_track_status_gauges(true);
+    for id in [1, 2] {
+        let mut store = manager
+            .open(&Partition::new(PartitionId::from(id), KeyRange::FULL), None)
+            .await
+            .unwrap();
+        store
+            .verify_and_run_migrations(Default::default(), &config)
+            .await
+            .unwrap();
+    }
+    // The rows the default engine's scanners produce on this node, unsorted.
+    let io = crate::mocks::query_io();
+    let (indexes, jobs) = v1::migration_records::create_local_scanners(
+        Arc::clone(&manager),
+        core.metadata.clone(),
+        io.clone(),
+    );
+    let mut legacy = Vec::new();
+    for (scanner, schema) in [
+        (indexes, Indexes::arrow_schema()),
+        (jobs, MigrationJobs::arrow_schema()),
+    ] {
+        let batches: Vec<_> = scanner
+            .scan(schema, &[], 128, None)
+            .try_collect()
+            .await
+            .unwrap();
+        let mut rows: Vec<Vec<String>> = batches
+            .iter()
+            .flat_map(|batch| {
+                (0..batch.num_rows()).map(|row| {
+                    batch
+                        .columns()
+                        .iter()
+                        .map(|column| array_value_to_string(column, row).unwrap())
+                        .collect()
+                })
+            })
+            .collect();
+        rows.sort();
+        legacy.push(rows);
+    }
+
+    let sources = SourceRegistry::local_only(core.metadata.clone());
+    register_cluster_scanners(Arc::clone(&manager), core.metadata.clone(), io, &sources);
+    let env = DataFusionEnv::new(64 * 1024 * 1024, None, Some(1), &HashMap::new())
+        .unwrap()
+        .with_mock_clock(MockClock::new())
+        .unwrap();
+    env.register_tables(ClusterTables::new(sources))
+        .await
+        .unwrap();
+    let session = DataFusionQueryEngine::from_env(env, None)
+        .create_session(SessionOptions {
+            schemas: vec!["cluster".into()],
+            ..Default::default()
+        })
+        .unwrap();
+    for (sql, expected) in [
+        ("SELECT * FROM cluster.indexes", &legacy[0]),
+        ("SELECT * FROM cluster.migration_jobs", &legacy[1]),
+    ] {
+        let mut actual = rows(session.as_ref(), sql).await;
+        actual.sort();
+        assert_eq!(&actual, expected, "{sql}");
+        assert_eq!(actual.len(), 6, "{sql}");
+    }
+    // Index sizes are estimated when the query selects them; completed jobs
+    // aren't blocked.
+    for sql in [
+        "SELECT COUNT(*) FROM cluster.indexes
+         WHERE status = 'ready' AND approx_size_bytes IS NOT NULL",
+        "SELECT COUNT(*) FROM cluster.migration_jobs
+         WHERE status = 'completed' AND blocked_by IS NULL",
+    ] {
+        assert_eq!(rows(session.as_ref(), sql).await, [["6"]], "{sql}");
+    }
+}
+
 #[restate_core::test]
 async fn shared_tables_preserve_v1_column_contracts() {
     let core = TestCoreEnv::create_with_single_node(1, 1).await;
