@@ -31,6 +31,7 @@ use crate::partition::processor::leadership::LeaderPromotion;
 use crate::partition::processor::{
     FsmAccess, FsmMut, HasFsm, HasFsmMut, Processor, ProcessorRawContext,
 };
+use crate::partition::state_machine::StateMachine;
 use crate::partition::{NodeContext, ProcessorError};
 
 pub struct VersionBarrierContext<'a, 'b, L> {
@@ -205,6 +206,42 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
                     // Only affects transitions applied after this point; entries keep what they
                     // recorded before.
                     PartitionFeatureChange::EnableVqLifecycleRefined => {}
+                    // Kills the invocations whose journal is stored in journal v1 and deletes the
+                    // journal v1 table.
+                    PartitionFeatureChange::RetireJournalV1 => {
+                        // The retirement runs the regular kill path, which depends on the
+                        // features this barrier enabled before, such as vqueues. Their migrations
+                        // are complete, so they can be stored already. Journal v1 itself only
+                        // counts as retired once the retirement is complete: it commits in parts,
+                        // and if it doesn't finish, the barrier is applied again and retires the
+                        // rest.
+                        let mut enabled_before = updated;
+                        enabled_before.journal_v1_retired = false;
+                        // Killing an invocation can start the next one in its inbox. With journal
+                        // v2 as the default, that invocation stores its input in journal v2, so the
+                        // retirement writes no journal v1 data that its scan could miss.
+                        assert!(
+                            enabled_before.journal_v2,
+                            "retiring journal v1 requires journal v2 to be enabled"
+                        );
+                        self.processor
+                            .fsm_mut()
+                            .set_enabled_features(self.txn, enabled_before);
+                        let retirement = StateMachine::retire_journal_v1(
+                            &mut *self.processor,
+                            self.txn,
+                            &self.partition_db,
+                            created_at.into(),
+                            lsn,
+                        )
+                        .await?;
+                        info!(
+                            partition_id = %self.processor.partition_id(),
+                            killed = retirement.killed,
+                            journals_dropped = retirement.journals_dropped,
+                            "Retired journal v1",
+                        );
+                    }
                     // Replicas could store state mutations enqueued before v1.8.0 under different
                     // ids (#5416). Removing all pending ones at this log position leaves every
                     // replica with the same entries. The cleanup commits the removals itself; the
