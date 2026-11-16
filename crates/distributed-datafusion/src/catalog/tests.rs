@@ -544,6 +544,168 @@ async fn logs_and_tail_segments_match_the_default_engine() {
     );
 }
 
+/// `loglet_workers` asks each log server for its loglets, and each answers with the
+/// local scanner the default engine uses too. V2 returns that scanner's rows,
+/// including the worker columns only active loglets have, and asks only log
+/// servers.
+#[restate_core::test]
+async fn loglet_workers_serve_the_shared_scanner_rows() {
+    use datafusion::arrow::datatypes::SchemaRef;
+    use datafusion::physical_plan::SendableRecordBatchStream;
+    use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+    use restate_core::test_env::{TestCoreEnvBuilder, create_mock_nodes_config};
+    use restate_storage_query_api::Scan;
+    use restate_storage_query_api::tables::loglet_workers::LogletWorkers;
+    use restate_types::GenerationalNodeId;
+    use restate_types::nodes_config::Role;
+    use v1::table_util::Builder;
+
+    use crate::tables::loglet_workers::LogletWorkersTable;
+
+    /// Two loglets on this log server: one with a running worker, one without and
+    /// with no known sequencer. Rows are written by the default engine's builder,
+    /// as the node's real scanner does.
+    #[derive(Debug)]
+    struct Loglets(GenerationalNodeId);
+    impl Scan for Loglets {
+        fn scan(
+            &self,
+            projection: SchemaRef,
+            _: &[datafusion::logical_expr::Expr],
+            _: usize,
+            _: Option<usize>,
+        ) -> SendableRecordBatchStream {
+            let mut builder = v1::loglet_worker::LogletWorkersBuilder::new(Arc::clone(&projection));
+            for (loglet_id, segment, active) in [("100_0", 0, true), ("100_1", 1, false)] {
+                let mut row = builder.row();
+                row.fmt_plain_node_id(self.0.as_plain());
+                row.fmt_gen_node_id(self.0);
+                row.loglet_id(loglet_id);
+                row.log_id(100);
+                row.segment_index(segment);
+                row.local_tail(10 + segment);
+                row.is_sealed(!active);
+                row.trim_point(segment);
+                row.known_global_tail(10);
+                row.is_active(active);
+                if active {
+                    row.fmt_sequencer(self.0);
+                    row.staging_local_tail(12);
+                    row.seal_enqueued(false);
+                    row.accepting_writes(true);
+                    row.pending_seals(0);
+                    row.pending_tail_waiters(2);
+                    row.last_request_at(1_700_000_000_000);
+                }
+            }
+            Box::pin(RecordBatchStreamAdapter::new(
+                projection,
+                futures::stream::iter([builder.finish()]),
+            ))
+        }
+    }
+
+    // This node is a log server; N2 isn't, so it isn't asked.
+    let mut nodes = create_mock_nodes_config(1, 1);
+    let mut node = nodes
+        .find_node_by_id(GenerationalNodeId::new(1, 1))
+        .unwrap()
+        .clone();
+    node.roles |= Role::LogServer;
+    nodes.upsert_node(node);
+    nodes.upsert_node(
+        create_mock_nodes_config(2, 1)
+            .find_node_by_id(GenerationalNodeId::new(2, 1))
+            .unwrap()
+            .clone(),
+    );
+    let core = TestCoreEnvBuilder::with_incoming_only_connector()
+        .set_nodes_config(nodes)
+        .build()
+        .await;
+    let me = core.metadata.my_node_id();
+
+    // The rows the shared scanner produces on this node: what the default engine
+    // serves through its remote-scanner service.
+    let batches: Vec<_> = Loglets(me)
+        .scan(LogletWorkers::arrow_schema(), &[], 128, None)
+        .try_collect()
+        .await
+        .unwrap();
+    let mut expected: Vec<Vec<String>> = batches
+        .iter()
+        .flat_map(|batch| {
+            (0..batch.num_rows()).map(|row| {
+                batch
+                    .columns()
+                    .iter()
+                    .map(|column| array_value_to_string(column, row).unwrap())
+                    .collect()
+            })
+        })
+        .collect();
+    expected.sort();
+
+    let sources = SourceRegistry::local_only(core.metadata.clone());
+    sources.register_node_scanner::<LogletWorkersTable>(Arc::new(Loglets(me)));
+    let env = DataFusionEnv::new(64 * 1024 * 1024, None, Some(1), &HashMap::new())
+        .unwrap()
+        .with_mock_clock(MockClock::new())
+        .unwrap();
+    env.register_tables(ClusterTables::new(sources, Default::default()))
+        .await
+        .unwrap();
+    let session = DataFusionQueryEngine::from_env(env, None)
+        .create_session(SessionOptions {
+            schemas: vec!["cluster".into()],
+            ..Default::default()
+        })
+        .unwrap();
+    let query = |sql: &'static str| {
+        let session = Arc::clone(&session);
+        async move {
+            let result = session.execute(sql, QueryOptions {}).await.unwrap();
+            let diagnostics = Arc::clone(&result.diagnostics);
+            let batches: Vec<_> = result.stream.try_collect().await.unwrap();
+            // Warnings accumulate while the stream runs: read them after it ends.
+            let warnings = diagnostics.warnings();
+            assert!(warnings.is_empty(), "{sql}: {warnings:?}");
+            batches
+                .iter()
+                .flat_map(|batch| {
+                    (0..batch.num_rows()).map(|row| {
+                        batch
+                            .columns()
+                            .iter()
+                            .map(|column| array_value_to_string(column, row).unwrap())
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(
+        query("SELECT * FROM cluster.loglet_workers ORDER BY loglet_id").await,
+        expected
+    );
+    assert_eq!(
+        query(
+            "SELECT loglet_id, sequencer, staging_local_tail, pending_tail_waiters \
+             FROM cluster.loglet_workers WHERE is_active"
+        )
+        .await,
+        [["100_0", "N1:1", "12", "2"]]
+    );
+    assert_eq!(
+        query(
+            "SELECT loglet_id FROM cluster.loglet_workers \
+             WHERE sequencer IS NULL AND staging_local_tail IS NULL AND last_request_at IS NULL"
+        )
+        .await,
+        [["100_1"]]
+    );
+}
+
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn migration_tables_serve_the_default_engine_rows() {
     use restate_partition_store::PartitionStoreManager;
@@ -727,6 +889,7 @@ async fn shared_tables_preserve_v1_column_contracts() {
         "partition_state",
         "logs",
         "logs_tail_segments",
+        "loglet_workers",
     ] {
         // V1 identifies some tables by their declaration name.
         let legacy_name = match name {
