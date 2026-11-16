@@ -185,7 +185,7 @@ impl QueryEngineBuilder {
     ) -> Result<Arc<QueryEngine>, BuildError> {
         self.env
             .register_tables(v1::ClusterTables::new(
-                self.replica_set_states,
+                self.replica_set_states.clone(),
                 cluster_state_watch.clone(),
                 self.scanners.clone(),
             ))
@@ -206,7 +206,7 @@ impl QueryEngineBuilder {
             v1::context::DataFusionQueryEngine::with_rate_limiter(self.env, rate_limiter.clone());
         if let Some((env, scanners)) = self.distributed {
             env.register_tables(
-                v2::ClusterTables::new(scanners.clone())
+                v2::ClusterTables::new(scanners.clone(), self.replica_set_states)
                     .with_cluster_state_watch(cluster_state_watch),
             )
             .await?;

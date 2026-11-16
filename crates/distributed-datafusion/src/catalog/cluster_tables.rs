@@ -15,6 +15,7 @@ use tokio::sync::watch;
 use restate_core::{Metadata, TaskCenter};
 use restate_types::cluster::cluster_state::LegacyClusterState;
 use restate_types::cluster_state::ClusterState;
+use restate_types::partitions::state::PartitionReplicaSetStates;
 
 use crate::BuildError;
 use crate::source_registry::SourceRegistry;
@@ -22,6 +23,7 @@ use crate::tables::bifrost_read_stream::BifrostReadStreamsTable;
 use crate::tables::migration_records::{IndexesTable, MigrationJobsTable};
 use crate::tables::nodes::NodesTable;
 use crate::tables::partition_state::PartitionStateTable;
+use crate::tables::partitions::PartitionsTable;
 
 use super::{RegisterTable, TableInventoryBuilder};
 
@@ -30,14 +32,19 @@ pub struct ClusterTables {
     sources: SourceRegistry,
     /// This node's gossip view of the cluster.
     cluster_state: ClusterState,
+    /// The partition memberships and leaders this node has observed.
+    replica_set_states: PartitionReplicaSetStates,
     cluster_state_watch: Option<watch::Receiver<Arc<LegacyClusterState>>>,
 }
 
 impl ClusterTables {
-    pub fn new(sources: SourceRegistry) -> Self {
+    /// `replica_set_states` are this node's observed partition memberships, the
+    /// same the default engine's cluster tables read.
+    pub fn new(sources: SourceRegistry, replica_set_states: PartitionReplicaSetStates) -> Self {
         Self {
             sources,
             cluster_state: TaskCenter::with_current(|tc| tc.cluster_state().clone()),
+            replica_set_states,
             cluster_state_watch: None,
         }
     }
@@ -58,6 +65,11 @@ impl RegisterTable for ClusterTables {
             "cluster",
             "nodes",
             NodesTable::create_provider(Metadata::current(), self.cluster_state.clone()),
+        )?;
+        inventory.add::<PartitionsTable>(
+            "cluster",
+            "partitions",
+            PartitionsTable::create_provider(Metadata::current(), self.replica_set_states.clone()),
         )?;
         inventory.add::<PartitionStateTable>(
             "cluster",

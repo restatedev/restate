@@ -620,7 +620,10 @@ mod tests {
             .unwrap();
         assert!(env.table_provider(&ConfigTable::identity()).is_some());
         distributed_env
-            .register_tables(v2::ClusterTables::new(distributed_scanners.clone()))
+            .register_tables(v2::ClusterTables::new(
+                distributed_scanners.clone(),
+                Default::default(),
+            ))
             .await
             .unwrap();
         distributed_env
@@ -748,7 +751,8 @@ mod tests {
                         {"table_name": "indexes"},
                         {"table_name": "migration_jobs"},
                         {"table_name": "nodes"},
-                        {"table_name": "partition_state"}
+                        {"table_name": "partition_state"},
+                        {"table_name": "partitions"}
                     ]})
                 }
             };
