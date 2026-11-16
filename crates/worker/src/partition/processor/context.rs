@@ -20,7 +20,7 @@ use restate_storage_api::fsm_table::FsmPosition;
 use restate_types::cluster::cluster_state::PartitionProcessorStatus;
 use restate_types::identifiers::LeaderEpoch;
 use restate_types::logs::{LogId, Lsn};
-use restate_types::partitions::{Partition, PersistedFeatures};
+use restate_types::partitions::{Partition, PersistedFeatures, REQUIRED_PARTITION_FEATURES};
 use restate_types::sharding::{KeyRange, PartitionId};
 use restate_types::{SemanticRestateVersion, Version};
 use restate_util_time::DurationExt;
@@ -36,6 +36,7 @@ use crate::partition::leadership::trim_queue::{HasTrimQueue, TrimQueue};
 
 use super::dedup::Dedup;
 use super::outbox::Outbox;
+use super::required_features;
 use super::status::{HasStatus, HasStatusMut, Status};
 use super::{DedupAccess, DedupMut, Fsm, HasDedup, HasDedupMut};
 
@@ -83,6 +84,11 @@ impl ProcessorRawContext {
                 storage_features: Vec::default(),
             });
         }
+
+        required_features::check_on_startup(
+            fsm_cache.enabled_features(),
+            REQUIRED_PARTITION_FEATURES,
+        )?;
 
         let dedup_cache = Dedup::create(partition_store).await?;
 
