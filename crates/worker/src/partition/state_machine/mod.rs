@@ -885,6 +885,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 0,
                 &StoredRawEntry::new(
                     StoredRawEntryHeader::new(self.record_created_at),
+                    None,
                     new_raw_entry,
                 ),
                 &[],
@@ -1383,6 +1384,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 name: Default::default(),
             }
             .into();
+
             let new_raw_entry = new_entry.encode::<ServiceProtocolV4Codec>();
 
             if let Some(leader) = self.leader {
@@ -1394,6 +1396,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
             let stored_entry = StoredRawEntry::new(
                 StoredRawEntryHeader::new(self.record_created_at),
+                None,
                 new_raw_entry,
             );
 
