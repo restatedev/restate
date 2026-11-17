@@ -40,6 +40,7 @@ use restate_types::protobuf::common::LogServerStatus;
 use crate::loglet_worker::{LogletWorker, LogletWorkerHandle};
 use crate::logstore::LogStore;
 use crate::metadata::{ActiveWorkerMap, LogletStateMap};
+use crate::rocksdb_logstore::{RocksDbLogStore, RocksDbLogWriterOwner, WriterExit};
 
 type LogletWorkerMap = HashMap<LogletId, LogletWorkerHandle>;
 
@@ -72,17 +73,15 @@ impl RequestPump {
     }
 
     /// Starts the main processing loop, exits on error or shutdown.
-    pub async fn run<S>(
+    pub async fn run(
         self,
         health_status: HealthStatus<LogServerStatus>,
-        log_store: S,
+        log_store: RocksDbLogStore,
+        mut writer_owner: RocksDbLogWriterOwner,
         state_map: LogletStateMap,
         _storage_state: StorageState,
         active_worker_map: ActiveWorkerMap,
-    ) -> anyhow::Result<()>
-    where
-        S: LogStore + Clone + Sync + Send + 'static,
-    {
+    ) -> anyhow::Result<()> {
         let RequestPump {
             data_svc, meta_svc, ..
         } = self;
@@ -97,14 +96,18 @@ impl RequestPump {
 
         // We only block on loading loglet state from logstore, if this proves to be a bottle-neck (it
         // shouldn't) then we can offload this operation to a background task.
+        let mut writer_running = true;
+        let result: anyhow::Result<()> = async {
         loop {
             tokio::select! {
                 _ = cancel_token.cancelled() => {
-                    // stop accepting messages
-                    drop(data_svc);
-                    drop(meta_svc);
-                    health_status.update(LogServerStatus::Stopping);
                     break;
+                }
+                writer_result = writer_owner.wait_for_exit(), if writer_running => {
+                    match writer_result? {
+                        WriterExit::Failsafe => writer_running = false,
+                        WriterExit::Shutdown => anyhow::bail!("log-server writer exited unexpectedly"),
+                    }
                 }
                 Some(ShardControlMessage::RegisterSortCode {sort_code, decision}) = meta_svc.next() => {
                     let loglet_id = LogletId::from(sort_code);
@@ -152,11 +155,18 @@ impl RequestPump {
                 }
             }
         }
-
-        // shutdown all workers.
-        Self::shutdown(loglet_workers).await;
-        health_status.update(LogServerStatus::Unknown);
         Ok(())
+        }.await;
+
+        // Stop ingress and workers before draining their accepted writes.
+        drop(data_svc);
+        drop(meta_svc);
+        health_status.update(LogServerStatus::Stopping);
+        Self::shutdown(loglet_workers).await;
+        let shutdown_result = writer_owner.shutdown().await;
+        health_status.update(LogServerStatus::Unknown);
+        result?;
+        shutdown_result
     }
 
     pub async fn shutdown(loglet_workers: LogletWorkerMap) {

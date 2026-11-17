@@ -631,6 +631,7 @@ mod tests {
 
     use restate_memory::MemoryLease;
     use restate_rocksdb::RocksDbManager;
+    use restate_types::config::{Configuration, set_current_config};
     use restate_types::logs::{LogletId, LogletOffset, Record, SequenceNumber};
     use restate_types::net::log_server::{
         DigestEntry, GetDigest, LogServerRequestHeader, RecordStatus, Status, Store, StoreFlags,
@@ -640,10 +641,10 @@ mod tests {
     use super::RocksDbLogStore;
     use crate::logstore::{LogStore, LogletWriter};
     use crate::metadata::{LogStoreMarker, LogletState};
-    use crate::rocksdb_logstore::RocksDbLogStoreBuilder;
+    use crate::rocksdb_logstore::{RocksDbLogStoreBuilder, RocksDbLogWriterOwner, WriterExit};
     use crate::tasks::StoreStorageTask;
 
-    async fn setup() -> Result<RocksDbLogStore> {
+    async fn setup() -> Result<(RocksDbLogStore, RocksDbLogWriterOwner)> {
         RocksDbManager::init();
         // create logstore.
         let builder = RocksDbLogStoreBuilder::create().await?;
@@ -697,8 +698,141 @@ mod tests {
     }
 
     #[test(restate_core::test(start_paused = true))]
+    async fn writer_drains_before_shutdown() -> Result<()> {
+        let (log_store, mut writer_owner) = setup().await?;
+        let loglet_id = LogletId::new_unchecked(91);
+        let loglet_state = LogletState::new(
+            None,
+            LogletOffset::OLDEST,
+            false,
+            LogletOffset::INVALID,
+            LogletOffset::OLDEST,
+        );
+        let mut writer = log_store.new_loglet_writer(loglet_id, &loglet_state);
+        let (reciprocal, _rx) = restate_core::network::Reciprocal::mock();
+        let task = StoreStorageTask::new(loglet_id, MemoryLease::unlinked(), reciprocal);
+        assert!(writer.enqueue_store(
+            LogletOffset::OLDEST,
+            LogletOffset::OLDEST,
+            vec![Record::from("drained record".to_owned())].into(),
+            task,
+        ));
+
+        writer_owner.shutdown().await.expect("writer shutdown");
+        assert!(!log_store.state().accepting_writes());
+        assert!(
+            !log_store
+                .writer_handle
+                .register_loglet(loglet_id, loglet_state.clone())
+        );
+        assert_that!(
+            loglet_state.local_tail().offset(),
+            eq(LogletOffset::OLDEST.next())
+        );
+        let loaded = log_store.load_loglet_state(loglet_id).await?;
+        assert_that!(
+            loaded.local_tail().offset(),
+            eq(LogletOffset::OLDEST.next())
+        );
+        writer.close();
+        Ok(())
+    }
+
+    #[test(restate_core::test)]
+    async fn unexpected_writer_exit_is_observable_while_serving() -> Result<()> {
+        let (log_store, mut writer_owner) = setup().await?;
+        writer_owner.inject_unexpected_exit();
+        assert_eq!(
+            writer_owner.wait_for_exit().await.expect("writer exited"),
+            WriterExit::Shutdown
+        );
+        assert!(!log_store.state().accepting_writes());
+        writer_owner
+            .shutdown()
+            .await
+            .expect("writer already joined");
+        Ok(())
+    }
+
+    #[test(restate_core::test)]
+    async fn read_only_writer_exit_preserves_reads() -> Result<()> {
+        let (log_store, mut writer_owner) = setup().await?;
+        let mut config = Configuration::default();
+        config.log_server.read_only = true;
+        set_current_config(config);
+
+        let loglet_id = LogletId::new_unchecked(93);
+        let loglet_state = LogletState::new(
+            None,
+            LogletOffset::OLDEST,
+            false,
+            LogletOffset::INVALID,
+            LogletOffset::OLDEST,
+        );
+        let mut writer = log_store.new_loglet_writer(loglet_id, &loglet_state);
+        let (reciprocal, _rx) = restate_core::network::Reciprocal::mock();
+        let task = StoreStorageTask::new(loglet_id, MemoryLease::unlinked(), reciprocal);
+        assert!(writer.enqueue_store(
+            LogletOffset::OLDEST,
+            LogletOffset::OLDEST,
+            vec![Record::from("read-only".to_owned())].into(),
+            task,
+        ));
+
+        assert_eq!(
+            writer_owner.wait_for_exit().await.expect("writer exited"),
+            WriterExit::Failsafe
+        );
+        assert!(!log_store.state().accepting_writes());
+        log_store.load_loglet_state(loglet_id).await?;
+        writer_owner
+            .shutdown()
+            .await
+            .expect("writer already joined");
+        Ok(())
+    }
+
+    #[test(restate_core::test(start_paused = true))]
+    async fn writer_outlives_startup_runtime() -> Result<()> {
+        restate_rocksdb::RocksDbManager::init();
+        let builder = RocksDbLogStoreBuilder::create().await?;
+        let (store_tx, store_rx) = tokio::sync::oneshot::channel();
+        let runtime = restate_core::TaskCenter::start_runtime(
+            restate_core::TaskKind::SystemBoot,
+            "log-server-writer-startup",
+            None,
+            move || async move {
+                let store = builder.start(Default::default()).await?;
+                let _ = store_tx.send(store);
+                Ok(())
+            },
+        )?;
+        let (store, mut writer_owner) = store_rx.await?;
+        runtime.await.expect("writer startup succeeded");
+
+        let loglet_id = LogletId::new_unchecked(92);
+        enqueue_store_and_wait(
+            &store,
+            Store {
+                header: LogServerRequestHeader::new(loglet_id, LogletOffset::INVALID),
+                timeout_at: None,
+                sequencer: GenerationalNodeId::new(1, 1),
+                known_archived: LogletOffset::INVALID,
+                first_offset: LogletOffset::OLDEST,
+                flags: StoreFlags::empty(),
+                payloads: vec![Record::from("after startup".to_owned())].into(),
+            },
+            false,
+        )
+        .await?;
+        writer_owner.shutdown().await.expect("writer shutdown");
+        assert!(!store.state().accepting_writes());
+        Ok(())
+    }
+
+    #[test(restate_core::test(start_paused = true))]
     async fn log_store_marker() -> Result<()> {
-        let log_store = setup().await?;
+        let (log_store, _writer_owner) = setup().await?;
 
         let marker = log_store.load_marker().await?;
         assert!(marker.is_none());
@@ -719,7 +853,7 @@ mod tests {
 
     #[test(restate_core::test(start_paused = true))]
     async fn load_loglet_state() -> Result<()> {
-        let log_store = setup().await?;
+        let (log_store, _writer_owner) = setup().await?;
         // fresh/unknown loglet
         let loglet_id_1 = LogletId::new_unchecked(88);
         let loglet_id_2 = LogletId::new_unchecked(89);
@@ -806,7 +940,7 @@ mod tests {
 
     #[test(restate_core::test(start_paused = true))]
     async fn digest() -> Result<()> {
-        let log_store = setup().await?;
+        let (log_store, _writer_owner) = setup().await?;
         let loglet_id_1 = LogletId::new_unchecked(88);
         let loglet_id_2 = LogletId::new_unchecked(89);
         let sequencer_1 = GenerationalNodeId::new(5, 213);

@@ -78,6 +78,9 @@ pub enum TaskKind {
     MetadataBackgroundSync,
     NodeRpcServer,
     AdminApiServer,
+    // Owns and joins the log-server writer before database shutdown; it must
+    // outlive any managed runtime that started the service.
+    #[strum(props(runtime = "default"))]
     LogServerRole,
     #[strum(props(OnError = "log", runtime = "default"))]
     SocketHandler,
@@ -156,7 +159,6 @@ pub enum TaskKind {
     ReplicatedLogletReadStream,
     // -- Log-server tasks
     LogletWorker,
-    LogStoreWriter,
     // - Datafusion
     DfScanner,
     #[strum(props(runtime = "default"))]

@@ -38,6 +38,7 @@ bytes = { workspace = true }
 chrono = { workspace = true }
 codederror = { workspace = true }
 derive_more = { workspace = true, features = ["from", "try_from"] }
+libc = { workspace = true }
 metrics = { workspace = true }
 rocksdb = { workspace = true }
 serde_json = { workspace = true }
