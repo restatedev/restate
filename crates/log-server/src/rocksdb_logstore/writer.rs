@@ -9,17 +9,19 @@
 // by the Apache License, Version 2.0.
 
 use std::io::IoSlice;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
+use std::thread;
 
 use ahash::HashMap;
+use anyhow::Context;
 use bytes::BytesMut;
 use metrics::{Histogram, histogram};
 use rocksdb::{BoundColumnFamily, WriteBatch};
 use smallvec::SmallVec;
-use tokio::sync::mpsc;
-use tracing::{debug, error, trace};
+use tokio::sync::{mpsc, oneshot};
+use tracing::{debug, error, trace, warn};
 
-use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_token};
 use restate_rocksdb::{IoMode, Priority, RocksDb, RocksError};
 use restate_types::GenerationalNodeId;
 use restate_types::config::{Configuration, LogServerOptions};
@@ -39,6 +41,7 @@ use crate::tasks::{
 
 /// Commands sent to the [`LogStoreWriter`] over the mpsc channel.
 enum LogStoreWriteCommand {
+    Shutdown,
     /// A data/metadata write to RocksDB.
     Write(WriteCommand),
     /// Register a loglet's state so the writer can advance its tail watch.
@@ -57,6 +60,7 @@ enum LogStoreWriteCommand {
 impl std::fmt::Debug for LogStoreWriteCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            LogStoreWriteCommand::Shutdown => write!(f, "Shutdown"),
             LogStoreWriteCommand::Write(cmd) => {
                 write!(f, "Write(")?;
                 match &cmd.data_update {
@@ -157,104 +161,213 @@ impl LogStoreWriterBuilder {
         }
     }
 
-    /// Must be called from task_center context
-    pub fn start(self) -> Result<RocksDbLogWriterHandle, ShutdownError> {
+    pub async fn start(self) -> std::io::Result<(RocksDbLogWriterHandle, RocksDbLogWriterOwner)> {
         // The channel is bounded by the ability to acquire memory for those writes via the memory
         // pool.
-        let (tx, mut rx) = mpsc::unbounded_channel();
-
-        TaskCenter::spawn(
-            TaskKind::LogStoreWriter,
-            "log-server-rocksdb-writer",
-            async move {
-                let data_cf = self
-                    .rocksdb
-                    .inner()
-                    .cf_handle(DATA_CF)
-                    .expect("data cf exists");
-                let metadata_cf = self
-                    .rocksdb
-                    .inner()
-                    .cf_handle(METADATA_CF)
-                    .expect("metadata cf exists");
-
-                let mut writer = LogStoreWriter {
-                    rocksdb: &self.rocksdb,
-                    data_cf,
-                    metadata_cf,
-                    state_map: HashMap::default(),
-                    arena: BytesMut::default(),
-                    log_store_state: self.log_store_state.clone(),
-                    write_size_histogram: histogram!(LOG_SERVER_WRITE_BATCH_SIZE_BYTES),
+        let (tx, rx) = mpsc::unbounded_channel();
+        let state = self.log_store_state.clone();
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (done_tx, done_rx) = oneshot::channel();
+        let thread = thread::Builder::new()
+            .name("log-server-rocksdb-writer".into())
+            .spawn(move || {
+                set_writer_io_priority();
+                // The writer only needs task scheduling and channel wakeups, not
+                // Tokio's I/O or timer drivers.
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .build_local(tokio::runtime::LocalOptions::default());
+                let ready = runtime
+                    .as_ref()
+                    .map(|_| ())
+                    .map_err(|e| std::io::Error::new(e.kind(), e.to_string()));
+                let _ = ready_tx.send(ready);
+                let completed = match runtime {
+                    Ok(runtime) => {
+                        let result =
+                            catch_unwind(AssertUnwindSafe(|| runtime.block_on(self.run(rx))));
+                        drop(runtime);
+                        if result.is_err() {
+                            state.disable_writes(WriteDisableReason::Shutdown);
+                        }
+                        result.ok()
+                    }
+                    Err(_) => {
+                        state.disable_writes(WriteDisableReason::Shutdown);
+                        None
+                    }
                 };
-                debug!("Start running LogStoreWriter");
-                let mut config = Configuration::live();
-                let mut batch = Batch::default();
-                let cancel = cancellation_token();
-                let mut draining = false;
+                let _ = done_tx.send(completed);
+            })?;
+        let mut owner = RocksDbLogWriterOwner {
+            tx: tx.clone(),
+            thread: Some(thread),
+            done_rx: Some(done_rx),
+        };
+        match ready_rx.await {
+            Ok(Ok(())) => Ok((RocksDbLogWriterHandle { tx }, owner)),
+            Ok(Err(e)) => {
+                owner.shutdown().await.ok();
+                Err(e)
+            }
+            Err(e) => {
+                owner.shutdown().await.ok();
+                Err(std::io::Error::other(e))
+            }
+        }
+    }
 
-                loop {
-                    tokio::select! {
-                        biased;
-                        () = cancel.cancelled(), if !draining => {
-                            draining = true;
-                            rx.close();
-                            continue;
-                        }
-                        Some(cmd) = rx.recv() => {
-                            writer.handle_command(cmd, &mut batch);
-                        }
-                        else => {
-                            // both channels are closed, we are done.
-                            break;
-                        }
-                    }
+    async fn run(self, mut rx: mpsc::UnboundedReceiver<LogStoreWriteCommand>) -> WriterExit {
+        let data_cf = self
+            .rocksdb
+            .inner()
+            .cf_handle(DATA_CF)
+            .expect("data cf exists");
+        let metadata_cf = self
+            .rocksdb
+            .inner()
+            .cf_handle(METADATA_CF)
+            .expect("metadata cf exists");
 
-                    let config = &config.live_load().log_server;
-                    let batch_bytes_limit = config.write_batch_commit_bytes();
+        let mut writer = LogStoreWriter {
+            rocksdb: &self.rocksdb,
+            data_cf,
+            metadata_cf,
+            state_map: HashMap::default(),
+            arena: BytesMut::default(),
+            log_store_state: self.log_store_state.clone(),
+            write_size_histogram: histogram!(LOG_SERVER_WRITE_BATCH_SIZE_BYTES),
+        };
+        debug!("Start running LogStoreWriter");
+        let mut config = Configuration::live();
+        let mut batch = Batch::default();
+        let exit = loop {
+            let Some(cmd) = rx.recv().await else {
+                break WriterExit::Shutdown;
+            };
+            if matches!(cmd, LogStoreWriteCommand::Shutdown) {
+                rx.close();
+                continue;
+            }
+            writer.handle_command(cmd, &mut batch);
 
-                    // Opportunistically drain normal-pri commands.
-                    while batch.size_in_bytes() < batch_bytes_limit
-                        && config
-                            .write_batch_commit_count
-                            .is_none_or(|c| batch.len() < c.get())
-                        && let Ok(cmd) = rx.try_recv()
-                    {
-                        writer.handle_command(cmd, &mut batch);
-                    }
+            let config = &config.live_load().log_server;
+            let batch_bytes_limit = config.write_batch_commit_bytes();
 
-                    if !writer.commit(config, &mut batch).await {
-                        // the store is disabled, will drop the rest of the commands.
-                        break;
-                    }
+            while batch.size_in_bytes() < batch_bytes_limit
+                && config
+                    .write_batch_commit_count
+                    .is_none_or(|c| batch.len() < c.get())
+                && let Ok(cmd) = rx.try_recv()
+            {
+                if matches!(cmd, LogStoreWriteCommand::Shutdown) {
+                    rx.close();
+                    break;
                 }
+                writer.handle_command(cmd, &mut batch);
+            }
 
-                // Signal to everybody that writes are now disabled unless we're
-                // disabled for other reasons already.
-                if self.log_store_state.accepting_writes() {
-                    // write the final batch
-                    if !batch.is_empty() {
-                        writer
-                            .commit(&config.live_load().log_server, &mut batch)
-                            .await;
-                    }
-                    debug!("LogStore writer shutdown complete");
-                    self.log_store_state
-                        .disable_writes(WriteDisableReason::Shutdown);
-                } else {
-                    // guaranteed that it's initialized
-                    let reason = self.log_store_state.wait_disabled().await;
-                    error!(
-                        "Writes to log-server have been disabled until the node is manually restarted and \
-                         the underlying reason has been resolved. Reason: {reason}",
-                    );
-                }
-                Ok(())
-            },
-        )?;
-        Ok(RocksDbLogWriterHandle { tx })
+            if !writer.commit(config, &mut batch).await {
+                break WriterExit::Failsafe;
+            }
+        };
+
+        if self.log_store_state.accepting_writes() {
+            if !batch.is_empty() {
+                writer
+                    .commit(&config.live_load().log_server, &mut batch)
+                    .await;
+            }
+            debug!("LogStore writer shutdown complete");
+            self.log_store_state
+                .disable_writes(WriteDisableReason::Shutdown);
+        } else {
+            let reason = self.log_store_state.wait_disabled().await;
+            error!(
+                "Writes to log-server have been disabled until the node is manually restarted and \
+                 the underlying reason has been resolved. Reason: {reason}",
+            );
+        }
+        exit
     }
 }
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum WriterExit {
+    Shutdown,
+    Failsafe,
+}
+
+/// Owns the writer thread; only the log-server decides when to drain and join it.
+pub struct RocksDbLogWriterOwner {
+    tx: mpsc::UnboundedSender<LogStoreWriteCommand>,
+    thread: Option<thread::JoinHandle<()>>,
+    done_rx: Option<oneshot::Receiver<Option<WriterExit>>>,
+}
+
+impl RocksDbLogWriterOwner {
+    pub async fn shutdown(&mut self) -> anyhow::Result<()> {
+        if self.done_rx.is_none() {
+            return Ok(());
+        }
+        let _ = self.tx.send(LogStoreWriteCommand::Shutdown);
+        self.wait_for_exit().await.map(|_| ())
+    }
+
+    /// Wait for the writer to exit without requesting shutdown.
+    pub(crate) async fn wait_for_exit(&mut self) -> anyhow::Result<WriterExit> {
+        let Some(done_rx) = &mut self.done_rx else {
+            anyhow::bail!("log-server writer already joined");
+        };
+        let result = done_rx.await;
+        self.done_rx = None;
+        let thread = self
+            .thread
+            .take()
+            .expect("writer thread exists until joined");
+        if thread.join().is_err() {
+            anyhow::bail!("log-server writer thread panicked");
+        }
+        result
+            .context("writer thread exited unexpectedly")?
+            .context("log-server writer thread panicked")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_unexpected_exit(&self) {
+        self.tx
+            .send(LogStoreWriteCommand::Shutdown)
+            .expect("writer is running");
+    }
+}
+
+impl Drop for RocksDbLogWriterOwner {
+    fn drop(&mut self) {
+        if let Some(thread) = self.thread.take() {
+            // Last-resort cleanup for aborted startup or unexpected role exit.
+            // Normal shutdown awaits the completion signal without blocking a runtime worker.
+            let _ = self.tx.send(LogStoreWriteCommand::Shutdown);
+            if thread.join().is_err() {
+                error!("Log-server writer thread panicked during cleanup");
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn set_writer_io_priority() {
+    // IOPRIO_WHO_PROCESS = 1, IOPRIO_CLASS_BE = 2, priority 0 (highest
+    // best-effort level). `who = 0` selects the calling thread.
+    const BEST_EFFORT_HIGH: libc::c_int = 2 << 13;
+    // SAFETY: ioprio_set only reads its scalar arguments and changes the
+    // calling thread's I/O priority; it does not access caller-owned memory.
+    let result = unsafe { libc::syscall(libc::SYS_ioprio_set, 1, 0, BEST_EFFORT_HIGH) };
+    if result == -1 {
+        warn!(error = %std::io::Error::last_os_error(), "Cannot raise log-server writer I/O priority");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_writer_io_priority() {}
 
 #[derive(Default)]
 struct LogletBatch {
@@ -312,6 +425,7 @@ impl LogStoreWriter<'_> {
     fn handle_command(&mut self, command: LogStoreWriteCommand, batch: &mut Batch) {
         trace!("LogStoreWriter: {command:?}");
         match command {
+            LogStoreWriteCommand::Shutdown => unreachable!("shutdown handled by writer loop"),
             LogStoreWriteCommand::Register {
                 loglet_id,
                 loglet_state,
@@ -511,12 +625,6 @@ impl LogStoreWriter<'_> {
         // are mostly ordered.
         write_opts.set_memtable_insert_hint_per_batch(true);
 
-        let io_mode = if opts.always_commit_in_background {
-            IoMode::AlwaysBackground
-        } else {
-            IoMode::Default
-        };
-
         let result = if opts.read_only {
             Err(RocksError::ReadOnly)
         } else {
@@ -524,7 +632,7 @@ impl LogStoreWriter<'_> {
                 .write_batch(
                     "loglet-write-batch",
                     Priority::High,
-                    io_mode,
+                    IoMode::AllowBlockingIO,
                     write_opts,
                     write_batch,
                 )
