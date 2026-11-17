@@ -9,17 +9,24 @@
 // by the Apache License, Version 2.0.
 
 use bytes::{Bytes, BytesMut};
+use futures::stream;
 use rocksdb::{DBPinnableSlice, ReadOptions};
 
+use restate_memory::{ClaimedMemoryPool, LocalMemoryLease, PinnableMemoryStream, WithPinHandle};
+use restate_rocksdb::{RocksDbPerfStreamExt, RocksDbReadPerfGuard};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::sharding::KeyRange;
 
+use crate::budgeted_reads::{BudgetedScan, Row};
 use crate::features::StorageFeatures;
 use crate::keys::{EncodeTableKeyPrefix, KeyKind};
 use crate::partition_store::{StorageRead, assert_partition_key_or_err};
 use crate::scan::{PhysicalScan, TableScan};
-use crate::{PartitionReadSnapshot, PartitionSnapshotReader, PartitionSnapshotScan};
+use crate::{
+    PartitionReadSnapshot, PartitionSnapshotReader, PartitionSnapshotScan,
+    TableScanIterationDecision,
+};
 
 /// Read-only access to the tables of a partition as they were when the snapshot was taken,
 /// created with [`PartitionStore::snapshot`](crate::PartitionStore::snapshot).
@@ -57,6 +64,40 @@ impl<'a> PartitionStoreSnapshot<'a> {
 
     pub(crate) fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) -> Result<()> {
         assert_partition_key_or_err(self.key_range, partition_key)
+    }
+
+    /// Streams the rows of `scan`. Each row's `cost` is reserved from `budget`
+    /// before `decode` gets the row with its lease. `decode` builds the row to
+    /// stream and decides whether the scan goes on.
+    ///
+    /// A row is read when the stream is polled for it. `budget` is
+    /// [lent](ClaimedMemoryPool::lend) to the stream until it's dropped.
+    ///
+    /// `name` labels the scan's RocksDB perf metrics: opening it is one
+    /// measurement, and reading its rows another, reported when the stream ends.
+    pub(crate) fn budgeted_scan<T, C, D>(
+        &self,
+        name: &'static str,
+        scan: PhysicalScan<Bytes>,
+        budget: ClaimedMemoryPool<'_>,
+        cost: C,
+        decode: D,
+    ) -> Result<impl PinnableMemoryStream<Item = Row<T>> + Send + 'static + use<T, C, D>>
+    where
+        T: Send + 'static,
+        C: Fn(&[u8], &[u8]) -> usize + Send + 'static,
+        D: FnMut(&[u8], &[u8], LocalMemoryLease) -> TableScanIterationDecision<T> + Send + 'static,
+    {
+        let iterator = {
+            let _x = RocksDbReadPerfGuard::new(name);
+            self.snapshot.owned_scan(scan, ReadOptions::default())
+        };
+        let (budget, pins) = budget.lend();
+        let rows = BudgetedScan::new(iterator, budget, cost, decode);
+        let rows = stream::try_unfold(rows, |mut rows| async move {
+            Ok(rows.next().await?.map(|row| (row, rows)))
+        });
+        Ok(WithPinHandle::new(rows.with_read_perf(name), pins))
     }
 }
 

@@ -42,7 +42,7 @@ pub type Result<T, E = StorageError> = std::result::Result<T, E>;
 
 /// Error type for budget-gated storage reads.
 ///
-/// Returned by budgeted stream methods on [`journal_table::ReadJournalTable`],
+/// Returned by budgeted read methods on [`journal_table::ReadJournalTable`],
 /// [`journal_table_v2::ReadJournalTable`], and [`state_table::ReadStateTable`].
 /// Callers can distinguish between storage failures (retryable/fatal) and
 /// memory budget exhaustion.
