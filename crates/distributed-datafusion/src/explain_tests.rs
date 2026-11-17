@@ -42,6 +42,9 @@ use crate::{DataFusionEnv, UserTables};
 
 use super::*;
 
+#[path = "explain_analyze_tests.rs"]
+mod analyze;
+
 fn environment() -> DataFusionEnv {
     DataFusionEnv::new(64 * 1024 * 1024, None, Some(1), &HashMap::new())
         .unwrap()
@@ -440,6 +443,9 @@ async fn explain_preserves_expression_shaped_aliases_and_schema_names() {
         .expr
         .to_string();
     eprintln!("native expression spelling: {spelling}");
+    ctx.sql("SET datafusion.explain.analyze_categories = 'rows'")
+        .await
+        .unwrap();
 
     for show_schema in [false, true] {
         ctx.sql(&format!(
@@ -465,6 +471,17 @@ async fn explain_preserves_expression_shaped_aliases_and_schema_names() {
             assert_eq!(
                 native[0].1.matches(&alias).count(),
                 compact[0].1.matches(&alias).count()
+            );
+            let sql = sql.replacen("EXPLAIN ", "EXPLAIN ANALYZE ", 1);
+            let native = plans(&ctx, &sql, true).await;
+            let compact = plans(&ctx, &sql, false).await;
+            assert_eq!(
+                native, compact,
+                "ANALYZE preserves expression-shaped aliases"
+            );
+            eprintln!(
+                "ANALYZE show_schema={show_schema}, alias={alias:?}\nnative:\n{}\ncompact:\n{}",
+                native[0].1, compact[0].1
             );
         }
     }
