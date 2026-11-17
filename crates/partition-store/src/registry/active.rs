@@ -82,6 +82,7 @@ pub(crate) const DEFINITIONS: &[&IndexDefinition] = &[
     &crate::vqueue_table::SERVICE_STATS,
     &crate::vqueue_table::DEPLOYMENT_STATS,
     &crate::vqueue_table::VIRTUAL_OBJECT_STATS,
+    &crate::vqueue_table::ENTRY_BY_SERVICE_CREATED,
 ];
 
 struct Active {

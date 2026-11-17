@@ -50,8 +50,6 @@
 ///     stage, service_name => non_null, transitioned_at, canonical_id,
 /// );
 /// ```
-// The index definitions, in their own commit, and tests declare indexes with it.
-#[allow(unused_macros)]
 macro_rules! define_secondary_index {
     (
         $(#[$meta:meta])*
