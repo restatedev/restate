@@ -69,7 +69,7 @@ use crate::mocks::MockSchemas;
 use crate::node_fan_out::{AllNodeLocator, NodeFanOutTableProvider, RoleBasedNodeLocator};
 use crate::placement::{PartitionPlacement, StoragePlacementOptions};
 use crate::query_correctness::run_distributed_state_corpus;
-use crate::schema_scan::SchemaScanner;
+use crate::schema_scan::LookupScanner;
 use crate::source_registry::{
     PartitionLocation, PartitionLocator, SourceRegistry, create_partition_locator,
 };
@@ -417,13 +417,13 @@ async fn setup_with_scanners(
         scanners.register_partition_scanner::<LegacyStateSource>(Arc::new(CheckedScanner {
             node,
             check_owner: true,
-            inner: Arc::new(SchemaScanner::<StateBinding>::new()),
+            inner: Arc::new(LookupScanner::<StateBinding>::new()),
             reads: Arc::clone(&reads),
         }));
         scanners.register_partition_scanner::<ScopedStateSource>(Arc::new(CheckedScanner {
             node,
             check_owner: true,
-            inner: Arc::new(SchemaScanner::<ScopedStateBinding>::new()),
+            inner: Arc::new(LookupScanner::<ScopedStateBinding>::new()),
             reads: Arc::clone(&reads),
         }));
         scanners.register_partition_scanner::<SysVqueueEntryStatusTable>(Arc::new(
@@ -675,12 +675,13 @@ async fn multi_owner_coverage_and_scoped_selection() {
                 .all(|task| !task.plan.contains("table=state.legacy")),
             "non_null_scope_excludes_the_legacy_physical_source"
         );
+        // The query names complete state keys, so the scoped layout looks them up.
         assert_eq!(
             scoped_tasks
                 .iter()
                 .map(|task| task
                     .plan
-                    .matches("TableScanExec: table=state.scoped,")
+                    .matches("MultiGetExec: table=state.scoped,")
                     .count())
                 .sum::<usize>(),
             1,

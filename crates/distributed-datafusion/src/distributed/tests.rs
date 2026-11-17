@@ -56,7 +56,7 @@ use crate::access::PrimaryRead;
 use crate::context::DataFusionQueryEngine;
 use crate::mocks::MockPartitionSelector;
 use crate::query_correctness::run_distributed_state_corpus;
-use crate::schema_scan::SchemaScanner;
+use crate::schema_scan::LookupScanner;
 use crate::source_registry::{PartitionLocation, PartitionLocator, SourceRegistry};
 use crate::table_providers::{PreparedPartitionRead, ReadMetrics, ScanPartition};
 use crate::tables::state::{LegacyStateSource, ScopedStateSource, StateTable};
@@ -234,13 +234,13 @@ async fn setup_at_version(
     let owner = TestCoreEnv::create_with_single_node(2, 1).await;
     let local = SourceRegistry::local_only(owner.metadata);
     local.register_offline_reads(Arc::clone(&manager), crate::mocks::query_io());
-    let scanner: Arc<dyn ScanPartition> = Arc::new(SchemaScanner::<StateBinding>::new());
+    let scanner: Arc<dyn ScanPartition> = Arc::new(LookupScanner::<StateBinding>::new());
     local.register_partition_scanner::<LegacyStateSource>(if fail_after_data {
         Arc::new(FailAfterData(scanner))
     } else {
         scanner
     });
-    local.register_partition_scanner::<ScopedStateSource>(Arc::new(SchemaScanner::<
+    local.register_partition_scanner::<ScopedStateSource>(Arc::new(LookupScanner::<
         ScopedStateBinding,
     >::new()));
     worker_scanners.set(local.clone()).unwrap();
