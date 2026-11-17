@@ -24,6 +24,7 @@ use restate_storage_api::vqueue_table::{
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
 use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, VQueueId};
 use restate_types::{PlainNodeId, Scope, ServiceName};
+use restate_util_string::ReString;
 use restate_worker_api::invoker::InvocationStatusReport;
 use restate_worker_api::invoker::status_handle::InvocationStatusReportInner;
 use restate_worker_api::{
@@ -97,13 +98,80 @@ fn capture_live(
     }
 }
 
-type Captures = Arc<Mutex<Vec<PartitionCaptureRequirements>>>;
+/// A query execution: its session and query timestamp.
+type Execution = (ReString, UniqueTimestamp);
+
+/// Each admission's capture requirements, with the execution that requested it.
+///
+/// A query that stops early, at a LIMIT, can return while some of its admissions
+/// are still on their way to an owner. They are recorded whenever they arrive,
+/// possibly while the next query runs, so a test of such queries counts only its
+/// current execution's admissions ([`take_admissions`]).
+type Captures = Arc<Mutex<Vec<(Execution, PartitionCaptureRequirements)>>>;
+
+/// The capture requirements of every admission recorded so far.
+fn requirements(captures: &Captures) -> Vec<PartitionCaptureRequirements> {
+    captures
+        .lock()
+        .iter()
+        .map(|(_, capture)| *capture)
+        .collect()
+}
+
+/// Takes every recorded admission: the capture requirements of `execution`'s, and
+/// the executions the others came from.
+fn take_admissions(
+    captures: &Captures,
+    execution: &Execution,
+) -> (Vec<PartitionCaptureRequirements>, Vec<Execution>) {
+    let (current, others): (Vec<_>, Vec<_>) = std::mem::take(&mut *captures.lock())
+        .into_iter()
+        .partition(|(admitted, _)| admitted == execution);
+    (
+        current.into_iter().map(|(_, capture)| capture).collect(),
+        others.into_iter().map(|(admitted, _)| admitted).collect(),
+    )
+}
+
+/// Records one admission late, as if it had reached its owner after its query
+/// returned: the first admission, at any owner, of a query whose SQL starts with
+/// `prefix`. The read itself proceeds at once, so the query never waits for the
+/// gate; only the record waits, until [`Self::release`] gets a permit.
+struct AdmissionGate {
+    prefix: &'static str,
+    /// The delayed admission's capture. Set, under its lock, by the admission
+    /// that claims the gate, so that only the first one is delayed and the
+    /// capture is there as soon as the claim is.
+    delayed: Mutex<Option<PartitionCaptureRequirements>>,
+    /// The delayed record is added on a permit.
+    release: tokio::sync::Semaphore,
+    /// A permit once the delayed record is added.
+    recorded: tokio::sync::Semaphore,
+}
+
+impl AdmissionGate {
+    fn new(prefix: &'static str) -> Self {
+        Self {
+            prefix,
+            delayed: Mutex::default(),
+            release: tokio::sync::Semaphore::new(0),
+            recorded: tokio::sync::Semaphore::new(0),
+        }
+    }
+}
 
 /// Storage and live state for every partition, with each admission's capture
 /// requirements recorded.
 async fn cross_schema_fixture() -> (MultiFixture<impl NetworkSender>, Captures) {
+    cross_schema_fixture_with(None).await
+}
+
+/// [`cross_schema_fixture`], delaying the admission `gate` selects.
+async fn cross_schema_fixture_with(
+    gate: Option<Arc<AdmissionGate>>,
+) -> (MultiFixture<impl NetworkSender>, Captures) {
     let manager = Arc::new(OnceLock::<Arc<PartitionStoreManager>>::new());
-    let captures = Arc::new(Mutex::new(Vec::<PartitionCaptureRequirements>::new()));
+    let captures: Captures = Arc::default();
     let fixture = setup_with_scanners({
         let manager = Arc::clone(&manager);
         let captures = Arc::clone(&captures);
@@ -125,13 +193,39 @@ async fn cross_schema_fixture() -> (MultiFixture<impl NetworkSender>, Captures) 
             );
             let manager = Arc::clone(&manager);
             let captures = Arc::clone(&captures);
+            let gate = gate.clone();
             tokio::spawn(async move {
                 while let Some(command) = receiver.recv().await {
                     let ProcessorsManagerCommand::ReadPartition(request) = command else {
                         panic!("expected capture")
                     };
                     assert_eq!(node, owner(request.partition));
-                    captures.lock().push(request.capture);
+                    let execution = (
+                        request.metadata.session_id.clone(),
+                        request.metadata.query_ts,
+                    );
+                    let delayed = gate.as_ref().filter(|gate| {
+                        request.metadata.redacted_sql.starts_with(gate.prefix) && {
+                            let mut delayed = gate.delayed.lock();
+                            let first = delayed.is_none();
+                            if first {
+                                *delayed = Some(request.capture);
+                            }
+                            first
+                        }
+                    });
+                    match delayed {
+                        Some(gate) => {
+                            let (gate, captures) = (Arc::clone(gate), Arc::clone(&captures));
+                            let capture = request.capture;
+                            tokio::spawn(async move {
+                                gate.release.acquire().await.unwrap().forget();
+                                captures.lock().push((execution, capture));
+                                gate.recorded.add_permits(1);
+                            });
+                        }
+                        None => captures.lock().push((execution, request.capture)),
+                    }
                     let store = manager
                         .get()
                         .unwrap()
@@ -289,7 +383,7 @@ async fn sharding_columns_colocate_cross_schema_joins_with_shared_admission() {
             &[&[expected]],
         )
         .await;
-        let captures = captures.lock();
+        let captures = requirements(&captures);
         assert_eq!(
             captures.len(),
             partitions,
@@ -325,7 +419,7 @@ async fn sharding_columns_colocate_cross_schema_joins_with_shared_admission() {
     captures.lock().clear();
     assert_sql(session.as_ref(), "index_join_results", &sql, &[&["1"]]).await;
     assert_eq!(
-        *captures.lock(),
+        requirements(&captures),
         [storage_and(PartitionCaptureRequirements {
             scheduler: true,
             ..Default::default()
@@ -366,7 +460,7 @@ async fn sharding_columns_colocate_cross_schema_joins_with_shared_admission() {
         captures.lock().clear();
         assert_sql(session.as_ref(), "global_join_results", sql, &[&[expected]]).await;
         assert_eq!(
-            captures.lock().len(),
+            requirements(&captures).len(),
             2 * partitions,
             "separate_admissions: {sql}"
         );
@@ -494,7 +588,8 @@ async fn join_inputs_keep_their_sources_and_require_consistent_topologies() {
         captures.lock().clear();
         let actual =
             count_with_selectors(&fixture, selectors(), &format!("{query} ON s.id = l.id")).await;
-        let observed = std::mem::take(&mut *captures.lock());
+        let observed = requirements(&captures);
+        captures.lock().clear();
         let control = count_with_selectors(
             &fixture,
             selectors(),
@@ -618,7 +713,17 @@ impl Scan for FlakyNodeRows {
 
 /// Sorted rows, with columns joined by `|`, and sorted warned nodes.
 async fn rows_and_warnings(session: &dyn QuerySession, sql: &str) -> (Vec<String>, Vec<String>) {
+    let (rows, warned, _) = rows_of_execution(session, sql).await;
+    (rows, warned)
+}
+
+/// [`rows_and_warnings`], with the execution that produced them.
+async fn rows_of_execution(
+    session: &dyn QuerySession,
+    sql: &str,
+) -> (Vec<String>, Vec<String>, Execution) {
     let result = session.execute(sql, QueryOptions {}).await.unwrap();
+    let execution = (result.metadata.session_id.clone(), result.metadata.query_ts);
     let diagnostics = result.diagnostics;
     let batches = result.stream.try_collect::<Vec<_>>().await.unwrap();
     let mut rows: Vec<_> = batches
@@ -641,7 +746,7 @@ async fn rows_and_warnings(session: &dyn QuerySession, sql: &str) -> (Vec<String
         .map(|warning| warning.node_id.to_string())
         .collect();
     warned.sort();
-    (rows, warned)
+    (rows, warned, execution)
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
@@ -798,7 +903,11 @@ type LimitCase<'a> = (
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
 async fn limits_keep_joins_shard_local_when_any_preserved_rows_suffice() {
-    let (fixture, captures) = cross_schema_fixture().await;
+    // One admission of the RIGHT JOIN is recorded late, during the next case, as
+    // a query that stops early can leave admissions in flight. Each case counts
+    // only its own execution's admissions.
+    let gate = Arc::new(AdmissionGate::new("SELECT l.id, s.id"));
+    let (fixture, captures) = cross_schema_fixture_with(Some(Arc::clone(&gate))).await;
     // One lane per owner group and production-sized batches, so a lane hands over
     // a partition's rows without waiting and stopping early is observable.
     let env = environment(1, 8192).with_distributed_execution(fixture.network.clone());
@@ -833,10 +942,31 @@ async fn limits_keep_joins_shard_local_when_any_preserved_rows_suffice() {
         // So does any bound on the other side.
         ("SELECT s.id, l.id FROM sys_invocation_status s LEFT JOIN (SELECT id FROM sys_invocation_state LIMIT 1) l ON s.id = l.id LIMIT 3".to_owned(), 3, None, None),
     ];
+    let delayed_into = format!("{view} LIMIT 3");
+    let mut delayed_from = None;
     for (sql, expected, valid, admissions) in cases {
         captures.lock().clear();
-        let actual = rows(&sql).await;
-        let observed = std::mem::take(&mut *captures.lock());
+        if sql == delayed_into {
+            // The RIGHT JOIN's delayed admission is recorded now, during this case.
+            gate.release.add_permits(1);
+            gate.recorded.acquire().await.unwrap().forget();
+        }
+        let (actual, _, execution) = rows_of_execution(session.as_ref(), &sql).await;
+        let (mut observed, others) = take_admissions(&captures, &execution);
+        if sql == delayed_into {
+            // Recorded during this case, the late admission still counts as the
+            // RIGHT JOIN's, not this query's.
+            let delayed_from = delayed_from.as_ref().unwrap();
+            assert!(others.contains(delayed_from), "{sql}: {others:?}");
+        }
+        if sql.starts_with(gate.prefix) {
+            // Its first admission is recorded later, during the next case.
+            let delayed = *gate.delayed.lock();
+            observed.extend(Some(
+                delayed.expect("the RIGHT JOIN's first admission is delayed"),
+            ));
+            delayed_from = Some(execution);
+        }
         assert_eq!(actual.len(), expected, "{sql}: {actual:?}");
         if let Some(valid) = valid {
             assert!(
