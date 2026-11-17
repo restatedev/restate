@@ -73,21 +73,27 @@ use rocksdb::DBRawIteratorWithThreadMode;
 use tokio::time::Instant;
 
 use restate_clock::WallClock;
+#[cfg(test)]
 use restate_storage_api::vqueue_table::OwnedEntryStatusHeader;
 use restate_storage_api::{StorageError, Transaction};
+#[cfg(test)]
 use restate_types::identifiers::BaseEntryId;
 
+use crate::features::StorageFeatures;
 use crate::fsm_table::{fsm_variable, put_migration_jobs, put_registry, put_walks};
 use crate::job::{MigrationJobId, MigrationJobRecords, MigrationJobStatus};
+use crate::journal_table_v2::JournalCompletionIdToCommandIndexKey;
 use crate::keys::DecodeTableKey;
 use crate::registry::{IndexBackfill, IndexRegistry, MaintainedIndexes};
 use crate::scan::TableScan;
-use crate::vqueue_table::{EntryStatusKey, decode_entry_status};
+use crate::vqueue_table::EntryStatusKey;
 use crate::{PartitionDb, PartitionStoreTransaction};
 
-use super::{Walk, WalkError, Walks};
+use super::jc_orphan_cleanup::JcOrphanCleanup;
+use super::{Source, Walk, WalkError, Walks};
 
 /// An entry status a slice read: its key, ID and decoded header.
+#[cfg(test)]
 pub(crate) type SourceEntry = (Vec<u8>, BaseEntryId, OwnedEntryStatusHeader);
 
 /// The bounds of one slice; see the module documentation.
@@ -95,7 +101,9 @@ pub(crate) type SourceEntry = (Vec<u8>, BaseEntryId, OwnedEntryStatusHeader);
 pub(crate) struct SliceBudget {
     /// Source keys read.
     pub(crate) keys: usize,
-    /// Bytes of the source keys and values read.
+    /// Bytes of source rows and additional lookups reported by the job.
+    /// A lookup's size is known only after reading it; an over-budget candidate
+    /// is rolled back and retried as the next slice's first row.
     pub(crate) read_bytes: usize,
     /// Bytes of the staged batch, including the walk and registry records it
     /// commits with.
@@ -167,6 +175,8 @@ pub(crate) struct Staged {
     pub(crate) filled: u64,
     /// The jobs that lacked the entry but can't fill it (passive ones).
     pub(crate) uncovered: u64,
+    /// Additional key/value bytes read while staging this source entry.
+    pub(crate) read_bytes: usize,
 }
 
 /// How a job ends the pass of an exhausted walk.
@@ -182,34 +192,33 @@ pub(crate) enum Settlement {
 /// progress, its members' evidence and its jobs' records, and commits; a job only
 /// stages its own work.
 pub(crate) trait WalkJob {
+    type Entry;
+
+    fn decode(raw: &[u8], value: &[u8]) -> Result<Self::Entry, StorageError>;
+
     /// The migration jobs the walk runs, at most 64. A slice reports what it did
     /// for each by position in this list.
     fn job_ids(&self) -> impl Iterator<Item = u32>;
 
     /// Stages the work on `entry`, the next source entry of the walk.
     fn stage(
-        &self,
+        &mut self,
         tx: &mut PartitionStoreTransaction<'_>,
         db: &PartitionDb,
-        entry: &SourceEntry,
+        raw_key: &[u8],
+        entry: &Self::Entry,
     ) -> Result<Staged, StorageError>;
 
     /// Applies to `registry` how each job ended the walk's pass at `at`; it
     /// commits with the walk's last work and removal.
     fn finish(
         &self,
+        tx: &mut PartitionStoreTransaction<'_>,
+        db: &PartitionDb,
         registry: &mut IndexRegistry,
         settled: &[(u32, Settlement)],
         at: u64,
-    ) -> Result<(), StorageError>;
-}
-
-/// The job running `walk`, if this binary knows its kind and source.
-fn job(active: &MaintainedIndexes, walk: &Walk) -> Result<impl WalkJob, StorageError> {
-    if !walk.is_supported() {
-        return Err(walk_error(WalkError::UnsupportedKind(walk.kind.clone())));
-    }
-    IndexBackfill::new(active, walk.id)
+    ) -> Result<Option<StorageFeatures>, StorageError>;
 }
 
 /// Runs one slice of walk `id` within `budget`; see the module documentation.
@@ -241,6 +250,33 @@ pub(crate) async fn run_counted_slice(
     id: u64,
     budget: SliceBudget,
 ) -> Result<(Slice, usize), (SliceError, usize)> {
+    let active = tx.maintained_indexes();
+    let job = (|| {
+        let walk = active
+            .walks()
+            .get(id)
+            .ok_or_else(|| walk_error(WalkError::UnknownId(id)))?;
+        if !walk.is_supported() {
+            return Err(walk_error(WalkError::UnsupportedKind(walk.kind.clone())));
+        }
+        Ok(walk.is_jc_orphan_cleanup())
+    })()
+    .map_err(|err| (SliceError::Staging(err), 0))?;
+    if job {
+        run_job_slice(tx, db, id, budget, JcOrphanCleanup::default()).await
+    } else {
+        let job = IndexBackfill::new(&active, id).map_err(|err| (SliceError::Staging(err), 0))?;
+        run_job_slice(tx, db, id, budget, job).await
+    }
+}
+
+async fn run_job_slice<J: WalkJob>(
+    tx: &mut PartitionStoreTransaction<'_>,
+    db: &PartitionDb,
+    id: u64,
+    budget: SliceBudget,
+    mut job: J,
+) -> Result<(Slice, usize), (SliceError, usize)> {
     let started = Instant::now();
     let active = tx.maintained_indexes();
     let mut examined = 0;
@@ -250,7 +286,6 @@ pub(crate) async fn run_counted_slice(
             .get(id)
             .ok_or(WalkError::UnknownId(id))
             .map_err(walk_error)?;
-        let job = job(&active, walk)?;
         let job_ids: Vec<_> = job.job_ids().collect();
         let mut filled = vec![0_u64; job_ids.len()];
         let mut uncovered = vec![0_u64; job_ids.len()];
@@ -261,22 +296,33 @@ pub(crate) async fn run_counted_slice(
         // registry and the unfinished jobs, which grow by at most a few fields,
         // and the history, which a finishing slice also writes. Whether a slice
         // finishes is only known at its end, so every slice counts the history.
-        let mut largest_walks = active.walks().clone();
-        for job_id in &job_ids {
-            largest_walks
-                .add_uncovered(id, *job_id, u64::MAX)
-                .map_err(walk_error)?;
-        }
+        let walks_size = if walk.is_index_backfill() {
+            let mut largest_walks = active.walks().clone();
+            for job_id in &job_ids {
+                largest_walks
+                    .add_uncovered(id, *job_id, u64::MAX)
+                    .map_err(walk_error)?;
+            }
+            bilrost::Message::encoded_len(&largest_walks)
+        } else {
+            bilrost::Message::encoded_len(active.walks())
+        };
         let jobs = active.jobs();
         let records = 4 * RECORD_OVERHEAD
-            + bilrost::Message::encoded_len(&largest_walks)
+            + walks_size
             + bilrost::Message::encoded_len(active.registry())
             + jobs.unfinished.encoded_len()
             + jobs.history.encoded_len()
             + JOB_GROWTH * jobs.unfinished.entries().len();
-        let mut source = SourceCursor::open(db, walk.cursor.as_deref(), Some(&walk.end))?;
+        let mut source = SourceCursor::open_source(
+            db,
+            walk.source().ok_or(StorageError::DataIntegrityError)?,
+            walk.cursor.as_deref(),
+            Some(&walk.end),
+        )?;
         let (mut taken, mut read) = (0, 0);
-        let mut last = None;
+        // Reuse one cursor buffer; source rows borrow their raw keys.
+        let mut last = Vec::new();
         let exhausted = loop {
             let Some(size) = source.peek()? else {
                 break true;
@@ -291,12 +337,20 @@ pub(crate) async fn run_counted_slice(
             read += size;
             // Decoding examines the entry, also when it fails.
             examined += 1;
-            let entry = source.take()?;
+            let entry = source.decode::<J>()?;
+            let raw_key = source
+                .iterator
+                .key()
+                .ok_or(StorageError::DataIntegrityError)?;
             if taken > 0 {
                 tx.set_save_point();
             }
-            let staged = job.stage(tx, db, &entry)?;
-            if taken > 0 && tx.estimated_size_in_bytes() + records > budget.write_bytes {
+            let staged = job.stage(tx, db, raw_key, &entry)?;
+            read = read.saturating_add(staged.read_bytes);
+            if taken > 0
+                && (read > budget.read_bytes
+                    || tx.estimated_size_in_bytes() + records > budget.write_bytes)
+            {
                 // The entry's work, tokens and evidence roll back together.
                 tx.rollback_to_save_point()?;
                 break false;
@@ -306,60 +360,82 @@ pub(crate) async fn run_counted_slice(
                 filled[position] += (staged.filled >> position) & 1;
                 uncovered[position] += (staged.uncovered >> position) & 1;
             }
-            last = Some(entry.0);
+            last.clear();
+            last.extend_from_slice(raw_key);
+            source.iterator.next();
         };
         let now = WallClock::now_ms().as_u64();
-        let work_us = micros(started.elapsed());
         let partition = db.partition().id();
         let mut registry = active.registry().clone();
         let mut walks = active.walks().clone();
         // Shares the history; only a finishing slice copies it.
         let mut jobs = active.jobs().clone();
-        for ((job_id, filled), uncovered) in job_ids.iter().zip(filled).zip(uncovered) {
+        for (job_id, uncovered) in job_ids.iter().zip(uncovered) {
             walks
                 .add_uncovered(id, *job_id, uncovered)
                 .map_err(walk_error)?;
+        }
+        let mut features = None;
+        let mut finished = Vec::new();
+        let slice = if exhausted {
+            let evidence = walks
+                .get(id)
+                .ok_or(WalkError::UnknownId(id))
+                .map_err(walk_error)?;
+            // One outcome per job, for both the registry and the job record.
+            let ends: Vec<_> = job_ids
+                .iter()
+                .map(|job_id| (*job_id, PassEnd::of(evidence, *job_id)))
+                .collect();
+            let settled: Vec<_> = ends
+                .iter()
+                .map(|(job_id, end)| (*job_id, end.settlement()))
+                .collect();
+            tx.set_save_point();
+            let before_finalization = tx.estimated_size_in_bytes();
+            features = job.finish(tx, db, &mut registry, &settled, now)?;
+            if taken > 0
+                && tx.estimated_size_in_bytes() > before_finalization
+                && tx.estimated_size_in_bytes() + records > budget.write_bytes
+            {
+                // Finalization can have its own metadata writes. If they don't
+                // fit, commit the rows/cursor now and finalize in an empty slice.
+                tx.rollback_to_save_point()?;
+                registry = active.registry().clone();
+                features = None;
+                walks.advance(id, Bytes::from(last)).map_err(walk_error)?;
+                Slice::Progressed
+            } else {
+                walks.remove(id).map_err(walk_error)?;
+                finished = ends;
+                Slice::Exhausted
+            }
+        } else {
+            debug_assert!(taken > 0);
+            walks.advance(id, Bytes::from(last)).map_err(walk_error)?;
+            Slice::Progressed
+        };
+        // Include finalization (or its rollback) in successful-slice timing.
+        let now = WallClock::now_ms().as_u64();
+        let work_us = micros(started.elapsed());
+        for (job_id, filled) in job_ids.iter().zip(filled) {
             if let Some(record) = jobs.unfinished.get_mut(MigrationJobId::for_index(*job_id)) {
                 let pass_start = pass_start && !walk.joined_late(*job_id);
                 record.record_slice(now, taken as u64, filled, work_us, pass_start);
             }
         }
-        let slice = match last {
-            _ if exhausted => {
-                let evidence = walks
-                    .get(id)
-                    .ok_or(WalkError::UnknownId(id))
-                    .map_err(walk_error)?
-                    .clone();
-                // One outcome per job, for both the registry and the job record.
-                let ends: Vec<_> = job_ids
-                    .iter()
-                    .map(|job_id| (*job_id, PassEnd::of(&evidence, *job_id)))
-                    .collect();
-                let settled: Vec<_> = ends
-                    .iter()
-                    .map(|(job_id, end)| (*job_id, end.settlement()))
-                    .collect();
-                job.finish(&mut registry, &settled, now)?;
-                walks.remove(id).map_err(walk_error)?;
-                for (job_id, end) in ends {
-                    settle(&mut jobs, job_id, end, now, active.history_limit());
-                }
-                put_registry(tx, partition, &registry)?;
-                put_migration_jobs(
-                    tx,
-                    partition,
-                    fsm_variable::MIGRATION_JOB_HISTORY,
-                    &jobs.history,
-                )?;
-                Slice::Exhausted
+        if slice == Slice::Exhausted {
+            for (job_id, end) in finished {
+                settle(&mut jobs, job_id, end, now, active.history_limit());
             }
-            Some(last) => {
-                walks.advance(id, Bytes::from(last)).map_err(walk_error)?;
-                Slice::Progressed
-            }
-            None => unreachable!("a slice that stops early took its first entry"),
-        };
+            put_registry(tx, partition, &registry)?;
+            put_migration_jobs(
+                tx,
+                partition,
+                fsm_variable::MIGRATION_JOB_HISTORY,
+                &jobs.history,
+            )?;
+        }
         put_walks(tx, partition, &walks)?;
         put_migration_jobs(
             tx,
@@ -367,10 +443,10 @@ pub(crate) async fn run_counted_slice(
             fsm_variable::MIGRATION_JOBS,
             &jobs.unfinished,
         )?;
-        Ok((registry, walks, jobs, slice))
+        Ok((registry, walks, jobs, features, slice))
     });
-    let (registry, walks, jobs, slice) = staged.map_err(|err| (err, examined))?;
-    commit(tx, db, &active, registry, walks, jobs)
+    let (registry, walks, jobs, features, slice) = staged.map_err(|err| (err, examined))?;
+    commit(tx, db, &active, registry, walks, jobs, features)
         .await
         .map_err(|err| (err, examined))?;
     Ok((slice, examined))
@@ -502,9 +578,12 @@ pub(crate) async fn record_failure(
         return Err(SliceError::Staging(walk_error(WalkError::UnknownId(id))));
     }
     let members: Vec<_> = active
-        .registry()
-        .members(id)
-        .map(|index| index.id)
+        .jobs()
+        .unfinished
+        .entries()
+        .iter()
+        .filter(|job| job.walk == Some(id))
+        .map(|job| job.id().as_u32())
         .collect();
     record_job_failures(tx, db, &members, error, work).await
 }
@@ -537,7 +616,7 @@ pub(crate) async fn record_job_failures(
         Ok(jobs)
     })?;
     let (registry, walks) = (active.registry().clone(), active.walks().clone());
-    commit(tx, db, &active, registry, walks, jobs).await
+    commit(tx, db, &active, registry, walks, jobs, None).await
 }
 
 /// Starts a pass for the waiting Backfilling indexes `ids` in one commit, as
@@ -579,7 +658,7 @@ pub(crate) async fn start_passes(
         }
         Ok((registry, walks, jobs, walk))
     })?;
-    commit(tx, db, &active, registry, walks, jobs).await?;
+    commit(tx, db, &active, registry, walks, jobs, None).await?;
     Ok(walk)
 }
 
@@ -612,6 +691,7 @@ pub(crate) async fn commit(
     registry: IndexRegistry,
     walks: Walks,
     jobs: MigrationJobRecords,
+    features: Option<StorageFeatures>,
 ) -> Result<(), SliceError> {
     let Some(_session) = db.gate().try_acquire() else {
         tx.clear();
@@ -624,25 +704,75 @@ pub(crate) async fn commit(
     let next = Arc::new(active.successor(registry, walks, jobs));
     db.install_maintained_indexes(Arc::clone(&next));
     tx.set_maintained_indexes(next);
+    if let Some(features) = features {
+        db.set_storage_features(features);
+        tx.set_storage_features(features);
+    }
     Ok(())
 }
 
 /// The last entry-status key of the partition: the end of a walk starting now.
 pub(crate) fn last_key(db: &PartitionDb) -> Result<Option<Bytes>, StorageError> {
+    last_source_key(db, Source::EntryStatus)
+}
+
+pub(crate) fn last_source_key(
+    db: &PartitionDb,
+    source: Source,
+) -> Result<Option<Bytes>, StorageError> {
     let mut arena = BytesMut::new();
     let mut options = rocksdb::ReadOptions::default();
     options.fill_cache(false);
-    let mut iterator = db.scan(
-        TableScan::ScanPartitionKeyRange::<EntryStatusKey>(db.partition().key_range)
-            .encode(&mut arena),
-        options,
-    )?;
+    let mut iterator = db.scan(source_scan(db, source, &mut arena), options)?;
     iterator.seek_to_last();
     let last = iterator.key().map(Bytes::copy_from_slice);
     iterator
         .status()
         .map_err(|err| StorageError::Generic(err.into()))?;
     Ok(last)
+}
+
+fn source_scan(
+    db: &PartitionDb,
+    source: Source,
+    arena: &mut BytesMut,
+) -> crate::scan::PhysicalScan<Bytes> {
+    match source {
+        Source::EntryStatus => {
+            TableScan::ScanPartitionKeyRange::<EntryStatusKey>(db.partition().key_range)
+                .encode(arena)
+        }
+        Source::JournalCompletionId => TableScan::ScanPartitionKeyRange::<
+            JournalCompletionIdToCommandIndexKey,
+        >(db.partition().key_range)
+        .encode(arena),
+    }
+}
+
+/// Validate persisted source positions before an open changes the store.
+pub(crate) fn validate_cursor(
+    db: &PartitionDb,
+    source: Source,
+    raw: &[u8],
+) -> Result<(), StorageError> {
+    use std::ops::RangeBounds;
+    let partition_key = match source {
+        Source::EntryStatus => {
+            if raw.len() != EntryStatusKey::serialized_length_fixed() {
+                return Err(StorageError::DataIntegrityError);
+            }
+            let key = EntryStatusKey::deserialize_from(&mut &raw[..])?;
+            if key.id.kind() == restate_types::vqueues::EntryKind::Unknown {
+                return Err(StorageError::DataIntegrityError);
+            }
+            key.id.partition_key()
+        }
+        Source::JournalCompletionId => JcOrphanCleanup::decode(raw, &[])?.partition_key,
+    };
+    if !db.partition().key_range.contains(&partition_key) {
+        return Err(StorageError::DataIntegrityError);
+    }
+    Ok(())
 }
 
 /// A fresh iterator over the entry statuses in `(resume, end]`, in key order.
@@ -652,18 +782,24 @@ struct SourceCursor<'a> {
 }
 
 impl<'a> SourceCursor<'a> {
+    #[cfg(test)]
     fn open(
         db: &'a PartitionDb,
         resume: Option<&[u8]>,
         end: Option<&'a [u8]>,
     ) -> Result<Self, StorageError> {
+        Self::open_source(db, Source::EntryStatus, resume, end)
+    }
+
+    fn open_source(
+        db: &'a PartitionDb,
+        source: Source,
+        resume: Option<&[u8]>,
+        end: Option<&'a [u8]>,
+    ) -> Result<Self, StorageError> {
         let mut options = rocksdb::ReadOptions::default();
         options.fill_cache(false);
-        let mut iterator = db.scan(
-            TableScan::ScanPartitionKeyRange::<EntryStatusKey>(db.partition().key_range)
-                .encode(&mut BytesMut::new()),
-            options,
-        )?;
+        let mut iterator = db.scan(source_scan(db, source, &mut BytesMut::new()), options)?;
         if let Some(resume) = resume {
             iterator.seek(resume);
             if iterator.key() == Some(resume) {
@@ -698,15 +834,23 @@ impl<'a> SourceCursor<'a> {
     }
 
     /// Decodes the next entry, after [`Self::peek`] found one, and moves past it.
+    #[cfg(test)]
     fn take(&mut self) -> Result<SourceEntry, StorageError> {
+        let raw = self
+            .iterator
+            .key()
+            .ok_or(StorageError::DataIntegrityError)?
+            .to_vec();
+        let (entry, header) = self.decode::<IndexBackfill>()?;
+        self.iterator.next();
+        Ok((raw, entry, header))
+    }
+
+    fn decode<J: WalkJob>(&self) -> Result<J::Entry, StorageError> {
         let (Some(raw), Some(value)) = (self.iterator.key(), self.iterator.value()) else {
             return Err(StorageError::DataIntegrityError);
         };
-        let mut key = raw;
-        let entry = EntryStatusKey::deserialize_from(&mut key)?.id;
-        let decoded = (raw.to_vec(), entry, decode_entry_status(&entry, value)?);
-        self.iterator.next();
-        Ok(decoded)
+        J::decode(raw, value)
     }
 }
 

@@ -41,7 +41,7 @@ define_schema! {
             partition_id: u32 => DataType::UInt32,
             /// The job's ID; a build job has its index's ID.
             job_id: u32 => DataType::UInt32,
-            /// What the job does: `index_backfill`.
+            /// What the job does: `index_backfill` or `cleanup`.
             kind: ReString => DataType::Utf8,
             /// What it builds: for an index backfill, the definition, for example
             /// `service_stats/1`.
@@ -90,7 +90,7 @@ define_schema! {
             passes: u32 => DataType::UInt32,
             /// Source rows its committed slices examined.
             rows_examined: u64 => DataType::UInt64,
-            /// Rows its slices filled for this job.
+            /// Rows its slices filled for this job, or deleted for a cleanup.
             rows_filled: u64 => DataType::UInt64,
             /// Rows the last full pass found it couldn't cover; NULL before one ended.
             rows_uncovered: Option<u64> => DataType::UInt64,

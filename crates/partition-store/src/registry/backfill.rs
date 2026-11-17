@@ -58,9 +58,12 @@ use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{EntryContext, EntryStateRef, EntryStatusHeader};
 
 use crate::job::{MigrationJob, MigrationJobId, MigrationJobRecords, MigrationJobStatus, Stamp};
+use crate::keys::DecodeTableKey;
 use crate::stats::aggregated::backfill::with_entry_target;
 use crate::vqueue_table::EntryStatusKey;
-use crate::walk::engine::{self, Settlement, SourceEntry, Staged, WalkJob, walk_error};
+#[cfg(test)]
+use crate::walk::engine::SourceEntry;
+use crate::walk::engine::{self, Settlement, Staged, WalkJob, walk_error};
 use crate::walk::{Source, WalkKind, Walks};
 use crate::{PartitionDb, PartitionStoreTransaction};
 
@@ -96,15 +99,29 @@ impl IndexBackfill {
 }
 
 impl WalkJob for IndexBackfill {
+    type Entry = (
+        restate_types::identifiers::BaseEntryId,
+        restate_storage_api::vqueue_table::OwnedEntryStatusHeader,
+    );
+
+    fn decode(raw: &[u8], value: &[u8]) -> Result<Self::Entry, StorageError> {
+        let entry = EntryStatusKey::deserialize_from(&mut &raw[..])?.id;
+        Ok((
+            entry,
+            crate::vqueue_table::decode_entry_status(&entry, value)?,
+        ))
+    }
+
     fn job_ids(&self) -> impl Iterator<Item = u32> {
         self.members.iter().map(|(_, id)| *id)
     }
 
     fn stage(
-        &self,
+        &mut self,
         tx: &mut PartitionStoreTransaction<'_>,
         db: &PartitionDb,
-        (key, entry, header): &SourceEntry,
+        key: &[u8],
+        (entry, header): &Self::Entry,
     ) -> Result<Staged, StorageError> {
         let touched_by = header.touched_by();
         let mut staged = Staged::default();
@@ -122,7 +139,6 @@ impl WalkJob for IndexBackfill {
             return Ok(staged);
         }
         let key: [u8; EntryStatusKey::serialized_length_fixed()] = key
-            .as_slice()
             .try_into()
             .map_err(|_| StorageError::DataIntegrityError)?;
         let state = EntryStateRef::from_header(header);
@@ -145,10 +161,12 @@ impl WalkJob for IndexBackfill {
 
     fn finish(
         &self,
+        _tx: &mut PartitionStoreTransaction<'_>,
+        _db: &PartitionDb,
         registry: &mut IndexRegistry,
         settled: &[(u32, Settlement)],
         at: u64,
-    ) -> Result<(), StorageError> {
+    ) -> Result<Option<crate::features::StorageFeatures>, StorageError> {
         for (id, settlement) in settled {
             match settlement {
                 Settlement::Certified => set_ready(registry, *id, at)?,
@@ -157,7 +175,7 @@ impl WalkJob for IndexBackfill {
                     .map_err(|err| StorageError::Conversion(err.into()))?,
             }
         }
-        Ok(())
+        Ok(None)
     }
 }
 

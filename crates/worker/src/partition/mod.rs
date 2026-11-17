@@ -840,7 +840,12 @@ where
                     // it out of the command batch histogram. The record arm sets the
                     // histogram again before its next batch.
                     txn.clear_write_batch_size_histogram();
-                    walks.step(&mut txn, bytes_limit).await?;
+                    if walks.step(&mut txn, bytes_limit).await? {
+                        self.status_watch_tx.send_modify(|status| {
+                            status.enabled_storage_features = self.partition_store.get_storage_features_names();
+                            status.updated_at = MillisSinceEpoch::now();
+                        });
+                    }
                     // A committed slice or failure record advanced the store byte offset.
                     self.ctx.refresh_fsm_position(&txn);
                 }

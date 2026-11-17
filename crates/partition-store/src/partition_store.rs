@@ -13,7 +13,7 @@ use std::num::NonZeroUsize;
 use std::ops::ControlFlow;
 use std::ops::RangeBounds;
 use std::path::Path;
-use std::sync::{Arc, Once, OnceLock};
+use std::sync::{Arc, Once};
 use std::time::Duration;
 
 use anyhow::anyhow;
@@ -66,7 +66,6 @@ use crate::fsm_table::{
     PartitionStateMachineKey, get_locally_durable_lsn, get_min_restate_version_from_partition_db,
     get_registry_from_partition_db, get_state_machine_features_from_partition_db,
     get_storage_features_from_partition_db, get_storage_version_from_partition_db,
-    is_jc_orphan_cleanup_done, put_jc_orphan_cleanup_done,
 };
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, FixedLengthTableKey, KeyKind};
 use crate::migrations::MigrationError;
@@ -257,7 +256,6 @@ impl TableKind {
 
 pub struct PartitionStore {
     db: PartitionDb,
-    storage_features: OnceLock<StorageFeatures>,
     key_buffer: BytesMut,
     value_buffer: BytesMut,
 }
@@ -277,7 +275,6 @@ impl Clone for PartitionStore {
     fn clone(&self) -> Self {
         PartitionStore {
             db: self.db.clone(),
-            storage_features: self.storage_features.clone(),
             key_buffer: BytesMut::default(),
             value_buffer: BytesMut::default(),
         }
@@ -294,16 +291,14 @@ impl PartitionStore {
     pub(crate) fn new(db: PartitionDb) -> Self {
         Self {
             db,
-            storage_features: OnceLock::new(),
             key_buffer: BytesMut::new(),
             value_buffer: BytesMut::new(),
         }
     }
 
-    /// Returns the on-disk storage features, reading it from RocksDB on the first
-    /// call and memoizing it. Clones of PartitionStore will copy the memoized value.
+    /// Returns published features shared by all handles, loading them on first use.
     pub(crate) fn storage_features(&self) -> StorageFeatures {
-        *self.storage_features.get_or_init(|| {
+        self.db.storage_features_or_init(|| {
             // NOTE: Using `default` is definitely the wrong value, but it prevents the server
             // from crashing when data-fusion tries to access the partition-store prior
             // or during the migration phase.
@@ -384,8 +379,7 @@ impl PartitionStore {
 
     /// Overwrites the memoized storage features after their finalization batch commits.
     pub(crate) fn set_storage_features(&mut self, features: StorageFeatures) {
-        self.storage_features.take();
-        let _ = self.storage_features.set(features);
+        self.db.set_storage_features(features);
     }
 
     pub fn partition_db(&self) -> &PartitionDb {
@@ -859,19 +853,6 @@ impl PartitionStore {
 
     pub async fn seal(&mut self, seal: &PartitionSeal) -> Result<()> {
         seal_partition(self, seal).await
-    }
-
-    /// Returns `true` if the one-time cleanup of orphaned `jc` index entries has not yet been
-    /// performed on this partition store.
-    pub async fn needs_jc_orphan_cleanup(&mut self) -> Result<bool> {
-        is_jc_orphan_cleanup_done(self, self.partition_id())
-            .await
-            .map(|done| !done)
-    }
-
-    /// Marks the one-time `jc` orphan cleanup as complete so it won't run again.
-    pub async fn mark_jc_orphan_cleanup_done(&mut self) -> Result<()> {
-        put_jc_orphan_cleanup_done(self, self.partition_id()).await
     }
 
     #[instrument(level = "info", skip_all, fields(partition_id = %self.partition().id()))]
@@ -1380,6 +1361,34 @@ impl<'a> PartitionStoreTransaction<'a> {
     #[inline]
     pub(crate) fn storage_features(&self) -> StorageFeatures {
         self.storage_features
+    }
+
+    pub(crate) fn set_storage_features(&mut self, features: StorageFeatures) {
+        self.storage_features = features;
+    }
+
+    /// A walk's existence lookup, including staged writes, without filling the
+    /// block cache. Returns existence and the key/value bytes read for budgeting.
+    pub(crate) fn lookup_for_walk<K: EncodeTableKey>(&mut self, key: K) -> Result<(bool, usize)> {
+        self.key_buffer.clear();
+        key.serialize_to(self.key_buffer);
+        let mut options = ReadOptions::default();
+        options.fill_cache(false);
+        let value = self
+            .write_batch_with_index
+            .as_ref()
+            .expect("transaction valid")
+            .get_pinned_from_batch_and_db_cf(
+                self.rocksdb.inner().as_raw_db(),
+                self.cf_for_key_kind(K::KEY_KIND),
+                &*self.key_buffer,
+                &options,
+            )
+            .map_err(|error| StorageError::Generic(error.into()))?;
+        Ok((
+            value.is_some(),
+            self.key_buffer.len() + value.as_ref().map_or(0, |value| value.len()),
+        ))
     }
 
     pub(crate) fn maintained_indexes(&self) -> Arc<MaintainedIndexes> {

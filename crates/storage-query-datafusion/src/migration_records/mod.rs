@@ -338,6 +338,7 @@ fn append_job(
     row.job_id(job.id().as_u32());
     row.kind(match job.kind {
         MigrationJobKind::IndexBackfill => "index_backfill",
+        MigrationJobKind::Cleanup => "cleanup",
         MigrationJobKind::Unknown => "unknown",
     });
     row.name(&job.name);
@@ -349,7 +350,12 @@ fn append_job(
         MigrationJobStatus::Cancelled => "cancelled",
         MigrationJobStatus::Unknown => "unknown",
     });
-    match fill_capability(&job.name) {
+    let capability = match job.kind {
+        MigrationJobKind::Cleanup => Some(true),
+        MigrationJobKind::IndexBackfill => fill_capability(&job.name),
+        MigrationJobKind::Unknown => None,
+    };
+    match capability {
         Some(true) => row.mode("active"),
         Some(false) => row.mode("passive"),
         None => {}

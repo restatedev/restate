@@ -301,13 +301,10 @@ impl PartitionStore {
         if pending && options.disable_background_migrations {
             info!(
                 started,
-                "Background migrations are disabled; the pending index and statistics backfill waits"
+                "Background migrations are disabled; pending walks wait"
             );
         } else if pending {
-            info!(
-                started,
-                "Backfilling indexes and statistics in the background"
-            );
+            info!(started, "Running migration walks in the background");
         }
         let now = Instant::now();
         let mut driver = WalkDriver {
@@ -379,7 +376,9 @@ impl WalkDriver {
     /// no pending writes. A slice stages at most `write_bytes`, apart from its
     /// first key; the processor passes its command batches' write budget,
     /// `worker.max-command-batch-bytes`. Fails only with a failed commit, after
-    /// which the processor must stop.
+    /// which the processor must stop. Returns whether committed storage features
+    /// changed, so the processor can refresh its status without allocating on
+    /// ordinary slices.
     ///
     /// Not cancellation safe: a step dropped during its commit or before its
     /// publication may have committed its native write while `tx` still carries
@@ -390,10 +389,11 @@ impl WalkDriver {
         &mut self,
         tx: &mut PartitionStoreTransaction<'_>,
         write_bytes: usize,
-    ) -> Result<(), StorageError> {
+    ) -> Result<bool, StorageError> {
+        let features = self.db.storage_features();
         let result = self.do_step(tx, write_bytes).await;
         self.publish();
-        result
+        result.map(|()| self.db.storage_features() != features)
     }
 
     async fn do_step(
@@ -617,10 +617,7 @@ impl WalkDriver {
         let (examined, failure) = match result {
             Ok((slice, examined)) => {
                 if slice == Slice::Exhausted {
-                    info!(
-                        walk,
-                        "A backfill walk ended its pass: its indexes are Ready, or wait for another pass"
-                    );
+                    info!(walk, "A migration walk ended its pass");
                 }
                 (examined, None)
             }
@@ -676,10 +673,7 @@ impl WalkDriver {
                 }
             }
             Some(error) => {
-                warn!(
-                    walk,
-                    "Background index and statistics backfill failed, retrying: {error}"
-                );
+                warn!(walk, "Background migration walk failed, retrying: {error}");
                 let failures = self
                     .backoffs
                     .get(&walk)

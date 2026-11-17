@@ -610,24 +610,12 @@ pub(crate) fn append_min_restate_version_to_wb(
     Ok(())
 }
 
-pub(crate) async fn is_jc_orphan_cleanup_done<S: StorageAccess>(
+pub(crate) fn is_jc_orphan_cleanup_done<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
 ) -> Result<bool> {
     get::<SequenceNumber, _>(storage, partition_id, fsm_variable::JC_ORPHAN_CLEANUP_DONE)
         .map(|opt| opt.is_some())
-}
-
-pub(crate) async fn put_jc_orphan_cleanup_done<S: StorageAccess>(
-    storage: &mut S,
-    partition_id: PartitionId,
-) -> Result<()> {
-    put(
-        storage,
-        partition_id,
-        fsm_variable::JC_ORPHAN_CLEANUP_DONE,
-        &SequenceNumber::from(1u64),
-    )
 }
 
 pub(crate) async fn get_partition_seal<S: StorageAccess>(

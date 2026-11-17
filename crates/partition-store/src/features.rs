@@ -12,12 +12,14 @@ mod aggregated_status_stats;
 #[cfg(test)]
 pub(crate) use aggregated_status_stats::legacy_status_gauge_key;
 mod index_registry;
+pub(crate) mod jc_orphan_cleanup;
 mod scoped_promise_migration;
 mod scoped_state_migration;
 mod state_promise_migration_combined;
 mod vqueue_meta_cleanup;
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Context;
 use rocksdb::WriteBatch;
@@ -108,6 +110,11 @@ storage_features! {
     ///
     /// Since v1.8.2
     pub IndexRegistry,
+    /// One online sweep of orphaned journal completion-ID index entries finished.
+    /// Completion evidence only; this does not change foreground data routing.
+    ///
+    /// Since v1.8.2
+    pub JcOrphanCleanupV1,
 }
 
 trait StorageFeature: Sized + 'static {
@@ -138,6 +145,41 @@ trait StorageFeature: Sized + 'static {
     ) -> Result<(), MigrationError>;
 }
 
+/// Published feature bits shared by store handles. One atomic load on the read
+/// path, with no locks or reference-count updates. These bits are never persisted.
+#[derive(Default)]
+pub(crate) struct PublishedStorageFeatures(AtomicU64);
+
+impl PublishedStorageFeatures {
+    const INITIALIZED: u64 = 1 << 63;
+
+    pub(crate) fn get(&self) -> Option<StorageFeatures> {
+        let bits = self.0.load(Ordering::Acquire);
+        (bits & Self::INITIALIZED != 0).then(|| StorageFeatures::from_bits(bits))
+    }
+
+    pub(crate) fn get_or_init(&self, init: impl FnOnce() -> StorageFeatures) -> StorageFeatures {
+        if let Some(features) = self.get() {
+            return features;
+        }
+        let features = init();
+        match self.0.compare_exchange(
+            0,
+            features.bits() | Self::INITIALIZED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => features,
+            Err(bits) => StorageFeatures::from_bits(bits),
+        }
+    }
+
+    pub(crate) fn set(&self, features: StorageFeatures) {
+        self.0
+            .store(features.bits() | Self::INITIALIZED, Ordering::Release);
+    }
+}
+
 /// Loaded feature state used while planning and applying storage migrations.
 #[derive(Debug, Default)]
 pub(crate) struct LoadedStorageFeatures {
@@ -147,6 +189,13 @@ pub(crate) struct LoadedStorageFeatures {
 }
 
 impl LoadedStorageFeatures {
+    pub(crate) fn mark_jc_orphan_cleanup_completed(
+        &mut self,
+        version: &SemanticRestateVersion,
+    ) -> bool {
+        self.set_enabled::<JcOrphanCleanupV1Feature>(Some(version))
+    }
+
     pub(crate) fn load(
         persisted: Option<PersistedEnabledFeatures>,
         storage_version: StorageVersion,
@@ -526,6 +575,17 @@ macro_rules! storage_features {
             )*
 
             impl StorageFeatures {
+                fn bits(self) -> u64 {
+                    const { assert!(KnownStorageFeature::VARIANTS.len() < 64); }
+                    0 $(| (u64::from(self.[<is_ $feature:snake>]) << (KnownStorageFeature::$feature as u32)))*
+                }
+
+                fn from_bits(bits: u64) -> Self {
+                    Self {
+                        $([<is_ $feature:snake>]: bits & (1 << (KnownStorageFeature::$feature as u32)) != 0,)*
+                    }
+                }
+
                 /// Returns the list of enabled features by name
                 pub fn into_names(self) -> Vec<ReString> {
                     [
