@@ -50,6 +50,13 @@ define_schema! {
     }
 }
 
+/// The most `(scope, lock_name)` pairs one alternative of a query may name for
+/// V2 to look the locks up by key. Pinning both columns names every combination:
+/// `scope IN (…5,000…) AND lock_name IN (…5,000…)` names 25 million locks, far
+/// more than a scan reads when few locks are held. Above this many, that
+/// alternative scans instead, with the same rows.
+pub const MAX_LOOKUP_PAIRS: usize = 10_000;
+
 /// Candidate partition keys of locks. A scoped lock hashes its scope and an
 /// unscoped lock hashes its lock name's key, as `CanonicalLockId` does; a holder
 /// given by entry ID (an invocation or state mutation) has the lock's partition key.

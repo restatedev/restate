@@ -251,6 +251,29 @@ impl<T: Ord + Clone> Domain<T> {
             .collect()
     }
 
+    /// The pairs of this domain's values with `other`'s, for an exact-key lookup
+    /// whose key spans two columns. It's `all` when either side isn't a finite
+    /// set or when there would be more than `max` pairs, so the lookup scans
+    /// instead, and it's empty when either side is empty. The bound is checked
+    /// before any pair is built: two lists of 5,000 values would make 25
+    /// million.
+    pub fn bounded_product<U: Ord + Clone>(&self, other: &Domain<U>, max: usize) -> Domain<(T, U)> {
+        if self.is_empty() || other.is_empty() {
+            return Domain::empty();
+        }
+        let (Some(left), Some(right)) = (self.clone().into_values(), other.clone().into_values())
+        else {
+            return Domain::all();
+        };
+        if left.len().saturating_mul(right.len()) > max {
+            return Domain::all();
+        }
+        Domain::values(
+            left.iter()
+                .flat_map(|l| right.iter().map(move |r| (l.clone(), r.clone()))),
+        )
+    }
+
     /// One native predicate admitting at least this domain's values, or `None` when
     /// it admits every value. Finite sets, including the empty set, stay sets; other
     /// domains become their hull, keeping the inclusiveness of both endpoints.
@@ -589,6 +612,29 @@ mod tests {
     use datafusion::prelude::{col, lit};
 
     use super::*;
+
+    #[test]
+    fn bounded_products_pair_finite_sets_or_scan() {
+        let pairs = Domain::values([1, 2]).bounded_product(&Domain::values(["a", "b", "c"]), 6);
+        assert_eq!(pairs.clone().into_values().unwrap().len(), 6);
+        assert!(pairs.contains(&(2, "c")));
+        // One pair too many, or an open side, scans; an empty side matches nothing.
+        assert!(
+            Domain::values([1, 2])
+                .bounded_product(&Domain::values(["a", "b", "c"]), 5)
+                .is_all()
+        );
+        assert!(
+            Domain::values([1])
+                .bounded_product(&Domain::<&str>::all(), 100)
+                .is_all()
+        );
+        assert!(
+            Domain::<i32>::empty()
+                .bounded_product(&Domain::<&str>::all(), 100)
+                .is_empty()
+        );
+    }
 
     #[test]
     fn exclusions_remove_only_named_values_including_null() {

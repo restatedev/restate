@@ -51,6 +51,10 @@ once with `v1` and once with `v2`, should return the same rows.
 - A query that names specific queues, such as
   `SELECT * FROM sys_vqueue_meta WHERE id IN (…)`, makes V2 read those queues'
   metadata directly instead of scanning the metadata stored between them.
+  The same goes for `sys_locks` when a query names both the scope and the
+  lock name, such as `WHERE scope IS NULL AND lock_name IN (…)` for unscoped
+  locks. Naming only the lock name, or more than 10,000 scope and lock name
+  combinations, still scans.
 - V2 doesn't serve every table yet. It has no `sys_inbox`, and in the
   operator-level `cluster` schema it serves only `nodes`, `partitions`,
   `partition_replica_set`, `partition_state`, `logs`, `logs_tail_segments`,
