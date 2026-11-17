@@ -26,6 +26,9 @@ use crate::sharding::PartitionSource;
 use crate::source_registry::SourceRegistry;
 use crate::table_providers::PartitionedTableProvider;
 
+#[cfg(test)]
+mod tests;
+
 crate::tables::table_adapter!(pub(crate) StateTable, State);
 
 #[derive(Debug, Clone)]

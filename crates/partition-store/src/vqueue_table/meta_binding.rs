@@ -188,15 +188,16 @@ mod tests {
         assert_eq!(precision, SelectionPrecision::Inexact);
         assert_eq!(visited, 1, "id_bounds_read_to_one_key");
 
-        // IDs on two partition keys: the header covers 7..=8 and both suffixes are
-        // sought under each, so residuals reject the crossed records.
+        // IDs on partition keys 6 and 9: the read lists those two headers, seeks
+        // from one to the other without visiting the 256 queues on 7 and 8, and
+        // seeks both suffixes under each, so residuals reject the crossed records.
         let (matches, visited, _) = read(VqueueMetaClause::Id(ValuePredicate::In(vec![
-            id(7, 5),
-            id(8, 9),
+            id(6, 5),
+            id(9, 9),
         ])));
-        let mut crossed = [id(7, 5), id(7, 9), id(8, 5), id(8, 9)];
+        let mut crossed = [id(6, 5), id(6, 9), id(9, 5), id(9, 9)];
         crossed.sort();
         assert_eq!(matches, crossed.iter().collect::<Vec<_>>());
-        assert_eq!(visited, 10, "ids_seek_within_and_between_partition_keys");
+        assert_eq!(visited, 9, "ids_seek_between_listed_partition_keys");
     }
 }

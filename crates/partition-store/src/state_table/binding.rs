@@ -26,7 +26,7 @@ use restate_storage_query_api::tables::state::{
 use restate_storage_query_api::{PreparedRead, RowSink, SchemaBinding, Table};
 
 use crate::keys::codecs::{DelimitedBytesCodec, OptionalScopeCodec};
-use crate::keys::header::{PartitionKeyed, partition_key_envelope};
+use crate::keys::header::{PartitionKeyed, restrict_partition_keys};
 use crate::keys::selection::KeySelection;
 use crate::keys::selection::codec::prepare_members;
 use crate::{Result, break_on_err};
@@ -86,12 +86,9 @@ fn prepare<K: PartitionKeyed>(
             service_key = service_key.intersect(predicate.into());
         }
     }
-    // The header accepts one interval; residuals retain gaps, cross-header
-    // candidates of the suffix fields, and unsupported predicates.
-    let request = match partition_key_envelope(&partition_keys(keys, scope, service_key)) {
-        None => KeySelection::empty(),
-        Some(range) => request.restrict_scope(range),
-    };
+    // Residuals retain gaps of non-finite key sets, cross-header candidates of
+    // the suffix fields, and unsupported predicates.
+    let request = restrict_partition_keys(request, &partition_keys(keys, scope, service_key));
     Ok((request, SelectionPrecision::Inexact))
 }
 
@@ -297,5 +294,81 @@ mod tests {
             (4, 4),
             "legacy_service_names_seek"
         );
+    }
+
+    /// The UI's object listing: the state of a few objects of one service, named
+    /// by their keys, with a NULL scope. Each object has its own partition key,
+    /// spread over the key space among other objects of this and other services.
+    /// The read visits the requested objects' partition keys only, however far
+    /// apart they are, and an owner reads only the ones it owns.
+    ///
+    /// Service names encode with their length first, so under each object's key
+    /// "Other" sorts before "Counter" (a seek skips it) and "CounterArchive"
+    /// after it (the read moves on to the next listed key).
+    #[test]
+    fn object_lists_visit_only_their_partition_keys() {
+        let mut rows = Vec::new();
+        for service in ["Counter", "CounterArchive", "Other"] {
+            for object in 0..200 {
+                let service_key = format!("{object}");
+                for state in 0..2 {
+                    let mut bytes = Vec::new();
+                    StateKey {
+                        partition_key: HashPartitioner::compute_partition_key(&service_key),
+                        service_name: service.into(),
+                        service_key: service_key.clone().into(),
+                        state_key: Bytes::from(format!("k{state}")),
+                    }
+                    .serialize_to(&mut bytes);
+                    rows.push((bytes, (service, object, state)));
+                }
+            }
+        }
+        rows.sort();
+        let keys: Vec<_> = rows.iter().map(|(key, _)| key).collect();
+        let objects = [3, 57, 101, 150, 199];
+        let selection = Selection::All
+            .and(StateClause::ServiceName(ValuePredicate::Equal(
+                "Counter".into(),
+            )))
+            .and(StateClause::ServiceKey(ValuePredicate::In(
+                objects
+                    .iter()
+                    .map(|object| format!("{object}").into())
+                    .collect(),
+            )))
+            .and(StateClause::Scope(ValuePredicate::Equal(None)));
+        let prepared = StateBinding::prepare(&selection).unwrap();
+        let read = |range| {
+            let (matches, visited) = navigate(Arc::clone(prepared.request()), range, &keys);
+            let mut found: Vec<_> = matches.into_iter().map(|index| rows[index].1).collect();
+            found.sort_unstable();
+            (found, visited)
+        };
+
+        let (found, visited) = read(KeyRange::FULL);
+        let expected: Vec<_> = objects
+            .iter()
+            .flat_map(|&object| (0..2).map(move |state| ("Counter", object, state)))
+            .collect();
+        assert_eq!(found, expected);
+        // Each object's partition key holds two state keys under each service.
+        // The read visits the first object's "Other" key, then per object the
+        // two "Counter" keys and one "CounterArchive" key, from which it seeks
+        // to the next object's "Counter" keys: 16 visits against 1,200 keys.
+        assert_eq!(visited, 3 * objects.len() + 1, "visits only the objects");
+
+        // An owner of half the key space reads the requested objects it owns.
+        let middle = u64::MAX / 2;
+        let (found, _) = read(KeyRange::new(0, middle));
+        let owned: Vec<_> = expected
+            .iter()
+            .copied()
+            .filter(|(_, object, _)| {
+                HashPartitioner::compute_partition_key(format!("{object}")) <= middle
+            })
+            .collect();
+        assert!(!owned.is_empty() && owned.len() < expected.len());
+        assert_eq!(found, owned);
     }
 }
