@@ -60,7 +60,7 @@ use restate_util_time::DurationExt;
 use restate_worker_api::invoker::capacity::TokenBucket;
 use restate_worker_api::invoker::invocation_reader::InvocationReader;
 use restate_worker_api::invoker::{
-    Effect, EffectKind, FencedEffect, InvocationStatusReport, YieldReason,
+    Effect, EffectKind, FencedEffect, InvocationStatusReport, SuspendIdleTarget, YieldReason,
 };
 
 use crate::error::InvocationMemoryExhausted;
@@ -72,6 +72,7 @@ use crate::invocation_state_machine::OnTaskError;
 use crate::invocation_task::InvocationTask;
 use crate::invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use crate::metric_definitions::{
+    EAGER_SUSPENSION_NO_CANDIDATE, EAGER_SUSPENSION_SUSPENDED, INVOKER_EAGER_SUSPENSION,
     INVOKER_ENQUEUE, INVOKER_INVOCATION_TASKS, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
     TASK_OP_SUSPENDED,
 };
@@ -443,6 +444,9 @@ where
                     InputCommand::StoredCommandAck { invocation_id, command_index } => {
                         self.handle_stored_command_ack(options, invocation_id, command_index);
                     }
+                    InputCommand::SuspendIdle(target) => {
+                        self.handle_suspend_idle(options, target);
+                    }
                 }
             },
             invocation_task_msg = self.task_outputs.recv() => {
@@ -479,10 +483,13 @@ where
                             requested_ack,
                         ).await
                     },
-                    InvocationTaskOutputInner::AwaitingOn { unresolved_future, .. } => {
+                    InvocationTaskOutputInner::AwaitingOn { unresolved_future, executing_side_effects, preemptable, .. } => {
                         self.handle_awaiting_on(
+                            options,
                             invocation_id,
-                            unresolved_future
+                            unresolved_future,
+                            executing_side_effects,
+                            preemptable,
                         )
                     },
                     InvocationTaskOutputInner::Closed => {
@@ -704,6 +711,9 @@ where
         notification: RawNotification,
         requested_ack: bool,
     ) {
+        // The SDK made progress, its last reported await point is outdated.
+        self.invocation_state_machine_manager
+            .clear_ready(&invocation_id);
         if let Some((output_tx, ism)) = self
             .invocation_state_machine_manager
             .resolve_invocation(&invocation_id)
@@ -761,6 +771,9 @@ where
         command: RawCommand,
         requested_ack: bool,
     ) {
+        // The SDK made progress, its last reported await point is outdated.
+        self.invocation_state_machine_manager
+            .clear_ready(&invocation_id);
         if let Some((output_tx, ism)) = self
             .invocation_state_machine_manager
             .resolve_invocation(&invocation_id)
@@ -832,11 +845,22 @@ where
     )]
     fn handle_awaiting_on(
         &mut self,
+        options: &InvokerOptions,
         invocation_id: InvocationId,
         unresolved_future: UnresolvedFuture,
+        executing_side_effects: bool,
+        preemptable: bool,
     ) {
-        self.invocation_state_machine_manager
-            .handle_for_invocation(&invocation_id, |_, ism| {
+        // Trust the SDK: it is blocked on this await point and, unless it says otherwise,
+        // not executing side effects. Suspending it is then as safe as the inactivity timeout,
+        // unless the service or handler opted out of eager suspension.
+        let awaiting =
+            (!options.disable_eager_suspension && preemptable && !executing_side_effects)
+                .then(|| unresolved_future.leaves());
+
+        let found = self.invocation_state_machine_manager.handle_for_invocation(
+            &invocation_id,
+            |_, ism| {
                 trace!(
                     restate.invocation.target = %ism.invocation_target,
                     "awaiting on received {:?}. Invocation state: {:?}",
@@ -846,7 +870,47 @@ where
 
                 self.status_store
                     .on_awaiting_on(&invocation_id, unresolved_future);
-            });
+            },
+        );
+
+        if found.is_some()
+            && let Some(awaiting) = awaiting
+        {
+            self.invocation_state_machine_manager
+                .mark_ready(&invocation_id, awaiting);
+        }
+    }
+
+    /// A vqueue is blocked on `target`: suspend the invocation that has been waiting the
+    /// longest among those whose suspension releases it. The released permit reaches the
+    /// scheduler through the usual permit release path.
+    #[instrument(level = "trace", skip_all, fields(?target))]
+    fn handle_suspend_idle(
+        &mut self,
+        options: &InvokerOptions,
+        target: SuspendIdleTarget,
+    ) -> Option<InvocationId> {
+        if options.disable_eager_suspension {
+            return None;
+        }
+        let suspended = self.invocation_state_machine_manager.eager_suspend(&target);
+        counter!(
+            INVOKER_EAGER_SUSPENSION,
+            "outcome" => if suspended.is_some() {
+                EAGER_SUSPENSION_SUSPENDED
+            } else {
+                EAGER_SUSPENSION_NO_CANDIDATE
+            },
+            "partition_id" => self.invoker_id_label.clone()
+        )
+        .increment(1);
+        if let Some(invocation_id) = &suspended {
+            debug!(
+                restate.invocation.id = %invocation_id,
+                "Suspending waiting invocation eagerly, a queue is blocked on its permit"
+            );
+        }
+        suspended
     }
 
     #[instrument(
@@ -1745,6 +1809,13 @@ mod tests {
                 let invocation_id = expired.into_inner();
                 self.handle_retry_timer_fired(options, invocation_id, timer_key);
             }
+        }
+
+        /// Helper for tests: checks if an invocation is marked ready for eager suspension.
+        fn is_ready_for_eager_suspension(&mut self, invocation_id: &InvocationId) -> bool {
+            self.invocation_state_machine_manager
+                .resolve_invocation(invocation_id)
+                .is_some_and(|(_, ism)| ism.ready_seq().is_some())
         }
 
         /// Helper for tests: checks if an invocation's ISM is in WaitingRetry state.
@@ -2889,5 +2960,169 @@ mod tests {
                 .resolve_invocation(&invocation_id)
                 .is_none()
         );
+    }
+
+    #[test(restate_core::test(flavor = "local"))]
+    async fn eager_suspension_marks_and_suspends_waiting_invocations() {
+        use restate_types::Scope;
+        use restate_worker_api::resources::{SystemPermit, UserPermitKind};
+
+        let options = InvokerOptions::default();
+
+        // Each invocation task reports when its notification channel gets closed.
+        let (closed_tx, mut closed_rx) = mpsc::unbounded_channel();
+        let runner =
+            move |invocation_id: InvocationId,
+                  _: InvocationTarget,
+                  _: EmptyStorageReader,
+                  _: fair_channel::Sender<InvocationTaskOutput>,
+                  mut notifications: mpsc::UnboundedReceiver<Notification>| {
+                let closed_tx = closed_tx.clone();
+                async move {
+                    while notifications.recv().await.is_some() {}
+                    let _ = closed_tx.send(invocation_id);
+                }
+            };
+        let (_, _status_tx, _effects_rx, mut service_inner) =
+            ServiceInner::mock(runner, MockSchemas::default(), EmptyStorageReader);
+
+        let scope = Scope::try_non_interned("tenants").unwrap();
+        let mut start = |invocation_id: InvocationId, limit_key: Option<&str>| {
+            let (permit, limit_key) = match limit_key {
+                None => (ReservedResources::new_empty(), LimitKey::None),
+                Some(limit_key) => {
+                    let limit_key: LimitKey<ReString> = limit_key.parse().unwrap();
+                    let (manager_tx, _) = mpsc::unbounded_channel();
+                    let permit = ReservedResources::new(
+                        Default::default(),
+                        vec![UserPermitKind::LimitKeyConcurrency(
+                            scope.clone(),
+                            limit_key.clone(),
+                        )]
+                        .into(),
+                        SystemPermit::default(),
+                        manager_tx,
+                    );
+                    (permit, limit_key)
+                }
+            };
+            service_inner.handle_vqueue_invoke(
+                &options,
+                VQueueInvokeCommand {
+                    qid: VQueueId::custom(invocation_id.partition_key(), invocation_id.to_string()),
+                    permit,
+                    invocation_id,
+                    fencing_token: 0,
+                    invocation_target: InvocationTarget::mock_service(),
+                    limit_key,
+                    idempotency_key: None,
+                },
+            );
+        };
+        let unscoped = InvocationId::mock_random();
+        let tenant1 = InvocationId::mock_random();
+        let tenant2 = InvocationId::mock_random();
+        start(unscoped, None);
+        start(tenant1, Some("t1/x"));
+        start(tenant2, Some("t2"));
+
+        let awaiting = |id: u32| UnresolvedFuture::Single(NotificationId::CompletionId(id));
+
+        // AwaitingOn marks the invocation, unless the SDK reports running side effects or the
+        // handler is non-preemptable.
+        service_inner.handle_awaiting_on(&options, unscoped, awaiting(1), false, true);
+        service_inner.handle_awaiting_on(&options, tenant1, awaiting(1), true, true);
+        service_inner.handle_awaiting_on(&options, tenant2, awaiting(1), false, false);
+        assert!(service_inner.is_ready_for_eager_suspension(&unscoped));
+        assert!(!service_inner.is_ready_for_eager_suspension(&tenant1));
+        assert!(!service_inner.is_ready_for_eager_suspension(&tenant2));
+        service_inner.handle_awaiting_on(&options, tenant2, awaiting(1), false, true);
+        assert!(service_inner.is_ready_for_eager_suspension(&tenant2));
+
+        // Neither an ack that isn't forwarded to the SDK nor a notification outside the awaited
+        // tree (e.g. the invocation id of a call) clears the mark.
+        service_inner.handle_stored_command_ack(&options, unscoped, 1);
+        service_inner.handle_notification(&options, unscoped, 2, NotificationId::CompletionId(2));
+        assert!(service_inner.is_ready_for_eager_suspension(&unscoped));
+
+        // An awaited notification clears it, until the SDK reports it is blocked again.
+        service_inner.handle_notification(&options, unscoped, 3, NotificationId::CompletionId(1));
+        assert!(!service_inner.is_ready_for_eager_suspension(&unscoped));
+        service_inner.handle_awaiting_on(&options, unscoped, awaiting(3), false, true);
+        assert!(service_inner.is_ready_for_eager_suspension(&unscoped));
+
+        // A limit-key target only matches holders under the blocked prefix.
+        let t1 = SuspendIdleTarget::LimitKey {
+            scope: scope.clone(),
+            limit_key: "t1".parse().unwrap(),
+        };
+        assert_eq!(
+            service_inner.handle_suspend_idle(&options, t1.clone()),
+            None
+        );
+        service_inner.handle_awaiting_on(&options, tenant1, awaiting(1), false, true);
+        assert_eq!(
+            service_inner.handle_suspend_idle(&options, t1.clone()),
+            Some(tenant1)
+        );
+        assert!(!service_inner.is_ready_for_eager_suspension(&tenant1));
+        assert_eq!(service_inner.handle_suspend_idle(&options, t1), None);
+
+        // A node slot target picks the invocation marked the longest ago.
+        assert_eq!(
+            service_inner.handle_suspend_idle(&options, SuspendIdleTarget::InvokerConcurrency),
+            Some(tenant2)
+        );
+
+        // The suspended invocations get their notification channel closed, as with the
+        // inactivity timeout.
+        let mut closed = Vec::new();
+        for _ in 0..2 {
+            closed.push(
+                tokio::time::timeout(Duration::from_secs(10), closed_rx.recv())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        closed.sort();
+        let mut expected = vec![tenant1, tenant2];
+        expected.sort();
+        assert_eq!(closed, expected);
+
+        // A new command clears the mark: nothing is left to suspend.
+        service_inner
+            .handle_new_command(
+                unscoped,
+                1,
+                ServiceProtocolV4Codec::encode_entry(Entry::Command(Command::Output(
+                    OutputCommand {
+                        result: OutputResult::Success(Bytes::default()),
+                        name: Default::default(),
+                    },
+                )))
+                .try_as_command()
+                .unwrap(),
+                false,
+            )
+            .await;
+        assert_eq!(
+            service_inner.handle_suspend_idle(&options, SuspendIdleTarget::InvokerConcurrency),
+            None
+        );
+
+        // With eager suspension disabled, AwaitingOn marks nothing and invocations marked
+        // before stay running.
+        let mut disabled = InvokerOptions::default();
+        disabled.disable_eager_suspension = true;
+        service_inner.handle_awaiting_on(&disabled, unscoped, awaiting(1), false, true);
+        assert!(!service_inner.is_ready_for_eager_suspension(&unscoped));
+        service_inner.handle_awaiting_on(&options, unscoped, awaiting(1), false, true);
+        assert_eq!(
+            service_inner.handle_suspend_idle(&disabled, SuspendIdleTarget::InvokerConcurrency),
+            None
+        );
+        assert!(service_inner.is_ready_for_eager_suspension(&unscoped));
+        assert!(closed_rx.try_recv().is_err());
     }
 }

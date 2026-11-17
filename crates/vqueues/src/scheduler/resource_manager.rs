@@ -34,6 +34,7 @@ use restate_storage_api::vqueue_table::{EntryKey, EntryMetadata};
 use restate_types::vqueues::EntryKind;
 use restate_types::{LockName, Scope};
 use restate_util_string::ReString;
+use restate_worker_api::invoker::SuspendIdleTarget;
 use restate_worker_api::resources::{ResourceManagerUpdate, UserPermitKind};
 use restate_worker_api::{ResourceKind, UserLimitCounterEntry};
 
@@ -50,6 +51,10 @@ use crate::GlobalTokenBucket;
 // A set of queues waiting on a resource
 type Waiters = VecDeque<VQueueHandle>;
 
+/// Receives requests to eagerly suspend a waiting invocation that holds a resource a queue
+/// is blocked on. Typically forwards them to the partition's invoker.
+pub type EagerSuspensionSink = Box<dyn FnMut(SuspendIdleTarget) + Send + Sync>;
+
 pub struct ResourceManager {
     // Resources
     locks: Locks,
@@ -62,6 +67,9 @@ pub struct ResourceManager {
     // We need to keep this alive to:
     // - Keep the receiver alive even if we don't have any resource permits handed out
     tx: mpsc::UnboundedSender<ResourceManagerUpdate>,
+    /// If set, queues that block on a resource held by invocations ask for one waiting
+    /// holder to be suspended eagerly.
+    eager_suspension_sink: Option<EagerSuspensionSink>,
 }
 
 pub(super) enum AcquireOutcome {
@@ -89,7 +97,28 @@ impl ResourceManager {
             locks,
             rx,
             tx: _tx,
+            eager_suspension_sink: None,
         })
+    }
+
+    /// Enables eager suspension requests, see [`EagerSuspensionSink`].
+    pub fn with_eager_suspension_sink(mut self, sink: EagerSuspensionSink) -> Self {
+        self.eager_suspension_sink = Some(sink);
+        self
+    }
+
+    /// Asks for a waiting invocation holding `resource` to be suspended, if eager suspension
+    /// is enabled and suspending an invocation releases `resource`.
+    pub(super) fn request_eager_suspension(&mut self, resource: &ResourceKind) {
+        if let Some(sink) = &mut self.eager_suspension_sink
+            && let Some(target) = SuspendIdleTarget::from_blocked(resource)
+        {
+            trace!(
+                ?target,
+                "Requesting eager suspension of a waiting invocation"
+            );
+            sink(target);
+        }
     }
 
     /// Forward a batch of rule-book updates to the resource manager's

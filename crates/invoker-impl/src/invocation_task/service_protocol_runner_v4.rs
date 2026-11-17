@@ -1542,9 +1542,9 @@ where
         awaiting_on: proto::AwaitingOnMessage,
         encoded_length: usize,
     ) -> TerminalLoopState<()> {
-        // this message should mark this invocation as suspendable.
-        // if it's not running any side effects.
-
+        // The invoker uses this message to mark the invocation as eagerly suspendable, unless
+        // the SDK reports that it is executing side effects or the handler is non-preemptable.
+        let executing_side_effects = awaiting_on.executing_side_effects;
         let Some(awaiting_on) = awaiting_on.awaiting_on else {
             return TerminalLoopState::Failed(InvokerError::EmptyAwaitingOnMessage);
         };
@@ -1564,10 +1564,10 @@ where
             .send_invoker_tx(InvocationTaskOutputInner::AwaitingOn {
                 unresolved_future,
                 encoded_length,
+                executing_side_effects,
+                preemptable: self.invocation_task.preemptable,
             });
 
-        // todo(azmy): Handle awaiting on message
-        //  Also verify that we keep correctly updated the InvocationStatusReportInner.last_awaiting_on_unresolved_future field!
         TerminalLoopState::Continue(())
     }
 

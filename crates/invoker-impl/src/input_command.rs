@@ -18,8 +18,9 @@ use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::VQueueId;
 use restate_util_string::ReString;
-use restate_worker_api::invoker::InvocationStatusReport;
+use restate_worker_api::invoker::{InvocationStatusReport, SuspendIdleTarget};
 use restate_worker_api::resources::ReservedResources;
+
 // -- Input messages
 
 #[derive(derive_more::Debug)]
@@ -59,6 +60,9 @@ pub(crate) enum InputCommand {
 
     /// Command used to clean up internal state when a partition leader is going away
     AbortAll,
+
+    /// Suspend one waiting invocation that holds the given resource.
+    SuspendIdle(SuspendIdleTarget),
 }
 
 // -- Handles implementations. This is just glue code between the Input<Command> and the interfaces
@@ -135,6 +139,12 @@ impl restate_worker_api::invoker::InvokerHandle for InvokerHandle {
     fn pause_invocation(&mut self, invocation_id: InvocationId) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::Pause { invocation_id })
+            .map_err(|_| NotRunningError)
+    }
+
+    fn suspend_idle(&mut self, target: SuspendIdleTarget) -> Result<(), NotRunningError> {
+        self.input
+            .send(InputCommand::SuspendIdle(target))
             .map_err(|_| NotRunningError)
     }
 }

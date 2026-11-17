@@ -40,7 +40,7 @@ mod resource_manager;
 mod vqueue_state;
 
 // Re-exports
-pub use resource_manager::ResourceManager;
+pub use resource_manager::{EagerSuspensionSink, ResourceManager};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefillMode {

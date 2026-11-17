@@ -158,6 +158,11 @@ impl Stats {
         *self = Self::default();
     }
 
+    /// Whether the head is already blocked on a resource of this bucket.
+    fn is_waiting_on(&self, bucket: WaitBucket) -> bool {
+        self.current.is_some_and(|(current, _)| current == bucket)
+    }
+
     /// Transition the wait segment. Passing `None` means "no longer blocked".
     /// Passing the *same* bucket as the currently-open segment is a no-op —
     /// the segment keeps running.
@@ -305,10 +310,16 @@ impl<S: VQueueStore> VQueueState<S> {
                 Ok(Pop::Run(action))
             }
             AcquireOutcome::BlockedOn(resource) => {
+                let bucket = WaitBucket::for_resource(&resource);
+                // Ask for an eager suspension only the first time this head blocks on this
+                // kind of resource. Woken queues that lose the race for a released permit
+                // block again and must not ask for another suspension.
+                if !self.head_stats.is_waiting_on(bucket) {
+                    resources.request_eager_suspension(&resource);
+                }
                 // One call handles the full state transition: closes any previously
                 // open segment (for a different resource) and opens the new one.
-                self.head_stats
-                    .set_wait(Some(WaitBucket::for_resource(&resource)));
+                self.head_stats.set_wait(Some(bucket));
                 Ok(Pop::Blocked(resource))
             }
         }

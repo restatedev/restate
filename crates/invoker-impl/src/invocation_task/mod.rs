@@ -241,6 +241,12 @@ pub(super) enum InvocationTaskOutputInner {
         unresolved_future: UnresolvedFuture,
         /// Length of the encoded message, a proxy for the future's size.
         encoded_length: usize,
+        /// True if the SDK reports that some awaited notification is a side effect it is
+        /// still executing, so the invocation must not be suspended eagerly.
+        executing_side_effects: bool,
+        /// False if the service or handler is declared non-preemptable, so the invocation must
+        /// not be suspended eagerly.
+        preemptable: bool,
     },
     Closed,
     SuspendedV2(HashSet<NotificationId>),
@@ -312,6 +318,8 @@ pub(super) struct InvocationTask<DMR> {
     idempotency_key: Option<ReString>,
     inactivity_timeout: Duration,
     abort_timeout: Duration,
+    /// Whether the invoked handler allows eager suspension, resolved per attempt.
+    preemptable: bool,
     eager_state_size_limit: usize,
     message_size_warning: NonZeroUsize,
     message_size_limit: NonZeroUsize,
@@ -412,6 +420,7 @@ where
             invocation_target,
             inactivity_timeout: default_inactivity_timeout,
             abort_timeout: default_abort_timeout,
+            preemptable: true,
             // Make sure eager_state_size_limit is capped to message size limit
             eager_state_size_limit: cmp::min(eager_state_size_limit, message_size_limit.get()),
             schemas: deployment_metadata_resolver,
@@ -599,6 +608,7 @@ where
         if let Some(abort_timeout) = invocation_attempt_options.abort_timeout {
             self.abort_timeout = abort_timeout;
         }
+        self.preemptable = invocation_attempt_options.preemptable;
 
         if chosen_service_protocol_version < ServiceProtocolVersion::V4 {
             // We don't support migrating from journal v2 to journal v1!
