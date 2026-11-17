@@ -8422,6 +8422,7 @@ dependencies = [
  "codederror",
  "derive_more",
  "googletest",
+ "libc",
  "metrics",
  "parking_lot",
  "prost",

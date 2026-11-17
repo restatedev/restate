@@ -69,11 +69,6 @@ pub struct LogServerOptions {
     /// Default is 1
     rocksdb_max_sub_compactions: u32,
 
-    /// Whether to perform commits in background IO thread pools eagerly or not
-    #[cfg_attr(feature = "schemars", schemars(skip))]
-    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
-    pub always_commit_in_background: bool,
-
     /// The number of messages that can queue up on input network stream while request processor is busy.
     #[deprecated = "Memory-based flow control is now managed through memory pools"]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -487,7 +482,6 @@ impl Default for LogServerOptions {
             rocksdb_disable_wal: false,
             rocksdb_disable_wal_fsync: false,
             rocksdb_disable_paranoid_checks: false,
-            always_commit_in_background: false,
             #[allow(deprecated)]
             incoming_network_queue_length: None,
             rocksdb_enable_blob_separation: false,
