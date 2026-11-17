@@ -151,6 +151,7 @@ async fn journal_matches_v1_and_id_lookups_skip_other_invocations() {
         for (index, entry) in current_entries.iter().enumerate() {
             let entry = StoredRawEntry::new(
                 StoredRawEntryHeader::new(MillisSinceEpoch::new(1_700_000_000_000 + index as u64)),
+                None,
                 entry.clone().encode::<ServiceProtocolV4Codec>(),
             );
             WriteJournalTableV2::put_journal_entry(&mut tx, &id, index as u32, &entry, &[])
