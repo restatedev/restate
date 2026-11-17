@@ -15,23 +15,33 @@
 //! and prefixes remain residual. The unscoped layout is read until its migration
 //! completes.
 
+use std::num::NonZeroUsize;
 use std::ops::ControlFlow;
+
+use anyhow::{Context, ensure};
+use bytes::Bytes;
 
 use restate_storage_query_api::schema::{RecordProgress, row_written};
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, SelectionPrecision};
 use restate_storage_query_api::tables::state::{
-    State, StateClause, StateColumn, StateView, partition_keys,
+    State, StateClause, StateColumn, StateDomains, StateKeyId, StateView, named_state_keys,
+    partition_keys,
 };
 use restate_storage_query_api::{PreparedRead, RowSink, SchemaBinding, Table};
+use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
+use restate_types::{Scope, ServiceName};
+use restate_util_string::ReString;
 
 use crate::keys::codecs::{DelimitedBytesCodec, OptionalScopeCodec};
 use crate::keys::header::{PartitionKeyed, restrict_partition_keys};
 use crate::keys::selection::KeySelection;
 use crate::keys::selection::codec::prepare_members;
+use crate::keys::{EncodeTableKey, FieldCodec, KeyKind};
+use crate::lookup::{LookupBinding, LookupTable};
 use crate::{Result, break_on_err};
 
-use super::{ScopedStateTable, StateTable};
+use super::{ScopedStateKey, ScopedStateTable, StateKey, StateTable, write_state_entry_key};
 
 /// `unscoped` marks the legacy layout, whose records all have a NULL scope: its
 /// header then follows from the service key alone.
@@ -165,6 +175,136 @@ impl SchemaBinding for ScopedStateBinding {
     }
 }
 
+/// The objects a state key belongs to, if `scope` is valid.
+fn service_id(
+    scope: &Option<ReString>,
+    service_name: &str,
+    service_key: &str,
+) -> Option<ServiceId> {
+    let scope = scope
+        .as_deref()
+        .map(Scope::try_non_interned)
+        .transpose()
+        .ok()?;
+    Some(ServiceId::new(scope, service_name, service_key))
+}
+
+/// Reads a delimited field of a received key as UTF-8, checking its bounds.
+fn text_field(rest: &mut &[u8], field: &str) -> anyhow::Result<ReString> {
+    let encoded = DelimitedBytesCodec::take_encoded(rest).with_context(|| format!("no {field}"))?;
+    let bytes = DelimitedBytesCodec::decode_encoded(encoded)?;
+    Ok(ReString::from(
+        std::str::from_utf8(&bytes).with_context(|| format!("{field} isn't UTF-8"))?,
+    ))
+}
+
+/// Requires `bytes` to be exactly the stored key `key` of the received identity.
+fn canonical(bytes: &[u8], stored: [u8; 8], key: &impl EncodeTableKey) -> anyhow::Result<()> {
+    let mut canonical = Vec::with_capacity(bytes.len());
+    key.serialize_to(&mut canonical);
+    ensure!(canonical == bytes, "state key isn't canonical");
+    ensure!(
+        canonical[KeyKind::SERIALIZED_LENGTH..][..8] == stored,
+        "state key stored under another partition key"
+    );
+    Ok(())
+}
+
+/// A state key is named by its scope, service name, service key and UTF-8 state
+/// key, as the `scope`, `service_name`, `service_key` and `key` columns show them.
+impl LookupTable for StateTable {
+    type Id = StateKeyId;
+    /// Smaller than for locks: state values can be large. Not measured.
+    const BATCH_SIZE: NonZeroUsize = NonZeroUsize::new(100).unwrap();
+
+    /// `None` for a scoped key: this layout holds unscoped state only.
+    fn key((scope, service_name, service_key, key): &StateKeyId) -> Option<StateKey> {
+        if scope.is_some() {
+            return None;
+        }
+        let service_id = service_id(scope, service_name, service_key)?;
+        Some(write_state_entry_key(
+            &service_id,
+            &Bytes::copy_from_slice(key.as_bytes()),
+        ))
+    }
+
+    fn check_key(bytes: &[u8]) -> anyhow::Result<PartitionKey> {
+        let rest = bytes
+            .strip_prefix(KeyKind::State.as_bytes())
+            .context("not a state key")?;
+        let (stored, mut rest) = rest
+            .split_first_chunk::<8>()
+            .context("state key without a partition key")?;
+        let service_name = text_field(&mut rest, "service name")?;
+        let service_key = text_field(&mut rest, "service key")?;
+        let key = text_field(&mut rest, "state key")?;
+        ensure!(rest.is_empty(), "state key with trailing bytes");
+        let key =
+            Self::key(&(None, service_name, service_key, key)).context("invalid state key")?;
+        canonical(bytes, *stored, &key)?;
+        Ok(key.partition_key)
+    }
+}
+
+/// As [`StateTable`], for scoped and unscoped state alike.
+impl LookupTable for ScopedStateTable {
+    type Id = StateKeyId;
+    /// Smaller than for locks: state values can be large. Not measured.
+    const BATCH_SIZE: NonZeroUsize = NonZeroUsize::new(100).unwrap();
+
+    /// `None` for an invalid scope.
+    fn key((scope, service_name, service_key, key): &StateKeyId) -> Option<ScopedStateKey> {
+        let service_id = service_id(scope, service_name, service_key)?;
+        Some(ScopedStateKey {
+            partition_key: service_id.partition_key(),
+            scope: service_id.scope,
+            service_name: ServiceName::from(service_name.as_str()),
+            service_key: service_key.clone(),
+            state_key: Bytes::copy_from_slice(key.as_bytes()),
+        })
+    }
+
+    fn check_key(bytes: &[u8]) -> anyhow::Result<PartitionKey> {
+        let rest = bytes
+            .strip_prefix(KeyKind::ScopedState.as_bytes())
+            .context("not a scoped state key")?;
+        let (stored, mut rest) = rest
+            .split_first_chunk::<8>()
+            .context("state key without a partition key")?;
+        let scope = OptionalScopeCodec::take_encoded(&mut rest)
+            .and_then(OptionalScopeCodec::decode_encoded)
+            .context("invalid state scope")?;
+        let service_name = text_field(&mut rest, "service name")?;
+        let service_key = text_field(&mut rest, "service key")?;
+        let key = text_field(&mut rest, "state key")?;
+        ensure!(rest.is_empty(), "state key with trailing bytes");
+        let key =
+            Self::key(&(scope, service_name, service_key, key)).context("invalid state key")?;
+        canonical(bytes, *stored, &key)?;
+        Ok(key.partition_key)
+    }
+}
+
+/// A branch that pins every key column to finitely many values can only match
+/// their combinations, up to `MAX_LOOKUP_KEYS` of them; this layout holds
+/// unscoped state only, so only the NULL scope can match.
+impl LookupBinding for StateBinding {
+    fn lookup_ids(domains: &StateDomains) -> Domain<StateKeyId> {
+        named_state_keys(
+            domains.scope.clone().intersect(Domain::values([None])),
+            domains,
+        )
+    }
+}
+
+/// As for [`StateBinding`], with every scope.
+impl LookupBinding for ScopedStateBinding {
+    fn lookup_ids(domains: &StateDomains) -> Domain<StateKeyId> {
+        named_state_keys(domains.scope.clone(), domains)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::ops::Bound;
@@ -294,6 +434,108 @@ mod tests {
             (4, 4),
             "legacy_service_names_seek"
         );
+    }
+
+    /// Complete state keys are named by every combination of finitely many scopes,
+    /// service names, service keys and state keys, up to the cap; the legacy layout
+    /// keeps only the NULL scope. Received keys of either layout are checked field
+    /// by field before anything decodes them.
+    #[test]
+    fn complete_state_keys_are_named_and_checked() {
+        use restate_storage_query_api::tables::state::MAX_LOOKUP_KEYS;
+
+        let texts = |values: &[&str]| Domain::values(values.iter().map(|v| ReString::from(*v)));
+        let mut domains = StateDomains {
+            scope: Domain::values([None, Some(ReString::from("tenant"))]),
+            service_name: texts(&["Counter"]),
+            service_key: texts(&["a", "b"]),
+            key: Domain::values([Some(ReString::from("count"))]),
+            ..Default::default()
+        };
+        let scoped = ScopedStateBinding::lookup_ids(&domains)
+            .into_values()
+            .unwrap();
+        assert_eq!(scoped.len(), 4);
+        let legacy = StateBinding::lookup_ids(&domains).into_values().unwrap();
+        assert_eq!(legacy.len(), 2);
+        assert!(legacy.iter().all(|(scope, ..)| scope.is_none()));
+        // A NULL state key names no bytes: the alternative is read instead.
+        domains.key = Domain::values([None, Some(ReString::from("count"))]);
+        assert!(ScopedStateBinding::lookup_ids(&domains).is_all());
+        // 100 × 100 is the cap; one more service key makes the alternative read.
+        let many = |n| Domain::values((0..n).map(|i| ReString::from(format!("k{i}"))));
+        domains.scope = Domain::values([None]);
+        domains.service_key = many(100);
+        domains.key = Domain::values((0..100).map(|i| Some(ReString::from(format!("s{i}")))));
+        let ids = ScopedStateBinding::lookup_ids(&domains)
+            .into_values()
+            .unwrap();
+        assert_eq!(ids.len(), MAX_LOOKUP_KEYS);
+        domains.service_key = many(101);
+        assert!(ScopedStateBinding::lookup_ids(&domains).is_all());
+
+        // Round trips: each key is accepted with the partition key it's stored under.
+        let id = |scope: Option<&str>, key: &str| {
+            (
+                scope.map(ReString::from),
+                ReString::from("Counter"),
+                ReString::from("alice"),
+                ReString::from(key),
+            )
+        };
+        fn encode(key: &impl EncodeTableKey) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            key.serialize_to(&mut bytes);
+            bytes
+        }
+        let unscoped = StateTable::key(&id(None, "count")).unwrap();
+        let unscoped_bytes = encode(&unscoped);
+        assert_eq!(
+            StateTable::check_key(&unscoped_bytes).unwrap(),
+            unscoped.partition_key
+        );
+        assert!(StateTable::key(&id(Some("tenant"), "count")).is_none());
+        let scoped = ScopedStateTable::key(&id(Some("tenant"), "count")).unwrap();
+        let scoped_bytes = encode(&scoped);
+        assert_eq!(
+            ScopedStateTable::check_key(&scoped_bytes).unwrap(),
+            scoped.partition_key
+        );
+        let null_scope = ScopedStateTable::key(&id(None, "")).unwrap();
+        assert_eq!(
+            ScopedStateTable::check_key(&encode(&null_scope)).unwrap(),
+            null_scope.partition_key
+        );
+        assert!(ScopedStateTable::key(&id(Some("bad scope"), "count")).is_none());
+
+        // Malformed keys are errors, never panics.
+        let mut moved = scoped_bytes.clone();
+        moved[9] ^= 1;
+        let raw = StateKey {
+            state_key: Bytes::from_static(&[0xff]),
+            ..unscoped
+        };
+        let mut trailing = unscoped_bytes.clone();
+        trailing.push(0);
+        for (case, bytes) in [
+            ("another key kind", scoped_bytes.clone()),
+            ("short partition key", unscoped_bytes[..9].to_vec()),
+            (
+                "truncated field",
+                unscoped_bytes[..unscoped_bytes.len() - 1].to_vec(),
+            ),
+            ("non-UTF-8 state key", encode(&raw)),
+            ("trailing bytes", trailing),
+        ] {
+            assert!(StateTable::check_key(&bytes).is_err(), "{case}");
+        }
+        for (case, bytes) in [
+            ("another key kind", unscoped_bytes),
+            ("another partition key", moved),
+            ("truncated scope", scoped_bytes[..13].to_vec()),
+        ] {
+            assert!(ScopedStateTable::check_key(&bytes).is_err(), "{case}");
+        }
     }
 
     /// The UI's object listing: the state of a few objects of one service, named

@@ -45,6 +45,10 @@ struct CaptureSource {
 }
 
 impl ScanPartition for CaptureSource {
+    fn supports_primary_lookup(&self) -> bool {
+        self.inner.supports_primary_lookup()
+    }
+
     fn prepare_read(
         self: Arc<Self>,
         access: crate::access::PrimaryRead,
@@ -170,7 +174,7 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
     let sources = SourceRegistry::local_only(core.metadata);
     sources.register_processor_reads(processors.clone(), crate::mocks::query_io());
     sources.register_declared_scanner::<LegacyStateSource>(Arc::new(CaptureSource {
-        inner: Arc::new(crate::schema_scan::SchemaScanner::<
+        inner: Arc::new(crate::schema_scan::LookupScanner::<
             restate_partition_store::state_table::StateBinding,
         >::new()),
         requirements: restate_worker_api::PartitionCaptureRequirements {
@@ -180,7 +184,7 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
         },
     }));
     sources.register_declared_scanner::<ScopedStateSource>(Arc::new(CaptureSource {
-        inner: Arc::new(crate::schema_scan::SchemaScanner::<
+        inner: Arc::new(crate::schema_scan::LookupScanner::<
             restate_partition_store::state_table::ScopedStateBinding,
         >::new()),
         requirements: restate_worker_api::PartitionCaptureRequirements {

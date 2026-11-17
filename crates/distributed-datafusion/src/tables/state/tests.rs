@@ -104,4 +104,57 @@ async fn object_lists_match_v1_across_layouts() {
          AND scope IS NULL AND value_length <= 2048) {order}"
     );
     assert_eq!(rows(new.as_ref(), &union).await, found);
+
+    // Complete keys are looked up: `keys=` is the number of stored keys each
+    // layout fetches. Anything short of a complete key reads its objects.
+    let many_keys = (0..101)
+        .map(|object| format!("'{object}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let many_states = (0..100)
+        .map(|state| format!("'s{state}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    for (sql, keys, count) in [
+        (
+            format!(
+                "{columns} WHERE service_name = 'Counter' AND service_key IN ('3', '57', '404')                  AND scope IS NULL AND key IN ('count', 'limits') {order}"
+            ),
+            Some(6),
+            4,
+        ),
+        (
+            format!(
+                "{columns} WHERE scope IN ('t1', 't2') AND service_name = 'Counter'                  AND service_key IN ('5', '57') AND key = 'count' {order}"
+            ),
+            Some(4),
+            4,
+        ),
+        (
+            format!(
+                "{columns} WHERE scope IS NULL AND service_name = 'Counter'                  AND service_key = '57' AND (key = 'count' OR key IS NULL) {order}"
+            ),
+            None,
+            2,
+        ),
+        (
+            format!(
+                "{columns} WHERE scope IS NULL AND service_name = 'Counter'                  AND service_key IN ({many_keys}) AND key IN ({many_states}) {order}"
+            ),
+            None,
+            0,
+        ),
+    ] {
+        let actual = rows(new.as_ref(), &sql).await;
+        assert_eq!(actual, rows(old.as_ref(), &sql).await, "{sql}");
+        assert_eq!(actual.len(), count, "{sql}");
+        let plan = rows(new.as_ref(), &format!("EXPLAIN {sql}"))
+            .await
+            .concat()
+            .join("\n");
+        match keys {
+            Some(keys) => assert!(plan.contains(&format!("keys={keys}")), "{sql}\n{plan}"),
+            None => assert!(!plan.contains("MultiGetExec"), "{sql}\n{plan}"),
+        }
+    }
 }
