@@ -17,6 +17,7 @@
 //! they are never planned, executed, or sent to a worker.
 
 use std::collections::HashSet;
+use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -25,14 +26,20 @@ use datafusion::catalog::Session;
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::display::{PlanType, StringifiedPlan};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeVisitor};
-use datafusion::common::{Result, ScalarValue};
+use datafusion::common::{Result, ScalarValue, Statistics};
 use datafusion::execution::context::QueryPlanner;
-use datafusion::execution::{SessionState, SessionStateBuilder};
+use datafusion::execution::{SessionState, SessionStateBuilder, TaskContext};
 use datafusion::logical_expr::{ExplainFormat, Expr, LogicalPlan};
 use datafusion::physical_expr::expressions::{InListExpr, Literal};
 use datafusion::physical_optimizer::{PhysicalOptimizerContext, PhysicalOptimizerRule};
+use datafusion::physical_plan::analyze::AnalyzeExec;
 use datafusion::physical_plan::explain::ExplainExec;
-use datafusion::physical_plan::{ExecutionPlan, PhysicalExpr, displayable};
+use datafusion::physical_plan::metrics::MetricsSet;
+use datafusion::physical_plan::statistics::{ChildStats, StatisticsArgs};
+use datafusion::physical_plan::{
+    ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, PhysicalExpr,
+    PlanProperties, ReplaceChildrenOptions, SendableRecordBatchStream, displayable,
+};
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 
 use restate_platform::sync::Mutex;
@@ -52,6 +59,27 @@ impl QueryPlanner for ExplainPlanner {
         session: &dyn Session,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let planner = DefaultPhysicalPlanner::default();
+        if let LogicalPlan::Analyze(analyze) = plan {
+            let native = planner.create_physical_plan(plan, session).await?;
+            if analyze.verbose || analyze.format != ExplainFormat::Indent {
+                return Ok(native);
+            }
+            let Some(analyze) = native.downcast_ref::<AnalyzeExec>() else {
+                return Ok(native);
+            };
+            // Install presentation only after native planning/optimization. The
+            // native AnalyzeExec still owns execution, cancellation and rendering
+            // of metrics/statistics, including all statement/session filters.
+            let Ok(input) = ExplainDisplay::default().analyze_input(Arc::clone(analyze.input()))
+            else {
+                // A display-only expression copy must not make a valid query fail.
+                return Ok(native);
+            };
+            return native.replace_children(
+                vec![input],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            );
+        }
         let LogicalPlan::Explain(explain) = plan else {
             return planner.create_physical_plan(plan, session).await;
         };
@@ -146,6 +174,97 @@ impl QueryPlanner for ExplainPlanner {
     }
 }
 
+/// A display tree over the original, optimized ANALYZE input. Only `fmt_as`
+/// changes: native AnalyzeExec appends metrics/statistics outside this text.
+/// `execute` enters the original root directly, so these display children never
+/// participate in execution or worker serialization. Downcasts remain native for
+/// diagnostics such as node-warning collection.
+#[derive(Debug)]
+struct AnalyzeDisplay {
+    inner: Arc<dyn ExecutionPlan>,
+    children: Vec<Arc<dyn ExecutionPlan>>,
+    replacements: Vec<(String, String)>,
+}
+
+impl DisplayAs for AnalyzeDisplay {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if t != DisplayFormatType::Default {
+            return self.inner.fmt_as(t, f);
+        }
+        struct Node<'a>(&'a dyn ExecutionPlan);
+        impl fmt::Display for Node<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.fmt_as(DisplayFormatType::Default, f)
+            }
+        }
+        f.write_str(&substitute(
+            &Node(self.inner.as_ref()).to_string(),
+            self.replacements.clone(),
+            &self.inner.schema(),
+        ))
+    }
+}
+
+impl ExecutionPlan for AnalyzeDisplay {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn downcast_delegate(&self) -> Option<&dyn ExecutionPlan> {
+        Some(self.inner.as_ref())
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        self.inner.properties()
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        self.children.iter().collect()
+    }
+
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        self.inner.apply_expressions(f)
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        // Rewrites operate on executable plans, discarding this presentation.
+        Arc::clone(&self.inner).replace_children(
+            children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
+        self.inner.execute(partition, context)
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        self.inner.metrics()
+    }
+
+    fn child_stats_requests(&self, partition: Option<usize>) -> Vec<ChildStats> {
+        self.inner.child_stats_requests(partition)
+    }
+
+    fn statistics_from_inputs(
+        &self,
+        input_stats: &[Arc<Statistics>],
+        args: &StatisticsArgs,
+    ) -> Result<Arc<Statistics>> {
+        self.inner.statistics_from_inputs(input_stats, args)
+    }
+}
+
 /// A query-local, pass-through observer. Keep the original rule's name,
 /// context-aware entry point, schema checks, and error behavior.
 #[derive(Debug)]
@@ -192,6 +311,29 @@ struct ExplainDisplay {
 }
 
 impl ExplainDisplay {
+    fn analyze_input(&mut self, inner: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
+        let replacements = self.physical_replacements(inner.as_ref())?;
+        let children = inner
+            .children()
+            .into_iter()
+            .map(|child| self.analyze_input(Arc::clone(child)))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Arc::new(AnalyzeDisplay {
+            inner,
+            children,
+            replacements,
+        }))
+    }
+
+    fn physical_replacements(&mut self, plan: &dyn ExecutionPlan) -> Result<Vec<(String, String)>> {
+        let mut replacements = Vec::new();
+        plan.apply_expressions(&mut |expr| {
+            self.physical(expr, &mut replacements)?;
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        Ok(replacements)
+    }
+
     fn physical_plan(
         &mut self,
         plan: &dyn ExecutionPlan,
@@ -205,11 +347,7 @@ impl ExplainDisplay {
             .set_show_schema(show_schema)
             .one_line()
             .to_string();
-        let mut replacements = Vec::new();
-        plan.apply_expressions(&mut |expr| {
-            self.physical(expr, &mut replacements)?;
-            Ok(TreeNodeRecursion::Continue)
-        })?;
+        let replacements = self.physical_replacements(plan)?;
         output.push_str(&"  ".repeat(depth));
         output.push_str(&substitute(&text, replacements, &plan.schema()));
         for child in plan.children() {
@@ -245,22 +383,18 @@ impl ExplainDisplay {
         let sample = values
             .iter()
             .take(SAMPLE_VALUES)
-            .map(|value| {
-                let value = value.to_string();
-                let mut chars = value.chars();
-                let mut sample: String = chars.by_ref().take(SAMPLE_CHARS).collect();
-                if chars.next().is_some() {
-                    sample.push('…');
-                }
-                // Quote/escape the sample even though native physical display
-                // leaves strings bare. Commas, quotes, newlines and Unicode are
-                // data, not delimiters for this formatter.
-                format!("{sample:?}")
-            })
+            .map(|value| sample_value(value))
             .collect::<Vec<_>>()
             .join(", ");
+        // A NULL member changes what IN and NOT IN return, so its presence is
+        // shown whether or not it is among the samples.
+        let null = if values.iter().any(|value| value.is_null()) {
+            ", with NULL"
+        } else {
+            ""
+        };
         format!(
-            "<set#{}: {} values, {unique} distinct, sample=[{sample}, …]>",
+            "<set#{}: {} values, {unique} distinct{null}, sample=[{sample}, …]>",
             index + 1,
             values.len()
         )
@@ -324,6 +458,29 @@ impl ExplainDisplay {
         replacements.push((expr.to_string(), display.data.to_string()));
         Ok(())
     }
+}
+
+/// One sample of a literal set, shown by its type: NULL bare, numbers and
+/// Booleans bare, and everything else quoted and escaped, so that the string
+/// `'NULL'` or `'1'` can't be mistaken for NULL or a number. Commas, quotes,
+/// newlines and Unicode in strings are data, not delimiters for this formatter.
+fn sample_value(value: &ScalarValue) -> String {
+    if value.is_null() {
+        return "NULL".to_owned();
+    }
+    let text = match value {
+        ScalarValue::Utf8(Some(text))
+        | ScalarValue::LargeUtf8(Some(text))
+        | ScalarValue::Utf8View(Some(text)) => text.clone(),
+        value => value.to_string(),
+    };
+    let mut chars = text.chars();
+    let mut sample: String = chars.by_ref().take(SAMPLE_CHARS).collect();
+    if chars.next().is_some() {
+        sample.push('…');
+    }
+    let bare = value.data_type().is_numeric() || matches!(value, ScalarValue::Boolean(_));
+    if bare { sample } else { format!("{sample:?}") }
 }
 
 struct LogicalDisplay<'a> {

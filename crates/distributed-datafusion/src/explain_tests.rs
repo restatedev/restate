@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use datafusion::arrow::array::{RecordBatch, StringArray};
+use datafusion::arrow::array::{Int64Array, RecordBatch, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::arrow::util::display::array_value_to_string;
 use datafusion::common::DataFusionError;
@@ -41,6 +41,9 @@ use crate::source_registry::{PartitionLocation, PartitionLocator, SourceRegistry
 use crate::{DataFusionEnv, UserTables};
 
 use super::*;
+
+#[path = "explain_analyze_tests.rs"]
+mod analyze;
 
 fn environment() -> DataFusionEnv {
     DataFusionEnv::new(64 * 1024 * 1024, None, Some(1), &HashMap::new())
@@ -414,6 +417,78 @@ async fn explain_preserves_nested_not_in_escaped_literals_and_small_predicates()
     );
 }
 
+/// Samples show their type: NULL and numbers bare, strings quoted, so the string
+/// `'NULL'` and the number 1 can't be mistaken for each other. A set with a NULL
+/// says so even when the NULL is not among the samples. VERBOSE and execution
+/// stay native.
+#[tokio::test]
+async fn explain_samples_show_types_and_nulls() {
+    let env = environment();
+    let ctx = env.create_session(&SessionOptions::default()).unwrap();
+    ctx.register_batch(
+        "typed",
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("n", DataType::Int64, true),
+                Field::new("s", DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(vec![Some(1), Some(20), None])),
+                Arc::new(StringArray::from(vec![Some("NULL"), Some("1"), None])),
+            ],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let strings = "'NULL', '1', 'a', 'b', 'c', 'd', 'e', 'f', 'g'";
+    for (query, expected) in [
+        (
+            "SELECT n FROM typed WHERE n IN (1, 2, 3, 4, 5, 6, 7, 8, 9)".to_owned(),
+            "9 values, 9 distinct, sample=[1, 2, 3, …]",
+        ),
+        (
+            format!("SELECT s FROM typed WHERE s IN ({strings})"),
+            r#"9 values, 9 distinct, sample=["NULL", "1", "a", …]"#,
+        ),
+        (
+            format!("SELECT s FROM typed WHERE s NOT IN ({strings}, NULL)"),
+            r#"10 values, 10 distinct, with NULL, sample=["NULL", "1", "a", …]"#,
+        ),
+        (
+            format!("SELECT s FROM typed WHERE s IN (NULL, {strings})"),
+            r#"10 values, 10 distinct, with NULL, sample=[NULL, "NULL", "1", …]"#,
+        ),
+    ] {
+        let explain = format!("EXPLAIN {query}");
+        for (kind, plan) in plans(&ctx, &explain, false).await {
+            assert!(plan.contains(expected), "{kind}: {plan}");
+        }
+        let verbose = format!("EXPLAIN VERBOSE {query}");
+        assert_eq!(
+            plans(&ctx, &verbose, false).await,
+            plans(&ctx, &verbose, true).await
+        );
+        let compact = ctx.sql(&query).await.unwrap().collect().await.unwrap();
+        let rows: usize = compact.iter().map(RecordBatch::num_rows).sum();
+        let native_rows: usize = {
+            let state = ctx.state();
+            let logical = state.create_logical_plan(&query).await.unwrap();
+            let logical = state.optimize(&logical).unwrap();
+            let physical = DefaultPhysicalPlanner::default()
+                .create_physical_plan(&logical, &state)
+                .await
+                .unwrap();
+            collect(physical, ctx.task_ctx())
+                .await
+                .unwrap()
+                .iter()
+                .map(RecordBatch::num_rows)
+                .sum()
+        };
+        assert_eq!(rows, native_rows, "{query}");
+    }
+}
+
 #[tokio::test]
 async fn explain_preserves_expression_shaped_aliases_and_schema_names() {
     let ctx = environment()
@@ -440,6 +515,9 @@ async fn explain_preserves_expression_shaped_aliases_and_schema_names() {
         .expr
         .to_string();
     eprintln!("native expression spelling: {spelling}");
+    ctx.sql("SET datafusion.explain.analyze_categories = 'rows'")
+        .await
+        .unwrap();
 
     for show_schema in [false, true] {
         ctx.sql(&format!(
@@ -465,6 +543,17 @@ async fn explain_preserves_expression_shaped_aliases_and_schema_names() {
             assert_eq!(
                 native[0].1.matches(&alias).count(),
                 compact[0].1.matches(&alias).count()
+            );
+            let sql = sql.replacen("EXPLAIN ", "EXPLAIN ANALYZE ", 1);
+            let native = plans(&ctx, &sql, true).await;
+            let compact = plans(&ctx, &sql, false).await;
+            assert_eq!(
+                native, compact,
+                "ANALYZE preserves expression-shaped aliases"
+            );
+            eprintln!(
+                "ANALYZE show_schema={show_schema}, alias={alias:?}\nnative:\n{}\ncompact:\n{}",
+                native[0].1, compact[0].1
             );
         }
     }
