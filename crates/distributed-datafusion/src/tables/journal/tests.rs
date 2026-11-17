@@ -194,6 +194,39 @@ async fn journal_matches_v1_and_id_lookups_skip_other_invocations() {
         [["13"]]
     );
 
+    // Complete entries are looked up: `keys=` is the number of entries each layout
+    // fetches. A range of indexes reads the invocations' journals instead.
+    for (sql, keys, count) in [
+        (
+            format!(
+                "SELECT id, index, entry_type FROM sys_journal \
+                 WHERE id IN ('{legacy}', '{current}') AND index IN (0, 2, 9) ORDER BY id, index"
+            ),
+            Some(6),
+            4,
+        ),
+        (
+            format!(
+                "SELECT index FROM sys_journal WHERE id = '{legacy}' AND index BETWEEN 1 AND 3 \
+                 ORDER BY index"
+            ),
+            None,
+            3,
+        ),
+    ] {
+        let actual = rows(new.as_ref(), &sql).await;
+        assert_eq!(actual, rows(old.as_ref(), &sql).await, "{sql}");
+        assert_eq!(actual.len(), count, "{sql}");
+        let plan = rows(new.as_ref(), &format!("EXPLAIN {sql}"))
+            .await
+            .concat()
+            .join("\n");
+        match keys {
+            Some(keys) => assert!(plan.contains(&format!("keys={keys}")), "{sql}\n{plan}"),
+            None => assert!(!plan.contains("MultiGetExec"), "{sql}\n{plan}"),
+        }
+    }
+
     // Malformed entries of the neighbor in both layouts: ID lookups on its partition
     // key must skip them by key, before decoding, while a full scan still fails.
     let mut tx = store.transaction();

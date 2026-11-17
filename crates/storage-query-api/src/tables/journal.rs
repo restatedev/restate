@@ -14,6 +14,7 @@ use restate_types::identifiers::{InvocationId, PartitionKey};
 use restate_types::time::MillisSinceEpoch;
 use restate_util_string::ReString;
 
+use crate::selection::domain::Domain;
 use crate::{ShardingScheme, define_schema};
 
 define_schema! {
@@ -66,6 +67,22 @@ define_schema! {
             appended_at: Option<MillisSinceEpoch> => TimestampMillisecond,
         }
     }
+}
+
+/// The most journal entries one alternative of a query may name for V2 to look
+/// them up by key instead of reading the invocations' journals. Naming both
+/// columns names their combinations: `id IN (…300…) AND index IN (…50…)` names
+/// 15,000 entries. Above this many, that alternative reads the journals instead,
+/// with the same rows.
+pub const MAX_LOOKUP_ENTRIES: usize = 10_000;
+
+/// The journal entries one alternative of a query names: every combination of
+/// its invocation IDs and indexes, up to [`MAX_LOOKUP_ENTRIES`] of them.
+/// Otherwise it names every entry, so the alternative is read instead.
+pub fn named_journal_entries(domains: &JournalDomains) -> Domain<(InvocationId, u32)> {
+    domains
+        .id
+        .bounded_product(&domains.index, MAX_LOOKUP_ENTRIES)
 }
 
 /// One stored entry, written through the projected row writer. Readers own entry
