@@ -27,6 +27,8 @@ mod writer;
 
 pub use self::builder::RocksDbLogStoreBuilder;
 pub use self::store::RocksDbLogStore;
+pub use self::writer::RocksDbLogWriterOwner;
+pub(crate) use self::writer::WriterExit;
 pub(crate) use error::*;
 
 pub const DATA_CF: &str = "data";

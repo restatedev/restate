@@ -14,7 +14,6 @@ use std::sync::Arc;
 use rocksdb::{BlockBasedOptions, Cache, SliceTransform, SstPartitionerFactory};
 use tracing::{info, warn};
 
-use restate_core::ShutdownError;
 use restate_platform::prelude::ToReString;
 use restate_rocksdb::configuration::create_empty_db_options;
 use restate_rocksdb::{
@@ -84,17 +83,22 @@ impl RocksDbLogStoreBuilder {
     pub async fn start(
         self,
         health_status: HealthStatus<LogServerStatus>,
-    ) -> Result<RocksDbLogStore, ShutdownError> {
+    ) -> std::io::Result<(RocksDbLogStore, super::RocksDbLogWriterOwner)> {
         let RocksDbLogStoreBuilder { rocksdb } = self;
         let store_state = LogStoreState::new(health_status);
-        let writer_handle =
-            LogStoreWriterBuilder::new(rocksdb.clone(), store_state.clone()).start()?;
+        let (writer_handle, writer_owner) =
+            LogStoreWriterBuilder::new(rocksdb.clone(), store_state.clone())
+                .start()
+                .await?;
 
-        Ok(RocksDbLogStore {
-            rocksdb,
-            store_state,
-            writer_handle,
-        })
+        Ok((
+            RocksDbLogStore {
+                rocksdb,
+                store_state,
+                writer_handle,
+            },
+            writer_owner,
+        ))
     }
 }
 

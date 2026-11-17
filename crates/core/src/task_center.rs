@@ -1158,8 +1158,6 @@ impl TaskCenterInner {
 
         // Stop log-server role
         self.cancel_tasks(Some(TaskKind::LogServerRole), None).await;
-        self.cancel_tasks(Some(TaskKind::LogStoreWriter), None)
-            .await;
 
         // stop metadata server
         self.cancel_tasks(Some(TaskKind::MetadataServer), None)
