@@ -10,13 +10,14 @@
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use http::HeaderName;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tokio::sync::Semaphore;
 
-use restate_util_time::NonZeroFriendlyDuration;
+use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 
 use super::{CommonOptions, ListenerOptions, QueryEngineOptions};
 use crate::net::address::{AdminPort, AdvertisedAddress, BindAddress};
@@ -65,6 +66,30 @@ pub struct AdminOptions {
     /// Controls the interval at which cluster controller polls nodes of the cluster.
     pub heartbeat_interval: NonZeroFriendlyDuration,
 
+    /// # Partition leader stall threshold
+    ///
+    /// The cluster controller considers a node stalled if at least one of its partition
+    /// processors stops reporting progress for longer than this threshold, while none of its
+    /// partition processors applies any records. See `partition-leader-stall-failover` for how
+    /// the cluster controller reacts to a stalled node.
+    ///
+    /// `0` disables stall detection.
+    ///
+    /// Since v1.8.2
+    partition_leader_stall_threshold: FriendlyDuration,
+
+    /// # Partition leader stall failover
+    ///
+    /// If enabled, the cluster controller moves partition leaders away from a stalled node. It
+    /// only does so if no other node stalled recently, and only to replicas that are caught up
+    /// with the stalled leader. The node can lead partitions again once it has been free of
+    /// stalls for ten times the stall threshold.
+    ///
+    /// If disabled, the cluster controller only reports which leaders it would have moved.
+    ///
+    /// Since v1.8.2
+    pub partition_leader_stall_failover: bool,
+
     /// Disable serving the Restate Web UI on the admin port. Default is `false`.
     pub disable_web_ui: bool,
 
@@ -105,6 +130,11 @@ impl AdminOptions {
         )
     }
 
+    /// Returns `None` if stall detection is disabled.
+    pub fn partition_leader_stall_threshold(&self) -> Option<Duration> {
+        self.partition_leader_stall_threshold.to_non_zero_std()
+    }
+
     pub fn is_cluster_controller_enabled(&self) -> bool {
         #[cfg(not(any(test, feature = "test-util")))]
         return true;
@@ -129,6 +159,8 @@ impl Default for AdminOptions {
             concurrent_api_requests_limit: None,
             query_engine: Default::default(),
             heartbeat_interval: NonZeroFriendlyDuration::from_millis_unchecked(1500),
+            partition_leader_stall_threshold: FriendlyDuration::from_secs(60),
+            partition_leader_stall_failover: false,
             #[cfg(any(test, feature = "test-util"))]
             disable_cluster_controller: false,
             disable_web_ui: false,

@@ -8,13 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::cmp::Ordering;
+use std::cmp::{Ordering, Reverse};
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
 use std::fmt;
 
 use ahash::HashMap;
 use futures::StreamExt;
+use metrics::counter;
 use tracing::{debug, info, trace};
 
 use restate_core::network::{NetworkSender as _, Networking, Swimlane, TransportConnect};
@@ -24,6 +25,7 @@ use restate_metadata_store::{
 };
 use restate_types::cluster::cluster_state::LegacyClusterState;
 use restate_types::cluster_state::ClusterState;
+use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
@@ -45,6 +47,9 @@ use restate_types::replication::balanced_spread_selector::{
 use restate_types::replication::{NodeSet, ReplicationProperty};
 use restate_types::{NodeId, PlainNodeId, Version, Versioned};
 
+use super::stall_tracker::StallTracker;
+use crate::metric_definitions::PARTITION_LEADER_STALL_FAILOVERS;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("failed writing to metadata store: {0}")]
@@ -62,6 +67,8 @@ pub enum Error {
 #[derive(Debug, Clone)]
 struct PartitionState {
     target_leader: Option<PlainNodeId>,
+    /// Set once it was reported that the leader would fail over if stall failover was enabled.
+    stall_reported: bool,
     /// Policy controlling leader election for this partition.
     leadership_policy: LeadershipPolicy,
     /// Policy controlling automatic placement for this partition.
@@ -79,6 +86,7 @@ impl PartitionState {
     ) -> Self {
         Self {
             target_leader: None,
+            stall_reported: false,
             leadership_policy,
             placement_policy,
             current,
@@ -218,6 +226,10 @@ pub struct Scheduler<T> {
     partitions: HashMap<PartitionId, PartitionState>,
     replica_set_states: PartitionReplicaSetStates,
     cluster_state: ClusterState,
+    stall_tracker: StallTracker,
+    /// Whether partition leaders fail over from a stalled node. If not, it is only reported
+    /// which leaders would fail over.
+    stall_failover: bool,
 }
 
 /// The scheduler is responsible for assigning partition processors to nodes and to electing
@@ -236,6 +248,8 @@ impl<T: TransportConnect> Scheduler<T> {
             partitions: HashMap::default(),
             replica_set_states,
             cluster_state: TaskCenter::with_current(|h| h.cluster_state().clone()),
+            stall_tracker: StallTracker::default(),
+            stall_failover: false,
         }
     }
 
@@ -305,6 +319,14 @@ impl<T: TransportConnect> Scheduler<T> {
             self.load_all_partition_configuration(partition_table)
                 .await?;
         }
+
+        let stall_threshold = {
+            let config = Configuration::pinned();
+            self.stall_failover = config.admin.partition_leader_stall_failover;
+            config.admin.partition_leader_stall_threshold()
+        };
+        self.stall_tracker
+            .observe(legacy_cluster_state, stall_threshold);
 
         // prioritise leadership changes over partition reconfiguration
         // when a pp leader shuts down, the time until we instruct a new leader is partition unavailability.
@@ -910,11 +932,17 @@ impl<T: TransportConnect> Scheduler<T> {
 
     /// Selects a leader based on the leadership policy, observed cluster state and replica set.
     ///
-    /// Scores each alive replica in a single pass. Higher score wins:
+    /// Scores each alive replica. Higher score wins:
     /// - 3: matches affinity + caught up
     /// - 2: caught up (no affinity match)
     /// - 1: matches affinity + alive (not caught up)
     /// - 0: alive only (baseline)
+    ///
+    /// Ties are broken by the replica set order: the first node with the highest score wins.
+    ///
+    /// A node that the [`StallTracker`] suspended from leadership is only chosen if there is no
+    /// other alive replica. If stall failover is disabled, the suspension has no effect other
+    /// than reporting which leaders would have moved.
     ///
     /// If `freeze` is set, the current target leader is kept unchanged.
     fn select_leader(
@@ -934,25 +962,77 @@ impl<T: TransportConnect> Scheduler<T> {
         }
 
         let affinity = partition.leadership_policy.affinity.as_ref();
+        let replica_set = partition.current.replica_set();
+        let is_alive = |node_id: &PlainNodeId| cluster_state.is_alive(NodeId::from(*node_id));
+        let choose = |avoid: Option<PlainNodeId>| {
+            replica_set
+                .iter()
+                .copied()
+                .filter(is_alive)
+                // min_by_key with Reverse picks the *first* node with the highest score
+                // (max_by_key would pick the last one), so that the replica set order determines
+                // the leader.
+                .min_by_key(|node_id| {
+                    let has_affinity =
+                        affinity.is_some_and(|a| matches_affinity(*node_id, a, nodes_config));
+                    let is_caught_up =
+                        legacy_cluster_state.is_partition_processor_active(partition_id, node_id);
+                    let score = match (has_affinity, is_caught_up) {
+                        (true, true) => 3u8,
+                        (false, true) => 2,
+                        (true, false) => 1,
+                        (false, false) => 0,
+                    };
+                    Reverse((Some(*node_id) != avoid, score))
+                })
+        };
 
-        let best = partition
-            .current
-            .replica_set()
-            .iter()
-            .copied()
-            .filter(|node_id| cluster_state.is_alive(NodeId::from(*node_id)))
-            .max_by_key(|node_id| {
-                let has_affinity =
-                    affinity.is_some_and(|a| matches_affinity(*node_id, a, nodes_config));
-                let is_caught_up =
-                    legacy_cluster_state.is_partition_processor_active(partition_id, node_id);
-                match (has_affinity, is_caught_up) {
-                    (true, true) => 3u8,
-                    (false, true) => 2,
-                    (true, false) => 1,
-                    (false, false) => 0,
+        // A suspended node keeps the leadership it has until another replica showed that it
+        // copes with the partition's workload. From then on, the node doesn't get the
+        // leadership back until its suspension ends.
+        let suspended = self.stall_tracker.suspended_node();
+        let leader_is_suspended = suspended.is_some() && suspended == partition.target_leader;
+        let avoid = suspended.filter(|suspended| {
+            !leader_is_suspended
+                || replica_set.iter().any(|candidate| {
+                    candidate != suspended
+                        && is_alive(candidate)
+                        && legacy_cluster_state
+                            .is_partition_processor_active(partition_id, candidate)
+                        && self
+                            .stall_tracker
+                            .can_take_over(*partition_id, *candidate, *suspended)
+                })
+        });
+        if !leader_is_suspended {
+            partition.stall_reported = false;
+        }
+
+        let mut best = choose(None);
+        if avoid.is_some() {
+            let failover = choose(avoid);
+            if self.stall_failover {
+                best = failover;
+            }
+            if leader_is_suspended
+                && let (Some(stalled), Some(failover)) = (suspended, failover)
+                && failover != stalled
+            {
+                if self.stall_failover {
+                    info!(
+                        "Moving leadership of partition {partition_id} from stalled node {stalled} \
+                        to node {failover}"
+                    );
+                    counter!(PARTITION_LEADER_STALL_FAILOVERS, "outcome" => "moved").increment(1);
+                } else if !std::mem::replace(&mut partition.stall_reported, true) {
+                    info!(
+                        "Leadership of partition {partition_id} would move from stalled node {stalled} \
+                        to node {failover} if stall failover was enabled"
+                    );
+                    counter!(PARTITION_LEADER_STALL_FAILOVERS, "outcome" => "skipped").increment(1);
                 }
-            });
+            }
+        }
 
         if let Some(best) = best
             && partition.target_leader != Some(best)
@@ -1096,6 +1176,7 @@ fn matches_affinity(
 #[cfg(test)]
 mod tests {
     use restate_core::network::FailingConnector;
+    use restate_types::cluster_state::NodeState;
     use restate_types::metadata::Precondition;
     use restate_types::nodes_config::{Role, WorkerConfig};
     use restate_types::partitions::placement_policy::{PlacementFreeze, PlacementPolicy};
@@ -1277,5 +1358,98 @@ mod tests {
         );
         assert!(completed.configuration.next.is_none());
         assert_eq!(completed.configuration.placement_policy, policy);
+    }
+
+    #[restate_core::test]
+    async fn stalled_node_gives_up_leadership_to_caught_up_replicas() {
+        use std::time::{Duration, Instant};
+
+        use restate_core::TestCoreEnvBuilder;
+
+        use super::super::stall_tracker::tests::{THRESHOLD, alive, cluster_state as legacy};
+
+        let builder = TestCoreEnvBuilder::with_incoming_only_connector();
+        let mut scheduler = Scheduler::new(
+            builder.metadata_writer.clone(),
+            builder.networking,
+            PartitionReplicaSetStates::default(),
+        );
+        let partition_id = PartitionId::MIN;
+        let [n1, n2, n3] = [1, 2, 3].map(PlainNodeId::from);
+        scheduler.partitions.insert(
+            partition_id,
+            PartitionState::new(
+                PartitionConfiguration::new(
+                    ReplicationProperty::new_unchecked(3),
+                    [n1, n2, n3].into_iter().collect(),
+                    HashMap::default(),
+                ),
+                None,
+                LeadershipPolicy::default(),
+                PlacementPolicy::default(),
+            ),
+        );
+
+        let cluster_state = ClusterState::default();
+        let mut updater = cluster_state.clone().updater();
+        for node_id in 1..=3 {
+            updater.upsert_node_state(GenerationalNodeId::new(node_id, 1), NodeState::Alive);
+        }
+        let nodes_config = NodesConfiguration::new_for_testing();
+
+        let start = Instant::now();
+        // Observes the `(updated_at, applied_lsn)` that the processors on n1, n2 and n3 report
+        // and returns the selected leader.
+        let select = |scheduler: &mut Scheduler<_>, secs: u64, processors: [(u64, u64); 3]| {
+            let nodes = (1..=3)
+                .zip(processors)
+                .map(|(node_id, (updated_at, lsn))| alive(node_id, &[(0, updated_at, lsn)]))
+                .collect();
+            let legacy = legacy(start + Duration::from_secs(secs), nodes);
+            scheduler.stall_tracker.observe(&legacy, Some(THRESHOLD));
+            scheduler.select_leader(&partition_id, &cluster_state, &legacy, &nodes_config);
+            scheduler.partitions[&partition_id].target_leader
+        };
+
+        // all tied: the first node in the replica set wins
+        assert_eq!(
+            select(&mut scheduler, 0, [(0, 10), (0, 10), (0, 10)]),
+            Some(n1)
+        );
+
+        // n1 stalls, but the other replicas are behind: the workload might be what stalls n1
+        scheduler.stall_failover = true;
+        assert_eq!(
+            select(&mut scheduler, 60, [(0, 10), (60, 5), (60, 5)]),
+            Some(n1)
+        );
+        assert_eq!(scheduler.stall_tracker.suspended_node(), Some(n1));
+
+        // n3 caught up, but stall failover is disabled: the leader stays and the stall is reported
+        scheduler.stall_failover = false;
+        assert_eq!(
+            select(&mut scheduler, 61, [(0, 10), (61, 5), (61, 10)]),
+            Some(n1)
+        );
+        assert!(scheduler.partitions[&partition_id].stall_reported);
+
+        // with stall failover enabled, leadership moves away from n1
+        scheduler.stall_failover = true;
+        assert_eq!(
+            select(&mut scheduler, 62, [(0, 10), (62, 5), (62, 10)]),
+            Some(n2)
+        );
+
+        // n1 doesn't get leadership back when it resumes, even if it is ahead of the others
+        assert_eq!(
+            select(&mut scheduler, 63, [(63, 20), (63, 5), (63, 10)]),
+            Some(n2)
+        );
+        assert!(!scheduler.partitions[&partition_id].stall_reported);
+        // but only once it has been free of stalls for the recovery period
+        assert_eq!(
+            select(&mut scheduler, 662, [(662, 20), (662, 20), (662, 20)]),
+            Some(n1)
+        );
     }
 }

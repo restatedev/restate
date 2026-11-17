@@ -15,6 +15,9 @@ pub(crate) const USAGE_STATE_STORAGE_BYTE_SECONDS: &str =
     "restate.usage.state.storage_byte_seconds.total";
 pub(crate) const USAGE_STATE_SIZE_ACCOUNTING_QUERY_DURATION_SECONDS: &str =
     "restate.usage.state_size_accounting.query_duration_seconds";
+pub(crate) const STALLED_NODES: &str = "restate.cluster_controller.stalled_nodes.total";
+pub(crate) const PARTITION_LEADER_STALL_FAILOVERS: &str =
+    "restate.partition_leader.stall_failovers.total";
 
 pub(crate) fn describe_metrics() {
     describe_gauge!(
@@ -27,6 +30,21 @@ pub(crate) fn describe_metrics() {
         USAGE_STATE_STORAGE_BYTE_SECONDS,
         Unit::Count,
         "Cumulative state storage usage over the process lifetime"
+    );
+
+    describe_counter!(
+        STALLED_NODES,
+        Unit::Count,
+        "Number of times a node stalled. outcome=suspended: it was the only node that stalled \
+        recently and was suspended from partition leadership; outcome=ignored: another node \
+        stalled recently too"
+    );
+
+    describe_counter!(
+        PARTITION_LEADER_STALL_FAILOVERS,
+        Unit::Count,
+        "Number of partition leaders that moved away from a stalled node (outcome=moved), or \
+        that would have moved if stall failover was enabled (outcome=skipped)"
     );
 
     describe_histogram!(
