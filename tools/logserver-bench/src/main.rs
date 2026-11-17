@@ -95,7 +95,7 @@ fn main() -> anyhow::Result<()> {
     restate_types::config::set_current_config(config.clone());
 
     let recorder = PrometheusBuilder::new().install_recorder().unwrap();
-    let (tc, log_store, state_map) = spawn_environment(Configuration::live());
+    let (tc, log_store, mut writer_owner, state_map) = spawn_environment(Configuration::live());
     let task_center = tc.clone();
     let args = cli_args.clone();
 
@@ -115,13 +115,14 @@ fn main() -> anyhow::Result<()> {
         // Run the benchmark as a spawned task so it executes on the tokio runtime
         // worker pool rather than inline in block_on (which runs on the calling
         // thread). This better reflects real-world scheduling behaviour.
+        let bench_log_store = log_store.clone();
         let bench_handle =
             TaskCenter::spawn_unmanaged(TaskKind::Disposable, "benchmark", async move {
                 match args.command {
                     Command::WriteThroughput(ref opts) => {
                         write_throughput::run(
                             opts,
-                            log_store.clone(),
+                            bench_log_store.clone(),
                             &state_map,
                             args.report_interval,
                             args.raw_rocksdb_stats,
@@ -131,7 +132,7 @@ fn main() -> anyhow::Result<()> {
                     Command::MixedWorkload(ref opts) => {
                         mixed_workload::run(
                             opts,
-                            log_store.clone(),
+                            bench_log_store.clone(),
                             &state_map,
                             args.report_interval,
                             args.raw_rocksdb_stats,
@@ -144,6 +145,9 @@ fn main() -> anyhow::Result<()> {
                 }
             })?;
         bench_handle.await??;
+        // Both workloads drain their loglet workers before returning. Drain the
+        // log-store writer before RocksDB's admission gate is sealed on shutdown.
+        writer_owner.shutdown().await?;
 
         // Record tokio runtime metrics
         task_center.submit_metrics();
@@ -173,6 +177,7 @@ fn spawn_environment(
 ) -> (
     task_center::Handle,
     restate_log_server::rocksdb_logstore::RocksDbLogStore,
+    restate_log_server::rocksdb_logstore::RocksDbLogWriterOwner,
     LogletStateMap,
 ) {
     let tc = TaskCenterBuilder::default()
@@ -181,7 +186,7 @@ fn spawn_environment(
         .expect("task_center builds")
         .into_handle();
 
-    let (log_store, state_map) = tc.block_on(async move {
+    let (log_store, writer_owner, state_map) = tc.block_on(async move {
         let metadata_builder = MetadataBuilder::default();
         TaskCenter::try_set_global_metadata(metadata_builder.to_metadata());
 
@@ -190,7 +195,7 @@ fn spawn_environment(
         let builder = RocksDbLogStoreBuilder::create()
             .await
             .expect("Failed to create RocksDB log store");
-        let log_store = builder
+        let (log_store, writer_owner) = builder
             .start(Default::default())
             .await
             .expect("Failed to start RocksDB log store");
@@ -199,8 +204,8 @@ fn spawn_environment(
             .await
             .expect("Failed to load loglet state map");
 
-        (log_store, state_map)
+        (log_store, writer_owner, state_map)
     });
 
-    (tc, log_store, state_map)
+    (tc, log_store, writer_owner, state_map)
 }

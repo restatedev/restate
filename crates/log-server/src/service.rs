@@ -32,7 +32,7 @@ use crate::logstore::LogStore;
 use crate::metadata::{ActiveWorkerMap, LogStoreMarker, LogletStateMap};
 use crate::metric_definitions::describe_metrics;
 use crate::network::RequestPump;
-use crate::rocksdb_logstore::{RocksDbLogStore, RocksDbLogStoreBuilder};
+use crate::rocksdb_logstore::{RocksDbLogStore, RocksDbLogStoreBuilder, RocksDbLogWriterOwner};
 
 pub struct LogServerService {
     health_status: HealthStatus<LogServerStatus>,
@@ -40,6 +40,7 @@ pub struct LogServerService {
     request_processor: RequestPump,
     state_map: LogletStateMap,
     log_store: RocksDbLogStore,
+    writer_owner: RocksDbLogWriterOwner,
     active_worker_map: ActiveWorkerMap,
 }
 
@@ -62,15 +63,22 @@ impl LogServerService {
             .map_err(LogServerBuildError::other)?;
 
         // 2. Fire up the log store.
-        let log_store = log_store_builder
+        let (log_store, mut writer_owner) = log_store_builder
             .start(health_status.clone())
             .await
             .map_err(LogServerBuildError::other)?;
 
         // Might fetch all known loglets from disk
-        let state_map = LogletStateMap::load_all(&log_store)
-            .await
-            .map_err(LogServerBuildError::other)?;
+        let state_map = match LogletStateMap::load_all(&log_store).await {
+            Ok(state_map) => state_map,
+            Err(e) => {
+                writer_owner
+                    .shutdown()
+                    .await
+                    .map_err(LogServerBuildError::other)?;
+                return Err(LogServerBuildError::other(e));
+            }
+        };
 
         // 3. Register the log-server grpc service
         server_builder.register_grpc_service(
@@ -95,6 +103,7 @@ impl LogServerService {
             request_processor,
             state_map,
             log_store,
+            writer_owner,
             active_worker_map,
         })
     }
@@ -116,19 +125,27 @@ impl LogServerService {
             request_processor: request_pump,
             state_map,
             mut log_store,
+            mut writer_owner,
             active_worker_map,
         } = self;
 
         // Run log-store checks and self-provision if needed.
         let storage_state =
-            Self::provision_node(&metadata, &mut log_store, &mut metadata_writer).await?;
+            match Self::provision_node(&metadata, &mut log_store, &mut metadata_writer).await {
+                Ok(state) => state,
+                Err(e) => {
+                    writer_owner.shutdown().await?;
+                    return Err(e);
+                }
+            };
 
-        let _ = TaskCenter::spawn(
+        TaskCenter::spawn(
             TaskKind::LogServerRole,
             "log-server",
             request_pump.run(
                 health_status,
                 log_store,
+                writer_owner,
                 state_map,
                 storage_state,
                 active_worker_map,
