@@ -62,6 +62,49 @@ define_schema! {
     }
 }
 
+/// The most state keys one alternative of a query may name for V2 to look state
+/// up by key instead of reading its objects. Pinning every key column names
+/// their combinations: `service_key IN (…300…) AND key IN (…50…)` names 15,000
+/// keys. Above this many, that alternative reads its objects instead, with the
+/// same rows.
+pub const MAX_LOOKUP_KEYS: usize = 10_000;
+
+/// A state key as a query names it: its scope (NULL when unscoped), service
+/// name, service key and UTF-8 state key.
+pub type StateKeyId = (Option<ReString>, ReString, ReString, ReString);
+
+/// The state keys one alternative of a query names, restricted to `scope`: every
+/// combination of its scopes, service names, service keys and state keys, up to
+/// [`MAX_LOOKUP_KEYS`] of them. Above that, or if some column isn't pinned to
+/// finitely many values, it names every key, so the alternative is read instead.
+/// So is one that allows a NULL state key: such a key isn't UTF-8, and no
+/// literal names its bytes.
+pub fn named_state_keys(
+    scope: Domain<Option<ReString>>,
+    domains: &StateDomains,
+) -> Domain<StateKeyId> {
+    let Some(keys) = domains
+        .key
+        .clone()
+        .into_values()
+        .and_then(|keys| keys.into_iter().collect::<Option<Vec<_>>>())
+    else {
+        return Domain::all();
+    };
+    scope
+        .bounded_product(&domains.service_name, MAX_LOOKUP_KEYS)
+        .bounded_product(&domains.service_key, MAX_LOOKUP_KEYS)
+        .bounded_product(&Domain::values(keys), MAX_LOOKUP_KEYS)
+        .map_values(|(((scope, service_name), service_key), key)| {
+            (
+                scope.clone(),
+                service_name.clone(),
+                service_key.clone(),
+                key.clone(),
+            )
+        })
+}
+
 /// Candidate shard keys for both physical layouts, preserving NULL-scope semantics:
 /// a scoped row hashes its scope, and an unscoped row hashes its service key.
 pub fn partition_keys(

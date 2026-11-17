@@ -21,7 +21,7 @@ use restate_util_string::ReString;
 
 use crate::QuerySource;
 use crate::context::SelectPartitions;
-use crate::schema_scan::SchemaScanner;
+use crate::schema_scan::LookupScanner;
 use crate::sharding::PartitionSource;
 use crate::source_registry::SourceRegistry;
 use crate::table_providers::PartitionedTableProvider;
@@ -52,6 +52,9 @@ impl QuerySource for ScopedStateSource {
 }
 impl PartitionSource for LegacyStateSource {
     const ORDERING: &'static [StateColumn] = &[StateColumn::PartitionKey];
+    /// A finite set of complete state keys is looked up instead of read.
+    const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> =
+        Some(crate::access::select_lookup::<StateBinding>);
 
     fn can_read(filters: &[Arc<dyn PhysicalExpr>]) -> anyhow::Result<bool> {
         Ok(State::analyze(filters, NonZeroUsize::new(16).unwrap())?
@@ -61,6 +64,9 @@ impl PartitionSource for LegacyStateSource {
 }
 impl PartitionSource for ScopedStateSource {
     const ORDERING: &'static [StateColumn] = &[StateColumn::PartitionKey];
+    /// A finite set of complete state keys is looked up instead of read.
+    const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> =
+        Some(crate::access::select_lookup::<ScopedStateBinding>);
 }
 
 impl StateTable {
@@ -75,10 +81,10 @@ impl StateTable {
     }
 
     pub(crate) fn register_scanners(sources: &SourceRegistry) {
-        sources.register_declared_scanner::<LegacyStateSource>(Arc::new(SchemaScanner::<
+        sources.register_declared_scanner::<LegacyStateSource>(Arc::new(LookupScanner::<
             StateBinding,
         >::new()));
-        sources.register_declared_scanner::<ScopedStateSource>(Arc::new(SchemaScanner::<
+        sources.register_declared_scanner::<ScopedStateSource>(Arc::new(LookupScanner::<
             ScopedStateBinding,
         >::new()));
     }
