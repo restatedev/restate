@@ -4,15 +4,19 @@
 
 ### What Changed
 
-The V2 query engine's default `EXPLAIN` output summarizes large literal `IN` and
-`NOT IN` lists in both logical and physical plans. Each summary includes the
-number of values, distinct count, a short sample, and a set identifier shared
-across that explanation. Surrounding conditions remain visible, including
+The V2 query engine's default indented `EXPLAIN` and `EXPLAIN ANALYZE` output
+summarizes large literal `IN` and `NOT IN` lists throughout the plans. Each summary
+includes the number of values, distinct count, whether the list contains NULL, a
+short sample, and a set identifier shared across that explanation. Samples show
+strings quoted and numbers and NULL bare, so the string `'NULL'` is not mistaken
+for NULL. Surrounding conditions remain visible, including
 filters after a long list and predicates in distributed stages.
 
 ### Impact on Users
 
-Use `EXPLAIN VERBOSE` when you need the complete literal values and optimizer
-steps. Small lists retain their existing presentation. Query results and
-execution behavior are unchanged. `EXPLAIN ANALYZE` and alternative EXPLAIN
-formats retain their existing presentation.
+`ANALYZE` executes the query and adds runtime metrics; it does not select the
+literal detail level. Use `EXPLAIN VERBOSE` or `EXPLAIN ANALYZE VERBOSE` for
+DataFusion's native detailed output, including complete literal values.
+Small lists retain their existing presentation. Query results, execution
+behavior, and metric selection are unchanged. Alternative EXPLAIN formats
+retain their existing presentation.
