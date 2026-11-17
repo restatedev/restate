@@ -12,18 +12,19 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::util::display::array_value_to_string;
-use futures::TryStreamExt;
+use futures::{FutureExt, TryStreamExt};
 
 use googletest::matcher::{Matcher, MatcherResult};
 use serde_json::Value;
 
 use restate_clock::MockClock;
+use restate_core::{TaskCenter, TaskCenterFutureExt, TaskKind, cancellation_watcher};
 use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::{PartitionStore, PartitionStoreManager, QueryIoExecutor};
 use restate_rocksdb::RocksDbManager;
@@ -48,6 +49,7 @@ use restate_types::sharding::KeyRange;
 use super::context::DataFusionQueryEngine;
 use crate::catalog::RegisterTable;
 use crate::context::SelectPartitions;
+use crate::distributed::DistributedQueryServer;
 use crate::local_scanners::{
     register_live_scanners, register_metadata_scanners, register_partition_scanners,
 };
@@ -57,6 +59,58 @@ use crate::{DataFusionEnv, UserTables};
 /// A one-thread query IO pool for tests that read partition storage.
 pub(crate) fn query_io() -> QueryIoExecutor {
     QueryIoExecutor::new(NonZeroUsize::MIN)
+}
+
+/// Starts a query server as a node does: a system service that drains and stops
+/// on shutdown.
+///
+/// A mock connector routes the first RPC as soon as it has built a node's router,
+/// so the server's receiver must already be started, which takes a first poll
+/// here. That poll also binds the server's shutdown to the task it runs in. In
+/// the caller's task, that is whichever task connected first, such as a query's
+/// connection pseudo-task, which shutdown never cancels: the server would stop
+/// only once its connector is dropped. So the server polls in a pseudo-task of
+/// its own, which the spawned task cancels on shutdown.
+pub(crate) fn spawn_query_server(name: &'static str, server: DistributedQueryServer) {
+    let shutdown = Arc::new(OnceLock::new());
+    let mut run = Box::pin(
+        {
+            let shutdown = Arc::clone(&shutdown);
+            async move {
+                shutdown.get_or_init(restate_core::cancellation_token);
+                server.run().await
+            }
+        }
+        .in_current_tc_as_task(TaskKind::SystemService, name),
+    );
+    assert!(run.as_mut().now_or_never().is_none());
+    let shutdown = shutdown.get().cloned().expect("the server has started");
+    TaskCenter::spawn(TaskKind::SystemService, name, async move {
+        tokio::select! {
+            result = &mut run => return result,
+            () = cancellation_watcher() => shutdown.cancel(),
+        }
+        run.await
+    })
+    .unwrap();
+}
+
+/// Keeps `network` until the storage teardown checks have run.
+///
+/// A failed distributed query can outlive its test: datafusion-distributed
+/// closes the query's remote tasks from plain Tokio tasks, which hold the query's
+/// session and, through its channel resolver, the network. Holding the network
+/// through teardown makes that worst case deterministic: a fixture whose network
+/// reaches storage fails every test, not one run in many.
+///
+/// ```text
+/// cleanup task ──▶ session ──▶ network ──▶ MockConnector ──╳──▶ sources ──▶ partition DBs
+/// ```
+pub(crate) fn keep_network_past_teardown(network: impl Send + 'static) {
+    // The manager registers its teardown checks on first init. Finalizers run in
+    // registration order, so the network is dropped after those checks.
+    RocksDbManager::init();
+    TaskCenter::register_test_finalizer(Box::pin(async move { drop(network) }));
 }
 
 /// Metadata for query tests. Deployments carry their service names as listed by
