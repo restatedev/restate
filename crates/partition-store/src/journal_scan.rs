@@ -171,12 +171,12 @@ mod tests {
 
     #[test]
     fn invocation_ids_and_indexes_position_journal_reads() {
-        // Four invocations with ten entries each on partition keys 7, 8 and 9, read
+        // Four invocations with ten entries each on partition keys 7 to 29, read
         // by an owner of many partition keys. UUIDs are distinct, as in practice.
         let id = |key: u64, n: u64| {
             InvocationId::from_parts(key, InvocationUuid::from_u128((key * 100 + n).into()))
         };
-        let mut entries: Vec<_> = (7..=9)
+        let mut entries: Vec<_> = (7..=29)
             .flat_map(|key| (1..=4).map(move |n| id(key, n)))
             .flat_map(|id| (0..10).map(move |index| (id, index)))
             .map(|(id, index)| {
@@ -217,18 +217,16 @@ mod tests {
         assert_eq!(rows, [(target, 3), (target, 4)]);
         assert_eq!(visited, 2, "an_index_range_positions_within_an_invocation");
 
-        // Partition keys 7..=9 lie between the requested IDs: each is positioned
-        // past by seeks rather than read.
-        let (first, last) = (id(7, 1), id(9, 4));
+        // The requested IDs are on partition keys 7 and 29: the read lists those
+        // two, so the invocations on the 21 keys between are never visited, and
+        // within each key it seeks past the other invocations.
+        let (first, last) = (id(7, 1), id(29, 4));
         let (rows, visited) = read(Selection::All.and(ids(&[first, last])));
         let expected: Vec<_> = [first, last]
             .into_iter()
             .flat_map(|id| (0..10).map(move |index| (id, index)))
             .collect();
         assert_eq!(rows, expected);
-        assert!(
-            visited <= 24,
-            "id_lists_seek_between_partition_keys: {visited}"
-        );
+        assert_eq!(visited, 23, "id_lists_seek_between_partition_keys");
     }
 }

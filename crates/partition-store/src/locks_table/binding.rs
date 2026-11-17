@@ -34,7 +34,7 @@ use restate_types::{CanonicalLockId, LockName, Scope};
 use restate_util_string::ReString;
 
 use crate::keys::codecs::{LockNameCodec, OptionalScopeCodec};
-use crate::keys::header::{KeySchema, PartitionKeyHeader, partition_key_envelope};
+use crate::keys::header::{KeySchema, PartitionKeyHeader, restrict_partition_keys};
 use crate::keys::selection::codec::prepare_members;
 use crate::keys::selection::{KeySelection, OrderedKeyField, OrderedKeySchema};
 use crate::keys::{DecodeTableKey, EncodeTableKey, FieldCodec, KeyDecode, KeyDecoder, KeyKind};
@@ -208,13 +208,12 @@ impl SchemaBinding for LocksBinding {
                 }
             }
         }
-        // The header accepts one interval; residuals retain gaps, cross-header
-        // candidates of the suffix fields, and unsupported predicates.
-        let request =
-            match partition_key_envelope(&partition_keys(keys, scope, lock_name, acquired_by)) {
-                None => KeySelection::empty(),
-                Some(range) => request.restrict_scope(range),
-            };
+        // Residuals retain gaps of non-finite key sets, cross-header candidates
+        // of the suffix fields, and unsupported predicates.
+        let request = restrict_partition_keys(
+            request,
+            &partition_keys(keys, scope, lock_name, acquired_by),
+        );
         Ok(PreparedRead::new(request, SelectionPrecision::Inexact))
     }
 

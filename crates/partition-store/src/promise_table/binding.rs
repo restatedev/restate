@@ -29,7 +29,7 @@ use restate_storage_query_api::tables::state::partition_keys;
 use restate_storage_query_api::{PreparedRead, RowSink, SchemaBinding, Table};
 
 use crate::keys::codecs::{DelimitedBytesCodec, OptionalScopeCodec};
-use crate::keys::header::{KeySchema, PartitionKeyHeader, PartitionKeyed, partition_key_envelope};
+use crate::keys::header::{KeySchema, PartitionKeyHeader, PartitionKeyed, restrict_partition_keys};
 use crate::keys::selection::codec::prepare_members;
 use crate::keys::selection::{KeySelection, OrderedKeyField, OrderedKeySchema};
 use crate::keys::{DecodeTableKey, EncodeTableKeyPrefix, KeyDecode, KeyDecoder, KeyKind};
@@ -157,12 +157,9 @@ fn prepare<K: PartitionKeyed>(
             }
         }
     }
-    // The header accepts one interval; residuals retain gaps, cross-header
-    // candidates of the suffix fields, and unsupported predicates.
-    let request = match partition_key_envelope(&partition_keys(keys, scope, service_key)) {
-        None => KeySelection::empty(),
-        Some(range) => request.restrict_scope(range),
-    };
+    // Residuals retain gaps of non-finite key sets, cross-header candidates of
+    // the suffix fields, and unsupported predicates.
+    let request = restrict_partition_keys(request, &partition_keys(keys, scope, service_key));
     Ok((request, SelectionPrecision::Inexact))
 }
 
