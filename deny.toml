@@ -12,6 +12,9 @@ ignore = [
     { id = "RUSTSEC-2026-0249", reason = "The smartstring crate is unmaintained; all versions are affected. The GitHub repository was archived by the owner on 2026-05-03." },
     # zstd 0.13 is pulled by arrow-ipc 59 (datafusion 55). Remove once datafusion moves to arrow 60.
     { id = "RUSTSEC-2026-0391", reason = "zstd 0.13 via arrow-ipc 59; the affected `with_context` constructors are not used" },
+    { id = "RUSTSEC-2026-0542", reason = "humantime is unmaintained following chrono; all versions are affected, and migration needs a coordinated dependency update." },
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained; all versions are affected, and migration to jiff or time needs a coordinated dependency update." },
+    { id = "RUSTSEC-2026-0555", reason = "chrono-tz is unmaintained; all versions are affected, and migration needs a coordinated dependency update." },
 ]
 
 
