@@ -20,17 +20,22 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use datafusion::arrow::datatypes::{DataType, Field};
+use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::catalog::Session;
+use datafusion::common::config::ConfigOptions;
 use datafusion::common::display::{PlanType, StringifiedPlan};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeVisitor};
 use datafusion::common::{Result, ScalarValue};
 use datafusion::execution::context::QueryPlanner;
+use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::logical_expr::{ExplainFormat, Expr, LogicalPlan};
 use datafusion::physical_expr::expressions::{InListExpr, Literal};
+use datafusion::physical_optimizer::{PhysicalOptimizerContext, PhysicalOptimizerRule};
 use datafusion::physical_plan::explain::ExplainExec;
 use datafusion::physical_plan::{ExecutionPlan, PhysicalExpr, displayable};
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
+
+use restate_platform::sync::Mutex;
 
 const INLINE_VALUES: usize = 8;
 const SAMPLE_VALUES: usize = 3;
@@ -59,45 +64,123 @@ impl QueryPlanner for ExplainPlanner {
             return planner.create_physical_plan(plan, session).await;
         }
 
+        // Let DataFusion handle EXPLAIN itself, including its distinction between
+        // initial-planning errors, optimizer diagnostics, and propagated errors.
+        // Observe the last rule's result without adding a rule or planning twice.
+        let Some(state) = session.as_any().downcast_ref::<SessionState>() else {
+            return planner.create_physical_plan(plan, session).await;
+        };
+        let mut rules = state.physical_optimizers().to_vec();
+        let Some(last) = rules.last_mut() else {
+            return planner.create_physical_plan(plan, session).await;
+        };
+        let observed = Arc::new(ObservePhysicalPlan {
+            rule: Arc::clone(last),
+            plan: Mutex::new(None),
+        });
+        *last = observed.clone();
+        // Rebuilding must not recreate the shared default catalog. Restore the
+        // original configuration after building so planning sees the same options.
+        let mut observing_state = SessionStateBuilder::new_from_existing(state.clone())
+            .with_session_id(state.session_id().to_owned())
+            .with_config(
+                state
+                    .config()
+                    .clone()
+                    .with_create_default_catalog_and_schema(false),
+            )
+            .with_physical_optimizer_rules(rules)
+            .build();
+        *observing_state.config_mut() = state.config().clone();
+        let native = planner.create_physical_plan(plan, &observing_state).await?;
+        let Some(native_explain) = native.downcast_ref::<ExplainExec>() else {
+            return Ok(native);
+        };
         let config = &session.config_options().explain;
+        if !config.logical_plan_only
+            && !native_explain
+                .stringified_plans()
+                .iter()
+                .any(|plan| plan.plan_type == PlanType::FinalPhysicalPlan)
+        {
+            // Failed planning: retain the entire native diagnostic history.
+            return Ok(native);
+        }
+        let physical = observed.plan.lock().take();
         let mut display = ExplainDisplay::default();
-        let mut plans = Vec::new();
-        if !config.physical_plan_only {
-            let mut visitor = LogicalDisplay {
-                display: &mut display,
-                output: String::new(),
-                depth: 0,
-            };
-            explain.plan.visit_with_subqueries(&mut visitor)?;
-            plans.push(StringifiedPlan::new(
-                PlanType::FinalLogicalPlan,
-                visitor.output,
-            ));
-        }
-        if !config.logical_plan_only {
-            match planner.create_physical_plan(&explain.plan, session).await {
-                Ok(physical) => {
-                    let mut text = String::new();
-                    display.physical_plan(
-                        physical.as_ref(),
-                        explain.show_statistics.unwrap_or(config.show_statistics),
-                        config.show_schema,
-                        0,
-                        &mut text,
-                    )?;
-                    plans.push(StringifiedPlan::new(PlanType::FinalPhysicalPlan, text));
-                }
-                Err(error) => plans.push(StringifiedPlan::new(
-                    PlanType::PhysicalPlanError,
-                    error.strip_backtrace(),
-                )),
-            }
-        }
+        let plans = native_explain
+            .stringified_plans()
+            .iter()
+            .map(|plan| {
+                let text = match (&plan.plan_type, &physical) {
+                    (PlanType::FinalLogicalPlan, _) => {
+                        let mut visitor = LogicalDisplay {
+                            display: &mut display,
+                            output: String::new(),
+                            depth: 0,
+                        };
+                        explain.plan.visit_with_subqueries(&mut visitor)?;
+                        visitor.output
+                    }
+                    (PlanType::FinalPhysicalPlan, Some(physical)) => {
+                        let mut text = String::new();
+                        display.physical_plan(
+                            physical.as_ref(),
+                            explain.show_statistics.unwrap_or(config.show_statistics),
+                            config.show_schema,
+                            0,
+                            &mut text,
+                        )?;
+                        text
+                    }
+                    _ => return Ok(plan.clone()),
+                };
+                Ok(StringifiedPlan::new(plan.plan_type.clone(), text))
+            })
+            .collect::<Result<Vec<_>>>()?;
         Ok(Arc::new(ExplainExec::new(
-            Arc::clone(explain.schema.inner()),
+            native_explain.schema(),
             plans,
-            false,
+            native_explain.verbose(),
         )))
+    }
+}
+
+/// A query-local, pass-through observer. Keep the original rule's name,
+/// context-aware entry point, schema checks, and error behavior.
+#[derive(Debug)]
+struct ObservePhysicalPlan {
+    rule: Arc<dyn PhysicalOptimizerRule + Send + Sync>,
+    plan: Mutex<Option<Arc<dyn ExecutionPlan>>>,
+}
+
+impl PhysicalOptimizerRule for ObservePhysicalPlan {
+    fn optimize(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        config: &ConfigOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let plan = self.rule.optimize(plan, config)?;
+        *self.plan.lock() = Some(Arc::clone(&plan));
+        Ok(plan)
+    }
+
+    fn optimize_with_context(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        context: &dyn PhysicalOptimizerContext,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let plan = self.rule.optimize_with_context(plan, context)?;
+        *self.plan.lock() = Some(Arc::clone(&plan));
+        Ok(plan)
+    }
+
+    fn name(&self) -> &str {
+        self.rule.name()
+    }
+
+    fn schema_check(&self) -> bool {
+        self.rule.schema_check()
     }
 }
 
@@ -128,7 +211,7 @@ impl ExplainDisplay {
             Ok(TreeNodeRecursion::Continue)
         })?;
         output.push_str(&"  ".repeat(depth));
-        output.push_str(&substitute(&text, replacements));
+        output.push_str(&substitute(&text, replacements, &plan.schema()));
         for child in plan.children() {
             self.physical_plan(
                 child.as_ref(),
@@ -262,8 +345,11 @@ impl<'n> TreeNodeVisitor<'n> for LogicalDisplay<'_> {
             self.output.push('\n');
         }
         self.output.push_str(&"  ".repeat(self.depth));
-        self.output
-            .push_str(&substitute(&plan.display().to_string(), replacements));
+        self.output.push_str(&substitute(
+            &plan.display().to_string(),
+            replacements,
+            plan.schema().as_arrow(),
+        ));
         self.depth += 1;
         Ok(TreeNodeRecursion::Continue)
     }
@@ -278,11 +364,27 @@ impl<'n> TreeNodeVisitor<'n> for LogicalDisplay<'_> {
 /// unchanged roots to protect literals containing expression-looking text.
 /// Prefer the longest match and never reprocess inserted samples. If different
 /// roots have identical native text but different summaries (physical strings
-/// are unquoted), retain the native rendering rather than guess.
-fn substitute(text: &str, mut replacements: Vec<(String, String)>) -> String {
+/// are unquoted), retain the native rendering rather than guess. Likewise keep
+/// a node intact when a changed spelling occurs in an output name, or more often
+/// than its expression roots account for: those occurrences can be labels.
+fn substitute(text: &str, mut replacements: Vec<(String, String)>, schema: &Schema) -> String {
     // An empty physical string literal renders as an empty string.
     replacements.retain(|(original, _)| !original.is_empty());
     if replacements.iter().all(|(before, after)| before == after) {
+        return text.to_owned();
+    }
+    if replacements.iter().any(|(before, after)| {
+        before != after
+            && (schema
+                .fields()
+                .iter()
+                .any(|field| field.name().contains(before))
+                || text.matches(before).count()
+                    > replacements
+                        .iter()
+                        .filter(|(root, _)| root == before)
+                        .count())
+    }) {
         return text.to_owned();
     }
     replacements.sort_unstable_by(|a, b| b.0.len().cmp(&a.0.len()).then(a.0.cmp(&b.0)));

@@ -10,11 +10,19 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use datafusion::arrow::array::{RecordBatch, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::arrow::util::display::array_value_to_string;
+use datafusion::common::DataFusionError;
+use datafusion::common::config::ConfigOptions;
+use datafusion::datasource::{TableProvider, TableType};
+use datafusion::execution::SessionStateBuilder;
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::collect;
+use datafusion::physical_plan::empty::EmptyExec;
+use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::prelude::SessionContext;
 use futures::TryStreamExt;
 
@@ -389,8 +397,9 @@ async fn explain_preserves_nested_not_in_escaped_literals_and_small_predicates()
                     "prefix a IN ([1, 2]) suffix".into(),
                 ),
             ],
+            &Schema::empty(),
         ),
-        "<set#1>, prefix a IN ([1, 2]) suffix"
+        "a IN ([1, 2]), prefix a IN ([1, 2]) suffix"
     );
     assert_eq!(
         substitute(
@@ -399,7 +408,194 @@ async fn explain_preserves_nested_not_in_escaped_literals_and_small_predicates()
                 ("same".into(), "<set#1>".into()),
                 ("same".into(), "same".into()),
             ],
+            &Schema::empty(),
         ),
         "same, same"
     );
+}
+
+#[tokio::test]
+async fn explain_preserves_expression_shaped_aliases_and_schema_names() {
+    let ctx = environment()
+        .create_session(&SessionOptions::default())
+        .unwrap();
+    ctx.register_batch(
+        "items",
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Utf8, false)])),
+            vec![Arc::new(StringArray::from(vec!["a"]))],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let expression = "id IN ('a','b','c','d','e','f','g','h','i')";
+    let probe = ctx
+        .sql(&format!("SELECT {expression} AS probe FROM items"))
+        .await
+        .unwrap()
+        .create_physical_plan()
+        .await
+        .unwrap();
+    let spelling = probe.downcast_ref::<ProjectionExec>().unwrap().expr()[0]
+        .expr
+        .to_string();
+    eprintln!("native expression spelling: {spelling}");
+
+    for show_schema in [false, true] {
+        ctx.sql(&format!(
+            "SET datafusion.explain.show_schema = {show_schema}"
+        ))
+        .await
+        .unwrap();
+        for alias in [spelling.clone(), format!("label 雪 {spelling} suffix")] {
+            let sql = format!(
+                "EXPLAIN SELECT {expression} AS \"{}\" FROM items",
+                alias.replace('"', "\"\""),
+            );
+            let native = plans(&ctx, &sql, true).await;
+            let compact = plans(&ctx, &sql, false).await;
+            eprintln!(
+                "show_schema={show_schema}, alias={alias:?}\nnative:\n{}\ncompact:\n{}",
+                native[1].1, compact[1].1
+            );
+            assert_eq!(
+                native[1], compact[1],
+                "ambiguous physical expression/alias spelling must retain native output",
+            );
+            assert_eq!(
+                native[0].1.matches(&alias).count(),
+                compact[0].1.matches(&alias).count()
+            );
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ExplainCountingTable {
+    fail: bool,
+    scans: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl TableProvider for ExplainCountingTable {
+    fn schema(&self) -> Arc<Schema> {
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Utf8, false)]))
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        _: &dyn Session,
+        _: Option<&Vec<usize>>,
+        _: &[Expr],
+        _: Option<usize>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        self.scans.fetch_add(1, Ordering::Relaxed);
+        if self.fail {
+            return Err(DataFusionError::Plan("explain scan failure".into()));
+        }
+        Ok(Arc::new(EmptyExec::new(self.schema())))
+    }
+}
+
+#[derive(Debug)]
+struct ExplainFailingRule {
+    schema_mismatch: bool,
+    calls: Arc<AtomicUsize>,
+}
+
+impl PhysicalOptimizerRule for ExplainFailingRule {
+    fn optimize(
+        &self,
+        _: Arc<dyn ExecutionPlan>,
+        _: &ConfigOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        if self.schema_mismatch {
+            Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))))
+        } else {
+            Err(DataFusionError::Plan("explain optimizer failure".into()))
+        }
+    }
+
+    fn name(&self) -> &str {
+        "explain_failing_rule"
+    }
+
+    fn schema_check(&self) -> bool {
+        true
+    }
+}
+
+#[tokio::test]
+async fn explain_preserves_native_planning_failures_without_replanning() {
+    for (phase, fail_scan, schema_mismatch) in [
+        ("initial plan", true, false),
+        ("optimizer", false, false),
+        ("optimizer schema check", false, true),
+    ] {
+        let scans = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let state =
+            SessionStateBuilder::new_from_existing(environment().build_session_state().unwrap())
+                .with_physical_optimizer_rule(Arc::new(ExplainFailingRule {
+                    schema_mismatch,
+                    calls: Arc::clone(&calls),
+                }))
+                .build();
+        let ctx = SessionContext::new_with_state(state);
+        ctx.register_table(
+            "items",
+            Arc::new(ExplainCountingTable {
+                fail: fail_scan,
+                scans: Arc::clone(&scans),
+            }),
+        )
+        .unwrap();
+        for verbose in ["", "VERBOSE "] {
+            let sql = format!("EXPLAIN {verbose}SELECT id FROM items");
+            let state = ctx.state();
+            let logical = state.create_logical_plan(&sql).await.unwrap();
+            let logical = state.optimize(&logical).unwrap();
+            let native = DefaultPhysicalPlanner::default()
+                .create_physical_plan(&logical, &state)
+                .await
+                .unwrap();
+            let compact = ExplainPlanner
+                .create_physical_plan(&logical, &state)
+                .await
+                .unwrap();
+            let native_explain = native.downcast_ref::<ExplainExec>().unwrap();
+            let compact_explain = compact.downcast_ref::<ExplainExec>().unwrap();
+            assert_eq!(
+                native_explain.stringified_plans(),
+                compact_explain.stringified_plans(),
+                "complete native diagnostic history for {phase}, including hidden plans"
+            );
+            let visible: Vec<_> = native_explain
+                .stringified_plans()
+                .iter()
+                .filter(|plan| plan.should_display(native_explain.verbose()))
+                .map(|plan| plan.plan_type.to_string())
+                .collect();
+            eprintln!(
+                "phase={phase}, verbose={verbose:?}\nnative visible rows: {visible:?}\n\
+                 native terminal diagnostic: {:#?}\ncompact: identical history and rows",
+                native_explain.stringified_plans().last().unwrap(),
+            );
+            assert_eq!(scans.swap(0, Ordering::Relaxed), 2, "one scan per planner");
+            assert_eq!(
+                calls.swap(0, Ordering::Relaxed),
+                if fail_scan { 0 } else { 2 }
+            );
+            assert_eq!(
+                collect(native, ctx.task_ctx()).await.unwrap(),
+                collect(compact, ctx.task_ctx()).await.unwrap(),
+                "native diagnostic rows for {phase}"
+            );
+        }
+    }
 }
