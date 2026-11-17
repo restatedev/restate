@@ -43,6 +43,7 @@ use restate_util_string::ReString;
 
 mod driver;
 pub(crate) mod engine;
+pub(crate) mod jc_orphan_cleanup;
 
 pub use driver::{DriverState, WalkDriver, WalkStatsSnapshot};
 pub(crate) use driver::{PublishedDriverState, WalkStats};
@@ -61,12 +62,17 @@ const FORMAT: u32 = 1;
 pub enum Source {
     /// Entry statuses, in entry-status key order within the partition's key range.
     EntryStatus = 1,
+    JournalCompletionId = 2,
 }
 
 impl Source {
     /// The source stored as `number`, if this binary knows it.
     pub fn from_number(number: u32) -> Option<Self> {
-        (number == Self::EntryStatus as u32).then_some(Self::EntryStatus)
+        match number {
+            1 => Some(Self::EntryStatus),
+            2 => Some(Self::JournalCompletionId),
+            _ => None,
+        }
     }
 }
 
@@ -112,6 +118,13 @@ pub struct WalkKind {
 }
 
 impl WalkKind {
+    pub(crate) fn jc_orphan_cleanup() -> Self {
+        Self {
+            name: ReString::from_static("jc_orphan_cleanup"),
+            version: 1,
+        }
+    }
+
     /// Backfills incomplete secondary and aggregate indexes; its members are the
     /// indexes that link to the walk (see [`crate::registry`]). It records every
     /// entry it fills with its members' tokens.
@@ -122,9 +135,9 @@ impl WalkKind {
         }
     }
 
-    /// The policy this binary's walks of this kind carry. An index backfill is
-    /// discardable: tokens are the only proof of coverage, so restarting its
-    /// members from the start loses nothing.
+    /// Both current kinds are discardable. Index tokens retain coverage; orphan
+    /// cleanup deletes only unused data and can safely restart from the beginning.
+    /// A future layout conversion must choose Refuse and raise the version floor.
     fn on_unknown(&self) -> OnUnknown {
         OnUnknown::Discard
     }
@@ -185,7 +198,16 @@ impl Walk {
 
     /// Whether this binary knows the walk's kind and source, so it can run it.
     pub fn is_supported(&self) -> bool {
+        self.is_index_backfill() || self.is_jc_orphan_cleanup()
+    }
+
+    pub(crate) fn is_index_backfill(&self) -> bool {
         self.kind == WalkKind::index_backfill() && self.source() == Some(Source::EntryStatus)
+    }
+
+    pub(crate) fn is_jc_orphan_cleanup(&self) -> bool {
+        self.kind == WalkKind::jc_orphan_cleanup()
+            && self.source() == Some(Source::JournalCompletionId)
     }
 
     /// The evidence of member `index`, if it differs from the default.
@@ -282,7 +304,10 @@ impl Walks {
                 continue;
             }
             if !walk.params.is_empty() {
-                return invalid("an index backfill has parameters");
+                return invalid("this walk kind has no parameters");
+            }
+            if !walk.is_index_backfill() && !walk.members.is_empty() {
+                return invalid("a standalone migration has no index members");
             }
             if walk
                 .cursor

@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Migration-job records: what each job building an index did, kept on the
+//! Migration-job records: what each background maintenance job did, kept on the
 //! replica for operators.
 //!
 //! A **migration job** is background work that builds derived data, such as an
@@ -20,8 +20,9 @@
 //! finished, the rows and time its slices took, and its failures. It also says
 //! when a waiting job may start its next pass, and keeps the counts its schedule
 //! compares. Nothing in it decides readiness or coverage, so it can be rebuilt
-//! from the registry: a missing or partly unknown record is reported as such,
+//! from the registry (or a cleanup's walk): a missing or partly unknown record is reported as such,
 //! never repaired by guessing, and a rebuilt waiting job is eligible at once.
+//! One-time cleanup completion is stored separately from this bounded history.
 //!
 //! Two records hold the jobs of a partition store, each an FSM variable:
 //! - **unfinished jobs** ([`MigrationJobs`] under `MIGRATION_JOBS`), rewritten by
@@ -82,6 +83,9 @@ pub(crate) const RECHECK_CAP_MS: u64 = 24 * 60 * 60 * 1000;
 pub struct MigrationJobId(NonZeroU32);
 
 impl MigrationJobId {
+    /// Reserved one-time cleanup job. Index build IDs start at 64.
+    pub(crate) const JC_ORPHAN_CLEANUP: Self = Self(NonZeroU32::new(8).unwrap());
+
     /// The build job of index `index_id`.
     ///
     /// # Panics
@@ -118,6 +122,9 @@ pub enum MigrationJobKind {
     /// Builds an index; the job has the index's ID.
     #[bilrost(1)]
     IndexBackfill,
+    /// Deletes obsolete data without building an index.
+    #[bilrost(2)]
+    Cleanup,
 }
 
 /// Where a migration job is in its life.
@@ -164,7 +171,7 @@ pub struct MigrationJob {
     id: u32,
     #[bilrost(2)]
     pub kind: MigrationJobKind,
-    /// The index definition it builds.
+    /// The versioned definition it runs.
     #[bilrost(3)]
     pub name: ReString,
     #[bilrost(4)]
@@ -189,7 +196,7 @@ pub struct MigrationJob {
     /// Source rows committed slices examined.
     #[bilrost(11)]
     pub rows_examined: u64,
-    /// Rows its slices filled, as opposed to rows that already listed its token.
+    /// Rows its slices filled, or deleted for a cleanup.
     #[bilrost(12)]
     pub rows_filled: u64,
     /// Committed slices.
@@ -238,6 +245,17 @@ pub struct MigrationJob {
 }
 
 impl MigrationJob {
+    pub(crate) fn jc_orphan_cleanup(walk: Option<u64>, stamp: Option<&Stamp>) -> Self {
+        Self::new(
+            MigrationJobId::JC_ORPHAN_CLEANUP,
+            MigrationJobKind::Cleanup,
+            ReString::from_static("jc_orphan_cleanup/1"),
+            walk,
+            stamp.map(|stamp| stamp.at),
+            stamp.map(|stamp| stamp.by.clone()),
+        )
+    }
+
     /// The `Pending` build job of index `index_id`, created at `at` by `by`.
     pub(crate) fn index_backfill(
         index_id: u32,
@@ -246,9 +264,27 @@ impl MigrationJob {
         at: Option<u64>,
         by: Option<ReString>,
     ) -> Self {
+        Self::new(
+            MigrationJobId::for_index(index_id),
+            MigrationJobKind::IndexBackfill,
+            name,
+            walk,
+            at,
+            by,
+        )
+    }
+
+    fn new(
+        id: MigrationJobId,
+        kind: MigrationJobKind,
+        name: ReString,
+        walk: Option<u64>,
+        at: Option<u64>,
+        by: Option<ReString>,
+    ) -> Self {
         Self {
-            id: MigrationJobId::for_index(index_id).as_u32(),
-            kind: MigrationJobKind::IndexBackfill,
+            id: id.as_u32(),
+            kind,
             name,
             status: MigrationJobStatus::Pending,
             walk,

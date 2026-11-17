@@ -118,6 +118,7 @@ pub struct PhysicalPartition {
     /// partition was opened. Shared by every session and clone, so no handle keeps
     /// a stale set.
     maintained_indexes: parking_lot::RwLock<Option<Arc<crate::registry::MaintainedIndexes>>>,
+    storage_features: crate::features::PublishedStorageFeatures,
     /// What the background walk drivers did, across sessions.
     walk_stats: crate::walk::WalkStats,
     /// Why the running walk driver's walks aren't progressing, if one runs.
@@ -169,6 +170,7 @@ impl PartitionDb {
                 archived_lsn,
                 notifications: database.notifications,
                 maintained_indexes: Default::default(),
+                storage_features: Default::default(),
                 walk_stats: Default::default(),
                 driver_state: Default::default(),
                 faults,
@@ -199,6 +201,21 @@ impl PartitionDb {
     /// The installed maintained indexes; see [`Self::install_maintained_indexes`].
     pub(crate) fn maintained_indexes(&self) -> Option<Arc<crate::registry::MaintainedIndexes>> {
         self.physical().maintained_indexes.read().clone()
+    }
+
+    pub(crate) fn storage_features(&self) -> Option<crate::features::StorageFeatures> {
+        self.physical().storage_features.get()
+    }
+
+    pub(crate) fn storage_features_or_init(
+        &self,
+        init: impl FnOnce() -> crate::features::StorageFeatures,
+    ) -> crate::features::StorageFeatures {
+        self.physical().storage_features.get_or_init(init)
+    }
+
+    pub(crate) fn set_storage_features(&self, features: crate::features::StorageFeatures) {
+        self.physical().storage_features.set(features);
     }
 
     /// Installs the maintained indexes for every session and handle of this partition.

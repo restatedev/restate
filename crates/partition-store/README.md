@@ -19,10 +19,9 @@ statistic, a data migration or a backfill here or in the worker.
 ## The concepts, in the order you need them
 
 **Source tables.** Derived data is computed from a *source table*: one of the
-store's tables whose rows are read by the mechanisms below. Today the only
-source is the virtual queues' `entry_status` table: the walk records name it,
-and the definitions apply to its rows. Supporting other source tables is the
-design direction; this document uses `entry_status` as its running example.
+store's tables whose rows are read by the mechanisms below. Index backfills use
+the virtual queues' `entry_status` table; orphan cleanup uses the journal
+completion-ID index. This document uses `entry_status` as its running example.
 Its rows describe each queued unit of work (an *entry*, for example an
 invocation): its stage (inbox, running, suspended, finished, …), its status, its
 timing statistics, and more. Where this document says "entry", read "a row of
@@ -86,13 +85,80 @@ replicas of one partition can be at different points, which is normal.
 **Definition families.** Definitions released together are grouped in a
 *family*, switched on by the same configuration options.
 
-**Migration job.** The general unit of maintenance work, today building an
-index. Each index has a build job with the same ID, recorded next to the
+**Migration job.** The general unit of maintenance work: building an index or
+cleaning up obsolete data. Each index has a build job with the same ID, recorded next to the
 registry (`src/job.rs`): its status, when it started and finished, and what
 its slices did, and when a waiting job may start its next pass. The registry
 decides whether an index is Ready, and the walk holds where its work resumes and
 the evidence for completing it; a job record can be rebuilt from the registry.
 Finished jobs are kept up to `worker.storage.migration-job-history-limit`.
+
+### Reference online migration: orphaned journal completion IDs
+
+`src/walk/jc_orphan_cleanup.rs` is the worked example of a non-index job.
+`jc_orphan_cleanup/1` removes completion-ID index (`jc`) rows left behind by an
+old journal deletion bug. It does not create an index-registry entry.
+
+**Authority and lifecycle.** The `jc-orphan-cleanup-v1` storage feature means the
+cleanup has completed; a supported cleanup walk means a sweep is in
+progress. Opening the store resumes that walk, reconstructing missing diagnostic
+job records without inventing counters or timestamps. Otherwise, if the marker
+is absent and the source is nonempty, open registers a walk with its captured
+last key. Empty sources need no job and cost only a last-key seek on reopening.
+Job ID 8 is reserved for this one-time migration; index jobs start at 64. Never
+reuse this identity for another definition or use history as a completion marker.
+The historical `JC_ORPHAN_CLEANUP_DONE` marker is also honored, but new jobs
+record completion only in the storage-feature ledger. This feature is completion
+evidence, not a foreground routing switch. Completion publishes the committed
+feature bits to all store handles and the processor's status; diagnostic records
+are reconciled against completion evidence even if an unfinished record survived.
+
+**Deletion proof.** The job checks the invocation's `j2[0]` ownership sentinel
+through the current processor transaction. It deletes a `jc` row only if that
+sentinel is absent. No ownership decision is retained across slices. A slice
+can end inside an invocation, so a large journal cannot defeat the entry budget.
+Ownership lookups bypass the block cache and charge their key/value bytes to
+the slice's read budget. Lookup sizes are known after reading: an oversized
+candidate yields to the next slice, whose first row always makes progress.
+Foreground journal creation establishes entry zero, writes journal entries and
+their indexes transactionally, and journal deletion removes both. Consequently
+foreground operations cannot introduce orphans behind the cursor or beyond the
+captured endpoint. A full pass is sufficient; the cursor alone is not proof.
+
+**Atomicity and recovery.** The shared walk engine owns traversal, read/write
+budgets, savepoints, cursor advancement, accounting, commit and publication.
+The definition owns decoding, the deletion predicate and the completion marker.
+A failed staging attempt clears all its writes, including earlier deletions in
+the slice. An uncertain commit stops the processor and requires reopening.
+The final slice commits its completion marker, job history and walk removal
+together. If adding completion metadata would exceed a data slice's write budget,
+that slice commits its deletions and cursor first, and an empty slice finishes
+the job. The ledger is read and encoded only when finishing, not for every slice.
+Trimming history cannot restart the cleanup.
+
+**Compatibility.** This walk uses `OnUnknown::Discard`: an older binary may
+discard it, because orphan deletion leaves the live data format unchanged and a
+later sweep can safely restart. The existing registry fence protects the walk
+records from binaries predating that infrastructure. Do not copy this policy
+for a layout conversion: choose `Refuse` and fence the required version before
+changing how foreground operations interpret data.
+
+**Operations.** The normal background-migration controls govern this job too.
+It appears in `restate.cluster.migration_jobs` as kind `cleanup`, mode `active`;
+`rows_examined` counts visited index keys and `rows_filled` counts deletions.
+Progress and ETA are approximate partition-key-range estimates, not row counts.
+
+When adding the next online migration:
+
+1. Specify the authoritative records and reserve a collision-free job identity.
+2. Write the safety argument for interleaved foreground writes, including keys
+   behind the cursor and beyond the captured endpoint.
+3. Define a versioned walk kind/source and validate their persisted positions.
+4. Stage each mutation and its predicate in the processor's transaction.
+5. Persist completion with the last slice, independently of job diagnostics.
+6. Choose the unknown-kind policy deliberately; preserve existing wire tags.
+7. Test restart, missing diagnostics, split slices, foreground mutations and
+   failure rollback. The tests beside this cleanup demonstrate these cases.
 
 ## The rules
 

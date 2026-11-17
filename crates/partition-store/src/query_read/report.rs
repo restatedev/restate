@@ -74,8 +74,8 @@ impl ReplicaMigrations {
     /// How far `walk` is through this replica's key range, in percent: the
     /// position of its cursor's partition key. Approximate, because entries spread
     /// over the range by hashing, and never evidence of completion. `None` for a
-    /// walk whose source isn't entry statuses, including a source this binary
-    /// doesn't know, before the first slice, or when the range holds a single key.
+    /// walk whose source this binary doesn't know, before the first slice, or
+    /// when the range holds a single key.
     pub fn progress_percent(&self, walk: &Walk) -> Option<u32> {
         let (done, span) = self.position(walk)?;
         u32::try_from(done * 100 / span).ok()
@@ -127,7 +127,7 @@ impl ReplicaMigrations {
             return Some("background-migrations-disabled");
         }
         let id = job.id().as_u32();
-        let walk = self.registry.get(id).and_then(|index| index.walk);
+        let walk = job.walk;
         let may_start = job.status == Waiting
             && driver
                 .eligible_at
@@ -159,14 +159,23 @@ impl ReplicaMigrations {
     /// How many partition keys of this replica's range `walk`'s cursor is past, and
     /// how many the range spans.
     fn position(&self, walk: &Walk) -> Option<(u128, u128)> {
-        if walk.source() != Some(Source::EntryStatus) {
-            return None;
-        }
         let mut cursor = walk.cursor.as_deref()?;
-        let key = EntryStatusKey::deserialize_from(&mut cursor).ok()?;
+        let partition_key = match walk.source()? {
+            Source::EntryStatus => EntryStatusKey::deserialize_from(&mut cursor)
+                .ok()?
+                .id
+                .partition_key(),
+            Source::JournalCompletionId => {
+                crate::journal_table_v2::JournalCompletionIdToCommandIndexKey::deserialize_from(
+                    &mut cursor,
+                )
+                .ok()?
+                .partition_key
+            }
+        };
         let (start, end) = (self.key_range.start(), self.key_range.end());
         let span = u128::from(end.checked_sub(start).filter(|span| *span > 0)?);
-        let done = u128::from(key.id.partition_key().checked_sub(start)?);
+        let done = u128::from(partition_key.checked_sub(start)?);
         Some((done.min(span), span))
     }
 }

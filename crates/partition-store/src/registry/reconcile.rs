@@ -68,7 +68,6 @@
 //! require are validated before any of this, and before any cleanup or
 //! storage-feature migration of the same open (`validate_registry`).
 
-use std::ops::RangeBounds;
 use std::sync::Arc;
 
 use rocksdb::WriteBatch;
@@ -80,7 +79,6 @@ use restate_rocksdb::{IoMode, Priority};
 use restate_storage_api::StorageError;
 use restate_types::SemanticRestateVersion;
 use restate_types::config::Configuration;
-use restate_types::vqueues::EntryKind;
 use restate_util_string::ReString;
 
 use crate::faults::{self, FaultPoint};
@@ -94,8 +92,11 @@ use crate::job::{
     DEFAULT_HISTORY_LIMIT, MigrationJob, MigrationJobId, MigrationJobRecords, MigrationJobStatus,
     MigrationJobs, Stamp,
 };
-use crate::keys::{DecodeTableKey, IndexKeyPrefix};
+#[cfg(test)]
+use crate::keys::DecodeTableKey;
+use crate::keys::IndexKeyPrefix;
 use crate::stats::AggregateKeyPrefix;
+#[cfg(test)]
 use crate::vqueue_table::EntryStatusKey;
 use crate::walk::Walks;
 use crate::{MigrationError, PartitionDb, PartitionStore};
@@ -199,6 +200,17 @@ impl PartitionStore {
         // A walk this binary doesn't know keeps its positions opaque; the open
         // discards it.
         for walk in walks.entries().iter().filter(|walk| walk.is_supported()) {
+            if !walk.is_index_backfill() {
+                for key in std::iter::once(&walk.end).chain(walk.cursor.as_ref()) {
+                    crate::walk::engine::validate_cursor(
+                        db,
+                        walk.source().expect("supported source"),
+                        key,
+                    )
+                    .map_err(|err| barrier(format!("position of walk {}", walk.id), err))?;
+                }
+                continue;
+            }
             for member in &walk.members {
                 if registry
                     .as_ref()
@@ -219,8 +231,12 @@ impl PartitionStore {
                 .chain(walk.cursor.as_ref())
                 .chain(joins)
             {
-                validate_cursor(db, key)
-                    .map_err(|err| barrier(format!("position of walk {}", walk.id), err))?;
+                crate::walk::engine::validate_cursor(
+                    db,
+                    walk.source().expect("supported source"),
+                    key,
+                )
+                .map_err(|err| barrier(format!("position of walk {}", walk.id), err))?;
             }
             if registry
                 .as_ref()
@@ -334,6 +350,7 @@ impl PartitionStore {
         let abandoned: Vec<_> = walks
             .entries()
             .iter()
+            .filter(|walk| walk.is_index_backfill())
             .map(|walk| walk.id)
             .filter(|walk| registry.members(*walk).next().is_none())
             .collect();
@@ -367,6 +384,26 @@ impl PartitionStore {
             }
         }
 
+        let cleanup_done = features.enabled().is_jc_orphan_cleanup_v1
+            || crate::fsm_table::is_jc_orphan_cleanup_done(self, db.partition().id())?;
+        let cleanup_completed = crate::walk::jc_orphan_cleanup::reconcile(
+            &db,
+            cleanup_done,
+            &mut walks,
+            &mut jobs,
+            &stamp,
+            limit,
+        )?;
+        let cleanup_feature_changed =
+            cleanup_completed && features.mark_jc_orphan_cleanup_completed(current_version);
+        if cleanup_feature_changed {
+            crate::fsm_table::append_storage_features_to_wb(
+                db.cf_handle(),
+                &mut batch,
+                db.partition().id(),
+                features.ledger(),
+            )?;
+        }
         settle_jobs(&registry, &walks, &mut jobs, limit);
         // Backfilling indexes without a walk start a pass over the entries that
         // exist now if they are eligible: new registrations, jobs that can fill
@@ -410,7 +447,7 @@ impl PartitionStore {
         let walks_changed = walks != persisted_walks;
         // An unreadable list is replaced even when what replaces it is empty.
         let jobs_changed = unreadable_jobs || jobs != persisted_jobs;
-        let fenced = !registry.entries().is_empty()
+        let fenced = (!registry.entries().is_empty() || !walks.entries().is_empty())
             && features.append_registry_fence(
                 current_version,
                 current_min_restate_version,
@@ -418,7 +455,7 @@ impl PartitionStore {
                 &mut batch,
                 db.partition().id(),
             )?;
-        if changed || walks_changed || jobs_changed || fenced {
+        if changed || walks_changed || jobs_changed || fenced || cleanup_feature_changed {
             let partition = db.partition().id();
             append_registry_to_wb(db.cf_handle(), &mut batch, partition, &registry);
             if walks_changed {
@@ -446,7 +483,7 @@ impl PartitionStore {
         // Whatever this or an earlier attempt wrote becomes durable before
         // anything depends on it: registry changes, walks, fence, deletions,
         // effects.
-        if !registry.entries().is_empty() {
+        if !registry.entries().is_empty() || !walks.entries().is_empty() {
             flush(&db).await?;
         }
 
@@ -555,6 +592,8 @@ fn settle_jobs(
         .unfinished
         .entries()
         .iter()
+        // Ownership follows the ID namespace, not possibly stale diagnostics.
+        .filter(|job| job.id().as_u32() >= super::FIRST_INDEX_ID)
         .map(MigrationJob::id)
         .collect();
     for id in unfinished {
@@ -644,24 +683,6 @@ fn append_instance_delete(
         return Err(StorageError::DataIntegrityError);
     }
     batch.delete_range_cf(db.cf_handle(), start, end);
-    Ok(())
-}
-
-/// A resume cursor must be the exact key of a usable entry status of this
-/// partition. The raw key codec also decodes the `Unknown` entry-kind sentinel,
-/// which no stored entry has.
-fn validate_cursor(db: &PartitionDb, cursor: &[u8]) -> Result<(), StorageError> {
-    if cursor.len() != EntryStatusKey::serialized_length_fixed() {
-        return Err(StorageError::DataIntegrityError);
-    }
-    let mut rest = cursor;
-    let key = EntryStatusKey::deserialize_from(&mut rest)?;
-    if !rest.is_empty()
-        || key.id.kind() == EntryKind::Unknown
-        || !db.partition().key_range.contains(&key.id.partition_key())
-    {
-        return Err(StorageError::DataIntegrityError);
-    }
     Ok(())
 }
 

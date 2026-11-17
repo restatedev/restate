@@ -37,7 +37,7 @@ define_table!(
         /// The job's ID; a build job has its index's ID.
         job_id: DataType::UInt32,
 
-        /// What the job does: `index_backfill`.
+        /// What the job does: `index_backfill` or `cleanup`.
         kind: DataType::Utf8,
 
         /// What it builds: for an index backfill, the definition, for example
@@ -102,7 +102,7 @@ define_table!(
         /// Source rows its committed slices examined.
         rows_examined: DataType::UInt64,
 
-        /// Rows its slices filled for this job.
+        /// Rows its slices filled for this job, or deleted for a cleanup.
         rows_filled: DataType::UInt64,
 
         /// Rows the last full pass found it couldn't cover; NULL before one ended.
