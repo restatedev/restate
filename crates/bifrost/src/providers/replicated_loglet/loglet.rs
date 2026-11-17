@@ -557,7 +557,9 @@ mod tests {
     }
 
     // ** Single-node replicated-loglet seal **
-    #[test(restate_core::test(start_paused = true))]
+    // The log-server writer runs on a separate thread; paused time can exhaust seal RPC retries
+    // before its RocksDB write completes.
+    #[test(restate_core::test(start_paused = false))]
     async fn seal_local_sequencer_single_node() -> Result<()> {
         let loglet_id = LogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
@@ -660,7 +662,8 @@ mod tests {
         .await
     }
 
-    #[test(restate_core::test(start_paused = true))]
+    // Seal RPCs must use real time while the log-server writer commits on another thread.
+    #[test(restate_core::test(start_paused = false))]
     async fn single_node_append_after_seal() -> Result<()> {
         let loglet_id = LogletId::new_unchecked(122);
         let params = ReplicatedLogletParams {
