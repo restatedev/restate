@@ -405,17 +405,18 @@ async fn explain_shows_distributed_stages_and_analyze_executes_them() {
         .engine(1, 2)
         .create_session(SessionOptions::default())
         .unwrap();
-    for (sql, analyze, verbose) in [
-        ("EXPLAIN SELECT COUNT(*) FROM state", false, false),
-        ("EXPLAIN VERBOSE SELECT COUNT(*) FROM state", false, true),
-        (
-            "EXPLAIN ANALYZE VERBOSE SELECT COUNT(*) FROM state",
-            true,
-            true,
-        ),
+    for (mode, analyze, verbose) in [
+        ("EXPLAIN", false, false),
+        ("EXPLAIN VERBOSE", false, true),
+        ("EXPLAIN ANALYZE", true, false),
+        ("EXPLAIN ANALYZE VERBOSE", true, true),
     ] {
+        let sql = format!(
+            "{mode} SELECT COUNT(*) FROM state \
+             WHERE service_key IN ('a','b','c','d','e','f','g','h','i')"
+        );
         let batches = tokio::time::timeout(Duration::from_secs(10), async {
-            let result = session.execute(sql, QueryOptions {}).await.unwrap();
+            let result = session.execute(&sql, QueryOptions {}).await.unwrap();
             result.stream.try_collect::<Vec<_>>().await.unwrap()
         })
         .await
@@ -452,12 +453,34 @@ async fn explain_shows_distributed_stages_and_analyze_executes_them() {
         );
         if !verbose {
             assert!(text.contains("partitions=[0], reads=1"), "{text}");
+            assert!(
+                text.matches("<set#1: 9 values, 9 distinct").count() >= 2,
+                "{text}"
+            );
+            assert!(!text.contains("<set#2"), "{text}");
+        } else {
+            assert!(!text.contains("<set#"), "{text}");
+            assert!(text.contains("a, b, c, d, e, f, g, h, i"), "{text}");
         }
+        let observations = std::mem::take(&mut *fixture.observations.lock());
         assert_eq!(
-            fixture.observations.lock().len(),
+            observations.len(),
             usize::from(analyze),
             "EXPLAIN must not install tasks; ANALYZE must execute remotely"
         );
+        for task in observations {
+            assert!(
+                !task.plan.contains("<set#"),
+                "worker receives executable native predicates"
+            );
+            assert!(
+                task.plan.contains("a, b, c, d, e, f, g, h, i"),
+                "{}",
+                task.plan
+            );
+            eprintln!("{mode} native worker plan:\n{}", task.plan);
+        }
+        eprintln!("{mode} coordinator output:\n{text}");
     }
 }
 
