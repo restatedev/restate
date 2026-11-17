@@ -133,7 +133,7 @@ Triggered on: PRs, pushes to `main`, `release/*`, and `hotfix/*` branches, and a
 | Job | Runner | Purpose |
 |-----|--------|---------|
 | `workspace-hack-check` | warp-ubuntu-latest-x64-4x | Verifies `cargo-hakari` workspace-hack is up to date |
-| `build-and-test` | warp-ubuntu-latest-x64-16x | Runs `just verify` (lint + test + doctest) |
+| `build-and-test` | warp-ubuntu-latest-x64-16x | Runs lint, tests and doctests, including Azure Blob metadata tests against Azurite |
 | `docker` | warp-ubuntu-latest-x64-16x | Builds Docker image, uploads as tarball artifact |
 | `docker-pr-cache` | warp-ubuntu-latest-x64-16x | Main pushes only. Builds the `release-lite` dependency layer (the `builder` stage) that PR `docker` builds restore from the cache |
 
