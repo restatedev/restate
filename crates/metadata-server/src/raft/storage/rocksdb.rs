@@ -325,11 +325,13 @@ impl RocksDbStorage {
     }
 
     async fn commit_write_batch(&mut self, write_batch: WriteBatch) -> Result<(), Error> {
+        // Keep potentially blocking RocksDB writes off the Tokio runtime and
+        // avoid a non-blocking attempt before dispatching to the I/O pool.
         self.rocksdb
             .write_batch(
                 "commit_write_batch",
                 Priority::High,
-                IoMode::Default,
+                IoMode::AlwaysBackground,
                 Self::write_options(),
                 write_batch,
             )
