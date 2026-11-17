@@ -69,32 +69,25 @@ define_schema! {
 /// same rows.
 pub const MAX_LOOKUP_KEYS: usize = 10_000;
 
-/// A state key as a query names it: its scope (NULL when unscoped), service
-/// name, service key and UTF-8 state key.
-pub type StateKeyId = (Option<ReString>, ReString, ReString, ReString);
+/// A key of an object's record, such as a state key or a promise key, as a query
+/// names it: its scope (NULL when unscoped), service name, service key and key.
+pub type ObjectKeyId = (Option<ReString>, ReString, ReString, ReString);
 
-/// The state keys one alternative of a query names, restricted to `scope`: every
-/// combination of its scopes, service names, service keys and state keys, up to
-/// [`MAX_LOOKUP_KEYS`] of them. Above that, or if some column isn't pinned to
-/// finitely many values, it names every key, so the alternative is read instead.
-/// So is one that allows a NULL state key: such a key isn't UTF-8, and no
-/// literal names its bytes.
-pub fn named_state_keys(
+/// The keys of objects' records one alternative of a query names: every
+/// combination of `scope`, `service_name`, `service_key` and `key`, up to `max`
+/// of them. Above that, or if some column isn't pinned to finitely many values,
+/// it names every key, so the alternative is read instead.
+pub fn named_object_keys(
     scope: Domain<Option<ReString>>,
-    domains: &StateDomains,
-) -> Domain<StateKeyId> {
-    let Some(keys) = domains
-        .key
-        .clone()
-        .into_values()
-        .and_then(|keys| keys.into_iter().collect::<Option<Vec<_>>>())
-    else {
-        return Domain::all();
-    };
+    service_name: &Domain<ReString>,
+    service_key: &Domain<ReString>,
+    key: &Domain<ReString>,
+    max: usize,
+) -> Domain<ObjectKeyId> {
     scope
-        .bounded_product(&domains.service_name, MAX_LOOKUP_KEYS)
-        .bounded_product(&domains.service_key, MAX_LOOKUP_KEYS)
-        .bounded_product(&Domain::values(keys), MAX_LOOKUP_KEYS)
+        .bounded_product(service_name, max)
+        .bounded_product(service_key, max)
+        .bounded_product(key, max)
         .map_values(|(((scope, service_name), service_key), key)| {
             (
                 scope.clone(),
@@ -103,6 +96,31 @@ pub fn named_state_keys(
                 key.clone(),
             )
         })
+}
+
+/// The state keys one alternative of a query names, restricted to `scope`, up to
+/// [`MAX_LOOKUP_KEYS`] of them ([`named_object_keys`]). One that allows a NULL
+/// state key names every key, so it is read instead: such a key isn't UTF-8, and
+/// no literal names its bytes.
+pub fn named_state_keys(
+    scope: Domain<Option<ReString>>,
+    domains: &StateDomains,
+) -> Domain<ObjectKeyId> {
+    let Some(keys) = domains
+        .key
+        .clone()
+        .into_values()
+        .and_then(|keys| keys.into_iter().collect::<Option<Vec<_>>>())
+    else {
+        return Domain::all();
+    };
+    named_object_keys(
+        scope,
+        &domains.service_name,
+        &domains.service_key,
+        &Domain::values(keys),
+        MAX_LOOKUP_KEYS,
+    )
 }
 
 /// Candidate shard keys for both physical layouts, preserving NULL-scope semantics:
