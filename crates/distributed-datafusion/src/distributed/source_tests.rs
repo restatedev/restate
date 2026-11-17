@@ -16,8 +16,9 @@ use datafusion_proto::physical_plan::DefaultPhysicalProtoConverter;
 
 use restate_core::test_env::TestCoreEnv;
 use restate_partition_store::PartitionStoreManager;
-use restate_partition_store::lookup::LookupKeys;
-use restate_partition_store::vqueue_table::VQueueMetaTable;
+use restate_partition_store::keys::FixedLengthTableKey;
+use restate_partition_store::lookup::encode_unchecked;
+use restate_partition_store::vqueue_table::MetaKey;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_query_api::tables::vqueue_meta::VqueueMeta;
 use restate_types::identifiers::BaseEntryId;
@@ -310,7 +311,11 @@ async fn primary_access_codec_validates_keys_scope_and_capability() {
     let queues = [VQueueId::custom(5, "a"), VQueueId::custom(6, "b")];
     let meta_keys = |count, ids: &[&VQueueId]| PrimaryKeys {
         count,
-        encoded: LookupKeys::<VQueueMetaTable>::encode(ids.iter().copied()),
+        encoded: encode_unchecked(
+            ids.iter()
+                .map(|id| MetaKey::from(*id).to_bytes().to_vec())
+                .collect(),
+        ),
     };
     let meta_read = |keys| {
         let mut read = descriptor(keys);

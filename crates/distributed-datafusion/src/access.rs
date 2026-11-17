@@ -14,12 +14,11 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
-use std::ops::RangeBounds;
 use std::sync::Arc;
 
 use datafusion::physical_plan::PhysicalExpr;
 
-use restate_partition_store::lookup::{LookupBinding, LookupKeys, LookupTable};
+use restate_partition_store::lookup::{LookupBinding, LookupCandidates, LookupTable};
 use restate_storage_query_api::schema::index::{IndexSchema, PrimarySchema, index_restriction};
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::static_conjuncts;
@@ -197,38 +196,40 @@ pub(crate) trait PrimarySelection: Debug + Send + Sync {
 }
 
 /// Complete-key lookups for a binding that supports them: the IDs a query can
-/// match, when they form a finite set across all of its alternatives. Otherwise
-/// (`into_values` is `None`, as for a surviving range) the source is scanned.
-/// Dynamic filters change during execution, so only static conjuncts count.
+/// match, when they form a finite set across all of its alternatives and every
+/// one of them names a stored key. Otherwise the source is scanned: when
+/// `into_values` is `None`, as for a surviving range, or when some ID can't name a
+/// key, such as an invalid scope. Dynamic filters change during execution, so
+/// only static conjuncts count.
 pub(crate) fn select_lookup<B: LookupBinding>(
     filters: &[Arc<dyn PhysicalExpr>],
 ) -> anyhow::Result<Option<Box<dyn PrimarySelection>>> {
     let filters = static_conjuncts(filters);
-    let ids = <B::Schema as SelectionSchema>::analyze(&filters, NonZeroUsize::new(16).unwrap())?
-        .iter()
-        .map(B::lookup_ids)
-        .fold(Domain::empty(), Domain::union)
-        .into_values();
-    Ok(ids.map(|ids| Box::new(KeyLookup::<B::Table>(ids)) as Box<dyn PrimarySelection>))
+    let Some(ids) =
+        <B::Schema as SelectionSchema>::analyze(&filters, NonZeroUsize::new(16).unwrap())?
+            .iter()
+            .map(B::lookup_ids)
+            .fold(Domain::empty(), Domain::union)
+            .into_values()
+    else {
+        return Ok(None);
+    };
+    Ok(LookupCandidates::<B::Table>::prepare(&ids)
+        .map(|keys| Box::new(KeyLookup(keys)) as Box<dyn PrimarySelection>))
 }
 
-/// The IDs of a lookup, ascending and distinct.
+/// The stored keys of a lookup, prepared once; each partition is sent its own.
 #[derive(derive_more::Debug)]
-#[debug("KeyLookup({})", _0.len())]
-struct KeyLookup<T: LookupTable>(Vec<T::Id>);
+struct KeyLookup<T: LookupTable>(LookupCandidates<T>);
 
 impl<T: LookupTable> PrimarySelection for KeyLookup<T> {
     fn within(&self, ownership: KeyRange) -> Option<PrimaryKeys> {
-        // Filters by each ID's partition key rather than relying on ID order.
-        let ids: Vec<_> = self
-            .0
-            .iter()
-            .filter(|id| ownership.contains(&T::partition_key(id)))
-            .collect();
-        (!ids.is_empty()).then(|| PrimaryKeys {
-            count: ids.len() as u64,
-            encoded: LookupKeys::<T>::encode(ids),
-        })
+        self.0
+            .within(ownership)
+            .map(|(count, encoded)| PrimaryKeys {
+                count: count as u64,
+                encoded,
+            })
     }
 }
 
@@ -274,12 +275,14 @@ mod tests {
 
     use super::*;
 
-    /// Each partition is sent its own keys and nothing else, whatever their
-    /// order; a partition without keys is sent nothing.
+    /// Each partition is sent its own keys and nothing else, a partition without
+    /// keys is sent nothing, and duplicate IDs give one key.
     #[test]
     fn lookups_send_each_partition_its_own_keys() {
+        use restate_partition_store::lookup::LookupKeys;
+
         let ids: Vec<_> = [5, 50, 500].map(|key| VQueueId::custom(key, "q")).into();
-        let lookup = KeyLookup::<VQueueMetaTable>(ids.clone());
+        let lookup = KeyLookup(LookupCandidates::<VQueueMetaTable>::prepare(&ids).unwrap());
         let sent = |range| {
             lookup.within(range).map(|keys| {
                 let decoded =
@@ -290,7 +293,9 @@ mod tests {
         assert_eq!(sent(KeyRange::new(0, 99)), Some((2, false)));
         assert_eq!(sent(KeyRange::new(100, 1000)), Some((1, false)));
         assert_eq!(sent(KeyRange::new(1001, 2000)), None);
-        let all = lookup.within(KeyRange::FULL).unwrap();
-        assert_eq!(all.encoded, LookupKeys::<VQueueMetaTable>::encode(&ids));
+        // Duplicate IDs give one key.
+        let twice: Vec<_> = ids.iter().chain(&ids).cloned().collect();
+        let deduplicated = LookupCandidates::<VQueueMetaTable>::prepare(&twice).unwrap();
+        assert_eq!(deduplicated.within(KeyRange::FULL).unwrap().0, 3);
     }
 }

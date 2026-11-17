@@ -144,7 +144,7 @@ pub struct InvocationStatusCursor {
 enum Mode {
     Empty,
     Scan(Box<TableCursor<InvocationStatusKeys>>),
-    Keys(MultiGetCursor<InvocationStatusKeys>),
+    Keys(Box<MultiGetCursor<InvocationStatusKeys>>),
 }
 
 impl ReadSnapshot {
@@ -153,14 +153,15 @@ impl ReadSnapshot {
         scan: InvocationStatusScan,
     ) -> Result<InvocationStatusCursor> {
         self.check_active()?;
-        let mode = match scan {
-            InvocationStatusScan::Ids(ids) => Mode::Keys(MultiGetCursor::new(self.clone(), ids)),
-            InvocationStatusScan::Keys(request) => {
-                Mode::Scan(Box::new(
+        let mode =
+            match scan {
+                InvocationStatusScan::Ids(ids) => {
+                    Mode::Keys(Box::new(MultiGetCursor::new(self.clone(), ids)))
+                }
+                InvocationStatusScan::Keys(request) => Mode::Scan(Box::new(
                     <Self as CursorScan<InvocationStatusKeys>>::scan_cursor(self, request)?,
-                ))
-            }
-        };
+                )),
+            };
         Ok(InvocationStatusCursor { mode })
     }
 }

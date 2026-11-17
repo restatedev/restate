@@ -58,7 +58,7 @@ use restate_types::partitions::Partition;
 use crate::features::StorageFeatures;
 use crate::keys::header::{KeyHeader, KeySchema};
 use crate::keys::selection::{KeyMatch, KeySelection, KeySelectionCursor};
-use crate::keys::{EncodeTableKey, KeyDecoder};
+use crate::keys::{EncodeTableKey, KeyDecoder, KeyKind};
 use crate::partition_db::PhysicalPartition;
 use crate::query_read::SnapshotCursor;
 use crate::registry::{IndexKind, IndexNotReady, MaintainedIndexes};
@@ -151,16 +151,29 @@ pub trait MultiGetTable: PhysicalTable<Key: EncodeTableKey> {
     fn key(id: &Self::Id) -> Self::Key;
 }
 
-/// Fetches the records of an ID set in ID order, a bounded batch per multi-get:
-/// a step hands out the next ID that has a record ([`CursorStep::Record`]) or
-/// skips one that has none, and a batch is fetched when the steps reach it.
-pub(crate) struct MultiGetCursor<T: MultiGetTable> {
-    ids: btree_set::IntoIter<T::Id>,
-    /// The IDs of the fetched batch, in order; `key_buf` holds their keys, each
-    /// `key_len` bytes long.
-    batch_ids: Vec<T::Id>,
+/// A key a [`KeyBatchCursor`] fetches: its partition key, so keys outside the
+/// snapshot's partition are skipped, and its stored bytes.
+pub(crate) trait BatchKey {
+    fn partition_key(&self) -> PartitionKey;
+    fn encode(&self, target: &mut BytesMut);
+}
+
+/// Fetches the records of a sequence of keys, in stored-byte order, a bounded
+/// batch per multi-get: a step hands out the next key that has a record
+/// ([`CursorStep::Record`]) or skips one that has none, and a batch is fetched
+/// when the steps reach it.
+///
+/// Each refill examines at most `batch_size` keys, owned or not, so a step does
+/// bounded work even when a whole batch lies outside the partition.
+pub(crate) struct KeyBatchCursor<I: BatchKey, It: ExactSizeIterator<Item = I>> {
+    keys: It,
+    batch_size: NonZeroUsize,
+    key_kind: KeyKind,
+    /// The keys of the fetched batch, in order; `key_buf` holds their bytes, and
+    /// `ends` where each one ends in it.
+    batch: Vec<I>,
     key_buf: BytesMut,
-    key_len: usize,
+    ends: Vec<usize>,
     results: Option<OwnedPinnedBatch<RocksReadSnapshot<PhysicalPartition>>>,
     /// The batch index the next step examines.
     next: usize,
@@ -172,31 +185,39 @@ pub(crate) struct MultiGetCursor<T: MultiGetTable> {
     snapshot: ReadSnapshot,
 }
 
-impl<T: MultiGetTable> MultiGetCursor<T> {
-    pub(crate) fn new(snapshot: ReadSnapshot, ids: BTreeSet<T::Id>) -> Self {
+impl<I: BatchKey, It: ExactSizeIterator<Item = I>> KeyBatchCursor<I, It> {
+    /// `keys` must be in stored-byte order: a batch is one sorted multi-get.
+    pub(crate) fn new(
+        snapshot: ReadSnapshot,
+        keys: It,
+        batch_size: NonZeroUsize,
+        key_kind: KeyKind,
+    ) -> Self {
         Self {
-            snapshot,
-            batch_ids: Vec::with_capacity(ids.len().min(T::BATCH_SIZE.get())),
-            ids: ids.into_iter(),
+            batch: Vec::with_capacity(keys.len().min(batch_size.get())),
+            keys,
+            batch_size,
+            key_kind,
             key_buf: BytesMut::new(),
-            key_len: 0,
+            ends: Vec::new(),
             results: None,
             next: 0,
             current: None,
+            snapshot,
         }
     }
 
     pub(crate) fn advance(&mut self) -> Result<CursorStep> {
         self.snapshot.check_active()?;
         self.current = None;
-        if self.next == self.batch_ids.len() {
-            if self.ids.len() == 0 {
+        if self.next == self.batch.len() {
+            if self.keys.len() == 0 {
                 return Ok(CursorStep::Done);
             }
             self.refill()?;
         }
-        if self.next == self.batch_ids.len() {
-            // Every ID of the batch lies outside the partition.
+        if self.next == self.batch.len() {
+            // Every key of the batch lies outside the partition.
             return Ok(CursorStep::Skipped);
         }
         let index = self.next;
@@ -219,8 +240,8 @@ impl<T: MultiGetTable> MultiGetCursor<T> {
         &self.snapshot
     }
 
-    /// The current record's stored key and value.
-    pub(crate) fn current_key(&self) -> Result<(&[u8], &[u8])> {
+    /// The current record's key, its stored bytes and its stored value.
+    pub(crate) fn current(&self) -> Result<(&I, &[u8], &[u8])> {
         self.snapshot.check_active()?;
         let index = self.current.ok_or(StorageError::DataIntegrityError)?;
         let value = self
@@ -228,20 +249,14 @@ impl<T: MultiGetTable> MultiGetCursor<T> {
             .get(index)
             .map_err(|error| StorageError::Generic(error.into()))?
             .ok_or(StorageError::DataIntegrityError)?;
-        let start = index * self.key_len;
-        Ok((&self.key_buf[start..start + self.key_len], value))
-    }
-
-    /// The current record: its ID and its stored value.
-    pub(crate) fn current(&self) -> Result<(T::Id, &[u8])> {
-        self.snapshot.check_active()?;
-        let index = self.current.ok_or(StorageError::DataIntegrityError)?;
-        let value = self
-            .results()?
-            .get(index)
-            .map_err(|error| StorageError::Generic(error.into()))?
-            .ok_or(StorageError::DataIntegrityError)?;
-        Ok((self.batch_ids[index].clone(), value))
+        let start = index
+            .checked_sub(1)
+            .map_or(0, |previous| self.ends[previous]);
+        Ok((
+            &self.batch[index],
+            &self.key_buf[start..self.ends[index]],
+            value,
+        ))
     }
 
     fn results(&self) -> Result<&OwnedPinnedBatch<RocksReadSnapshot<PhysicalPartition>>> {
@@ -250,36 +265,82 @@ impl<T: MultiGetTable> MultiGetCursor<T> {
             .ok_or(StorageError::DataIntegrityError)
     }
 
-    /// Fetches the next batch: the next `BATCH_SIZE` IDs, minus those outside the
-    /// partition.
+    /// Fetches the next batch: the next `batch_size` keys, minus those outside
+    /// the partition.
     fn refill(&mut self) -> Result<()> {
         self.key_buf.clear();
-        self.batch_ids.clear();
+        self.ends.clear();
+        self.batch.clear();
         self.results = None;
         self.next = 0;
         let partition = self.snapshot.partition_key_range();
-        let mut key_len = 0;
-        for id in self.ids.by_ref().take(T::BATCH_SIZE.get()) {
-            if partition.contains(&T::partition_key(&id)) {
-                let key = T::key(&id);
-                key_len = key.serialized_length();
-                key.serialize_to(&mut self.key_buf);
-                self.batch_ids.push(id);
+        for key in self.keys.by_ref().take(self.batch_size.get()) {
+            if partition.contains(&key.partition_key()) {
+                key.encode(&mut self.key_buf);
+                self.ends.push(self.key_buf.len());
+                self.batch.push(key);
             }
         }
-        if self.batch_ids.is_empty() {
+        if self.batch.is_empty() {
             return Ok(());
         }
-        debug_assert_eq!(self.key_buf.len(), key_len * self.batch_ids.len());
-        self.key_len = key_len;
+        let key_buf = &self.key_buf;
+        let keys = std::iter::once(0)
+            .chain(self.ends.iter().copied())
+            .zip(self.ends.iter().copied())
+            .map(|(start, end)| &key_buf[start..end]);
         let reader = self.snapshot.storage_snapshot().reader();
         self.results = Some(
             reader
-                .multi_get_pinned(T::Key::KEY_KIND, self.key_buf.chunks_exact(key_len), true)
+                .multi_get_pinned(self.key_kind, keys, true)
                 .map_err(|error| StorageError::Generic(error.into()))?
                 .into_owned(),
         );
         Ok(())
+    }
+}
+
+/// An ID of a [`MultiGetTable`], fetched through its stored key.
+pub(crate) struct IdKey<T: MultiGetTable>(T::Id);
+
+impl<T: MultiGetTable> BatchKey for IdKey<T> {
+    fn partition_key(&self) -> PartitionKey {
+        T::partition_key(&self.0)
+    }
+
+    fn encode(&self, target: &mut BytesMut) {
+        T::key(&self.0).serialize_to(target);
+    }
+}
+
+type IdKeys<T> = std::iter::Map<
+    btree_set::IntoIter<<T as MultiGetTable>::Id>,
+    fn(<T as MultiGetTable>::Id) -> IdKey<T>,
+>;
+
+/// Fetches the records of an ID set in ID order, which is their stored-key order,
+/// [`MultiGetTable::BATCH_SIZE`] IDs per multi-get ([`KeyBatchCursor`]).
+pub(crate) struct MultiGetCursor<T: MultiGetTable>(KeyBatchCursor<IdKey<T>, IdKeys<T>>);
+
+impl<T: MultiGetTable> MultiGetCursor<T> {
+    pub(crate) fn new(snapshot: ReadSnapshot, ids: BTreeSet<T::Id>) -> Self {
+        let keys: IdKeys<T> = ids.into_iter().map(IdKey);
+        Self(KeyBatchCursor::new(
+            snapshot,
+            keys,
+            T::BATCH_SIZE,
+            T::Key::KEY_KIND,
+        ))
+    }
+
+    pub(crate) fn advance(&mut self) -> Result<CursorStep> {
+        self.0.advance()
+    }
+
+    /// The current record: its ID and its stored value.
+    pub(crate) fn current(&self) -> Result<(T::Id, &[u8])> {
+        let (id, _, value) = self.0.current()?;
+        Ok((id.0.clone(), value))
     }
 }
 
