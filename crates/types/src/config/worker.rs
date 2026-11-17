@@ -509,6 +509,27 @@ pub struct InvokerOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     eager_state_size_limit: Option<ByteCount>,
 
+    /// # Disable eager suspension
+    ///
+    /// By default, when invocations wait for a free slot of the node's concurrent invocations
+    /// limit or of a concurrency rule, Restate suspends one running invocation that holds such a
+    /// slot and is idle, waiting on an await point (for example a call, a sleep or an awakeable).
+    /// The slot is freed right away instead of after the inactivity timeout. Invocations resume as
+    /// usual when what they wait for completes. Services and handlers can opt out of this in the
+    /// SDK by declaring themselves as not preemptable.
+    ///
+    /// Set this to `true` to never suspend invocations eagerly: idle invocations then keep their
+    /// slots until the inactivity timeout fires.
+    ///
+    /// Eager suspension needs services that use service protocol V7 or newer. Invocations of
+    /// older services are never suspended eagerly.
+    ///
+    /// Turning it on only affects new invocations, not existing ones.
+    ///
+    /// Since v1.8.2
+    #[serde(default)]
+    pub disable_eager_suspension: bool,
+
     // -- Private config options (not exposed in the schema)
     /// Deprecated since v1.7.0: Use `eager_state_size_limit` with a value of `0` instead.
     /// When true, treated as `eager_state_size_limit = 0` (no eager state).
@@ -720,6 +741,7 @@ impl Default for InvokerOptions {
             concurrent_invocations_limit: Some(NonZeroUsize::new(24000).expect("is non zero")),
             eager_state_size_limit: None,
             disable_eager_state: false,
+            disable_eager_suspension: false,
             invocation_throttling: None,
             action_throttling: None,
             memory_limit: NonZeroByteCount::new(

@@ -1434,6 +1434,63 @@ mod tests {
     }
 
     #[restate_core::test]
+    async fn blocked_heads_request_eager_suspension_once() {
+        use restate_worker_api::invoker::SuspendIdleTarget;
+
+        const NUM_QUEUES: usize = 4;
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(NUM_QUEUES);
+        let mut txn = rocksdb.transaction();
+        for index in 0..NUM_QUEUES {
+            enqueue_entry(&mut txn, &mut cache, &test_qid(index as u64), 1, 0, None).await;
+        }
+        txn.commit().await.unwrap();
+        drop(txn);
+
+        // The node's only invoker slot is held, e.g. by an invocation waiting on an await point.
+        let mut capacity = Concurrency::new(NonZeroUsize::new(1));
+        let _held = capacity.acquire().await;
+
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_requests = Arc::clone(&requests);
+        let db = rocksdb.partition_db();
+        let mut scheduler = DRRScheduler::new(
+            NonZeroU16::new(100).unwrap(),
+            NonZeroU16::new(100).unwrap(),
+            create_resource_manager(db, capacity)
+                .await
+                .with_eager_suspension_sink(Box::new(move |target| {
+                    sink_requests.lock().unwrap().push(target)
+                })),
+            db.clone(),
+            cache.view(),
+            RefillMode::Blocking,
+        );
+
+        // Poll until every queue is parked. Polls and wake-ups after the first block of a head
+        // must not repeat the request.
+        for _ in 0..10 {
+            assert!(
+                poll_scheduler(Pin::new(&mut scheduler), cache.view()).is_pending(),
+                "no capacity, nothing can run"
+            );
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            scheduler
+                .q
+                .keys()
+                .filter(|&h| scheduler.eligible.find_blocking_resource(h).is_some())
+                .count(),
+            NUM_QUEUES
+        );
+        assert_eq!(
+            *requests.lock().unwrap(),
+            vec![SuspendIdleTarget::InvokerConcurrency; NUM_QUEUES]
+        );
+    }
+
+    #[restate_core::test]
     async fn invalidating_a_notified_head_unblocks_the_next_queue() {
         let mut rocksdb = storage_test_environment().await;
 

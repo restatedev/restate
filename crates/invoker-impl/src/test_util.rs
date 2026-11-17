@@ -152,4 +152,11 @@ impl InvokerHandle for MockInvokerHandle {
     fn pause_invocation(&mut self, _invocation_id: InvocationId) -> Result<(), NotRunningError> {
         Ok(())
     }
+
+    fn suspend_idle(
+        &mut self,
+        _target: restate_worker_api::invoker::SuspendIdleTarget,
+    ) -> Result<(), NotRunningError> {
+        Ok(())
+    }
 }

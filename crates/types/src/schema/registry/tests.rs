@@ -39,6 +39,7 @@ fn greeter_service_greet_handler() -> endpoint_manifest::Handler {
         enable_lazy_state: None,
         eager_state_keys_whitelist: vec![],
         ingress_private: None,
+        preemptable: None,
         retry_policy_on_max_attempts: None,
     }
 }
@@ -48,6 +49,7 @@ fn greeter_service() -> endpoint_manifest::Service {
         abort_timeout: None,
         documentation: None,
         ingress_private: None,
+        preemptable: None,
         ty: endpoint_manifest::ServiceType::Service,
         name: GREETER_SERVICE_NAME.parse().unwrap(),
         retry_policy_exponentiation_factor: None,

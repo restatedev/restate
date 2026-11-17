@@ -73,6 +73,12 @@ pub(super) const STATE_PRELOAD_POLICY: &str = indoc! {
     'eager' preloads all state, 'lazy' preloads none, 'selective (...)' preloads only the listed keys.
     This is relevant only for Workflows and Virtual Objects."
 };
+pub(super) const PREEMPTABLE: &str = indoc! {
+    "If true, Restate may suspend invocations of this service while they wait on an await point,
+    to free up concurrency capacity for other invocations (eager suspension).
+    If false, invocations only suspend when the inactivity timeout fires.
+    This is declared by the service code (SDK)."
+};
 pub(super) const RETRY_POLICY: &str = indoc! {
     "Retry policy to use for transient errors. The next retry interval is calculated as
     initial_interval * (exponentiation_factor ^ attempt), capped at max_interval.
@@ -152,6 +158,12 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
             service.state_preload_policy.to_string(),
             STATE_PRELOAD_POLICY,
         ),
+        ConfigOption::new(
+            "preemptable",
+            "Preemptable",
+            service.preemptable,
+            PREEMPTABLE,
+        ),
         ConfigOption {
             option: "retry_policy",
             value: serde_json::to_value(retry)?,
@@ -221,6 +233,14 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
                 "State preload policy",
                 Value::from(policy.clone()),
                 policy,
+            );
+        }
+        if handler.preemptable != service.preemptable {
+            add(
+                "preemptable",
+                "Preemptable",
+                Value::from(handler.preemptable),
+                handler.preemptable.to_string(),
             );
         }
         if handler.public != service.public {

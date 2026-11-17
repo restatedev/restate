@@ -298,6 +298,9 @@ struct ServiceRevisionLite {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[bilrost(tag(18))]
     retry_policy_on_max_attempts: Option<OnMaxAttempts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag(20))]
+    preemptable: Option<bool>,
 }
 
 impl MapAsVecItem for ServiceRevisionLite {
@@ -330,6 +333,7 @@ impl ServiceRevisionLite {
             retry_policy_max_attempts,
             retry_policy_max_interval,
             retry_policy_on_max_attempts,
+            preemptable,
             service_openapi_cache: _,
         }: &ServiceRevision,
     ) -> Self {
@@ -356,6 +360,7 @@ impl ServiceRevisionLite {
             retry_policy_max_attempts: *retry_policy_max_attempts,
             retry_policy_max_interval: *retry_policy_max_interval,
             retry_policy_on_max_attempts: *retry_policy_on_max_attempts,
+            preemptable: *preemptable,
         }
     }
 }
@@ -382,6 +387,7 @@ impl From<ServiceRevisionLite> for ServiceRevision {
             retry_policy_max_attempts,
             retry_policy_max_interval,
             retry_policy_on_max_attempts,
+            preemptable,
         }: ServiceRevisionLite,
     ) -> Self {
         Self {
@@ -407,6 +413,7 @@ impl From<ServiceRevisionLite> for ServiceRevision {
             retry_policy_max_attempts,
             retry_policy_max_interval,
             retry_policy_on_max_attempts,
+            preemptable,
             service_openapi_cache: default_empty_openapi_cache(),
         }
     }
@@ -476,6 +483,9 @@ struct HandlerLite {
     #[bilrost(tag = 18)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retry_policy_on_max_attempts: Option<OnMaxAttempts>,
+    #[bilrost(tag = 20)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    preemptable: Option<bool>,
 }
 
 impl MapAsVecItem for HandlerLite {
@@ -508,6 +518,7 @@ impl HandlerLite {
             retry_policy_max_attempts,
             retry_policy_max_interval,
             retry_policy_on_max_attempts,
+            preemptable,
         }: &Handler,
     ) -> Self {
         Self {
@@ -530,6 +541,7 @@ impl HandlerLite {
             retry_policy_max_attempts: *retry_policy_max_attempts,
             retry_policy_max_interval: *retry_policy_max_interval,
             retry_policy_on_max_attempts: *retry_policy_on_max_attempts,
+            preemptable: *preemptable,
         }
     }
 }
@@ -556,6 +568,7 @@ impl From<HandlerLite> for Handler {
             retry_policy_max_attempts,
             retry_policy_max_interval,
             retry_policy_on_max_attempts,
+            preemptable,
         }: HandlerLite,
     ) -> Self {
         Self {
@@ -578,6 +591,7 @@ impl From<HandlerLite> for Handler {
             retry_policy_max_attempts,
             retry_policy_max_interval,
             retry_policy_on_max_attempts,
+            preemptable,
         }
     }
 }

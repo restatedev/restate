@@ -132,6 +132,9 @@ pub struct InvocationAttemptOptions {
     pub inactivity_timeout: Option<Duration>,
     /// State preload policy for this invocation.
     pub state_preload_policy: StatePreloadPolicy,
+    /// If false, the invoker must not suspend this invocation eagerly to free up concurrency
+    /// capacity for other invocations.
+    pub preemptable: bool,
 }
 
 // --- Input rules
@@ -628,6 +631,7 @@ pub mod test_util {
                         abort_timeout: None,
                         inactivity_timeout: None,
                         state_preload_policy: StatePreloadPolicy::All,
+                        preemptable: true,
                     })
             })
         }
