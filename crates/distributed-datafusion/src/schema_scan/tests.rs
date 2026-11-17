@@ -549,3 +549,92 @@ async fn final_output_waits_without_holding_the_snapshot() {
     read.await.unwrap();
     assert_eq!(rx.recv().await.unwrap().unwrap().num_rows(), 1);
 }
+
+/// Dropping a lookup's output while its producer waits for room releases the
+/// read's snapshot and the storage worker; the same prepared keys then read
+/// completely.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_lookup_output_releases_the_snapshot_and_storage_worker() {
+    use restate_clock::UniqueTimestamp;
+    use restate_limiter::LimitKey;
+    use restate_partition_store::lookup::LookupKeys;
+    use restate_partition_store::vqueue_table::{VQueueMetaBinding, VQueueMetaTable};
+    use restate_storage_api::Transaction;
+    use restate_storage_api::vqueue_table::WriteVQueueTable;
+    use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
+    use restate_storage_query_api::tables::vqueue_meta::VqueueMeta;
+    use restate_types::time::MillisSinceEpoch;
+    use restate_types::vqueues::VQueueId;
+
+    use crate::batches::read_lookup_into;
+
+    RocksDbManager::init();
+    let manager = PartitionStoreManager::create(true).await.unwrap();
+    let mut store = manager
+        .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+        .await
+        .unwrap();
+    let created =
+        UniqueTimestamp::try_from_unix_millis(MillisSinceEpoch::new(1_744_010_000_000)).unwrap();
+    let ids: std::collections::BTreeSet<_> =
+        (0..50).map(|n| VQueueId::custom(n * 1000, "q")).collect();
+    let mut tx = store.transaction();
+    for id in &ids {
+        tx.create_vqueue(
+            id,
+            &VQueueMeta::new(created, None, LimitKey::None, VQueueLink::None),
+        );
+    }
+    tx.commit().await.unwrap();
+    drop(tx);
+    let keys = Arc::new(
+        LookupKeys::<VQueueMetaTable>::decode(
+            ids.len(),
+            &LookupKeys::<VQueueMetaTable>::encode(&ids),
+        )
+        .unwrap(),
+    );
+    let executor = QueryIoExecutor::new(NonZeroUsize::MIN);
+    // One row per batch into a one-batch channel: the producer waits for room.
+    let lookup = |snapshot: ReadSnapshot| {
+        let schema = VqueueMeta::arrow_schema();
+        let mut stream = RecordBatchReceiverStream::builder(Arc::clone(&schema), 1);
+        let sink = BatchSink::new(
+            Batches::<VqueueMeta>::new(schema, 1, None, Time::new()),
+            stream.tx(),
+        );
+        let (executor, keys) = (executor.clone(), Arc::clone(&keys));
+        stream.spawn(async move {
+            read_lookup_into::<VQueueMetaBinding>(snapshot, &executor, keys, sink).await
+        });
+        stream.build()
+    };
+
+    let (snapshot, closed) = store.query_read(CancellationToken::new()).unwrap();
+    let mut output = lookup(snapshot);
+    let first = tokio::time::timeout(Duration::from_secs(5), output.next())
+        .await
+        .expect("the lookup produces its first row")
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.num_rows(), 1);
+    drop(output);
+    tokio::time::timeout(Duration::from_secs(5), closed)
+        .await
+        .expect("dropping_lookup_output_releases_its_snapshot");
+
+    // The only storage worker is free again, and the same keys read in full.
+    let (snapshot, closed) = store.query_read(CancellationToken::new()).unwrap();
+    let rows = tokio::time::timeout(Duration::from_secs(5), async {
+        lookup(snapshot)
+            .map(|batch| batch.unwrap().num_rows())
+            .collect::<Vec<_>>()
+            .await
+    })
+    .await
+    .expect("the released worker serves the next lookup");
+    assert_eq!(rows.iter().sum::<usize>(), ids.len());
+    tokio::time::timeout(Duration::from_secs(5), closed)
+        .await
+        .expect("a finished lookup releases its snapshot");
+}

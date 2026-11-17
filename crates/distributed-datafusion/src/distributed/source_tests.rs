@@ -16,10 +16,13 @@ use datafusion_proto::physical_plan::DefaultPhysicalProtoConverter;
 
 use restate_core::test_env::TestCoreEnv;
 use restate_partition_store::PartitionStoreManager;
+use restate_partition_store::lookup::LookupKeys;
+use restate_partition_store::vqueue_table::VQueueMetaTable;
 use restate_rocksdb::RocksDbManager;
+use restate_storage_query_api::tables::vqueue_meta::VqueueMeta;
 use restate_types::identifiers::BaseEntryId;
 use restate_types::sharding::KeyRange;
-use restate_types::vqueues::{EntryId, EntryKind};
+use restate_types::vqueues::{EntryId, EntryKind, VQueueId};
 
 use crate::QuerySource;
 use crate::table_providers::ScanPartition;
@@ -28,6 +31,7 @@ use crate::tables::vqueue_entry_status::read::{EntrySelection, decode_keys, enco
 use crate::tables::vqueue_entry_status::schema::{
     SysVqueueEntryStatusBuilder, SysVqueueEntryStatusTable,
 };
+use crate::tables::vqueue_meta::SysVqueueMetaTable;
 
 use super::*;
 
@@ -298,6 +302,58 @@ async fn primary_access_codec_validates_keys_scope_and_capability() {
             "the_source_validates_its_own_encoded_primary_keys"
         );
     }
+    // A generic lookup source validates the same way: the stated count of
+    // strictly increasing keys, and only keys of its own partition.
+    manager.register_declared_scanner::<SysVqueueMetaTable>(Arc::new(
+        SysVqueueMetaTable::create_local_scanner(),
+    ));
+    let queues = [VQueueId::custom(5, "a"), VQueueId::custom(6, "b")];
+    let meta_keys = |count, ids: &[&VQueueId]| PrimaryKeys {
+        count,
+        encoded: LookupKeys::<VQueueMetaTable>::encode(ids.iter().copied()),
+    };
+    let meta_read = |keys| {
+        let mut read = descriptor(keys);
+        read.table = SysVqueueMetaTable::identity();
+        SourceProto {
+            descriptor: read.encode_to_vec(),
+            schema: encode_schema(&VqueueMeta::arrow_schema()),
+            predicate: None,
+        }
+        .encode_to_vec()
+    };
+    for keys in [
+        meta_keys(3, &[&queues[0], &queues[1]]),
+        meta_keys(2, &[&queues[1], &queues[0]]),
+        meta_keys(2, &[&queues[0], &queues[0]]),
+    ] {
+        assert!(
+            SourceCodec {
+                manager: Some(manager.clone())
+            }
+            .try_decode(&meta_read(keys), &[], &context, &converter)
+            .is_err(),
+            "lookup_sources_validate_their_keys"
+        );
+    }
+    let far = VQueueId::custom(100, "far");
+    let decoded = SourceCodec {
+        manager: Some(manager.clone()),
+    }
+    .try_decode(&meta_read(meta_keys(1, &[&far])), &[], &context, &converter)
+    .unwrap();
+    assert!(
+        PartitionReadExec::new(vec![decoded], 1, None)
+            .unwrap()
+            .execute(0, Arc::clone(&context))
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("primary keys are outside their partition"),
+        "lookup_keys_must_belong_to_the_addressed_partition"
+    );
     let mut outside = descriptor(encode_keys(&[BaseEntryId::new(
         100,
         EntryId::new(EntryKind::Invocation, [1; 16]),
