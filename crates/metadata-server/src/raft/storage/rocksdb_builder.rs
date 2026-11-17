@@ -141,20 +141,7 @@ fn cf_data_options(
     cf_options.set_compaction_style(rocksdb::DBCompactionStyle::Level);
     cf_options.set_num_levels(7);
 
-    let l0_l1 = if metadata_server_config
-        .rocksdb
-        .rocksdb_disable_l0_l1_compression()
-    {
-        rocksdb::DBCompressionType::None
-    } else {
-        rocksdb::DBCompressionType::Zstd
-    };
-    let levels = restate_rocksdb::configuration::build_compression_per_level(
-        7,
-        l0_l1,
-        rocksdb::DBCompressionType::Zstd,
-    );
-    cf_options.set_compression_per_level(&levels);
+    restate_rocksdb::configuration::set_compression(cf_options, &metadata_server_config.rocksdb);
 }
 
 fn set_memory_related_opts(opts: &mut rocksdb::Options, memtables_budget: usize) {
@@ -193,20 +180,7 @@ fn cf_metadata_options(
     // Set compactions per level
     //
     cf_options.set_num_levels(3);
-    let l0_l1 = if metadata_server_config
-        .rocksdb
-        .rocksdb_disable_l0_l1_compression()
-    {
-        rocksdb::DBCompressionType::None
-    } else {
-        rocksdb::DBCompressionType::Lz4
-    };
-    let levels = restate_rocksdb::configuration::build_compression_per_level(
-        3,
-        l0_l1,
-        rocksdb::DBCompressionType::Zstd,
-    );
-    cf_options.set_compression_per_level(&levels);
+    restate_rocksdb::configuration::set_compression(cf_options, &metadata_server_config.rocksdb);
     cf_options.set_memtable_whole_key_filtering(true);
     cf_options.set_max_write_buffer_number(4);
     cf_options.set_max_successive_merges(10);
