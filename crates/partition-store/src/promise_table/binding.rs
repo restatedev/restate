@@ -14,7 +14,11 @@
 //! ID, and promise key position the iterator, while ranges and prefixes remain
 //! residual. The legacy layout is read until its migration completes.
 
+use std::num::NonZeroUsize;
 use std::ops::ControlFlow;
+
+use anyhow::{Context, ensure};
+use bytestring::ByteString;
 
 use restate_storage_api::StorageError;
 use restate_storage_api::promise_table::Promise as StoredPromise;
@@ -23,20 +27,25 @@ use restate_storage_query_api::schema::{RecordProgress, row_written};
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, SelectionPrecision};
 use restate_storage_query_api::tables::promise::{
-    Promise, PromiseClause, PromiseColumn, PromiseView,
+    Promise, PromiseClause, PromiseColumn, PromiseDomains, PromiseView, named_promise_keys,
 };
-use restate_storage_query_api::tables::state::partition_keys;
+use restate_storage_query_api::tables::state::{ObjectKeyId, partition_keys};
 use restate_storage_query_api::{PreparedRead, RowSink, SchemaBinding, Table};
+use restate_types::ServiceName;
+use restate_types::identifiers::{PartitionKey, WithPartitionKey};
 
 use crate::keys::codecs::{DelimitedBytesCodec, OptionalScopeCodec};
 use crate::keys::header::{KeySchema, PartitionKeyHeader, PartitionKeyed, restrict_partition_keys};
 use crate::keys::selection::codec::prepare_members;
 use crate::keys::selection::{KeySelection, OrderedKeyField, OrderedKeySchema};
-use crate::keys::{DecodeTableKey, EncodeTableKeyPrefix, KeyDecode, KeyDecoder, KeyKind};
+use crate::keys::{
+    DecodeTableKey, EncodeTableKeyPrefix, FieldCodec, KeyDecode, KeyDecoder, KeyKind,
+};
+use crate::lookup::{LookupBinding, LookupTable, ensure_canonical, object_id, utf8_field};
 use crate::table::{PhysicalTable, ReadMetadata};
 use crate::{Result, break_on_err};
 
-use super::{PromiseKey, ScopedPromiseKey};
+use super::{PromiseKey, ScopedPromiseKey, create_key};
 
 macro_rules! promise_table {
     (
@@ -231,6 +240,104 @@ promise_binding!(
     }
 );
 
+/// A promise is named by its workflow's scope, service name and workflow ID, and
+/// its key, as the `scope`, `service_name`, `service_key` and `key` columns show
+/// them.
+impl LookupTable for PromiseTable {
+    type Id = ObjectKeyId;
+    /// Smaller than for locks: completed promises hold their values. Not measured.
+    const BATCH_SIZE: NonZeroUsize = NonZeroUsize::new(100).unwrap();
+
+    /// `None` for a scoped promise: this layout holds unscoped workflows only.
+    fn key((scope, service_name, service_key, key): &ObjectKeyId) -> Option<PromiseKey> {
+        if scope.is_some() {
+            return None;
+        }
+        let service_id = object_id(scope, service_name, service_key)?;
+        Some(create_key(&service_id, &ByteString::from(key.as_str())))
+    }
+
+    fn check_key(bytes: &[u8]) -> anyhow::Result<PartitionKey> {
+        let rest = bytes
+            .strip_prefix(KeyKind::Promise.as_bytes())
+            .context("not a promise key")?;
+        let (stored, mut rest) = rest
+            .split_first_chunk::<8>()
+            .context("promise key without a partition key")?;
+        let service_name = utf8_field(&mut rest, "service name")?;
+        let service_key = utf8_field(&mut rest, "workflow ID")?;
+        let key = utf8_field(&mut rest, "promise key")?;
+        ensure!(rest.is_empty(), "promise key with trailing bytes");
+        let key =
+            Self::key(&(None, service_name, service_key, key)).context("invalid promise key")?;
+        ensure_canonical(bytes, *stored, &key)?;
+        Ok(key.partition_key)
+    }
+}
+
+/// As [`PromiseTable`], for scoped and unscoped workflows alike.
+impl LookupTable for ScopedPromiseTable {
+    type Id = ObjectKeyId;
+    /// Smaller than for locks: completed promises hold their values. Not measured.
+    const BATCH_SIZE: NonZeroUsize = NonZeroUsize::new(100).unwrap();
+
+    /// `None` for an invalid scope or an empty service name, which no key holds.
+    fn key((scope, service_name, service_key, key): &ObjectKeyId) -> Option<ScopedPromiseKey> {
+        if service_name.is_empty() {
+            return None;
+        }
+        let service_id = object_id(scope, service_name, service_key)?;
+        Some(ScopedPromiseKey {
+            partition_key: service_id.partition_key(),
+            scope: service_id.scope,
+            // Not interned: interned names live as long as the process, and these
+            // come from queries.
+            service_name: ServiceName::new_non_interned(service_name),
+            service_key: service_key.clone(),
+            key: key.clone(),
+        })
+    }
+
+    fn check_key(bytes: &[u8]) -> anyhow::Result<PartitionKey> {
+        let rest = bytes
+            .strip_prefix(KeyKind::ScopedPromise.as_bytes())
+            .context("not a scoped promise key")?;
+        let (stored, mut rest) = rest
+            .split_first_chunk::<8>()
+            .context("promise key without a partition key")?;
+        let scope = OptionalScopeCodec::take_encoded(&mut rest)
+            .and_then(OptionalScopeCodec::decode_encoded)
+            .context("invalid promise scope")?;
+        let service_name = utf8_field(&mut rest, "service name")?;
+        let service_key = utf8_field(&mut rest, "workflow ID")?;
+        let key = utf8_field(&mut rest, "promise key")?;
+        ensure!(rest.is_empty(), "promise key with trailing bytes");
+        let key =
+            Self::key(&(scope, service_name, service_key, key)).context("invalid promise key")?;
+        ensure_canonical(bytes, *stored, &key)?;
+        Ok(key.partition_key)
+    }
+}
+
+/// A branch that pins every key column to finitely many values can only match
+/// their combinations, up to `MAX_LOOKUP_KEYS` of them; this layout holds
+/// unscoped workflows only, so only the NULL scope can match.
+impl LookupBinding for PromiseBinding {
+    fn lookup_ids(domains: &PromiseDomains) -> Domain<ObjectKeyId> {
+        named_promise_keys(
+            domains.scope.clone().intersect(Domain::values([None])),
+            domains,
+        )
+    }
+}
+
+/// As for [`PromiseBinding`], with every scope.
+impl LookupBinding for ScopedPromiseBinding {
+    fn lookup_ids(domains: &PromiseDomains) -> Domain<ObjectKeyId> {
+        named_promise_keys(domains.scope.clone(), domains)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -247,6 +354,72 @@ mod tests {
     use crate::table::navigate;
 
     use super::*;
+
+    /// Complete promise keys are named by every combination of finite columns; the
+    /// legacy layout keeps only the NULL scope. Received keys of either layout are
+    /// checked before anything decodes them.
+    #[test]
+    fn complete_promise_keys_are_named_and_checked() {
+        let texts = |values: &[&str]| Domain::values(values.iter().map(|v| ReString::from(*v)));
+        let domains = PromiseDomains {
+            scope: Domain::values([None, Some(ReString::from("tenant"))]),
+            service_name: texts(&["Signup"]),
+            service_key: texts(&["alice", "bob"]),
+            key: texts(&["email"]),
+            ..Default::default()
+        };
+        assert_eq!(
+            ScopedPromiseBinding::lookup_ids(&domains)
+                .into_values()
+                .unwrap()
+                .len(),
+            4
+        );
+        let legacy = PromiseBinding::lookup_ids(&domains).into_values().unwrap();
+        assert!(legacy.len() == 2 && legacy.iter().all(|(scope, ..)| scope.is_none()));
+
+        fn encode(key: &impl EncodeTableKey) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            key.serialize_to(&mut bytes);
+            bytes
+        }
+        let id = |scope: Option<&str>| {
+            (
+                scope.map(ReString::from),
+                ReString::from("Signup"),
+                ReString::from("alice"),
+                ReString::from("email"),
+            )
+        };
+        let legacy = PromiseTable::key(&id(None)).unwrap();
+        let legacy_bytes = encode(&legacy);
+        assert_eq!(
+            PromiseTable::check_key(&legacy_bytes).unwrap(),
+            legacy.partition_key
+        );
+        assert!(PromiseTable::key(&id(Some("tenant"))).is_none());
+        let scoped = ScopedPromiseTable::key(&id(Some("tenant"))).unwrap();
+        let scoped_bytes = encode(&scoped);
+        assert_eq!(
+            ScopedPromiseTable::check_key(&scoped_bytes).unwrap(),
+            scoped.partition_key
+        );
+        let mut moved = scoped_bytes.clone();
+        moved[9] ^= 1;
+        let mut trailing = legacy_bytes.clone();
+        trailing.push(0);
+        assert!(PromiseTable::check_key(&scoped_bytes).is_err());
+        assert!(PromiseTable::check_key(&legacy_bytes[..9]).is_err());
+        assert!(PromiseTable::check_key(&trailing).is_err());
+        assert!(ScopedPromiseTable::check_key(&legacy_bytes).is_err());
+        let error = ScopedPromiseTable::check_key(&moved).unwrap_err();
+        assert!(
+            error.to_string().contains("another partition key"),
+            "{error}"
+        );
+        let unnamed = (None, ReString::default(), "alice".into(), "email".into());
+        assert!(ScopedPromiseTable::key(&unnamed).is_none());
+    }
 
     #[test]
     fn natural_keys_position_promise_reads() {

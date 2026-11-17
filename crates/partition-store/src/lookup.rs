@@ -49,11 +49,14 @@ use restate_storage_api::StorageError;
 use restate_storage_query_api::scan::{CursorScan, CursorStep, ReadCursor};
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::{RecordsOf, SchemaBinding, SelectionSchema, Table};
-use restate_types::identifiers::PartitionKey;
+use restate_types::Scope;
+use restate_types::identifiers::{PartitionKey, ServiceId};
 use restate_types::sharding::KeyRange;
+use restate_util_string::ReString;
 
-use crate::keys::EncodeTableKey;
+use crate::keys::codecs::DelimitedBytesCodec;
 use crate::keys::header::{KeyHeader, KeySchema};
+use crate::keys::{EncodeTableKey, FieldCodec, KeyKind};
 use crate::table::{BatchKey, KeyBatchCursor, PhysicalTable};
 use crate::{ReadSnapshot, Result};
 
@@ -315,6 +318,47 @@ impl<T: LookupTable> ReadCursor<RecordsOf<T, LookupKeys<T>>> for LookupCursor<T>
         let (_, key, value) = cursor.current()?;
         Ok((<T::Key as KeySchema>::decoder(key)?, value))
     }
+}
+
+/// The object a lookup ID names, such as the owner of a state key, if `scope` is
+/// valid. Its partition key follows the same rule as writes.
+pub(crate) fn object_id(
+    scope: &Option<ReString>,
+    service_name: &str,
+    service_key: &str,
+) -> Option<ServiceId> {
+    let scope = scope
+        .as_deref()
+        .map(Scope::try_non_interned)
+        .transpose()
+        .ok()?;
+    Some(ServiceId::new(scope, service_name, service_key))
+}
+
+/// Reads a delimited field of a received key as UTF-8, checking its bounds.
+pub(crate) fn utf8_field(rest: &mut &[u8], field: &str) -> anyhow::Result<ReString> {
+    let encoded = DelimitedBytesCodec::take_encoded(rest).with_context(|| format!("no {field}"))?;
+    let bytes = DelimitedBytesCodec::decode_encoded(encoded)?;
+    Ok(ReString::from(
+        std::str::from_utf8(&bytes).with_context(|| format!("{field} isn't UTF-8"))?,
+    ))
+}
+
+/// Requires `bytes` to be exactly the stored bytes of `key`, which a received
+/// identity rebuilt, stored under the partition key `stored`.
+pub(crate) fn ensure_canonical(
+    bytes: &[u8],
+    stored: [u8; 8],
+    key: &impl EncodeTableKey,
+) -> anyhow::Result<()> {
+    let mut canonical = Vec::with_capacity(bytes.len());
+    key.serialize_to(&mut canonical);
+    ensure!(
+        canonical[KeyKind::SERIALIZED_LENGTH..][..8] == stored,
+        "key stored under another partition key"
+    );
+    ensure!(canonical == bytes, "key isn't canonical");
+    Ok(())
 }
 
 #[cfg(test)]
