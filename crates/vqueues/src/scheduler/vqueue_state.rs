@@ -224,8 +224,8 @@ pub struct VQueueState<S: VQueueStore> {
 }
 
 impl<S: VQueueStore> VQueueState<S> {
-    pub fn new(qid: &VQueueId, storage: &S, num_running: u32) -> Self {
-        let queue = Queue::new(num_running, storage, qid);
+    pub fn new(qid: &VQueueId, storage: &S, num_running: u32, initial_capacity: usize) -> Self {
+        let queue = Queue::new(num_running, storage, qid, initial_capacity);
         Self {
             deficit: QUANTUM,
             unconfirmed_assignments: UnconfirmedAssignments::new(),
@@ -235,10 +235,10 @@ impl<S: VQueueStore> VQueueState<S> {
         }
     }
 
-    pub fn new_empty() -> Self {
+    pub fn new_empty(initial_capacity: usize) -> Self {
         Self {
             unconfirmed_assignments: UnconfirmedAssignments::new(),
-            queue: Queue::new_closed(),
+            queue: Queue::new_closed(initial_capacity),
             deficit: 0,
             head_stats: Stats::default(),
             current_permit: Default::default(),

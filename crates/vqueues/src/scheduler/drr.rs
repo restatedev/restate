@@ -62,6 +62,8 @@ pub struct DRRScheduler<S: VQueueStore> {
     max_items_per_decision: NonZeroU16,
 
     refill_mode: RefillMode,
+    /// Number of inbox cache entries pre-allocated for each vqueue added to the scheduler
+    initial_queue_capacity: usize,
 
     // SAFETY NOTE: **must** Keep this at the end since it needs to outlive all readers.
     storage: S,
@@ -75,6 +77,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
         storage: S,
         vqueues: VQueuesMeta<'_>,
         refill_mode: RefillMode,
+        initial_queue_capacity: usize,
     ) -> Self {
         let mut total_running = 0;
         let mut total_waiting = 0;
@@ -86,7 +89,10 @@ impl<S: VQueueStore> DRRScheduler<S> {
         for (handle, qid, meta) in vqueues.iter_active_vqueues() {
             total_running += meta.num_running();
             total_waiting += meta.total_waiting();
-            q.insert(handle, VQueueState::new(qid, &storage, meta.num_running()));
+            q.insert(
+                handle,
+                VQueueState::new(qid, &storage, meta.num_running(), initial_queue_capacity),
+            );
             // We init all active vqueues as eligible first
             eligible.insert_eligible(handle);
         }
@@ -106,6 +112,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
             limit_qid_per_poll,
             max_items_per_decision,
             refill_mode,
+            initial_queue_capacity,
         }
     }
 
@@ -281,7 +288,12 @@ impl<S: VQueueStore> DRRScheduler<S> {
 
                     let qstate = self.q.entry(event.queue).unwrap().or_insert_with(|| {
                         trace!("VQueue {} is added to the scheduler", slot.vqueue_id());
-                        VQueueState::new(slot.vqueue_id(), &self.storage, slot.meta().num_running())
+                        VQueueState::new(
+                            slot.vqueue_id(),
+                            &self.storage,
+                            slot.meta().num_running(),
+                            self.initial_queue_capacity,
+                        )
                     });
 
                     if self
@@ -298,7 +310,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
 
                     let qstate = self.q.entry(event.queue).unwrap().or_insert_with(|| {
                         trace!("VQueue {} is added to the scheduler", slot.vqueue_id());
-                        VQueueState::new_empty()
+                        VQueueState::new_empty(self.initial_queue_capacity)
                     });
 
                     counter!(VQUEUE_ENQUEUE).increment(1);
@@ -489,6 +501,8 @@ mod tests {
     use crate::{GlobalTokenBucket, SchedulingStatus, VQueue, VQueueEvent};
 
     const TEST_VQUEUES_CAPACITY: usize = 1024;
+    /// Allocate inbox caches lazily to exercise growth; `queue_test` covers pre-allocated queues.
+    const TEST_INITIAL_QUEUE_CAPACITY: usize = 0;
 
     use super::*;
 
@@ -723,6 +737,7 @@ mod tests {
             db.clone(),
             cache.view(),
             RefillMode::Blocking,
+            TEST_INITIAL_QUEUE_CAPACITY,
         )
     }
 
@@ -742,6 +757,7 @@ mod tests {
             db.clone(),
             cache.view(),
             RefillMode::Blocking,
+            TEST_INITIAL_QUEUE_CAPACITY,
         )
     }
 
@@ -1232,6 +1248,7 @@ mod tests {
             db.clone(),
             cache.view(),
             RefillMode::Blocking,
+            TEST_INITIAL_QUEUE_CAPACITY,
         );
 
         let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
@@ -1365,6 +1382,7 @@ mod tests {
             db.clone(),
             cache.view(),
             RefillMode::Blocking,
+            TEST_INITIAL_QUEUE_CAPACITY,
         );
 
         // Use a spawned task to exercise a fresh, bounded Tokio cooperative budget.
@@ -1462,6 +1480,7 @@ mod tests {
                 db.clone(),
                 cache.view(),
                 RefillMode::Blocking,
+                TEST_INITIAL_QUEUE_CAPACITY,
             );
             let was_woken = Arc::new(AtomicBool::new(false));
             let waker = Waker::from(Arc::new(TestWaker(Arc::clone(&was_woken))));
@@ -1549,6 +1568,7 @@ mod tests {
             db.clone(),
             cache.view(),
             RefillMode::Blocking,
+            TEST_INITIAL_QUEUE_CAPACITY,
         );
 
         let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
@@ -1631,6 +1651,7 @@ mod tests {
             db.clone(),
             cache.view(),
             RefillMode::Blocking,
+            TEST_INITIAL_QUEUE_CAPACITY,
         );
 
         let Poll::Ready(Ok(_decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
@@ -1680,6 +1701,7 @@ mod tests {
             db.clone(),
             cache.view(),
             RefillMode::Blocking,
+            TEST_INITIAL_QUEUE_CAPACITY,
         );
 
         if let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view()) {
@@ -1710,6 +1732,7 @@ mod tests {
             db.clone(),
             cache.view(),
             RefillMode::Blocking,
+            TEST_INITIAL_QUEUE_CAPACITY,
         );
 
         let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
@@ -1787,6 +1810,7 @@ mod tests {
             db.clone(),
             cache.view(),
             RefillMode::Blocking,
+            TEST_INITIAL_QUEUE_CAPACITY,
         );
 
         let h_qid1 = cache.view().handle_for(&qid1).unwrap();

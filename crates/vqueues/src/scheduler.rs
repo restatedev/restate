@@ -147,6 +147,7 @@ impl<S: VQueueStore> SchedulerService<S> {
         storage: S,
         vqueues_cache: &VQueuesMetaCache,
         refill_mode: RefillMode,
+        initial_queue_capacity: usize,
     ) -> Result<Self, StorageError>
     where
         S: ScanVQueueTable,
@@ -167,6 +168,7 @@ impl<S: VQueueStore> SchedulerService<S> {
             storage,
             vqueues_cache.view(),
             refill_mode,
+            initial_queue_capacity,
         )));
         Ok(Self { state })
     }

@@ -127,7 +127,7 @@ fn blocking_refill_completes_inline() {
     let storage = GatedStore::new(vec![entry.clone()]);
     storage.release_refill_thread();
     let qid = test_qid(1);
-    let mut queue = Queue::new(0, &storage, &qid);
+    let mut queue = Queue::new(0, &storage, &qid, INBOX_CACHE_CAPACITY);
     let skip = UnconfirmedAssignments::new();
     let mut cx = Context::from_waker(Waker::noop());
 
@@ -415,7 +415,7 @@ async fn refill_without_overlay_activity() {
     let entries: Vec<_> = (1..=5).map(entry_at_seq).collect();
     let storage = GatedStore::new(entries.clone());
     let qid = test_qid(1);
-    let mut queue: Queue<GatedStore> = Queue::new(0, &storage, &qid);
+    let mut queue: Queue<GatedStore> = Queue::new(0, &storage, &qid, INBOX_CACHE_CAPACITY);
     let skip = UnconfirmedAssignments::new();
 
     poll_once_expect_pending(&mut queue, &storage, &skip, &qid);
@@ -440,7 +440,7 @@ async fn tombstone_in_overlay_suppresses_storage_row() {
     let r_target = entry_at_seq(100);
     let storage = GatedStore::new(vec![r_target.clone()]);
     let qid = test_qid(2);
-    let mut queue: Queue<GatedStore> = Queue::new(0, &storage, &qid);
+    let mut queue: Queue<GatedStore> = Queue::new(0, &storage, &qid, INBOX_CACHE_CAPACITY);
     let skip = UnconfirmedAssignments::new();
 
     poll_once_expect_pending(&mut queue, &storage, &skip, &qid);
@@ -513,7 +513,7 @@ async fn tombstone_evicted_on_overlay_overflow_leaks_deleted_row() {
 
     let storage = GatedStore::new(vec![r_target.clone()]);
     let qid = test_qid(3);
-    let mut queue: Queue<GatedStore> = Queue::new(0, &storage, &qid);
+    let mut queue: Queue<GatedStore> = Queue::new(0, &storage, &qid, INBOX_CACHE_CAPACITY);
     let skip = UnconfirmedAssignments::new();
 
     // Kick off the in-flight refill so subsequent enqueue/remove events
@@ -564,7 +564,7 @@ async fn overlay_tombstone_then_add_resurrects_row() {
 
     let storage = GatedStore::new(vec![target.clone()]);
     let qid = test_qid(4);
-    let mut queue: Queue<GatedStore> = Queue::new(0, &storage, &qid);
+    let mut queue: Queue<GatedStore> = Queue::new(0, &storage, &qid, INBOX_CACHE_CAPACITY);
     let skip = UnconfirmedAssignments::new();
 
     poll_once_expect_pending(&mut queue, &storage, &skip, &qid);
@@ -599,7 +599,7 @@ async fn overflowed_overlay_refills_deferred_entries() {
         .collect::<Vec<_>>();
     let storage = GatedStore::new(removed_entries[..INBOX_CACHE_CAPACITY - 1].to_vec());
     let qid = test_qid(5);
-    let mut queue: Queue<GatedStore> = Queue::new(0, &storage, &qid);
+    let mut queue: Queue<GatedStore> = Queue::new(0, &storage, &qid, INBOX_CACHE_CAPACITY);
     let skip = UnconfirmedAssignments::new();
 
     // Ensure that the load will be async.
@@ -632,7 +632,7 @@ async fn tombstone_beyond_full_refill_does_not_advance_anchor() {
     let entries = (1..=100).map(entry_at_seq).collect::<Vec<_>>();
     let storage = GatedStore::new(entries.clone());
     let qid = test_qid(6);
-    let mut queue: Queue<GatedStore> = Queue::new(0, &storage, &qid);
+    let mut queue: Queue<GatedStore> = Queue::new(0, &storage, &qid, INBOX_CACHE_CAPACITY);
     let skip = UnconfirmedAssignments::new();
 
     poll_once_expect_pending(&mut queue, &storage, &skip, &qid);
@@ -696,7 +696,7 @@ async fn real_non_blocking_refill_merges_committed_updates() {
     drop(cold_reader);
 
     let storage = GatedPartitionDb::new(db);
-    let mut queue = Queue::new(0, &storage, &qid);
+    let mut queue = Queue::new(0, &storage, &qid, INBOX_CACHE_CAPACITY);
     let skip = UnconfirmedAssignments::new();
 
     poll_once_expect_pending(&mut queue, &storage, &skip, &qid);
