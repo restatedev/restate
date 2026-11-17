@@ -327,6 +327,7 @@ impl DataFusionEnv {
         physical_rules.push(Arc::new(FilterBatchSize));
         let builder = SessionStateBuilder::new()
             .with_config(self.config.clone())
+            .with_query_planner(Arc::new(crate::explain::ExplainPlanner))
             .with_physical_optimizer_rules(physical_rules)
             .with_runtime_env(Arc::clone(&self.runtime));
         let builder = if let Some(distributed) = self

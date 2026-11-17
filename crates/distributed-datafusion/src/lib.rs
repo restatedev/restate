@@ -13,6 +13,7 @@ mod batches;
 pub mod context;
 mod diagnostics;
 mod environment;
+mod explain;
 mod live_scanners;
 pub mod local_scanners;
 pub use catalog::{
