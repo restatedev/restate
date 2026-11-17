@@ -431,20 +431,7 @@ fn cf_data_options(
     opts.set_num_levels(7);
     restate_rocksdb::configuration::set_compaction(opts, compaction);
 
-    let l0_l1 = if log_server_config
-        .rocksdb
-        .rocksdb_disable_l0_l1_compression()
-    {
-        rocksdb::DBCompressionType::None
-    } else {
-        rocksdb::DBCompressionType::Lz4
-    };
-    let levels = restate_rocksdb::configuration::build_compression_per_level(
-        7,
-        l0_l1,
-        rocksdb::DBCompressionType::Zstd,
-    );
-    opts.set_compression_per_level(&levels);
+    restate_rocksdb::configuration::set_compression(opts, &log_server_config.rocksdb);
 
     // Override the global default. We want bloom filters on the last level because
     // trimmed ranges (via DeleteRange) can cause scans to hit levels where data no longer
@@ -549,7 +536,8 @@ mod tests {
 
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::{
-        Configuration, RocksDbCompaction, UniversalCompactionOptions, node_dir, set_current_config,
+        Configuration, RocksDbCompaction, RocksDbOptionsBuilder, UniversalCompactionOptions,
+        node_dir, set_current_config,
     };
     use restate_types::logs::metadata::SegmentIndex;
     use restate_types::logs::{LogletId, LogletOffset};
@@ -651,10 +639,10 @@ mod tests {
         Ok(())
     }
 
-    /// The data column family keeps the compaction it was opened with. Configuration updates apply
-    /// the new L0 trigger and blob options, but a new compaction only takes effect on restart: the
-    /// compaction trigger stays the one of the opening style, L0 files for leveled and sorted runs
-    /// for universal.
+    /// The data column family keeps the compaction it was opened with and uses the configured
+    /// compression. Configuration updates apply the new L0 trigger and blob options, but a new
+    /// compaction only takes effect on restart: the compaction trigger stays the one of the opening
+    /// style, L0 files for leveled and sorted runs for universal.
     #[test(restate_core::test(start_paused = true))]
     async fn dynamically_update_blob_and_l0_options() -> anyhow::Result<()> {
         RocksDbManager::init();
@@ -669,22 +657,36 @@ mod tests {
             sorted_runs_compaction_trigger: NonZeroU32::new(12).unwrap(),
             ..Default::default()
         });
-        for (compaction, style, trigger, universal_options) in [
+        for (compaction, style, trigger, universal_options, compression, expected_compression) in [
             (
                 RocksDbCompaction::Level,
                 "kCompactionStyleLevel",
                 "3",
                 ["allow_trivial_move=false", "max_read_amp=-1"],
+                None,
+                [
+                    "compression_per_level=kLZ4Compression:kLZ4Compression",
+                    "bottommost_compression=kZSTD",
+                ],
             ),
             (
                 RocksDbCompaction::Universal(universal),
                 "kCompactionStyleUniversal",
                 "6",
                 ["allow_trivial_move=true", "max_read_amp=10"],
+                // The last value applies to the levels in between and the bottommost one.
+                Some("zstd,lz4".parse().map_err(anyhow::Error::msg)?),
+                [
+                    "compression_per_level=kZSTD:kLZ4Compression",
+                    "bottommost_compression=kLZ4Compression",
+                ],
             ),
         ] {
             let mut config = Configuration::default();
             config.log_server.rocksdb_compaction = Some(compaction);
+            config.log_server.rocksdb = RocksDbOptionsBuilder::default()
+                .rocksdb_compression(compression)
+                .build()?;
             set_current_config(config.clone());
             let builder = RocksDbLogStoreBuilder::create().await?;
 
@@ -701,7 +703,10 @@ mod tests {
                     format!("enable_blob_files={blob_separation}"),
                     format!("compaction_style={style}"),
                     format!("level0_file_num_compaction_trigger={trigger}"),
-                ] {
+                ]
+                .into_iter()
+                .chain(expected_compression.map(str::to_owned))
+                {
                     assert!(data_cf.contains(&option), "{option} not in {data_cf:?}");
                 }
                 let universal_line = data_cf
