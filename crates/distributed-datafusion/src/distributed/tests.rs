@@ -66,7 +66,7 @@ use crate::{DataFusionEnv, QuerySource};
 use super::DistributedQueryServer;
 use super::source::{SourceCodec, plan_partition_access};
 use super::transport::rpc;
-use super::worker::{Tamper, TaskObservation};
+use super::worker::{Hold, Tamper, TaskObservation, WorkerEvent};
 
 const OWNER: GenerationalNodeId = GenerationalNodeId::new(2, 1);
 
@@ -140,6 +140,82 @@ struct Fixture<N> {
     manager: Arc<PartitionStoreManager>,
     observations: Arc<Mutex<Vec<TaskObservation>>>,
     tamper: Arc<Mutex<Tamper>>,
+    /// Holds the owner's state reads, when set.
+    read_hold: Arc<Mutex<Option<ReadHold>>>,
+}
+
+/// A test's hold on the owner's state reads: each read tells `entered` its
+/// snapshot's completion, then waits for `release` before its first row.
+#[derive(Clone)]
+struct ReadHold {
+    entered: tokio::sync::mpsc::UnboundedSender<tokio_util::sync::WaitForCancellationFutureOwned>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+/// An owner's state scanner that a test can hold ([`ReadHold`]).
+#[derive(derive_more::Debug)]
+struct Held(
+    Arc<dyn ScanPartition>,
+    #[debug(skip)] Arc<Mutex<Option<ReadHold>>>,
+);
+
+impl ScanPartition for Held {
+    fn prepare_read(
+        self: Arc<Self>,
+        access: PrimaryRead,
+        projection: SchemaRef,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
+        limit: Option<usize>,
+    ) -> anyhow::Result<Arc<dyn PreparedPartitionRead>> {
+        Ok(Arc::new(HeldRead(
+            Arc::clone(&self.0).prepare_read(access, projection, predicate, limit)?,
+            Arc::clone(&self.1),
+        )))
+    }
+}
+
+#[derive(derive_more::Debug)]
+struct HeldRead(
+    Arc<dyn PreparedPartitionRead>,
+    #[debug(skip)] Arc<Mutex<Option<ReadHold>>>,
+);
+
+impl PreparedPartitionRead for HeldRead {
+    fn capture_requirements(&self) -> restate_worker_api::PartitionCaptureRequirements {
+        self.0.capture_requirements()
+    }
+
+    fn execute(
+        &self,
+        context: crate::table_providers::PartitionReadContext,
+        batch_size: usize,
+        metrics: ReadMetrics,
+    ) -> anyhow::Result<SendableRecordBatchStream> {
+        let hold = self.1.lock().clone();
+        let closed = hold
+            .as_ref()
+            .map(|_| {
+                context
+                    .storage_read()
+                    .map(|(snapshot, _)| snapshot.closed())
+            })
+            .transpose()?;
+        let input = self.0.execute(context, batch_size, metrics)?;
+        let Some((hold, closed)) = hold.zip(closed) else {
+            return Ok(input);
+        };
+        let _ = hold.entered.send(closed);
+        let release = hold.release;
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            input.schema(),
+            stream::once(async move {
+                release.notified().await;
+                None
+            })
+            .filter_map(std::future::ready)
+            .chain(input),
+        )))
+    }
 }
 
 pub(super) fn environment(target_partitions: usize, batch_size: usize) -> DataFusionEnv {
@@ -244,11 +320,15 @@ async fn setup_at_version(
     let local = SourceRegistry::local_only(owner.metadata);
     local.register_offline_reads(Arc::clone(&manager), crate::mocks::query_io());
     let scanner: Arc<dyn ScanPartition> = Arc::new(LookupScanner::<StateBinding>::new());
-    local.register_partition_scanner::<LegacyStateSource>(if fail_after_data {
-        Arc::new(FailAfterData(scanner))
-    } else {
-        scanner
-    });
+    let read_hold = Arc::new(Mutex::new(None));
+    local.register_partition_scanner::<LegacyStateSource>(Arc::new(Held(
+        if fail_after_data {
+            Arc::new(FailAfterData(scanner))
+        } else {
+            scanner
+        },
+        Arc::clone(&read_hold),
+    )));
     local.register_partition_scanner::<ScopedStateSource>(Arc::new(LookupScanner::<
         ScopedStateBinding,
     >::new()));
@@ -266,6 +346,7 @@ async fn setup_at_version(
         manager,
         observations,
         tamper,
+        read_hold,
     }
 }
 
@@ -1086,4 +1167,231 @@ async fn unusable_reports_degrade_to_markers() {
         assert!(text.contains("metrics_invalid=1"), "{text}");
         assert!(!text.contains("tasks_completed"), "{text}");
     }
+}
+
+/// A Close racing a task's blocked requests, over the native transport, each
+/// held at an explicit barrier:
+///
+/// - **a blocked Next:** its read is held before its first row; the query is
+///   dropped, so the coordinator closes the task. The Next ends as closed,
+///   the task closes once, and the read's snapshot actually closes;
+/// - **a blocked Execute**, under ANALYZE: held before it runs; the query is
+///   dropped, and the Close arrives while it's held. Released, the Execute ends
+///   as closed and publishes nothing; the Close then settles once, with its
+///   report.
+///
+/// Every event names the owner's task, as installed.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_close_ends_a_blocked_execute_or_next_once() {
+    let mut fixture = setup(false).await;
+    let mut transaction = fixture.store.transaction();
+    for key in ["a", "b", "c"] {
+        transaction
+            .put_user_state(
+                &ServiceId::new(None, "service", "object"),
+                &Bytes::copy_from_slice(key.as_bytes()),
+                Bytes::from_static(b"value"),
+            )
+            .unwrap();
+    }
+    transaction.commit().await.unwrap();
+    drop(transaction);
+    let (events, mut events_rx) = tokio::sync::mpsc::unbounded_channel::<WorkerEvent>();
+    fixture.tamper.lock().events = Some(events);
+    // The first event of `kind` for task `id` not yet taken, received within
+    // 10 s: one request's events may arrive before or after another's.
+    let mut seen: Vec<WorkerEvent> = Vec::new();
+    let mut taken: Vec<bool> = Vec::new();
+    let mut next_event =
+        async |kind: &str, id: &QueryTaskId, seen: &mut Vec<WorkerEvent>, taken: &mut Vec<bool>| {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(at) = seen
+                    .iter()
+                    .enumerate()
+                    .position(|(at, event)| !taken[at] && event.kind == kind && event.id == *id)
+                {
+                    taken[at] = true;
+                    return seen[at].clone();
+                }
+                let event = tokio::time::timeout_at(deadline, events_rx.recv())
+                    .await
+                    .unwrap_or_else(|_| panic!("no {kind} event: {seen:#?}"))
+                    .unwrap();
+                seen.push(event);
+                taken.push(false);
+            }
+        };
+    let engine = fixture.engine(1, 1);
+
+    // A blocked Next.
+    let (entered, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+    *fixture.read_hold.lock() = Some(ReadHold {
+        entered,
+        release: Arc::new(tokio::sync::Notify::new()),
+    });
+    let mut stream = engine
+        .create_session(SessionOptions::default())
+        .unwrap()
+        .execute("SELECT * FROM state", QueryOptions {})
+        .await
+        .unwrap()
+        .stream;
+    let consumer = tokio::spawn(async move { stream.next().await.map(|batch| batch.is_ok()) });
+    let closed = tokio::time::timeout(Duration::from_secs(10), entered_rx.recv())
+        .await
+        .expect("the read is held")
+        .unwrap();
+    let task = fixture.observations.lock()[0].id.clone();
+    assert_eq!(fixture.observations.lock()[0].owner, OWNER);
+    consumer.abort();
+    let next = next_event("next", &task, &mut seen, &mut taken).await;
+    let close = next_event("close", &task, &mut seen, &mut taken).await;
+    assert!(next.outcome.contains("query task closed"), "{seen:#?}");
+    assert_eq!(close.outcome, "closed report=false");
+    tokio::time::timeout(Duration::from_secs(5), closed)
+        .await
+        .expect("the held read's snapshot closes");
+    *fixture.read_hold.lock() = None;
+
+    // A blocked Execute, under ANALYZE.
+    let (entered, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Notify::new());
+    fixture.tamper.lock().execute_hold = Some(Hold {
+        entered,
+        release: Arc::clone(&release),
+    });
+    let mut stream = engine
+        .create_session(SessionOptions::default())
+        .unwrap()
+        .execute("EXPLAIN ANALYZE SELECT * FROM state", QueryOptions {})
+        .await
+        .unwrap()
+        .stream;
+    let consumer = tokio::spawn(async move { stream.next().await.map(|batch| batch.is_ok()) });
+    let task = tokio::time::timeout(Duration::from_secs(10), entered_rx.recv())
+        .await
+        .expect("the Execute is held")
+        .unwrap();
+    let installed = fixture.observations.lock()[1].id.clone();
+    assert_eq!(task, installed);
+    consumer.abort();
+    next_event("close-received", &task, &mut seen, &mut taken).await;
+    release.notify_one();
+    let execute = next_event("execute", &task, &mut seen, &mut taken).await;
+    let close = next_event("close", &task, &mut seen, &mut taken).await;
+    assert!(execute.outcome.contains("query task closed"), "{seen:#?}");
+    assert_eq!(close.outcome, "closed report=true");
+    // Each task closed once.
+    fixture.tamper.lock().events = None;
+    while let Ok(event) = events_rx.try_recv() {
+        seen.push(event);
+    }
+    for id in [&installed, &next.id] {
+        assert_eq!(
+            seen.iter()
+                .filter(|event| event.kind == "close" && event.id == *id)
+                .count(),
+            1,
+            "{seen:#?}"
+        );
+    }
+}
+
+/// A task's own failure stays the query's error however its telemetry fails
+/// too. An Execute fails as a protocol failure: without ANALYZE; under ANALYZE
+/// with a malformed report; and from a worker without reports. Each time the
+/// query fails with that failure, worded the same.
+///
+/// The ordering covered is the native one for a failed task: the control
+/// failure ends the query first; the coordinator's control stream for the
+/// task still ends, and closes it. Receipts from the coordinator, waited for
+/// as well as the failure, show for each task: without ANALYZE, the close;
+/// with a malformed report, that its worker was to report, then the report
+/// read and degraded to invalid (the soft-failure branch), after the control
+/// failure; from a worker without reports, that it wasn't to report, then
+/// the close.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_control_failure_stays_the_error_whatever_the_telemetry() {
+    let mut fixture = setup(false).await;
+    let mut transaction = fixture.store.transaction();
+    transaction
+        .put_user_state(
+            &ServiceId::new(None, "service", "object"),
+            &Bytes::from_static(b"a"),
+            Bytes::from_static(b"value"),
+        )
+        .unwrap();
+    transaction.commit().await.unwrap();
+    drop(transaction);
+    let (receipts, mut receipts_rx) = tokio::sync::mpsc::unbounded_channel();
+    *super::transport::TELEMETRY.lock().unwrap() = Some(receipts);
+    fixture.tamper.lock().execute_error = Some("injected execute failure".to_owned());
+    let engine = fixture.engine(1, 1);
+    let mut errors = Vec::new();
+    for (at, (sql, legacy, report, expected)) in [
+        ("SELECT * FROM state", false, None, &["closed"][..]),
+        (
+            "EXPLAIN ANALYZE SELECT * FROM state",
+            false,
+            Some(vec![0xff; 16]),
+            &["installed report=true", "invalid"][..],
+        ),
+        (
+            "EXPLAIN ANALYZE SELECT * FROM state",
+            true,
+            None,
+            &["installed report=false", "closed"][..],
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        {
+            let mut tamper = fixture.tamper.lock();
+            tamper.legacy = legacy;
+            tamper.report = report;
+        }
+        let error = engine
+            .create_session(SessionOptions::default())
+            .unwrap()
+            .execute(sql, QueryOptions {})
+            .await
+            .unwrap()
+            .stream
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap_err()
+            .to_string();
+        // The owner's failure, with its owner and kind.
+        assert!(
+            error.contains("N2:1: protocol: injected execute failure")
+                && !error.contains("metrics"),
+            "{sql}: {error}"
+        );
+        errors.push(error);
+        // This task's telemetry, up to what became of it.
+        let task = fixture.observations.lock()[at].id.clone();
+        let mut seen = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let terminal = ["closed unread", "closed", "received", "invalid", "missing"];
+        while seen
+            .last()
+            .is_none_or(|what: &String| !terminal.contains(&what.as_str()))
+        {
+            let (id, what) = tokio::time::timeout_at(deadline, receipts_rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("{sql}: {seen:?}"))
+                .unwrap();
+            if id == task {
+                seen.push(what);
+            }
+        }
+        assert_eq!(seen, expected, "{sql} legacy={legacy}");
+    }
+    // The same failure, worded the same, each time.
+    assert!(
+        errors.windows(2).all(|pair| pair[0] == pair[1]),
+        "{errors:#?}"
+    );
 }

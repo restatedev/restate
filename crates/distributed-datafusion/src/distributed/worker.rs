@@ -70,7 +70,7 @@ pub struct DistributedQueryServer {
     pub(super) tamper: Arc<Mutex<Tamper>>,
 }
 
-/// How a test worker misbehaves.
+/// How a test worker misbehaves, and what it tells the test.
 #[cfg(test)]
 #[derive(Default)]
 pub(super) struct Tamper {
@@ -78,6 +78,55 @@ pub(super) struct Tamper {
     pub legacy: bool,
     /// Sends these bytes as every report.
     pub report: Option<Vec<u8>>,
+    /// Holds each Execute before it runs: tells its task's ID, then waits for
+    /// a release.
+    pub execute_hold: Option<Hold>,
+    /// Fails each Execute with this message, as a protocol failure.
+    pub execute_error: Option<String>,
+    /// Receives each request's arrival or reply, in order.
+    pub events: Option<tokio::sync::mpsc::UnboundedSender<WorkerEvent>>,
+}
+
+/// A test's hold on a request: it tells `entered`, then waits for `release`.
+#[cfg(test)]
+#[derive(Clone)]
+pub(super) struct Hold {
+    pub entered: tokio::sync::mpsc::UnboundedSender<QueryTaskId>,
+    pub release: Arc<tokio::sync::Notify>,
+}
+
+/// A request a test worker received or answered, and how.
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(super) struct WorkerEvent {
+    pub kind: &'static str,
+    pub id: QueryTaskId,
+    pub outcome: String,
+}
+
+#[cfg(test)]
+fn record(tamper: &Mutex<Tamper>, kind: &'static str, id: &QueryTaskId, outcome: String) {
+    if let Some(events) = &tamper.lock().events {
+        let _ = events.send(WorkerEvent {
+            kind,
+            id: id.clone(),
+            outcome,
+        });
+    }
+}
+
+#[cfg(test)]
+fn outcome(reply: &Result<QueryTaskReplyBody>) -> String {
+    match reply {
+        Ok(QueryTaskReplyBody::Closed(closed)) => {
+            format!("closed report={}", closed.report.is_some())
+        }
+        Ok(QueryTaskReplyBody::Executing(())) => "executing".to_owned(),
+        Ok(QueryTaskReplyBody::Batch(_)) => "batch".to_owned(),
+        Ok(QueryTaskReplyBody::End(())) => "end".to_owned(),
+        Ok(_) => "other".to_owned(),
+        Err(error) => format!("error: {error}"),
+    }
 }
 
 #[cfg(test)]
@@ -194,6 +243,8 @@ impl DistributedQueryServer {
                             }
                         }
                         QueryTaskRequest::Close(request) => {
+                            #[cfg(test)]
+                            record(&self.tamper, "close-received", &request.id, String::new());
                             let key = (peer, request.id);
                             match tasks.remove(&key) {
                                 // Settling and building the report waits: not in this loop.
@@ -202,6 +253,8 @@ impl DistributedQueryServer {
                                     closing.insert(key.clone(), result.clone());
                                     #[cfg(test)]
                                     let tampered = self.tamper.lock().report.clone();
+                                    #[cfg(test)]
+                                    let tamper = Arc::clone(&self.tamper);
                                     requests.spawn(async move {
                                         #[cfg_attr(not(test), expect(unused_mut))]
                                         let mut closed = result.await;
@@ -209,12 +262,16 @@ impl DistributedQueryServer {
                                         if let Some(bytes) = tampered {
                                             closed.report = Some(bytes.into());
                                         }
+                                        #[cfg(test)]
+                                        record(&tamper, "close", &key.1, outcome(&Ok(QueryTaskReplyBody::Closed(closed.clone()))));
                                         reply.send(QueryTaskReplyBody::Closed(closed).into());
                                         Some(key)
                                     });
                                 }
                                 Some(task) => {
                                     task.abort();
+                                    #[cfg(test)]
+                                    record(&self.tamper, "close", &key.1, "closed report=false".to_owned());
                                     reply.send(QueryTaskReplyBody::Closed(QueryTaskClosed::default()).into());
                                 }
                                 None => match closing.get(&key).cloned() {
@@ -235,17 +292,35 @@ impl DistributedQueryServer {
                             // and the request's first poll. It stays marked until the
                             // reply is sent.
                             let in_flight = task.as_ref().map(|task| task.activity.begin());
+                            #[cfg(test)]
+                            let (tamper, hold, failure) = {
+                                let tampered = self.tamper.lock();
+                                (Arc::clone(&self.tamper), tampered.execute_hold.clone(), tampered.execute_error.clone())
+                            };
                             requests.spawn(async move {
+                                #[cfg(test)]
+                                let id = request.id.clone();
+                                #[cfg(test)]
+                                if let Some(hold) = hold {
+                                    let _ = hold.entered.send(id.clone());
+                                    hold.release.notified().await;
+                                }
                                 let result = match task {
+                                    #[cfg(test)]
+                                    Some(_) if failure.is_some() => Err(protocol_error(failure.unwrap_or_default())),
                                     Some(task) => task.execute(request).await,
                                     None => Err(protocol_error("query task is not installed")),
                                 };
+                                #[cfg(test)]
+                                record(&tamper, "execute", &id, outcome(&result));
                                 reply.send(task_reply(result, origin));
                                 drop(in_flight);
                                 None
                             });
                         }
                         QueryTaskRequest::Next(request) => {
+                            #[cfg(test)]
+                            let (tamper, id) = (Arc::clone(&self.tamper), request.id.clone());
                             let task = tasks.get(&(peer, request.id)).cloned();
                             let in_flight = task.as_ref().map(|task| task.activity.begin());
                             requests.spawn(async move {
@@ -253,6 +328,8 @@ impl DistributedQueryServer {
                                     Some(task) => task.next(request.partition as usize).await,
                                     None => Err(protocol_error("query task is not installed")),
                                 };
+                                #[cfg(test)]
+                                record(&tamper, "next", &id, outcome(&result));
                                 reply.send(task_reply(result, origin));
                                 drop(in_flight);
                                 None
