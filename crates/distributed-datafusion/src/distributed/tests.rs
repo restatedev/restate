@@ -1234,6 +1234,9 @@ async fn a_close_ends_a_blocked_execute_or_next_once() {
         .unwrap();
     let task = fixture.observations.lock()[0].id.clone();
     assert_eq!(fixture.observations.lock()[0].owner, OWNER);
+    // The read starts as the Execute runs, before the coordinator pulls: the
+    // Next must reach the owner before the query is dropped, or it's never sent.
+    next_event("next-received", &task, &mut seen, &mut taken).await;
     consumer.abort();
     let next = next_event("next", &task, &mut seen, &mut taken).await;
     let close = next_event("close", &task, &mut seen, &mut taken).await;
@@ -1506,6 +1509,9 @@ async fn a_close_cancels_a_waiting_task_and_finalizes_it_once() {
         (observations[0].id.clone(), observations[0].owner)
     };
     assert_eq!(owner, OWNER);
+    // The read starts as the Execute runs, before the coordinator pulls: the
+    // Next must reach the owner first, or it finds the task closed and gone.
+    next_event("next-received", &task, &mut seen, &mut taken).await;
     let first = close(&task);
     next_event("cancelled", &task, &mut seen, &mut taken).await;
     let next = next_event("next", &task, &mut seen, &mut taken).await;

@@ -353,6 +353,8 @@ impl DistributedQueryServer {
                         QueryTaskRequest::Next(request) => {
                             #[cfg(test)]
                             let (tamper, id) = (Arc::clone(&self.tamper), request.id.clone());
+                            #[cfg(test)]
+                            record(&tamper, "next-received", &id, String::new());
                             let task = tasks.get(&(peer, request.id)).cloned();
                             let in_flight = task.as_ref().map(|task| task.activity.begin());
                             requests.spawn(async move {
