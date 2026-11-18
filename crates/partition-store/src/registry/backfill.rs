@@ -49,22 +49,29 @@
 //! [`crate::job`]). Registering an index creates its job ([`register_job`]);
 //! starting a walk links the jobs, keeping what earlier passes recorded; each
 //! slice adds the rows it took to every member's job and the rows it filled for
-//! that member, in the slice's commit; completion moves the jobs to the history.
+//! that member, in the slice's commit; completion finishes the jobs, whose
+//! records then expire after the configured retention.
 //!
 //! Opening a partition starts the walk ([`start`]), and the walk engine runs it
 //! a slice at a time (see [`crate::walk::engine`]).
 
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::{EntryContext, EntryStateRef, EntryStatusHeader};
+use restate_storage_api::vqueue_table::{
+    EntryContext, EntryStateRef, EntryStatusHeader, OwnedEntryStatusHeader,
+};
+use restate_types::identifiers::BaseEntryId;
 
 use crate::job::{MigrationJob, MigrationJobId, MigrationJobRecords, MigrationJobStatus, Stamp};
+use crate::keys::DecodeTableKey;
 use crate::stats::aggregated::backfill::with_entry_target;
-use crate::vqueue_table::EntryStatusKey;
-use crate::walk::engine::{self, Settlement, SourceEntry, Staged, WalkJob, walk_error};
+use crate::vqueue_table::{EntryStatusKey, decode_entry_status};
+#[cfg(test)]
+use crate::walk::engine::SourceEntry;
+use crate::walk::engine::{self, Settlement, Staged, WalkJob, walk_error};
 use crate::walk::{Source, WalkKind, Walks};
 use crate::{PartitionDb, PartitionStoreTransaction};
 
-use super::{IndexDefinition, IndexRegistry, MaintainedIndexes, RegistryError};
+use super::{IndexDefinition, PublishedRegistry, Registry, RegistryError};
 
 /// A Backfilling index: its definition and index ID.
 type Member = (&'static IndexDefinition, u32);
@@ -75,7 +82,7 @@ pub(crate) struct IndexBackfill {
 }
 
 impl IndexBackfill {
-    pub(crate) fn new(active: &MaintainedIndexes, walk: u64) -> Result<Self, StorageError> {
+    pub(crate) fn new(active: &PublishedRegistry, walk: u64) -> Result<Self, StorageError> {
         let members = active.members(walk)?;
         if members.len() > 64 {
             return Err(StorageError::Generic(anyhow::anyhow!(
@@ -96,15 +103,24 @@ impl IndexBackfill {
 }
 
 impl WalkJob for IndexBackfill {
+    /// An entry status: the entry's ID and its decoded header.
+    type Entry = (BaseEntryId, OwnedEntryStatusHeader);
+
+    fn decode(raw: &[u8], value: &[u8]) -> Result<Self::Entry, StorageError> {
+        let entry = EntryStatusKey::deserialize_from(&mut &raw[..])?.id;
+        Ok((entry, decode_entry_status(&entry, value)?))
+    }
+
     fn job_ids(&self) -> impl Iterator<Item = u32> {
         self.members.iter().map(|(_, id)| *id)
     }
 
     fn stage(
-        &self,
+        &mut self,
         tx: &mut PartitionStoreTransaction<'_>,
         db: &PartitionDb,
-        (key, entry, header): &SourceEntry,
+        key: &[u8],
+        (entry, header): &Self::Entry,
     ) -> Result<Staged, StorageError> {
         let touched_by = header.touched_by();
         let mut staged = Staged::default();
@@ -122,7 +138,6 @@ impl WalkJob for IndexBackfill {
             return Ok(staged);
         }
         let key: [u8; EntryStatusKey::serialized_length_fixed()] = key
-            .as_slice()
             .try_into()
             .map_err(|_| StorageError::DataIntegrityError)?;
         let state = EntryStateRef::from_header(header);
@@ -145,7 +160,7 @@ impl WalkJob for IndexBackfill {
 
     fn finish(
         &self,
-        registry: &mut IndexRegistry,
+        registry: &mut Registry,
         settled: &[(u32, Settlement)],
         at: u64,
     ) -> Result<(), StorageError> {
@@ -162,7 +177,7 @@ impl WalkJob for IndexBackfill {
 }
 
 /// Makes the Backfilling index `id` Ready at `at`.
-fn set_ready(registry: &mut IndexRegistry, id: u32, at: u64) -> Result<(), StorageError> {
+fn set_ready(registry: &mut Registry, id: u32, at: u64) -> Result<(), StorageError> {
     registry
         .set_ready(id)
         .map_err(|err| StorageError::Conversion(err.into()))?;
@@ -174,7 +189,7 @@ fn set_ready(registry: &mut IndexRegistry, id: u32, at: u64) -> Result<(), Stora
 
 /// Creates the `Pending` build job of index `id`, registered at `stamp`.
 pub(crate) fn register_job(
-    registry: &IndexRegistry,
+    registry: &Registry,
     jobs: &mut MigrationJobRecords,
     id: u32,
     stamp: &Stamp,
@@ -197,30 +212,34 @@ pub(crate) fn register_job(
 /// now, linked to them and to their build jobs, which must exist (see
 /// [`register_job`]). A job keeps what earlier passes recorded; one that waited
 /// runs again. A partition without entries has nothing to walk: the indexes
-/// become Ready at once and their jobs move to the history, completed. For a new
+/// become Ready at once and their jobs finish, completed. For a new
 /// registration that takes no pass; for a job that waited, it is a full pass
-/// that found nothing. The change is staged on `registry`, `walks` and `jobs`;
-/// the caller commits them.
+/// that found nothing. The change is staged on `registry` (which issues the
+/// walk's ID), `walks` and `jobs`; the caller commits them.
 pub(crate) fn start(
     db: &PartitionDb,
-    registry: &mut IndexRegistry,
+    registry: &mut Registry,
     walks: &mut Walks,
     jobs: &mut MigrationJobRecords,
     ids: &[u32],
     at: u64,
-    history_limit: usize,
 ) -> Result<Option<u64>, StorageError> {
     let registry_error = |err: RegistryError| StorageError::Conversion(err.into());
-    let walk = match engine::last_key(db)? {
+    let walk = match engine::last_key(db, Source::EntryStatus)? {
         None => None,
         Some(end) => Some(
             walks
-                .start(WalkKind::index_backfill(), Source::EntryStatus, end)
+                .start(
+                    registry,
+                    WalkKind::index_backfill(),
+                    Source::EntryStatus,
+                    end,
+                )
                 .map_err(walk_error)?,
         ),
     };
     for id in ids {
-        let job_id = MigrationJobId::for_index(*id);
+        let job_id = MigrationJobId::for_entry(*id);
         let job = jobs
             .unfinished
             .get_mut(job_id)
@@ -242,12 +261,7 @@ pub(crate) fn start(
                     job.pass_started_at = Some(at);
                     job.record_full_pass(at, 0);
                 }
-                jobs.finish(
-                    job_id,
-                    MigrationJobStatus::Completed,
-                    Some(at),
-                    history_limit,
-                );
+                jobs.finish(job_id, MigrationJobStatus::Completed, Some(at), at);
             }
         }
     }

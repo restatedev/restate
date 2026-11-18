@@ -18,7 +18,7 @@ use crate::tables::bifrost_read_stream::BifrostReadStreamsTable;
 use crate::tables::config::ConfigTable;
 use crate::tables::loglet_workers::LogletWorkersTable;
 use crate::tables::logs::LogsTable;
-use crate::tables::migration_records::{IndexesTable, MigrationJobsTable};
+use crate::tables::migration_records::{MigrationJobsTable, RegistryTable};
 use crate::tables::nodes::NodesTable;
 use crate::tables::partition_replica_set::PartitionReplicaSetTable;
 use crate::tables::partition_state::PartitionStateTable;
@@ -123,10 +123,10 @@ impl RegisterTable for ClusterTables {
         )?;
         // Worker nodes register their scanners of these separately
         // (`local_scanners::register_cluster_scanners`).
-        inventory.add::<IndexesTable>(
+        inventory.add::<RegistryTable>(
             "cluster",
-            "indexes",
-            IndexesTable::create_provider(Metadata::current(), self.sources.clone()),
+            "registry",
+            RegistryTable::create_provider(Metadata::current(), self.sources.clone()),
         )?;
         inventory.add::<MigrationJobsTable>(
             "cluster",

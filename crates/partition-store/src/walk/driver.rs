@@ -40,8 +40,8 @@
 //!
 //! **Failures.** A slice that fails before its commit is recorded on its walk's
 //! jobs, and that walk retries after its own exponential backoff while the other
-//! walks keep their turns, the partition keeps serving and the indexes stay
-//! Backfilling. A pass that fails to start likewise defers only its jobs, behind
+//! walks keep their turns, the partition keeps serving and the walk's indexes
+//! stay Backfilling, or its migration in progress. A pass that fails to start likewise defers only its jobs, behind
 //! a backoff of its own; started walks keep their turns meanwhile. A failed commit has an
 //! unknown outcome: [`WalkDriver::step`] returns it, and the processor stops; its
 //! reopen reloads the records.
@@ -77,7 +77,7 @@ use restate_types::config::StorageOptions;
 
 use crate::faults::{self, FaultPoint};
 use crate::job::{MigrationJobStatus, RECHECK_CAP_MS};
-use crate::registry::{IndexStatus, MaintainedIndexes};
+use crate::registry::{IndexStatus, PublishedRegistry};
 use crate::{PartitionDb, PartitionStore, PartitionStoreTransaction};
 
 use super::engine::{self, Slice, SliceBudget, SliceError};
@@ -289,11 +289,10 @@ impl PartitionStore {
     /// The background driver of this partition's walks, under `options`.
     pub fn walk_driver(&self, options: &StorageOptions) -> WalkDriver {
         let db = self.partition_db().clone();
-        let active = self.maintained_indexes();
+        let active = self.published_registry();
         let started = active.walks().entries().len();
         let waiting = active
             .jobs()
-            .unfinished
             .entries()
             .iter()
             .any(|job| job.status == MigrationJobStatus::Waiting);
@@ -301,13 +300,10 @@ impl PartitionStore {
         if pending && options.disable_background_migrations {
             info!(
                 started,
-                "Background migrations are disabled; the pending index and statistics backfill waits"
+                "Background migrations are disabled; pending walks wait"
             );
         } else if pending {
-            info!(
-                started,
-                "Backfilling indexes and statistics in the background"
-            );
+            info!(started, "Running migration walks in the background");
         }
         let now = Instant::now();
         let mut driver = WalkDriver {
@@ -407,7 +403,7 @@ impl WalkDriver {
         }
         // Before the fence check: the published state then tells when each waiting
         // job may start, also while a fence holds every start back.
-        let active = tx.maintained_indexes();
+        let active = tx.published_registry();
         let eligible = self.eligible(&active, started);
         let fenced = tx.commits_held();
         if fenced != self.fenced {
@@ -434,11 +430,10 @@ impl WalkDriver {
     /// The waiting jobs, by index ID, whose wait is over at `now`. Gives each
     /// waiting job first seen a deadline on this process's clock: its wall-clock
     /// eligibility, at most [`RECHECK_CAP_MS`] away.
-    fn eligible(&mut self, active: &MaintainedIndexes, now: Instant) -> Vec<u32> {
+    fn eligible(&mut self, active: &PublishedRegistry, now: Instant) -> Vec<u32> {
         let wall = WallClock::now_ms().as_u64();
         let waiting: Vec<_> = active
             .jobs()
-            .unfinished
             .entries()
             .iter()
             .filter(|job| job.status == MigrationJobStatus::Waiting)
@@ -507,7 +502,7 @@ impl WalkDriver {
 
     /// The next walk to take a slice at `now`: the lowest started walk after the
     /// latest one, or else the lowest, skipping those in backoff.
-    fn next_walk(&mut self, active: &MaintainedIndexes, now: Instant) -> Option<u64> {
+    fn next_walk(&mut self, active: &PublishedRegistry, now: Instant) -> Option<u64> {
         let walks = active.walks().entries();
         let backoffs = self.backoffs.len();
         self.backoffs
@@ -617,10 +612,7 @@ impl WalkDriver {
         let (examined, failure) = match result {
             Ok((slice, examined)) => {
                 if slice == Slice::Exhausted {
-                    info!(
-                        walk,
-                        "A backfill walk ended its pass: its indexes are Ready, or wait for another pass"
-                    );
+                    info!(walk, "A migration walk ended its pass");
                 }
                 (examined, None)
             }
@@ -676,10 +668,7 @@ impl WalkDriver {
                 }
             }
             Some(error) => {
-                warn!(
-                    walk,
-                    "Background index and statistics backfill failed, retrying: {error}"
-                );
+                warn!(walk, "A migration walk failed, retrying: {error}");
                 let failures = self
                     .backoffs
                     .get(&walk)

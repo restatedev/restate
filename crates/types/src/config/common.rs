@@ -1253,8 +1253,8 @@ experimental! {
     /// status gauges are explicitly reset. Statistics-table visibility is controlled
     /// separately on the query coordinator.
     ///
-    /// Enabling this option registers the statistics in the partition's index
-    /// registry and raises the partition's minimum Restate version to v1.8.2.
+    /// Enabling this option registers the statistics in the partition's registry
+    /// and raises the partition's minimum Restate version to v1.8.2.
     /// That stays, also after the option is removed or the gauges are reset: a
     /// node that has ever run with it cannot be rolled back to an older version.
     ///
@@ -1270,7 +1270,7 @@ experimental! {
     ///
     /// To build these statistics, first enable
     /// `experimental-enable-track-status-gauges` on workers, and wait until the
-    /// statistics are Ready on every partition (see `restate.cluster.indexes`);
+    /// statistics are Ready on every partition (see `restate.cluster.registry`);
     /// this option doesn't start that or wait for it. A query fails if a partition
     /// it reads has missing or incomplete statistics, instead of returning a
     /// partial total. Enable this only once all nodes are upgraded: an older node
@@ -1307,8 +1307,8 @@ experimental! {
     /// Maintenance persists across restarts even if this flag is removed, unless
     /// the entry indexes are explicitly reset.
     ///
-    /// Enabling this option registers the indexes in the partition's index
-    /// registry and raises the partition's minimum Restate version to v1.8.2.
+    /// Enabling this option registers the indexes in the partition's registry and
+    /// raises the partition's minimum Restate version to v1.8.2.
     /// That stays, also after the option is removed or the indexes are reset: a
     /// node that has ever run with it cannot be rolled back to an older version.
     ///

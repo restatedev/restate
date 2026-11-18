@@ -12,8 +12,10 @@
 //! configuration, before the partition processor starts writing:
 //!
 //! 0. **Discard** the walks of a kind or source this binary doesn't know, if they
-//!    allow it (see [`crate::walk::OnUnknown`]); their members are unlinked. A
-//!    walk that doesn't allow it refuses the open before anything changes.
+//!    allow it (see [`crate::walk::OnUnknown`]); their members and their
+//!    migration are unlinked. A walk that doesn't allow it refuses the open
+//!    before anything changes, as does a migration this binary doesn't know
+//!    whose entry says so (see [`super::MigrationOnUnknown`]).
 //! 1. **Retire** maintained indexes of definitions this binary does not know (a
 //!    rollback, or another build): their keys are range-deleted and they become
 //!    Dropped, keeping their IDs reserved.
@@ -21,37 +23,45 @@
 //! 3. **Register** each requested definition that has no maintained index, under
 //!    a fresh ID, with a `Pending` build job.
 //!    Running out of IDs skips the request with an error log.
-//! 4. **Settle the job records** (see [`crate::job`]) with the registry, which
+//! 4. **Migrations**, on a store with the `registry` fence only, set before
+//!    this open or by its registrations above: register each one this binary
+//!    knows that the store hasn't, with a walk and a job, and restart the walk
+//!    of each one in progress that lost it (see [`super::migration`]). A
+//!    migration over an empty source completes at once.
+//! 5. **Settle the job records** (see [`crate::job`]) with the registry, which
 //!    decides. Registering and dropping record their times on the indexes'
 //!    timelines and jobs. Records that disagree follow the registry: a job whose
-//!    index is Ready or dropped is finished at an unknown time, a Backfilling
-//!    index without a job gets one with unknown times, and the history is
-//!    trimmed to its limit. Unreadable job records are rebuilt, never fail the
+//!    index is Ready or dropped, or whose migration is Complete, is finished at
+//!    an unknown time, and a Backfilling index or a migration in progress
+//!    without a job gets one with unknown times. A job that
+//!    finishes gets its final record, which expires after the configured
+//!    retention. Unreadable job records are rebuilt or deleted, never fail the
 //!    open.
-//! 5. **Start** one walk for the eligible Backfilling indexes that have none,
+//! 6. **Start** one walk for the eligible Backfilling indexes that have none,
 //!    over the entries that exist now (see [`super::backfill`]): new
 //!    registrations, indexes whose definition can fill now, and passive ones
 //!    whose wait is over. A partition without entries has nothing to walk: those
 //!    indexes become Ready instead.
-//! 6. **Fence:** once anything was ever registered, the `index-registry` storage
+//! 7. **Fence:** once an index was ever registered, the `registry` storage
 //!    feature is in the store's ledger, so older binaries cannot open it.
 //!
 //! ```text
-//! open ─▶ validate registry, walks, fence ─▶ retire · reset · register · start walks
-//!          (an invalid state fails the open)                 │
-//!                                             one batch: registry + walks + fence
-//!                                                            │
-//!                                              flush ─▶ install for writes ─▶ processor runs,
-//!                                                                             walks run in slices
+//! open ─▶ load (one scan) + validate ─▶ retire · reset · register · start walks
+//!          (an invalid state fails the open)              │
+//!                          one batch: the changed records (see `records`) + fence
+//!                                                         │
+//!                                     flush ─▶ install for writes ─▶ processor runs,
+//!                                                                    walks run in slices
 //! ```
 //!
-//! The changes, the walks (see [`crate::walk`]), the job records and the fence
-//! are written in one batch. The store is then flushed whenever it has any registration history,
-//! even when this open changed nothing: an earlier attempt may have written
-//! registry state or effects without finishing its flush. Only once the flush
-//! succeeded are the reconciled indexes installed for writes, so the registry,
-//! the walks and the fence are durable before any effect depends on them, and a
-//! failed flush publishes nothing.
+//! The changed records, the registry, walks (see [`crate::walk`]) and job
+//! records, and the fence are written in one batch; records this open didn't
+//! change are not rewritten. The store is then flushed whenever it has any
+//! registration history, even when this open changed nothing: an earlier
+//! attempt may have written registry state or effects without finishing its
+//! flush. Only once the flush succeeded are the reconciled indexes installed for
+//! writes, so the registry, the walks and the fence are durable before any
+//! effect depends on them, and a failed flush publishes nothing.
 //!
 //! Reconciliation, from its reads to that publication, is work of the
 //! partition's session, like the legacy cleanup: closing the partition waits for
@@ -70,6 +80,7 @@
 
 use std::ops::RangeBounds;
 use std::sync::Arc;
+use std::time::Duration;
 
 use rocksdb::WriteBatch;
 use tracing::{error, info, warn};
@@ -79,30 +90,26 @@ use restate_clock::WallClock;
 use restate_rocksdb::{IoMode, Priority};
 use restate_storage_api::StorageError;
 use restate_types::SemanticRestateVersion;
-use restate_types::config::Configuration;
-use restate_types::vqueues::EntryKind;
+use restate_types::config::{Configuration, StorageOptions};
 use restate_util_string::ReString;
 
 use crate::faults::{self, FaultPoint};
 use crate::features::{LoadedStorageFeatures, StorageFeatures};
-use crate::fsm_table::{
-    append_migration_jobs_to_wb, append_registry_to_wb, append_walks_to_wb, fsm_variable,
-    get_migration_jobs_from_partition_db, get_min_restate_version_from_partition_db,
-    get_registry_from_partition_db, get_walks_from_partition_db,
-};
+use crate::fsm_table::get_min_restate_version_from_partition_db;
 use crate::job::{
-    DEFAULT_HISTORY_LIMIT, MigrationJob, MigrationJobId, MigrationJobRecords, MigrationJobStatus,
-    MigrationJobs, Stamp,
+    MigrationJob, MigrationJobId, MigrationJobKind, MigrationJobRecords, MigrationJobStatus, Stamp,
 };
-use crate::keys::{DecodeTableKey, IndexKeyPrefix};
+use crate::keys::IndexKeyPrefix;
+use crate::migrations::online::{MigrationDefinition, ONLINE_MIGRATIONS};
+use crate::registry::{MigrationOnUnknown, MigrationState};
 use crate::stats::AggregateKeyPrefix;
-use crate::vqueue_table::EntryStatusKey;
-use crate::walk::Walks;
+use crate::walk::{Source, Walks};
 use crate::{MigrationError, PartitionDb, PartitionStore};
 
+use super::records::{self, BatchSink, RecordKey, RecordKind, RecordSink, Records, View};
 use super::{
-    DropReason, Family, Index, IndexDefinition, IndexKind, IndexRegistry, IndexStatus,
-    MaintainedIndexes, RegistryError, backfill,
+    DropReason, Family, Index, IndexDefinition, IndexKind, IndexStatus, PublishedRegistry,
+    Registry, RegistryError, backfill,
 };
 
 /// The released families.
@@ -117,16 +124,24 @@ pub(crate) struct Requests {
     pub(crate) maintain: Vec<&'static IndexDefinition>,
     /// Definitions whose maintained index is dropped.
     pub(crate) reset: Vec<&'static IndexDefinition>,
-    /// How many finished jobs the history keeps.
-    pub(crate) history_limit: usize,
+    /// How long the record of a job that finishes is kept
+    /// (`worker.storage.finished-migration-jobs-retention`).
+    pub(crate) retention: Duration,
+    /// The one-time migrations this binary knows. Each registers once, on a
+    /// fenced store; entries of any other migration follow their policy.
+    pub(crate) migrations: &'static [&'static MigrationDefinition],
 }
 
 impl Default for Requests {
+    /// No requests and no migrations, with the default retention.
     fn default() -> Self {
         Self {
             maintain: Vec::new(),
             reset: Vec::new(),
-            history_limit: DEFAULT_HISTORY_LIMIT,
+            retention: StorageOptions::default()
+                .finished_migration_jobs_retention
+                .to_std(),
+            migrations: &[],
         }
     }
 }
@@ -134,8 +149,12 @@ impl Default for Requests {
 impl Requests {
     pub(crate) fn from_config(families: &[Family], config: &Configuration) -> Self {
         let mut requests = Self {
-            history_limit: usize::try_from(config.worker.storage.migration_job_history_limit)
-                .unwrap_or(usize::MAX),
+            retention: config
+                .worker
+                .storage
+                .finished_migration_jobs_retention
+                .to_std(),
+            migrations: ONLINE_MIGRATIONS,
             ..Self::default()
         };
         for family in families {
@@ -157,85 +176,144 @@ pub(crate) struct FenceState<'a> {
 }
 
 impl PartitionStore {
-    /// Reads and validates the registry and the walks for opening this partition:
-    /// their formats and invariants, every walk endpoint and cursor against the
-    /// entry-status key schema and this partition's key range,
-    /// and the links between them. Walks also require the `index-registry`
-    /// fence in `features`, the loaded storage features, which keeps binaries
-    /// predating the registry out of a store with walks. Runs before any cleanup
-    /// or migration mutates the store; an invalid state fails the open with the
-    /// store unchanged.
+    /// Loads the registry records for opening this partition (see
+    /// [`records::load`]) and validates the registry and the walks: their
+    /// formats and invariants, every walk endpoint and cursor against its
+    /// source's key schema and this partition's key range, and the links
+    /// between them. Walks and migrations also require the `registry` fence in
+    /// `features`, the loaded storage features, which keeps binaries predating
+    /// the registry out of a store with them. A migration this binary doesn't
+    /// know, and whose entry refuses such binaries, fails the open, as does a
+    /// walk that must not be discarded. Runs before any cleanup or migration
+    /// mutates the store; an invalid state fails the open with the store
+    /// unchanged. Also returns the IDs of the unreadable job records.
     pub(crate) fn validate_registry(
         &self,
         features: &StorageFeatures,
-    ) -> Result<(Option<IndexRegistry>, Walks), MigrationError> {
+    ) -> Result<(Records, Vec<u64>), MigrationError> {
+        self.validate_registry_knowing(features, ONLINE_MIGRATIONS)
+    }
+
+    /// [`Self::validate_registry`] by a binary that knows `migrations`.
+    fn validate_registry_knowing(
+        &self,
+        features: &StorageFeatures,
+        migrations: &[&'static MigrationDefinition],
+    ) -> Result<(Records, Vec<u64>), MigrationError> {
         let db = self.partition_db();
-        let registry = get_registry_from_partition_db(db)?;
-        let walks = get_walks_from_partition_db(db)?.unwrap_or_default();
-        // Before anything changes: a walk this binary doesn't know and must not
-        // discard refuses the open. The walk doesn't record which release started
-        // it; the store's minimum Restate version is the closest hint.
-        if let Err(err) = walks.preflight() {
+        let (records, unreadable_jobs) = records::load(db)?;
+        let (registry, walks) = (records.registry.as_ref(), &records.walks);
+        let entries = registry.map_or(&[][..], Registry::migrations);
+        // Before anything changes: a migration this binary doesn't know refuses
+        // the open if its entry says so, and so does a walk this binary doesn't
+        // know and must not discard. Neither records which release started it;
+        // the store's minimum Restate version is the closest hint.
+        let refused = match entries.iter().find(|migration| {
+            migration.on_unknown() == MigrationOnUnknown::Refuse
+                && !migrations
+                    .iter()
+                    .any(|known| migration.definition == known.name)
+        }) {
+            Some(migration) => Some(format!(
+                "migration '{}' ({}) belongs to a release this binary predates, and refuses \
+                 binaries that don't know it; open the store with that release or a newer one",
+                migration.definition, migration.id
+            )),
+            None => walks.preflight(migrations).err().map(|err| err.to_string()),
+        };
+        if let Some(reason) = refused {
             let minimum = get_min_restate_version_from_partition_db(db)?;
             return Err(MigrationError::MigrationBarrier(format!(
-                "{err}; this store's minimum Restate version is {minimum}"
+                "{reason}; this store's minimum Restate version is {minimum}"
             )));
         }
         let barrier = |what: String, err: StorageError| {
             MigrationError::MigrationBarrier(format!("invalid {what}: {err}"))
         };
-        if !walks.entries().is_empty() && !features.is_index_registry {
+        let integrity = |what: String| barrier(what, StorageError::DataIntegrityError);
+        if !(walks.entries().is_empty() && entries.is_empty()) && !features.is_registry {
             return Err(MigrationError::MigrationBarrier(
-                "walks exist without the index-registry storage feature".to_owned(),
+                "walks or migrations exist without the registry storage feature".to_owned(),
             ));
         }
-        for index in registry.iter().flat_map(IndexRegistry::entries) {
+        for index in registry.iter().flat_map(|registry| registry.indexes()) {
             if let Some(walk) = index.walk
                 && walks.get(walk).is_none()
             {
-                return Err(barrier(
-                    format!("walk link of '{}' ({})", index.definition, index.id),
-                    StorageError::DataIntegrityError,
-                ));
+                return Err(integrity(format!(
+                    "walk link of '{}' ({})",
+                    index.definition, index.id
+                )));
             }
         }
-        // A walk this binary doesn't know keeps its positions opaque; the open
-        // discards it.
-        for walk in walks.entries().iter().filter(|walk| walk.is_supported()) {
-            for member in &walk.members {
-                if registry
-                    .as_ref()
-                    .and_then(|registry| registry.get(member.index))
-                    .is_none_or(|index| index.walk != Some(walk.id))
-                {
-                    return Err(barrier(
-                        format!("evidence of walk {} for index {}", walk.id, member.index),
-                        StorageError::DataIntegrityError,
-                    ));
-                }
+        for migration in entries {
+            if let Some(walk) = migration.walk
+                && walks.get(walk).is_none()
+            {
+                return Err(integrity(format!(
+                    "walk link of migration '{}' ({})",
+                    migration.definition, migration.id
+                )));
             }
-            let joins = walk
-                .members
-                .iter()
-                .filter_map(|member| member.joined_at.as_ref());
-            for key in std::iter::once(&walk.end)
+        }
+        let positions = |walk: &crate::walk::Walk, source: Source, others: &[&bytes::Bytes]| {
+            std::iter::once(&walk.end)
                 .chain(walk.cursor.as_ref())
-                .chain(joins)
-            {
-                validate_cursor(db, key)
-                    .map_err(|err| barrier(format!("position of walk {}", walk.id), err))?;
+                .chain(others.iter().copied())
+                .try_for_each(|key| validate_position(db, source, key))
+                .map_err(|err| barrier(format!("position of walk {}", walk.id), err))
+        };
+        for walk in walks.entries() {
+            let linked = registry.and_then(|registry| registry.migration_of_walk(walk.id));
+            if walk.is_index_backfill() {
+                if let Some(migration) = linked {
+                    return Err(integrity(format!(
+                        "link of migration '{}' to index backfill {}",
+                        migration.definition, walk.id
+                    )));
+                }
+                for member in &walk.members {
+                    if registry
+                        .and_then(|registry| registry.get(member.index))
+                        .is_none_or(|index| index.walk != Some(walk.id))
+                    {
+                        return Err(integrity(format!(
+                            "evidence of walk {} for index {}",
+                            walk.id, member.index
+                        )));
+                    }
+                }
+                let joins: Vec<_> = walk
+                    .members
+                    .iter()
+                    .filter_map(|member| member.joined_at.as_ref())
+                    .collect();
+                positions(walk, Source::EntryStatus, &joins)?;
+                if registry.is_none_or(|registry| registry.members(walk.id).next().is_none()) {
+                    return Err(integrity(format!("walk {} without members", walk.id)));
+                }
+            } else if let Some(definition) = migrations.iter().find(|known| known.runs(walk)) {
+                // A migration's walk runs its own entry, with neither members
+                // nor parameters.
+                if linked.is_none_or(|migration| migration.definition != definition.name)
+                    || registry.is_some_and(|registry| registry.members(walk.id).next().is_some())
+                    || !walk.members.is_empty()
+                    || !walk.params.is_empty()
+                    || walk
+                        .cursor
+                        .as_ref()
+                        .is_some_and(|cursor| *cursor > walk.end)
+                {
+                    return Err(integrity(format!(
+                        "walk {} of migration '{}'",
+                        walk.id, definition.name
+                    )));
+                }
+                positions(walk, definition.source, &[])?;
             }
-            if registry
-                .as_ref()
-                .is_none_or(|registry| registry.members(walk.id).next().is_none())
-            {
-                return Err(barrier(
-                    format!("walk {} without members", walk.id),
-                    StorageError::DataIntegrityError,
-                ));
-            }
+            // Any other walk keeps its positions opaque; the open discards it.
         }
-        Ok((registry, walks))
+        Ok((records, unreadable_jobs))
     }
 
     /// Reconciles the registry with `known` definitions and `requests`; see the
@@ -258,36 +336,54 @@ impl PartitionStore {
             .gate()
             .try_acquire()
             .ok_or(StorageError::OperationalError)?;
-        let (persisted, persisted_walks) = self.validate_registry(features.enabled())?;
-        let (persisted_jobs, unreadable_jobs) = load_job_records(&db)?;
-        let mut registry = persisted.clone().unwrap_or_default();
-        let mut walks = persisted_walks.clone();
-        let mut jobs = persisted_jobs.clone();
+        let (persisted, unreadable_jobs) =
+            self.validate_registry_knowing(features.enabled(), requests.migrations)?;
+        let mut registry = persisted.registry.clone().unwrap_or_default();
+        let mut walks = persisted.walks.clone();
+        let mut jobs = MigrationJobRecords::new(persisted.jobs.clone(), requests.retention);
         let mut batch = WriteBatch::default();
         let stamp = Stamp {
             at: WallClock::now_ms().as_u64(),
             by: ReString::from(current_version.to_string()),
         };
-        let limit = requests.history_limit;
 
         // Walks this binary doesn't know, and may discard: their members restart
-        // under this binary's kind, or are retired below.
-        let discarded = walks.discard_unknown();
+        // under this binary's kind, or are retired below; their migration waits
+        // for a binary that knows it.
+        let discarded = walks.discard_unknown(requests.migrations);
         if !discarded.is_empty() {
+            let on_discarded =
+                |walk: Option<u64>| walk.is_some_and(|walk| discarded.contains(&walk));
             let unlinked: Vec<_> = registry
-                .entries()
+                .indexes()
                 .iter()
-                .filter(|index| index.walk.is_some_and(|walk| discarded.contains(&walk)))
+                .filter(|index| on_discarded(index.walk))
                 .map(|index| index.id)
                 .collect();
             for id in &unlinked {
                 registry.unlink(*id).map_err(registry_error)?;
             }
-            warn!(walks = ?discarded, indexes = ?unlinked, "Discarded walks of a kind this binary doesn't know");
+            let waiting: Vec<_> = registry
+                .migrations()
+                .iter()
+                .filter(|migration| on_discarded(migration.walk))
+                .map(|migration| migration.id)
+                .collect();
+            for id in &waiting {
+                registry
+                    .set_migration_walk(*id, None)
+                    .map_err(registry_error)?;
+            }
+            warn!(
+                walks = ?discarded,
+                indexes = ?unlinked,
+                migrations = ?waiting,
+                "Discarded walks of a kind this binary doesn't know"
+            );
         }
 
         let unknown: Vec<_> = registry
-            .entries()
+            .indexes()
             .iter()
             .filter(|index| index.is_maintained())
             .filter(|index| {
@@ -305,7 +401,6 @@ impl PartitionStore {
                 id,
                 DropReason::UnknownDefinition,
                 &stamp,
-                limit,
             )
             .map_err(registry_error)?;
             warn!(
@@ -319,26 +414,23 @@ impl PartitionStore {
         for definition in &requests.reset {
             if let Some(id) = registry.maintained(definition.name).map(|active| active.id) {
                 append_instance_delete(&db, &mut batch, definition.kind, id)?;
-                drop_and_record(
-                    &mut registry,
-                    &mut jobs,
-                    id,
-                    DropReason::Reset,
-                    &stamp,
-                    limit,
-                )
-                .map_err(registry_error)?;
+                drop_and_record(&mut registry, &mut jobs, id, DropReason::Reset, &stamp)
+                    .map_err(registry_error)?;
                 info!(definition = definition.name, id, "Reset the index");
             }
         }
         // A walk whose members were all dropped has nothing left to backfill;
         // surviving members keep their walk, its position and their evidence,
-        // and the dropped members' evidence goes with them.
+        // and the dropped members' evidence goes with them. A migration's walk
+        // has no members: its entry keeps it.
         let abandoned: Vec<_> = walks
             .entries()
             .iter()
             .map(|walk| walk.id)
-            .filter(|walk| registry.members(*walk).next().is_none())
+            .filter(|walk| {
+                registry.members(*walk).next().is_none()
+                    && registry.migration_of_walk(*walk).is_none()
+            })
             .collect();
         for walk in abandoned {
             walks.remove(walk).map_err(walk_error)?;
@@ -376,7 +468,20 @@ impl PartitionStore {
             }
         }
 
-        settle_jobs(&registry, &walks, &mut jobs, limit);
+        // Migrations run on a fenced store only: fenced before this open, or by
+        // its registrations above. A migration never sets the fence itself.
+        if features.enabled().is_registry || !registry.indexes().is_empty() {
+            super::migration::reconcile(
+                &db,
+                &mut registry,
+                &mut walks,
+                &mut jobs,
+                requests.migrations,
+                &stamp,
+            )?;
+        }
+
+        settle_jobs(&registry, &walks, &mut jobs, stamp.at);
         // Backfilling indexes without a walk start a pass over the entries that
         // exist now if they are eligible: new registrations, jobs that can fill
         // now (a definition may have gained its fill), and passive jobs whose
@@ -387,12 +492,12 @@ impl PartitionStore {
                 .any(|definition| index.definition == definition.name && definition.can_fill)
         };
         let unstarted: Vec<_> = registry
-            .entries()
+            .indexes()
             .iter()
             .filter(|index| index.state == IndexStatus::Backfilling && index.walk.is_none())
             .filter(|index| {
                 jobs.unfinished
-                    .get(MigrationJobId::for_index(index.id))
+                    .get(MigrationJobId::for_entry(index.id))
                     .is_none_or(|job| {
                         job.status == MigrationJobStatus::Pending
                             || can_fill(index)
@@ -409,44 +514,55 @@ impl PartitionStore {
                 &mut jobs,
                 &unstarted,
                 stamp.at,
-                limit,
             )?
         {
             info!(walk, indexes = ?unstarted, "Started the backfill of indexes");
         }
 
-        let changed = persisted.as_ref() != Some(&registry) && registry != IndexRegistry::default();
-        let walks_changed = walks != persisted_walks;
-        // An unreadable list is replaced even when what replaces it is empty.
-        let jobs_changed = unreadable_jobs || jobs != persisted_jobs;
-        let fenced = !registry.entries().is_empty()
+        let partition = db.partition().id();
+        let fenced = !registry.indexes().is_empty()
             && features.append_registry_fence(
                 current_version,
                 current_min_restate_version,
                 db.cf_handle(),
                 &mut batch,
-                db.partition().id(),
+                partition,
             )?;
-        if changed || walks_changed || jobs_changed || fenced {
-            let partition = db.partition().id();
-            append_registry_to_wb(db.cf_handle(), &mut batch, partition, &registry);
-            if walks_changed {
-                append_walks_to_wb(db.cf_handle(), &mut batch, partition, &walks);
-            }
-            if jobs_changed {
-                for (state_id, list) in [
-                    (fsm_variable::MIGRATION_JOBS, &jobs.unfinished),
-                    (fsm_variable::MIGRATION_JOB_HISTORY, &*jobs.history),
-                ] {
-                    append_migration_jobs_to_wb(
-                        db.cf_handle(),
-                        &mut batch,
-                        partition,
-                        state_id,
-                        list,
-                    );
+        // Only what changed: a store where nothing was ever registered gets no
+        // registry, and an unreadable job record that nothing replaced goes.
+        let mut sink = BatchSink {
+            batch: &mut batch,
+            cf: db.cf_handle(),
+        };
+        records::stage_changes(
+            &mut sink,
+            partition,
+            View {
+                registry: persisted.registry.as_ref(),
+                walks: &persisted.walks,
+                jobs: &persisted.jobs,
+            },
+            View {
+                registry: (persisted.registry.is_some() || registry != Registry::default())
+                    .then_some(&registry),
+                walks: &walks,
+                jobs: &jobs.unfinished,
+            },
+            &jobs.finished,
+        )?;
+        for id in unreadable_jobs {
+            let replaced = u32::try_from(id).is_ok_and(|id| {
+                id != 0 && {
+                    let id = MigrationJobId::for_entry(id);
+                    jobs.unfinished.get(id).is_some()
+                        || jobs.finished.iter().any(|job| job.id() == id)
                 }
+            });
+            if !replaced {
+                sink.delete(&RecordKey::new(partition, RecordKind::Job, id));
             }
+        }
+        if fenced || !batch.is_empty() {
             write(&db, batch).await?;
             features.mark_persisted();
             self.set_storage_features(*features.enabled());
@@ -455,61 +571,33 @@ impl PartitionStore {
         // Whatever this or an earlier attempt wrote becomes durable before
         // anything depends on it: registry changes, walks, fence, deletions,
         // effects.
-        if !registry.entries().is_empty() {
+        if !registry.indexes().is_empty() || !registry.migrations().is_empty() {
             flush(&db).await?;
         }
 
         // Writes maintain the reconciled indexes from here on, and walks run on
         // the records as committed.
-        db.install_maintained_indexes(Arc::new(
-            MaintainedIndexes::new(&registry, &walks, known).with_jobs(jobs, limit),
+        db.install_published_registry(Arc::new(
+            PublishedRegistry::new(&registry, &walks, known)
+                .with_jobs(jobs.unfinished, requests.retention)
+                .with_migrations(requests.migrations),
         ));
         Ok(())
     }
 }
 
-/// The committed job records of `db`, and whether one of the lists was
-/// unreadable. A list this binary can't decode is reported and replaced with an
-/// empty one, which [`settle_jobs`] then rebuilds from the registry, and the open
-/// writes the replacement: job records are diagnostics and never fail an open.
-pub(crate) fn load_job_records(
-    db: &PartitionDb,
-) -> Result<(MigrationJobRecords, bool), StorageError> {
-    let mut unreadable = false;
-    let mut load = |state_id, what| -> Result<MigrationJobs, StorageError> {
-        Ok(match get_migration_jobs_from_partition_db(db, state_id)? {
-            None => MigrationJobs::default(),
-            Some(Ok(jobs)) => jobs,
-            Some(Err(err)) => {
-                warn!(
-                    partition_id = %db.partition().id(),
-                    "Replacing the unreadable {what} of migration jobs: {err}"
-                );
-                unreadable = true;
-                MigrationJobs::default()
-            }
-        })
-    };
-    let records = MigrationJobRecords {
-        unfinished: load(fsm_variable::MIGRATION_JOBS, "unfinished list")?,
-        history: Arc::new(load(fsm_variable::MIGRATION_JOB_HISTORY, "history")?),
-    };
-    Ok((records, unreadable))
-}
-
 /// Drops index `id` and records why: its timeline gets the time and `reason`,
-/// and its build job, if unfinished, ends Cancelled in the history.
+/// and its build job, if unfinished, finishes Cancelled.
 fn drop_and_record(
-    registry: &mut IndexRegistry,
+    registry: &mut Registry,
     jobs: &mut MigrationJobRecords,
     id: u32,
     reason: DropReason,
     stamp: &Stamp,
-    history_limit: usize,
 ) -> Result<(), RegistryError> {
-    let job_id = MigrationJobId::for_index(id);
+    let job_id = MigrationJobId::for_entry(id);
     // Records this open could not read lack the job of a Backfilling index; it
-    // gets one, with unknown times, so its cancelled build reaches the history.
+    // gets one, with unknown times, so that its cancelled build is recorded.
     if let Some(index) = registry.get(id)
         && index.state == IndexStatus::Backfilling
         && jobs.unfinished.get(job_id).is_none()
@@ -530,32 +618,31 @@ fn drop_and_record(
         job_id,
         MigrationJobStatus::Cancelled,
         Some(stamp.at),
-        history_limit,
+        stamp.at,
     );
     Ok(())
 }
 
 /// Brings the job records in line with the registry and the walks, which decide.
 /// The records lag them when they couldn't be read, or when another binary
-/// changed builds without writing records this one reads.
+/// changed builds or migrations without writing records this one reads.
 ///
-/// - An unfinished job whose index is Ready or gone is finished at an unknown
-///   time.
-/// - A job follows its index's walk: `Running` once that walk has a cursor,
+/// - An unfinished job whose index is Ready or whose migration is Complete is
+///   finished, completed, at an unknown time; one whose entry is dropped or gone
+///   is finished, cancelled. A migration in a state this binary doesn't know
+///   leaves its job alone.
+/// - A job follows its entry's walk: `Running` once that walk has a cursor,
 ///   keeping an unknown start if it was still `Pending`; a running job whose
-///   index lost its walk waits, eligible now. A job moved onto a walk that has
+///   entry lost its walk waits, eligible now. A job moved onto a walk that has
 ///   already advanced gets an unknown pass start: the one it had belongs to an
 ///   earlier pass.
-/// - A Backfilling index without a job gets one, with unknown times: following
-///   its walk, or waiting and eligible now without one.
+/// - A Backfilling index or a migration in progress without a job gets one,
+///   with unknown times: following its walk, or waiting and eligible now without
+///   one.
 ///
-/// The history is trimmed to `history_limit`.
-fn settle_jobs(
-    registry: &IndexRegistry,
-    walks: &Walks,
-    jobs: &mut MigrationJobRecords,
-    history_limit: usize,
-) {
+/// A job finished here expires one retention after `now`, its finish time
+/// being unknown.
+fn settle_jobs(registry: &Registry, walks: &Walks, jobs: &mut MigrationJobRecords, now: u64) {
     let started = |walk: Option<u64>| {
         walk.and_then(|walk| walks.get(walk))
             .is_some_and(|walk| walk.cursor.is_some())
@@ -567,11 +654,8 @@ fn settle_jobs(
         .map(MigrationJob::id)
         .collect();
     for id in unfinished {
-        match registry
-            .get(id.as_u32())
-            .map(|index| (index.state, index.walk))
-        {
-            Some((IndexStatus::Backfilling, walk)) => {
+        match Progress::of(registry, id.as_u32()) {
+            Progress::Running(walk) => {
                 if let Some(job) = jobs.unfinished.get_mut(id) {
                     if job.walk != walk && started(walk) {
                         job.pass_started_at = None;
@@ -592,32 +676,78 @@ fn settle_jobs(
                     }
                 }
             }
-            Some((IndexStatus::Ready, _)) => {
-                jobs.finish(id, MigrationJobStatus::Completed, None, history_limit);
-            }
-            _ => jobs.finish(id, MigrationJobStatus::Cancelled, None, history_limit),
+            Progress::Done => jobs.finish(id, MigrationJobStatus::Completed, None, now),
+            Progress::Gone => jobs.finish(id, MigrationJobStatus::Cancelled, None, now),
+            Progress::Unknown => {}
         }
     }
-    for index in registry.entries() {
-        let id = MigrationJobId::for_index(index.id);
-        if index.state == IndexStatus::Backfilling && jobs.unfinished.get(id).is_none() {
-            let mut job = MigrationJob::index_backfill(
+    let indexes = registry
+        .indexes()
+        .iter()
+        .filter(|index| index.state == IndexStatus::Backfilling)
+        .map(|index| {
+            (
                 index.id,
-                index.definition.clone(),
+                &index.definition,
                 index.walk,
-                None,
-                None,
-            );
-            if index.walk.is_none() {
+                MigrationJobKind::IndexBackfill,
+            )
+        });
+    let migrations = registry
+        .migrations()
+        .iter()
+        .filter(|migration| migration.state() == Some(MigrationState::InProgress))
+        .map(|migration| {
+            let kind = MigrationJobKind::Migration;
+            (migration.id, &migration.definition, migration.walk, kind)
+        });
+    for (entry, name, walk, kind) in indexes.chain(migrations) {
+        if jobs
+            .unfinished
+            .get(MigrationJobId::for_entry(entry))
+            .is_none()
+        {
+            let mut job = MigrationJob::new(entry, kind, name.clone(), walk, None, None);
+            if walk.is_none() {
                 job.wait(None, None);
-            } else if started(index.walk) {
+            } else if started(walk) {
                 job.status = MigrationJobStatus::Running;
             }
             jobs.unfinished.insert(job);
         }
     }
-    if jobs.history.entries().len() > history_limit {
-        Arc::make_mut(&mut jobs.history).trim(history_limit);
+}
+
+/// What the registry says about the job of an entry.
+enum Progress {
+    /// A Backfilling index or a migration in progress, with its walk if any.
+    Running(Option<u64>),
+    /// A Ready index or a Complete migration.
+    Done,
+    /// A dropped index, or no entry at all.
+    Gone,
+    /// A migration in a state this binary doesn't know.
+    Unknown,
+}
+
+impl Progress {
+    fn of(registry: &Registry, id: u32) -> Self {
+        if let Some(index) = registry.get(id) {
+            return match index.state {
+                IndexStatus::Backfilling => Self::Running(index.walk),
+                IndexStatus::Ready => Self::Done,
+                _ => Self::Gone,
+            };
+        }
+        match registry
+            .get_migration(id)
+            .map(|migration| (migration.state(), migration.walk))
+        {
+            Some((Some(MigrationState::InProgress), walk)) => Self::Running(walk),
+            Some((Some(MigrationState::Complete), _)) => Self::Done,
+            Some((None, _)) => Self::Unknown,
+            None => Self::Gone,
+        }
     }
 }
 
@@ -656,18 +786,13 @@ fn append_instance_delete(
     Ok(())
 }
 
-/// A resume cursor must be the exact key of a usable entry status of this
-/// partition. The raw key codec also decodes the `Unknown` entry-kind sentinel,
-/// which no stored entry has.
-fn validate_cursor(db: &PartitionDb, cursor: &[u8]) -> Result<(), StorageError> {
-    if cursor.len() != EntryStatusKey::serialized_length_fixed() {
-        return Err(StorageError::DataIntegrityError);
-    }
-    let mut rest = cursor;
-    let key = EntryStatusKey::deserialize_from(&mut rest)?;
-    if !rest.is_empty()
-        || key.id.kind() == EntryKind::Unknown
-        || !db.partition().key_range.contains(&key.id.partition_key())
+/// A walk's end or cursor must be the exact key of a row of its `source` in
+/// this partition (see [`Source::partition_key`]).
+fn validate_position(db: &PartitionDb, source: Source, key: &[u8]) -> Result<(), StorageError> {
+    if !db
+        .partition()
+        .key_range
+        .contains(&source.partition_key(key)?)
     {
         return Err(StorageError::DataIntegrityError);
     }
@@ -718,8 +843,10 @@ mod tests {
         get_min_restate_version_from_partition_db, get_storage_features_from_partition_db,
         get_storage_version_from_partition_db,
     };
+    use crate::registry::records::get_registry;
     use crate::stats::StatKind;
     use crate::stats::aggregated::backfill::tests::seed;
+    use crate::walk::Walks;
     use crate::{PartitionStoreManager, PartitionStoreTransaction};
 
     #[test]
@@ -728,7 +855,7 @@ mod tests {
         for family in FAMILIES {
             for definition in family.definitions {
                 assert!(
-                    crate::registry::DEFINITIONS
+                    crate::registry::INDEX_DEFINITIONS
                         .iter()
                         .any(|known| std::ptr::eq(*known, *definition)),
                     "{}",
@@ -798,16 +925,12 @@ mod tests {
             .await
     }
 
-    fn persisted(store: &PartitionStore) -> IndexRegistry {
-        get_registry_from_partition_db(store.partition_db())
-            .unwrap()
-            .unwrap()
+    fn persisted(store: &PartitionStore) -> Registry {
+        get_registry(store.partition_db()).unwrap().unwrap()
     }
 
     fn walks(store: &PartitionStore) -> Walks {
-        get_walks_from_partition_db(store.partition_db())
-            .unwrap()
-            .unwrap_or_default()
+        records::load(store.partition_db()).unwrap().0.walks
     }
 
     fn maintain(definitions: &[&'static IndexDefinition]) -> Requests {
@@ -849,8 +972,8 @@ mod tests {
         reconcile(&mut store, &[&INDEX, &STAT], Requests::default())
             .await
             .unwrap();
-        assert!(get_registry_from_partition_db(&db).unwrap().is_none());
-        assert!(!store.storage_features().is_index_registry);
+        assert!(get_registry(&db).unwrap().is_none());
+        assert!(!store.storage_features().is_registry);
 
         // The first registration persists the fence and the minimum version with
         // it, and starts one walk for both indexes.
@@ -875,14 +998,14 @@ mod tests {
             SemanticRestateVersion::current(),
         )
         .unwrap();
-        assert!(ledger.enabled().is_index_registry, "fenced_on_disk");
+        assert!(ledger.enabled().is_registry, "fenced_on_disk");
         assert!(
             get_min_restate_version_from_partition_db(&db)
                 .unwrap()
                 .is_equal_or_newer_than(&RESTATE_VERSION_1_8_2)
         );
         assert_eq!(
-            store.maintained_indexes().touched_by_on_write(),
+            store.published_registry().touched_by_on_write(),
             [0, 0, 0, 64, 0, 0, 0, 65],
             "reconciled_indexes_are_installed"
         );
@@ -938,7 +1061,7 @@ mod tests {
             "retirement_deletes_exactly_the_index"
         );
         assert_eq!(
-            store.maintained_indexes().touched_by_on_write(),
+            store.published_registry().touched_by_on_write(),
             [0, 0, 0, 65]
         );
         assert_eq!(walks(&store).entries().len(), 1);
@@ -966,7 +1089,7 @@ mod tests {
             (1, 0, 1),
             "reset_deletes_exactly_the_index"
         );
-        assert!(store.storage_features().is_index_registry, "fence_is_kept");
+        assert!(store.storage_features().is_registry, "fence_is_kept");
         assert!(walks(&store).entries().is_empty(), "abandoned_walks_go");
 
         // Enabling again builds fresh indexes on a new walk; old IDs stay reserved.
@@ -994,13 +1117,11 @@ mod tests {
             .unwrap();
         seed(&mut store).await;
         let db = store.partition_db().clone();
-        let mut registry = IndexRegistry::default();
+        let mut registry = Registry::default();
         registry.register("stat/1", IndexKind::Aggregate).unwrap();
         registry.next_id = u64::from(u32::MAX) + 1;
-        let write = |registry: &IndexRegistry| {
-            let mut batch = WriteBatch::default();
-            append_registry_to_wb(db.cf_handle(), &mut batch, db.partition().id(), registry);
-            db.rocksdb().inner().as_raw_db().write(&batch).unwrap();
+        let write = |registry: &Registry| {
+            records::testing::overwrite(&db, registry, &Walks::default());
         };
         write(&registry);
 
@@ -1011,7 +1132,7 @@ mod tests {
             .unwrap();
         assert!(persisted(&store).maintained("index/1").is_none());
         assert_eq!(
-            store.maintained_indexes().touched_by_on_write(),
+            store.published_registry().touched_by_on_write(),
             [0, 0, 0, 64]
         );
         assert_eq!(persisted(&store).get(64).unwrap().walk, Some(1));
@@ -1060,20 +1181,22 @@ mod backfill_tests {
     use super::*;
     use crate::fsm_table::{
         get_min_restate_version_from_partition_db, get_storage_features_from_partition_db,
-        get_storage_version_from_partition_db, registry_key, walks_key,
+        get_storage_version_from_partition_db,
     };
+    use crate::job::MigrationJobs;
     use crate::keys::header::{HeaderBounds, IndexScope, KeyHeader, KeySchema};
     use crate::keys::selection::KeySelection;
-    use crate::keys::{KeyDecode, KeyDecoder, KeyKind};
+    use crate::keys::{DecodeTableKey, KeyDecode, KeyDecoder, KeyKind};
+    use crate::registry::records::{get_job, get_registry, testing};
     use crate::snapshots::{LocalPartitionSnapshot, SnapshotDir};
     use crate::stats::aggregated::Gauge;
     use crate::stats::aggregated::backfill::tests::seed;
     use crate::stats::aggregated::backfill::with_entry_target;
     use crate::stats::{StatKind, StatValueCodec};
     use crate::table::{PhysicalTable, ReadMetadata};
-    use crate::walk::WalkDriver;
+    use crate::vqueue_table::EntryStatusKey;
     use crate::walk::engine::{Slice, SliceBudget};
-    use crate::walk::{OnUnknown, Source, Walk, WalkKind, WalkMember, engine};
+    use crate::walk::{OnUnknown, Source, Walk, WalkDriver, WalkKind, WalkMember, Walks, engine};
     use crate::{
         IndexSizes, PartitionStoreManager, PartitionStoreTransaction, QueryIoExecutor,
         ReadSnapshot, ReplicaMigrations,
@@ -1217,21 +1340,22 @@ mod backfill_tests {
             })
     }
 
-    fn registry(store: &PartitionStore) -> IndexRegistry {
-        get_registry_from_partition_db(store.partition_db())
-            .unwrap()
-            .unwrap()
+    fn registry(store: &PartitionStore) -> Registry {
+        get_registry(store.partition_db()).unwrap().unwrap()
     }
 
     fn walks(store: &PartitionStore) -> Walks {
-        get_walks_from_partition_db(store.partition_db())
-            .unwrap()
-            .unwrap_or_default()
+        records::load(store.partition_db()).unwrap().0.walks
+    }
+
+    /// The unfinished jobs of `store`, as an open loads them.
+    fn unfinished(store: &PartitionStore) -> MigrationJobs {
+        records::load(store.partition_db()).unwrap().0.jobs
     }
 
     fn registry_after(store: &PartitionStore, name: &str) -> super::super::Index {
         registry(store)
-            .entries()
+            .indexes()
             .iter()
             .find(|index| index.definition == name)
             .unwrap()
@@ -1240,43 +1364,33 @@ mod backfill_tests {
 
     /// The unfinished build job of index `id`, as committed.
     fn committed_job(store: &PartitionStore, id: u32) -> MigrationJob {
-        load_job_records(store.partition_db())
-            .unwrap()
-            .0
-            .unfinished
-            .get(MigrationJobId::for_index(id))
-            .unwrap()
-            .clone()
+        let job = get_job(store.partition_db(), id).unwrap();
+        assert!(!job.status.is_finished(), "{job:?}");
+        job
     }
 
-    /// The finished build job of index `id`, as committed.
+    /// The finished build job of index `id`, as committed, with its expiry.
     fn finished_job(store: &PartitionStore, id: u32) -> MigrationJob {
-        load_job_records(store.partition_db())
-            .unwrap()
-            .0
-            .history
-            .get(MigrationJobId::for_index(id))
-            .unwrap()
-            .clone()
+        let job = get_job(store.partition_db(), id).unwrap();
+        assert!(
+            job.status.is_finished() && job.expires_at.is_some(),
+            "{job:?}"
+        );
+        job
     }
 
     /// The unfinished build job of index `id`, as published to `tx`.
     fn published_job(tx: &PartitionStoreTransaction<'_>, id: u32) -> MigrationJob {
-        tx.maintained_indexes()
+        tx.published_registry()
             .jobs()
-            .unfinished
-            .get(MigrationJobId::for_index(id))
+            .get(MigrationJobId::for_entry(id))
             .unwrap()
             .clone()
     }
 
     /// Writes `registry` and `walks` as a binary would have committed them.
-    fn write_state(store: &PartitionStore, registry: &IndexRegistry, walks: &Walks) {
-        let db = store.partition_db();
-        let mut batch = WriteBatch::default();
-        append_registry_to_wb(db.cf_handle(), &mut batch, db.partition().id(), registry);
-        append_walks_to_wb(db.cf_handle(), &mut batch, db.partition().id(), walks);
-        db.rocksdb().inner().as_raw_db().write(&batch).unwrap();
+    fn write_state(store: &PartitionStore, registry: &Registry, walks: &Walks) {
+        testing::overwrite(store.partition_db(), registry, walks);
     }
 
     fn add_counts(store: &PartitionStore, id: u32, delta: u32) {
@@ -1361,7 +1475,7 @@ mod backfill_tests {
         assert_eq!((index.state, index.walk), (IndexStatus::Ready, None));
         assert_eq!(count(&store, index.id), SEEDED, "every_entry_once");
         assert!(
-            store.maintained_indexes().touched_by_on_write().is_empty(),
+            store.published_registry().touched_by_on_write().is_empty(),
             "ready_indexes_are_not_listed"
         );
         assert!(walks(&store).entries().is_empty());
@@ -1422,7 +1536,12 @@ mod backfill_tests {
         let shared = persisted.get(ids[2]).unwrap().walk.unwrap();
         let end = walks.get(shared).unwrap().end.clone();
         let own = walks
-            .start(WalkKind::index_backfill(), Source::EntryStatus, end)
+            .start(
+                &mut persisted,
+                WalkKind::index_backfill(),
+                Source::EntryStatus,
+                end,
+            )
             .unwrap();
         walks
             .advance(own, Bytes::from(entries.last().unwrap().0.clone()))
@@ -1516,33 +1635,33 @@ mod backfill_tests {
         );
     }
 
+    /// Flushes `store`, so that [`testing::written`] then lists the records the
+    /// next commits put.
+    async fn flushed(store: &PartitionStore) {
+        store.partition_db().flush_memtables(true).await.unwrap();
+        assert!(testing::written(store.partition_db()).is_empty());
+    }
+
     #[restate_core::test]
-    async fn job_records_follow_each_build_into_the_history() {
+    async fn job_records_follow_each_build_and_commits_write_only_changed_records() {
         RocksDbManager::init();
         let manager = PartitionStoreManager::create(true).await.unwrap();
         let version = ReString::from(SemanticRestateVersion::current().to_string());
+        let day = Requests::default().retention.as_millis() as u64;
 
         // An empty partition has nothing to walk: the index is Ready at once, and
-        // its job goes straight to the history, completed without a pass.
+        // its job finishes at once, completed without a pass, expiring a
+        // retention later.
         let mut empty = manager
             .open(&Partition::new(PartitionId::from(2), KeyRange::FULL), None)
             .await
             .unwrap();
         reconcile(&mut empty, maintain(&COUNT)).await;
         let index = registry(&empty).maintained(COUNT.name).unwrap().clone();
-        let records = load_job_records(empty.partition_db()).unwrap().0;
-        let [job] = records.history.entries() else {
-            panic!("one finished job: {records:?}");
-        };
-        assert!(records.unfinished.entries().is_empty());
-        assert_eq!(
-            (job.id(), job.status, job.passes),
-            (
-                MigrationJobId::for_index(index.id),
-                MigrationJobStatus::Completed,
-                0
-            )
-        );
+        assert!(unfinished(&empty).entries().is_empty());
+        assert!(empty.published_registry().jobs().entries().is_empty());
+        let job = finished_job(&empty, index.id);
+        assert_eq!((job.status, job.passes), (MigrationJobStatus::Completed, 0));
         let registered_at = index.timeline.registered_at;
         assert!(registered_at.is_some());
         assert_eq!(
@@ -1554,6 +1673,7 @@ mod backfill_tests {
             ),
             (registered_at, registered_at, registered_at, registered_at)
         );
+        assert_eq!(job.expires_at, registered_at.map(|at| at + day));
         assert_eq!(index.timeline.registered_by.as_ref(), Some(&version));
 
         // Three indexes share one walk. A command adopts one entry first, so the
@@ -1570,24 +1690,41 @@ mod backfill_tests {
         for id in ids {
             let job = committed_job(&store, id);
             assert_eq!(
-                (job.status, job.walk),
-                (MigrationJobStatus::Pending, Some(walk))
+                (job.status, job.walk, job.expires_at),
+                (MigrationJobStatus::Pending, Some(walk), None)
             );
             assert_eq!(job.created_by.as_ref(), Some(&version));
         }
         let entries = read_chunk(&store, None, usize::MAX).unwrap();
         update(&mut store, &entries[3].1).await;
+        let jobs = ids.map(|id| (RecordKind::Job, u64::from(id)));
 
-        // Each member is charged the walk's full slice; a failed attempt counts a
-        // failure and its error, and commits no rows.
+        // An open that changes nothing writes nothing; a slice writes its walk
+        // and its jobs only. Each member is charged the walk's full slice.
+        let sequence = testing::sequence(store.partition_db());
+        reconcile(&mut store, Requests::default()).await;
+        assert_eq!(testing::sequence(store.partition_db()), sequence);
+        flushed(&store).await;
         fill(&mut store, walk, 10).await;
+        assert_eq!(
+            testing::written(store.partition_db()),
+            [(RecordKind::Walk, walk)]
+                .into_iter()
+                .chain(jobs)
+                .collect::<Vec<_>>()
+        );
+
+        // A failed attempt counts a failure and its error, and commits no rows:
+        // its record writes the jobs only.
         let invocation = entries[20].1.to_invocation_id().unwrap();
         let mut tx = store.transaction();
         let status = tx.get_invocation_status(&invocation).await.unwrap();
         tx.delete_invocation_status(&invocation).unwrap();
         tx.commit().await.unwrap();
         drop(tx);
+        flushed(&store).await;
         assert!(engine::run_all(&mut store, 32).await.is_err());
+        assert_eq!(testing::written(store.partition_db()), jobs);
         for id in ids {
             let job = committed_job(&store, id);
             assert_eq!(job.status, MigrationJobStatus::Running);
@@ -1596,17 +1733,34 @@ mod backfill_tests {
             assert!(job.last_error.is_some() && job.last_error_at.is_some());
         }
 
-        // Completion moves every member's job to the history, completed after one
-        // pass, and stamps the indexes Ready.
+        // The finishing slice writes the registry, which stamps the indexes
+        // Ready, deletes its walk, and finishes every member's job, completed
+        // after one pass, with its expiry; none stays unfinished.
         let mut tx = store.transaction();
         tx.put_invocation_status(&invocation, &status).unwrap();
         tx.commit().await.unwrap();
         drop(tx);
-        run_walks(&mut store).await;
-        let records = load_job_records(store.partition_db()).unwrap().0;
-        assert!(records.unfinished.entries().is_empty());
+        flushed(&store).await;
+        let db = store.partition_db().clone();
+        let mut tx = store.transaction();
+        assert_eq!(
+            engine::run_slice(&mut tx, &db, walk, usize::MAX)
+                .await
+                .unwrap(),
+            Slice::Exhausted
+        );
+        drop(tx);
+        assert_eq!(
+            testing::written(&db),
+            [(RecordKind::Registry, 0)]
+                .into_iter()
+                .chain(jobs)
+                .collect::<Vec<_>>()
+        );
+        assert!(walks(&store).entries().is_empty());
+        assert!(unfinished(&store).entries().is_empty());
         for id in ids {
-            let job = records.history.get(MigrationJobId::for_index(id)).unwrap();
+            let job = finished_job(&store, id);
             assert_eq!(
                 (job.status, job.passes, job.walk),
                 (MigrationJobStatus::Completed, 1, None)
@@ -1617,11 +1771,17 @@ mod backfill_tests {
                 (0, None)
             );
             assert!(job.finished_at.is_some());
+            assert_eq!(job.expires_at, job.finished_at.map(|at| at + day));
             assert_eq!(
                 registry(&store).get(id).unwrap().timeline.ready_at,
                 job.finished_at
             );
         }
+        // The next open loads no finished job and writes nothing.
+        let sequence = testing::sequence(&db);
+        reconcile(&mut store, Requests::default()).await;
+        assert_eq!(testing::sequence(&db), sequence);
+        assert!(store.published_registry().jobs().entries().is_empty());
     }
 
     #[restate_core::test]
@@ -1655,18 +1815,14 @@ mod backfill_tests {
             (MigrationJobStatus::Running, None, 1)
         );
 
-        // Records this binary can't read are replaced on disk, also when
-        // nothing else changes and the replacement is empty: here only the
-        // history is unreadable, and the unfinished jobs stay as they were.
+        // Job records this binary can't read are replaced or deleted on disk,
+        // never fail the open.
         let db = store.partition_db().clone();
-        let corrupt = |state_ids: &[u64]| {
+        let corrupt = |ids: &[u32]| {
             let mut batch = WriteBatch::default();
-            for &state_id in state_ids {
-                batch.put_cf(
-                    db.cf_handle(),
-                    crate::fsm_table::migration_jobs_key(db.partition().id(), state_id),
-                    b"not a job list",
-                );
+            for &id in ids {
+                let key = RecordKey::job(db.partition().id(), MigrationJobId::for_entry(id));
+                batch.put_cf(db.cf_handle(), key, b"not a job");
             }
             db.rocksdb().inner().as_raw_db().write(&batch).unwrap();
         };
@@ -1674,8 +1830,8 @@ mod backfill_tests {
         // when that pass started. The start it had is from its previous pass, and
         // would stretch `eta` by the wait between passes, so it becomes unknown.
         // A job that stays on its walk keeps its start.
-        let (mut moved, _) = load_job_records(&db).unwrap();
-        let job_id = MigrationJobId::for_index(count);
+        let mut moved = MigrationJobRecords::new(unfinished(&store), Duration::ZERO);
+        let job_id = MigrationJobId::for_entry(count);
         moved.unfinished.get_mut(job_id).unwrap().pass_started_at = Some(1);
         let mut stayed = moved.clone();
         let job = moved.unfinished.get_mut(job_id).unwrap();
@@ -1696,22 +1852,28 @@ mod backfill_tests {
             (MigrationJobStatus::Running, Some(walk), Some(1))
         );
 
-        let (before, _) = load_job_records(&db).unwrap();
-        corrupt(&[fsm_variable::MIGRATION_JOB_HISTORY]);
+        // An unreadable record of no unfinished job goes, as does one under
+        // another job's key; the readable unfinished jobs stay as they were.
+        let before = unfinished(&store);
+        corrupt(&[1_000]);
+        let mut misplaced = WriteBatch::default();
+        misplaced.put_cf(
+            db.cf_handle(),
+            RecordKey::job(db.partition().id(), MigrationJobId::for_entry(1_001)),
+            committed_job(&store, count).encode(),
+        );
+        db.rocksdb().inner().as_raw_db().write(&misplaced).unwrap();
+        assert_eq!(records::load(&db).unwrap().1, [1_000, 1_001]);
         reconcile(&mut store, Requests::default()).await;
-        let (after, unreadable) = load_job_records(&db).unwrap();
-        assert!(!unreadable, "the history was rewritten");
-        assert_eq!(after.unfinished, before.unfinished);
-        assert!(after.history.entries().is_empty());
+        let (after, unreadable) = records::load(&db).unwrap();
+        assert!(unreadable.is_empty(), "both records were deleted");
+        assert_eq!(after.jobs, before);
 
-        // A store whose lists are both unreadable:
-        // the open rebuilds the unfinished jobs from the registry, with unknown
-        // times, and Running once their walk has started. RESUMED is reset in
-        // that same open, and its cancelled build still reaches the history.
-        corrupt(&[
-            fsm_variable::MIGRATION_JOBS,
-            fsm_variable::MIGRATION_JOB_HISTORY,
-        ]);
+        // Unreadable records of unfinished jobs: the open rebuilds them from the
+        // registry, with unknown times, and Running once their walk has started.
+        // RESUMED is reset in that same open, and its cancelled build is still
+        // recorded.
+        corrupt(&[count, adopted, reset_index]);
         reconcile(
             &mut store,
             Requests {
@@ -1720,14 +1882,15 @@ mod backfill_tests {
             },
         )
         .await;
-        let reset = load_job_records(&db).unwrap().0.history;
-        let reset = reset.get(MigrationJobId::for_index(reset_index)).unwrap();
+        let reset = finished_job(&store, reset_index);
         assert_eq!(
             (reset.status, reset.created_at, reset.finished_at.is_some()),
             (MigrationJobStatus::Cancelled, None, true)
         );
-        let (_, unreadable) = load_job_records(&db).unwrap();
-        assert!(!unreadable, "both lists were rewritten");
+        assert!(
+            records::load(&db).unwrap().1.is_empty(),
+            "every record was rewritten"
+        );
         let rebuilt = committed_job(&store, count);
         assert_eq!(
             (
@@ -1740,51 +1903,34 @@ mod backfill_tests {
         );
 
         // COUNT's build completed and ADOPTED was dropped without their jobs
-        // being updated: the open finishes both, at an unknown time.
+        // being updated: the open finishes both, at an unknown time, writing
+        // their two records and nothing else. They expire a retention after the
+        // open, here at once: a retention of 0 keeps no finished job.
         let mut registry_now = registry(&store);
         let mut walks_now = walks(&store);
         registry_now.set_ready(count).unwrap();
         registry_now.drop_index(adopted).unwrap();
         walks_now.remove(walk).unwrap();
         write_state(&store, &registry_now, &walks_now);
-        reconcile(&mut store, Requests::default()).await;
-        let records = load_job_records(store.partition_db()).unwrap().0;
-        assert!(records.unfinished.entries().is_empty());
-        let completed = records
-            .history
-            .get(MigrationJobId::for_index(count))
-            .unwrap();
-        assert_eq!(
-            (completed.status, completed.finished_at),
-            (MigrationJobStatus::Completed, None)
-        );
-        let cancelled = records
-            .history
-            .get(MigrationJobId::for_index(adopted))
-            .unwrap();
-        assert_eq!(
-            (cancelled.status, cancelled.finished_at),
-            (MigrationJobStatus::Cancelled, None)
-        );
-
-        // The history keeps the latest jobs up to the configured limit, and none
-        // with a limit of 0.
-        for (limit, kept) in [(1, vec![adopted]), (0, vec![])] {
-            reconcile(
-                &mut store,
-                Requests {
-                    history_limit: limit,
-                    ..Requests::default()
-                },
-            )
-            .await;
-            let history = load_job_records(store.partition_db()).unwrap().0.history;
-            let ids: Vec<_> = history
-                .entries()
-                .iter()
-                .map(|job| job.id().as_u32())
-                .collect();
-            assert_eq!(ids, kept, "limit {limit}");
+        let (sequence, opened) = (testing::sequence(&db), WallClock::now_ms().as_u64());
+        reconcile(
+            &mut store,
+            Requests {
+                retention: Duration::ZERO,
+                ..Requests::default()
+            },
+        )
+        .await;
+        assert_eq!(testing::sequence(&db) - sequence, 2, "two job records");
+        assert!(unfinished(&store).entries().is_empty());
+        let now = WallClock::now_ms().as_u64();
+        for (id, status) in [
+            (count, MigrationJobStatus::Completed),
+            (adopted, MigrationJobStatus::Cancelled),
+        ] {
+            let job = finished_job(&store, id);
+            assert_eq!((job.status, job.finished_at), (status, None));
+            assert!(job.expires_at.is_some_and(|at| at >= opened) && job.is_expired(now));
         }
     }
 
@@ -1900,22 +2046,9 @@ mod backfill_tests {
             update(&mut quiet, entry).await;
         }
         delete(&mut quiet, &entries[0].1).await;
-        let mut records = load_job_records(quiet.partition_db()).unwrap().0;
-        records
-            .unfinished
-            .get_mut(MigrationJobId::for_index(id))
-            .unwrap()
-            .next_eligible_at = Some(0);
-        let db = quiet.partition_db();
-        let mut batch = WriteBatch::default();
-        append_migration_jobs_to_wb(
-            db.cf_handle(),
-            &mut batch,
-            db.partition().id(),
-            fsm_variable::MIGRATION_JOBS,
-            &records.unfinished,
-        );
-        db.rocksdb().inner().as_raw_db().write(&batch).unwrap();
+        let mut eligible = committed_job(&quiet, id);
+        eligible.next_eligible_at = Some(0);
+        testing::put_jobs(quiet.partition_db(), [&eligible]);
         try_reconcile(&mut quiet, only, Requests::default())
             .await
             .unwrap();
@@ -2163,7 +2296,7 @@ mod backfill_tests {
         let db = store.partition_db().rocksdb().inner().as_raw_db();
         let cf = db.cf_handle(store.partition().cf_name().as_ref()).unwrap();
         let mut rows = Vec::new();
-        for index in registry(store).entries() {
+        for index in registry(store).indexes() {
             let prefix = match index.kind {
                 IndexKind::Secondary => {
                     IndexKeyPrefix::new(partition, index.id).as_bytes().to_vec()
@@ -2203,7 +2336,7 @@ mod backfill_tests {
             .unwrap();
         // Every released index and statistic, and a passive one: one walk, every
         // member.
-        let all: Vec<&'static IndexDefinition> = crate::registry::DEFINITIONS
+        let all: Vec<&'static IndexDefinition> = crate::registry::INDEX_DEFINITIONS
             .iter()
             .copied()
             .chain([&PASSIVE])
@@ -2215,45 +2348,36 @@ mod backfill_tests {
             .await
             .unwrap();
         run_walks(&mut reference).await;
-        // Earlier builds left a history of jobs that failed with long errors,
-        // larger than 2 KiB per member. Every slice counts it against its write
-        // budget, and the finishing slice writes it.
-        let mut earlier = MigrationJobRecords::default();
+        // Earlier builds left finished jobs that failed with long errors, larger
+        // than 2 KiB per member. They stay on disk: no slice counts them against
+        // its write budget, nor writes them.
+        let mut earlier =
+            MigrationJobRecords::new(MigrationJobs::default(), Duration::from_secs(3600));
         for id in 1_000..1_030 {
             let mut job =
                 MigrationJob::index_backfill(id, ReString::from_static("old/1"), None, None, None);
             job.record_failure(0, &"x".repeat(crate::job::MAX_ERROR_LEN), 0);
             earlier.unfinished.insert(job);
+            let now = WallClock::now_ms().as_u64();
             earlier.finish(
-                MigrationJobId::for_index(id),
+                MigrationJobId::for_entry(id),
                 MigrationJobStatus::Cancelled,
                 None,
-                DEFAULT_HISTORY_LIMIT,
+                now,
             );
         }
-        let history_bytes = earlier.history.encoded_len();
-        assert!(history_bytes > all.len() * (2 << 10), "{history_bytes}");
-        {
-            let db = store.partition_db();
-            let mut batch = WriteBatch::default();
-            append_migration_jobs_to_wb(
-                db.cf_handle(),
-                &mut batch,
-                db.partition().id(),
-                fsm_variable::MIGRATION_JOB_HISTORY,
-                &earlier.history,
-            );
-            db.rocksdb().inner().as_raw_db().write(&batch).unwrap();
-        }
+        let earlier_bytes: usize = earlier.finished.iter().map(|job| job.encode().len()).sum();
+        assert!(earlier_bytes > all.len() * (2 << 10), "{earlier_bytes}");
+        testing::put_jobs(store.partition_db(), &earlier.finished);
         try_reconcile(&mut store, all, maintain_all(all))
             .await
             .unwrap();
         let registered = registry(&store);
-        assert_eq!(registered.entries().len(), all.len());
-        let walk = registered.entries()[0].walk.unwrap();
+        assert_eq!(registered.indexes().len(), all.len());
+        let walk = registered.indexes()[0].walk.unwrap();
         assert!(
             registered
-                .entries()
+                .indexes()
                 .iter()
                 .all(|index| index.walk == Some(walk))
         );
@@ -2261,10 +2385,10 @@ mod backfill_tests {
         let db = store.partition_db().clone();
         let mut tx = store.transaction();
         // Every member is charged the walk's rows, so any member's job tells.
-        let member = registered.entries()[0].id;
+        let member = registered.indexes()[0].id;
         let passive = registered.maintained(PASSIVE.name).unwrap().id;
         let progress = |tx: &PartitionStoreTransaction<'_>| {
-            let walk = tx.maintained_indexes().walks().get(walk).unwrap().clone();
+            let walk = tx.published_registry().walks().get(walk).unwrap().clone();
             let rows = published_job(tx, member).rows_examined;
             // PASSIVE's gaps count exactly the entries slices took: a candidate
             // rolled back at the byte limit leaves them unchanged too.
@@ -2308,12 +2432,23 @@ mod backfill_tests {
         tx.put_invocation_status(&invocation, &status).unwrap();
         tx.commit().await.unwrap();
 
-        // An allowance for a few entries' work that leaves no room for the
-        // history still takes the first entry, and nothing more: the records the
-        // slice commits count against its budget.
+        // An allowance for the records the slice commits with, the registry,
+        // its walk and its jobs, and no more, still takes the first entry, and
+        // nothing more: those records count against its budget. They are much
+        // smaller than the finished jobs on disk, which don't count.
+        let records = {
+            let active = tx.published_registry();
+            let members: Vec<_> = active
+                .registry()
+                .members(walk)
+                .map(|index| index.id)
+                .collect();
+            engine::records_estimate(&active, active.walks().get(walk).unwrap(), &members)
+        };
+        assert!(records < earlier_bytes, "{records}");
         let tight = SliceBudget {
             keys: 10,
-            write_bytes: all.len() * (2 << 10),
+            write_bytes: records,
             ..unbounded
         };
         assert_eq!(
@@ -2322,16 +2457,16 @@ mod backfill_tests {
         );
         assert_eq!(progress(&tx), (Bytes::from(entries[2].0.clone()), 3));
 
-        // The same allowance on top of the history (scaled to the members, each
-        // of which stages about one record per entry) ends each slice before its
-        // key limit, here all but the last entry, and the cursor covers exactly
-        // the work committed.
+        // An allowance on top of the records (scaled to the members, each of
+        // which stages about one record per entry), smaller than the finished
+        // jobs on disk, ends each slice before its key limit, here all but the
+        // last entry, and the cursor covers exactly the work committed.
         let mut taken = Vec::new();
         let mut scanned = 3;
         while scanned < entries.len() - 1 {
             let budget = SliceBudget {
                 keys: entries.len() - 1 - scanned,
-                write_bytes: history_bytes + all.len() * (2 << 10),
+                write_bytes: records + all.len() * (2 << 10),
                 ..unbounded
             };
             assert_eq!(
@@ -2361,15 +2496,27 @@ mod backfill_tests {
         assert!(self::walks(&store).entries().is_empty());
         assert!(
             registry(&store)
-                .entries()
+                .indexes()
                 .iter()
                 .all(|index| (index.state == IndexStatus::Ready) != (index.id == passive))
         );
         assert_eq!(index_rows(&store), index_rows(&reference));
-        // The finishing slice appended every active member's job to the history;
-        // PASSIVE waits with a gap at every entry.
-        let history = load_job_records(store.partition_db()).unwrap().0.history;
-        assert_eq!(history.entries().len(), 30 + all.len() - 1);
+        // The finishing slice finished every active member's job and left the
+        // earlier ones alone; PASSIVE waits with a gap at every entry.
+        for index in registry(&store).indexes() {
+            if index.id != passive {
+                assert_eq!(
+                    finished_job(&store, index.id).status,
+                    MigrationJobStatus::Completed
+                );
+            }
+        }
+        for job in &earlier.finished {
+            assert_eq!(
+                get_job(store.partition_db(), job.id().as_u32()).as_ref(),
+                Some(job)
+            );
+        }
         assert_eq!(
             committed_job(&store, passive).rows_uncovered,
             Some(entries.len() as u64)
@@ -2400,7 +2547,12 @@ mod backfill_tests {
         // ADOPTED has evidence on the shared walk, which goes with it.
         walks.add_uncovered(shared, adopted_id, 3).unwrap();
         let own = walks
-            .start(WalkKind::index_backfill(), Source::EntryStatus, end)
+            .start(
+                &mut persisted,
+                WalkKind::index_backfill(),
+                Source::EntryStatus,
+                end,
+            )
             .unwrap();
         persisted.link(resumed_id, own).unwrap();
         for id in [count_id, adopted_id] {
@@ -2455,13 +2607,20 @@ mod backfill_tests {
         // A store with the registry's storage feature, so each case meets its own
         // check rather than the feature's.
         reconcile(&mut store, maintain(&COUNT)).await;
-        let mut base = IndexRegistry::default();
+        let mut base = Registry::default();
         let id = base.register(COUNT.name, COUNT.kind).unwrap();
+        // The counter issued walk 1, which each case starts.
+        assert_eq!(base.issue_walk_id(), 1);
         let end = Bytes::from(read_chunk(&store, None, 1).unwrap()[0].0.clone());
         let started = |end: Bytes| {
             let mut walks = Walks::default();
             walks
-                .start(WalkKind::index_backfill(), Source::EntryStatus, end)
+                .start(
+                    &mut Registry::default(),
+                    WalkKind::index_backfill(),
+                    Source::EntryStatus,
+                    end,
+                )
                 .unwrap();
             walks
         };
@@ -2470,7 +2629,7 @@ mod backfill_tests {
             registry.link(id, 1).unwrap();
             registry
         };
-        let cases: [(&str, &str, IndexRegistry, Walks); 6] = [
+        let cases: [(&str, &str, Registry, Walks); 6] = [
             (
                 "dangling link",
                 "walk link of",
@@ -2567,26 +2726,18 @@ mod backfill_tests {
             walk.cursor = Some(Bytes::from_static(b"not a key"));
         };
         unknown(&mut walks_later.entries_mut()[0], 2, OnUnknown::Discard);
-        let mut refusing = walks_later.clone();
+        let (mut refusing, mut registry_refusing) = (walks_later.clone(), registry_later.clone());
         let refused = refusing
-            .start(WalkKind::index_backfill(), Source::EntryStatus, end.clone())
+            .start(
+                &mut registry_refusing,
+                WalkKind::index_backfill(),
+                Source::EntryStatus,
+                end.clone(),
+            )
             .unwrap();
         unknown(&mut refusing.entries_mut()[1], 3, OnUnknown::Refuse);
-        write_state(&later, &registry_later, &refusing);
-        let raw = |store: &PartitionStore| {
-            let db = store.partition_db();
-            [
-                registry_key(db.partition().id()),
-                walks_key(db.partition().id()),
-            ]
-            .map(|key| {
-                db.rocksdb()
-                    .inner()
-                    .as_raw_db()
-                    .get_cf(db.cf_handle(), key)
-                    .unwrap()
-            })
-        };
+        write_state(&later, &registry_refusing, &refusing);
+        let raw = |store: &PartitionStore| testing::raw(store.partition_db(), false);
         let before = raw(&later);
         assert!(matches!(
             try_reconcile(&mut later, KNOWN, Requests::default()).await,
@@ -2635,7 +2786,7 @@ mod backfill_tests {
         id: u32,
         now: Instant,
     ) -> Option<&'static str> {
-        let active = tx.maintained_indexes();
+        let active = tx.published_registry();
         let replica = ReplicaMigrations {
             partition_id: db.partition().id(),
             key_range: db.partition().key_range,
@@ -2645,10 +2796,7 @@ mod backfill_tests {
             index_sizes: Default::default(),
             driver: db.driver_state().get(),
         };
-        let job = active
-            .jobs()
-            .unfinished
-            .get(MigrationJobId::for_index(id))?;
+        let job = active.jobs().get(MigrationJobId::for_entry(id))?;
         replica.blocked_by(job, now)
     }
 
@@ -2735,7 +2883,7 @@ mod backfill_tests {
         let db = store.partition_db().clone();
         let mut tx = store.transaction();
         let state = |tx: &PartitionStoreTransaction<'_>, id| {
-            tx.maintained_indexes().registry().get(id).unwrap().state
+            tx.published_registry().registry().get(id).unwrap().state
         };
 
         // The walks take turns. The failing one waits out its backoff while the
@@ -2838,7 +2986,7 @@ mod backfill_tests {
         assert_eq!(blocked_by(&db, &tx, count, refill), None);
         drive(&mut driver, &mut tx, 1).await;
         assert!(
-            tx.maintained_indexes()
+            tx.published_registry()
                 .registry()
                 .get(passive)
                 .unwrap()
@@ -2941,7 +3089,8 @@ mod backfill_tests {
         };
         assert_eq!(replica.progress_percent(&unknown_source), None);
 
-        // After the pass: COUNT's job is in the history, PASSIVE's waits.
+        // After the pass: COUNT's job is finished, and listed until it expires;
+        // PASSIVE's waits.
         run_walks(&mut store).await;
         let after = report().await;
         let replica = &after.replicas[0];
@@ -2955,8 +3104,7 @@ mod backfill_tests {
         assert_eq!(
             replica
                 .jobs
-                .history
-                .get(MigrationJobId::for_index(active))
+                .get(MigrationJobId::for_entry(active))
                 .unwrap()
                 .status,
             MigrationJobStatus::Completed
@@ -2964,12 +3112,23 @@ mod backfill_tests {
         assert_eq!(
             replica
                 .jobs
-                .unfinished
-                .get(MigrationJobId::for_index(passive))
+                .get(MigrationJobId::for_entry(passive))
                 .unwrap()
                 .status,
             MigrationJobStatus::Waiting
         );
+        // Once its record expired, a report hides it, compacted away or not.
+        let mut expired = get_job(store.partition_db(), active).unwrap();
+        expired.expires_at = Some(WallClock::now_ms().as_u64());
+        testing::put_jobs(store.partition_db(), [&expired]);
+        let hidden = report().await;
+        let ids: Vec<_> = hidden.replicas[0]
+            .jobs
+            .entries()
+            .iter()
+            .map(|job| job.id().as_u32())
+            .collect();
+        assert_eq!(ids, [passive]);
 
         // A flushed index is estimated from its table files: 1 MiB of
         // incompressible values under COUNT's prefix, once flushed, counts at
@@ -3009,11 +3168,8 @@ mod backfill_tests {
         let mut batch = WriteBatch::default();
         batch.put_cf(
             db.cf_handle(),
-            crate::fsm_table::migration_jobs_key(
-                db.partition().id(),
-                fsm_variable::MIGRATION_JOB_HISTORY,
-            ),
-            b"not a job list",
+            RecordKey::job(db.partition().id(), MigrationJobId::for_entry(active)),
+            b"not a job",
         );
         db.rocksdb().inner().as_raw_db().write(&batch).unwrap();
         let broken = report().await;
@@ -3024,7 +3180,14 @@ mod backfill_tests {
                 .iter()
                 .map(|replica| (replica.partition_id, replica.record))
                 .collect::<Vec<_>>(),
-            [(PartitionId::MIN, "job history")]
+            [(PartitionId::MIN, "job")]
+        );
+        assert!(
+            broken.unreadable[0]
+                .error
+                .starts_with(&format!("job {active}: malformed job record")),
+            "{:?}",
+            broken.unreadable
         );
     }
 
@@ -3070,31 +3233,20 @@ mod backfill_tests {
             .await
             .unwrap();
         run_walks(store).await;
-        let active = store.maintained_indexes();
+        let active = store.published_registry();
         let ids = [&PASSIVE, &PEER]
             .map(|definition| active.registry().maintained(definition.name).unwrap().id);
         let mut jobs = active.jobs().clone();
         let later = WallClock::now_ms().as_u64() + 10_000;
         for (id, at) in [(ids[0], None), (ids[1], Some(later))] {
-            let job = jobs
-                .unfinished
-                .get_mut(MigrationJobId::for_index(id))
-                .unwrap();
+            let job = jobs.get_mut(MigrationJobId::for_entry(id)).unwrap();
             assert_eq!(job.status, MigrationJobStatus::Waiting);
             job.wait(None, at);
         }
         let db = store.partition_db();
-        let mut batch = WriteBatch::default();
-        append_migration_jobs_to_wb(
-            db.cf_handle(),
-            &mut batch,
-            db.partition().id(),
-            fsm_variable::MIGRATION_JOBS,
-            &jobs.unfinished,
-        );
-        db.rocksdb().inner().as_raw_db().write(&batch).unwrap();
-        db.install_maintained_indexes(Arc::new(active.successor(
-            active.registry().clone(),
+        testing::put_jobs(db, jobs.entries());
+        db.install_published_registry(Arc::new(active.successor(
+            None,
             active.walks().clone(),
             jobs,
         )));
@@ -3135,7 +3287,7 @@ mod backfill_tests {
                 Instant::now() < retry,
                 "the first job's retry is still ahead"
             );
-            let started = tx.maintained_indexes().registry().get(second).unwrap().walk;
+            let started = tx.published_registry().registry().get(second).unwrap().walk;
             assert_eq!(started.is_some(), !second_fails);
             assert_eq!(
                 [first, second].map(|id| blocked_by(&db, &tx, id, Instant::now())),
@@ -3186,11 +3338,7 @@ mod backfill_tests {
             .iter()
             .find(|replica| replica.partition_id == partition.id())
             .unwrap();
-        let job = replica
-            .jobs
-            .unfinished
-            .get(MigrationJobId::for_index(first))
-            .unwrap();
+        let job = replica.jobs.get(MigrationJobId::for_entry(first)).unwrap();
         assert_eq!(
             replica.blocked_by(job, Instant::now()),
             Some("snapshot-export")
@@ -3225,7 +3373,7 @@ mod backfill_tests {
         let mut tx = store.transaction();
         let rows = |tx: &PartitionStoreTransaction<'_>| published_job(tx, count).rows_examined;
         let linked = |tx: &PartitionStoreTransaction<'_>| {
-            tx.maintained_indexes()
+            tx.published_registry()
                 .registry()
                 .get(adopted)
                 .unwrap()
@@ -3292,7 +3440,7 @@ mod backfill_tests {
             .open(&Partition::new(PartitionId::from(2), KeyRange::FULL), None)
             .await
             .unwrap();
-        let all = crate::registry::DEFINITIONS;
+        let all = crate::registry::INDEX_DEFINITIONS;
         seed(&mut store).await;
         seed(&mut reference).await;
         try_reconcile(&mut reference, all, maintain_all(all))
@@ -3308,13 +3456,13 @@ mod backfill_tests {
         // Small slices, so that the walk is still going after a few.
         driver.tuning_mut().max_keys = 32;
         let mut tx = store.transaction();
-        let walks = tx.maintained_indexes().walks().clone();
+        let walks = tx.published_registry().walks().clone();
         let [walk] = walks.entries() else {
             panic!("one walk: {walks:?}");
         };
         let walk = walk.id;
         assert_eq!(
-            tx.maintained_indexes().registry().members(walk).count(),
+            tx.published_registry().registry().members(walk).count(),
             all.len()
         );
 
@@ -3322,7 +3470,7 @@ mod backfill_tests {
         // did not reach, through the same transaction.
         drive(&mut driver, &mut tx, 4).await;
         let member = tx
-            .maintained_indexes()
+            .published_registry()
             .registry()
             .members(walk)
             .next()
@@ -3341,7 +3489,7 @@ mod backfill_tests {
             .await;
         }
         assert!(
-            Arc::ptr_eq(&tx.maintained_indexes(), &db.maintained_indexes().unwrap()),
+            Arc::ptr_eq(&tx.published_registry(), &db.published_registry().unwrap()),
             "the processor's transaction and the partition share the committed set"
         );
 
@@ -3393,7 +3541,7 @@ mod backfill_tests {
         assert!(self::walks(&store).entries().is_empty());
         assert!(
             registry(&store)
-                .entries()
+                .indexes()
                 .iter()
                 .all(|index| index.state == IndexStatus::Ready)
         );
@@ -3447,7 +3595,7 @@ mod backfill_tests {
         let mut tx = store.transaction();
         let progress = |tx: &PartitionStoreTransaction<'_>| {
             let cursor = tx
-                .maintained_indexes()
+                .published_registry()
                 .walks()
                 .get(walk)
                 .unwrap()
@@ -3497,7 +3645,7 @@ mod backfill_tests {
                 .is_some_and(|error| error.contains("missing invocation status"))
         );
         assert_eq!(
-            tx.maintained_indexes().registry().get(id).unwrap().state,
+            tx.published_registry().registry().get(id).unwrap().state,
             IndexStatus::Backfilling
         );
         // Its job shows the walk's backoff until it ends, without another step.
@@ -3554,7 +3702,7 @@ mod backfill_tests {
             closing.await;
         }
         assert_eq!(
-            tx.maintained_indexes()
+            tx.published_registry()
                 .walks()
                 .get(walk)
                 .unwrap()
@@ -3745,9 +3893,11 @@ mod open_tests {
         get_storage_version_from_partition_db,
     };
     use crate::keys::EncodeTableKeyPrefix;
+    use crate::registry::records::{get_registry, testing};
     use crate::stats::StatKind;
     use crate::stats::aggregated::backfill::tests::seed;
-    use crate::walk::{Source, WalkKind, engine};
+    use crate::vqueue_table::EntryStatusKey;
+    use crate::walk::{WalkKind, Walks, engine};
     use crate::{PartitionStoreManager, PartitionStoreTransaction};
 
     use super::super::backfill::read_chunk;
@@ -3803,10 +3953,9 @@ mod open_tests {
 
     /// Writes `registry` and `walks` without flushing, as an interrupted open
     /// might have left them.
-    fn write_unflushed(db: &PartitionDb, registry: &IndexRegistry, walks: &Walks) {
+    fn write_unflushed(db: &PartitionDb, registry: &Registry, walks: &Walks) {
         let mut batch = WriteBatch::default();
-        append_registry_to_wb(db.cf_handle(), &mut batch, db.partition().id(), registry);
-        append_walks_to_wb(db.cf_handle(), &mut batch, db.partition().id(), walks);
+        testing::stage_overwrite(db, &mut batch, registry, walks);
         let mut options = rocksdb::WriteOptions::default();
         options.disable_wal(true);
         db.rocksdb()
@@ -3849,25 +3998,26 @@ mod open_tests {
         seed(&mut store).await;
         reconcile(&mut store, maintain()).await.unwrap();
         let db = store.partition_db().clone();
-        let registered = get_registry_from_partition_db(&db).unwrap().unwrap();
+        let registered = get_registry(&db).unwrap().unwrap();
         let id = registered.maintained("stat/1").unwrap().id;
         assert_eq!(unflushed(&db), 0, "registration_is_flushed");
 
-        let started = get_walks_from_partition_db(&db).unwrap().unwrap();
+        let started = records::load(&db).unwrap().0.walks;
 
         // A walk positioned at an entry-status key of another partition is not
         // a walk of this one.
         let mut outside = Walks::default();
+        let mut linked = Registry::default();
+        assert_eq!(linked.register("stat/1", IndexKind::Aggregate).unwrap(), id);
         let walk = outside
             .start(
+                &mut linked,
                 WalkKind::index_backfill(),
                 Source::EntryStatus,
                 cursor(500, 1),
             )
             .unwrap();
         outside.advance(walk, cursor(500, 1)).unwrap();
-        let mut linked = IndexRegistry::default();
-        assert_eq!(linked.register("stat/1", IndexKind::Aggregate).unwrap(), id);
         linked.link(id, walk).unwrap();
         write_unflushed(&db, &linked, &outside);
         assert!(
@@ -3879,7 +4029,7 @@ mod open_tests {
         write_unflushed(&db, &registered, &started);
         reconcile(&mut store, maintain()).await.unwrap();
         engine::run_all(&mut store, 3).await.unwrap();
-        let completed = get_registry_from_partition_db(&db).unwrap().unwrap();
+        let completed = get_registry(&db).unwrap().unwrap();
         assert_eq!(completed.get(id).unwrap().state, IndexStatus::Ready);
 
         // An attempt that wrote registry state but did not flush it: a retry on
@@ -3895,9 +4045,7 @@ mod open_tests {
         assert!(unflushed(retry.partition_db()) > 0);
         reconcile(&mut retry, maintain()).await.unwrap();
         assert_eq!(
-            get_registry_from_partition_db(retry.partition_db())
-                .unwrap()
-                .unwrap(),
+            get_registry(retry.partition_db()).unwrap().unwrap(),
             later,
             "the retry changes nothing"
         );
@@ -3917,8 +4065,8 @@ mod open_tests {
         seed(&mut store).await;
         reconcile(&mut store, maintain()).await.unwrap();
         let db = store.partition_db().clone();
-        let registered = get_registry_from_partition_db(&db).unwrap().unwrap();
-        let walks = get_walks_from_partition_db(&db).unwrap().unwrap();
+        let registered = get_registry(&db).unwrap().unwrap();
+        let walks = records::load(&db).unwrap().0.walks;
         let id = registered.maintained("stat/1").unwrap().id;
         // A row of the index.
         let mut key = AggregateKeyPrefix::new(partition.id(), id)
@@ -3928,7 +4076,7 @@ mod open_tests {
         key.extend_from_slice(b"payload");
         let raw = db.rocksdb().inner().as_raw_db();
         raw.put_cf(db.cf_handle(), &key, b"value").unwrap();
-        let installed = db.maintained_indexes().unwrap();
+        let installed = db.published_registry().unwrap();
         let ledger = |db: &PartitionDb| {
             serde_json::to_value(get_storage_features_from_partition_db(db).unwrap()).unwrap()
         };
@@ -3951,14 +4099,11 @@ mod open_tests {
             raw.get_cf(db.cf_handle(), &key).unwrap().is_some(),
             "the_index_keys_stay"
         );
-        assert_eq!(
-            get_registry_from_partition_db(&db).unwrap().unwrap(),
-            registered
-        );
-        assert_eq!(get_walks_from_partition_db(&db).unwrap().unwrap(), walks);
+        assert_eq!(get_registry(&db).unwrap().unwrap(), registered);
+        assert_eq!(records::load(&db).unwrap().0.walks, walks);
         assert_eq!(ledger(&db), fenced, "the_fence_stays");
         assert!(
-            Arc::ptr_eq(&db.maintained_indexes().unwrap(), &installed),
+            Arc::ptr_eq(&db.published_registry().unwrap(), &installed),
             "nothing_was_published"
         );
 
@@ -3966,9 +4111,7 @@ mod open_tests {
         let mut store = manager.open(&partition, None).await.unwrap();
         reconcile(&mut store, maintain()).await.unwrap();
         assert_eq!(
-            get_registry_from_partition_db(store.partition_db())
-                .unwrap()
-                .unwrap(),
+            get_registry(store.partition_db()).unwrap().unwrap(),
             registered
         );
     }
@@ -3983,9 +4126,9 @@ mod open_tests {
         let db = store.partition_db().clone();
         let faults = manager.faults(&partition);
         // Seeding installed the empty set a store without reconciliation uses.
-        let empty = db.maintained_indexes().unwrap();
-        assert!(empty.registry().entries().is_empty());
-        let unpublished = |db: &PartitionDb| Arc::ptr_eq(&db.maintained_indexes().unwrap(), &empty);
+        let empty = db.published_registry().unwrap();
+        assert!(empty.registry().indexes().is_empty());
+        let unpublished = |db: &PartitionDb| Arc::ptr_eq(&db.published_registry().unwrap(), &empty);
 
         // A failed flush fails the open and publishes nothing: the registration
         // is written, but not installed.
@@ -3995,7 +4138,7 @@ mod open_tests {
             Err(MigrationError::StorageError(StorageError::Generic(_)))
         ));
         assert!(unpublished(&db), "nothing_was_published");
-        let written = get_registry_from_partition_db(&db).unwrap().unwrap();
+        let written = get_registry(&db).unwrap().unwrap();
         assert_eq!(
             written.maintained("stat/1").map(|index| index.state),
             Some(IndexStatus::Backfilling)
@@ -4014,7 +4157,7 @@ mod open_tests {
         assert!(unpublished(&db), "unpublished_while_the_flush_is_pending");
         drop(resume);
         retry.await.unwrap();
-        let installed = db.maintained_indexes().unwrap();
+        let installed = db.published_registry().unwrap();
         assert_eq!(installed.registry(), &written);
         assert!(!installed.touched_by_on_write().is_empty());
     }
@@ -4034,7 +4177,7 @@ mod open_tests {
             .unwrap();
         seed(&mut store).await;
         let db = store.partition_db().clone();
-        let mut invalid = IndexRegistry::default();
+        let mut invalid = Registry::default();
         invalid.register("stat/1", IndexKind::Aggregate).unwrap();
         invalid.next_id = 10;
         write_unflushed(&db, &invalid, &Walks::default());
@@ -4063,7 +4206,7 @@ mod open_tests {
             "no_legacy_gauge_was_deleted"
         );
         assert!(
-            get_registry_from_partition_db(&db).is_err(),
+            get_registry(&db).is_err(),
             "the_invalid_registry_is_left_as_is"
         );
         assert_eq!(read_chunk(&store, None, usize::MAX).unwrap().len(), entries);

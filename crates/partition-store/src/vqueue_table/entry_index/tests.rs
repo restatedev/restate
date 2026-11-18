@@ -24,11 +24,11 @@ use restate_types::partitions::Partition;
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, HandlerRef, Seq, VQueueId};
 
-use crate::fsm_table::get_registry_from_partition_db;
 use crate::index::SecondaryIndexKey;
 use crate::keys::header::IndexScope;
 use crate::keys::{IndexKeyPrefix, KeyKind};
 use crate::registry::IndexStatus;
+use crate::registry::records::get_registry;
 use crate::stats::aggregated::backfill::tests::seed;
 use crate::walk::engine;
 use crate::{PartitionStore, PartitionStoreManager};
@@ -47,7 +47,7 @@ async fn open(store: &mut PartitionStore, config: &Configuration) {
 
 /// The maintained index of `entry_by_service_created/1`: its ID and status.
 fn index(store: &PartitionStore) -> Option<(u32, IndexStatus)> {
-    get_registry_from_partition_db(store.partition_db())
+    get_registry(store.partition_db())
         .unwrap()
         .unwrap_or_default()
         .maintained(ENTRY_BY_SERVICE_CREATED.name)
@@ -78,7 +78,7 @@ fn index_keys(store: &PartitionStore) -> Vec<Vec<u8>> {
 /// The entry indexes' keys without their index header, by definition:
 /// comparable across replicas whatever partition and index IDs they have.
 fn payloads(store: &PartitionStore) -> Vec<(&'static str, Vec<Vec<u8>>)> {
-    let registry = get_registry_from_partition_db(store.partition_db())
+    let registry = get_registry(store.partition_db())
         .unwrap()
         .unwrap_or_default();
     ENTRY_INDEXES
@@ -330,9 +330,7 @@ async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     assert_eq!(index(&late), Some((first, IndexStatus::Ready)));
     for definition in [&FINISHED_ENTRY_BY_OUTCOME, &ACTIVE_ENTRY_BY_STAGE] {
         let id = maintained(&late, definition);
-        let registry = get_registry_from_partition_db(late.partition_db())
-            .unwrap()
-            .unwrap();
+        let registry = get_registry(late.partition_db()).unwrap().unwrap();
         assert_eq!(registry.get(id).unwrap().state, IndexStatus::Ready);
     }
     assert_eq!(payloads(&late), payloads(&reference));
@@ -424,7 +422,7 @@ async fn maintain_only(store: &mut PartitionStore, definitions: &[&'static Index
 
 /// The ID of the maintained index of `definition`.
 fn maintained(store: &PartitionStore, definition: &IndexDefinition) -> u32 {
-    get_registry_from_partition_db(store.partition_db())
+    get_registry(store.partition_db())
         .unwrap()
         .unwrap()
         .maintained(definition.name)

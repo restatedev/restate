@@ -8,8 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! The cluster tables `indexes` and `migration_jobs`: what each partition replica
-//! on a worker node records about its indexes and background migration jobs.
+//! The cluster tables `registry` and `migration_jobs`: what each partition replica
+//! on a worker node records about its indexes, its one-time migrations, and the
+//! background jobs running them.
 //!
 //! Each worker answers for the replicas it has open, from a report its partition
 //! store reads on the query IO pool (see [`PartitionStoreManager::migration_report`]).
@@ -23,8 +24,8 @@
 //! it. The remote path delivers it the same way by inspection of the scanner
 //! service, not by a test.
 
-mod indexes_schema;
 mod migration_jobs_schema;
+mod registry_schema;
 #[cfg(test)]
 mod tests;
 
@@ -45,7 +46,7 @@ use restate_clock::WallClock;
 use restate_core::Metadata;
 use restate_partition_store::job::{MigrationJob, MigrationJobKind, MigrationJobStatus};
 use restate_partition_store::registry::{
-    DropReason, Index, IndexKind, IndexStatus, fill_capability,
+    DropReason, Index, IndexKind, IndexStatus, Migration, MigrationState, fill_capability,
 };
 use restate_partition_store::{
     IndexSizes, MigrationReport, PartitionStoreManager, QueryIoExecutor, ReplicaMigrations,
@@ -59,18 +60,18 @@ use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::Scan;
 use crate::table_util::Builder;
 
-pub use indexes_schema::{IndexesBuilder, IndexesTable};
 pub use migration_jobs_schema::{MigrationJobsBuilder, MigrationJobsTable};
+pub use registry_schema::{RegistryBuilder, RegistryTable};
 
-impl IndexesTable {
-    /// The `indexes` fan-out table over the worker nodes. Each node's scanner is
+impl RegistryTable {
+    /// The `registry` fan-out table over the worker nodes. Each node's scanner is
     /// registered separately (see [`create_local_scanners`]).
     pub(crate) fn create_provider(
         metadata: Metadata,
         remote_scanner_manager: RemoteScannerManager,
     ) -> Arc<dyn TableProvider> {
         Arc::new(NodeFanOutTableProvider::new(
-            IndexesBuilder::schema(),
+            RegistryBuilder::schema(),
             Arc::new(RoleBasedNodeLocator::new(Role::Worker, metadata)),
             remote_scanner_manager,
             None,
@@ -96,7 +97,7 @@ impl MigrationJobsTable {
     }
 }
 
-/// This node's scanners of `indexes` and `migration_jobs`, in that order. They
+/// This node's scanners of `registry` and `migration_jobs`, in that order. They
 /// read the replicas `partition_store_manager` has open, on `io_executor`.
 pub fn create_local_scanners(
     partition_store_manager: Arc<PartitionStoreManager>,
@@ -111,12 +112,12 @@ pub fn create_local_scanners(
             table,
         })
     };
-    (scanner(Table::Indexes), scanner(Table::MigrationJobs))
+    (scanner(Table::Registry), scanner(Table::MigrationJobs))
 }
 
 #[derive(Debug, Clone, Copy)]
 enum Table {
-    Indexes,
+    Registry,
     MigrationJobs,
 }
 
@@ -146,7 +147,7 @@ impl Scan for ReportScanner {
     ) -> SendableRecordBatchStream {
         // Index sizes cost a RocksDB estimate per replica: only when selected.
         let sizes = match self.table {
-            Table::Indexes if projection.field_with_name("approx_size_bytes").is_ok() => {
+            Table::Registry if projection.field_with_name("approx_size_bytes").is_ok() => {
                 IndexSizes::Estimate
             }
             _ => IndexSizes::Skip,
@@ -163,11 +164,11 @@ impl Scan for ReportScanner {
             // the deadlines of what blocks a job.
             let (now, instant) = (WallClock::now_ms().as_u64(), Instant::now());
             let batches = match table {
-                Table::Indexes => batches::<IndexesBuilder, _>(
+                Table::Registry => batches::<RegistryBuilder, _>(
                     schema,
                     batch_size,
-                    indexes(&report, limit),
-                    |builder, (replica, index)| append_index(builder, node, replica, index),
+                    entries(&report, limit),
+                    |builder, (replica, entry)| append_entry(builder, node, replica, entry),
                 )?,
                 Table::MigrationJobs => batches::<MigrationJobsBuilder, _>(
                     schema,
@@ -231,41 +232,75 @@ fn batches<B: Builder, R>(
     Ok(batches)
 }
 
-/// The indexes of every replica in `report`, at most `limit` of them.
-fn indexes(
+/// A row of `registry`: an index or a migration.
+#[derive(Debug, Clone, Copy)]
+enum Entry<'a> {
+    Index(&'a Index),
+    Migration(&'a Migration),
+}
+
+/// The indexes, then the migrations, of every replica in `report`, at most
+/// `limit` of them.
+fn entries(
     report: &MigrationReport,
     limit: Option<usize>,
-) -> impl Iterator<Item = (&ReplicaMigrations, &Index)> {
+) -> impl Iterator<Item = (&ReplicaMigrations, Entry<'_>)> {
     report
         .replicas
         .iter()
         .flat_map(|replica| {
-            replica
-                .registry
-                .entries()
-                .iter()
-                .map(move |index| (replica, index))
+            let registry = &replica.registry;
+            let indexes = registry.indexes().iter().map(Entry::Index);
+            let migrations = registry.migrations().iter().map(Entry::Migration);
+            indexes.chain(migrations).map(move |entry| (replica, entry))
         })
         .take(limit.unwrap_or(usize::MAX))
 }
 
-fn append_index(
-    builder: &mut IndexesBuilder,
+fn append_entry(
+    builder: &mut RegistryBuilder,
     node: GenerationalNodeId,
     replica: &ReplicaMigrations,
-    index: &Index,
+    entry: Entry<'_>,
 ) {
     let mut row = builder.row();
     row.fmt_plain_node_id(node.as_plain());
     row.fmt_gen_node_id(node);
     row.partition_id(replica.partition_id.into());
+    let index = match entry {
+        Entry::Index(index) => index,
+        Entry::Migration(migration) => {
+            row.definition(&migration.definition);
+            row.kind("migration");
+            row.id(migration.id);
+            match migration.state() {
+                Some(MigrationState::InProgress) => {
+                    row.status("in_progress");
+                    row.job_id(migration.id);
+                }
+                Some(MigrationState::Complete) => row.status("complete"),
+                None => row.fmt_status(format_args!("unknown({})", migration.state)),
+            }
+            let timeline = &migration.timeline;
+            if let Some(at) = timeline.registered_at {
+                row.registered_at(millis(at));
+            }
+            if let Some(by) = &timeline.registered_by {
+                row.registered_by_version(by);
+            }
+            if let Some(at) = timeline.completed_at {
+                row.completed_at(millis(at));
+            }
+            return;
+        }
+    };
     row.definition(&index.definition);
     row.kind(match index.kind {
         IndexKind::Secondary => "secondary",
         IndexKind::Aggregate => "aggregate",
         IndexKind::Unknown => "unknown",
     });
-    row.index_id(index.id);
+    row.id(index.id);
     row.status(match index.state {
         IndexStatus::Backfilling => "backfilling",
         IndexStatus::Ready => "ready",
@@ -302,8 +337,8 @@ fn append_index(
     }
 }
 
-/// The unfinished and retained finished jobs of every replica in `report`, at
-/// most `limit` of them.
+/// The unfinished jobs, and the finished ones not expired yet, of every replica
+/// in `report`, at most `limit` of them.
 fn jobs(
     report: &MigrationReport,
     limit: Option<usize>,
@@ -311,14 +346,7 @@ fn jobs(
     report
         .replicas
         .iter()
-        .flat_map(|replica| {
-            let jobs = &replica.jobs;
-            jobs.unfinished
-                .entries()
-                .iter()
-                .chain(jobs.history.entries())
-                .map(move |job| (replica, job))
-        })
+        .flat_map(|replica| replica.jobs.entries().iter().map(move |job| (replica, job)))
         .take(limit.unwrap_or(usize::MAX))
 }
 
@@ -338,6 +366,7 @@ fn append_job(
     row.job_id(job.id().as_u32());
     row.kind(match job.kind {
         MigrationJobKind::IndexBackfill => "index_backfill",
+        MigrationJobKind::Migration => "migration",
         MigrationJobKind::Unknown => "unknown",
     });
     row.name(&job.name);
@@ -349,7 +378,12 @@ fn append_job(
         MigrationJobStatus::Cancelled => "cancelled",
         MigrationJobStatus::Unknown => "unknown",
     });
-    match fill_capability(&job.name) {
+    // A migration changes each row itself.
+    let active = match job.kind {
+        MigrationJobKind::Migration => Some(true),
+        _ => fill_capability(&job.name),
+    };
+    match active {
         Some(true) => row.mode("active"),
         Some(false) => row.mode("passive"),
         None => {}

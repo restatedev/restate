@@ -223,7 +223,7 @@ mod tests {
         let scope = IndexScope {
             partition: tx.partition_id(),
             index: tx
-                .maintained_indexes()
+                .published_registry()
                 .ready_index(S::DEFINITION, IndexKind::Aggregate)
                 .unwrap(),
         };
@@ -410,7 +410,7 @@ mod tests {
         };
         let size = tx.estimated_size_in_bytes();
         let header = tx.get_vqueue_entry_status(&id).await.unwrap().unwrap();
-        tx.maintained_indexes().apply(
+        tx.published_registry().apply(
             &mut tx,
             &context,
             &EntryChange::Update {

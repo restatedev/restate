@@ -114,10 +114,11 @@ pub struct PhysicalPartition {
     durable_lsn: watch::Sender<Lsn>,
     archived_lsn: watch::Sender<Option<Lsn>>,
     notifications: Arc<DurableLsnSenders>,
-    /// The registry indexes maintained on entry writes, as reconciled when the
-    /// partition was opened. Shared by every session and clone, so no handle keeps
-    /// a stale set.
-    maintained_indexes: parking_lot::RwLock<Option<Arc<crate::registry::MaintainedIndexes>>>,
+    /// The published registry, with the indexes maintained on entry writes, as
+    /// reconciled when the partition was opened and updated by each commit that
+    /// changes it. Shared by every session and clone, so no handle keeps a stale
+    /// one.
+    published_registry: parking_lot::RwLock<Option<Arc<crate::registry::PublishedRegistry>>>,
     /// What the background walk drivers did, across sessions.
     walk_stats: crate::walk::WalkStats,
     /// Why the running walk driver's walks aren't progressing, if one runs.
@@ -168,7 +169,7 @@ impl PartitionDb {
                 durable_lsn: watch::Sender::new(Lsn::INVALID),
                 archived_lsn,
                 notifications: database.notifications,
-                maintained_indexes: Default::default(),
+                published_registry: Default::default(),
                 walk_stats: Default::default(),
                 driver_state: Default::default(),
                 faults,
@@ -196,17 +197,18 @@ impl PartitionDb {
         &self.physical().meta
     }
 
-    /// The installed maintained indexes; see [`Self::install_maintained_indexes`].
-    pub(crate) fn maintained_indexes(&self) -> Option<Arc<crate::registry::MaintainedIndexes>> {
-        self.physical().maintained_indexes.read().clone()
+    /// The published registry, once installed; see
+    /// [`Self::install_published_registry`].
+    pub(crate) fn published_registry(&self) -> Option<Arc<crate::registry::PublishedRegistry>> {
+        self.physical().published_registry.read().clone()
     }
 
-    /// Installs the maintained indexes for every session and handle of this partition.
-    pub(crate) fn install_maintained_indexes(
+    /// Publishes `published_registry` to every session and handle of this partition.
+    pub(crate) fn install_published_registry(
         &self,
-        maintained_indexes: Arc<crate::registry::MaintainedIndexes>,
+        published_registry: Arc<crate::registry::PublishedRegistry>,
     ) {
-        *self.physical().maintained_indexes.write() = Some(maintained_indexes);
+        *self.physical().published_registry.write() = Some(published_registry);
     }
 
     /// What the background walk drivers of this partition did.

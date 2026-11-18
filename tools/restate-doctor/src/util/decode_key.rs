@@ -11,6 +11,7 @@
 //! Decoding helpers for partition-store keys with custom layouts.
 
 use restate_partition_store::keys::IndexKeyPrefix;
+use restate_partition_store::registry::records::RecordKey;
 use restate_partition_store::stats::AggregateKeyPrefix;
 
 use super::hex_encode;
@@ -37,9 +38,34 @@ pub fn decode_stat_key(key: &[u8]) -> Option<String> {
     ))
 }
 
+/// A registry record's key: the partition, the record kind and its ID.
+pub fn decode_registry_key(key: &[u8]) -> Option<String> {
+    let key = RecordKey::decode(key).ok()?;
+    Some(format!(
+        "partition={}, record={}, id={}",
+        key.partition_id(),
+        key.record().name(),
+        key.id()
+    ))
+}
+
 #[cfg(test)]
 mod tests {
+    use restate_partition_store::registry::records::RecordKind;
+    use restate_types::identifiers::PartitionId;
+    use zerocopy::IntoBytes;
+
     use super::*;
+
+    #[test]
+    fn registry_keys_show_partition_record_and_id() {
+        let key = RecordKey::new(PartitionId::from(7), RecordKind::Job, 64);
+        assert_eq!(
+            decode_registry_key(key.as_bytes()).as_deref(),
+            Some("partition=7, record=job, id=64")
+        );
+        assert_eq!(decode_registry_key(&key.as_bytes()[..14]), None);
+    }
 
     /// A raw index key: `xI | padding | partition | index ID | payload`.
     fn index_key(padding: u16, partition: u16, index_id: u32, payload: &[u8]) -> Vec<u8> {
