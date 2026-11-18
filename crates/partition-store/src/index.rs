@@ -37,10 +37,10 @@
 //! - **Scope** ([`SecondaryIndex::Scope`]): where one partition's keys of the
 //!   index live: the partition plus the index ID.
 //!
-//! This module is the machinery; the index definitions come in a commit of their
-//! own. Writes keep an index up to date (`maintenance`); reads go through the
-//! physical table every declaration generates, like any other ordered key
-//! ([`crate::table`]).
+//! This module is the machinery; definitions live with their source table, such
+//! as the entry indexes in `crate::vqueue_table`. Writes keep an index up to date
+//! (`maintenance`); reads go through the physical table every declaration
+//! generates, like any other ordered key ([`crate::table`]).
 
 use bytes::BufMut;
 use zerocopy::IntoBytes;

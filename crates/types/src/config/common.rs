@@ -1297,6 +1297,40 @@ experimental! {
     /// Since v1.8.2
     status_gauges_reset,
 
+    /// # Entry indexes
+    ///
+    /// Maintains secondary indexes over VQueue entries, such as entries by service
+    /// and handler, newest created first. Each partition indexes the entries
+    /// written from then on and backfills the entries that existed before in the
+    /// background. Queries don't read these indexes yet.
+    ///
+    /// Maintenance persists across restarts even if this flag is removed, unless
+    /// the entry indexes are explicitly reset.
+    ///
+    /// Enabling this option registers the indexes in the partition's index
+    /// registry and raises the partition's minimum Restate version to v1.8.2.
+    /// That stays, also after the option is removed or the indexes are reset: a
+    /// node that has ever run with it cannot be rolled back to an older version.
+    ///
+    /// Since v1.8.2
+    track_entry_indexes,
+
+    /// # Reset entry indexes
+    ///
+    /// Deletes the local entry indexes and stops maintaining them when each
+    /// partition starts. While enabled, this takes precedence over
+    /// `experimental-enable-track-entry-indexes`, and queries read as they do
+    /// without the indexes.
+    ///
+    /// To rebuild them, turn this option off, turn
+    /// `experimental-enable-track-entry-indexes` on, and restart the nodes: the
+    /// indexes are registered again and backfilled in the background. VQueue entry
+    /// data is preserved. A reset does not lift the partition's minimum Restate
+    /// version of v1.8.2 that enabling the indexes set.
+    ///
+    /// Since v1.8.2
+    entry_indexes_reset,
+
     /// # Index query tables in V2
     ///
     /// Shows the index tables, such as the entry-by-queue index, in query sessions

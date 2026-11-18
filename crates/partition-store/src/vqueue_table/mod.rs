@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod entry;
+mod entry_index;
 mod inbox;
 mod inbox_reader;
 mod input;
@@ -30,6 +31,8 @@ use std::ops::ControlFlow;
 use std::pin::Pin;
 
 pub use entry::{EntryStatusKey, EntryStatusKeyRef};
+pub(crate) use entry_index::{ENTRY_BY_SERVICE_CREATED, ENTRY_INDEXES};
+pub use entry_index::{EntryByServiceCreated, EntryByServiceCreatedKey};
 pub use inbox::InboxKey;
 pub use input::InputPayloadKey;
 pub use meta_binding::{VQueueMetaBinding, VQueueMetaTable};
