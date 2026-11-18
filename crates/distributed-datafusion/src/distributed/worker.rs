@@ -70,7 +70,7 @@ pub struct DistributedQueryServer {
     pub(super) tamper: Arc<Mutex<Tamper>>,
 }
 
-/// How a test worker misbehaves.
+/// How a test worker misbehaves, and what it tells the test.
 #[cfg(test)]
 #[derive(Default)]
 pub(super) struct Tamper {
@@ -78,6 +78,75 @@ pub(super) struct Tamper {
     pub legacy: bool,
     /// Sends these bytes as every report.
     pub report: Option<Vec<u8>>,
+    /// Holds each Execute before it runs: tells its task's ID, then waits for
+    /// a release.
+    pub execute_hold: Option<Hold>,
+    /// Fails each Execute with this message, as a protocol failure.
+    pub execute_error: Option<String>,
+    /// Holds each Execute inside the task's cancellable work, before the
+    /// runtime executes it.
+    pub execute_inside_hold: Option<Hold>,
+    /// Holds each closing with a report after its streams were dropped and its
+    /// copies settled, before it freezes what was collected.
+    pub finalize_hold: Option<Hold>,
+    /// Receives each request's arrival or reply, in order.
+    pub events: Option<tokio::sync::mpsc::UnboundedSender<WorkerEvent>>,
+}
+
+/// A test's hold on a request: it tells `entered`, then waits for `release`.
+#[cfg(test)]
+#[derive(Clone)]
+pub(super) struct Hold {
+    pub entered: tokio::sync::mpsc::UnboundedSender<QueryTaskId>,
+    pub release: Arc<tokio::sync::Notify>,
+}
+
+/// A request a test worker received or answered, and how.
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(super) struct WorkerEvent {
+    pub kind: &'static str,
+    pub id: QueryTaskId,
+    pub outcome: String,
+    /// A Close reply's report bytes.
+    pub report: Option<Vec<u8>>,
+}
+
+#[cfg(test)]
+fn record(tamper: &Mutex<Tamper>, kind: &'static str, id: &QueryTaskId, outcome: String) {
+    record_report(tamper, kind, id, outcome, None);
+}
+
+#[cfg(test)]
+fn record_report(
+    tamper: &Mutex<Tamper>,
+    kind: &'static str,
+    id: &QueryTaskId,
+    outcome: String,
+    report: Option<Vec<u8>>,
+) {
+    if let Some(events) = &tamper.lock().events {
+        let _ = events.send(WorkerEvent {
+            kind,
+            id: id.clone(),
+            outcome,
+            report,
+        });
+    }
+}
+
+#[cfg(test)]
+fn outcome(reply: &Result<QueryTaskReplyBody>) -> String {
+    match reply {
+        Ok(QueryTaskReplyBody::Closed(closed)) => {
+            format!("closed report={}", closed.report.is_some())
+        }
+        Ok(QueryTaskReplyBody::Executing(())) => "executing".to_owned(),
+        Ok(QueryTaskReplyBody::Batch(_)) => "batch".to_owned(),
+        Ok(QueryTaskReplyBody::End(())) => "end".to_owned(),
+        Ok(_) => "other".to_owned(),
+        Err(error) => format!("error: {error}"),
+    }
 }
 
 #[cfg(test)]
@@ -187,6 +256,13 @@ impl DistributedQueryServer {
                                         owner: self.scanners.node_id(), plan: datafusion::physical_plan::displayable(task.plan.as_ref()).indent(true).to_string(), output: Arc::clone(&task.output),
                                     });
                                     let analyze = task.collector.as_ref().map(|_| QueryTaskAnalyze {});
+                                    #[cfg_attr(not(test), expect(unused_mut))]
+                                    let mut task = task;
+                                    #[cfg(test)]
+                                    {
+                                        task.tamper = Arc::clone(&self.tamper);
+                                        task.id = Some(key.1.clone());
+                                    }
                                     tasks.insert(key, Arc::new(task));
                                     reply.send(QueryTaskReplyBody::Installed(QueryTaskInstalled { schema, analyze }).into());
                                 }
@@ -194,6 +270,8 @@ impl DistributedQueryServer {
                             }
                         }
                         QueryTaskRequest::Close(request) => {
+                            #[cfg(test)]
+                            record(&self.tamper, "close-received", &request.id, String::new());
                             let key = (peer, request.id);
                             match tasks.remove(&key) {
                                 // Settling and building the report waits: not in this loop.
@@ -202,6 +280,8 @@ impl DistributedQueryServer {
                                     closing.insert(key.clone(), result.clone());
                                     #[cfg(test)]
                                     let tampered = self.tamper.lock().report.clone();
+                                    #[cfg(test)]
+                                    let tamper = Arc::clone(&self.tamper);
                                     requests.spawn(async move {
                                         #[cfg_attr(not(test), expect(unused_mut))]
                                         let mut closed = result.await;
@@ -209,18 +289,27 @@ impl DistributedQueryServer {
                                         if let Some(bytes) = tampered {
                                             closed.report = Some(bytes.into());
                                         }
+                                        #[cfg(test)]
+                                        record_report(&tamper, "close", &key.1, outcome(&Ok(QueryTaskReplyBody::Closed(closed.clone()))), closed.report.as_ref().map(|bytes| bytes.to_vec()));
                                         reply.send(QueryTaskReplyBody::Closed(closed).into());
                                         Some(key)
                                     });
                                 }
                                 Some(task) => {
                                     task.abort();
+                                    #[cfg(test)]
+                                    record(&self.tamper, "close", &key.1, "closed report=false".to_owned());
                                     reply.send(QueryTaskReplyBody::Closed(QueryTaskClosed::default()).into());
                                 }
                                 None => match closing.get(&key).cloned() {
                                     Some(result) => {
+                                        #[cfg(test)]
+                                        let tamper = Arc::clone(&self.tamper);
                                         requests.spawn(async move {
-                                            reply.send(QueryTaskReplyBody::Closed(result.await).into());
+                                            let closed = result.await;
+                                            #[cfg(test)]
+                                            record_report(&tamper, "close-repeated", &key.1, outcome(&Ok(QueryTaskReplyBody::Closed(closed.clone()))), closed.report.as_ref().map(|bytes| bytes.to_vec()));
+                                            reply.send(QueryTaskReplyBody::Closed(closed).into());
                                             None
                                         });
                                     }
@@ -235,17 +324,35 @@ impl DistributedQueryServer {
                             // and the request's first poll. It stays marked until the
                             // reply is sent.
                             let in_flight = task.as_ref().map(|task| task.activity.begin());
+                            #[cfg(test)]
+                            let (tamper, hold, failure) = {
+                                let tampered = self.tamper.lock();
+                                (Arc::clone(&self.tamper), tampered.execute_hold.clone(), tampered.execute_error.clone())
+                            };
                             requests.spawn(async move {
+                                #[cfg(test)]
+                                let id = request.id.clone();
+                                #[cfg(test)]
+                                if let Some(hold) = hold {
+                                    let _ = hold.entered.send(id.clone());
+                                    hold.release.notified().await;
+                                }
                                 let result = match task {
+                                    #[cfg(test)]
+                                    Some(_) if failure.is_some() => Err(protocol_error(failure.unwrap_or_default())),
                                     Some(task) => task.execute(request).await,
                                     None => Err(protocol_error("query task is not installed")),
                                 };
+                                #[cfg(test)]
+                                record(&tamper, "execute", &id, outcome(&result));
                                 reply.send(task_reply(result, origin));
                                 drop(in_flight);
                                 None
                             });
                         }
                         QueryTaskRequest::Next(request) => {
+                            #[cfg(test)]
+                            let (tamper, id) = (Arc::clone(&self.tamper), request.id.clone());
                             let task = tasks.get(&(peer, request.id)).cloned();
                             let in_flight = task.as_ref().map(|task| task.activity.begin());
                             requests.spawn(async move {
@@ -253,6 +360,8 @@ impl DistributedQueryServer {
                                     Some(task) => task.next(request.partition as usize).await,
                                     None => Err(protocol_error("query task is not installed")),
                                 };
+                                #[cfg(test)]
+                                record(&tamper, "next", &id, outcome(&result));
                                 reply.send(task_reply(result, origin));
                                 drop(in_flight);
                                 None
@@ -469,6 +578,11 @@ struct InstalledTask {
     activity: Arc<Activity>,
     #[cfg(test)]
     output: Arc<Mutex<TaskOutput>>,
+    /// The test worker's hooks, and this task's ID for them.
+    #[cfg(test)]
+    tamper: Arc<Mutex<Tamper>>,
+    #[cfg(test)]
+    id: Option<QueryTaskId>,
 }
 
 impl InstalledTask {
@@ -629,6 +743,10 @@ impl InstalledTask {
             activity: Arc::new(Activity::new()),
             #[cfg(test)]
             output: Default::default(),
+            #[cfg(test)]
+            tamper: Default::default(),
+            #[cfg(test)]
+            id: None,
         })
     }
 
@@ -646,12 +764,24 @@ impl InstalledTask {
             started.extend(start..end);
         }
         let (streams, context) = self
-            .while_running(self.worker.execute_task(ExecuteTaskRequest {
-                task_key: self.key,
-                target_partition_start: start,
-                target_partition_end: end,
-                producer_head: ProducerHead::None,
-            }))
+            .while_running(async {
+                #[cfg(test)]
+                {
+                    let hold = self.tamper.lock().execute_inside_hold.clone();
+                    if let (Some(hold), Some(id)) = (hold, &self.id) {
+                        let _ = hold.entered.send(id.clone());
+                        hold.release.notified().await;
+                    }
+                }
+                self.worker
+                    .execute_task(ExecuteTaskRequest {
+                        task_key: self.key,
+                        target_partition_start: start,
+                        target_partition_end: end,
+                        producer_head: ProducerHead::None,
+                    })
+                    .await
+            })
             .await?;
         if !Arc::ptr_eq(&self.context, &context)
             || context.session_id() != request.id.session_id.as_str()
@@ -724,7 +854,16 @@ impl InstalledTask {
     /// Stops the task's work and releases it, without a report.
     fn abort(&self) {
         self.cancel.cancel();
+        #[cfg(test)]
+        self.event("cancelled", String::new());
         self.control_end.cancel();
+    }
+
+    #[cfg(test)]
+    fn event(&self, kind: &'static str, outcome: String) {
+        if let Some(id) = &self.id {
+            record(&self.tamper, kind, id, outcome);
+        }
     }
 
     /// Closes the task, with its report if it was asked for one: stops its
@@ -738,10 +877,21 @@ impl InstalledTask {
             return QueryTaskClosed::default();
         };
         self.cancel.cancel();
+        #[cfg(test)]
+        self.event("cancelled", String::new());
         let deadline = Instant::now() + SETTLE_DEADLINE;
         let idle = self.activity.idle(deadline).await;
         self.lanes.lock().take();
         let settled = collector.settle(deadline).await;
+        #[cfg(test)]
+        {
+            self.event("settled", format!("idle={idle} settled={settled}"));
+            let hold = self.tamper.lock().finalize_hold.clone();
+            if let (Some(hold), Some(id)) = (hold, &self.id) {
+                let _ = hold.entered.send(id.clone());
+                hold.release.notified().await;
+            }
+        }
         let mut collected = collector.freeze();
         if !idle {
             collected.unsettled += 1;
@@ -760,25 +910,36 @@ impl InstalledTask {
         let mut report = build_report(self.shape.as_ref(), collected, outcome);
         report.plan_digest = self.plan_digest;
         self.control_end.cancel();
+        #[cfg(test)]
+        self.event("finalized", String::new());
         QueryTaskClosed {
             report: Some(bilrost::Message::encode_to_vec(&report).into()),
         }
     }
 
+    /// Runs `work` until the task closes ([`until_closed`]).
     async fn while_running<T>(&self, work: impl Future<Output = Result<T>>) -> Result<T> {
-        self.cancel
-            .run_until_cancelled(async {
-                tokio::select! {
-                    biased;
-                    result = self.control.clone() => {
-                        result.map_err(DataFusionError::Shared)?;
-                        exec_err!("worker control channel ended before task closure")
-                    }
-                    result = work => result,
-                }
-            })
-            .await
-            .ok_or_else(closed_error)?
+        until_closed(&self.cancel, self.control.clone(), work).await
+    }
+}
+
+/// Runs `work` until `cancel`, or until `control` ends. A closing task
+/// cancels its work, then ends its control input: cancellation is checked
+/// first, so that a request racing a Close ends as closed, not as a control
+/// failure, however late it's polled.
+async fn until_closed<T>(
+    cancel: &CancellationToken,
+    control: impl Future<Output = Result<(), Arc<DataFusionError>>>,
+    work: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => Err(closed_error()),
+        result = control => {
+            result.map_err(DataFusionError::Shared)?;
+            exec_err!("worker control channel ended before task closure")
+        }
+        result = work => result,
     }
 }
 
@@ -831,6 +992,28 @@ mod tests {
             task_error(&unknown, origin).to_string(),
             "N2:1: protocol: unknown query task request"
         );
+    }
+
+    #[tokio::test]
+    async fn a_request_racing_a_close_ends_as_closed() {
+        // Waiting, then both happen before its next poll: the task is
+        // cancelled, then its control input ends.
+        let cancel = CancellationToken::new();
+        let (end, ended) = tokio::sync::oneshot::channel::<()>();
+        let control = async move {
+            let _ = ended.await;
+            Ok(())
+        };
+        let mut request = std::pin::pin!(until_closed(
+            &cancel,
+            control,
+            std::future::pending::<Result<()>>()
+        ));
+        assert!(futures::poll!(request.as_mut()).is_pending());
+        cancel.cancel();
+        end.send(()).unwrap();
+        let error = request.await.unwrap_err();
+        assert!(error.to_string().contains("query task closed"), "{error}");
     }
 
     #[restate_core::test(start_paused = true)]

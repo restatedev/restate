@@ -29,7 +29,8 @@ use restate_partition_store::invocation_status_table::{
 };
 use restate_partition_store::keys::selection::KeySelection;
 use restate_partition_store::vqueue_table::{
-    EntryStatusCursor, EntryStatusKey, EntryStatusKeys, EntryStatusRecords, EntryStatusScan,
+    ActiveEntryByStage as StoredActiveIndex, ActiveRead, EntryStatusCursor, EntryStatusKey,
+    EntryStatusKeys, EntryStatusRecords, EntryStatusScan,
     FinishedEntryByOutcome as StoredFinishedIndex, FinishedRead, StageReads,
 };
 use restate_storage_api::vqueue_table::Stage;
@@ -39,7 +40,8 @@ use restate_storage_query_api::schema::index::index_restriction;
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
 use restate_storage_query_api::tables::index::{
-    EntryByQueue, EntryByQueueDomains, FinishedEntryByOutcome, FinishedEntryByOutcomeDomains,
+    ActiveEntryByStage, ActiveEntryByStageDomains, EntryByQueue, EntryByQueueDomains,
+    FinishedEntryByOutcome, FinishedEntryByOutcomeDomains,
 };
 use restate_storage_query_api::tables::vqueue_entry_status::{
     VqueueEntryStatus, VqueueEntryStatusColumn, VqueueEntryStatusDomains,
@@ -80,24 +82,38 @@ struct EntryKeys {
 #[derive(Debug)]
 pub(crate) struct EntrySelection(pub(crate) Vec<BaseEntryId>);
 
-/// The scheduler's stage tables, read as `_idx_entry_by_queue`. They hold exactly
-/// one key per current entry status, maintained unconditionally by the scheduler.
-pub(crate) struct StageIndex;
+/// The scheduler's stage tables, read as `_idx_entry_by_queue` for a finite set
+/// of queues. They hold exactly one key per current entry status, maintained
+/// unconditionally by the scheduler. A conservative policy: a queue's entries
+/// are taken to be few, which is not a measurement.
+pub(crate) struct QueueIndex;
 
-impl CompleteIndex for StageIndex {
+impl CompleteIndex for QueueIndex {
     type Index = EntryByQueue;
     /// The stage tables are always maintained; V2 reads them as an index from
     /// v1.8.2, its first release.
     const INTRODUCED: SemanticRestateVersion = SemanticRestateVersion::new(1, 8, 2);
 
-    /// A conservative first policy: a finite set of queues, or a finite set of
-    /// stages without `finished`. The finished stage retains most entries, so
-    /// reading it through the index would fetch most statuses by random lookups.
     fn useful(restriction: &EntryByQueueDomains) -> bool {
         matches!(
             restriction.vqueue_id.to_predicate(),
             Some(ValuePredicate::In(_))
-        ) || matches!(
+        )
+    }
+}
+
+/// The stage tables again, for a finite set of stages without `finished`, when
+/// no other index fits ([`ActiveIndex`] reads such stages in creation order).
+/// The finished stage retains most entries, so reading it through the stage
+/// tables would fetch most statuses by random lookups.
+pub(crate) struct StageIndex;
+
+impl CompleteIndex for StageIndex {
+    type Index = EntryByQueue;
+    const INTRODUCED: SemanticRestateVersion = QueueIndex::INTRODUCED;
+
+    fn useful(restriction: &EntryByQueueDomains) -> bool {
+        matches!(
             restriction.stage.to_predicate(),
             Some(ValuePredicate::In(stages)) if !stages.is_empty() && !stages.contains(&Stage::Finished)
         )
@@ -164,17 +180,93 @@ impl CompleteIndex for FinishedIndex {
     /// syntactic choice, not a selectivity proof: a status condition can still
     /// reject every candidate.
     fn residual_allowed(conjunct: &Arc<dyn PhysicalExpr>) -> bool {
-        finished_condition(conjunct, true)
+        ordered_condition(conjunct, VqueueEntryStatusColumn::TransitionedAt, true)
     }
 }
 
-/// See [`FinishedIndex::residual_allowed`]. `times` admits transition-time
-/// comparisons; not inside alternatives, which would leave gaps to visit.
-fn finished_condition(condition: &Arc<dyn PhysicalExpr>, times: bool) -> bool {
-    use VqueueEntryStatusColumn::{Stage as StageColumn, Status, TransitionedAt};
+/// Active entries, those in Inbox, Running, Suspended or Paused, through
+/// `active_entry_by_stage/1`, newest created first, for a query that asks for
+/// exactly that order under a LIMIT:
+///
+/// ```sql
+/// SELECT … FROM sys_vqueue_entry_status
+/// WHERE stage IN ('inbox', 'paused') [AND status = 'backing-off']
+/// ORDER BY created_at DESC NULLS LAST
+/// LIMIT 50
+/// ```
+///
+/// The index holds only active entries, so every alternative of the query must
+/// fix the stage to some of those stages ([`Self::admits`]); a status condition
+/// is checked on each row and proves nothing. Another order, or a condition
+/// outside the allowlist below, reads as before.
+pub(crate) struct ActiveIndex;
+
+/// The stages `active_entry_by_stage/1` holds.
+const ACTIVE: [Stage; 4] = [
+    Stage::Inbox,
+    Stage::Running,
+    Stage::Suspended,
+    Stage::Paused,
+];
+
+impl CompleteIndex for ActiveIndex {
+    type Index = ActiveEntryByStage;
+    const INTRODUCED: SemanticRestateVersion = <StoredActiveIndex as RegisteredIndex>::INTRODUCED;
+
+    /// The read merges its runs by creation time, newest first. The index
+    /// keeps the full timestamp, whose millisecond is the entry's `created_at`:
+    /// the read checks that for every row.
+    const ORDERING: &'static [IndexOrder<VqueueEntryStatusColumn>] = &[IndexOrder {
+        column: VqueueEntryStatusColumn::CreatedAt,
+        options: SortOptions {
+            descending: true,
+            nulls_first: false,
+        },
+    }];
+
+    /// Where the index isn't maintained, every partition would scan and sort
+    /// instead, so the planner then scans.
+    fn useful(_: &ActiveEntryByStageDomains) -> bool {
+        Configuration::pinned()
+            .common
+            .experimental
+            .is_track_entry_indexes_enabled()
+    }
+
+    /// Every alternative fixes the stage to a non-empty set of active stages.
+    /// A domain of points, even one, is an `IN` set.
+    fn admits(alternatives: &[VqueueEntryStatusDomains]) -> bool {
+        !alternatives.is_empty()
+            && alternatives.iter().all(|alternative| {
+                matches!(
+                    alternative.stage.to_predicate(),
+                    Some(ValuePredicate::In(stages))
+                        if !stages.is_empty() && stages.iter().all(|stage| ACTIVE.contains(stage))
+                )
+            })
+    }
+
+    const NEEDS_ORDERED_DEMAND: bool = true;
+
+    /// The allowlist: the stage, the status, and the creation time.
+    fn residual_allowed(conjunct: &Arc<dyn PhysicalExpr>) -> bool {
+        ordered_condition(conjunct, VqueueEntryStatusColumn::CreatedAt, true)
+    }
+}
+
+/// Whether `condition` is on the stage or status by `=` or `IN`, or compares
+/// `time`, the column an ordered entry index sorts by. `times` admits the time
+/// comparisons; not inside alternatives, which would leave gaps to visit. See
+/// [`FinishedIndex::residual_allowed`].
+fn ordered_condition(
+    condition: &Arc<dyn PhysicalExpr>,
+    time: VqueueEntryStatusColumn,
+    times: bool,
+) -> bool {
+    use VqueueEntryStatusColumn::{Stage as StageColumn, Status};
     let column = |expr: &Arc<dyn PhysicalExpr>| {
         let name = expr.downcast_ref::<Column>()?.name();
-        [StageColumn, Status, TransitionedAt]
+        [StageColumn, Status, time]
             .into_iter()
             .find(|column| VqueueEntryStatus::sql_name(*column) == Some(name))
     };
@@ -182,8 +274,8 @@ fn finished_condition(condition: &Arc<dyn PhysicalExpr>, times: bool) -> bool {
     if let Some(binary) = condition.downcast_ref::<BinaryExpr>() {
         if *binary.op() == Operator::Or {
             // A small IN list arrives as alternatives.
-            return finished_condition(binary.left(), false)
-                && finished_condition(binary.right(), false);
+            return ordered_condition(binary.left(), time, false)
+                && ordered_condition(binary.right(), time, false);
         }
         let (column, op) = if literal(binary.right()) {
             (column(binary.left()), Some(*binary.op()))
@@ -194,7 +286,7 @@ fn finished_condition(condition: &Arc<dyn PhysicalExpr>, times: bool) -> bool {
         };
         return match (column, op) {
             (Some(StageColumn | Status), Some(op)) => op == Operator::Eq,
-            (Some(TransitionedAt), Some(op)) => {
+            (Some(_), Some(op)) => {
                 times
                     && matches!(
                         op,
@@ -290,7 +382,9 @@ impl ScanPartition for EntryStatusScanner {
     }
 
     fn supports_index(&self, index: &str) -> bool {
-        index == EntryByQueue::NAME || index == FinishedEntryByOutcome::NAME
+        index == EntryByQueue::NAME
+            || index == FinishedEntryByOutcome::NAME
+            || index == ActiveEntryByStage::NAME
     }
 
     fn prepare_read(
@@ -315,6 +409,20 @@ impl ScanPartition for EntryStatusScanner {
                     .map_or(Selection::Empty, |domains| domains.to_selection());
                 EntryStatusAccess::Finished {
                     read: Arc::new(FinishedRead::prepare(&selection)?),
+                    fallback: Arc::new(EntryStatusKeys::prepare(
+                        &compile_selection::<VqueueEntryStatus>(predicate.as_ref())?,
+                        crate::selection::key_range(&VqueueEntryStatus::candidate_shard_keys(
+                            predicate.as_slice(),
+                        )?),
+                    )?),
+                }
+            }
+            PrimaryRead::Index(index) if index.as_str() == ActiveEntryByStage::NAME => {
+                // As for finished entries.
+                let selection = index_restriction::<ActiveEntryByStage>(predicate.as_slice())?
+                    .map_or(Selection::Empty, |domains| domains.to_selection());
+                EntryStatusAccess::Active {
+                    read: Arc::new(ActiveRead::prepare(&selection)?),
                     fallback: Arc::new(EntryStatusKeys::prepare(
                         &compile_selection::<VqueueEntryStatus>(predicate.as_ref())?,
                         crate::selection::key_range(&VqueueEntryStatus::candidate_shard_keys(
@@ -361,6 +469,20 @@ enum EntryStatusAccess {
         #[debug(skip)]
         fallback: Arc<KeySelection<EntryStatusKey>>,
     },
+    /// Active entries through their index, or the fallback scan.
+    Active {
+        #[debug(skip)]
+        read: Arc<ActiveRead>,
+        #[debug(skip)]
+        fallback: Arc<KeySelection<EntryStatusKey>>,
+    },
+}
+
+impl EntryStatusAccess {
+    /// An entry index read in index order, which a partition may scan instead.
+    fn ordered(&self) -> bool {
+        matches!(self, Self::Finished { .. } | Self::Active { .. })
+    }
 }
 
 impl PreparedPartitionRead for EntryStatusRead {
@@ -371,15 +493,15 @@ impl PreparedPartitionRead for EntryStatusRead {
         }
     }
 
-    /// A finished-entry index read that scans instead loses its order. The
-    /// read tells which path it took as it opens, before its first row.
+    /// An entry index read that scans instead loses its order. The read tells
+    /// which path it took as it opens, before its first row.
     fn execute_in_order(
         &self,
         context: PartitionReadContext,
         batch_size: usize,
         metrics: ReadMetrics,
     ) -> anyhow::Result<(SendableRecordBatchStream, InOrder)> {
-        if !matches!(self.access, EntryStatusAccess::Finished { .. }) {
+        if !self.access.ordered() {
             let rows = self.read(context, batch_size, metrics, None)?;
             return Ok((rows, Box::pin(std::future::ready(true))));
         }
@@ -409,7 +531,7 @@ impl PreparedPartitionRead for EntryStatusRead {
 }
 
 impl EntryStatusRead {
-    /// A finished-entry index read tells `chosen` which path it takes.
+    /// An entry index read tells `chosen` which path it takes.
     fn read(
         &self,
         context: PartitionReadContext,
@@ -420,11 +542,11 @@ impl EntryStatusRead {
         anyhow::ensure!(batch_size > 0, "batch size must be positive");
         let index_metrics = matches!(self.access, EntryStatusAccess::Stages(_))
             .then(|| IndexMetrics::new(&metrics));
-        // What a finished-entry index read did: its path and why, the runs it
-        // merged, the index keys it went through, the statuses it fetched and the
-        // stale references it skipped.
-        let finished = matches!(self.access, EntryStatusAccess::Finished { .. }).then(|| {
-            let memory = context.retained_memory("finished-entry index read");
+        // What an entry index read did: its path and why, the runs it merged,
+        // the index keys it went through, the statuses it fetched and the stale
+        // references it skipped.
+        let ordered = self.access.ordered().then(|| {
+            let memory = context.retained_memory("entry index read");
             let reads = metrics.counter("entry_index_reads");
             let scans = metrics.counter("entry_index_scans");
             let not_ready = metrics.counter("entry_index_scans_not_ready");
@@ -496,12 +618,24 @@ impl EntryStatusRead {
                 EntryStatusAccess::Scan(request) => EntryStatusScan::Keys(request),
                 EntryStatusAccess::Stages(reads) => EntryStatusScan::Stages(reads),
                 EntryStatusAccess::Finished { read, fallback } => {
-                    let Some(execution) = finished else {
+                    let Some(execution) = ordered else {
                         return datafusion::common::internal_err!(
-                            "a finished-entry index read has no execution"
+                            "an entry index read has no execution"
                         );
                     };
                     EntryStatusScan::Finished {
+                        read,
+                        fallback,
+                        execution,
+                    }
+                }
+                EntryStatusAccess::Active { read, fallback } => {
+                    let Some(execution) = ordered else {
+                        return datafusion::common::internal_err!(
+                            "an entry index read has no execution"
+                        );
+                    };
+                    EntryStatusScan::Active {
                         read,
                         fallback,
                         execution,

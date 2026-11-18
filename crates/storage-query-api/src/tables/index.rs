@@ -274,3 +274,36 @@ crate::define_schema! {
         }
     }
 }
+
+crate::define_schema! {
+    /// Active vqueue entries, those in Inbox, Running, Suspended or Paused, by
+    /// stage, service and handler, newest created first: the entry index
+    /// `active_entry_by_stage/1`, read instead of scanning
+    /// `sys_vqueue_entry_status` for its active entries. Stage and creation time
+    /// are the entry table's columns; service and handler are the index's own,
+    /// which the entry table doesn't show. Not shown as a table.
+    active_entry_by_stage {
+        name: "_idx_active_entry_by_stage",
+        primary: vqueue_entry_status::VqueueEntryStatus,
+        reference: canonical_id => |id| id.to_base_entry_id(),
+        columns {
+            /// The entry's stored stage.
+            stage => DataType::LargeUtf8,
+            /// The service the entry targets.
+            target_service_name: ReString => DataType::LargeUtf8,
+            /// The handler the entry targets; NULL for a state mutation.
+            target_handler_name: Option<ReString> => DataType::LargeUtf8,
+            /// When the entry was created. The index keeps its full timestamp;
+            /// this column compares at millisecond precision.
+            created_at => TimestampMillisecond,
+            /// The complete indexed entry incarnation.
+            canonical_id => DataType::LargeUtf8,
+        }
+        key {
+            stage: asc nulls_last,
+            target_service_name: asc nulls_last,
+            target_handler_name: asc nulls_first,
+            created_at: desc nulls_last,
+        }
+    }
+}

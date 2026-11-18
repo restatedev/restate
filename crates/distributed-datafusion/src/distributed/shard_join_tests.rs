@@ -101,20 +101,21 @@ fn capture_live(
 /// A query execution: its session and query timestamp.
 type Execution = (ReString, UniqueTimestamp);
 
-/// Each admission's capture requirements, with the execution that requested it.
+/// Each admission's capture requirements, with the execution that requested it
+/// and the partition it admitted.
 ///
 /// A query that stops early, at a LIMIT, can return while some of its admissions
 /// are still on their way to an owner. They are recorded whenever they arrive,
 /// possibly while the next query runs, so a test of such queries counts only its
 /// current execution's admissions ([`take_admissions`]).
-type Captures = Arc<Mutex<Vec<(Execution, PartitionCaptureRequirements)>>>;
+type Captures = Arc<Mutex<Vec<(Execution, PartitionId, PartitionCaptureRequirements)>>>;
 
 /// The capture requirements of every admission recorded so far.
 fn requirements(captures: &Captures) -> Vec<PartitionCaptureRequirements> {
     captures
         .lock()
         .iter()
-        .map(|(_, capture)| *capture)
+        .map(|(_, _, capture)| *capture)
         .collect()
 }
 
@@ -126,10 +127,13 @@ fn take_admissions(
 ) -> (Vec<PartitionCaptureRequirements>, Vec<Execution>) {
     let (current, others): (Vec<_>, Vec<_>) = std::mem::take(&mut *captures.lock())
         .into_iter()
-        .partition(|(admitted, _)| admitted == execution);
+        .partition(|(admitted, _, _)| admitted == execution);
     (
-        current.into_iter().map(|(_, capture)| capture).collect(),
-        others.into_iter().map(|(admitted, _)| admitted).collect(),
+        current.into_iter().map(|(_, _, capture)| capture).collect(),
+        others
+            .into_iter()
+            .map(|(admitted, _, _)| admitted)
+            .collect(),
     )
 }
 
@@ -217,14 +221,18 @@ async fn cross_schema_fixture_with(
                     match delayed {
                         Some(gate) => {
                             let (gate, captures) = (Arc::clone(gate), Arc::clone(&captures));
-                            let capture = request.capture;
+                            let (partition, capture) = (request.partition, request.capture);
                             tokio::spawn(async move {
                                 gate.release.acquire().await.unwrap().forget();
-                                captures.lock().push((execution, capture));
+                                captures.lock().push((execution, partition, capture));
                                 gate.recorded.add_permits(1);
                             });
                         }
-                        None => captures.lock().push((execution, request.capture)),
+                        None => {
+                            captures
+                                .lock()
+                                .push((execution, request.partition, request.capture))
+                        }
                     }
                     let store = manager
                         .get()
@@ -986,5 +994,223 @@ async fn limits_keep_joins_shard_local_when_any_preserved_rows_suffice() {
             }
             None => assert_eq!(combined, 0, "{sql}: {observed:?}"),
         }
+    }
+}
+
+/// Operators below the partition reads, as a shard-local JOIN places them,
+/// run as a fresh copy for every partition. Each partition holds a different
+/// population: partition `p` adds `p + 1` invocations that join nothing, and
+/// on even partitions one of its two joined invocations targets a service the
+/// query's filter rejects. Under EXPLAIN ANALYZE, with one lane per owner,
+/// which runs each partition's copy in turn, and with a lane per partition,
+/// each owner's stage shows exactly its own partitions' counts, every copy
+/// merged once: its scan read
+/// every status, its filter kept the qualifying ones, and its join output the
+/// joined ones. Each stage is the one task its owner installed for this query,
+/// every task completes, and no metric shows as missing, partial, ambiguous or
+/// truncated.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
+async fn operators_below_the_partition_reads_report_every_copy() {
+    let (mut fixture, captures) = cross_schema_fixture().await;
+    // Per owner: statuses scanned, kept by the filter, joined.
+    let mut expected: HashMap<GenerationalNodeId, [usize; 3]> = HashMap::new();
+    for store in fixture.stores.iter_mut() {
+        let partition = store.partition_id();
+        let p = u64::from(u16::from(partition));
+        let start = store.partition_key_range().start();
+        let rejected = p % 2 == 0;
+        let mut tx = store.transaction();
+        if rejected {
+            let mut dropped = InFlightInvocationMetadata::mock();
+            dropped.invocation_target =
+                restate_types::invocation::InvocationTarget::service("Drop", "h");
+            tx.put_invocation_status(
+                &InvocationId::from_parts(start, InvocationUuid::from_u128(0)),
+                &InvocationStatus::Invoked(dropped),
+            )
+            .unwrap();
+        }
+        for n in 0..=p {
+            tx.put_invocation_status(
+                &InvocationId::from_parts(
+                    start + 10 + n,
+                    InvocationUuid::from_u128(100 + u128::from(n)),
+                ),
+                &InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
+            )
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+        // The fixture's four statuses, two of them joined, and these.
+        let scanned = 4 + p as usize + 1;
+        let counts = expected.entry(owner(partition)).or_default();
+        counts[0] += scanned;
+        counts[1] += scanned - usize::from(rejected);
+        counts[2] += 2 - usize::from(rejected);
+    }
+    assert_eq!(expected.len(), 3);
+    // One lane per owner, which runs a fresh copy for each of its partitions
+    // in turn; then a lane per partition.
+    for target_partitions in [1, 4] {
+        let env =
+            environment(target_partitions, 1).with_distributed_execution(fixture.network.clone());
+        env.register_tables(UserTables::new(
+            fixture.partitions.clone(),
+            fixture.scanners.clone(),
+        ))
+        .await
+        .unwrap();
+        let engine = DataFusionQueryEngine::from_env(env, None);
+        let session = engine.create_session(SessionOptions::default()).unwrap();
+        let text = async |sql: &str| {
+            let result = session.execute(sql, QueryOptions {}).await.unwrap();
+            let metadata = result.metadata;
+            let lines = result
+                .stream
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap()
+                .iter()
+                .flat_map(|batch| {
+                    let column = batch.num_columns() - 1;
+                    (0..batch.num_rows())
+                        .map(move |row| array_value_to_string(batch.column(column), row).unwrap())
+                })
+                .collect::<Vec<_>>();
+            (metadata, lines)
+        };
+        let join = "FROM sys_invocation_status s JOIN sys_invocation_state l ON s.id = l.id \
+        WHERE upper(s.target_service_name) <> 'DROP'";
+        let sql = format!("EXPLAIN ANALYZE SELECT s.id {join}");
+        let (metadata, lines) = text(&sql).await;
+        let plan = lines.join("\n");
+        eprintln!("target_partitions={target_partitions}\n{sql}\n{plan}");
+        let metric = |line: &str, name: &str| -> usize {
+            let start = line
+                .find(&format!("{name}="))
+                .unwrap_or_else(|| panic!("{name}: {line}"));
+            line[start + name.len() + 1..]
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+                .parse()
+                .unwrap()
+        };
+        let stages: Vec<Vec<&str>> = plan.lines().fold(Vec::new(), |mut stages, line| {
+            if line.contains("NetworkCoalesceExec") {
+                stages.push(vec![line]);
+            } else if let Some(stage) = stages.last_mut() {
+                stage.push(line);
+            }
+            stages
+        });
+        assert_eq!(stages.len(), 3, "{plan}");
+        // This execution admitted every partition exactly once, each at its
+        // owner.
+        let execution = (metadata.session_id.clone(), metadata.query_ts);
+        let mut admitted: Vec<PartitionId> = std::mem::take(&mut *captures.lock())
+            .into_iter()
+            .filter(|(admitting, _, _)| *admitting == execution)
+            .map(|(_, partition, _)| partition)
+            .collect();
+        admitted.sort();
+        let all: Vec<PartitionId> = fixture
+            .stores
+            .iter()
+            .map(|store| store.partition_id())
+            .collect();
+        assert_eq!(admitted, all, "{plan}");
+        // The tasks this execution installed, by their full IDs: three, one
+        // per owner, of one runtime query.
+        let tasks: Vec<(
+            GenerationalNodeId,
+            restate_types::net::distributed_query::QueryTaskId,
+        )> = fixture
+            .tasks
+            .lock()
+            .iter()
+            .filter(|task| {
+                task.id.session_id == metadata.session_id && task.id.query_ts == metadata.query_ts
+            })
+            .map(|task| (task.owner, task.id.clone()))
+            .collect();
+        assert_eq!(tasks.len(), 3, "{tasks:#?}");
+        assert!(
+            tasks
+                .iter()
+                .all(|(_, id)| id.runtime_query_id == tasks[0].1.runtime_query_id && id.task == 0),
+            "{tasks:#?}"
+        );
+        let installed: HashMap<GenerationalNodeId, u64> =
+            tasks.iter().map(|(owner, id)| (*owner, id.stage)).collect();
+        assert_eq!(installed.len(), 3, "{tasks:#?}");
+        let mut owners = std::collections::HashSet::new();
+        for stage in &stages {
+            let find = |prefix: &str| {
+                stage
+                    .iter()
+                    .position(|line| line.trim_start().starts_with(prefix))
+                    .unwrap_or_else(|| panic!("{prefix}: {plan}"))
+            };
+            let reads = find("PartitionReadExec");
+            let hash_join = find("HashJoinExec");
+            let filter = find("FilterExec: upper(target_service_name");
+            let scan = stage
+                .iter()
+                .rposition(|line| line.contains("TableScanExec: table=sys_invocation_status"))
+                .unwrap();
+            // Below the partition reads, on this stage's owner.
+            assert!(
+                reads < hash_join && hash_join < filter && filter < scan,
+                "{plan}"
+            );
+            let owner = *expected
+                .keys()
+                .find(|owner| stage[scan].contains(&format!("owner={owner},")))
+                .unwrap_or_else(|| panic!("{plan}"));
+            assert!(owners.insert(owner), "{plan}");
+            let number = stage[0]
+                .split("[Stage ")
+                .nth(1)
+                .and_then(|rest| rest.split(']').next())
+                .and_then(|number| number.parse::<u64>().ok())
+                .unwrap_or_else(|| panic!("{plan}"));
+            assert_eq!(installed[&owner], number, "{plan}");
+            let [scanned, kept, joined] = expected[&owner];
+            assert_eq!(
+                (
+                    metric(stage[scan], "output_rows"),
+                    metric(stage[filter], "output_rows"),
+                    metric(stage[hash_join], "output_rows"),
+                    metric(stage[reads], "output_rows"),
+                ),
+                (scanned, kept, joined, joined),
+                "{owner}: {plan}"
+            );
+            assert!(stage[0].contains("tasks_completed=1"), "{plan}");
+            if target_partitions == 1 {
+                assert!(stage[reads].contains("parallelism=1,"), "{plan}");
+            }
+        }
+        for marker in [
+            "metrics_missing",
+            "metrics_partial",
+            "metrics_ambiguous",
+            "metrics_truncated",
+        ] {
+            assert!(!plan.contains(marker), "{marker}: {plan}");
+        }
+        // The same totals, counted by the queries themselves.
+        let count = async |sql: String| text(&sql).await.1[0].parse::<usize>().unwrap();
+        let total = |at: usize| expected.values().map(|counts| counts[at]).sum::<usize>();
+        assert_eq!(
+        count(
+            "SELECT COUNT(*) FROM sys_invocation_status WHERE upper(target_service_name) <> 'DROP'"
+                .to_owned()
+        )
+        .await,
+        total(1)
+    );
+        assert_eq!(count(format!("SELECT COUNT(*) {join}")).await, total(2));
     }
 }
