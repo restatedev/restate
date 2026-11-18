@@ -142,7 +142,9 @@ struct IndexWork {
     index: ReString,
     #[bilrost(2)]
     work: PartitionWork<PartitionScan>,
-    /// The order of each partition's rows, as the index declares it.
+    /// The order of each partition's rows: the index's declared order, except
+    /// that a never-NULL column's null placement follows the query
+    /// ([`IndexOrder::never_null`](crate::access::IndexOrder::never_null)).
     #[bilrost(3)]
     ordering: Vec<SortedColumn>,
     /// How many rows a partition that can't keep the order keeps, sorted: the

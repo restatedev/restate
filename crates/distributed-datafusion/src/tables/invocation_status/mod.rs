@@ -86,7 +86,7 @@ const MAX_INDEXED_SERVICES: usize = 64;
 /// ```sql
 /// SELECT id FROM sys_invocation_status
 /// WHERE target_service_name = 'Promises' AND target_service_key IS NOT NULL
-/// ORDER BY created_at DESC NULLS LAST
+/// ORDER BY created_at DESC [NULLS FIRST | NULLS LAST]
 /// LIMIT 51
 /// ```
 ///
@@ -101,12 +101,16 @@ impl CompleteIndex for EntryIndex {
     /// The read merges its runs by creation time, newest first. The index keeps
     /// each entry's full creation timestamp, whose millisecond is the
     /// invocation's `created_at`: the read checks that for every row.
+    ///
+    /// `created_at` is never NULL: every stored invocation status has a
+    /// creation time, and the row writer always sets it (`row.rs`).
     const ORDERING: &'static [IndexOrder<InvocationStatusColumn>] = &[IndexOrder {
         column: InvocationStatusColumn::CreatedAt,
         options: SortOptions {
             descending: true,
             nulls_first: false,
         },
+        never_null: true,
     }];
 
     /// A few services, each with a few handlers, stay within the runs one read
