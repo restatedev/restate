@@ -132,8 +132,8 @@ pub enum OrderedRunsDiscovery<T: PhysicalTable> {
     /// The runs, ready to be merged.
     Ready(OrderedRuns<T>),
     /// More runs or more discovery work than the limits allow. Nothing was read
-    /// and nothing is held.
-    TooManyRuns,
+    /// and nothing is held. The keys discovery examined before it stopped.
+    TooManyRuns { examined: u64 },
 }
 
 /// The keys of one read, in the order of the fields after the runs' prefix.
@@ -297,6 +297,23 @@ impl ReadSnapshot {
         T: PhysicalTable,
         T::Key: OrderedKeySchema,
     {
+        self.ordered_runs_counted(request, run_fields, limits, memory, &mut 0)
+    }
+
+    /// [`Self::ordered_runs`], keeping in `examined` the keys discovery examined
+    /// so far, so that a caller can tell that work even when discovery fails.
+    pub fn ordered_runs_counted<T>(
+        &self,
+        request: Arc<KeySelection<T::Key>>,
+        run_fields: usize,
+        limits: OrderedRunsLimits,
+        memory: Box<dyn RetainedMemory>,
+        examined: &mut u64,
+    ) -> Result<OrderedRunsDiscovery<T>>
+    where
+        T: PhysicalTable,
+        T::Key: OrderedKeySchema,
+    {
         self.check_active()?;
         let mut runs = OrderedRuns {
             inner: None,
@@ -334,8 +351,11 @@ impl ReadSnapshot {
                     break;
                 };
                 runs.examined += 1;
+                *examined = runs.examined;
                 if runs.examined > limits.max_discovery_keys as u64 {
-                    return Ok(OrderedRunsDiscovery::TooManyRuns);
+                    return Ok(OrderedRunsDiscovery::TooManyRuns {
+                        examined: runs.examined,
+                    });
                 }
                 let matched = selection.evaluate(key)?;
                 runs.memory.selection(&selection)?;
@@ -345,7 +365,9 @@ impl ReadSnapshot {
                     KeyMatch::Seek => Step::Seek,
                     KeyMatch::Match => {
                         if found.len() == limits.max_runs {
-                            return Ok(OrderedRunsDiscovery::TooManyRuns);
+                            return Ok(OrderedRunsDiscovery::TooManyRuns {
+                                examined: runs.examined,
+                            });
                         }
                         reserve_run(&mut found, limits.max_runs, &mut runs.memory)?;
                         let payload = key.get(header..).ok_or(StorageError::DataIntegrityError)?;
@@ -503,6 +525,11 @@ impl<T: PhysicalTable> OrderedRuns<T> {
     /// ones the selection or the ownership check rejected.
     pub fn examined(&self) -> u64 {
         self.examined
+    }
+
+    /// How many runs the read merges; none once they're exhausted.
+    pub fn runs(&self) -> usize {
+        self.inner.as_ref().map_or(0, |merge| merge.runs.len())
     }
 }
 

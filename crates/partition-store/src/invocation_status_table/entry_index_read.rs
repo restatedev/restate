@@ -24,12 +24,12 @@
 //! ```
 //!
 //! The index finds every invocation only once the partition has fully migrated
-//! to vqueues and the index is Ready ([`EntryIndexRead::usable`]). Both are read
-//! through the query's own snapshot when the read opens. If either doesn't
+//! to vqueues and the index is Ready ([`EntryIndexRead::unusable`]). Both are
+//! read through the query's own snapshot when the read opens. If either doesn't
 //! hold, or finding the runs takes more than one read allows, the read scans the
 //! invocation statuses instead, before it returns anything: the result is
-//! complete either way. It reports which it did ([`EntryIndexPath`]), so that a
-//! caller relying on creation order sorts a scan.
+//! complete either way. It reports which it did and why ([`EntryIndexPath`]), so
+//! that a caller relying on creation order sorts a scan.
 //!
 //! Everything the index read holds is charged to the caller's memory
 //! ([`EntryIndexExecution`]): the merge of the runs (see [`OrderedRuns`]), the
@@ -90,43 +90,79 @@ const KEY_LEN: usize = InvocationStatusKey::serialized_length_fixed();
 /// How a read of the entry index went.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryIndexPath {
-    /// Through the index: the invocations come newest created first.
-    Index,
+    /// Through the index, merging `runs` runs: the invocations come newest
+    /// created first.
+    Index { runs: usize },
     /// A scan of the invocation statuses, in key order.
-    Scan,
+    Scan(ScanReason),
+}
+
+/// Why an entry-index read scans instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanReason {
+    /// The partition hasn't fully migrated to vqueues: an invocation may have no
+    /// entry.
+    NotMigrated,
+    /// The index isn't Ready on the read's snapshot.
+    NotReady,
+    /// Finding the runs takes more than one read allows.
+    TooManyRuns,
 }
 
 /// What one execution of an entry-index read charges and reports. The read takes
 /// it when it opens.
 pub struct EntryIndexExecution(Mutex<Option<Execution>>);
 
-struct Execution {
-    memory: Box<dyn RetainedMemory>,
-    chosen: Box<dyn FnOnce(EntryIndexPath) + Send>,
-    fetched: Box<dyn Fn(usize) + Send>,
+pub(crate) struct Execution {
+    pub(crate) memory: Box<dyn RetainedMemory>,
+    pub(crate) chosen: Box<dyn FnOnce(EntryIndexPath) + Send>,
+    pub(crate) fetched: Box<dyn Fn(usize, u64) + Send>,
+    /// Learns how many references the read skipped: missing or stale.
+    pub(crate) skipped: Box<dyn Fn(u64) + Send>,
 }
 
 impl EntryIndexExecution {
     /// `memory` is charged for what the index read holds. `chosen` learns which
     /// path the read takes before it returns any row. `fetched` learns how many
     /// statuses each multi-get requests, once it returns: the window's slots,
-    /// before any is inspected or charged.
+    /// before any is inspected or charged; and how many index keys the read
+    /// examined since it last learned, the rest of them once the read ends or is
+    /// dropped.
     pub fn new(
         memory: Box<dyn RetainedMemory>,
         chosen: impl FnOnce(EntryIndexPath) + Send + 'static,
-        fetched: impl Fn(usize) + Send + 'static,
+        fetched: impl Fn(usize, u64) + Send + 'static,
     ) -> Self {
         Self(Mutex::new(Some(Execution {
             memory,
             chosen: Box::new(chosen),
             fetched: Box::new(fetched),
+            skipped: Box::new(|_| {}),
         })))
+    }
+
+    /// Also tells `skipped` how many references the read skips, for a read that
+    /// skips stale ones rather than failing on them.
+    pub fn with_skipped(self, skipped: impl Fn(u64) + Send + 'static) -> Self {
+        if let Some(execution) = self.0.lock().expect("not poisoned").as_mut() {
+            execution.skipped = Box::new(skipped);
+        }
+        self
+    }
+
+    /// What the read charges and reports; a read takes it once, as it opens.
+    pub(crate) fn take(&self) -> Result<Execution> {
+        self.0
+            .lock()
+            .expect("not poisoned")
+            .take()
+            .ok_or_else(|| StorageError::Generic(anyhow::anyhow!("an index read opens once")))
     }
 }
 
 /// One charge shared by the merge of the runs and the cursor's own state.
 #[derive(Clone)]
-struct SharedMemory(Arc<Mutex<Box<dyn RetainedMemory>>>);
+pub(crate) struct SharedMemory(pub(crate) Arc<Mutex<Box<dyn RetainedMemory>>>);
 
 impl RetainedMemory for SharedMemory {
     fn grow(&mut self, bytes: usize) -> Result<()> {
@@ -139,19 +175,19 @@ impl RetainedMemory for SharedMemory {
 }
 
 /// What the cursor itself holds, released when it is dropped.
-struct Held {
-    memory: SharedMemory,
-    bytes: usize,
+pub(crate) struct Held {
+    pub(crate) memory: SharedMemory,
+    pub(crate) bytes: usize,
 }
 
 impl Held {
-    fn grow(&mut self, bytes: usize) -> Result<()> {
+    pub(crate) fn grow(&mut self, bytes: usize) -> Result<()> {
         self.memory.grow(bytes)?;
         self.bytes += bytes;
         Ok(())
     }
 
-    fn shrink(&mut self, bytes: usize) {
+    pub(crate) fn shrink(&mut self, bytes: usize) {
         self.memory.shrink(bytes);
         self.bytes -= bytes;
     }
@@ -177,14 +213,21 @@ impl EntryIndexRead {
         })
     }
 
-    /// Whether a read on `snapshot` goes through the index, and so returns the
-    /// invocations newest created first: the partition has fully migrated to
-    /// vqueues, so every invocation has its entry, and the index is Ready.
-    pub fn usable(snapshot: &ReadSnapshot) -> Result<bool> {
-        Ok(snapshot.fully_migrated_to_vqueues()?
-            && snapshot
-                .ready_index(EntryByServiceCreated::DEFINITION, IndexKind::Secondary)
-                .is_ok())
+    /// Why a read on `snapshot` can't go through the index, if it can't. It can,
+    /// and so return the invocations newest created first, once the partition
+    /// has fully migrated to vqueues, so every invocation has its entry, and the
+    /// index is Ready.
+    pub fn unusable(snapshot: &ReadSnapshot) -> Result<Option<ScanReason>> {
+        Ok(if !snapshot.fully_migrated_to_vqueues()? {
+            Some(ScanReason::NotMigrated)
+        } else if snapshot
+            .ready_index(EntryByServiceCreated::DEFINITION, IndexKind::Secondary)
+            .is_err()
+        {
+            Some(ScanReason::NotReady)
+        } else {
+            None
+        })
     }
 }
 
@@ -207,13 +250,31 @@ pub(super) struct EntryIndexCursor {
     /// Window position the cursor is on.
     current: Option<usize>,
     held: Held,
-    /// Learns how many statuses each multi-get requests.
-    fetched: Box<dyn Fn(usize) + Send>,
+    /// Learns how many statuses each multi-get requests, and how many index
+    /// keys the read examined.
+    fetched: Box<dyn Fn(usize, u64) + Send>,
+    /// Index keys examined that `fetched` has learned of.
+    reported: u64,
     /// How the read ended, once it holds nothing.
     ended: Option<Ended>,
     /// Last: the runs and the fetched window are dropped before the snapshot.
     /// `None` once the read ended.
     snapshot: Option<ReadSnapshot>,
+}
+
+impl Drop for EntryIndexCursor {
+    /// A read dropped part-way, say past a query's LIMIT, still tells what it
+    /// examined.
+    fn drop(&mut self) {
+        self.report(0);
+    }
+}
+
+/// How opening went: the runs to merge and what the read holds, or the scan's
+/// reason and the index keys examined before it was chosen.
+enum Opened {
+    Index(OrderedRuns<EntryByServiceCreated>, Held),
+    Scan(ScanReason, u64),
 }
 
 /// How a read that holds nothing ended.
@@ -225,7 +286,7 @@ enum Ended {
 
 impl EntryIndexCursor {
     /// The cursor, or `None` if the read scans instead: the index can't stand in
-    /// for a scan on this snapshot ([`EntryIndexRead::usable`]), or finding its
+    /// for a scan on this snapshot ([`EntryIndexRead::unusable`]), or finding its
     /// runs takes more than one read allows. Nothing is held then. Either way,
     /// `execution` learns the path before this returns.
     pub(super) fn open(
@@ -237,31 +298,48 @@ impl EntryIndexCursor {
             memory,
             chosen,
             fetched,
-        } = execution
-            .0
-            .lock()
-            .expect("not poisoned")
-            .take()
-            .ok_or_else(|| {
-                StorageError::Generic(anyhow::anyhow!("an entry-index read opens once"))
-            })?;
+            ..
+        } = execution.take()?;
         let memory = SharedMemory(Arc::new(Mutex::new(memory)));
-        let cursor = Self::try_open(snapshot, read, memory, fetched)?;
-        chosen(match cursor {
-            Some(_) => EntryIndexPath::Index,
-            None => EntryIndexPath::Scan,
+        // Discovery's work counts even if it fails: the error stays the read's.
+        let mut discovered = 0;
+        let opened = Self::try_open(snapshot, read, memory, &mut discovered);
+        let opened = match opened {
+            Ok(opened) => opened,
+            Err(error) => {
+                if discovered > 0 {
+                    fetched(0, discovered);
+                }
+                return Err(error);
+            }
+        };
+        let cursor = match opened {
+            Opened::Index(runs, held) => Ok(Self::new(snapshot, runs, held, fetched)),
+            Opened::Scan(reason, examined) => {
+                // What discovery examined before it gave up is work done too.
+                if examined > 0 {
+                    fetched(0, examined);
+                }
+                Err(reason)
+            }
+        };
+        chosen(match &cursor {
+            Ok(cursor) => EntryIndexPath::Index {
+                runs: cursor.runs.as_ref().map_or(0, OrderedRuns::runs),
+            },
+            Err(reason) => EntryIndexPath::Scan(*reason),
         });
-        Ok(cursor)
+        Ok(cursor.ok())
     }
 
     fn try_open(
         snapshot: &ReadSnapshot,
         read: &EntryIndexRead,
         memory: SharedMemory,
-        fetched: Box<dyn Fn(usize) + Send>,
-    ) -> Result<Option<Self>> {
-        if !EntryIndexRead::usable(snapshot)? {
-            return Ok(None);
+        discovered: &mut u64,
+    ) -> Result<Opened> {
+        if let Some(reason) = EntryIndexRead::unusable(snapshot)? {
+            return Ok(Opened::Scan(reason, 0));
         }
         // The caller's selection, and the window with its keys, before the window
         // is allocated.
@@ -274,16 +352,28 @@ impl EntryIndexCursor {
                 + WINDOW * std::mem::size_of::<(InvocationId, Seq, MillisSinceEpoch)>()
                 + WINDOW * KEY_LEN,
         )?;
-        let discovery = snapshot.ordered_runs::<EntryByServiceCreated>(
+        let discovery = snapshot.ordered_runs_counted::<EntryByServiceCreated>(
             Arc::clone(&read.index),
             RUN_FIELDS,
             LIMITS,
             Box::new(memory),
+            discovered,
         )?;
-        let OrderedRunsDiscovery::Ready(runs) = discovery else {
-            return Ok(None);
-        };
-        Ok(Some(Self {
+        Ok(match discovery {
+            OrderedRunsDiscovery::Ready(runs) => Opened::Index(runs, held),
+            OrderedRunsDiscovery::TooManyRuns { examined } => {
+                Opened::Scan(ScanReason::TooManyRuns, examined)
+            }
+        })
+    }
+
+    fn new(
+        snapshot: &ReadSnapshot,
+        runs: OrderedRuns<EntryByServiceCreated>,
+        held: Held,
+        fetched: Box<dyn Fn(usize, u64) + Send>,
+    ) -> Self {
+        Self {
             runs: Some(runs),
             runs_done: false,
             window: Vec::with_capacity(WINDOW),
@@ -294,9 +384,24 @@ impl EntryIndexCursor {
             current: None,
             held,
             fetched,
+            reported: 0,
             ended: None,
             snapshot: Some(snapshot.clone()),
-        }))
+        }
+    }
+
+    /// Tells `fetched` of a multi-get of `statuses`, if any, and of the index
+    /// keys examined since it last learned.
+    fn report(&mut self, statuses: usize) {
+        let examined = self
+            .runs
+            .as_ref()
+            .map_or(self.reported, OrderedRuns::examined);
+        let new = examined.saturating_sub(self.reported);
+        if statuses > 0 || new > 0 {
+            (self.fetched)(statuses, new);
+        }
+        self.reported = examined;
     }
 
     /// The next step. A step that fails, or finds the read done, releases
@@ -314,6 +419,7 @@ impl EntryIndexCursor {
     /// Drops what the read holds and its charge: the merge of the runs, the
     /// window with its keys, the fetched statuses and the snapshot.
     fn release(&mut self, ended: Ended) {
+        self.report(0);
         self.runs = None;
         self.results = None;
         self.results_bytes = 0;
@@ -393,7 +499,7 @@ impl EntryIndexCursor {
             .multi_get_pinned(KeyKind::InvocationStatus, keys, false)
             .map_err(|error| StorageError::Generic(error.into()))?
             .into_owned();
-        (self.fetched)(self.window.len());
+        self.report(self.window.len());
         let mut bytes = 0;
         for slot in 0..self.window.len() {
             let value = fetched
@@ -461,6 +567,68 @@ impl EntryIndexCursor {
     }
 }
 
+/// A charge for the entry-index reads' tests.
+#[cfg(test)]
+pub(crate) mod counting {
+    use std::sync::{Arc, Mutex};
+
+    use restate_storage_api::StorageError;
+
+    use crate::Result;
+    use crate::ordered_runs::RetainedMemory;
+
+    /// Counts what a read charges. It refuses a charge that would pass
+    /// `limit`, or one of exactly `refuse` bytes, and records the refusal.
+    #[derive(Clone, Default)]
+    pub(crate) struct Counting(Arc<Mutex<Charge>>);
+
+    #[derive(Default)]
+    pub(crate) struct Charge {
+        pub(crate) now: usize,
+        pub(crate) peak: usize,
+        pub(crate) limit: Option<usize>,
+        pub(crate) refuse: Option<usize>,
+        pub(crate) refused: Option<usize>,
+    }
+
+    impl Counting {
+        pub(crate) fn with(charge: Charge) -> Self {
+            Self(Arc::new(Mutex::new(charge)))
+        }
+
+        pub(crate) fn now(&self) -> usize {
+            self.0.lock().unwrap().now
+        }
+
+        pub(crate) fn refused(&self) -> Option<usize> {
+            self.0.lock().unwrap().refused
+        }
+
+        pub(crate) fn peak(&self) -> usize {
+            self.0.lock().unwrap().peak
+        }
+    }
+
+    impl RetainedMemory for Counting {
+        fn grow(&mut self, bytes: usize) -> Result<()> {
+            let mut charge = self.0.lock().unwrap();
+            if charge.limit.is_some_and(|limit| charge.now + bytes > limit)
+                || charge.refuse == Some(bytes)
+            {
+                charge.refused = Some(bytes);
+                return Err(StorageError::Generic(anyhow::anyhow!("refused")));
+            }
+            charge.now += bytes;
+            charge.peak = charge.peak.max(charge.now);
+            Ok(())
+        }
+
+        fn shrink(&mut self, bytes: usize) {
+            self.0.lock().unwrap().now -= bytes;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use futures::FutureExt;
@@ -488,68 +656,33 @@ mod tests {
 
     use crate::PartitionStoreManager;
 
+    use super::counting::{Charge, Counting};
     use super::*;
 
-    /// Counts what a read charges. It refuses a charge that would pass
-    /// `limit`, or one of exactly `refuse` bytes, and records the refusal.
-    #[derive(Clone, Default)]
-    struct Counting(Arc<Mutex<Charge>>);
-
-    #[derive(Default)]
-    struct Charge {
-        now: usize,
-        limit: Option<usize>,
-        refuse: Option<usize>,
-        refused: Option<usize>,
-    }
-
-    impl Counting {
-        fn with(charge: Charge) -> Self {
-            Self(Arc::new(Mutex::new(charge)))
-        }
-
-        fn now(&self) -> usize {
-            self.0.lock().unwrap().now
-        }
-
-        fn refused(&self) -> Option<usize> {
-            self.0.lock().unwrap().refused
-        }
-    }
-
-    impl RetainedMemory for Counting {
-        fn grow(&mut self, bytes: usize) -> Result<()> {
-            let mut charge = self.0.lock().unwrap();
-            if charge.limit.is_some_and(|limit| charge.now + bytes > limit)
-                || charge.refuse == Some(bytes)
-            {
-                charge.refused = Some(bytes);
-                return Err(StorageError::Generic(anyhow::anyhow!("refused")));
-            }
-            charge.now += bytes;
-            Ok(())
-        }
-
-        fn shrink(&mut self, bytes: usize) {
-            self.0.lock().unwrap().now -= bytes;
-        }
-    }
-
+    /// An execution charging `memory`, the path it takes, and the index keys it
+    /// examines.
     fn execution(
         memory: &Counting,
     ) -> (
         EntryIndexExecution,
         std::sync::mpsc::Receiver<EntryIndexPath>,
+        Arc<std::sync::atomic::AtomicU64>,
     ) {
         let (chosen, path) = std::sync::mpsc::channel();
+        let examined = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let execution = EntryIndexExecution::new(
             Box::new(memory.clone()),
             move |taken| {
                 let _ = chosen.send(taken);
             },
-            |_| {},
+            {
+                let examined = Arc::clone(&examined);
+                move |_, keys| {
+                    examined.fetch_add(keys, std::sync::atomic::Ordering::Relaxed);
+                }
+            },
         );
-        (execution, path)
+        (execution, path, examined)
     }
 
     /// Between steps, an entry-index read charges exactly what it holds: the
@@ -619,11 +752,12 @@ mod tests {
         assert!(read.index.retained_bytes() > 0);
 
         let memory = Counting::default();
-        let (opening, path) = execution(&memory);
+        let (opening, path, examined) = execution(&memory);
         let mut cursor = EntryIndexCursor::open(&snapshot, &read, &opening)
             .unwrap()
             .unwrap();
-        assert_eq!(path.try_recv(), Ok(EntryIndexPath::Index));
+        // One service, one handler: one run.
+        assert_eq!(path.try_recv(), Ok(EntryIndexPath::Index { runs: 1 }));
         let (mut created, mut fetched) = (Vec::new(), 0);
         loop {
             let statuses = (0..cursor.window.len())
@@ -645,19 +779,26 @@ mod tests {
         }
         assert!(fetched > 0);
         assert_eq!(created.len(), 30);
+        // Every entry's key, at least, once the read is done.
+        let all = examined.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(all >= 30, "{all}");
         assert!(created.is_sorted_by(|newer, older| newer > older));
         assert_eq!(memory.now(), 0, "everything is released at the end");
         assert!(cursor.snapshot.is_none() && cursor.advance().unwrap() == CursorStep::Done);
         drop(cursor);
 
-        // Dropped part-way through a window, it releases everything too.
-        let (opening, _) = execution(&memory);
+        // Dropped part-way through a window, it releases everything too, and
+        // tells what it examined until then.
+        let (opening, _, examined) = execution(&memory);
         let mut cursor = EntryIndexCursor::open(&snapshot, &read, &opening)
             .unwrap()
             .unwrap();
         while cursor.advance().unwrap() != CursorStep::Record {}
         assert!(memory.now() > fixed);
         drop(cursor);
+        // Here the merge read ahead every key before handing out a record.
+        let part = examined.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(part, all);
         assert_eq!(memory.now(), 0);
 
         // A refused charge fails the read. Refused at the open, nothing opens.
@@ -665,9 +806,43 @@ mod tests {
             limit: Some(fixed - 1),
             ..Default::default()
         });
-        let (opening, _) = execution(&refusing);
+        let (opening, _, _) = execution(&refusing);
         assert!(EntryIndexCursor::open(&snapshot, &read, &opening).is_err());
         assert_eq!((refusing.refused(), refusing.now()), (Some(fixed), 0));
+        // Refused at discovery's largest charge, once it examined keys: the read
+        // fails with the refusal, still tells those keys exactly once, and holds
+        // nothing.
+        let measuring = Counting::default();
+        let (opening, _, _) = execution(&measuring);
+        drop(EntryIndexCursor::open(&snapshot, &read, &opening).unwrap());
+        let peak = measuring.peak();
+        let refusing = Counting::with(Charge {
+            limit: Some(peak - 1),
+            ..Default::default()
+        });
+        let (chosen, path) = std::sync::mpsc::channel();
+        let reports = Arc::new(Mutex::new(Vec::new()));
+        let opening = EntryIndexExecution::new(
+            Box::new(refusing.clone()),
+            move |taken| {
+                let _ = chosen.send(taken);
+            },
+            {
+                let reports = Arc::clone(&reports);
+                move |statuses, keys| reports.lock().unwrap().push((statuses, keys))
+            },
+        );
+        let failed = EntryIndexCursor::open(&snapshot, &read, &opening)
+            .err()
+            .unwrap();
+        assert!(failed.to_string().contains("refused"), "{failed}");
+        let reports = reports.lock().unwrap().clone();
+        assert!(
+            matches!(reports.as_slice(), [(0, keys)] if *keys > 0),
+            "{reports:?}"
+        );
+        assert!(path.try_recv().is_err(), "a failed open chooses no path");
+        assert_eq!(refusing.now(), 0);
         // Refused for the first window of statuses, the newest 25, measured
         // directly: the cursor, still held, holds nothing and fails again.
         let status_len = |index: u64| {
@@ -686,14 +861,14 @@ mod tests {
             refuse: Some(window),
             ..Default::default()
         });
-        let (opening, path) = execution(&refusing);
+        let (opening, path, _) = execution(&refusing);
         let (own, closed) = store.query_read(CancellationToken::new()).unwrap();
         let mut closed = std::pin::pin!(closed);
         let mut cursor = EntryIndexCursor::open(&own, &read, &opening)
             .unwrap()
             .unwrap();
         drop(own);
-        assert_eq!(path.try_recv(), Ok(EntryIndexPath::Index));
+        assert_eq!(path.try_recv(), Ok(EntryIndexPath::Index { runs: 1 }));
         let failed = loop {
             match cursor.advance() {
                 Ok(CursorStep::Done) => panic!("the read completes"),
@@ -726,7 +901,7 @@ mod tests {
         drop(tx);
         let (own, closed) = store.query_read(CancellationToken::new()).unwrap();
         let mut closed = std::pin::pin!(closed);
-        let (opening, _) = execution(&memory);
+        let (opening, _, _) = execution(&memory);
         let mut cursor = EntryIndexCursor::open(&own, &read, &opening)
             .unwrap()
             .unwrap();
@@ -747,6 +922,88 @@ mod tests {
         );
         drop(cursor);
 
+        // A run longer than the merge reads ahead: dropped while it navigates
+        // past what it last reported, the read still tells those keys.
+        let big = InvocationTarget::service("Big", "h");
+        let mut tx = store.transaction();
+        for index in 0..400u64 {
+            let n = 1_000 + index;
+            let id = InvocationId::from_parts(n * 997, InvocationUuid::from_u128(n.into()));
+            let created = MillisSinceEpoch::new(BASE + n);
+            let mut completed = CompletedInvocation::mock_neo();
+            completed.invocation_target = big.clone();
+            completed.timestamps = StatusTimestamps::init(created);
+            completed.creation_seq = Some(Seq::new(n));
+            tx.put_invocation_status(&id, &InvocationStatus::Completed(completed))
+                .unwrap();
+            let created = UniqueTimestamp::from_unix_millis_unchecked(created);
+            let key = EntryKey::new(false, created.to_unix_millis(), n, EntryId::from(id));
+            tx.create_vqueue_entry_status(
+                &EntryContext {
+                    qid: &VQueueId::custom(id.partition_key(), "q"),
+                    target: &big.entry_target_ref(),
+                },
+                EntryStateRef {
+                    stage: Stage::Finished,
+                    status: Status::Succeeded,
+                    entry_key: &key,
+                    metadata: &EntryMetadata::default(),
+                    stats: &EntryStatistics::new(created, key.run_at()),
+                },
+            );
+        }
+        tx.commit().await.unwrap();
+        drop(tx);
+        let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
+        let read_big = EntryIndexRead::prepare(&Selection::All.and(
+            EntryByServiceCreatedClause::TargetServiceName(ValuePredicate::Equal("Big".into())),
+        ))
+        .unwrap();
+        let (opening, _, examined) = execution(&memory);
+        let mut cursor = EntryIndexCursor::open(&snapshot, &read_big, &opening)
+            .unwrap()
+            .unwrap();
+        let unreported = loop {
+            assert_ne!(cursor.advance().unwrap(), CursorStep::Done);
+            let navigated = cursor.runs.as_ref().map_or(0, OrderedRuns::examined);
+            if navigated > cursor.reported && cursor.reported > 0 {
+                break navigated - cursor.reported;
+            }
+        };
+        let before = examined.load(std::sync::atomic::Ordering::Relaxed);
+        drop(cursor);
+        assert_eq!(
+            examined.load(std::sync::atomic::Ordering::Relaxed),
+            before + unreported
+        );
+        drop(snapshot);
+
+        // Not Ready: a migrated partition that doesn't maintain the index scans.
+        let mut plain = manager
+            .open(&Partition::new(PartitionId::from(1), KeyRange::FULL), None)
+            .await
+            .unwrap();
+        let mut tx = plain.transaction();
+        tx.put_state_machine_features(&PersistedFeatures {
+            vqueues: true,
+            ..Default::default()
+        })
+        .unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+        let (snapshot, _completed) = plain.query_read(CancellationToken::new()).unwrap();
+        let (opening, path, _) = execution(&memory);
+        assert!(
+            EntryIndexCursor::open(&snapshot, &read, &opening)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            path.try_recv(),
+            Ok(EntryIndexPath::Scan(ScanReason::NotReady))
+        );
+        drop(snapshot);
+
         // Not migrated: the read scans, and holds nothing of the index.
         let mut tx = store.transaction();
         tx.put_state_machine_features(&PersistedFeatures::default())
@@ -754,13 +1011,16 @@ mod tests {
         tx.commit().await.unwrap();
         drop(tx);
         let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
-        let (opening, path) = execution(&memory);
+        let (opening, path, _) = execution(&memory);
         assert!(
             EntryIndexCursor::open(&snapshot, &read, &opening)
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(path.try_recv(), Ok(EntryIndexPath::Scan));
+        assert_eq!(
+            path.try_recv(),
+            Ok(EntryIndexPath::Scan(ScanReason::NotMigrated))
+        );
         assert_eq!(memory.now(), 0);
     }
 }

@@ -39,8 +39,9 @@ use restate_storage_query_api::{QueryEngine, QueryOptions, QueryStatus, SessionO
 use restate_types::GenerationalNodeId;
 use restate_types::identifiers::{PartitionId, ServiceId};
 use restate_types::net::distributed_query::{
-    PartitionReadError, QueryErrorCode, QueryFailureKind, QueryTaskClose, QueryTaskError,
-    QueryTaskId, QueryTaskInstall, QueryTaskReply, QueryTaskReplyBody, QueryTaskRequest,
+    MetricLevel, MetricRecord, MetricRecordValue, NamedValue, PartitionReadError, QueryErrorCode,
+    QueryFailureKind, QueryTaskClose, QueryTaskError, QueryTaskId, QueryTaskInstall,
+    QueryTaskReply, QueryTaskReplyBody, QueryTaskReport, QueryTaskRequest,
 };
 use restate_types::net::node::{GetNodeState, GossipService, NodeStateResponse};
 use restate_types::net::{CURRENT_PROTOCOL_VERSION, ProtocolVersion};
@@ -65,7 +66,7 @@ use crate::{DataFusionEnv, QuerySource};
 use super::DistributedQueryServer;
 use super::source::{SourceCodec, plan_partition_access};
 use super::transport::rpc;
-use super::worker::TaskObservation;
+use super::worker::{Tamper, TaskObservation};
 
 const OWNER: GenerationalNodeId = GenerationalNodeId::new(2, 1);
 
@@ -138,6 +139,7 @@ struct Fixture<N> {
     store: PartitionStore,
     manager: Arc<PartitionStoreManager>,
     observations: Arc<Mutex<Vec<TaskObservation>>>,
+    tamper: Arc<Mutex<Tamper>>,
 }
 
 pub(super) fn environment(target_partitions: usize, batch_size: usize) -> DataFusionEnv {
@@ -171,12 +173,14 @@ async fn setup_at_version(
         .unwrap();
     let owner_scanners = Arc::new(OnceLock::<SourceRegistry>::new());
     let observations = Arc::new(Mutex::new(vec![]));
+    let tamper = Arc::new(Mutex::new(Tamper::default()));
     // Queries keep the connector through their network, possibly past teardown
     // (see `keep_network_past_teardown`), so it must not own storage: it only
     // borrows the owner's sources and the observations.
     let (connector, _connections) = MockConnector::new({
         let owner_scanners = Arc::downgrade(&owner_scanners);
         let observations = Arc::downgrade(&observations);
+        let tamper = Arc::clone(&tamper);
         move |node, router: &mut restate_core::network::MessageRouterBuilder| {
             assert_eq!(node, OWNER, "task was routed to a non-owner");
             // An owner first reached once the test has returned serves nothing.
@@ -191,6 +195,7 @@ async fn setup_at_version(
                 router,
             );
             server.observations = observations;
+            server.tamper = Arc::clone(&tamper);
             crate::mocks::spawn_query_server("distributed-query-test", server);
             // An ordinary node service next to the query service, so tests can
             // check that query failures leave the connection usable for it.
@@ -260,6 +265,7 @@ async fn setup_at_version(
         store,
         manager,
         observations,
+        tamper,
     }
 }
 
@@ -624,6 +630,7 @@ async fn invalid_task_and_required_storage_fail_closed() {
         query_headers: vec![],
         redacted_sql: Default::default(),
         planning_duration: Default::default(),
+        analyze: None,
     };
     let id = invalid.id.clone();
     let error = rpc(&connection, QueryTaskRequest::Install(invalid))
@@ -640,7 +647,7 @@ async fn invalid_task_and_required_storage_fail_closed() {
     assert!(!connection.is_closed());
     assert!(matches!(
         rpc(&connection, QueryTaskRequest::Close(QueryTaskClose { id })).await,
-        Ok(QueryTaskReplyBody::Closed(()))
+        Ok(QueryTaskReplyBody::Closed(_))
     ));
     // This is the Datafusion swimlane connection. Ordinary node traffic usually
     // goes over other swimlanes; sending it here on purpose shows that the
@@ -972,4 +979,111 @@ async fn task_transport_preserves_rows_before_terminal_failure() {
     assert_eq!(rows, 3);
     assert_eq!(diagnostics.snapshot().status, QueryStatus::Failed);
     assert_eq!(diagnostics.snapshot().output_rows, 3);
+
+    // Under ANALYZE, a report the coordinator can't use doesn't hide the
+    // data's own failure.
+    fixture.tamper.lock().report = Some(vec![0xff; 16]);
+    let error = fixture
+        .engine(1, 1)
+        .create_session(SessionOptions::default())
+        .unwrap()
+        .execute("EXPLAIN ANALYZE SELECT * FROM state", QueryOptions {})
+        .await
+        .unwrap()
+        .stream
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("injected late storage failure"),
+        "{error}"
+    );
+}
+
+/// A report the coordinator can't use costs only the report. A worker from
+/// before reports, and a malformed, an oversized or an out-of-domain report,
+/// each show as a marker on the stage, and the query succeeds.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unusable_reports_degrade_to_markers() {
+    use bilrost::Message;
+
+    // A report with a metric level no binary knows.
+    #[derive(bilrost::Message)]
+    struct Record {
+        #[bilrost(1)]
+        output_rows: u64,
+        #[bilrost(22)]
+        level: u32,
+    }
+    #[derive(bilrost::Message)]
+    struct Node {
+        #[bilrost(1)]
+        ordinal: u32,
+        #[bilrost(2)]
+        metrics: Vec<Record>,
+    }
+    #[derive(bilrost::Message)]
+    struct Report {
+        #[bilrost(3)]
+        nodes: Vec<Node>,
+    }
+    let out_of_domain = Report {
+        nodes: vec![Node {
+            ordinal: 0,
+            metrics: vec![Record {
+                output_rows: 1,
+                level: 99,
+            }],
+        }],
+    }
+    .encode_to_vec();
+
+    let fixture = setup(false).await;
+    let session = fixture
+        .engine(1, 2)
+        .create_session(SessionOptions::default())
+        .unwrap();
+    let analyze = async || {
+        let result = session
+            .execute(
+                "EXPLAIN ANALYZE SELECT COUNT(*) FROM state",
+                QueryOptions {},
+            )
+            .await
+            .unwrap();
+        let batches = result.stream.try_collect::<Vec<_>>().await.unwrap();
+        batches
+            .iter()
+            .flat_map(|batch| {
+                (0..batch.num_rows())
+                    .map(|row| array_value_to_string(batch.column(1), row).unwrap())
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let text = analyze().await;
+    assert!(text.contains("tasks_completed=1"), "{text}");
+    fixture.tamper.lock().legacy = true;
+    let text = analyze().await;
+    assert!(text.contains("metrics_unsupported=1"), "{text}");
+    fixture.tamper.lock().legacy = false;
+    // A well-formed report over the size a worker can build.
+    let oversized = QueryTaskReport {
+        task: vec![MetricRecord {
+            value: MetricRecordValue::Count(NamedValue {
+                name: "n".repeat(70_000).into(),
+                value: 1,
+            }),
+            level: MetricLevel::Summary,
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+    .encode_to_vec();
+    for report in [vec![0xff; 16], oversized, out_of_domain] {
+        fixture.tamper.lock().report = Some(report);
+        let text = analyze().await;
+        assert!(text.contains("metrics_invalid=1"), "{text}");
+        assert!(!text.contains("tasks_completed"), "{text}");
+    }
 }

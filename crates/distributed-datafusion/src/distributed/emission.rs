@@ -21,9 +21,10 @@
 //! stage = 'finished' AND length(id) > 3                 → plan only (a function)
 //! ```
 //!
-//! Splitting a predicate instead would change where the left-out part is
-//! evaluated: a conjunction evaluates its right side only on the rows its left
-//! side keeps, so dropping rows earlier could skip, or newly reach, an error.
+//! Splitting a predicate instead could change where the left-out part is
+//! evaluated: DataFusion may evaluate a conjunction's right side only on the
+//! rows its left side keeps, so dropping rows earlier could skip, or newly
+//! reach, an error.
 
 use std::sync::Arc;
 

@@ -13,17 +13,24 @@ use std::ops::{ControlFlow, RangeBounds};
 use std::sync::Arc;
 
 use bilrost::{Message, OwnedMessage};
+use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::SendableRecordBatchStream;
+use datafusion::logical_expr::Operator;
+use datafusion::physical_expr::expressions::{BinaryExpr, Column, InListExpr, Literal};
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::metrics::Count;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 
 use restate_partition_store::ReadSnapshot;
+use restate_partition_store::index::RegisteredIndex;
+use restate_partition_store::invocation_status_table::{
+    EntryIndexExecution, EntryIndexPath, ScanReason,
+};
 use restate_partition_store::keys::selection::KeySelection;
 use restate_partition_store::vqueue_table::{
     EntryStatusCursor, EntryStatusKey, EntryStatusKeys, EntryStatusRecords, EntryStatusScan,
-    StageReads,
+    FinishedEntryByOutcome as StoredFinishedIndex, FinishedRead, StageReads,
 };
 use restate_storage_api::vqueue_table::Stage;
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
@@ -31,19 +38,24 @@ use restate_storage_query_api::scan::{CursorScan, CursorStep, ReadCursor, Table}
 use restate_storage_query_api::schema::index::index_restriction;
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
-use restate_storage_query_api::tables::index::{EntryByQueue, EntryByQueueDomains};
-use restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatus;
+use restate_storage_query_api::tables::index::{
+    EntryByQueue, EntryByQueueDomains, FinishedEntryByOutcome, FinishedEntryByOutcomeDomains,
+};
+use restate_storage_query_api::tables::vqueue_entry_status::{
+    VqueueEntryStatus, VqueueEntryStatusColumn, VqueueEntryStatusDomains,
+};
 use restate_storage_query_api::{LogicalSchema, RowSink, SelectionSchema};
 use restate_types::SemanticRestateVersion;
+use restate_types::config::Configuration;
 use restate_types::identifiers::{BaseEntryId, PartitionKey};
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::{EntryId, EntryKind};
 
-use crate::access::{CompleteIndex, PrimaryKeys, PrimaryRead, PrimarySelection};
+use crate::access::{CompleteIndex, IndexOrder, PrimaryKeys, PrimaryRead, PrimarySelection};
 use crate::batches::{BatchSink, Batches, scan_rows_into};
 use crate::schema_scan::compile_selection;
 use crate::table_providers::{
-    PartitionReadContext, PreparedPartitionRead, ReadMetrics, ScanPartition,
+    InOrder, PartitionReadContext, PreparedPartitionRead, ReadMetrics, ScanPartition,
 };
 
 use super::row::append_vqueue_entry_status_row;
@@ -90,6 +102,118 @@ impl CompleteIndex for StageIndex {
             Some(ValuePredicate::In(stages)) if !stages.is_empty() && !stages.contains(&Stage::Finished)
         )
     }
+}
+
+/// Finished entries through `finished_entry_by_outcome/1`, newest finished
+/// first, for a query that asks for exactly that order under a LIMIT:
+///
+/// ```sql
+/// SELECT … FROM sys_vqueue_entry_status
+/// WHERE stage = 'finished' [AND status IN ('failed', 'killed')]
+/// ORDER BY transitioned_at DESC NULLS LAST
+/// LIMIT 50
+/// ```
+///
+/// The index holds only Finished entries, so every alternative of the query
+/// must fix the stage to `finished` ([`Self::admits`]); a status condition
+/// narrows the runs it reads but proves nothing alone. Another order, or a
+/// condition outside the allowlist below, reads as before.
+pub(crate) struct FinishedIndex;
+
+impl CompleteIndex for FinishedIndex {
+    type Index = FinishedEntryByOutcome;
+    const INTRODUCED: SemanticRestateVersion = <StoredFinishedIndex as RegisteredIndex>::INTRODUCED;
+
+    /// The read merges its runs by the time each entry entered Finished, newest
+    /// first. The index keeps the full timestamp, whose millisecond is the
+    /// entry's `transitioned_at`: the read checks that for every row.
+    const ORDERING: &'static [IndexOrder<VqueueEntryStatusColumn>] = &[IndexOrder {
+        column: VqueueEntryStatusColumn::TransitionedAt,
+        options: SortOptions {
+            descending: true,
+            nulls_first: false,
+        },
+    }];
+
+    /// Where the index isn't maintained, every partition would scan and sort
+    /// instead, so the planner then scans.
+    fn useful(_: &FinishedEntryByOutcomeDomains) -> bool {
+        Configuration::pinned()
+            .common
+            .experimental
+            .is_track_entry_indexes_enabled()
+    }
+
+    /// Every alternative fixes the stage to `finished` and nothing else.
+    fn admits(alternatives: &[VqueueEntryStatusDomains]) -> bool {
+        !alternatives.is_empty()
+            && alternatives
+                .iter()
+                .all(|alternative| match alternative.stage.to_predicate() {
+                    Some(ValuePredicate::Equal(stage)) => stage == Stage::Finished,
+                    Some(ValuePredicate::In(stages)) => {
+                        !stages.is_empty() && stages.iter().all(|stage| *stage == Stage::Finished)
+                    }
+                    _ => false,
+                })
+    }
+
+    const NEEDS_ORDERED_DEMAND: bool = true;
+
+    /// The allowlist: the stage, the status, and the transition time. A
+    /// syntactic choice, not a selectivity proof: a status condition can still
+    /// reject every candidate.
+    fn residual_allowed(conjunct: &Arc<dyn PhysicalExpr>) -> bool {
+        finished_condition(conjunct, true)
+    }
+}
+
+/// See [`FinishedIndex::residual_allowed`]. `times` admits transition-time
+/// comparisons; not inside alternatives, which would leave gaps to visit.
+fn finished_condition(condition: &Arc<dyn PhysicalExpr>, times: bool) -> bool {
+    use VqueueEntryStatusColumn::{Stage as StageColumn, Status, TransitionedAt};
+    let column = |expr: &Arc<dyn PhysicalExpr>| {
+        let name = expr.downcast_ref::<Column>()?.name();
+        [StageColumn, Status, TransitionedAt]
+            .into_iter()
+            .find(|column| VqueueEntryStatus::sql_name(*column) == Some(name))
+    };
+    let literal = |expr: &Arc<dyn PhysicalExpr>| expr.downcast_ref::<Literal>().is_some();
+    if let Some(binary) = condition.downcast_ref::<BinaryExpr>() {
+        if *binary.op() == Operator::Or {
+            // A small IN list arrives as alternatives.
+            return finished_condition(binary.left(), false)
+                && finished_condition(binary.right(), false);
+        }
+        let (column, op) = if literal(binary.right()) {
+            (column(binary.left()), Some(*binary.op()))
+        } else if literal(binary.left()) {
+            (column(binary.right()), binary.op().swap())
+        } else {
+            return false;
+        };
+        return match (column, op) {
+            (Some(StageColumn | Status), Some(op)) => op == Operator::Eq,
+            (Some(TransitionedAt), Some(op)) => {
+                times
+                    && matches!(
+                        op,
+                        Operator::Eq
+                            | Operator::Lt
+                            | Operator::LtEq
+                            | Operator::Gt
+                            | Operator::GtEq
+                    )
+            }
+            _ => false,
+        };
+    }
+    if let Some(list) = condition.downcast_ref::<InListExpr>() {
+        return !list.negated()
+            && matches!(column(list.expr()), Some(StageColumn | Status))
+            && list.list().iter().all(literal);
+    }
+    false
 }
 
 pub(crate) fn select_primary(
@@ -166,7 +290,7 @@ impl ScanPartition for EntryStatusScanner {
     }
 
     fn supports_index(&self, index: &str) -> bool {
-        index == EntryByQueue::NAME
+        index == EntryByQueue::NAME || index == FinishedEntryByOutcome::NAME
     }
 
     fn prepare_read(
@@ -183,6 +307,22 @@ impl ScanPartition for EntryStatusScanner {
                     predicate.as_slice(),
                 )?),
             )?)),
+            PrimaryRead::Index(index) if index.as_str() == FinishedEntryByOutcome::NAME => {
+                // The planner's choice is fixed; the restriction is derived again
+                // from the shipped predicate, and the predicate stays residual. A
+                // partition that can't read the index scans with the same one.
+                let selection = index_restriction::<FinishedEntryByOutcome>(predicate.as_slice())?
+                    .map_or(Selection::Empty, |domains| domains.to_selection());
+                EntryStatusAccess::Finished {
+                    read: Arc::new(FinishedRead::prepare(&selection)?),
+                    fallback: Arc::new(EntryStatusKeys::prepare(
+                        &compile_selection::<VqueueEntryStatus>(predicate.as_ref())?,
+                        crate::selection::key_range(&VqueueEntryStatus::candidate_shard_keys(
+                            predicate.as_slice(),
+                        )?),
+                    )?),
+                }
+            }
             PrimaryRead::Index(index) => {
                 anyhow::ensure!(self.supports_index(&index), "unsupported index '{index}'");
                 // The planner's choice is fixed; the restriction is derived again
@@ -213,6 +353,14 @@ enum EntryStatusAccess {
     Scan(#[debug(skip)] Arc<KeySelection<EntryStatusKey>>),
     MultiGet(Arc<[BaseEntryId]>),
     Stages(#[debug(skip)] Arc<StageReads>),
+    /// Finished entries through their index, or the fallback scan where a
+    /// partition can't read it.
+    Finished {
+        #[debug(skip)]
+        read: Arc<FinishedRead>,
+        #[debug(skip)]
+        fallback: Arc<KeySelection<EntryStatusKey>>,
+    },
 }
 
 impl PreparedPartitionRead for EntryStatusRead {
@@ -223,15 +371,101 @@ impl PreparedPartitionRead for EntryStatusRead {
         }
     }
 
+    /// A finished-entry index read that scans instead loses its order. The
+    /// read tells which path it took as it opens, before its first row.
+    fn execute_in_order(
+        &self,
+        context: PartitionReadContext,
+        batch_size: usize,
+        metrics: ReadMetrics,
+    ) -> anyhow::Result<(SendableRecordBatchStream, InOrder)> {
+        if !matches!(self.access, EntryStatusAccess::Finished { .. }) {
+            let rows = self.read(context, batch_size, metrics, None)?;
+            return Ok((rows, Box::pin(std::future::ready(true))));
+        }
+        let (chosen, path) = tokio::sync::oneshot::channel();
+        let rows = self.read(context, batch_size, metrics, Some(chosen))?;
+        // No answer means the read failed, or stopped before opening, so it
+        // returns no rows to order.
+        Ok((
+            rows,
+            Box::pin(async move {
+                match path.await {
+                    Ok(path) => matches!(path, EntryIndexPath::Index { .. }),
+                    Err(_) => true,
+                }
+            }),
+        ))
+    }
+
     fn execute(
         &self,
         context: PartitionReadContext,
         batch_size: usize,
         metrics: ReadMetrics,
     ) -> anyhow::Result<SendableRecordBatchStream> {
+        self.read(context, batch_size, metrics, None)
+    }
+}
+
+impl EntryStatusRead {
+    /// A finished-entry index read tells `chosen` which path it takes.
+    fn read(
+        &self,
+        context: PartitionReadContext,
+        batch_size: usize,
+        metrics: ReadMetrics,
+        chosen: Option<tokio::sync::oneshot::Sender<EntryIndexPath>>,
+    ) -> anyhow::Result<SendableRecordBatchStream> {
         anyhow::ensure!(batch_size > 0, "batch size must be positive");
         let index_metrics = matches!(self.access, EntryStatusAccess::Stages(_))
             .then(|| IndexMetrics::new(&metrics));
+        // What a finished-entry index read did: its path and why, the runs it
+        // merged, the index keys it went through, the statuses it fetched and the
+        // stale references it skipped.
+        let finished = matches!(self.access, EntryStatusAccess::Finished { .. }).then(|| {
+            let memory = context.retained_memory("finished-entry index read");
+            let reads = metrics.counter("entry_index_reads");
+            let scans = metrics.counter("entry_index_scans");
+            let not_ready = metrics.counter("entry_index_scans_not_ready");
+            let too_many_runs = metrics.counter("entry_index_scans_too_many_runs");
+            let runs = metrics.counter("entry_index_runs");
+            let examined = metrics.counter("entry_index_keys_examined");
+            let statuses = metrics.counter("entry_index_statuses");
+            let skipped = metrics.counter("entry_index_skipped");
+            Arc::new(
+                EntryIndexExecution::new(
+                    memory,
+                    move |path| {
+                        match path {
+                            EntryIndexPath::Index { runs: merged } => {
+                                reads.add(1);
+                                runs.add(merged);
+                            }
+                            EntryIndexPath::Scan(reason) => {
+                                scans.add(1);
+                                match reason {
+                                    ScanReason::NotReady | ScanReason::NotMigrated => {
+                                        not_ready.add(1)
+                                    }
+                                    ScanReason::TooManyRuns => too_many_runs.add(1),
+                                }
+                            }
+                        }
+                        if let Some(chosen) = chosen {
+                            let _ = chosen.send(path);
+                        }
+                    },
+                    move |fetched, keys| {
+                        statuses.add(fetched);
+                        examined.add(usize::try_from(keys).unwrap_or(usize::MAX));
+                    },
+                )
+                .with_skipped(move |references| {
+                    skipped.add(usize::try_from(references).unwrap_or(usize::MAX))
+                }),
+            )
+        });
         let (store, executor) = context.storage_read()?;
         let (store, executor) = (store.clone(), executor.clone());
         let projection = Arc::clone(&self.projection);
@@ -261,6 +495,18 @@ impl PreparedPartitionRead for EntryStatusRead {
                 // The cursor intersects the selection with the snapshot's ownership.
                 EntryStatusAccess::Scan(request) => EntryStatusScan::Keys(request),
                 EntryStatusAccess::Stages(reads) => EntryStatusScan::Stages(reads),
+                EntryStatusAccess::Finished { read, fallback } => {
+                    let Some(execution) = finished else {
+                        return datafusion::common::internal_err!(
+                            "a finished-entry index read has no execution"
+                        );
+                    };
+                    EntryStatusScan::Finished {
+                        read,
+                        fallback,
+                        execution,
+                    }
+                }
             };
             scan_rows_into::<CountedEntryStatusRecords, VqueueEntryStatus, _>(
                 store,

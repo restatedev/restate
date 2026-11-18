@@ -10,6 +10,7 @@
 
 mod entry;
 mod entry_index;
+mod finished_read;
 mod inbox;
 mod inbox_reader;
 mod input;
@@ -31,8 +32,14 @@ use std::ops::ControlFlow;
 use std::pin::Pin;
 
 pub use entry::{EntryStatusKey, EntryStatusKeyRef};
-pub(crate) use entry_index::{ENTRY_BY_SERVICE_CREATED, ENTRY_INDEXES};
-pub use entry_index::{EntryByServiceCreated, EntryByServiceCreatedKey};
+pub(crate) use entry_index::{
+    ACTIVE_ENTRY_BY_STAGE, ENTRY_BY_SERVICE_CREATED, ENTRY_INDEXES, FINISHED_ENTRY_BY_OUTCOME,
+};
+pub use entry_index::{
+    ActiveEntryByStage, ActiveEntryByStageKey, EntryByServiceCreated, EntryByServiceCreatedKey,
+    FinishedEntryByOutcome, FinishedEntryByOutcomeKey,
+};
+pub use finished_read::FinishedRead;
 pub use inbox::InboxKey;
 pub use input::InputPayloadKey;
 pub use meta_binding::{VQueueMetaBinding, VQueueMetaTable};

@@ -2236,11 +2236,11 @@ mod backfill_tests {
             .await
             .unwrap();
         run_walks(&mut reference).await;
-        // Earlier builds left a history of jobs that failed with long errors.
-        // Every slice counts it against its write budget, and the finishing
-        // slice writes it.
+        // Earlier builds left a history of jobs that failed with long errors,
+        // larger than 2 KiB per member. Every slice counts it against its write
+        // budget, and the finishing slice writes it.
         let mut earlier = MigrationJobRecords::default();
-        for id in 1_000..1_020 {
+        for id in 1_000..1_030 {
             let mut job =
                 MigrationJob::index_backfill(id, ReString::from_static("old/1"), None, None, None);
             job.record_failure(0, &"x".repeat(crate::job::MAX_ERROR_LEN), 0);
@@ -2390,7 +2390,7 @@ mod backfill_tests {
         // The finishing slice appended every active member's job to the history;
         // PASSIVE waits with a gap at every entry.
         let history = load_job_records(store.partition_db()).unwrap().0.history;
-        assert_eq!(history.entries().len(), 20 + all.len() - 1);
+        assert_eq!(history.entries().len(), 30 + all.len() - 1);
         assert_eq!(
             committed_job(&store, passive).rows_uncovered,
             Some(entries.len() as u64)

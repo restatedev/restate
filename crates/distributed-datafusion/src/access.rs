@@ -61,6 +61,15 @@ pub trait CompleteIndex: 'static {
     /// restrictions never reach this policy: the primary scan reads nothing too.
     fn useful(restriction: &<Self::Index as SelectionSchema>::Domains) -> bool;
 
+    /// Whether the index holds every row the query can return. An index of
+    /// every row of its primary does. A partial index, which holds only some,
+    /// admits a query only if each of its Boolean alternatives, analyzed on the
+    /// primary before they are unioned for the index's restriction, proves that
+    /// its rows are members.
+    fn admits(_alternatives: &[<PrimaryOf<Self> as SelectionSchema>::Domains]) -> bool {
+        true
+    }
+
     /// Whether the index pays off only for a query that wants the first rows in
     /// exactly its declared [`Self::ORDERING`]: a bounded sort above the source
     /// whose whole order, null placement included, is the declared one. The read
@@ -79,8 +88,8 @@ pub trait CompleteIndex: 'static {
     }
 }
 
-type PrimaryColumn<B> =
-    <<<B as CompleteIndex>::Index as IndexSchema>::Primary as SelectionSchema>::Column;
+type PrimaryOf<B> = <<B as CompleteIndex>::Index as IndexSchema>::Primary;
+type PrimaryColumn<B> = <PrimaryOf<B> as SelectionSchema>::Column;
 
 /// One column of an index read's declared order.
 #[derive(Debug, Clone, Copy)]
@@ -203,6 +212,13 @@ fn select<B: CompleteIndex>(
     demand: Option<&Demand>,
 ) -> anyhow::Result<bool> {
     if !index_restriction::<B::Index>(filters)?.is_some_and(|restriction| B::useful(&restriction)) {
+        return Ok(false);
+    }
+    let alternatives = <PrimaryOf<B> as SelectionSchema>::analyze(
+        &static_conjuncts(filters),
+        NonZeroUsize::new(16).unwrap(),
+    )?;
+    if !B::admits(&alternatives) {
         return Ok(false);
     }
     if !B::NEEDS_ORDERED_DEMAND {
@@ -514,7 +530,13 @@ mod tests {
                     .create_declared_source::<SysVqueueEntryStatusTable>()
                     .indexes
             ),
-            [("_idx_entry_by_queue", SemanticRestateVersion::new(1, 8, 2))]
+            [
+                ("_idx_entry_by_queue", SemanticRestateVersion::new(1, 8, 2)),
+                (
+                    "_idx_finished_entry_by_outcome",
+                    restate_partition_store::vqueue_table::FinishedEntryByOutcome::INTRODUCED
+                ),
+            ]
         );
     }
 
