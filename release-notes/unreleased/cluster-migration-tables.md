@@ -6,7 +6,7 @@
 Two new cluster tables show the indexes and statistics of each partition
 replica, and the background migrations that build them:
 
-- `restate.cluster.indexes`: one row per index or statistic on each replica,
+- `restate.cluster.registry`: one row per index or statistic on each replica,
   with its definition, its status (`backfilling`, `ready` or `dropped`), when it
   was registered, became ready or was dropped, why it was dropped, and an
   estimate of the storage it takes, including writes not yet flushed
@@ -43,7 +43,7 @@ Indexes not yet usable everywhere:
 
 ```sql
 SELECT partition_id, plain_node_id, definition, status
-FROM restate.cluster.indexes
+FROM restate.cluster.registry
 WHERE status = 'backfilling';
 ```
 
@@ -52,7 +52,7 @@ removes its data:
 
 ```sql
 SELECT partition_id, plain_node_id, definition, status, approx_size_bytes
-FROM restate.cluster.indexes
+FROM restate.cluster.registry
 ORDER BY approx_size_bytes DESC NULLS LAST
 LIMIT 10;
 ```

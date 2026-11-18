@@ -60,7 +60,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
             .unwrap();
     }
 
-    let (indexes, jobs) = create_local_scanners(
+    let (registry, jobs) = create_local_scanners(
         Arc::clone(&manager),
         env.metadata.clone(),
         QueryIoExecutor::new(NonZeroUsize::MIN),
@@ -79,13 +79,13 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
     };
     let ctx = SessionContext::new();
     ctx.register_table(
-        "indexes",
+        "registry",
         Arc::new(NodeFanOutTableProvider::new(
-            IndexesBuilder::schema(),
+            RegistryBuilder::schema(),
             locator(),
             remote.clone(),
-            Some(Arc::clone(&indexes)),
-            IndexesTable::identity(),
+            Some(Arc::clone(&registry)),
+            RegistryTable::identity(),
         )),
     )
     .unwrap();
@@ -111,7 +111,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
     // Is every index readable everywhere? And is anything still being built?
     assert_eq!(
         count(
-            "SELECT count(*) FROM indexes
+            "SELECT count(*) FROM registry
              WHERE plain_node_id = 'N1' AND gen_node_id = 'N1:1'
                AND kind = 'aggregate' AND status = 'ready' AND job_id IS NULL
                AND registered_at IS NOT NULL AND registered_by_version IS NOT NULL
@@ -143,8 +143,8 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         .unwrap()
         .await
         .unwrap();
-    let rendered = batches::<IndexesBuilder, _>(
-        IndexesBuilder::schema(),
+    let rendered = batches::<RegistryBuilder, _>(
+        RegistryBuilder::schema(),
         16,
         super::indexes(&report, None),
         |builder, (replica, index)| {
@@ -185,7 +185,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
     );
 
     let partitions = ctx
-        .sql("SELECT DISTINCT partition_id FROM indexes ORDER BY partition_id")
+        .sql("SELECT DISTINCT partition_id FROM registry ORDER BY partition_id")
         .await
         .unwrap()
         .collect()
@@ -195,7 +195,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
     // Both tables honor the row batch size and the total fetch limit, including
     // an empty projection used for counts.
     for (scanner, schema) in [
-        (&indexes, IndexesBuilder::schema()),
+        (&registry, RegistryBuilder::schema()),
         (&jobs, MigrationJobsBuilder::schema()),
     ] {
         for (batch_size, limit, expected) in [
@@ -241,7 +241,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
     tx.commit().await.unwrap();
     drop(tx);
     for (table, scanner, schema) in [
-        ("indexes", &indexes, IndexesBuilder::schema()),
+        ("registry", &registry, RegistryBuilder::schema()),
         ("migration_jobs", &jobs, MigrationJobsBuilder::schema()),
     ] {
         let items: Vec<_> = scanner.scan(schema, &[], 2, None).collect().await;

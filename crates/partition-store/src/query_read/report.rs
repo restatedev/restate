@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 //! What each partition replica open on this node records about its indexes and
-//! migration jobs, for the cluster tables `indexes` and `migration_jobs`.
+//! migration jobs, for the cluster tables `registry` and `migration_jobs`.
 //!
 //! Each replica is read through one snapshot, so its registry, walks and job
 //! records agree with each other; two replicas, or two reports, may be at
@@ -42,7 +42,7 @@ use crate::fsm_table::{fsm_variable, migration_jobs_key, registry_key, walks_key
 use crate::job::{MigrationJob, MigrationJobRecords, MigrationJobStatus, MigrationJobs};
 use crate::keys::{DecodeTableKey, IndexKeyPrefix, KeyKind};
 use crate::read_snapshot::PartitionSnapshotReader;
-use crate::registry::{IndexKind, IndexRegistry};
+use crate::registry::{IndexKind, Registry};
 use crate::stats::AggregateKeyPrefix;
 use crate::vqueue_table::EntryStatusKey;
 use crate::walk::{DriverState, Source, Walk, Walks};
@@ -57,7 +57,7 @@ use super::QueryIoExecutor;
 pub struct ReplicaMigrations {
     pub partition_id: PartitionId,
     pub key_range: KeyRange,
-    pub registry: IndexRegistry,
+    pub registry: Registry,
     pub walks: Walks,
     pub jobs: MigrationJobRecords,
     /// RocksDB's estimate of the storage each index's keys take, including
@@ -259,7 +259,7 @@ fn read_replica(
         partition_id,
         key_range,
         registry: decode(reader, registry_key(partition_id), "registry", |value| {
-            IndexRegistry::decode(value).map_err(|err| err.to_string())
+            Registry::decode(value).map_err(|err| err.to_string())
         })?,
         walks: decode(reader, walks_key(partition_id), "walks", |value| {
             Walks::decode(value).map_err(|err| err.to_string())
@@ -279,13 +279,13 @@ fn read_replica(
 /// still show bytes until compaction removes its keys. Indexes of an unknown
 /// kind are left out, and so are all of a key kind's if its call returns an
 /// error.
-fn index_sizes(db: &PartitionDb, registry: &IndexRegistry) -> HashMap<u32, u64> {
+fn index_sizes(db: &PartitionDb, registry: &Registry) -> HashMap<u32, u64> {
     let mut options = SizeApproximationOptions::new();
     options.set_include_memtables(true);
     options.set_include_files(true);
     let rocksdb = db.rocksdb().inner().as_raw_db();
     let ranges: Vec<_> = registry
-        .entries()
+        .indexes()
         .iter()
         .filter_map(|index| {
             let (kind, start, end) = index_key_range(index.kind, db.partition().id(), index.id)?;

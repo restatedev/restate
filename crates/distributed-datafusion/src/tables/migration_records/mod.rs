@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! The cluster tables `indexes` and `migration_jobs`: what each partition replica
+//! The cluster tables `registry` and `migration_jobs`: what each partition replica
 //! on a worker node records about its indexes and background migration jobs.
 //!
 //! Each worker answers with the scanners of the default engine
@@ -23,17 +23,17 @@ use std::sync::Arc;
 use datafusion::catalog::TableProvider;
 
 use restate_core::Metadata;
-use restate_storage_query_api::tables::indexes::Indexes;
 use restate_storage_query_api::tables::migration_jobs::MigrationJobs;
+use restate_storage_query_api::tables::registry::Registry;
 
 use crate::node_fan_out::NodeFanOutTableProvider;
 use crate::source_registry::SourceRegistry;
 
-crate::tables::table_adapter!(pub IndexesTable, Indexes);
+crate::tables::table_adapter!(pub RegistryTable, Registry);
 crate::tables::table_adapter!(pub MigrationJobsTable, MigrationJobs);
 
-impl IndexesTable {
-    /// The `indexes` fan-out table over the worker nodes. A worker's scanner must
+impl RegistryTable {
+    /// The `registry` fan-out table over the worker nodes. A worker's scanner must
     /// be registered in `sources` before this provider is created.
     pub(crate) fn create_provider(
         metadata: Metadata,

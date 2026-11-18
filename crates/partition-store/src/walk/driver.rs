@@ -77,7 +77,7 @@ use restate_types::config::StorageOptions;
 
 use crate::faults::{self, FaultPoint};
 use crate::job::{MigrationJobStatus, RECHECK_CAP_MS};
-use crate::registry::{IndexStatus, MaintainedIndexes};
+use crate::registry::{IndexStatus, PublishedRegistry};
 use crate::{PartitionDb, PartitionStore, PartitionStoreTransaction};
 
 use super::engine::{self, Slice, SliceBudget, SliceError};
@@ -289,7 +289,7 @@ impl PartitionStore {
     /// The background driver of this partition's walks, under `options`.
     pub fn walk_driver(&self, options: &StorageOptions) -> WalkDriver {
         let db = self.partition_db().clone();
-        let active = self.maintained_indexes();
+        let active = self.published_registry();
         let started = active.walks().entries().len();
         let waiting = active
             .jobs()
@@ -407,7 +407,7 @@ impl WalkDriver {
         }
         // Before the fence check: the published state then tells when each waiting
         // job may start, also while a fence holds every start back.
-        let active = tx.maintained_indexes();
+        let active = tx.published_registry();
         let eligible = self.eligible(&active, started);
         let fenced = tx.commits_held();
         if fenced != self.fenced {
@@ -434,7 +434,7 @@ impl WalkDriver {
     /// The waiting jobs, by index ID, whose wait is over at `now`. Gives each
     /// waiting job first seen a deadline on this process's clock: its wall-clock
     /// eligibility, at most [`RECHECK_CAP_MS`] away.
-    fn eligible(&mut self, active: &MaintainedIndexes, now: Instant) -> Vec<u32> {
+    fn eligible(&mut self, active: &PublishedRegistry, now: Instant) -> Vec<u32> {
         let wall = WallClock::now_ms().as_u64();
         let waiting: Vec<_> = active
             .jobs()
@@ -507,7 +507,7 @@ impl WalkDriver {
 
     /// The next walk to take a slice at `now`: the lowest started walk after the
     /// latest one, or else the lowest, skipping those in backoff.
-    fn next_walk(&mut self, active: &MaintainedIndexes, now: Instant) -> Option<u64> {
+    fn next_walk(&mut self, active: &PublishedRegistry, now: Instant) -> Option<u64> {
         let walks = active.walks().entries();
         let backoffs = self.backoffs.len();
         self.backoffs

@@ -22,9 +22,9 @@ use super::{StorageFeature, StorageFeatures};
 /// A fence, not a switch: registry reconciliation persists it in the batch of the
 /// first registration (`PartitionStore::reconcile_registry`). It never enables
 /// itself and has nothing to migrate.
-impl StorageFeature for super::IndexRegistryFeature {
+impl StorageFeature for super::RegistryFeature {
     fn persisted_name() -> &'static ReString {
-        const NAME: &ReString = &ReString::from_static("index-registry");
+        const NAME: &ReString = &ReString::from_static("registry");
         NAME
     }
 
@@ -41,11 +41,11 @@ impl StorageFeature for super::IndexRegistryFeature {
     }
 
     fn is_enabled(features: &StorageFeatures) -> bool {
-        features.is_index_registry
+        features.is_registry
     }
 
     fn set_enabled(features: &mut StorageFeatures) {
-        features.is_index_registry = true;
+        features.is_registry = true;
     }
 
     async fn enable(

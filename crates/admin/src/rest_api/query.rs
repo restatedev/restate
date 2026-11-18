@@ -727,7 +727,6 @@ mod tests {
             let expected_catalog = match version {
                 QueryEngineVersion::V1 => serde_json::json!({"rows": [
                     {"table_name": "bifrost_read_streams"},
-                    {"table_name": "indexes"},
                     {"table_name": "loglet_workers"},
                     {"table_name": "logs"},
                     {"table_name": "logs_tail_segments"},
@@ -735,12 +734,12 @@ mod tests {
                     {"table_name": "nodes"},
                     {"table_name": "partition_replica_set"},
                     {"table_name": "partition_state"},
-                    {"table_name": "partitions"}
+                    {"table_name": "partitions"},
+                    {"table_name": "registry"}
                 ]}),
                 QueryEngineVersion::V2 => {
                     serde_json::json!({"rows": [
                         {"table_name": "bifrost_read_streams"},
-                        {"table_name": "indexes"},
                         {"table_name": "loglet_workers"},
                         {"table_name": "logs"},
                         {"table_name": "logs_tail_segments"},
@@ -748,7 +747,8 @@ mod tests {
                         {"table_name": "nodes"},
                         {"table_name": "partition_replica_set"},
                         {"table_name": "partition_state"},
-                        {"table_name": "partitions"}
+                        {"table_name": "partitions"},
+                        {"table_name": "registry"}
                     ]})
                 }
             };
