@@ -1614,6 +1614,9 @@ where
 }
 
 #[cfg(test)]
+mod entry_index_tests;
+
+#[cfg(test)]
 mod tests {
     use restate_partition_store::{PartitionStore, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;

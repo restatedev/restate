@@ -51,10 +51,14 @@ use restate_storage_api::StorageError;
 use restate_storage_api::scan::{RowConsumer, ScanOutcome};
 use restate_storage_query_api::scan::{CursorScan, Scan, Table, consume_cursor};
 use restate_types::identifiers::PartitionId;
+use restate_types::partitions::features::PersistedFeatures;
 use restate_types::sharding::KeyRange;
+use restate_types::storage::StorageCodec;
 
 use crate::features::StorageFeatures;
-use crate::fsm_table::{fsm_variable, migration_jobs_key, registry_key};
+use crate::fsm_table::{
+    fsm_variable, migration_jobs_key, registry_key, state_machine_features_key,
+};
 use crate::job::{MigrationJobId, MigrationJobStatus, MigrationJobs};
 use crate::keys::KeyKind;
 use crate::registry::{Index, IndexKind, IndexNotReady, IndexRegistry, IndexStatus};
@@ -164,6 +168,25 @@ impl ReadSnapshot {
 
     pub fn partition_id(&self) -> PartitionId {
         self.inner.snapshot.partition().partition_id
+    }
+
+    /// Whether this snapshot's partition has fully migrated to vqueues: every
+    /// invocation it stores then has its vqueue entry, so a read may find
+    /// invocations through the entries. Read through this snapshot, so it matches
+    /// the data the query reads. A partition that never stored its features has
+    /// not migrated; an unreadable value is an error.
+    pub fn fully_migrated_to_vqueues(&self) -> Result<bool> {
+        let key = state_machine_features_key(self.partition_id());
+        let reader = self.inner.snapshot.reader();
+        let Some(value) = reader
+            .get_pinned(KeyKind::Fsm, &key)
+            .map_err(|err| StorageError::Generic(err.into()))?
+        else {
+            return Ok(false);
+        };
+        let features: PersistedFeatures = StorageCodec::decode(&mut value.as_ref())
+            .map_err(|err| StorageError::Conversion(err.into()))?;
+        Ok(features.vqueues)
     }
 
     /// The index ID of the Ready index of `definition` in this snapshot.
@@ -290,7 +313,7 @@ impl ReadSnapshot {
         let iterator = self
             .inner
             .snapshot
-            .owned_scan(scan.clone(), ReadOptions::default());
+            .owned_scan(scan.by_ref(), ReadOptions::default());
         Ok(SnapshotCursor {
             iterator,
             scan,
@@ -400,17 +423,31 @@ impl SnapshotCursor {
     }
 
     /// Seeks forward within the cursor's original ownership/request bounds.
-    pub fn seek_forward(&mut self, target: Bytes) -> Result<()> {
+    pub fn seek_forward(&mut self, target: &[u8]) -> Result<()> {
         let Some((key, _)) = self.peek()? else {
             return Ok(());
         };
-        if target.as_ref() <= key || !self.scan.contains_key(&target) {
+        if target <= key || !self.scan.contains_key(target) {
             return Err(StorageError::Generic(anyhow::anyhow!(
                 "scan navigation must advance and remain within its bounds"
             )));
         }
-        self.iterator.seek(&target);
+        self.iterator.seek(target);
         Ok(())
+    }
+
+    /// Moves to the first key at or after `target`, backwards as well as forwards,
+    /// and also after the cursor ran off its end. Returns `false`, without moving,
+    /// when `target` lies outside the cursor's bounds. Only a read that merges
+    /// several runs of one index revisits earlier keys
+    /// ([`crate::ordered_runs`]); scans move forward only ([`Self::seek_forward`]).
+    pub(crate) fn reposition(&mut self, target: &[u8]) -> Result<bool> {
+        self.snapshot.check_active()?;
+        if !self.scan.contains_key(target) {
+            return Ok(false);
+        }
+        self.iterator.seek(target);
+        Ok(true)
     }
 }
 

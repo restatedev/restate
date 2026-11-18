@@ -206,6 +206,11 @@ impl SourceRegistry {
         }
     }
 
+    /// The cluster metadata the planner reads, such as the nodes' versions.
+    pub(crate) fn metadata(&self) -> &Metadata {
+        &self.metadata
+    }
+
     /// Offline execution uses the same prepared sources without cluster routing.
     pub fn local_only(metadata: Metadata) -> Self {
         Self::new(
@@ -304,6 +309,13 @@ impl SourceRegistry {
                 .iter()
                 .all(|index| scanner.supports_index(index.declared().identity())),
             "declared indexes must be readable by the source's scanner"
+        );
+        assert!(
+            T::INDEXES.iter().all(|index| {
+                restate_types::SemanticRestateVersion::current()
+                    .release_is_equal_or_newer_than(&index.declared().introduced())
+            }),
+            "a declared index can't be newer than this binary"
         );
         self.register_partition_scanner::<T>(scanner);
     }

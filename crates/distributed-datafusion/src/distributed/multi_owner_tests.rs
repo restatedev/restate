@@ -222,15 +222,38 @@ impl PreparedPartitionRead for CheckedRead {
         batch_size: usize,
         metrics: crate::table_providers::ReadMetrics,
     ) -> anyhow::Result<SendableRecordBatchStream> {
-        assert!(
-            batch_size > 0 && self.limit.is_none_or(|limit| batch_size <= limit.max(1)),
-            "source_fetch_bounds_the_reader_batch_target"
-        );
+        self.check_batch_size(batch_size);
         let partition = context.partition_id();
         let stream = self.prepared.execute(context, batch_size, metrics)?;
         Ok(self
             .scanner
             .observe(partition, self.access.clone(), batch_size, stream))
+    }
+
+    fn execute_in_order(
+        &self,
+        context: crate::table_providers::PartitionReadContext,
+        batch_size: usize,
+        metrics: crate::table_providers::ReadMetrics,
+    ) -> anyhow::Result<(SendableRecordBatchStream, crate::table_providers::InOrder)> {
+        self.check_batch_size(batch_size);
+        let partition = context.partition_id();
+        let (stream, in_order) = self
+            .prepared
+            .execute_in_order(context, batch_size, metrics)?;
+        let stream = self
+            .scanner
+            .observe(partition, self.access.clone(), batch_size, stream);
+        Ok((stream, in_order))
+    }
+}
+
+impl CheckedRead {
+    fn check_batch_size(&self, batch_size: usize) {
+        assert!(
+            batch_size > 0 && self.limit.is_none_or(|limit| batch_size <= limit.max(1)),
+            "source_fetch_bounds_the_reader_batch_target"
+        );
     }
 }
 
@@ -1435,11 +1458,11 @@ async fn partial_aggregation_reduces_transfer_without_changing_storage_work() {
         let b = measure(&fixture, pushed.as_ref(), sql, &expected, true, false).await;
         assert_eq!(a.storage_rows, records.len());
         assert_eq!(a.storage_rows, b.storage_rows);
-        // Physical readers emit candidates. Moving native residual evaluation
-        // to owners reduces transported rows without changing storage work.
-        assert_eq!(a.transported_rows, 4096);
+        // Partition reads emit only the rows meeting the scan's predicate, so
+        // owners send the 2,048 matches with or without operator pushdown, and
+        // read the same.
+        assert_eq!(a.transported_rows, 2048);
         assert_eq!(b.transported_rows, 2048);
-        assert!(b.ipc < a.ipc && b.remote_ipc < a.remote_ipc);
         eprintln!("m2_filter parallelism={parallelism} control={a:?} pushed={b:?}");
     }
 }

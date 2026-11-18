@@ -122,6 +122,7 @@ mod tests {
         /// A test index of entries by stage and service, newest transition first.
         TestIndex,
         definition: "test_index/1",
+        introduced: (1, 8, 2),
         key: TestIndexKey {
             stage: StageRankCodec,
             service_name: ServiceNameCodec => str,

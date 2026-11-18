@@ -381,6 +381,39 @@ pub(crate) async fn differential_sessions(
     ]
 }
 
+/// A V2 session over `partitions` of `manager`, all of them local, reading
+/// with `parallelism` lanes.
+pub(crate) async fn v2_session(
+    manager: &Arc<PartitionStoreManager>,
+    partitions: Vec<(PartitionId, Partition)>,
+    parallelism: usize,
+) -> Arc<dyn QuerySession> {
+    #[derive(Clone, Debug)]
+    struct Partitions(Vec<(PartitionId, Partition)>);
+
+    #[async_trait]
+    impl SelectPartitions for Partitions {
+        async fn get_live_partitions(&self) -> Result<Vec<(PartitionId, Partition)>, GenericError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    let metadata = restate_core::MetadataBuilder::default().to_metadata();
+    let env = DataFusionEnv::new(64 * 1024 * 1024, None, Some(parallelism), &HashMap::new())
+        .unwrap()
+        .with_mock_clock(MockClock::new())
+        .unwrap();
+    let sources = SourceRegistry::new(Arc::new(LocalPartition), metadata, Default::default());
+    register_partition_scanners(Arc::clone(manager), crate::mocks::query_io(), &sources);
+    register_live_scanners(&sources);
+    env.register_tables(UserTables::new(Partitions(partitions), sources))
+        .await
+        .unwrap();
+    DataFusionQueryEngine::from_env(env, None)
+        .create_session(SessionOptions::default())
+        .unwrap()
+}
+
 /// All rows, each column rendered as text.
 pub(crate) async fn rows(session: &dyn QuerySession, sql: &str) -> Vec<Vec<String>> {
     let batches: Vec<_> = session

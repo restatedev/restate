@@ -384,9 +384,10 @@ pub(crate) fn navigate_live<K: KeySchema>(
                 matches.push(position);
                 position += 1;
             }
-            KeyMatch::Seek(target) => {
-                assert!(target.as_ref() > key);
-                position = keys.partition_point(|key| key.as_ref() < target.as_ref());
+            KeyMatch::Seek => {
+                let target = cursor.seek_target();
+                assert!(target > key);
+                position = keys.partition_point(|key| key.as_ref() < target);
             }
             KeyMatch::Skip => position += 1,
             KeyMatch::Done => break,
@@ -421,7 +422,8 @@ impl<T: PhysicalTable> BlockingScan<T> for ReadSnapshot {
 /// the selection or the ownership check rejects, so a step is bounded work.
 pub struct TableCursor<T: PhysicalTable> {
     inner: Option<(SnapshotCursor, KeySelectionCursor<T::Key>)>,
-    seek: Option<bytes::Bytes>,
+    /// The selection asked to seek to its target before the next key.
+    seek: bool,
     first: bool,
     positioned: bool,
     evaluated: u64,
@@ -453,7 +455,7 @@ impl<T: PhysicalTable> CursorScan<T> for ReadSnapshot {
                         .map(|cursor| (cursor, selection))
                 })
                 .transpose()?,
-            seek: None,
+            seek: false,
             first: true,
             positioned: false,
             evaluated: 0,
@@ -468,9 +470,10 @@ impl<T: PhysicalTable> ReadCursor<T> for TableCursor<T> {
             return Ok(CursorStep::Done);
         };
         if !std::mem::take(&mut self.first) {
-            match self.seek.take() {
-                Some(target) => cursor.seek_forward(target)?,
-                None => cursor.advance()?,
+            if std::mem::take(&mut self.seek) {
+                cursor.seek_forward(selection.seek_target())?;
+            } else {
+                cursor.advance()?;
             }
         }
         let Some((key, _)) = cursor.peek()? else {
@@ -479,7 +482,7 @@ impl<T: PhysicalTable> ReadCursor<T> for TableCursor<T> {
         };
         self.evaluated += 1;
         match selection.evaluate(key)? {
-            KeyMatch::Seek(target) => self.seek = Some(target),
+            KeyMatch::Seek => self.seek = true,
             KeyMatch::Done => {
                 self.inner = None;
                 return Ok(CursorStep::Done);

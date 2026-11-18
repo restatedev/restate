@@ -259,12 +259,10 @@ fn compiled_bounds_and_key_checks_agree_with_logical_filters() {
             }
             match cursor.as_mut().unwrap().evaluate(key).unwrap() {
                 KeyMatch::Match => actual.push(*row),
-                KeyMatch::Seek(target) => {
-                    assert!(
-                        target.as_ref() > key.as_slice() && in_bounds(&target),
-                        "case {case}"
-                    );
-                    seek_to = Some(target);
+                KeyMatch::Seek => {
+                    let target = cursor.as_ref().unwrap().seek_target();
+                    assert!(target > key.as_slice() && in_bounds(target), "case {case}");
+                    seek_to = Some(Bytes::copy_from_slice(target));
                 }
                 KeyMatch::Done => break,
                 KeyMatch::Skip => panic!("fixed_header_uses_ordered_seeks"),
@@ -489,7 +487,7 @@ async fn service_stats_filters_run_before_value_materialization() {
             KeyMatch::Match => raw.advance().unwrap(),
             KeyMatch::Skip => panic!("fixed_header_uses_ordered_seeks"),
             KeyMatch::Done => break,
-            KeyMatch::Seek(target) => raw.seek_forward(target).unwrap(),
+            KeyMatch::Seek => raw.seek_forward(cursor.seek_target()).unwrap(),
         }
     }
     let mut expected_visits = expected;
@@ -503,7 +501,7 @@ async fn service_stats_filters_run_before_value_materialization() {
     };
     for target in [visited[0].clone(), fixed.to_vec(), upper.to_vec()] {
         let mut raw = snapshot.physical_cursor(scan.clone()).unwrap();
-        let error = raw.seek_forward(target.into()).unwrap_err();
+        let error = raw.seek_forward(&target).unwrap_err();
         assert!(error.to_string().contains("must advance"));
     }
 }

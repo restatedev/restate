@@ -16,6 +16,7 @@
 ///     /// Find the most recently transitioned entries for a service within a stage.
 ///     EntryByStageService,
 ///     definition: "entry_by_stage_service/1",   // registered under this name
+///     introduced: (1, 8, 2),                     // the Restate version that added it
 ///     key: EntryByStageServiceKey {
 ///         stage: StageRankCodec,
 ///         service_name: ServiceNameCodec => str, // `=> str`: the encoder borrows a &str
@@ -55,10 +56,12 @@ macro_rules! define_secondary_index {
         $(#[$meta:meta])*
         $index:ident,
         definition: $definition:literal,
+        introduced: ($major:literal, $minor:literal, $patch:literal),
         key: $key:ident { $($fields:tt)* } $(,)?
     ) => {
         crate::index::macros::define_secondary_index!(
-            @annotation [$(#[$meta])* $index, $key, [registered $definition]] []; $($fields)*
+            @annotation [$(#[$meta])* $index, $key, [registered $definition ($major, $minor, $patch)]] [];
+            $($fields)*
         );
     };
 
@@ -94,7 +97,7 @@ macro_rules! define_secondary_index {
         );
     };
 
-    (@identity $index:ident, $primary_type:ty, [registered $definition:literal]) => {
+    (@identity $index:ident, $primary_type:ty, [registered $definition:literal ($major:literal, $minor:literal, $patch:literal)]) => {
         impl crate::index::SecondaryIndex for $index {
             type PrimaryKey = <$primary_type as crate::keys::FieldCodec>::Value;
             type Scope = crate::keys::header::IndexScope;
@@ -118,6 +121,8 @@ macro_rules! define_secondary_index {
 
         impl crate::index::RegisteredIndex for $index {
             const DEFINITION: &'static str = $definition;
+            const INTRODUCED: restate_types::SemanticRestateVersion =
+                restate_types::SemanticRestateVersion::new($major, $minor, $patch);
         }
     };
 

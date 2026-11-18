@@ -45,6 +45,14 @@ impl LiteralSpan {
 }
 
 impl EncodedValuePredicate {
+    /// The bytes it holds beyond its own size: an IN list's literal spans.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        match &self.predicate {
+            ValuePredicate::In(spans) => spans.capacity() * std::mem::size_of::<LiteralSpan>(),
+            _ => 0,
+        }
+    }
+
     /// Appends literals to the shared buffer and records their offsets.
     /// Existing predicates' literals are preserved. IN candidates are sorted and
     /// deduplicated by encoded value; range endpoints are kept as supplied.
@@ -268,6 +276,11 @@ pub(crate) struct EncodedValueRanges {
 }
 
 impl EncodedValueRanges {
+    /// The bytes it holds beyond its own size: its intervals.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.ranges.capacity() * std::mem::size_of::<(LiteralSpan, LiteralSpan)>()
+    }
+
     /// Encodes endpoints, drops reversed intervals, and merges overlapping ones.
     /// Returns `None` when no non-empty interval remains. Earlier literals in the
     /// shared buffer are preserved.

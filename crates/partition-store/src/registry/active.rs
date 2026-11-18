@@ -35,6 +35,7 @@
 use restate_storage_api::StorageError;
 use restate_storage_api::migration_job::MigrationJobIds;
 use restate_storage_api::vqueue_table::{EntryChange, EntryContext, EntryStateRef};
+use restate_types::SemanticRestateVersion;
 use restate_types::config::Configuration;
 
 use crate::PartitionStoreTransaction;
@@ -74,7 +75,16 @@ pub(crate) struct IndexDefinition {
     /// and its build waits until writes or deletions have covered them (see
     /// [`crate::job`]). Not persisted: a release may add a definition's fill.
     pub(crate) can_fill: bool,
+    /// The Restate version that introduced the definition, from its declaration
+    /// ([`crate::index::RegisteredIndex::INTRODUCED`],
+    /// [`crate::stats::Stat::INTRODUCED`]). Never newer than the binary. Not
+    /// persisted: it describes this binary's code, not a stored index.
+    pub(crate) introduced: SemanticRestateVersion,
 }
+
+/// The version test definitions claim.
+#[cfg(test)]
+pub(crate) const TEST_INTRODUCED: SemanticRestateVersion = SemanticRestateVersion::new(1, 8, 2);
 
 /// The definitions this binary maintains. Opening a store retires the indexes of
 /// any other definition.
@@ -263,6 +273,57 @@ impl MaintainedIndexes {
                 .before()
                 .filter(|_| entry.ready || touched_by.contains(entry.id));
             (entry.definition.apply)(storage, entry.id, context, before, change.after());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::index::RegisteredIndex;
+    use crate::stats::Stat;
+    use crate::stats::aggregated::{DeploymentStats, ServiceStats, VirtualObjectStats};
+    use crate::vqueue_table::EntryByServiceCreated;
+
+    use super::*;
+
+    /// Every definition this binary maintains carries the version that
+    /// introduced it, as its declaration and its release notes state, and none
+    /// is newer than the binary.
+    #[test]
+    fn definitions_carry_the_version_that_introduced_them() {
+        let declared = [
+            (ServiceStats::DEFINITION, ServiceStats::INTRODUCED),
+            (DeploymentStats::DEFINITION, DeploymentStats::INTRODUCED),
+            (
+                VirtualObjectStats::DEFINITION,
+                VirtualObjectStats::INTRODUCED,
+            ),
+            (
+                EntryByServiceCreated::DEFINITION,
+                EntryByServiceCreated::INTRODUCED,
+            ),
+        ];
+        let carried = DEFINITIONS
+            .iter()
+            .map(|definition| (definition.name, definition.introduced.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            carried, declared,
+            "each definition carries its declared version"
+        );
+        let binary = SemanticRestateVersion::current();
+        for definition in DEFINITIONS {
+            assert_eq!(
+                definition.introduced.to_string(),
+                "1.8.2",
+                "{}",
+                definition.name
+            );
+            assert!(
+                binary.release_is_equal_or_newer_than(&definition.introduced),
+                "{}",
+                definition.name
+            );
         }
     }
 }

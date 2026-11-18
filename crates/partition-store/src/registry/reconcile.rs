@@ -367,6 +367,12 @@ impl PartitionStore {
         });
 
         for definition in &requests.maintain {
+            debug_assert!(
+                restate_types::SemanticRestateVersion::current()
+                    .release_is_equal_or_newer_than(&definition.introduced),
+                "{} is newer than this binary",
+                definition.name
+            );
             let registered = registry.maintained(definition.name).is_some();
             match registry.register(definition.name, definition.kind) {
                 Ok(id) if !registered => {
@@ -777,12 +783,14 @@ mod tests {
         kind: IndexKind::Secondary,
         apply: ignore,
         can_fill: true,
+        introduced: crate::registry::TEST_INTRODUCED,
     };
     static STAT: IndexDefinition = IndexDefinition {
         name: "stat/1",
         kind: IndexKind::Aggregate,
         apply: ignore,
         can_fill: true,
+        introduced: crate::registry::TEST_INTRODUCED,
     };
 
     async fn reconcile(
@@ -1123,18 +1131,21 @@ mod backfill_tests {
         kind: IndexKind::Aggregate,
         apply: apply_count,
         can_fill: true,
+        introduced: crate::registry::TEST_INTRODUCED,
     };
     static ADOPTED: IndexDefinition = IndexDefinition {
         name: "adopted/1",
         kind: IndexKind::Aggregate,
         apply: apply_count,
         can_fill: true,
+        introduced: crate::registry::TEST_INTRODUCED,
     };
     static RESUMED: IndexDefinition = IndexDefinition {
         name: "resumed/1",
         kind: IndexKind::Aggregate,
         apply: apply_count,
         can_fill: true,
+        introduced: crate::registry::TEST_INTRODUCED,
     };
     const KNOWN: &[&IndexDefinition] = &[&COUNT, &ADOPTED, &RESUMED];
     /// Counts like COUNT, but can't fill: its walks only find its gaps.
@@ -1143,6 +1154,7 @@ mod backfill_tests {
         kind: IndexKind::Aggregate,
         apply: apply_count,
         can_fill: false,
+        introduced: crate::registry::TEST_INTRODUCED,
     };
     /// PASSIVE in a release that added its fill.
     static PASSIVE_FILLING: IndexDefinition = IndexDefinition {
@@ -1150,6 +1162,7 @@ mod backfill_tests {
         kind: IndexKind::Aggregate,
         apply: apply_count,
         can_fill: true,
+        introduced: crate::registry::TEST_INTRODUCED,
     };
 
     /// Reconciles as an open does: walks start but do not run.
@@ -3070,6 +3083,7 @@ mod backfill_tests {
             kind: IndexKind::Aggregate,
             apply: apply_count,
             can_fill: false,
+            introduced: crate::registry::TEST_INTRODUCED,
         };
         let known: &[&'static IndexDefinition] = &[&PASSIVE, &PEER];
         seed(store).await;
@@ -3773,6 +3787,7 @@ mod open_tests {
         kind: IndexKind::Aggregate,
         apply: ignore,
         can_fill: true,
+        introduced: crate::registry::TEST_INTRODUCED,
     };
 
     async fn reconcile(
