@@ -61,7 +61,7 @@ use crate::keys::selection::{KeyMatch, KeySelection, KeySelectionCursor};
 use crate::keys::{EncodeTableKey, KeyDecoder, KeyKind};
 use crate::partition_db::PhysicalPartition;
 use crate::query_read::SnapshotCursor;
-use crate::registry::{IndexKind, IndexNotReady, MaintainedIndexes};
+use crate::registry::{IndexKind, IndexNotReady, PublishedRegistry};
 use crate::{ReadSnapshot, Result};
 
 #[cfg(test)]
@@ -85,7 +85,7 @@ pub(crate) enum IndexSource<'a> {
     Snapshot(&'a ReadSnapshot),
     /// The store's installed indexes, for reads that are not snapshot-bound.
     #[allow(dead_code)] // Used by reads that are not snapshot-bound.
-    Store(&'a MaintainedIndexes),
+    Store(&'a PublishedRegistry),
 }
 
 impl ReadMetadata<'_> {

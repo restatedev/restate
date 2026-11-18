@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! The cluster tables `indexes` and `migration_jobs`: what each partition replica
+//! The cluster tables `registry` and `migration_jobs`: what each partition replica
 //! on a worker node records about its indexes and background migration jobs.
 //!
 //! Each worker answers for the replicas it has open, from a report its partition
@@ -23,8 +23,8 @@
 //! it. The remote path delivers it the same way by inspection of the scanner
 //! service, not by a test.
 
-mod indexes_schema;
 mod migration_jobs_schema;
+mod registry_schema;
 #[cfg(test)]
 mod tests;
 
@@ -59,18 +59,18 @@ use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::Scan;
 use crate::table_util::Builder;
 
-pub use indexes_schema::{IndexesBuilder, IndexesTable};
 pub use migration_jobs_schema::{MigrationJobsBuilder, MigrationJobsTable};
+pub use registry_schema::{RegistryBuilder, RegistryTable};
 
-impl IndexesTable {
-    /// The `indexes` fan-out table over the worker nodes. Each node's scanner is
+impl RegistryTable {
+    /// The `registry` fan-out table over the worker nodes. Each node's scanner is
     /// registered separately (see [`create_local_scanners`]).
     pub(crate) fn create_provider(
         metadata: Metadata,
         remote_scanner_manager: RemoteScannerManager,
     ) -> Arc<dyn TableProvider> {
         Arc::new(NodeFanOutTableProvider::new(
-            IndexesBuilder::schema(),
+            RegistryBuilder::schema(),
             Arc::new(RoleBasedNodeLocator::new(Role::Worker, metadata)),
             remote_scanner_manager,
             None,
@@ -96,7 +96,7 @@ impl MigrationJobsTable {
     }
 }
 
-/// This node's scanners of `indexes` and `migration_jobs`, in that order. They
+/// This node's scanners of `registry` and `migration_jobs`, in that order. They
 /// read the replicas `partition_store_manager` has open, on `io_executor`.
 pub fn create_local_scanners(
     partition_store_manager: Arc<PartitionStoreManager>,
@@ -111,12 +111,12 @@ pub fn create_local_scanners(
             table,
         })
     };
-    (scanner(Table::Indexes), scanner(Table::MigrationJobs))
+    (scanner(Table::Registry), scanner(Table::MigrationJobs))
 }
 
 #[derive(Debug, Clone, Copy)]
 enum Table {
-    Indexes,
+    Registry,
     MigrationJobs,
 }
 
@@ -146,7 +146,7 @@ impl Scan for ReportScanner {
     ) -> SendableRecordBatchStream {
         // Index sizes cost a RocksDB estimate per replica: only when selected.
         let sizes = match self.table {
-            Table::Indexes if projection.field_with_name("approx_size_bytes").is_ok() => {
+            Table::Registry if projection.field_with_name("approx_size_bytes").is_ok() => {
                 IndexSizes::Estimate
             }
             _ => IndexSizes::Skip,
@@ -163,7 +163,7 @@ impl Scan for ReportScanner {
             // the deadlines of what blocks a job.
             let (now, instant) = (WallClock::now_ms().as_u64(), Instant::now());
             let batches = match table {
-                Table::Indexes => batches::<IndexesBuilder, _>(
+                Table::Registry => batches::<RegistryBuilder, _>(
                     schema,
                     batch_size,
                     indexes(&report, limit),
@@ -242,7 +242,7 @@ fn indexes(
         .flat_map(|replica| {
             replica
                 .registry
-                .entries()
+                .indexes()
                 .iter()
                 .map(move |index| (replica, index))
         })
@@ -250,7 +250,7 @@ fn indexes(
 }
 
 fn append_index(
-    builder: &mut IndexesBuilder,
+    builder: &mut RegistryBuilder,
     node: GenerationalNodeId,
     replica: &ReplicaMigrations,
     index: &Index,
@@ -265,7 +265,7 @@ fn append_index(
         IndexKind::Aggregate => "aggregate",
         IndexKind::Unknown => "unknown",
     });
-    row.index_id(index.id);
+    row.id(index.id);
     row.status(match index.state {
         IndexStatus::Backfilling => "backfilling",
         IndexStatus::Ready => "ready",

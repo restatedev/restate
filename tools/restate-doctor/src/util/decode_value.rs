@@ -631,18 +631,18 @@ fn decode_stage_counts(value: &[u8]) -> DecodedValue {
 /// when an operator needs to see it most.
 fn decode_fsm_registry(value: &[u8]) -> DecodedValue {
     use bilrost::OwnedMessage;
-    use restate_partition_store::registry::IndexRegistry;
+    use restate_partition_store::registry::Registry;
 
     let payload_size = value.len();
-    let (registry, rejected) = match IndexRegistry::decode(value) {
+    let (registry, rejected) = match Registry::decode(value) {
         Ok(registry) => (registry, None),
-        Err(reason) => match <IndexRegistry as OwnedMessage>::decode(value) {
+        Err(reason) => match <Registry as OwnedMessage>::decode(value) {
             Ok(registry) => (registry, Some(reason)),
             Err(_) => return DecodedValue::error(None, payload_size, reason.to_string()),
         },
     };
     let entries = registry
-        .entries()
+        .indexes()
         .iter()
         .map(|r| {
             let walk = r
@@ -664,7 +664,7 @@ fn decode_fsm_registry(value: &[u8]) -> DecodedValue {
         None,
         payload_size,
         format!(
-            "IndexRegistry(format={}, [{}]){}",
+            "Registry(format={}, [{}]){}",
             registry.format(),
             entries.join("; "),
             rejected
@@ -933,7 +933,7 @@ mod tests {
         let DecodedContent::Decoded(text) = &decoded.content else {
             panic!("shown from its raw fields, got: {decoded}");
         };
-        assert!(text.contains("IndexRegistry(format=2, [])"), "{text}");
+        assert!(text.contains("Registry(format=2, [])"), "{text}");
         assert!(
             text.contains("rejected: unsupported registry format 2"),
             "{text}"
@@ -1034,8 +1034,8 @@ mod tests {
         for (id, value, expected) in [
             (
                 14,
-                restate_partition_store::registry::IndexRegistry::default().encode(),
-                "IndexRegistry(format=1, [])",
+                restate_partition_store::registry::Registry::default().encode(),
+                "Registry(format=1, [])",
             ),
             (
                 15,

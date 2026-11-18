@@ -82,15 +82,15 @@ pub(crate) const RECHECK_CAP_MS: u64 = 24 * 60 * 60 * 1000;
 pub struct MigrationJobId(NonZeroU32);
 
 impl MigrationJobId {
-    /// The build job of index `index_id`.
+    /// The job of registry entry `id`: an index's build job has the index's ID.
     ///
     /// # Panics
-    /// If `index_id` is 0, which the registry never issues: index IDs start at
-    /// [`crate::registry::FIRST_INDEX_ID`].
-    pub const fn for_index(index_id: u32) -> Self {
-        match NonZeroU32::new(index_id) {
+    /// If `id` is 0, which the registry never issues: its IDs start at
+    /// [`crate::registry::FIRST_ID`].
+    pub const fn for_entry(id: u32) -> Self {
+        match NonZeroU32::new(id) {
             Some(id) => Self(id),
-            None => panic!("index IDs are never 0"),
+            None => panic!("registry IDs are never 0"),
         }
     }
 
@@ -247,7 +247,7 @@ impl MigrationJob {
         by: Option<ReString>,
     ) -> Self {
         Self {
-            id: MigrationJobId::for_index(index_id).as_u32(),
+            id: MigrationJobId::for_entry(index_id).as_u32(),
             kind: MigrationJobKind::IndexBackfill,
             name,
             status: MigrationJobStatus::Pending,
@@ -277,7 +277,7 @@ impl MigrationJob {
     }
 
     pub fn id(&self) -> MigrationJobId {
-        MigrationJobId::for_index(self.id)
+        MigrationJobId::for_entry(self.id)
     }
 
     /// Records a slice that committed at `at`, examining `examined` rows and
@@ -591,7 +591,7 @@ mod tests {
 
         // Finishing moves a job to the history, which keeps the latest ones.
         let mut records = MigrationJobRecords::default();
-        let id = MigrationJobId::for_index;
+        let id = MigrationJobId::for_entry;
         for index in [70, 71, 72] {
             records.unfinished.insert(MigrationJob {
                 id: index,

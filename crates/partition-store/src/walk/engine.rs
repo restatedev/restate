@@ -21,7 +21,7 @@
 //! [`SliceBudget`] bounds the keys read, their bytes, and the bytes of the
 //! staged batch with the records it commits with. One commit makes the work and
 //! the progress visible together. Only after it does the engine publish the
-//! committed records (the [`MaintainedIndexes`]) to the transaction and the
+//! committed records (the [`PublishedRegistry`]) to the transaction and the
 //! partition, so the next slice resumes after the new cursor, the next write
 //! sees indexes the slice made Ready, and a failed commit never publishes.
 //! Recording a failure commits and publishes the same way. Starting a walk does
@@ -80,7 +80,7 @@ use restate_types::identifiers::BaseEntryId;
 use crate::fsm_table::{fsm_variable, put_migration_jobs, put_registry, put_walks};
 use crate::job::{MigrationJobId, MigrationJobRecords, MigrationJobStatus};
 use crate::keys::DecodeTableKey;
-use crate::registry::{IndexBackfill, IndexRegistry, MaintainedIndexes};
+use crate::registry::{IndexBackfill, PublishedRegistry, Registry};
 use crate::scan::TableScan;
 use crate::vqueue_table::{EntryStatusKey, decode_entry_status};
 use crate::{PartitionDb, PartitionStoreTransaction};
@@ -198,14 +198,14 @@ pub(crate) trait WalkJob {
     /// commits with the walk's last work and removal.
     fn finish(
         &self,
-        registry: &mut IndexRegistry,
+        registry: &mut Registry,
         settled: &[(u32, Settlement)],
         at: u64,
     ) -> Result<(), StorageError>;
 }
 
 /// The job running `walk`, if this binary knows its kind and source.
-fn job(active: &MaintainedIndexes, walk: &Walk) -> Result<impl WalkJob, StorageError> {
+fn job(active: &PublishedRegistry, walk: &Walk) -> Result<impl WalkJob, StorageError> {
     if !walk.is_supported() {
         return Err(walk_error(WalkError::UnsupportedKind(walk.kind.clone())));
     }
@@ -242,7 +242,7 @@ pub(crate) async fn run_counted_slice(
     budget: SliceBudget,
 ) -> Result<(Slice, usize), (SliceError, usize)> {
     let started = Instant::now();
-    let active = tx.maintained_indexes();
+    let active = tx.published_registry();
     let mut examined = 0;
     let staged = stage(tx, |tx| {
         let walk = active
@@ -319,7 +319,7 @@ pub(crate) async fn run_counted_slice(
             walks
                 .add_uncovered(id, *job_id, uncovered)
                 .map_err(walk_error)?;
-            if let Some(record) = jobs.unfinished.get_mut(MigrationJobId::for_index(*job_id)) {
+            if let Some(record) = jobs.unfinished.get_mut(MigrationJobId::for_entry(*job_id)) {
                 let pass_start = pass_start && !walk.joined_late(*job_id);
                 record.record_slice(now, taken as u64, filled, work_us, pass_start);
             }
@@ -413,7 +413,7 @@ fn settle(
     now: u64,
     history_limit: usize,
 ) {
-    let id = MigrationJobId::for_index(job_id);
+    let id = MigrationJobId::for_entry(job_id);
     let Some(record) = jobs.unfinished.get_mut(id) else {
         return;
     };
@@ -459,7 +459,7 @@ pub(crate) async fn run_all(
     let budget = budget.into();
     let db = store.partition_db().clone();
     let mut ids: Vec<_> = store
-        .maintained_indexes()
+        .published_registry()
         .walks()
         .entries()
         .iter()
@@ -497,7 +497,7 @@ pub(crate) async fn record_failure(
     error: &str,
     work: Duration,
 ) -> Result<(), SliceError> {
-    let active = tx.maintained_indexes();
+    let active = tx.published_registry();
     if active.walks().get(id).is_none() {
         return Err(SliceError::Staging(walk_error(WalkError::UnknownId(id))));
     }
@@ -519,12 +519,12 @@ pub(crate) async fn record_job_failures(
     error: &str,
     work: Duration,
 ) -> Result<(), SliceError> {
-    let active = tx.maintained_indexes();
+    let active = tx.published_registry();
     let now = WallClock::now_ms().as_u64();
     let jobs = stage(tx, |tx| {
         let mut jobs = active.jobs().clone();
         for id in ids {
-            if let Some(record) = jobs.unfinished.get_mut(MigrationJobId::for_index(*id)) {
+            if let Some(record) = jobs.unfinished.get_mut(MigrationJobId::for_entry(*id)) {
                 record.record_failure(now, error, micros(work));
             }
         }
@@ -553,7 +553,7 @@ pub(crate) async fn start_passes(
     crate::faults::inject(fault)
         .await
         .map_err(|err| SliceError::Staging(StorageError::Generic(err.into())))?;
-    let active = tx.maintained_indexes();
+    let active = tx.published_registry();
     let now = WallClock::now_ms().as_u64();
     let (registry, walks, jobs, walk) = stage(tx, |tx| {
         let mut registry = active.registry().clone();
@@ -608,8 +608,8 @@ pub(crate) fn stage<'a, T>(
 pub(crate) async fn commit(
     tx: &mut PartitionStoreTransaction<'_>,
     db: &PartitionDb,
-    active: &MaintainedIndexes,
-    registry: IndexRegistry,
+    active: &PublishedRegistry,
+    registry: Registry,
     walks: Walks,
     jobs: MigrationJobRecords,
 ) -> Result<(), SliceError> {
@@ -622,8 +622,8 @@ pub(crate) async fn commit(
         .reach(crate::faults::FaultPoint::WalkPublication)
         .await;
     let next = Arc::new(active.successor(registry, walks, jobs));
-    db.install_maintained_indexes(Arc::clone(&next));
-    tx.set_maintained_indexes(next);
+    db.install_published_registry(Arc::clone(&next));
+    tx.set_published_registry(next);
     Ok(())
 }
 

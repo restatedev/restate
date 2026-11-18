@@ -288,8 +288,8 @@ pub enum KeyKind {
     /// All secondary indexes are stored under a single key kind.
     SecondaryIndex,
 
-    /// Partition-level statistics: aggregate indexes keyed by the index registry's
-    /// `u32` index ID (see `crate::stats`).
+    /// Partition-level statistics: aggregate indexes keyed by the registry's `u32`
+    /// index ID (see `crate::stats`).
     Stats,
     /// Retired. A pre-release build kept statistics under this kind with a
     /// different layout. Nothing decodes or writes them, a later commit deletes

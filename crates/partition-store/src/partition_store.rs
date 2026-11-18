@@ -71,7 +71,7 @@ use crate::fsm_table::{
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, FixedLengthTableKey, KeyKind};
 use crate::migrations::MigrationError;
 use crate::partition_db::PartitionDb;
-use crate::registry::MaintainedIndexes;
+use crate::registry::PublishedRegistry;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
 use crate::snapshots::{CaptureGuard, LocalPartitionSnapshot, SnapshotCompatibility, export_dir};
@@ -330,21 +330,21 @@ impl PartitionStore {
         })
     }
 
-    /// The indexes maintained on entry writes. Opening the partition reconciles
-    /// the registry and installs this set before the processor writes. A store
-    /// used without that (tools and tests) loads it from disk on first use. An
-    /// unreadable registry or walks record is a bug there, and panics: writing
-    /// with an empty set instead would skip the Ready indexes and clear the
-    /// entries' tokens, corrupting the indexes silently, and an open would have
-    /// failed on it.
-    pub(crate) fn maintained_indexes(&self) -> Arc<MaintainedIndexes> {
-        if let Some(maintained_indexes) = self.db.maintained_indexes() {
-            return maintained_indexes;
+    /// The published registry, with the indexes maintained on entry writes.
+    /// Opening the partition reconciles the registry and installs it before the
+    /// processor writes. A store used without that (tools and tests) loads it from
+    /// disk on first use. An unreadable registry or walks record is a bug there,
+    /// and panics: writing with no indexes instead would skip the Ready indexes
+    /// and clear the entries' tokens, corrupting the indexes silently, and an open
+    /// would have failed on it.
+    pub(crate) fn published_registry(&self) -> Arc<PublishedRegistry> {
+        if let Some(published_registry) = self.db.published_registry() {
+            return published_registry;
         }
         let registry = get_registry_from_partition_db(self.partition_db())
             .unwrap_or_else(|err| {
                 panic!(
-                    "the index registry of partition {} is unreadable: {err}",
+                    "the registry of partition {} is unreadable: {err}",
                     self.partition_id()
                 )
             })
@@ -364,22 +364,22 @@ impl PartitionStore {
                     self.partition_id()
                 )
             });
-        let maintained_indexes = Arc::new(
-            MaintainedIndexes::new(&registry, &walks, crate::registry::DEFINITIONS)
+        let published_registry = Arc::new(
+            PublishedRegistry::new(&registry, &walks, crate::registry::INDEX_DEFINITIONS)
                 .with_jobs(jobs, crate::job::DEFAULT_HISTORY_LIMIT),
         );
         self.db
-            .install_maintained_indexes(Arc::clone(&maintained_indexes));
-        maintained_indexes
+            .install_published_registry(Arc::clone(&published_registry));
+        published_registry
     }
 
-    /// Installs the maintained indexes for every handle of this partition, as opening does
-    /// after reconciling the registry. Tests install indexes of test definitions.
+    /// Publishes `published_registry` to every handle of this partition, as opening
+    /// does after reconciling the registry. Tests publish indexes of test definitions.
     #[cfg(test)]
     #[allow(dead_code)] // Consumed when the registry is reconciled at open.
-    pub(crate) fn set_maintained_indexes(&mut self, maintained_indexes: MaintainedIndexes) {
+    pub(crate) fn set_published_registry(&mut self, published_registry: PublishedRegistry) {
         self.db
-            .install_maintained_indexes(Arc::new(maintained_indexes));
+            .install_published_registry(Arc::new(published_registry));
     }
 
     /// Overwrites the memoized storage features after their finalization batch commits.
@@ -421,7 +421,7 @@ impl PartitionStore {
     }
 
     /// Admits a read: captures a [`crate::ReadSnapshot`] of the store as it is
-    /// now, with its storage features and index registry, and returns the future
+    /// now, with its storage features and registry, and returns the future
     /// that resolves once the snapshot's last holder (a clone, a cursor or a
     /// storage job) has released it. The processor calls this in its loop, after
     /// its readiness checks; `cancel` is the token that ends the read.
@@ -716,7 +716,7 @@ impl PartitionStore {
         // If PartitionStore.storage_features() was never called before,
         // this will fetch the value and cache it.
         let storage_features = self.storage_features();
-        let maintained_indexes = self.maintained_indexes();
+        let published_registry = self.published_registry();
         let settings = TransactionSettings::from(&Configuration::pinned().worker.storage);
 
         PartitionStoreTransaction {
@@ -728,7 +728,7 @@ impl PartitionStore {
             value_buffer: &mut self.value_buffer,
             meta: self.db.partition(),
             storage_features,
-            maintained_indexes,
+            published_registry,
             settings,
             commit_fence: None,
             write_batch_size_histogram: None,
@@ -977,7 +977,7 @@ impl PartitionStore {
         // indexes, start their walks, fence the store, and install the indexes
         // maintained on writes.
         self.reconcile_registry(
-            crate::registry::DEFINITIONS,
+            crate::registry::INDEX_DEFINITIONS,
             &crate::registry::Requests::from_config(crate::registry::FAMILIES, config),
             crate::registry::FenceState {
                 features: &mut storage_features,
@@ -1162,7 +1162,7 @@ pub struct PartitionStoreTransaction<'a> {
     key_buffer: &'a mut BytesMut,
     value_buffer: &'a mut BytesMut,
     storage_features: StorageFeatures,
-    maintained_indexes: Arc<MaintainedIndexes>,
+    published_registry: Arc<PublishedRegistry>,
     settings: TransactionSettings,
     /// Resolves once the [`CommitFence`] holding back commits is dropped.
     commit_fence: Option<oneshot::Receiver<()>>,
@@ -1382,13 +1382,14 @@ impl<'a> PartitionStoreTransaction<'a> {
         self.storage_features
     }
 
-    pub(crate) fn maintained_indexes(&self) -> Arc<MaintainedIndexes> {
-        Arc::clone(&self.maintained_indexes)
+    pub(crate) fn published_registry(&self) -> Arc<PublishedRegistry> {
+        Arc::clone(&self.published_registry)
     }
 
-    /// Replaces the indexes maintained on writes, once a commit changed them.
-    pub(crate) fn set_maintained_indexes(&mut self, maintained_indexes: Arc<MaintainedIndexes>) {
-        self.maintained_indexes = maintained_indexes;
+    /// Replaces the published registry, and with it the indexes maintained on
+    /// writes, once a commit changed it.
+    pub(crate) fn set_published_registry(&mut self, published_registry: Arc<PublishedRegistry>) {
+        self.published_registry = published_registry;
     }
 
     /// Whether a [`CommitFence`] currently holds back commits. Neither takes nor lifts a

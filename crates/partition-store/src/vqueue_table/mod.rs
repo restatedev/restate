@@ -480,7 +480,7 @@ impl PartitionStoreTransaction<'_> {
             );
         }
 
-        let active = self.maintained_indexes();
+        let active = self.published_registry();
         if let Some(after) = change.after() {
             // Every write adopts the entry into each maintained index.
             self.put_entry_status(key_buffer, context.qid, after, active.touched_by_on_write());

@@ -273,7 +273,7 @@ async fn restored_snapshots_keep_ready_registered_instances() {
         store
             .get_storage_features_names()
             .iter()
-            .any(|name| name.as_str() == "index-registry")
+            .any(|name| name.as_str() == "registry")
     );
     assert_eq!(registered_totals(&store), 147);
     assert_eq!(store.get_fsm_position().await.unwrap(), Some(POSITION));

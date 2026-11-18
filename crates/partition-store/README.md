@@ -76,7 +76,7 @@ being built contains the row. A row carries a token until that index is Ready or
 dropped; the next write then drops it. Each source table stores its tokens in
 its own rows; for the example, that is the `entry_status` header.
 
-**Index registry.** The per-store record of which indexes exist, with their
+**Registry.** The per-store record of which indexes exist, with their
 definition name, ID and status (`src/registry.rs`). An index being built points
 to its **walk**, recorded next to the registry (`src/walk.rs`): the walk has its
 own ID and holds the traversal's progress, and several indexes built together
@@ -133,7 +133,7 @@ are their foundation.
 8. **Persisted formats are append-only.** Bilrost tags, enum numbers and the keys
    under which the registry and walks are stored never change meaning. Rename
    in code freely; never renumber.
-9. **The `index-registry` storage feature fences older binaries.** It is set with
+9. **The `registry` storage feature fences older binaries.** It is set with
    the first registration and records a minimum Restate version, so an older
    binary, which doesn't know tokens and index keys, refuses to open the store
    because of that version floor rather than ignoring them.
