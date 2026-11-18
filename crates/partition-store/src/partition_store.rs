@@ -1739,6 +1739,9 @@ pub(crate) trait StorageIterator {
     #[allow(clippy::type_complexity)]
     fn item(&self) -> Result<Option<(&[u8], &[u8])>>;
 
+    /// Moves to the first entry at or after `key`.
+    fn seek(&mut self, key: &[u8]);
+
     /// Moves to the next entry.
     fn next(&mut self);
 }
@@ -1756,6 +1759,11 @@ impl<D: rocksdb::DBAccess> StorageIterator for DBRawIteratorWithThreadMode<'_, D
     }
 
     #[inline]
+    fn seek(&mut self, key: &[u8]) {
+        DBRawIteratorWithThreadMode::seek(self, key)
+    }
+
+    #[inline]
     fn next(&mut self) {
         DBRawIteratorWithThreadMode::next(self)
     }
@@ -1765,6 +1773,11 @@ impl<H> StorageIterator for ReadIterator<'_, H> {
     #[inline]
     fn item(&self) -> Result<Option<(&[u8], &[u8])>> {
         ReadIterator::item(self).map_err(|err| StorageError::Generic(err.into()))
+    }
+
+    #[inline]
+    fn seek(&mut self, key: &[u8]) {
+        ReadIterator::seek(self, key)
     }
 
     #[inline]

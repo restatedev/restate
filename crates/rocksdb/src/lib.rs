@@ -60,7 +60,9 @@ pub use self::db_spec::*;
 pub use self::error::*;
 pub use self::iterator::IterAction;
 use self::iterator::RocksIterator;
-pub use self::perf::{RocksDbPerf, RocksDbPerfExt, RocksDbReadPerfGuard, RocksDbWritePerfGuard};
+pub use self::perf::{
+    RocksDbPerf, RocksDbPerfExt, RocksDbPerfStreamExt, RocksDbReadPerfGuard, RocksDbWritePerfGuard,
+};
 use self::reads::{
     ColumnFamilies, Iteration, IterationOptions, IteratorVisitor, OwnedReadIterator, ScopedReads,
 };
