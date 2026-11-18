@@ -43,7 +43,8 @@ use restate_types::config::Configuration;
 
 use crate::PartitionStoreTransaction;
 use crate::job::{MigrationJobRecords, MigrationJobs};
-use crate::walk::Walks;
+use crate::migrations::online::{MigrationDefinition, ONLINE_MIGRATIONS};
+use crate::walk::{Walk, Walks};
 
 use super::{IndexKind, Registry};
 
@@ -110,8 +111,9 @@ struct Active {
 
 /// The committed registry, walks and unfinished jobs, published to every
 /// transaction and handle after each commit that changes them, together with
-/// the indexes writes maintain: the Backfilling and Ready indexes of known
-/// definitions. Finished jobs are never published: they stay on disk only.
+/// the indexes writes maintain, the Backfilling and Ready indexes of known
+/// definitions, and the migrations this binary knows, whose walks it runs.
+/// Finished jobs are never published: they stay on disk only.
 #[derive(Default)]
 pub(crate) struct PublishedRegistry {
     /// The indexes writes maintain, sorted by ID.
@@ -127,6 +129,7 @@ pub(crate) struct PublishedRegistry {
     /// record of a job that finishes is kept.
     jobs: MigrationJobs,
     retention: Duration,
+    migrations: &'static [&'static MigrationDefinition],
 }
 
 impl std::fmt::Debug for PublishedRegistry {
@@ -145,7 +148,8 @@ impl PublishedRegistry {
     /// Publishes `registry` and `walks`, without job records and with a
     /// retention of 0, until [`Self::with_jobs`] sets both. Writes maintain the
     /// indexes whose definition is in `known`, with a matching kind; opening a
-    /// store retires the others before writes.
+    /// store retires the others before writes. Walks run the migrations of
+    /// [`ONLINE_MIGRATIONS`], unless [`Self::with_migrations`] says otherwise.
     pub(crate) fn new(
         registry: &Registry,
         walks: &Walks,
@@ -162,6 +166,15 @@ impl PublishedRegistry {
         self
     }
 
+    /// Runs the walks of `migrations`, the ones this binary knows.
+    pub(crate) fn with_migrations(
+        mut self,
+        migrations: &'static [&'static MigrationDefinition],
+    ) -> Self {
+        self.migrations = migrations;
+        self
+    }
+
     /// What to publish once a commit changed the walks or the jobs to `walks`
     /// and `jobs`, and the registry to `registry` if it changed it, for the same
     /// known definitions and retention.
@@ -173,7 +186,9 @@ impl PublishedRegistry {
     ) -> Self {
         let known: Vec<_> = self.entries.iter().map(|entry| entry.definition).collect();
         let registry = registry.map_or_else(|| Arc::clone(&self.registry), Arc::new);
-        Self::build(registry, walks, &known).with_jobs(jobs, self.retention)
+        Self::build(registry, walks, &known)
+            .with_jobs(jobs, self.retention)
+            .with_migrations(self.migrations)
     }
 
     fn build(registry: Arc<Registry>, walks: Walks, known: &[&'static IndexDefinition]) -> Self {
@@ -208,6 +223,7 @@ impl PublishedRegistry {
             walks,
             jobs: MigrationJobs::default(),
             retention: Duration::ZERO,
+            migrations: ONLINE_MIGRATIONS,
         }
     }
 
@@ -248,6 +264,17 @@ impl PublishedRegistry {
             return Err(StorageError::DataIntegrityError);
         }
         Ok(members)
+    }
+
+    /// The migration `walk` runs and its entry's ID, if this binary knows that
+    /// migration.
+    pub(crate) fn migration_of(&self, walk: &Walk) -> Option<(&'static MigrationDefinition, u32)> {
+        let entry = self.registry.migration_of_walk(walk.id)?;
+        let definition = self
+            .migrations
+            .iter()
+            .find(|definition| entry.definition == definition.name && definition.runs(walk))?;
+        Some((definition, entry.id))
     }
 
     /// The index ID of the Ready index of `definition`, or why there is none.

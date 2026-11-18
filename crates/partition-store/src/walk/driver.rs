@@ -40,8 +40,8 @@
 //!
 //! **Failures.** A slice that fails before its commit is recorded on its walk's
 //! jobs, and that walk retries after its own exponential backoff while the other
-//! walks keep their turns, the partition keeps serving and the indexes stay
-//! Backfilling. A pass that fails to start likewise defers only its jobs, behind
+//! walks keep their turns, the partition keeps serving and the walk's indexes
+//! stay Backfilling, or its migration in progress. A pass that fails to start likewise defers only its jobs, behind
 //! a backoff of its own; started walks keep their turns meanwhile. A failed commit has an
 //! unknown outcome: [`WalkDriver::step`] returns it, and the processor stops; its
 //! reopen reloads the records.
@@ -300,13 +300,10 @@ impl PartitionStore {
         if pending && options.disable_background_migrations {
             info!(
                 started,
-                "Background migrations are disabled; the pending index and statistics backfill waits"
+                "Background migrations are disabled; pending walks wait"
             );
         } else if pending {
-            info!(
-                started,
-                "Backfilling indexes and statistics in the background"
-            );
+            info!(started, "Running migration walks in the background");
         }
         let now = Instant::now();
         let mut driver = WalkDriver {
@@ -615,10 +612,7 @@ impl WalkDriver {
         let (examined, failure) = match result {
             Ok((slice, examined)) => {
                 if slice == Slice::Exhausted {
-                    info!(
-                        walk,
-                        "A backfill walk ended its pass: its indexes are Ready, or wait for another pass"
-                    );
+                    info!(walk, "A migration walk ended its pass");
                 }
                 (examined, None)
             }
@@ -674,10 +668,7 @@ impl WalkDriver {
                 }
             }
             Some(error) => {
-                warn!(
-                    walk,
-                    "Background index and statistics backfill failed, retrying: {error}"
-                );
+                warn!(walk, "A migration walk failed, retrying: {error}");
                 let failures = self
                     .backoffs
                     .get(&walk)

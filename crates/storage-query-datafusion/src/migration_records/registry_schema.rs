@@ -14,8 +14,8 @@ use crate::table_macro::*;
 
 define_table!(
     /// The registry of each partition replica on the worker nodes: its indexes and
-    /// statistics, with their status. Each replica keeps its own: two replicas of a
-    /// partition can be at different points. A replica's rows come from one snapshot
+    /// statistics, and its one-time migrations, with their status. Each replica
+    /// keeps its own: two replicas of a partition can be at different points. A replica's rows come from one snapshot
     /// of it, separate from the one `migration_jobs` reads, except
     /// `approx_size_bytes`, estimated over the replica's current data.
     registry(
@@ -28,31 +28,39 @@ define_table!(
         /// The partition the replica belongs to.
         partition_id: DataType::UInt32,
 
-        /// The definition the index builds, with its version, for example
-        /// `service_stats/1`.
+        /// The definition the index builds or the migration runs, with its
+        /// version, for example `service_stats/1`.
         definition: DataType::Utf8,
 
-        /// `secondary` (one key per entry) or `aggregate` (counters, a statistic).
+        /// `secondary` (one key per entry) or `aggregate` (counters, a statistic)
+        /// for an index; `migration` for a one-time migration.
         kind: DataType::Utf8,
 
         /// The entry's ID in this replica; for an index, the prefix of its keys.
         id: DataType::UInt32,
 
-        /// `backfilling` (maintained but incomplete: queries don't read it),
-        /// `ready` or `dropped`.
+        /// For an index, `backfilling` (maintained but incomplete: queries don't
+        /// read it), `ready` or `dropped`; for a migration, `in_progress` or
+        /// `complete`.
         status: DataType::Utf8,
 
-        /// The build job, while the index is backfilling; see `migration_jobs`.
+        /// The job, while the index is backfilling or the migration in progress;
+        /// see `migration_jobs`.
         job_id: DataType::UInt32,
 
-        /// When the index was registered; NULL if unknown.
+        /// When the entry was registered; NULL if unknown.
         registered_at: TimestampMillisecond,
 
         /// The Restate version that registered it; NULL if unknown.
         registered_by_version: DataType::Utf8,
 
-        /// When it became Ready; NULL until then, or if unknown.
+        /// When the index became Ready; NULL until then, if unknown, and for a
+        /// migration.
         ready_at: TimestampMillisecond,
+
+        /// When the migration completed; NULL until then, if unknown, and for an
+        /// index.
+        completed_at: TimestampMillisecond,
 
         /// When it was dropped; NULL unless dropped, or if unknown.
         dropped_at: TimestampMillisecond,
@@ -65,8 +73,8 @@ define_table!(
         /// including writes not flushed yet, over the replica's current data rather
         /// than the rows' snapshot. Approximate: small indexes can show 0, and a
         /// dropped index may still show bytes until compaction removes its keys.
-        /// NULL for an index of unknown kind, or when RocksDB's estimate returns an
-        /// error.
+        /// NULL for a migration, an index of unknown kind, or when RocksDB's
+        /// estimate returns an error.
         approx_size_bytes: DataType::UInt64,
     )
 );

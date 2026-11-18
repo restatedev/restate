@@ -39,12 +39,27 @@
 //! The `engine` runs walks a slice at a time, through the [`WalkDriver`], between
 //! the partition processor's turns. What a walk's slices did, the rows,
 //! time and failures, is recorded on the jobs it runs (see [`crate::job`]).
+//!
+//! Two kinds of jobs run on walks: index backfills, whose members are the
+//! indexes linked to the walk (see [`crate::registry`]), and one-time
+//! migrations, one per walk (see `crate::migrations::online`).
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 
+use restate_storage_api::StorageError;
+use restate_types::identifiers::PartitionKey;
+use restate_types::sharding::KeyRange;
+use restate_types::vqueues::EntryKind;
 use restate_util_string::ReString;
 
+use crate::journal_table_v2::{
+    JournalCompletionIdToCommandIndexKey, JournalCompletionIdToCommandIndexKeyBuilder,
+};
+use crate::keys::DecodeTableKey;
+use crate::migrations::online::MigrationDefinition;
 use crate::registry::Registry;
+use crate::scan::{PhysicalScan, TableScan};
+use crate::vqueue_table::EntryStatusKey;
 
 mod driver;
 pub(crate) mod engine;
@@ -52,7 +67,8 @@ pub(crate) mod engine;
 pub use driver::{DriverState, WalkDriver, WalkStatsSnapshot};
 pub(crate) use driver::{PublishedDriverState, WalkStats};
 
-/// The table a walk traverses, stored on the walk as its number.
+/// The table a walk traverses, stored on the walk as its number. Every source is
+/// partition-keyed: a walk reads one partition's rows in key order.
 ///
 /// **Compatibility.** The walk stores the number, not a bilrost enumeration, so a
 /// walk over a source this binary doesn't know still decodes, and its
@@ -63,12 +79,56 @@ pub(crate) use driver::{PublishedDriverState, WalkStats};
 pub enum Source {
     /// Entry statuses, in entry-status key order within the partition's key range.
     EntryStatus = 1,
+    /// The journal's completion-ID index (`jc` keys), in key order within the
+    /// partition's key range.
+    JournalCompletionId = 2,
 }
 
 impl Source {
     /// The source stored as `number`, if this binary knows it.
     pub fn from_number(number: u32) -> Option<Self> {
-        (number == Self::EntryStatus as u32).then_some(Self::EntryStatus)
+        match number {
+            1 => Some(Self::EntryStatus),
+            2 => Some(Self::JournalCompletionId),
+            _ => None,
+        }
+    }
+
+    /// A scan of this table's rows in the partition keys `range`, in key order.
+    pub(crate) fn scan(self, range: KeyRange) -> PhysicalScan<Bytes> {
+        let mut arena = BytesMut::new();
+        match self {
+            Self::EntryStatus => {
+                TableScan::ScanPartitionKeyRange::<EntryStatusKey>(range).encode(&mut arena)
+            }
+            Self::JournalCompletionId => TableScan::ScanPartitionKeyRange::<
+                JournalCompletionIdToCommandIndexKeyBuilder,
+            >(range)
+            .encode(&mut arena),
+        }
+    }
+
+    /// The partition key of `key`, which must be a whole key of this table: a
+    /// walk's end or cursor. The raw entry-status codec also decodes the
+    /// `Unknown` entry-kind sentinel, which no stored entry has.
+    pub fn partition_key(self, key: &[u8]) -> Result<PartitionKey, StorageError> {
+        let mut rest = key;
+        let partition_key = match self {
+            Self::EntryStatus => {
+                let id = EntryStatusKey::deserialize_from(&mut rest)?.id;
+                if id.kind() == EntryKind::Unknown {
+                    return Err(StorageError::DataIntegrityError);
+                }
+                id.partition_key()
+            }
+            Self::JournalCompletionId => {
+                JournalCompletionIdToCommandIndexKey::deserialize_from(&mut rest)?.partition_key
+            }
+        };
+        if !rest.is_empty() {
+            return Err(StorageError::DataIntegrityError);
+        }
+        Ok(partition_key)
     }
 }
 
@@ -85,8 +145,9 @@ impl Source {
 pub enum OnUnknown {
     /// The open fails without changing anything.
     Refuse = 0,
-    /// The open removes the walk and unlinks its members: members of known
-    /// definitions start a pass of this binary's own kind, the others are retired.
+    /// The open removes the walk and unlinks its members and its migration:
+    /// members of known definitions start a pass of this binary's own kind, the
+    /// others are retired; the migration waits for a binary that knows it.
     Discard = 1,
 }
 
@@ -100,7 +161,10 @@ impl OnUnknown {
     }
 }
 
-/// The kind of a walk: its name and the version of its semantics.
+/// The kind of a walk: its name and the version of its semantics. An index
+/// backfill is `index_backfill` version 1; a migration's walks are of the kind
+/// its versioned name spells, `jc_orphan_cleanup` version 1 for
+/// `"jc_orphan_cleanup/1"`.
 ///
 /// **Compatibility.** A walk of a kind this binary doesn't know still decodes; its
 /// [`OnUnknown`] policy decides what an open does. Changing a kind's semantics
@@ -122,13 +186,6 @@ impl WalkKind {
             name: ReString::from_static("index_backfill"),
             version: 1,
         }
-    }
-
-    /// The policy this binary's walks of this kind carry. An index backfill is
-    /// discardable: tokens are the only proof of coverage, so restarting its
-    /// members from the start loses nothing.
-    fn on_unknown(&self) -> OnUnknown {
-        OnUnknown::Discard
     }
 }
 
@@ -204,9 +261,15 @@ impl Walk {
         Source::from_number(self.source)
     }
 
-    /// Whether this binary knows the walk's kind and source, so it can run it.
-    pub fn is_supported(&self) -> bool {
+    /// Whether the walk backfills indexes: the only kind with members.
+    pub fn is_index_backfill(&self) -> bool {
         self.kind == WalkKind::index_backfill() && self.source() == Some(Source::EntryStatus)
+    }
+
+    /// Whether this binary can run the walk: an index backfill, or a walk of one
+    /// of the `migrations` it knows.
+    pub(crate) fn is_known(&self, migrations: &[&MigrationDefinition]) -> bool {
+        self.is_index_backfill() || migrations.iter().any(|migration| migration.runs(self))
     }
 
     /// The evidence of member `index`, if it differs from the default.
@@ -258,10 +321,10 @@ pub struct Walks {
 
 impl Walks {
     /// The walks `walks`, loaded from their records, checked against each other
-    /// and `next_id`, the registry's next walk ID. Walks of a kind or source
-    /// this binary doesn't know are accepted too, with only their common
-    /// invariants checked: an open resolves them by their policy (see
-    /// [`Self::preflight`]).
+    /// and `next_id`, the registry's next walk ID. Only index backfills are
+    /// checked in full; other walks only for their common invariants: an open
+    /// checks the walks of the migrations it knows, and resolves the others by
+    /// their policy (see [`Self::preflight`]).
     pub fn new(walks: Vec<Walk>, next_id: u64) -> Result<Self, WalkError> {
         let walks = Self { walks };
         walks.validate(next_id)?;
@@ -278,8 +341,8 @@ impl Walks {
             if !ids.insert(walk.id) {
                 return invalid("a walk ID is used twice");
             }
-            if !walk.is_supported() {
-                // Its params, positions and evidence are the unknown kind's own.
+            if !walk.is_index_backfill() {
+                // Its params, positions and evidence are its kind's own.
                 continue;
             }
             if !walk.params.is_empty() {
@@ -309,11 +372,12 @@ impl Walks {
         Ok(())
     }
 
-    /// Checks, before an open changes anything, that every walk of a kind or
-    /// source this binary doesn't know may be discarded.
-    pub(crate) fn preflight(&self) -> Result<(), WalkError> {
+    /// Checks, before an open changes anything, that every walk this binary
+    /// doesn't know, knowing `migrations`, may be discarded.
+    pub(crate) fn preflight(&self, migrations: &[&MigrationDefinition]) -> Result<(), WalkError> {
         match self.walks.iter().find(|walk| {
-            !walk.is_supported() && OnUnknown::from_number(walk.on_unknown) == OnUnknown::Refuse
+            !walk.is_known(migrations)
+                && OnUnknown::from_number(walk.on_unknown) == OnUnknown::Refuse
         }) {
             Some(walk) => Err(WalkError::Refused {
                 id: walk.id,
@@ -324,16 +388,17 @@ impl Walks {
         }
     }
 
-    /// Removes the walks this binary doesn't know, returning their IDs, which stay
-    /// issued. Run [`Self::preflight`] first: it refuses the ones that must stay.
-    pub(crate) fn discard_unknown(&mut self) -> Vec<u64> {
+    /// Removes the walks this binary doesn't know, knowing `migrations`,
+    /// returning their IDs, which stay issued. Run [`Self::preflight`] first: it
+    /// refuses the ones that must stay.
+    pub(crate) fn discard_unknown(&mut self, migrations: &[&MigrationDefinition]) -> Vec<u64> {
         let discarded = self
             .walks
             .iter()
-            .filter(|walk| !walk.is_supported())
+            .filter(|walk| !walk.is_known(migrations))
             .map(|walk| walk.id)
             .collect();
-        self.walks.retain(Walk::is_supported);
+        self.walks.retain(|walk| walk.is_known(migrations));
         discarded
     }
 
@@ -403,10 +468,13 @@ impl Walks {
         self.walks.iter().find(|walk| walk.id == id)
     }
 
-    /// Starts a walk of `kind` over `source` up to `end`, inclusive, with the
-    /// next ID of `registry`'s walk counter. The new walk is checked like a
-    /// loaded one, so that nothing `start` accepts can fail to load again; a
+    /// Starts an index backfill of `kind` over `source` up to `end`, inclusive,
+    /// with the next ID of `registry`'s walk counter. The new walk is checked like
+    /// a loaded one, so that nothing `start` accepts can fail to load again; a
     /// rejected walk changes neither the walks nor the counter.
+    ///
+    /// An index backfill is discardable: tokens are the only proof of coverage,
+    /// so restarting its members from the start loses nothing.
     pub(crate) fn start(
         &mut self,
         registry: &mut Registry,
@@ -414,12 +482,44 @@ impl Walks {
         source: Source,
         end: Bytes,
     ) -> Result<u64, WalkError> {
+        if kind != WalkKind::index_backfill() || source != Source::EntryStatus {
+            return Err(WalkError::UnsupportedKind(kind));
+        }
+        self.begin(registry, kind, source, end, OnUnknown::Discard)
+    }
+
+    /// Starts a walk of `migration` over its source up to `end`, inclusive, as
+    /// [`Self::start`] does. The walk carries the policy the migration's own
+    /// [`crate::registry::MigrationOnUnknown`] implies.
+    pub(crate) fn start_migration(
+        &mut self,
+        registry: &mut Registry,
+        migration: &MigrationDefinition,
+        end: Bytes,
+    ) -> Result<u64, WalkError> {
+        let policy = migration.walk_policy();
+        self.begin(
+            registry,
+            migration.walk_kind(),
+            migration.source,
+            end,
+            policy,
+        )
+    }
+
+    fn begin(
+        &mut self,
+        registry: &mut Registry,
+        kind: WalkKind,
+        source: Source,
+        end: Bytes,
+        on_unknown: OnUnknown,
+    ) -> Result<u64, WalkError> {
         let id = registry.next_walk_id();
         if id == u64::MAX {
             return Err(WalkError::Exhausted);
         }
-        let on_unknown = kind.on_unknown() as u32;
-        let walk = Walk {
+        self.walks.push(Walk {
             id,
             kind,
             source: source as u32,
@@ -427,12 +527,8 @@ impl Walks {
             cursor: None,
             params: Bytes::new(),
             members: Vec::new(),
-            on_unknown,
-        };
-        if !walk.is_supported() {
-            return Err(WalkError::UnsupportedKind(walk.kind));
-        }
-        self.walks.push(walk);
+            on_unknown: on_unknown as u32,
+        });
         if let Err(error) = self.validate(id + 1) {
             self.walks.pop();
             return Err(error);
@@ -582,11 +678,11 @@ mod tests {
         );
 
         let mut discardable = unknown(OnUnknown::Discard);
-        discardable.preflight().unwrap();
-        assert_eq!(discardable.discard_unknown(), [3]);
+        discardable.preflight(&[]).unwrap();
+        assert_eq!(discardable.discard_unknown(&[]), [3]);
         assert!(discardable.entries().is_empty());
         assert!(matches!(
-            unknown(OnUnknown::Refuse).preflight(),
+            unknown(OnUnknown::Refuse).preflight(&[]),
             Err(WalkError::Refused {
                 id: 3,
                 table: 99,
@@ -597,7 +693,10 @@ mod tests {
         future_policy[0].kind.version = 2;
         future_policy[0].on_unknown = 7;
         assert!(
-            Walks::new(future_policy, 4).unwrap().preflight().is_err(),
+            Walks::new(future_policy, 4)
+                .unwrap()
+                .preflight(&[])
+                .is_err(),
             "a policy this binary doesn't know refuses"
         );
         // `start` rejects what loading would reject, and reserves no ID for it.

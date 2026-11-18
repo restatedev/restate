@@ -689,11 +689,33 @@ fn format_registry(registry: &restate_partition_store::registry::Registry) -> St
             )
         })
         .collect::<Vec<_>>();
+    let migrations = registry
+        .migrations()
+        .iter()
+        .map(|m| {
+            let state = m.state().map_or_else(
+                || format!("unknown({})", m.state),
+                |state| format!("{state:?}"),
+            );
+            let walk = m
+                .walk
+                .map(|walk| format!(" walk={walk}"))
+                .unwrap_or_default();
+            format!(
+                "{} {} {state} on_unknown={:?}{walk} {:?}",
+                m.id,
+                m.definition,
+                m.on_unknown(),
+                m.timeline
+            )
+        })
+        .collect::<Vec<_>>();
     format!(
-        "Registry(format={}, next_walk_id={}, [{}])",
+        "Registry(format={}, next_walk_id={}, [{}], migrations=[{}])",
         registry.format(),
         registry.next_walk_id(),
         entries.join("; "),
+        migrations.join("; "),
     )
 }
 
@@ -905,7 +927,7 @@ mod tests {
         assert_eq!(decoded.codec, None);
         assert_eq!(
             decoded.to_string(),
-            "Registry(format=1, next_walk_id=1, [])"
+            "Registry(format=1, next_walk_id=1, [], migrations=[])"
         );
 
         /// The persisted registry's layout, with a format this binary does not support.
