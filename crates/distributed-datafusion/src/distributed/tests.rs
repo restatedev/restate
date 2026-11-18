@@ -20,7 +20,7 @@ use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_proto::physical_plan::{DeduplicatingProtoConverter, PhysicalExtensionCodec};
-use futures::{FutureExt, StreamExt, TryStreamExt, stream};
+use futures::{StreamExt, TryStreamExt, stream};
 
 use restate_clock::{MockClock, UniqueTimestamp};
 use restate_core::network::transport_connector::test_util::MockConnector;
@@ -133,7 +133,8 @@ impl PartitionLocator for RemoteOwner {
 struct Fixture<N> {
     network: N,
     scanners: SourceRegistry,
-    owner_scanners: SourceRegistry,
+    /// The owner's sources, whose server starts on first connection.
+    owner_scanners: Arc<OnceLock<SourceRegistry>>,
     store: PartitionStore,
     manager: Arc<PartitionStoreManager>,
     observations: Arc<Mutex<Vec<TaskObservation>>>,
@@ -168,27 +169,29 @@ async fn setup_at_version(
         .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
         .await
         .unwrap();
-    let worker_scanners = Arc::new(OnceLock::<SourceRegistry>::new());
+    let owner_scanners = Arc::new(OnceLock::<SourceRegistry>::new());
     let observations = Arc::new(Mutex::new(vec![]));
+    // Queries keep the connector through their network, possibly past teardown
+    // (see `keep_network_past_teardown`), so it must not own storage: it only
+    // borrows the owner's sources and the observations.
     let (connector, _connections) = MockConnector::new({
-        let worker_scanners = Arc::clone(&worker_scanners);
-        let observations = Arc::clone(&observations);
+        let owner_scanners = Arc::downgrade(&owner_scanners);
+        let observations = Arc::downgrade(&observations);
         move |node, router: &mut restate_core::network::MessageRouterBuilder| {
             assert_eq!(node, OWNER, "task was routed to a non-owner");
+            // An owner first reached once the test has returned serves nothing.
+            let (Some(owner_scanners), Some(observations)) =
+                (owner_scanners.upgrade(), observations.upgrade())
+            else {
+                return;
+            };
             let mut server = DistributedQueryServer::new(
                 environment(1, 128),
-                worker_scanners.get().unwrap().clone(),
+                owner_scanners.get().unwrap().clone(),
                 router,
             );
-            server.observations = Arc::clone(&observations);
-            // Start the receiver before the connector can dispatch its first RPC.
-            let mut task = Box::pin(server.run());
-            assert!(task.as_mut().now_or_never().is_none());
-            // Like production, shutdown waits for the server to drain, releasing its
-            // storage owners before teardown checks run.
-            TaskCenter::current()
-                .spawn(TaskKind::SystemService, "distributed-query-test", task)
-                .unwrap();
+            server.observations = observations;
+            crate::mocks::spawn_query_server("distributed-query-test", server);
             // An ordinary node service next to the query service, so tests can
             // check that query failures leave the connection usable for it.
             let mut gossip = router
@@ -229,6 +232,7 @@ async fn setup_at_version(
     .set_nodes_config(nodes)
     .build()
     .await;
+    crate::mocks::keep_network_past_teardown(coordinator.networking.clone());
     // The injected worker metadata belongs to N2, while the loopback transport's
     // task-center/global metadata remains N1. RPC, codecs and Arrow IPC are real.
     let owner = TestCoreEnv::create_with_single_node(2, 1).await;
@@ -243,7 +247,7 @@ async fn setup_at_version(
     local.register_partition_scanner::<ScopedStateSource>(Arc::new(LookupScanner::<
         ScopedStateBinding,
     >::new()));
-    worker_scanners.set(local.clone()).unwrap();
+    owner_scanners.set(local).unwrap();
     let scanners = SourceRegistry::new(
         Arc::new(RemoteOwner),
         coordinator.metadata,
@@ -252,7 +256,7 @@ async fn setup_at_version(
     Fixture {
         network: coordinator.networking,
         scanners,
-        owner_scanners: local,
+        owner_scanners,
         store,
         manager,
         observations,
@@ -734,7 +738,8 @@ fn remote_error(error: &DataFusionError) -> &QueryTaskError {
 async fn processor_admission_errors_reach_the_remote_query_consumer() {
     let fixture = setup(false).await;
     let (commands, mut receiver) = tokio::sync::mpsc::channel(32);
-    fixture.owner_scanners.register_processor_reads(
+    let owner_scanners = fixture.owner_scanners.get().unwrap();
+    owner_scanners.register_processor_reads(
         ProcessorsManagerHandle::new(
             commands,
             Arc::new(UnusedRuleBook),

@@ -30,14 +30,14 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{ExecutionPlanProperties, PhysicalExpr};
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::{NetworkBoundary, NetworkCoalesceExec, Stage};
-use futures::{FutureExt, StreamExt, TryStreamExt, stream};
+use futures::{StreamExt, TryStreamExt, stream};
 use tokio::time::Instant;
 
 use restate_core::network::NetworkSender;
 use restate_core::network::transport_connector::test_util::MockConnector;
 use restate_core::partitions::PartitionRouting;
 use restate_core::test_env::{TestCoreEnv, TestCoreEnvBuilder, create_mock_nodes_config};
-use restate_core::{Metadata, TaskCenter, TaskKind};
+use restate_core::{Metadata, TaskCenter};
 use restate_memory::ByteCount;
 use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::state_table::{ScopedStateBinding, StateBinding};
@@ -319,6 +319,8 @@ struct MultiFixture<N> {
     stores: Vec<PartitionStore>,
     store_manager: Arc<PartitionStoreManager>,
     tasks: Arc<Mutex<Vec<TaskObservation>>>,
+    /// The sources of the remote workers, whose servers start on first connection.
+    _workers: Arc<OnceLock<HashMap<GenerationalNodeId, SourceRegistry>>>,
     reads: Arc<Mutex<Reads>>,
     node_reads: Arc<Mutex<Vec<GenerationalNodeId>>>,
     placements: PlacementCalls,
@@ -350,24 +352,25 @@ async fn setup_with_scanners(
     }
     let workers = Arc::new(OnceLock::<HashMap<GenerationalNodeId, SourceRegistry>>::new());
     let tasks = Arc::new(Mutex::new(vec![]));
+    // Queries keep the connector through their network, possibly past teardown
+    // (see `keep_network_past_teardown`), so it must not own storage: it only
+    // borrows the workers' sources and observations. The fixture owns them, and
+    // so does each server it starts.
     let (connector, _) = MockConnector::new({
-        let workers = Arc::clone(&workers);
-        let tasks = Arc::clone(&tasks);
+        let workers = Arc::downgrade(&workers);
+        let tasks = Arc::downgrade(&tasks);
         move |node, router: &mut restate_core::network::MessageRouterBuilder| {
+            // A node first reached once the test has returned serves nothing.
+            let (Some(workers), Some(tasks)) = (workers.upgrade(), tasks.upgrade()) else {
+                return;
+            };
             let mut server = DistributedQueryServer::new(
                 environment(1, 128),
                 workers.get().unwrap()[&node].clone(),
                 router,
             );
-            server.observations = Arc::clone(&tasks);
-            // Start the receiver before the connector can dispatch its first RPC.
-            let mut task = Box::pin(server.run());
-            assert!(task.as_mut().now_or_never().is_none());
-            // Like production, shutdown waits for the server to drain, releasing its
-            // storage owners before teardown checks run.
-            TaskCenter::current()
-                .spawn(TaskKind::SystemService, "multi-owner-query", task)
-                .unwrap();
+            server.observations = tasks;
+            crate::mocks::spawn_query_server("multi-owner-query", server);
         }
     });
     let mut nodes = create_mock_nodes_config(1, 1);
@@ -447,14 +450,9 @@ async fn setup_with_scanners(
         &mut coordinator.router_builder,
     );
     server.observations = Arc::clone(&tasks);
-    let mut task = Box::pin(server.run());
-    assert!(task.as_mut().now_or_never().is_none());
-    // Like production, shutdown waits for the server to drain, releasing its
-    // storage owners before teardown checks run.
-    TaskCenter::current()
-        .spawn(TaskKind::SystemService, "local-query-worker", task)
-        .unwrap();
+    crate::mocks::spawn_query_server("local-query-worker", server);
     let coordinator = coordinator.build().await;
+    crate::mocks::keep_network_past_teardown(coordinator.networking.clone());
     let mut remote = HashMap::new();
     for id in 2..=3 {
         let worker = TestCoreEnv::create_with_single_node(id, 1).await;
@@ -477,6 +475,7 @@ async fn setup_with_scanners(
         stores,
         store_manager: manager,
         tasks,
+        _workers: workers,
         reads,
         node_reads,
         placements,

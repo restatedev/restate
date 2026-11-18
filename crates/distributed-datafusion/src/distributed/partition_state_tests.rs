@@ -18,12 +18,12 @@ use datafusion::arrow::util::display::array_value_to_string;
 use datafusion::common::exec_err;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use futures::{FutureExt, StreamExt, TryStreamExt, stream};
+use futures::{StreamExt, TryStreamExt, stream};
 use tokio::sync::watch;
 
+use restate_core::TaskCenter;
 use restate_core::network::transport_connector::test_util::MockConnector;
 use restate_core::test_env::{TestCoreEnv, TestCoreEnvBuilder, create_mock_nodes_config};
-use restate_core::{TaskCenter, TaskKind};
 use restate_storage_query_api::{QueryOptions, QuerySession, SessionOptions};
 use restate_types::cluster::cluster_state::PartitionProcessorStatus;
 use restate_types::cluster_state::NodeState;
@@ -238,11 +238,7 @@ async fn partition_state_reconciles_worker_reports() {
                 workers.get().unwrap()[&node].clone(),
                 router,
             );
-            let mut task = Box::pin(server.run());
-            assert!(task.as_mut().now_or_never().is_none());
-            TaskCenter::current()
-                .spawn(TaskKind::SystemService, "partition-state-worker", task)
-                .unwrap();
+            crate::mocks::spawn_query_server("partition-state-worker", server);
         }
     });
     // The configured generations; N7's is newer than the one gossip saw die.
@@ -286,11 +282,7 @@ async fn partition_state_reconciles_worker_reports() {
         coordinator_sources.clone(),
         &mut coordinator.router_builder,
     );
-    let mut task = Box::pin(server.run());
-    assert!(task.as_mut().now_or_never().is_none());
-    TaskCenter::current()
-        .spawn(TaskKind::SystemService, "partition-state-coordinator", task)
-        .unwrap();
+    crate::mocks::spawn_query_server("partition-state-coordinator", server);
     let coordinator = coordinator.build().await;
     coordinator_sources.register_node_scanner::<PartitionStateReports>(
         PartitionStateTable::create_reports_scanner(
