@@ -124,7 +124,8 @@ pub enum InvocationStatusScan {
     Ids(BTreeSet<InvocationId>),
     /// Iteration over stored keys, navigated by the prepared selection.
     Keys(Arc<KeySelection<InvocationStatusKey>>),
-    /// The invocations the entry index finds, newest created first, or the
+    /// The invocations the entry index finds, newest created first (or oldest
+    /// first, as the [`EntryIndexRead`] says), or the
     /// `fallback` iteration if the index can't stand in for it on the snapshot.
     /// `execution` is charged for the index read and learns which path it took.
     /// It serves one cursor: a request holds the execution of one partition

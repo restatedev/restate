@@ -316,33 +316,45 @@ async fn invocations_read_through_the_entry_index_match_v1() {
     // Every invocation of a service, newest first: the orphan is the oldest.
     let promises = "SELECT id FROM sys_invocation_status WHERE target_service_name = 'Promises' \
         ORDER BY created_at DESC NULLS LAST LIMIT 1000";
-    // The newest rows of named services, under conditions on what the read
-    // navigates, the service type and the key's presence: read through the
-    // index, wherever NULLs go, as `created_at` is never NULL. Rows that share a
-    // creation time differ only in it.
+    // The newest rows of named services, or the oldest, under conditions on
+    // what the read navigates, the service type and the key's presence: read
+    // through the index, forward or backward, wherever NULLs go, as
+    // `created_at` is never NULL. Rows that share a creation time differ only
+    // in it.
+    let window = |order: &str| {
+        format!(
+            "SELECT created_at FROM sys_invocation_status WHERE target_service_name = 'Promises' \
+             AND target_handler_name IN ('promise', 'run') \
+             AND created_at >= to_timestamp_millis({}) \
+             AND created_at < to_timestamp_millis({}) \
+             ORDER BY created_at {order} NULLS LAST LIMIT 7",
+            BASE + 10,
+            BASE + 400
+        )
+    };
     let indexed = [
         page.to_owned(),
         page.replace("LIMIT 51", "LIMIT 9 OFFSET 40"),
         "SELECT id, created_at FROM sys_invocation_status WHERE target_service_name = 'Many' \
          ORDER BY created_at DESC NULLS LAST LIMIT 3"
             .into(),
-        format!(
-            "SELECT created_at FROM sys_invocation_status WHERE target_service_name = 'Promises' \
-             AND target_handler_name IN ('promise', 'run') \
-             AND created_at >= to_timestamp_millis({}) \
-             AND created_at < to_timestamp_millis({}) \
-             ORDER BY created_at DESC NULLS LAST LIMIT 7",
-            BASE + 10,
-            BASE + 400
-        ),
+        window("DESC"),
         newest_counter.clone(),
         page.replace("DESC NULLS LAST", "DESC NULLS FIRST"),
         page.replace("DESC NULLS LAST", "DESC"),
+        // Backwards: Counter's one run, past many windows of statuses; two
+        // runs of a time window, which the read steps through key by key; and
+        // too many runs, which scan and sort oldest first.
+        oldest.to_owned(),
+        oldest.replace("LIMIT 250", "LIMIT 9 OFFSET 240"),
+        window("ASC"),
+        "SELECT id, created_at FROM sys_invocation_status WHERE target_service_name = 'Many' \
+         ORDER BY created_at ASC LIMIT 3"
+            .into(),
     ];
     // Scanned: another order, a tie-breaker, a condition outside the
     // allowlist, no LIMIT, or a view above the table.
     let scans = [
-        oldest.to_owned(),
         scheduled.to_owned(),
         page.replace("NULLS LAST", "NULLS LAST, id"),
         page.replace("target_service_key IS NOT NULL", "status = 'invoked'"),
@@ -359,14 +371,28 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         rows
     };
     // Each query's rows match V1's. Counter's pages have no tie-breaker, and
-    // its invocations come in pairs created together, one of them split by the
-    // oldest-first LIMIT: there, both must return the 250 oldest (or newest)
-    // creation times of the stored invocations, each invocation once.
+    // its invocations come in pairs created together, which a LIMIT or OFFSET
+    // may split: there, both return the same creation times, each invocation
+    // once, and the full pages the 250 oldest (or newest) stored.
     let matches_v1 = async |sql: &str, scheduled_stored: bool| {
         let (actual, expected) = (rows(new.as_ref(), sql).await, rows(old.as_ref(), sql).await);
+        if !sql.contains("'Counter'") || sql == scheduled {
+            assert_eq!(actual, expected, "{sql}");
+            return;
+        }
+        let times = |rows: &[Vec<String>]| -> Vec<u64> {
+            rows.iter().map(|row| created_of[&row[0]]).collect()
+        };
+        assert_eq!(times(&actual), times(&expected), "{sql}");
+        for rows in [&actual, &expected] {
+            assert_eq!(
+                rows.iter().collect::<HashSet<_>>().len(),
+                rows.len(),
+                "{sql}"
+            );
+        }
         let newest_first = sql == newest_counter;
         if sql != oldest && !newest_first {
-            assert_eq!(actual, expected, "{sql}");
             return;
         }
         let mut stored: Vec<u64> = created_of.values().copied().collect();
@@ -458,14 +484,14 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         matches_v1(sql, false).await;
     }
     assert!(!orphaned().await);
-    // The scan-routed pages read the partition's every status, without the
-    // index, and emit only those meeting the scan's predicate: Counter's 300 for
-    // the oldest-first page, none of them scheduled.
+    // The scan-routed page reads the partition's every status, without the
+    // index, and emits only those meeting the scan's predicate: none of
+    // Counter's are scheduled.
     let statuses: u64 = rows(old.as_ref(), "SELECT COUNT(*) FROM sys_invocation_status").await[0]
         [0]
     .parse()
     .unwrap();
-    for (sql, emitted) in [(oldest, 300), (scheduled, 0)] {
+    for (sql, emitted) in [(scheduled, 0)] {
         let plan = analyzed(sql).await;
         let source = plan
             .lines()
@@ -499,6 +525,46 @@ async fn invocations_read_through_the_entry_index_match_v1() {
     assert_eq!(metric(&plan, "entry_index_runs"), Some(1), "{plan}");
     assert!(
         metric(&plan, "entry_index_keys_examined") >= Some(120),
+        "{plan}"
+    );
+    // Oldest first, Counter's one run is read backwards: partitions merge
+    // without a sort, and the read stops after the LIMIT, having fetched the
+    // statuses of the windows it needed rather than all 300.
+    let plan = explained(oldest).await;
+    assert!(
+        plan.contains("index=_idx_entry_by_service_created")
+            && plan.contains("SortPreservingMergeExec")
+            && !plan.contains("SortExec:"),
+        "{plan}"
+    );
+    let plan = analyzed(oldest).await;
+    assert!(plan.contains("entry_index_reads=1"), "{plan}");
+    assert_eq!(metric(&plan, "entry_index_runs"), Some(1), "{plan}");
+    assert_eq!(metric(&plan, "entry_index_statuses"), Some(275), "{plan}");
+    assert!(
+        metric(&plan, "entry_index_keys_examined") < Some(300),
+        "{plan}"
+    );
+    // The time window's two runs, backwards: keys outside the window are
+    // stepped over one by one rather than sought past, and one window of
+    // statuses holds its 7 rows.
+    let plan = analyzed(&indexed[9]).await;
+    assert_eq!(
+        [
+            "entry_index_runs",
+            "entry_index_keys_examined",
+            "entry_index_statuses"
+        ]
+        .map(|name| metric(&plan, name)),
+        [Some(2), Some(46), Some(25)],
+        "{plan}"
+    );
+    // Too many runs: the read scans and sorts, before returning anything,
+    // oldest first too.
+    let plan = analyzed(&indexed[10]).await;
+    assert_eq!(
+        metric(&plan, "entry_index_scans_too_many_runs"),
+        Some(1),
         "{plan}"
     );
     // Too many runs: the read scans and sorts, before returning anything.
@@ -539,9 +605,27 @@ async fn invocations_read_through_the_entry_index_match_v1() {
             &InvocationStatus::Scheduled(ScheduledInvocation { metadata }),
         )
         .unwrap();
+        // With its entry, as in any migrated partition.
+        let created =
+            UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::new(scheduled_at(n)));
+        let key = EntryKey::new(false, created.to_unix_millis(), 4000 + n, EntryId::from(id));
+        tx.create_vqueue_entry_status(
+            &EntryContext {
+                qid: &VQueueId::custom(id.partition_key(), "q"),
+                target: &counter(format!("s{n}")).entry_target_ref(),
+            },
+            EntryStateRef {
+                stage: Stage::Inbox,
+                status: Status::Scheduled,
+                entry_key: &key,
+                metadata: &EntryMetadata::default(),
+                stats: &EntryStatistics::new(created, key.run_at()),
+            },
+        );
     }
     tx.commit().await.unwrap();
     drop(tx);
+    // Oldest first, the read now begins with them.
     matches_v1(oldest, true).await;
     matches_v1(scheduled, true).await;
     assert_eq!(

@@ -217,7 +217,7 @@ async fn stage_index_access_matches_scans_across_windows_and_owners() {
                         .accesses
                         .iter()
                         .all(|(_, access)| matches!(access, PrimaryRead::Index(index)
-                            if index.as_str() == "_idx_entry_by_queue")),
+                            if index.name() == "_idx_entry_by_queue")),
                     indexed,
                     "owners_receive_the_planned_access: {sql}: {:?}",
                     reads.accesses
@@ -543,15 +543,26 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
         let through_index = |accesses: &[(PartitionId, PrimaryRead)], sql: &str| {
             assert_eq!(accesses.len(), fixture.stores.len(), "{sql}");
             assert!(
-                accesses.iter().all(|(_, access)| matches!(access, PrimaryRead::Index(index) if index.as_str() == INDEX)),
+                accesses.iter().all(|(_, access)| matches!(access, PrimaryRead::Index(index) if index.name() == INDEX)),
                 "every_owner_reads_the_index: {sql}: {accesses:?}"
             );
         };
+        // Oldest first, the index is read backwards. Past the probes, which
+        // only the partitions that scan can find (below).
+        let oldest = exact.replace(
+            "ORDER BY created_at DESC",
+            &format!("AND created_at >= to_timestamp_millis({BASE}) ORDER BY created_at ASC"),
+        );
         for sql in [
             exact.to_owned(),
             exact.replace("LIMIT 51", "LIMIT 10 OFFSET 45"),
             "SELECT id FROM sys_invocation_status WHERE target_service_name = 'Many' \
              ORDER BY created_at DESC NULLS LAST LIMIT 3"
+                .to_owned(),
+            oldest.clone(),
+            oldest.replace("LIMIT 51", "LIMIT 10 OFFSET 45"),
+            "SELECT id FROM sys_invocation_status WHERE target_service_name = 'Many' \
+             ORDER BY created_at ASC NULLS LAST LIMIT 3"
                 .to_owned(),
         ] {
             let (rows, accesses) = run(&sql).await;
@@ -569,7 +580,6 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
             "SELECT id, created_at FROM sys_invocation_status WHERE target_service_name = 'Promises' \
              AND target_handler_name = 'promise' ORDER BY created_at DESC NULLS LAST, id LIMIT 40"
                 .to_owned(),
-            exact.replace("DESC", "ASC"),
             exact.replace("target_service_key IS NOT NULL", "status = 'invoked'"),
         ] {
             let (rows, accesses) = run(&sql).await;
@@ -581,14 +591,11 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
                 "{sql}: {accesses:?}"
             );
             assert!(!rows.is_empty(), "{sql}");
-            // The probes, oldest first, share their creation time.
-            let mut expected = scanned(&sql).await;
-            let mut rows = rows;
-            if sql.contains("ASC") {
-                rows.sort();
-                expected.sort();
-            }
-            assert_eq!(rows, expected, "parallelism {parallelism}: {sql}");
+            assert_eq!(
+                rows,
+                scanned(&sql).await,
+                "parallelism {parallelism}: {sql}"
+            );
         }
         // Only the partitions that scan find their invocation without an entry,
         // older than every other.
@@ -598,14 +605,16 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
              AND created_at < to_timestamp_millis({BASE}) \
              ORDER BY created_at DESC NULLS LAST LIMIT 20"
         );
-        let (mut rows, accesses) = run(&probes).await;
-        through_index(&accesses, &probes);
-        rows.sort();
-        assert_eq!(
-            rows,
-            [[format!("probe{UNMIGRATED}")], [format!("probe{UNREADY}")]],
-            "parallelism {parallelism}"
-        );
+        for probes in [probes.clone(), probes.replace("DESC", "ASC")] {
+            let (mut rows, accesses) = run(&probes).await;
+            through_index(&accesses, &probes);
+            rows.sort();
+            assert_eq!(
+                rows,
+                [[format!("probe{UNMIGRATED}")], [format!("probe{UNREADY}")]],
+                "parallelism {parallelism}: {probes}"
+            );
+        }
         assert_eq!(scanned(&probes).await.len(), fixture.stores.len());
         let plan = crate::mocks::rows(session.as_ref(), &format!("EXPLAIN {exact}"))
             .await
