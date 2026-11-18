@@ -12,6 +12,6 @@ mod collector;
 mod read_perf;
 mod write_perf;
 
-pub use self::collector::{RocksDbPerf, RocksDbPerfExt};
+pub use self::collector::{RocksDbPerf, RocksDbPerfExt, RocksDbPerfStreamExt};
 pub use self::read_perf::RocksDbReadPerfGuard;
 pub use self::write_perf::RocksDbWritePerfGuard;

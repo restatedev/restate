@@ -421,6 +421,37 @@ impl LocalMemoryPool {
     }
 }
 
+/// A budget that a read reserves from: a [`LocalMemoryPool`], or one that is
+/// [lent](crate::LentMemoryPool).
+pub trait ReserveMemory {
+    /// See [`LocalMemoryPool::try_reserve`].
+    fn try_reserve(&mut self, size: usize) -> Option<LocalMemoryLease>;
+
+    /// Reserves `size` bytes, waiting for memory to be released if needed.
+    /// Fails if waiting can't help.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel-safe: no memory is reserved until this returns.
+    fn reserve(
+        &mut self,
+        size: usize,
+    ) -> impl Future<Output = Result<LocalMemoryLease, OutOfMemory>> + Send;
+}
+
+impl ReserveMemory for LocalMemoryPool {
+    fn try_reserve(&mut self, size: usize) -> Option<LocalMemoryLease> {
+        LocalMemoryPool::try_reserve(self, size)
+    }
+
+    fn reserve(
+        &mut self,
+        size: usize,
+    ) -> impl Future<Output = Result<LocalMemoryLease, OutOfMemory>> + Send {
+        LocalMemoryPool::reserve(self, size, 0)
+    }
+}
+
 impl Drop for LocalMemoryPool {
     fn drop(&mut self) {
         // Atomically read the exact in-flight count AND set the dead bit in one

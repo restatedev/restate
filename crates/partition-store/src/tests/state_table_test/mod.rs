@@ -18,7 +18,8 @@ use bytestring::ByteString;
 use futures::{Stream, StreamExt};
 
 use restate_memory::{
-    ByteCount, LocalMemoryPool, MemoryPool, NonZeroByteCount, OutOfMemoryKind, PinnableMemoryStream,
+    ByteCount, LendableMemoryPool, LocalMemoryPool, MemoryPool, NonZeroByteCount, OutOfMemoryKind,
+    PinnableMemoryStream,
 };
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_storage_api::{BudgetedReadError, Transaction};
@@ -76,53 +77,28 @@ async fn prefix_scans<T: ReadStateTable>(table: &T) {
         (Bytes::from_static(b"k2"), Bytes::from_static(b"v2")),
     ];
 
-    assert_stream_eq(result, expected.clone()).await;
-
-    let mut budget = LocalMemoryPool::unlimited();
-    let stream = table
-        .get_all_user_states_budgeted(service_id, &mut budget)
-        .unwrap();
-    let got: Vec<_> = stream
-        .map(|entry| {
-            let (key, value, lease) = entry.unwrap();
-            assert!(lease.size() >= key.len() + value.len());
-            (key, value)
-        })
-        .collect()
-        .await;
-    assert_eq!(got, expected);
+    assert_stream_eq(result, expected).await;
 }
 
-async fn point_reads_budgeted<T: ReadStateTable>(table: &mut T) {
+async fn verify_budgeted_point_reads_after_delete(store: &mut PartitionStore) {
     let service_id = ServiceId::with_partition_key(1337, "svc-1", "key-1");
     let mut budget = LocalMemoryPool::unlimited();
 
-    // Whitelist interleaves present keys with an absent one: absent keys are
-    // omitted, present ones are returned with their leases.
-    let keys = vec![
-        ByteString::from_static("k2"),
-        ByteString::from_static("absent"),
-        ByteString::from_static("k1"),
-    ];
-    let stream = table
-        .get_user_states_budgeted(&service_id, keys.as_slice(), &mut budget)
-        .unwrap();
-    let got: Vec<(Bytes, Bytes)> = stream
-        .map(|entry| {
-            let (key, value, lease) = entry.expect("point read should not fail");
-            assert_eq!(lease.size(), key.len() + value.len());
-            (key, value)
-        })
-        .collect()
-        .await;
-
-    assert_eq!(
-        got,
-        vec![
-            (Bytes::from_static(b"k2"), Bytes::from_static(b"v2")),
-            (Bytes::from_static(b"k1"), Bytes::from_static(b"v1")),
-        ]
-    );
+    // A deleted or absent key reads as `None`, a present one comes with its lease.
+    for (key, expected) in [("k2", None), ("absent", None), ("k1", Some("v1"))] {
+        let got = store
+            .get_user_state_budgeted(&service_id, &ByteString::from_static(key), &mut budget)
+            .await
+            .expect("point read should not fail")
+            .map(|(value, lease)| {
+                assert_eq!(lease.size(), key.len() + value.len());
+                value
+            });
+        assert_eq!(
+            got,
+            expected.map(|value| Bytes::from_static(value.as_bytes()))
+        );
+    }
 }
 
 fn deletes<T: WriteStateTable>(table: &mut T) {
@@ -155,13 +131,33 @@ async fn verify_prefix_scan_after_delete<T: ReadStateTable>(table: &T) {
     assert_stream_eq(result, expected).await;
 }
 
+async fn verify_budgeted_prefix_scan_after_delete(store: &mut PartitionStore) {
+    let service_id = &ServiceId::with_partition_key(1337, "svc-1", "key-1");
+    let snapshot = store.snapshot().unwrap();
+    let mut budget = LendableMemoryPool::new(LocalMemoryPool::unlimited());
+    let stream = snapshot
+        .get_all_user_states_budgeted(service_id, budget.claim().await)
+        .unwrap();
+    let got: Vec<_> = stream
+        .map(|entry| {
+            let (key, value, lease) = entry.unwrap();
+            assert!(lease.size() >= key.len() + value.len());
+            (key, value)
+        })
+        .collect()
+        .await;
+    assert_eq!(
+        got,
+        vec![(Bytes::from_static(b"k1"), Bytes::from_static(b"v1"))]
+    );
+}
+
 pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     let mut txn = rocksdb.transaction();
 
     populate_data(&mut txn);
     point_lookup(&mut txn).await;
     prefix_scans(&txn).await;
-    point_reads_budgeted(&mut txn).await;
     deletes(&mut txn);
 
     txn.commit().await.expect("should not fail");
@@ -170,6 +166,10 @@ pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     let mut txn = rocksdb.transaction();
     verify_delete(&mut txn).await;
     verify_prefix_scan_after_delete(&txn).await;
+    drop(txn);
+
+    verify_budgeted_point_reads_after_delete(&mut rocksdb).await;
+    verify_budgeted_prefix_scan_after_delete(&mut rocksdb).await;
 }
 
 fn bounded_budget(capacity: usize, upper_bound: usize) -> (MemoryPool, LocalMemoryPool) {
@@ -213,25 +213,21 @@ async fn budgeted_point_reads_are_lazy_and_snapshot_consistent() {
         drop(txn);
 
         let mut snapshot_store = store.clone();
-        let mut snapshot = snapshot_store.snapshot().unwrap();
+        let snapshot = snapshot_store.snapshot().unwrap();
         let keys = [
             ByteString::from_static("k2"),
             ByteString::from_static("absent"),
             ByteString::from_static("k1"),
         ];
-        let (pool, mut budget) = bounded_budget(1024, 1024);
-        let mut live = Box::pin(
-            store
-                .get_user_states_budgeted(&service_id, &keys, &mut budget)
+        let mut live_budget = LocalMemoryPool::unlimited();
+        let (pool, budget) = bounded_budget(1024, 1024);
+        let mut budget = LendableMemoryPool::new(budget);
+        let mut frozen = Box::pin(
+            snapshot
+                .get_user_states_budgeted(&service_id, &keys, budget.claim().await)
                 .unwrap(),
         );
         assert_eq!(pool.used(), ByteCount::ZERO);
-        let mut snapshot_budget = LocalMemoryPool::unlimited();
-        let mut frozen = Box::pin(
-            snapshot
-                .get_user_states_budgeted(&service_id, &keys, &mut snapshot_budget)
-                .unwrap(),
-        );
 
         // Writes after the snapshot must be visible to the live reader,
         // but not to the snapshot.
@@ -239,24 +235,21 @@ async fn budgeted_point_reads_are_lazy_and_snapshot_consistent() {
         txn.put_user_state(&service_id, &k2, b"new").unwrap();
         txn.commit().await.unwrap();
         drop(txn);
-        let (key, value, lease) = live.next().await.unwrap().unwrap();
-        assert_eq!((key, value), (k2.clone(), Bytes::from_static(b"new")));
+        let (value, lease) = store
+            .get_user_state_budgeted(&service_id, &keys[0], &mut live_budget)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(value, Bytes::from_static(b"new"));
         assert_eq!(lease.size(), 5);
-        assert_eq!(pool.used(), ByteCount::from(5_usize));
-        drop(lease);
-        let (key, value, _) = frozen.next().await.unwrap().unwrap();
+        let (key, value, lease) = frozen.next().await.unwrap().unwrap();
         assert_eq!((key, value), (k2, Bytes::from_static(b"buffered")));
+        assert_eq!(lease.size(), 10);
+        // The next key is not read when yielding the first entry.
+        assert_eq!(pool.used(), ByteCount::from(10_usize));
 
-        // The next key is not prefetched when yielding the first entry.
-        let mut txn = writer.transaction();
-        txn.put_user_state(&service_id, &k1, b"latest").unwrap();
-        txn.commit().await.unwrap();
-        drop(txn);
-        let (key, value, _) = live.next().await.unwrap().unwrap();
-        assert_eq!((key, value), (k1.clone(), Bytes::from_static(b"latest")));
         let (key, value, _) = frozen.next().await.unwrap().unwrap();
         assert_eq!((key, value), (k1, Bytes::from_static(b"old")));
-        assert!(live.next().await.is_none());
         assert!(frozen.next().await.is_none());
     }
 }
@@ -266,25 +259,32 @@ async fn budgeted_point_reads_wait_wake_and_cancel() {
     let mut store = storage_test_environment().await;
     let mut txn = store.transaction();
     populate_data(&mut txn);
+    txn.commit().await.unwrap();
+    drop(txn);
     let service_id = ServiceId::with_partition_key(1337, "svc-1", "key-1");
     let keys = [ByteString::from_static("k1")];
+    let mut snapshot_store = store.clone();
+    let snapshot = snapshot_store.snapshot().unwrap();
     let (_pool, mut budget) = bounded_budget(4, 4);
     let held = budget.try_reserve(4).unwrap();
+    let mut budget = LendableMemoryPool::new(budget);
     let counter = Arc::new(WakeCounter::default());
     let waker = counter.clone().into();
     let mut cx = Context::from_waker(&waker);
 
     // Cancellation while waiting must not leak a reservation.
     let mut stream = Box::pin(
-        txn.get_user_states_budgeted(&service_id, &keys, &mut budget)
+        snapshot
+            .get_user_states_budgeted(&service_id, &keys, budget.claim().await)
             .unwrap(),
     );
     assert!(stream.as_mut().poll_next(&mut cx).is_pending());
     drop(stream);
-    assert_eq!(budget.in_flight(), 4);
+    assert_eq!(budget.claim().await.in_flight(), 4);
 
     let mut stream = Box::pin(
-        txn.get_user_states_budgeted(&service_id, &keys, &mut budget)
+        snapshot
+            .get_user_states_budgeted(&service_id, &keys, budget.claim().await)
             .unwrap(),
     );
     assert!(stream.as_mut().poll_next(&mut cx).is_pending());
@@ -302,9 +302,7 @@ async fn budgeted_point_reads_wait_wake_and_cancel() {
     assert!(stream.next().await.is_none());
     drop(stream);
     drop(lease);
-    assert_eq!(budget.in_flight(), 0);
-    txn.commit().await.unwrap();
-    drop(txn);
+    assert_eq!(budget.claim().await.in_flight(), 0);
 
     // A non-snapshot point read must recheck a value that grows while waiting.
     // Cancelling the second wait must also release the already acquired portion.
@@ -312,20 +310,16 @@ async fn budgeted_point_reads_wait_wake_and_cancel() {
     let (_pool, mut budget) = bounded_budget(8, 8);
     let first_held = budget.try_reserve(4).unwrap();
     let second_held = budget.try_reserve(4).unwrap();
-    let mut stream = Box::pin(
-        store
-            .get_user_states_budgeted(&service_id, &keys, &mut budget)
-            .unwrap(),
-    );
-    assert!(stream.as_mut().poll_next(&mut cx).is_pending());
+    let mut read = Box::pin(store.get_user_state_budgeted(&service_id, &keys[0], &mut budget));
+    assert!(read.as_mut().poll(&mut cx).is_pending());
     let mut txn = writer.transaction();
     txn.put_user_state(&service_id, &Bytes::from_static(b"k1"), b"longer")
         .unwrap();
     txn.commit().await.unwrap();
     drop(txn);
     drop(first_held);
-    assert!(stream.as_mut().poll_next(&mut cx).is_pending());
-    drop(stream);
+    assert!(read.as_mut().poll(&mut cx).is_pending());
+    drop(read);
     assert_eq!(budget.in_flight(), 4);
     drop(second_held);
     assert_eq!(budget.in_flight(), 0);
@@ -336,6 +330,9 @@ async fn budgeted_point_reads_reject_infeasible_reservations() {
     let mut store = storage_test_environment().await;
     let mut txn = store.transaction();
     populate_data(&mut txn);
+    txn.commit().await.unwrap();
+    drop(txn);
+    let snapshot = store.snapshot().unwrap();
     let service_id = ServiceId::with_partition_key(1337, "svc-1", "key-1");
     let keys = [ByteString::from_static("k1"), ByteString::from_static("k2")];
 
@@ -344,9 +341,11 @@ async fn budgeted_point_reads_reject_infeasible_reservations() {
         (8, 4, true, OutOfMemoryKind::UpperBoundExceeded),
         (4, 8, true, OutOfMemoryKind::PoolExhausted),
     ] {
-        let (_pool, mut budget) = bounded_budget(capacity, upper_bound);
+        let (_pool, budget) = bounded_budget(capacity, upper_bound);
+        let mut budget = LendableMemoryPool::new(budget);
         let mut stream = Box::pin(
-            txn.get_user_states_budgeted(&service_id, &keys, &mut budget)
+            snapshot
+                .get_user_states_budgeted(&service_id, &keys, budget.claim().await)
                 .unwrap(),
         );
         let retained = if pin_first {
@@ -367,9 +366,8 @@ async fn budgeted_point_reads_reject_infeasible_reservations() {
         );
         drop(stream);
         drop(retained);
-        assert_eq!(budget.in_flight(), 0);
+        assert_eq!(budget.claim().await.in_flight(), 0);
     }
-    drop(txn);
 }
 
 #[restate_core::test]

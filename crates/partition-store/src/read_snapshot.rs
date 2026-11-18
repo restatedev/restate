@@ -99,10 +99,9 @@ impl PartitionReadSnapshot {
     pub fn scan<B: AsRef<[u8]>>(
         &self,
         scan: PhysicalScan<B>,
-        mut options: ReadOptions,
+        options: ReadOptions,
     ) -> PartitionSnapshotScan<'_> {
-        scan.configure(&mut options);
-        let mut iterator = self.inner.iterator(scan.key_kind(), options);
+        let mut iterator = self.unpositioned_scan(&scan, options);
         iterator.seek(scan.start().as_ref());
         iterator
     }
@@ -115,5 +114,26 @@ impl PartitionReadSnapshot {
         options: ReadOptions,
     ) -> PartitionSnapshotScan<'static> {
         self.scan(scan, options).into_owned()
+    }
+
+    /// Like [`Self::scan`], but the iterator isn't positioned yet: seeking is
+    /// left to the caller, so this doesn't read anything.
+    pub(crate) fn unpositioned_scan<B: AsRef<[u8]>>(
+        &self,
+        scan: &PhysicalScan<B>,
+        mut options: ReadOptions,
+    ) -> PartitionSnapshotScan<'_> {
+        scan.configure(&mut options);
+        self.inner.iterator(scan.key_kind(), options)
+    }
+
+    /// Like [`Self::unpositioned_scan`], but the iterator holds its own clone of
+    /// the snapshot, so it can be kept across pauses and moved between threads.
+    pub(crate) fn owned_unpositioned_scan<B: AsRef<[u8]>>(
+        &self,
+        scan: &PhysicalScan<B>,
+        options: ReadOptions,
+    ) -> PartitionSnapshotScan<'static> {
+        self.unpositioned_scan(scan, options).into_owned()
     }
 }
