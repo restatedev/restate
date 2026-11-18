@@ -20,6 +20,7 @@ use futures::StreamExt;
 use restate_core::TestCoreEnvBuilder;
 use restate_partition_store::job::MigrationJobId;
 use restate_partition_store::keys::KeyKind;
+use restate_partition_store::registry::MigrationOnUnknown;
 use restate_partition_store::registry::records::RecordKey;
 use restate_partition_store::walk::DriverState;
 use restate_partition_store::{PartitionStoreManager, QueryIoExecutor};
@@ -31,6 +32,7 @@ use restate_types::identifiers::PartitionId;
 use restate_types::nodes_config::Role;
 use restate_types::partitions::Partition;
 use restate_types::sharding::KeyRange;
+use restate_util_string::ReString;
 
 use super::*;
 use crate::mocks::{AlwaysLocalPartitionLocator, NoopSvc};
@@ -144,17 +146,61 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         .unwrap()
         .await
         .unwrap();
-    let rendered = batches::<RegistryBuilder, _>(
-        RegistryBuilder::schema(),
-        16,
-        super::indexes(&report, None),
-        |builder, (replica, index)| {
-            append_index(builder, GenerationalNodeId::new(1, 1), replica, index)
-        },
-    )
-    .unwrap();
+    let render = |report: &MigrationReport| {
+        batches::<RegistryBuilder, _>(
+            RegistryBuilder::schema(),
+            16,
+            entries(report, None),
+            |builder, (replica, entry)| {
+                append_entry(builder, GenerationalNodeId::new(1, 1), replica, entry)
+            },
+        )
+        .unwrap()
+    };
+    let rendered = render(&report);
     let sizes = rendered[0].column_by_name("approx_size_bytes").unwrap();
     assert_eq!((sizes.len(), sizes.null_count()), (6, 6));
+
+    // Migrations follow a replica's indexes: one in progress, with its job, and
+    // one complete, with its completion time; neither has a size.
+    let mut replica = report.replicas[0].clone();
+    let entries = &mut replica.registry;
+    let by = || ReString::from_static("1.8.2");
+    let running = entries
+        .register_migration("cleanup/1", MigrationOnUnknown::Keep, 1_000, by())
+        .unwrap();
+    let done = entries
+        .register_migration("cleanup/2", MigrationOnUnknown::Keep, 1_000, by())
+        .unwrap();
+    entries.complete(done, 2_000, by()).unwrap();
+    replica.index_sizes.insert(done, 1);
+    let rendered = render(&MigrationReport {
+        replicas: vec![replica],
+        unreadable: Vec::new(),
+    });
+    let column = |name| rendered[0].column_by_name(name).unwrap();
+    let text = |name| column(name).as_string::<i32>().clone();
+    let (kind, status) = (text("kind"), text("status"));
+    let (job, completed) = (column("job_id"), column("completed_at"));
+    assert_eq!(
+        [3, 4].map(|row| (kind.value(row), status.value(row), job.is_null(row))),
+        [
+            ("migration", "in_progress", false),
+            ("migration", "complete", true)
+        ]
+    );
+    assert_eq!(
+        job.as_primitive::<datafusion::arrow::datatypes::UInt32Type>()
+            .value(3),
+        running
+    );
+    assert_eq!(
+        completed
+            .as_primitive::<datafusion::arrow::datatypes::TimestampMillisecondType>()
+            .value(4),
+        2_000
+    );
+    assert!(completed.is_null(3) && column("approx_size_bytes").is_null(4));
 
     // `blocked_by` renders the reason the replica's driver reports for an
     // unfinished job, and NULL for a finished one.
@@ -167,10 +213,18 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
     assert!(finished.status.is_finished() && finished.expires_at.is_some());
     let mut running = finished.clone();
     running.status = MigrationJobStatus::Running;
+    // A migration's job is active, whatever its name.
+    let mut migration = finished.clone();
+    (migration.kind, migration.name) = (MigrationJobKind::Migration, "cleanup/1".into());
     let rendered = batches::<MigrationJobsBuilder, _>(
         MigrationJobsBuilder::schema(),
         16,
-        [(&replica, &running), (&replica, &finished)].into_iter(),
+        [
+            (&replica, &running),
+            (&replica, &finished),
+            (&replica, &migration),
+        ]
+        .into_iter(),
         |builder, (replica, job)| {
             let now = tokio::time::Instant::now();
             append_job(builder, GenerationalNodeId::new(1, 1), replica, job, 0, now)
@@ -184,6 +238,17 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
     assert_eq!(
         (reasons.value(0), reasons.is_null(1)),
         ("background-migrations-disabled", true)
+    );
+    let column = |name| {
+        rendered[0]
+            .column_by_name(name)
+            .unwrap()
+            .as_string::<i32>()
+            .clone()
+    };
+    assert_eq!(
+        (column("kind").value(2), column("mode").value(2)),
+        ("migration", "active")
     );
 
     let partitions = ctx

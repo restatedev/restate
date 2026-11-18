@@ -8,9 +8,27 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+//! Migrations of a partition store's data, in two kinds.
+//!
+//! # Which kind of migration do I need?
+//!
+//! | | Startup migration | Online migration |
+//! |---|---|---|
+//! | Runs | at open, before the processor starts | in slices between the processor's commands |
+//! | Serving meanwhile | no | yes |
+//! | For | layout changes foreground code must see complete | cleanups and conversions that tolerate foreground writes |
+//! | Completion | the storage-feature ledger | the registry entry `Complete` |
+//! | Lives in | this module, enabled by a storage feature (`crate::features`) | [`online`], one file each |
+//!
+//! Prefer an online migration: a partition with much data stays unavailable
+//! for the whole of a startup migration. Choose a startup migration only when
+//! commands can't run correctly until every row is converted, for example when
+//! they read a table in its new layout only.
+
 pub mod migrate_to_locks_table;
 pub mod migrate_to_scoped_promise_table;
 pub mod migrate_to_scoped_state_table;
+pub(crate) mod online;
 
 use std::num::NonZeroU16;
 use std::sync::Arc;

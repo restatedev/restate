@@ -41,12 +41,11 @@ use restate_types::identifiers::PartitionId;
 use restate_types::sharding::KeyRange;
 
 use crate::job::{MigrationJob, MigrationJobStatus, MigrationJobs};
-use crate::keys::{DecodeTableKey, IndexKeyPrefix, KeyKind};
+use crate::keys::{IndexKeyPrefix, KeyKind};
 use crate::registry::records::{self, RecordsError};
 use crate::registry::{IndexKind, Registry};
 use crate::stats::AggregateKeyPrefix;
-use crate::vqueue_table::EntryStatusKey;
-use crate::walk::{DriverState, Source, Walk, Walks};
+use crate::walk::{DriverState, Walk, Walks};
 use crate::{PartitionDb, PartitionReadSnapshot, PartitionStoreManager};
 
 use super::QueryIoExecutor;
@@ -74,10 +73,10 @@ pub struct ReplicaMigrations {
 
 impl ReplicaMigrations {
     /// How far `walk` is through this replica's key range, in percent: the
-    /// position of its cursor's partition key. Approximate, because entries spread
+    /// position of its cursor's partition key. Approximate, because rows spread
     /// over the range by hashing, and never evidence of completion. `None` for a
-    /// walk whose source isn't entry statuses, including a source this binary
-    /// doesn't know, before the first slice, or when the range holds a single key.
+    /// walk over a source this binary doesn't know, before the first slice, or
+    /// when the range holds a single key.
     pub fn progress_percent(&self, walk: &Walk) -> Option<u32> {
         let (done, span) = self.position(walk)?;
         u32::try_from(done * 100 / span).ok()
@@ -129,7 +128,7 @@ impl ReplicaMigrations {
             return Some("background-migrations-disabled");
         }
         let id = job.id().as_u32();
-        let walk = self.registry.get(id).and_then(|index| index.walk);
+        let walk = self.registry.walk_of(id);
         let may_start = job.status == Waiting
             && driver
                 .eligible_at
@@ -161,14 +160,10 @@ impl ReplicaMigrations {
     /// How many partition keys of this replica's range `walk`'s cursor is past, and
     /// how many the range spans.
     fn position(&self, walk: &Walk) -> Option<(u128, u128)> {
-        if walk.source() != Some(Source::EntryStatus) {
-            return None;
-        }
-        let mut cursor = walk.cursor.as_deref()?;
-        let key = EntryStatusKey::deserialize_from(&mut cursor).ok()?;
+        let cursor = walk.source()?.partition_key(walk.cursor.as_deref()?).ok()?;
         let (start, end) = (self.key_range.start(), self.key_range.end());
         let span = u128::from(end.checked_sub(start).filter(|span| *span > 0)?);
-        let done = u128::from(key.id.partition_key().checked_sub(start)?);
+        let done = u128::from(cursor.checked_sub(start)?);
         Some((done.min(span), span))
     }
 }

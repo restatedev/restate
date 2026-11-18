@@ -56,12 +56,18 @@
 //! a slice at a time (see [`crate::walk::engine`]).
 
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::{EntryContext, EntryStateRef, EntryStatusHeader};
+use restate_storage_api::vqueue_table::{
+    EntryContext, EntryStateRef, EntryStatusHeader, OwnedEntryStatusHeader,
+};
+use restate_types::identifiers::BaseEntryId;
 
 use crate::job::{MigrationJob, MigrationJobId, MigrationJobRecords, MigrationJobStatus, Stamp};
+use crate::keys::DecodeTableKey;
 use crate::stats::aggregated::backfill::with_entry_target;
-use crate::vqueue_table::EntryStatusKey;
-use crate::walk::engine::{self, Settlement, SourceEntry, Staged, WalkJob, walk_error};
+use crate::vqueue_table::{EntryStatusKey, decode_entry_status};
+#[cfg(test)]
+use crate::walk::engine::SourceEntry;
+use crate::walk::engine::{self, Settlement, Staged, WalkJob, walk_error};
 use crate::walk::{Source, WalkKind, Walks};
 use crate::{PartitionDb, PartitionStoreTransaction};
 
@@ -97,15 +103,24 @@ impl IndexBackfill {
 }
 
 impl WalkJob for IndexBackfill {
+    /// An entry status: the entry's ID and its decoded header.
+    type Entry = (BaseEntryId, OwnedEntryStatusHeader);
+
+    fn decode(raw: &[u8], value: &[u8]) -> Result<Self::Entry, StorageError> {
+        let entry = EntryStatusKey::deserialize_from(&mut &raw[..])?.id;
+        Ok((entry, decode_entry_status(&entry, value)?))
+    }
+
     fn job_ids(&self) -> impl Iterator<Item = u32> {
         self.members.iter().map(|(_, id)| *id)
     }
 
     fn stage(
-        &self,
+        &mut self,
         tx: &mut PartitionStoreTransaction<'_>,
         db: &PartitionDb,
-        (key, entry, header): &SourceEntry,
+        key: &[u8],
+        (entry, header): &Self::Entry,
     ) -> Result<Staged, StorageError> {
         let touched_by = header.touched_by();
         let mut staged = Staged::default();
@@ -123,7 +138,6 @@ impl WalkJob for IndexBackfill {
             return Ok(staged);
         }
         let key: [u8; EntryStatusKey::serialized_length_fixed()] = key
-            .as_slice()
             .try_into()
             .map_err(|_| StorageError::DataIntegrityError)?;
         let state = EntryStateRef::from_header(header);
@@ -211,7 +225,7 @@ pub(crate) fn start(
     at: u64,
 ) -> Result<Option<u64>, StorageError> {
     let registry_error = |err: RegistryError| StorageError::Conversion(err.into());
-    let walk = match engine::last_key(db)? {
+    let walk = match engine::last_key(db, Source::EntryStatus)? {
         None => None,
         Some(end) => Some(
             walks

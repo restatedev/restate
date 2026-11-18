@@ -4,22 +4,27 @@
 
 ### What Changed
 Two new cluster tables show the indexes and statistics of each partition
-replica, and the background migrations that build them:
+replica, the one-time data migrations it runs in the background, and the
+background jobs doing that work:
 
 - `restate.cluster.registry`: one row per index or statistic on each replica,
   with its definition, its status (`backfilling`, `ready` or `dropped`), when it
   was registered, became ready or was dropped, why it was dropped, and an
   estimate of the storage it takes, including writes not yet flushed
-  (`approx_size_bytes`).
-- `restate.cluster.migration_jobs`: one row per background migration on each
-  replica, with its status (`pending`, `running`, `waiting`, `completed` or
-  `cancelled`), its progress and an estimate of when the current pass ends
-  (`eta`), the rows it examined and filled, its work time, and its failures
-  with the last error. `blocked_by` gives the reason the replica last saw for
-  it not to progress: `background-migrations-disabled`, `snapshot-export`,
-  `failure-backoff` or `throttled`. A snapshot export shows from the moment
-  the replica next checks for one, and NULL only means no reason is known,
-  not that the migration is progressing. Finished migrations stay listed for
+  (`approx_size_bytes`). One-time migrations are listed too, with kind
+  `migration`, status `in_progress` or `complete`, and when they completed
+  (`completed_at`).
+- `restate.cluster.migration_jobs`: one row per background job on each
+  replica, building an index (`index_backfill`) or running a one-time
+  migration (`migration`), with its status (`pending`, `running`, `waiting`,
+  `completed` or `cancelled`), its progress and an estimate of when the current
+  pass ends (`eta`), the rows it examined and filled (or changed, for a
+  migration), its work time, and its failures with the last error.
+  `blocked_by` gives the reason the replica last saw for it not to progress:
+  `background-migrations-disabled`, `snapshot-export`, `failure-backoff` or
+  `throttled`. A snapshot export shows from the moment the replica next checks
+  for one, and NULL only means no reason is known, not that the job is
+  progressing. Finished jobs stay listed for
   `worker.storage.finished-migration-jobs-retention` (24 hours by default)
   after they finished.
 
@@ -28,7 +33,7 @@ replicas of one partition can show different progress.
 
 ### Why This Matters
 You can check whether an index or statistic is usable on every replica, follow
-a backfill while it runs, and see why one is stuck.
+a backfill or a migration while it runs, and see why one is stuck.
 
 ### Impact on Users
 - New tables only; existing queries are unchanged.
@@ -58,7 +63,15 @@ ORDER BY approx_size_bytes DESC NULLS LAST
 LIMIT 10;
 ```
 
-Backfills in progress, and whether they fail:
+Migrations not yet complete everywhere:
+
+```sql
+SELECT partition_id, plain_node_id, definition, status
+FROM restate.cluster.registry
+WHERE kind = 'migration' AND status <> 'complete';
+```
+
+Backfills and migrations in progress, and whether they fail:
 
 ```sql
 SELECT partition_id, plain_node_id, name, status, progress_percent, eta,

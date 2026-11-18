@@ -13,16 +13,19 @@ kind, one partition's data is one contiguous range of keys.
 
 This crate also owns the store's **derived data**: secondary indexes and
 statistics computed from the stored tables, and the machinery that builds them
-while the partition keeps running. Read the rest before adding an index, a
-statistic, a data migration or a backfill here or in the worker.
+while the partition keeps running. The same machinery runs **one-time
+migrations** of stored data online. Read the rest before adding an index, a
+statistic, a data migration or a backfill here or in the worker; to write a
+migration, start with the guide in `src/migrations/online.rs`.
 
 ## The concepts, in the order you need them
 
 **Source tables.** Derived data is computed from a *source table*: one of the
 store's tables whose rows are read by the mechanisms below. Today the only
-source is the virtual queues' `entry_status` table: the walk records name it,
-and the definitions apply to its rows. Supporting other source tables is the
-design direction; this document uses `entry_status` as its running example.
+source of indexes is the virtual queues' `entry_status` table: the walk records
+name it, and the definitions apply to its rows. One-time migrations may walk
+other tables (`walk::Source`). This document uses `entry_status` as its running
+example.
 Its rows describe each queued unit of work (an *entry*, for example an
 invocation): its stage (inbox, running, suspended, finished, …), its status, its
 timing statistics, and more. Where this document says "entry", read "a row of
@@ -77,10 +80,11 @@ dropped; the next write then drops it. Each source table stores its tokens in
 its own rows; for the example, that is the `entry_status` header.
 
 **Registry.** The per-store record of which indexes exist, with their
-definition name, ID and status (`src/registry.rs`). An index being built points
-to its **walk**, recorded next to the registry (`src/walk.rs`): the walk has its
-own ID and holds the traversal's progress, and several indexes built together
-share one walk. Both records are local to the store, not replicated: two
+definition name, ID and status, and of the one-time migrations the store runs
+or ran (`src/registry.rs`). An index being built, or a migration in progress,
+points to its **walk**, recorded next to the registry (`src/walk.rs`): the walk
+has its own ID and holds the traversal's progress, and several indexes built
+together share one walk. Both records are local to the store, not replicated: two
 replicas of one partition can be at different points, which is normal. The
 registry, each walk and each migration job have a key of their own, under one
 key kind (`src/registry/records.rs`), so a slice writes only the records it
@@ -89,11 +93,12 @@ changes.
 **Definition families.** Definitions released together are grouped in a
 *family*, switched on by the same configuration options.
 
-**Migration job.** The general unit of maintenance work, today building an
-index. Each index has a build job with the same ID, recorded next to the
-registry (`src/job.rs`): its status, when it started and finished, and what
-its slices did, and when a waiting job may start its next pass. The registry
-decides whether an index is Ready, and the walk holds where its work resumes and
+**Migration job.** The general unit of maintenance work: building an index or
+running a one-time migration. Each index and each migration in progress has a
+job with the same ID, recorded next to the registry (`src/job.rs`): its
+status, when it started and finished, and what its slices did, and when a
+waiting job may start its next pass. The registry decides whether an index is
+Ready or a migration Complete, and the walk holds where its work resumes and
 the evidence for completing it; a job record can be rebuilt from the registry.
 Finished jobs are kept for `worker.storage.finished-migration-jobs-retention`,
 24 hours by default, then hidden and removed by compaction.
@@ -139,9 +144,10 @@ are their foundation.
    (`src/registry/records.rs`); their key layout and record kinds are
    append-only too. Rename in code freely; never renumber.
 9. **The `registry` storage feature fences older binaries.** It is set with
-   the first registration and records a minimum Restate version, so an older
-   binary, which doesn't know tokens and index keys, refuses to open the store
-   because of that version floor rather than ignoring them.
+   the first index registration and records a minimum Restate version, so an
+   older binary, which doesn't know tokens and index keys, refuses to open the
+   store because of that version floor rather than ignoring them. Migrations
+   register only on a store that has it, and never set it.
 10. **Every definition declares the Restate version that introduced it**
     (`introduced:` next to `definition:`). A node of an older version can't
     maintain or read the definition's indexes, so a query coordinator must
@@ -149,11 +155,16 @@ are their foundation.
     that version. The V2 planner checks this, against the versions the worker
     nodes recorded, before it reads an index in place of its primary. The version is code,
     not stored data: it is never persisted.
+11. **A migration's name is never reused.** A store runs each `name/N` once and
+    keeps its entry forever, so a migration that changes in any way is a new
+    version, `name/N+1`, which runs again on every store. From the release that
+    adds it, foreground writes must already produce the migrated form: the walk
+    never visits rows written behind its cursor or after its end.
 
 ## Don'ts
 
 Don't read a Backfilling index, or a newer registry than your snapshot. Don't
 reuse a row read in an earlier transaction as an old state. Don't renumber tags,
-enums or storage keys. Don't reuse an ID, or change a definition without
-renaming it. Don't add an option, feature or definition without a
+enums or storage keys. Don't reuse an ID, or change a definition or a
+migration without renaming it. Don't add an option, feature or definition without a
 `Since vX.Y.Z` note.

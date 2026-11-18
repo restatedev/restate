@@ -8,7 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! The local registry of secondary and aggregate indexes.
+//! The local registry of a partition store's indexes and one-time migrations.
+//!
+//! The registry holds two kinds of entries, numbered by one counter:
+//!
+//! | Entry | Life | Run by | Defined in |
+//! |---|---|---|---|
+//! | [`Index`] | Backfilling ─▶ Ready ─▶ Dropped | its build job, on a walk | an index definition, below |
+//! | [`Migration`] | InProgress ─▶ Complete | its job, on a walk | an `OnlineMigration` (`migrations::online`) |
+//!
+//! This page describes indexes; [`migration`] describes migrations.
 //!
 //! An **index definition** is code-defined, with a stable name that includes its
 //! semantic version, such as `"entry_by_stage_service/1"`. Changing its
@@ -24,16 +33,17 @@
 //! different index IDs to the same definition. Queries therefore name the
 //! definition and resolve the index ID against an admitted snapshot.
 //!
-//! The registry, its walks and its build jobs are stored under one key kind,
+//! The registry, its walks and its jobs are stored under one key kind,
 //! one key per record ([`records`]).
 //!
-//! # Index IDs
+//! # IDs
 //!
-//! One counter issues IDs for secondary and aggregate indexes alike, starting at
-//! [`FIRST_ID`], so that an entry's tokens are never ambiguous. IDs are
-//! never reused, not even after an index is dropped, and fit the `u32` of both key
-//! prefixes. Registering a definition that already has a maintained index returns
-//! that index; ordinary reopening therefore consumes no IDs.
+//! One counter issues IDs for secondary and aggregate indexes and migrations
+//! alike, starting at [`FIRST_ID`], so that an entry's tokens are never
+//! ambiguous and an entry's job can have the entry's ID. IDs are never reused,
+//! not even after an index is dropped, and fit the `u32` of both key prefixes.
+//! Registering a definition that already has a maintained index returns that
+//! index; ordinary reopening therefore consumes no IDs.
 //!
 //! ```
 //! use restate_partition_store::registry::{IndexKind, IndexStatus, Registry};
@@ -55,6 +65,7 @@ use restate_util_string::ReString;
 
 mod active;
 mod backfill;
+pub mod migration;
 mod reconcile;
 pub mod records;
 
@@ -62,6 +73,7 @@ pub mod records;
 pub(crate) use active::TEST_INTRODUCED;
 pub(crate) use active::{Family, INDEX_DEFINITIONS, IndexDefinition, PublishedRegistry};
 pub(crate) use backfill::{IndexBackfill, start as start_backfill};
+pub use migration::{Migration, MigrationOnUnknown, MigrationState, MigrationTimeline};
 pub(crate) use reconcile::{FAMILIES, FenceState, Requests};
 
 /// Whether this binary's definition `name` fills rows itself (`Some(true)`, an
@@ -252,7 +264,7 @@ pub struct IndexNotReady {
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RegistryError {
-    #[error("all {} index IDs of this store are allocated", u32::MAX - FIRST_ID + 1)]
+    #[error("all {} IDs of this store's registry are allocated", u32::MAX - FIRST_ID + 1)]
     Exhausted,
     #[error("unsupported registry format {0}; this binary supports format {FORMAT}")]
     UnsupportedFormat(u32),
@@ -260,8 +272,10 @@ pub enum RegistryError {
     KindMismatch(ReString),
     #[error("indexes must be secondary or aggregate")]
     UnknownKind,
-    #[error("no index has ID {0}")]
+    #[error("no entry has ID {0}")]
     UnknownId(u32),
+    #[error("migration {0} is not in progress")]
+    NotInProgress(u32),
     #[error("index {id} cannot change from {from:?} to {to:?}")]
     InvalidTransition {
         id: u32,
@@ -274,8 +288,9 @@ pub enum RegistryError {
     Invalid(&'static str),
 }
 
-/// The indexes of one partition store and the counters that issue their IDs
-/// and their walks' IDs. Persisted tags never change meaning (README rule 8).
+/// The indexes and migrations of one partition store, and the counters that
+/// issue their IDs and their walks' IDs. Persisted tags never change meaning
+/// (README rule 8).
 #[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
 pub struct Registry {
     /// A newer format must not be rewritten by this binary: re-encoding would
@@ -290,6 +305,9 @@ pub struct Registry {
     /// The next walk ID to issue, never 0; `u64::MAX` is never issued.
     #[bilrost(4)]
     next_walk_id: u64,
+    /// The one-time migrations, complete ones included, in registration order.
+    #[bilrost(5)]
+    migrations: Vec<Migration>,
 }
 
 impl Default for Registry {
@@ -299,6 +317,7 @@ impl Default for Registry {
             next_id: u64::from(FIRST_ID),
             indexes: Vec::new(),
             next_walk_id: FIRST_WALK_ID,
+            migrations: Vec::new(),
         }
     }
 }
@@ -325,13 +344,17 @@ impl Registry {
         }
         let mut ids = std::collections::BTreeSet::new();
         let mut active = std::collections::BTreeSet::new();
+        let mut issued = |id: u32| {
+            if id < FIRST_ID || u64::from(id) >= self.next_id {
+                return invalid("an ID was not issued by the counter");
+            }
+            if !ids.insert(id) {
+                return invalid("an ID is registered twice");
+            }
+            Ok(())
+        };
         for entry in &self.indexes {
-            if entry.id < FIRST_ID || u64::from(entry.id) >= self.next_id {
-                return invalid("an index ID was not issued by the counter");
-            }
-            if !ids.insert(entry.id) {
-                return invalid("an index ID is registered twice");
-            }
+            issued(entry.id)?;
             if entry.kind == IndexKind::Unknown || entry.state == IndexStatus::Unknown {
                 return invalid("an index has an unknown kind or state");
             }
@@ -340,6 +363,25 @@ impl Registry {
             }
             if entry.walk.is_some() && entry.state != IndexStatus::Backfilling {
                 return invalid("only a Backfilling index can be backfilled");
+            }
+        }
+        let mut definitions = std::collections::BTreeSet::new();
+        let mut walks: std::collections::BTreeSet<_> =
+            self.indexes.iter().filter_map(|entry| entry.walk).collect();
+        for migration in &self.migrations {
+            issued(migration.id)?;
+            if !definitions.insert(&migration.definition) {
+                return invalid("a migration is registered twice");
+            }
+            // A state this binary doesn't know is a later release's: kept as is.
+            if migration.state == 0 {
+                return invalid("a migration has no state");
+            }
+            if migration.walk.is_some() && migration.state() == Some(MigrationState::Complete) {
+                return invalid("a Complete migration has a walk");
+            }
+            if migration.walk.is_some_and(|walk| !walks.insert(walk)) {
+                return invalid("a migration shares its walk");
             }
         }
         Ok(())
@@ -393,8 +435,7 @@ impl Registry {
             }
             return Ok(active.id);
         }
-        let id = u32::try_from(self.next_id).map_err(|_| RegistryError::Exhausted)?;
-        self.next_id += 1;
+        let id = self.issue_id()?;
         self.indexes.push(Index {
             definition: ReString::from(definition),
             kind,
@@ -403,6 +444,13 @@ impl Registry {
             walk: None,
             timeline: IndexTimeline::default(),
         });
+        Ok(id)
+    }
+
+    /// Issues the next ID, to an index or a migration.
+    fn issue_id(&mut self) -> Result<u32, RegistryError> {
+        let id = u32::try_from(self.next_id).map_err(|_| RegistryError::Exhausted)?;
+        self.next_id += 1;
         Ok(id)
     }
 
@@ -672,15 +720,49 @@ mod tests {
             "disabled_instances_stay_disabled"
         );
 
+        // Migrations take IDs from the same counter, register once, and complete
+        // for good. A state or policy number a later release adds is kept.
+        let by = || ReString::from_static("1.8.2");
+        let keep = MigrationOnUnknown::Keep;
+        let migration = registry.register_migration("m/1", keep, 1, by()).unwrap();
+        assert_eq!(migration, 65);
+        assert_eq!(registry.register_migration("m/1", keep, 2, by()), Ok(65));
+        registry.set_migration_walk(migration, Some(3)).unwrap();
+        assert_eq!(registry.walk_of(migration), Some(3));
+        registry.complete(migration, 4, by()).unwrap();
+        let complete = registry.get_migration(migration).unwrap();
+        assert_eq!(
+            (
+                complete.state(),
+                complete.walk,
+                complete.timeline.completed_at
+            ),
+            (Some(MigrationState::Complete), None, Some(4))
+        );
+        assert_eq!(
+            registry.complete(migration, 5, by()),
+            Err(RegistryError::NotInProgress(migration))
+        );
+        registry.migrations[0].state = 9;
+        registry.migrations[0].on_unknown = 7;
+        let later = Registry::decode(&registry.encode()).unwrap();
+        let entry = &later.migrations()[0];
+        assert_eq!((entry.state, entry.state(), entry.on_unknown), (9, None, 7));
+        assert_eq!(entry.on_unknown(), MigrationOnUnknown::Refuse, "fails safe");
+
         // Each persisted state that breaks an invariant is rejected on load.
         let valid = {
             let mut valid = Registry::default();
             valid.register("a/1", IndexKind::Secondary).unwrap();
             valid.register("b/1", IndexKind::Aggregate).unwrap();
+            let id = valid.register_migration("m/1", keep, 1, by()).unwrap();
+            valid.set_migration_walk(id, Some(2)).unwrap();
+            valid.link(64, 1).unwrap();
+            valid.next_walk_id = 3;
             valid
         };
         type Corruption = (&'static str, fn(&mut Registry));
-        let broken: [Corruption; 8] = [
+        let broken: [Corruption; 14] = [
             ("counter below the floor", |r| r.next_id = 10),
             ("walk counter at zero", |r| r.next_walk_id = 0),
             ("ID not issued", |r| r.next_id = 65),
@@ -693,6 +775,24 @@ mod tests {
             ("walk on a Ready index", |r| {
                 r.indexes[0].state = IndexStatus::Ready;
                 r.indexes[0].walk = Some(1);
+            }),
+            ("migration ID of an index", |r| r.migrations[0].id = 64),
+            ("migration ID not issued", |r| r.migrations[0].id = 70),
+            ("migration without a state", |r| r.migrations[0].state = 0),
+            ("walk on a Complete migration", |r| {
+                r.migrations[0].state = MigrationState::Complete as u32
+            }),
+            ("migration on an index's walk", |r| {
+                r.migrations[0].walk = Some(1)
+            }),
+            ("migration registered twice", |r| {
+                let twice = Migration {
+                    id: 67,
+                    walk: None,
+                    ..r.migrations[0].clone()
+                };
+                r.migrations.push(twice);
+                r.next_id = 68;
             }),
         ];
         assert!(Registry::decode(&valid.encode()).is_ok());

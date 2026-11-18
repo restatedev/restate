@@ -86,6 +86,9 @@ pub enum FaultPoint {
     /// The background driver starts another pass of waiting build jobs, before it
     /// stages anything. Can fail.
     PassStart,
+    /// A walk's slice staged its work and records, before it commits. Can fail:
+    /// the failure clears what the slice staged, as any staging failure does.
+    SliceStaged,
 }
 
 impl FaultPoint {
@@ -93,7 +96,7 @@ impl FaultPoint {
     pub fn can_fail(self) -> bool {
         matches!(
             self,
-            Self::Open | Self::Delete | Self::RegistryFlush | Self::PassStart
+            Self::Open | Self::Delete | Self::RegistryFlush | Self::PassStart | Self::SliceStaged
         )
     }
 }
