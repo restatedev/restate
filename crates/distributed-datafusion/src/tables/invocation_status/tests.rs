@@ -121,6 +121,7 @@ async fn persisted_invocations_match_v1_for_scans_lookups_and_projections() {
         partition: PartitionId::MIN,
         storage: Some(snapshot),
         live: Default::default(),
+        timing: restate_worker_api::CaptureTiming::admitted_at(tokio::time::Instant::now()),
     })
     .with_query_io(crate::mocks::query_io());
     let schema = InvocationStatusSchema::arrow_schema();

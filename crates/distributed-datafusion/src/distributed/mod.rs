@@ -12,6 +12,7 @@
 
 pub(crate) mod analyze;
 pub(crate) mod analyze_view;
+pub(crate) mod capture_metrics;
 pub(crate) mod demand;
 pub(crate) mod emission;
 mod pushdown;

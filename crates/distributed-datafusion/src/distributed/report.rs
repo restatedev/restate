@@ -19,26 +19,32 @@
 //! output partition, the metric type (its `analyze_level`) and its category.
 //!
 //! Custom metric values aren't carried, and their encodings aren't bounded in
-//! general: they are unsupported, which the caller counts. Restate's own scan
-//! and read metrics, and the operators of today's static owner-bound tasks, use
-//! standard kinds; the distributed runtime's worker task timings (`plan_*_at`)
-//! are custom, but reports carry their own task timings instead.
+//! general: they are unsupported, which the caller counts. The exception is
+//! the distributed runtime's minimum, maximum, average and first latencies,
+//! a few numbers each, which a task's capture timings use too. Restate's own
+//! scan and read metrics, and the operators of today's static owner-bound
+//! tasks, use standard kinds.
 //!
 //! [`QueryTaskReport`]: restate_types::net::distributed_query::QueryTaskReport
 
 use std::borrow::Cow;
+use std::sync::Arc;
 use std::time::Duration;
 
 use datafusion::arrow::temporal_conversions::timestamp_ns_to_datetime;
 use datafusion::physical_plan::Metric;
 use datafusion::physical_plan::metrics::{
-    Count, Gauge, Label, MetricCategory, MetricType, MetricValue, PruningMetrics,
-    RatioMergeStrategy, RatioMetrics, Time, Timestamp,
+    Count, CustomMetricValue, Gauge, Label, MetricCategory, MetricType, MetricValue,
+    PruningMetrics, RatioMergeStrategy, RatioMetrics, Time, Timestamp,
+};
+use datafusion_distributed::{
+    AvgLatencyMetric, FirstLatencyMetric, MaxLatencyMetric, MinLatencyMetric,
 };
 
 use restate_types::net::distributed_query::{
-    MetricCategoryRecord, MetricLabel, MetricLevel, MetricRecord, MetricRecordValue, NamedPruning,
-    NamedRatio, NamedValue, QueryTaskReport, RatioMerge, Timestamp as TimestampRecord,
+    LatencyKind, MetricCategoryRecord, MetricLabel, MetricLevel, MetricRecord, MetricRecordValue,
+    NamedLatency, NamedPruning, NamedRatio, NamedValue, QueryTaskReport, RatioMerge,
+    Timestamp as TimestampRecord,
 };
 
 /// The most metric records one task report holds.
@@ -106,9 +112,13 @@ pub(crate) enum Encoded {
 /// `metric` as a record, if its kind is supported and it fits in `budget`.
 pub(crate) fn encode(metric: &Metric, budget: &mut Budget) -> Encoded {
     let value = metric.value();
-    if matches!(value, MetricValue::Custom { .. }) {
-        return Encoded::Unsupported;
-    }
+    let latency = match value {
+        MetricValue::Custom { value, .. } => match latency(value.as_ref()) {
+            Some(latency) => Some(latency),
+            None => return Encoded::Unsupported,
+        },
+        _ => None,
+    };
     // Counted before its labels are walked: a metric with more of them than a
     // record keeps doesn't fit.
     if metric.labels().len() > MAX_LABELS {
@@ -183,7 +193,15 @@ pub(crate) fn encode(metric: &Metric, budget: &mut Budget) -> Encoded {
             },
             display_raw_values: ratio_metrics.display_raw_values(),
         }),
-        MetricValue::Custom { .. } => unreachable!("custom values are unsupported"),
+        MetricValue::Custom { name, .. } => {
+            let (kind, nanos, count) = latency.expect("only latencies are supported");
+            MetricRecordValue::Latency(NamedLatency {
+                name: name.as_ref().into(),
+                kind,
+                nanos,
+                count,
+            })
+        }
     };
     Encoded::Record(MetricRecord {
         value,
@@ -208,6 +226,24 @@ pub(crate) fn encode(metric: &Metric, budget: &mut Budget) -> Encoded {
             Some(MetricCategory::Uncategorized) => MetricCategoryRecord::UNCATEGORIZED,
         },
     })
+}
+
+/// A latency of the distributed runtime as its record's kind, nanoseconds (the
+/// sum, for an average) and count (of an average), if `value` is one.
+fn latency(value: &dyn CustomMetricValue) -> Option<(LatencyKind, u64, u64)> {
+    let value = value.as_any();
+    let nanos = |nanos: usize| nanos as u64;
+    if let Some(min) = value.downcast_ref::<MinLatencyMetric>() {
+        Some((LatencyKind::MIN, nanos(min.value()), 0))
+    } else if let Some(max) = value.downcast_ref::<MaxLatencyMetric>() {
+        Some((LatencyKind::MAX, nanos(max.value()), 0))
+    } else if let Some(first) = value.downcast_ref::<FirstLatencyMetric>() {
+        Some((LatencyKind::FIRST, nanos(first.value()), 0))
+    } else {
+        value
+            .downcast_ref::<AvgLatencyMetric>()
+            .map(|avg| (LatencyKind::AVG, nanos(avg.nanos_sum()), nanos(avg.count())))
+    }
 }
 
 /// An upper bound of `metric`'s encoded record, from its name (for the kinds
@@ -340,9 +376,24 @@ pub(crate) fn decode(record: &MetricRecord) -> Option<Metric> {
     let name = |named: &str| Cow::Owned(named.to_owned());
     let value = match &record.value {
         MetricRecordValue::Unknown
-        | MetricRecordValue::Latency(_)
         | MetricRecordValue::BytesCounter(_)
         | MetricRecordValue::MaxGauge(_) => return None,
+        MetricRecordValue::Latency(latency) => {
+            let nanos = size(latency.nanos)?;
+            let value: Arc<dyn CustomMetricValue> = match latency.kind {
+                LatencyKind::MIN => Arc::new(MinLatencyMetric::from_nanos(nanos)),
+                LatencyKind::MAX => Arc::new(MaxLatencyMetric::from_nanos(nanos)),
+                LatencyKind::FIRST => Arc::new(FirstLatencyMetric::from_nanos(nanos)),
+                LatencyKind::AVG => {
+                    Arc::new(AvgLatencyMetric::from_raw(nanos, size(latency.count)?))
+                }
+                _ => return None,
+            };
+            MetricValue::Custom {
+                name: name(&latency.name),
+                value,
+            }
+        }
         MetricRecordValue::OutputRows(value) => MetricValue::OutputRows(count(*value)?),
         MetricRecordValue::ElapsedComputeNanos(nanos) => MetricValue::ElapsedCompute(time(*nanos)?),
         MetricRecordValue::SpillCount(value) => MetricValue::SpillCount(count(*value)?),
@@ -462,8 +513,9 @@ mod tests {
         timestamp
     }
 
-    /// One metric of each standard kind, zero times included, with `name` for
-    /// the named kinds and `n` for every number.
+    /// One metric of each standard kind and of each latency the distributed
+    /// runtime has, zero times included, with `name` for the named kinds and
+    /// `n` for every number.
     fn every_kind(name: &str, n: usize) -> Vec<MetricValue> {
         let name = || Cow::Owned(name.to_owned());
         let pruning = PruningMetrics::new();
@@ -525,11 +577,28 @@ mod tests {
                 name: name(),
                 ratio_metrics: ratio(RatioMergeStrategy::SetPartAddTotal),
             },
+            MetricValue::Custom {
+                name: name(),
+                value: Arc::new(MinLatencyMetric::from_nanos(n)),
+            },
+            MetricValue::Custom {
+                name: name(),
+                value: Arc::new(MaxLatencyMetric::from_nanos(n)),
+            },
+            MetricValue::Custom {
+                name: name(),
+                value: Arc::new(FirstLatencyMetric::from_nanos(n)),
+            },
+            MetricValue::Custom {
+                name: name(),
+                value: Arc::new(AvgLatencyMetric::from_raw(n, n)),
+            },
         ]
     }
 
-    /// Every standard kind, zero times included, survives encoding and decoding
-    /// with its value, labels, partition, level and category. A custom value, a
+    /// Every standard and latency kind, zero times included, survives encoding
+    /// and decoding with its value, labels, partition, level and category.
+    /// Another custom value, a
     /// timestamp beyond nanosecond range and an unknown level aren't carried,
     /// and a metric that doesn't fit takes nothing from the budget.
     #[test]
@@ -690,6 +759,24 @@ mod tests {
         };
         named.merge = RatioMerge(99);
         assert!(decode(&ratio).is_none());
+        // So does a latency of a kind this binary doesn't know.
+        let Encoded::Record(mut record) = encode(
+            &Metric::new(
+                MetricValue::Custom {
+                    name: "latency".into(),
+                    value: Arc::new(MaxLatencyMetric::from_nanos(1)),
+                },
+                None,
+            ),
+            &mut spent,
+        ) else {
+            panic!("fits");
+        };
+        let MetricRecordValue::Latency(latency) = &mut record.value else {
+            panic!("a latency record");
+        };
+        latency.kind = LatencyKind(99);
+        assert!(decode(&record).is_none());
 
         // A long label doesn't fit a nearly spent budget, and takes nothing.
         let mut tight = Budget::for_task(MAX_BYTES - 300);

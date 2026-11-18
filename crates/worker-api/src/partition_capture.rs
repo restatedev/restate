@@ -22,6 +22,9 @@
 //! moment of the invoker.
 
 use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use restate_partition_store::ReadSnapshot;
 use restate_types::identifiers::PartitionId;
@@ -94,4 +97,60 @@ pub struct CapturedPartitionRead {
     pub partition: PartitionId,
     pub storage: Option<ReadSnapshot>,
     pub live: CapturedPartitionState,
+    pub timing: CaptureTiming,
+}
+
+/// When the steps of a capture happened, on the monotonic clock of the node
+/// that hosts the partition, for `EXPLAIN ANALYZE`. The query's lane asks for
+/// the capture on the same node, so differences with its own instants are
+/// durations within one process. For example, a request sent at `t`, taken up
+/// by its processor at `t + 40ms` because a commit held the processor's turn,
+/// with a snapshot from `t + 40.1ms` to `t + 40.3ms`:
+///
+/// ```text
+/// lane sends ── waits for the processor ──▶ admitted ── snapshot ──▶ answer
+///     t                  40ms              t + 40ms     0.2ms
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct CaptureTiming {
+    /// When the processor took up the request, between two of its turns.
+    pub admitted: Instant,
+    /// The storage snapshot's creation, if the capture took one.
+    pub snapshot: Option<CaptureSpan>,
+    /// The read of the invoker's rows after the processor answered, if the
+    /// capture asked for them.
+    pub invoker: Option<CaptureSpan>,
+}
+
+impl CaptureTiming {
+    /// A capture admitted at `admitted` that took no snapshot and read no
+    /// invoker rows, so far.
+    pub fn admitted_at(admitted: Instant) -> Self {
+        Self {
+            admitted,
+            snapshot: None,
+            invoker: None,
+        }
+    }
+}
+
+/// A step of a capture: when it started and when it ended.
+#[derive(Debug, Clone, Copy)]
+pub struct CaptureSpan {
+    pub start: Instant,
+    pub end: Instant,
+}
+
+impl CaptureSpan {
+    /// The step from `start` until now.
+    pub fn since(start: Instant) -> Self {
+        Self {
+            start,
+            end: Instant::now(),
+        }
+    }
+
+    pub fn duration(&self) -> Duration {
+        self.end.saturating_duration_since(self.start)
+    }
 }

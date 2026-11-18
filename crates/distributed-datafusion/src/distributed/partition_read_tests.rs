@@ -439,6 +439,9 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
                         partition: request.partition,
                         storage: Some(read),
                         live: restate_worker_api::CapturedPartitionState::empty(request.capture),
+                        timing: restate_worker_api::CaptureTiming::admitted_at(
+                            tokio::time::Instant::now(),
+                        ),
                     }));
                 // Told only once its admission is recorded and answered.
                 let _ = opened.send(admitted);
@@ -824,6 +827,9 @@ async fn an_abandoned_lane_can_admit_after_its_query_ended() {
                         partition,
                         storage: Some(read),
                         live: restate_worker_api::CapturedPartitionState::empty(request.capture),
+                        timing: restate_worker_api::CaptureTiming::admitted_at(
+                            tokio::time::Instant::now(),
+                        ),
                     }))
                     .is_ok();
                 trace.push(Event::Replied {

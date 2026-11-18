@@ -204,6 +204,7 @@ mod tests {
                 invoker: Some(reports.into()),
                 ..Default::default()
             },
+            timing: restate_worker_api::CaptureTiming::admitted_at(tokio::time::Instant::now()),
         });
         let batches = prepared
             .execute(context.clone(), 1, ReadMetrics::default())
