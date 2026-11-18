@@ -473,10 +473,12 @@ mod tests {
                 PlanNodeShape {
                     name: "FilterExec".into(),
                     children: 1,
+                    identity: 7,
                 },
                 PlanNodeShape {
                     name: "TableScanExec".into(),
                     children: 0,
+                    identity: u64::MAX,
                 },
             ],
             nodes: vec![NodeMetrics {
@@ -504,9 +506,11 @@ mod tests {
             },
             unsupported: 3,
             unsettled_lanes: 1,
+            ambiguous_nodes: 4,
+            plan_digest: 5,
         };
         let closed = QueryTaskClosed {
-            report: Some(report),
+            report: Some(report.encode_to_vec().into()),
         };
         let bytes = reply(QueryTaskReplyBody::Closed(closed.clone()));
         let QueryTaskReplyBody::Closed(decoded) =
@@ -517,32 +521,46 @@ mod tests {
             panic!("expected Closed")
         };
         assert_eq!(decoded, closed);
+        let carried = decoded.report.unwrap();
+        assert_eq!(
+            <QueryTaskReport as OwnedMessage>::decode(carried.as_ref()).unwrap(),
+            report
+        );
+        // The report as bytes is the report inline, as 1a sent it.
+        #[derive(bilrost::Message)]
+        struct InlineClosed {
+            #[bilrost(1)]
+            report: Option<QueryTaskReport>,
+        }
+        assert_eq!(
+            InlineClosed {
+                report: Some(report)
+            }
+            .encode_to_vec(),
+            closed.encode_to_vec()
+        );
 
         // Numbers a newer node uses that this one doesn't know still decode: the
-        // reply stays whole, and only what reads them treats them as unknown.
-        let mut newer = closed;
-        let report = newer.report.as_mut().unwrap();
-        report.outcome = TaskOutcome(99);
-        report.task = vec![MetricRecord {
-            value: MetricRecordValue::Latency(NamedLatency {
-                name: "latency".into(),
-                kind: LatencyKind(99),
-                nanos: 1,
-                count: 1,
-            }),
-            level: MetricLevel(99),
-            category: MetricCategoryRecord(99),
-            ..MetricRecord::default()
-        }];
-        let bytes = reply(QueryTaskReplyBody::Closed(newer.clone()));
-        let QueryTaskReplyBody::Closed(decoded) =
-            <QueryTaskReply as OwnedMessage>::decode(bytes.as_slice())
-                .unwrap()
-                .body
-        else {
-            panic!("expected Closed")
+        // report stays whole, and only what reads them treats them as unknown.
+        let newer = QueryTaskReport {
+            outcome: TaskOutcome(99),
+            task: vec![MetricRecord {
+                value: MetricRecordValue::Latency(NamedLatency {
+                    name: "latency".into(),
+                    kind: LatencyKind(99),
+                    nanos: 1,
+                    count: 1,
+                }),
+                level: MetricLevel(99),
+                category: MetricCategoryRecord(99),
+                ..MetricRecord::default()
+            }],
+            ..QueryTaskReport::default()
         };
-        assert_eq!(decoded, newer);
+        assert_eq!(
+            <QueryTaskReport as OwnedMessage>::decode(newer.encode_to_vec().as_slice()).unwrap(),
+            newer
+        );
     }
 
     #[test]

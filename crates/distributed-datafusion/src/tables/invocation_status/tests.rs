@@ -429,6 +429,11 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         plan.contains("entry_index_scans=1") && !plan.contains("entry_index_reads=1"),
         "{plan}"
     );
+    assert_eq!(
+        metric(&plan, "entry_index_scans_not_migrated"),
+        Some(1),
+        "{plan}"
+    );
     // The scanning partition emits only the newest 51 of its 61 matches.
     let source = plan
         .lines()
@@ -486,9 +491,26 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         "{plan}"
     );
     assert_eq!(metric(&plan, "entry_index_statuses"), Some(120), "{plan}");
+    // One run, ("Promises", "promise"), whatever the service's type; every one
+    // of its keys examined at least once.
+    assert_eq!(metric(&plan, "entry_index_runs"), Some(1), "{plan}");
+    assert!(
+        metric(&plan, "entry_index_keys_examined") >= Some(120),
+        "{plan}"
+    );
     // Too many runs: the read scans and sorts, before returning anything.
     let plan = analyzed(&indexed[2]).await;
     assert!(plan.contains("entry_index_scans=1"), "{plan}");
+    assert_eq!(
+        metric(&plan, "entry_index_scans_too_many_runs"),
+        Some(1),
+        "{plan}"
+    );
+    // The discovery that gave up examined keys, and says so.
+    assert!(
+        metric(&plan, "entry_index_keys_examined") > Some(0),
+        "{plan}"
+    );
     // The index's order satisfies the page's ORDER BY: partitions are merged,
     // not sorted, and the merge stops after the LIMIT.
     let plan = explained(page).await;

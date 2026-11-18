@@ -60,7 +60,7 @@ const INVOCATION_STATUS_MULTI_GET_BATCH_SIZE: NonZeroUsize = NonZeroUsize::new(2
 
 mod entry_index_read;
 mod read_cursor;
-pub use entry_index_read::{EntryIndexExecution, EntryIndexPath, EntryIndexRead};
+pub use entry_index_read::{EntryIndexExecution, EntryIndexPath, EntryIndexRead, ScanReason};
 pub use read_cursor::{
     InvocationStatusCursor, InvocationStatusKeys, InvocationStatusRecords, InvocationStatusScan,
 };

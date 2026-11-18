@@ -26,7 +26,7 @@ use datafusion::physical_plan::{PhysicalExpr, SendableRecordBatchStream};
 use restate_partition_store::index::RegisteredIndex;
 use restate_partition_store::invocation_status_table::{
     EntryIndexExecution, EntryIndexPath, EntryIndexRead, InvocationStatusKey, InvocationStatusKeys,
-    InvocationStatusRecords, InvocationStatusScan,
+    InvocationStatusRecords, InvocationStatusScan, ScanReason,
 };
 use restate_partition_store::keys::selection::KeySelection;
 use restate_partition_store::vqueue_table::EntryByServiceCreated as StoredEntryIndex;
@@ -400,7 +400,7 @@ impl PreparedPartitionRead for StatusRead {
             rows,
             Box::pin(async move {
                 match path.await {
-                    Ok(path) => path == EntryIndexPath::Index,
+                    Ok(path) => matches!(path, EntryIndexPath::Index { .. }),
                     Err(_) => true,
                 }
             }),
@@ -468,23 +468,47 @@ impl StatusRead {
                     }
                     InvocationStatusScan::Ids(keys.iter().copied().collect())
                 }
-                StatusAccess::EntryIndex { index, fallback } => InvocationStatusScan::EntryIndex {
-                    index,
-                    fallback,
-                    execution: Arc::new(EntryIndexExecution::new(
-                        memory,
-                        move |path| {
-                            match path {
-                                EntryIndexPath::Index => index_reads.add(1),
-                                EntryIndexPath::Scan => index_scans.add(1),
-                            }
-                            if let Some(chosen) = chosen {
-                                let _ = chosen.send(path);
-                            }
-                        },
-                        move |statuses| index_statuses.add(statuses),
-                    )),
-                },
+                StatusAccess::EntryIndex { index, fallback } => {
+                    // Why a read scanned, and how much of the index a read
+                    // examined: the runs it merged and the keys it went through.
+                    let (not_migrated, not_ready, too_many_runs) = (
+                        metrics.counter("entry_index_scans_not_migrated"),
+                        metrics.counter("entry_index_scans_not_ready"),
+                        metrics.counter("entry_index_scans_too_many_runs"),
+                    );
+                    let runs = metrics.counter("entry_index_runs");
+                    let examined = metrics.counter("entry_index_keys_examined");
+                    InvocationStatusScan::EntryIndex {
+                        index,
+                        fallback,
+                        execution: Arc::new(EntryIndexExecution::new(
+                            memory,
+                            move |path| {
+                                match path {
+                                    EntryIndexPath::Index { runs: merged } => {
+                                        index_reads.add(1);
+                                        runs.add(merged);
+                                    }
+                                    EntryIndexPath::Scan(reason) => {
+                                        index_scans.add(1);
+                                        match reason {
+                                            ScanReason::NotMigrated => not_migrated.add(1),
+                                            ScanReason::NotReady => not_ready.add(1),
+                                            ScanReason::TooManyRuns => too_many_runs.add(1),
+                                        }
+                                    }
+                                }
+                                if let Some(chosen) = chosen {
+                                    let _ = chosen.send(path);
+                                }
+                            },
+                            move |statuses, keys| {
+                                index_statuses.add(statuses);
+                                examined.add(usize::try_from(keys).unwrap_or(usize::MAX));
+                            },
+                        )),
+                    }
+                }
             };
             scan_rows_into::<InvocationStatusRecords, InvocationStatus, _>(
                 store,

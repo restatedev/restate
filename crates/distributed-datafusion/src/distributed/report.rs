@@ -38,7 +38,7 @@ use datafusion::physical_plan::metrics::{
 
 use restate_types::net::distributed_query::{
     MetricCategoryRecord, MetricLabel, MetricLevel, MetricRecord, MetricRecordValue, NamedPruning,
-    NamedRatio, NamedValue, RatioMerge, Timestamp as TimestampRecord,
+    NamedRatio, NamedValue, QueryTaskReport, RatioMerge, Timestamp as TimestampRecord,
 };
 
 /// The most metric records one task report holds.
@@ -73,6 +73,15 @@ impl Budget {
         }
     }
 
+    /// Takes `bytes` that aren't a record from the allowance, if they fit.
+    pub(crate) fn take_bytes(&mut self, bytes: usize) -> bool {
+        if bytes > self.bytes {
+            return false;
+        }
+        self.bytes -= bytes;
+        true
+    }
+
     /// Takes `bytes` and one record from the allowance, if both fit.
     pub(crate) fn take(&mut self, bytes: usize) -> bool {
         if self.records == 0 || bytes > self.bytes {
@@ -100,19 +109,11 @@ pub(crate) fn encode(metric: &Metric, budget: &mut Budget) -> Encoded {
     if matches!(value, MetricValue::Custom { .. }) {
         return Encoded::Unsupported;
     }
-    let named = !matches!(
-        value,
-        MetricValue::OutputRows(_)
-            | MetricValue::ElapsedCompute(_)
-            | MetricValue::SpillCount(_)
-            | MetricValue::SpilledBytes(_)
-            | MetricValue::OutputBytes(_)
-            | MetricValue::OutputBatches(_)
-            | MetricValue::SpilledRows(_)
-            | MetricValue::CurrentMemoryUsage(_)
-            | MetricValue::StartTimestamp(_)
-            | MetricValue::EndTimestamp(_)
-    );
+    // Counted before its labels are walked: a metric with more of them than a
+    // record keeps doesn't fit.
+    if metric.labels().len() > MAX_LABELS {
+        return Encoded::OverBudget;
+    }
     // A set timestamp beyond what nanoseconds since the epoch can hold.
     if let MetricValue::StartTimestamp(at) | MetricValue::EndTimestamp(at) = value
         && at
@@ -121,7 +122,7 @@ pub(crate) fn encode(metric: &Metric, budget: &mut Budget) -> Encoded {
     {
         return Encoded::Unsupported;
     }
-    if !budget.take(charge(metric, named)) {
+    if !budget.take(charge(metric)) {
         return Encoded::OverBudget;
     }
     let named_value = |name: &Cow<'static, str>, value: usize| NamedValue {
@@ -209,9 +210,24 @@ pub(crate) fn encode(metric: &Metric, budget: &mut Budget) -> Encoded {
     })
 }
 
-/// An upper bound of `metric`'s encoded record, from its name (if `named`) and
-/// labels, saturating rather than overflowing.
-fn charge(metric: &Metric, named: bool) -> usize {
+/// An upper bound of `metric`'s encoded record, from its name (for the kinds
+/// that carry one) and labels, saturating rather than overflowing.
+pub(crate) fn charge(metric: &Metric) -> usize {
+    let value = metric.value();
+    let named = !matches!(
+        value,
+        MetricValue::OutputRows(_)
+            | MetricValue::ElapsedCompute(_)
+            | MetricValue::SpillCount(_)
+            | MetricValue::SpilledBytes(_)
+            | MetricValue::OutputBytes(_)
+            | MetricValue::OutputBatches(_)
+            | MetricValue::SpilledRows(_)
+            | MetricValue::CurrentMemoryUsage(_)
+            | MetricValue::StartTimestamp(_)
+            | MetricValue::EndTimestamp(_)
+    );
+
     let string = |text: &str| FIELD.saturating_add(text.len());
     let name = if named {
         string(metric.value().name())
@@ -227,6 +243,68 @@ fn charge(metric: &Metric, named: bool) -> usize {
                 .saturating_add(label.name().len())
                 .saturating_add(label.value().len())
         })
+}
+
+/// The most nodes a report's shape describes.
+pub(crate) const MAX_NODES: usize = 1024;
+/// The most labels a kept metric has.
+pub(crate) const MAX_LABELS: usize = 64;
+
+/// A task's report from the bytes its `Closed` carries, or why it can't be
+/// used. The size is checked before anything is decoded, so a report allocates
+/// at most what [`MAX_BYTES`] of input can describe; then its counts are
+/// checked before anyone keeps it. A worker's report is built within the same
+/// bytes ([`Budget`]), so a valid one always fits.
+pub(crate) fn read_report(bytes: &[u8]) -> Result<QueryTaskReport, &'static str> {
+    if bytes.len() > MAX_BYTES {
+        return Err("oversized");
+    }
+    let report =
+        <QueryTaskReport as bilrost::OwnedMessage>::decode(bytes).map_err(|_| "malformed")?;
+    let records = report
+        .nodes
+        .iter()
+        .map(|node| node.metrics.len())
+        .sum::<usize>()
+        + report.task.len();
+    if report.shape.len() > MAX_NODES
+        || report.nodes.len() > report.shape.len()
+        || records > MAX_RECORDS
+    {
+        return Err("over bounds");
+    }
+    Ok(report)
+}
+
+/// FNV-1a 64 of `bytes`, the same on every node.
+pub(crate) fn digest(bytes: &[u8]) -> u64 {
+    let mut hash = Fnv::default();
+    hash.write(bytes);
+    hash.0
+}
+
+/// FNV-1a 64, fed bytes or formatted text without allocating.
+pub(crate) struct Fnv(pub(crate) u64);
+
+impl Default for Fnv {
+    fn default() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl Fnv {
+    pub(crate) fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = (self.0 ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+}
+
+impl std::fmt::Write for Fnv {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        self.write(text.as_bytes());
+        Ok(())
+    }
 }
 
 /// The metric `record` holds, or `None` for a value kind, level, category or
