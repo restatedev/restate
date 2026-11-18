@@ -19,8 +19,9 @@ replica, and the background migrations that build them:
   it not to progress: `background-migrations-disabled`, `snapshot-export`,
   `failure-backoff` or `throttled`. A snapshot export shows from the moment
   the replica next checks for one, and NULL only means no reason is known,
-  not that the migration is progressing. Finished migrations stay listed up
-  to `worker.storage.migration-job-history-limit`.
+  not that the migration is progressing. Finished migrations stay listed for
+  `worker.storage.finished-migration-jobs-retention` (24 hours by default)
+  after they finished.
 
 Each worker node answers for the partition replicas it has open, so two
 replicas of one partition can show different progress.

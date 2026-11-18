@@ -49,7 +49,8 @@
 //! [`crate::job`]). Registering an index creates its job ([`register_job`]);
 //! starting a walk links the jobs, keeping what earlier passes recorded; each
 //! slice adds the rows it took to every member's job and the rows it filled for
-//! that member, in the slice's commit; completion moves the jobs to the history.
+//! that member, in the slice's commit; completion finishes the jobs, whose
+//! records then expire after the configured retention.
 //!
 //! Opening a partition starts the walk ([`start`]), and the walk engine runs it
 //! a slice at a time (see [`crate::walk::engine`]).
@@ -197,10 +198,10 @@ pub(crate) fn register_job(
 /// now, linked to them and to their build jobs, which must exist (see
 /// [`register_job`]). A job keeps what earlier passes recorded; one that waited
 /// runs again. A partition without entries has nothing to walk: the indexes
-/// become Ready at once and their jobs move to the history, completed. For a new
+/// become Ready at once and their jobs finish, completed. For a new
 /// registration that takes no pass; for a job that waited, it is a full pass
-/// that found nothing. The change is staged on `registry`, `walks` and `jobs`;
-/// the caller commits them.
+/// that found nothing. The change is staged on `registry` (which issues the
+/// walk's ID), `walks` and `jobs`; the caller commits them.
 pub(crate) fn start(
     db: &PartitionDb,
     registry: &mut Registry,
@@ -208,14 +209,18 @@ pub(crate) fn start(
     jobs: &mut MigrationJobRecords,
     ids: &[u32],
     at: u64,
-    history_limit: usize,
 ) -> Result<Option<u64>, StorageError> {
     let registry_error = |err: RegistryError| StorageError::Conversion(err.into());
     let walk = match engine::last_key(db)? {
         None => None,
         Some(end) => Some(
             walks
-                .start(WalkKind::index_backfill(), Source::EntryStatus, end)
+                .start(
+                    registry,
+                    WalkKind::index_backfill(),
+                    Source::EntryStatus,
+                    end,
+                )
                 .map_err(walk_error)?,
         ),
     };
@@ -242,12 +247,7 @@ pub(crate) fn start(
                     job.pass_started_at = Some(at);
                     job.record_full_pass(at, 0);
                 }
-                jobs.finish(
-                    job_id,
-                    MigrationJobStatus::Completed,
-                    Some(at),
-                    history_limit,
-                );
+                jobs.finish(job_id, MigrationJobStatus::Completed, Some(at), at);
             }
         }
     }
