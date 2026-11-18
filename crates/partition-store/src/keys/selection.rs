@@ -157,6 +157,11 @@ impl OrderedKeyField {
         self.tag
     }
 
+    /// Borrows this field's encoding from the front of `input` and advances past it.
+    pub(crate) fn take_encoded<'a>(&self, input: &mut &'a [u8]) -> Result<&'a [u8]> {
+        (self.take)(input)
+    }
+
     /// Associates a logical column tag with its physical codec.
     pub(crate) const fn new<C: OrderedFieldCodec>(tag: &'static str) -> Self {
         Self {
@@ -215,6 +220,23 @@ pub(crate) enum PreparedFieldPredicate {
 }
 
 impl PreparedFieldPredicate {
+    /// The bytes it holds beyond its own size.
+    fn heap_bytes(&self) -> usize {
+        match self {
+            Self::Value(value) => value.heap_bytes(),
+            Self::Ranges(ranges) => ranges.heap_bytes(),
+            Self::Prefix {
+                prefix,
+                nullable_lower,
+                upper,
+            } => {
+                prefix.encoded_lower_bound().len()
+                    + nullable_lower.as_ref().map_or(0, |lower| lower.len())
+                    + upper.as_ref().map_or(0, |upper| upper.len())
+            }
+        }
+    }
+
     /// Whether this is an equality or IN predicate over complete values.
     fn is_finite(&self) -> bool {
         matches!(self, Self::Value(value) if value.is_finite())
@@ -555,14 +577,42 @@ pub(crate) enum KeyMatch {
     /// The key does not match; advance normally. Used when a live scope rejects
     /// a key that the static bounds admit.
     Skip,
-    /// A strictly forward, in-bounds absolute byte target. Seek to the first key
-    /// at or after it and evaluate that key again; the target need not exist.
-    Seek(Bytes),
+    /// Seek to the first key at or after [`KeySelectionCursor::seek_target`], a
+    /// strictly forward, in-bounds absolute byte target, and evaluate that key
+    /// again; the target need not exist.
+    Seek,
     /// No later key in this scan interval can match.
     Done,
 }
 
 impl<K> KeySelection<K> {
+    /// The bytes the selection holds, for a read that charges it: its field and
+    /// predicate slots with their lists and prefixes, its literals, its listed
+    /// headers and its scope. Not counted: the allocator's own overhead.
+    pub fn retained_bytes(&self) -> usize {
+        let fields = self
+            .fields
+            .iter()
+            .map(|field| {
+                field.predicates.capacity() * std::mem::size_of::<PreparedFieldPredicate>()
+                    + field
+                        .predicates
+                        .iter()
+                        .map(PreparedFieldPredicate::heap_bytes)
+                        .sum::<usize>()
+            })
+            .sum::<usize>();
+        let headers = self.headers.as_ref().map_or(0, |headers| {
+            headers.len() * std::mem::size_of::<Bytes>()
+                + headers.iter().map(Bytes::len).sum::<usize>()
+        });
+        self.fields.capacity() * std::mem::size_of::<PreparedField>()
+            + fields
+            + self.literals.len()
+            + headers
+            + self.scope.as_ref().map_or(0, |scope| scope.0.bound_bytes())
+    }
+
     /// A selection that matches no key; its scan is `None`.
     pub fn empty() -> Self {
         Self {
@@ -855,10 +905,10 @@ impl<K> KeySelection<K> {
         let Some(scan) = self.scan_with_prefix(key_kind, prefix)? else {
             return Ok(None);
         };
-        // Share the fixed identity with the lower bound rather than copying it.
+        // Its own copy, so that no allocation is shared (see `retained_bytes`).
         let identity = match &scan {
             PhysicalScan::Prefix(_, start) | PhysicalScan::RangeExclusive(_, _, start, _) => {
-                start.slice(..prefix.len())
+                Bytes::copy_from_slice(&start[..prefix.len()])
             }
         };
         let scan = match &self.scope {
@@ -881,7 +931,9 @@ impl<K> KeySelection<K> {
             selection: self,
             live: None,
             position: Position {
-                scan,
+                // Copied so that the cursor owns its bounds outright: built by
+                // growing a buffer, they may hold spare capacity or share it.
+                scan: scan.to_exact(),
                 header,
                 offsets: Vec::with_capacity(if fields == 0 { 0 } else { fields + 1 }),
                 target: BytesMut::new(),
@@ -1070,6 +1122,27 @@ impl<K> KeySelectionCursor<K> {
         &self.position.scan
     }
 
+    /// The target of the last [`KeyMatch::Seek`], until the next evaluation.
+    pub(crate) fn seek_target(&self) -> &[u8] {
+        &self.position.target
+    }
+
+    /// The bytes this cursor holds of its own, at capacity: its bounds and fixed
+    /// header, allocated at their exact length and not shared, and its seek
+    /// storage, which only grows. The selection, including a list of headers it
+    /// shares with the cursor, and a live selection installed by the caller, are
+    /// not counted.
+    pub(crate) fn retained_bytes(&self) -> usize {
+        let identity = match &self.position.header {
+            CursorHeader::Fixed(identity) => identity.len(),
+            CursorHeader::Varying(_) | CursorHeader::Listed { .. } => 0,
+        };
+        self.position.scan.bound_bytes()
+            + identity
+            + self.position.offsets.capacity() * std::mem::size_of::<usize>()
+            + self.position.target.capacity()
+    }
+
     /// Installs a tighter live selection. It replaces the previous live one rather
     /// than combining with it, so every live selection must be sound on its own:
     /// keys it rejects are skipped for good. The static selection and the scan
@@ -1124,6 +1197,8 @@ impl<K> KeySelectionCursor<K> {
 }
 
 /// The scan's bounds and reusable seek storage, shared by the static and live selections.
+/// Seek targets are lent from the storage until the next evaluation, so it stays
+/// with the cursor and keeps its capacity from key to key.
 struct Position {
     scan: PhysicalScan<Bytes>,
     header: CursorHeader,
@@ -1186,7 +1261,7 @@ impl Position {
             if !self.scan.contains_key(&self.target) {
                 return Ok(KeyMatch::Done);
             }
-            return Ok(KeyMatch::Seek(self.target.split().freeze()));
+            return Ok(KeyMatch::Seek);
         }
         // The suffix is exhausted within this header. Seek to the next listed
         // header, or to the first key after this one; carries may shorten the
@@ -1209,7 +1284,7 @@ impl Position {
         {
             return Ok(KeyMatch::Done);
         }
-        Ok(KeyMatch::Seek(self.target.split().freeze()))
+        Ok(KeyMatch::Seek)
     }
 }
 
@@ -1261,7 +1336,7 @@ impl Position {
         if !selection.append_minimum(0, target)? || !scan.contains_key(&target[..]) {
             return Ok(KeyMatch::Done);
         }
-        Ok(KeyMatch::Seek(target.split().freeze()))
+        Ok(KeyMatch::Seek)
     }
 }
 
