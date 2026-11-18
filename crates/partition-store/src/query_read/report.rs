@@ -11,11 +11,13 @@
 //! What each partition replica open on this node records about its indexes and
 //! migration jobs, for the cluster tables `registry` and `migration_jobs`.
 //!
-//! Each replica is read through one snapshot, so its registry, walks and job
+//! Each replica is read through one snapshot, with one scan of its registry
+//! records (see [`crate::registry::records`]), so its registry, walks and job
 //! records agree with each other; two replicas, or two reports, may be at
 //! different points. The reads block, so they run on the query IO pool. A
 //! replica whose records can't be read is reported as such, never as a replica
-//! without indexes.
+//! without indexes. Finished jobs whose record expired are left out, whether or
+//! not compaction removed them yet.
 //!
 //! The constraints the replica's walk driver last observed come with it, read
 //! from the driver's published state rather than the snapshot; see
@@ -28,25 +30,24 @@
 //! only makes it when asked.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
-use rocksdb::{Range, SizeApproximationOptions};
+use rocksdb::{Range, ReadOptions, SizeApproximationOptions};
 use tokio::time::Instant;
 use zerocopy::IntoBytes;
 
+use restate_clock::WallClock;
 use restate_storage_api::Result;
 use restate_types::identifiers::PartitionId;
 use restate_types::sharding::KeyRange;
 
-use crate::fsm_table::{fsm_variable, migration_jobs_key, registry_key, walks_key};
-use crate::job::{MigrationJob, MigrationJobRecords, MigrationJobStatus, MigrationJobs};
+use crate::job::{MigrationJob, MigrationJobStatus, MigrationJobs};
 use crate::keys::{DecodeTableKey, IndexKeyPrefix, KeyKind};
-use crate::read_snapshot::PartitionSnapshotReader;
+use crate::registry::records::{self, RecordsError};
 use crate::registry::{IndexKind, Registry};
 use crate::stats::AggregateKeyPrefix;
 use crate::vqueue_table::EntryStatusKey;
 use crate::walk::{DriverState, Source, Walk, Walks};
-use crate::{PartitionDb, PartitionStoreManager};
+use crate::{PartitionDb, PartitionReadSnapshot, PartitionStoreManager};
 
 use super::QueryIoExecutor;
 
@@ -59,7 +60,8 @@ pub struct ReplicaMigrations {
     pub key_range: KeyRange,
     pub registry: Registry,
     pub walks: Walks,
-    pub jobs: MigrationJobRecords,
+    /// The unfinished jobs and the finished ones not expired yet, by ID.
+    pub jobs: MigrationJobs,
     /// RocksDB's estimate of the storage each index's keys take, including
     /// writes not flushed yet, by index ID. Empty unless the report asked for
     /// sizes; an index of unknown kind, or whose estimate returned an error, has
@@ -175,7 +177,8 @@ impl ReplicaMigrations {
 #[derive(Debug, Clone)]
 pub struct UnreadableReplica {
     pub partition_id: PartitionId,
-    /// Which record: `registry`, `walks`, `unfinished jobs` or `job history`.
+    /// Which record: `registry`, `walk` or `job`, or `key` or `records` when a
+    /// key or the scan itself failed.
     pub record: &'static str,
     pub error: String,
 }
@@ -219,7 +222,8 @@ impl PartitionStoreManager {
                     continue;
                 };
                 let partition = db.partition();
-                match read_replica(&snapshot.reader(), partition.id(), partition.key_range) {
+                let now = WallClock::now_ms().as_u64();
+                match read_replica(&snapshot, partition.id(), partition.key_range, now) {
                     Ok(mut replica) => {
                         replica.driver = db.driver_state().get();
                         // While the snapshot keeps the replica admitted.
@@ -240,34 +244,27 @@ impl PartitionStoreManager {
     }
 }
 
-/// Reads one replica's records through `reader`, or names the record that can't
-/// be read and why.
+/// Reads one replica's records through `snapshot` with one scan, leaving out
+/// the jobs expired at `now`, or names the record that can't be read and why.
 fn read_replica(
-    reader: &PartitionSnapshotReader<'_>,
+    snapshot: &PartitionReadSnapshot,
     partition_id: PartitionId,
     key_range: KeyRange,
+    now: u64,
 ) -> std::result::Result<ReplicaMigrations, (&'static str, String)> {
-    let jobs = |state_id, record| {
-        decode(
-            reader,
-            migration_jobs_key(partition_id, state_id),
-            record,
-            |value| MigrationJobs::decode(value).map_err(|err| err.to_string()),
-        )
-    };
+    let mut iterator = snapshot.scan(records::scan(partition_id, None), ReadOptions::default());
+    let read = records::read(
+        &mut iterator,
+        |job| !job.is_expired(now),
+        |id, error| Err(RecordsError::Job { id, error }),
+    )
+    .map_err(|err| (err.record(), err.to_string()))?;
     Ok(ReplicaMigrations {
         partition_id,
         key_range,
-        registry: decode(reader, registry_key(partition_id), "registry", |value| {
-            Registry::decode(value).map_err(|err| err.to_string())
-        })?,
-        walks: decode(reader, walks_key(partition_id), "walks", |value| {
-            Walks::decode(value).map_err(|err| err.to_string())
-        })?,
-        jobs: MigrationJobRecords {
-            unfinished: jobs(fsm_variable::MIGRATION_JOBS, "unfinished jobs")?,
-            history: Arc::new(jobs(fsm_variable::MIGRATION_JOB_HISTORY, "job history")?),
-        },
+        registry: read.registry.unwrap_or_default(),
+        walks: read.walks,
+        jobs: read.jobs,
         index_sizes: HashMap::new(),
         driver: None,
     })
@@ -338,21 +335,6 @@ fn index_key_range(
     };
     let mut end = start.clone();
     crate::convert_to_upper_bound(&mut end).then_some((kind, start, end))
-}
-
-/// The `record` stored at `key`, decoded, or its default when absent.
-fn decode<T: Default>(
-    reader: &PartitionSnapshotReader<'_>,
-    key: impl AsRef<[u8]>,
-    record: &'static str,
-    decode: impl FnOnce(&[u8]) -> std::result::Result<T, String>,
-) -> std::result::Result<T, (&'static str, String)> {
-    let value = reader
-        .get_pinned(KeyKind::Fsm, key.as_ref())
-        .map_err(|err| (record, err.to_string()))?;
-    value
-        .map_or(Ok(T::default()), |value| decode(&value))
-        .map_err(|err| (record, err))
 }
 
 #[cfg(test)]

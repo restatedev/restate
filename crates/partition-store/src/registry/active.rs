@@ -32,6 +32,9 @@
 //! applies an entry to its own indexes and adds their tokens to the entry, in one
 //! commit (see [`super::backfill`]).
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use restate_storage_api::StorageError;
 use restate_storage_api::migration_job::MigrationJobIds;
 use restate_storage_api::vqueue_table::{EntryChange, EntryContext, EntryStateRef};
@@ -39,7 +42,7 @@ use restate_types::SemanticRestateVersion;
 use restate_types::config::Configuration;
 
 use crate::PartitionStoreTransaction;
-use crate::job::{DEFAULT_HISTORY_LIMIT, MigrationJobRecords};
+use crate::job::{MigrationJobRecords, MigrationJobs};
 use crate::walk::Walks;
 
 use super::{IndexKind, Registry};
@@ -105,10 +108,10 @@ struct Active {
     walk: Option<u64>,
 }
 
-/// The committed registry, walks and job records, published to every
+/// The committed registry, walks and unfinished jobs, published to every
 /// transaction and handle after each commit that changes them, together with
 /// the indexes writes maintain: the Backfilling and Ready indexes of known
-/// definitions.
+/// definitions. Finished jobs are never published: they stay on disk only.
 #[derive(Default)]
 pub(crate) struct PublishedRegistry {
     /// The indexes writes maintain, sorted by ID.
@@ -116,13 +119,14 @@ pub(crate) struct PublishedRegistry {
     /// The list every written entry stores: the Backfilling IDs as sorted
     /// big-endian `u32`s. Empty when every index is Ready.
     maintaining: Vec<u8>,
-    /// The committed registry and walks, from which `entries` is derived.
-    registry: Registry,
+    /// The committed registry and walks, from which `entries` is derived. The
+    /// registry is shared with the successors of commits that don't change it.
+    registry: Arc<Registry>,
     walks: Walks,
-    /// The committed job records, which slices update, and how many finished
-    /// jobs their history keeps.
-    jobs: MigrationJobRecords,
-    history_limit: usize,
+    /// The committed unfinished jobs, which slices update, and how long the
+    /// record of a job that finishes is kept.
+    jobs: MigrationJobs,
+    retention: Duration,
 }
 
 impl std::fmt::Debug for PublishedRegistry {
@@ -138,39 +142,41 @@ impl std::fmt::Debug for PublishedRegistry {
 }
 
 impl PublishedRegistry {
-    /// Publishes `registry` and `walks`, without job records. Writes maintain
-    /// the indexes whose definition is in `known`, with a matching kind; opening a
+    /// Publishes `registry` and `walks`, without job records and with a
+    /// retention of 0, until [`Self::with_jobs`] sets both. Writes maintain the
+    /// indexes whose definition is in `known`, with a matching kind; opening a
     /// store retires the others before writes.
     pub(crate) fn new(
         registry: &Registry,
         walks: &Walks,
         known: &[&'static IndexDefinition],
     ) -> Self {
-        Self::build(registry.clone(), walks.clone(), known)
-            .with_jobs(MigrationJobRecords::default(), DEFAULT_HISTORY_LIMIT)
+        Self::build(Arc::new(registry.clone()), walks.clone(), known)
     }
 
-    /// Adds the committed `jobs`, whose history keeps at most `history_limit`
-    /// finished jobs.
-    pub(crate) fn with_jobs(mut self, jobs: MigrationJobRecords, history_limit: usize) -> Self {
+    /// Adds the committed unfinished `jobs`; a job that finishes from now on is
+    /// kept for `retention`.
+    pub(crate) fn with_jobs(mut self, jobs: MigrationJobs, retention: Duration) -> Self {
         self.jobs = jobs;
-        self.history_limit = history_limit;
+        self.retention = retention;
         self
     }
 
-    /// What to publish once a commit changed the registry, the walks or the jobs
-    /// to `registry`, `walks` and `jobs`, for the same known definitions.
+    /// What to publish once a commit changed the walks or the jobs to `walks`
+    /// and `jobs`, and the registry to `registry` if it changed it, for the same
+    /// known definitions and retention.
     pub(crate) fn successor(
         &self,
-        registry: Registry,
+        registry: Option<Registry>,
         walks: Walks,
-        jobs: MigrationJobRecords,
+        jobs: MigrationJobs,
     ) -> Self {
         let known: Vec<_> = self.entries.iter().map(|entry| entry.definition).collect();
-        Self::build(registry, walks, &known).with_jobs(jobs, self.history_limit)
+        let registry = registry.map_or_else(|| Arc::clone(&self.registry), Arc::new);
+        Self::build(registry, walks, &known).with_jobs(jobs, self.retention)
     }
 
-    fn build(registry: Registry, walks: Walks, known: &[&'static IndexDefinition]) -> Self {
+    fn build(registry: Arc<Registry>, walks: Walks, known: &[&'static IndexDefinition]) -> Self {
         let mut entries: Vec<_> = registry
             .indexes()
             .iter()
@@ -200,8 +206,8 @@ impl PublishedRegistry {
             maintaining,
             registry,
             walks,
-            jobs: MigrationJobRecords::default(),
-            history_limit: DEFAULT_HISTORY_LIMIT,
+            jobs: MigrationJobs::default(),
+            retention: Duration::ZERO,
         }
     }
 
@@ -215,14 +221,15 @@ impl PublishedRegistry {
         &self.walks
     }
 
-    /// The committed job records.
-    pub(crate) fn jobs(&self) -> &MigrationJobRecords {
+    /// The committed unfinished jobs.
+    pub(crate) fn jobs(&self) -> &MigrationJobs {
         &self.jobs
     }
 
-    /// How many finished jobs the history keeps.
-    pub(crate) fn history_limit(&self) -> usize {
-        self.history_limit
+    /// The committed unfinished jobs, for an operation to change: the jobs it
+    /// finishes are kept for the published retention.
+    pub(crate) fn job_records(&self) -> MigrationJobRecords {
+        MigrationJobRecords::new(self.jobs.clone(), self.retention)
     }
 
     /// The indexes walk `walk` backfills, or an error if a member's definition

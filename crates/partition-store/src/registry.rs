@@ -24,6 +24,9 @@
 //! different index IDs to the same definition. Queries therefore name the
 //! definition and resolve the index ID against an admitted snapshot.
 //!
+//! The registry, its walks and its build jobs are stored under one key kind,
+//! one key per record ([`records`]).
+//!
 //! # Index IDs
 //!
 //! One counter issues IDs for secondary and aggregate indexes alike, starting at
@@ -53,12 +56,13 @@ use restate_util_string::ReString;
 mod active;
 mod backfill;
 mod reconcile;
+pub mod records;
 
 #[cfg(test)]
 pub(crate) use active::TEST_INTRODUCED;
 pub(crate) use active::{Family, INDEX_DEFINITIONS, IndexDefinition, PublishedRegistry};
 pub(crate) use backfill::{IndexBackfill, start as start_backfill};
-pub(crate) use reconcile::{FAMILIES, FenceState, Requests, load_job_records};
+pub(crate) use reconcile::{FAMILIES, FenceState, Requests};
 
 /// Whether this binary's definition `name` fills rows itself (`Some(true)`, an
 /// active one) or relies on writes and deletions (`Some(false)`, a passive one);
@@ -79,7 +83,12 @@ pub fn fill_capability(name: &str) -> Option<bool> {
 /// identities are not handled here.
 pub const FIRST_ID: u32 = 64;
 
-/// The persisted registry format this binary reads and writes.
+/// The first walk ID the registry issues: a store without a registry has
+/// issued none.
+pub(crate) const FIRST_WALK_ID: u64 = 1;
+
+/// The persisted registry format this binary reads and writes. It versions the
+/// whole record family: the registry, its walks and its jobs (see [`records`]).
 const FORMAT: u32 = 1;
 
 /// What an index stores for each entry.
@@ -265,11 +274,12 @@ pub enum RegistryError {
     Invalid(&'static str),
 }
 
-/// The indexes of one partition store and the counter that issues their IDs.
+/// The indexes of one partition store and the counters that issue their IDs
+/// and their walks' IDs. Persisted tags never change meaning (README rule 8).
 #[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
 pub struct Registry {
     /// A newer format must not be rewritten by this binary: re-encoding would
-    /// drop fields it does not know.
+    /// drop fields it does not know. It versions the whole record family.
     #[bilrost(1)]
     format: u32,
     /// The next ID to issue. Beyond `u32::MAX` the counter is exhausted.
@@ -277,6 +287,9 @@ pub struct Registry {
     next_id: u64,
     #[bilrost(3)]
     indexes: Vec<Index>,
+    /// The next walk ID to issue, never 0; `u64::MAX` is never issued.
+    #[bilrost(4)]
+    next_walk_id: u64,
 }
 
 impl Default for Registry {
@@ -285,6 +298,7 @@ impl Default for Registry {
             format: FORMAT,
             next_id: u64::from(FIRST_ID),
             indexes: Vec::new(),
+            next_walk_id: FIRST_WALK_ID,
         }
     }
 }
@@ -305,6 +319,9 @@ impl Registry {
         let invalid = |reason| Err(RegistryError::Invalid(reason));
         if self.next_id < u64::from(FIRST_ID) {
             return invalid("the ID counter is below the first ID");
+        }
+        if self.next_walk_id == 0 {
+            return invalid("the walk ID counter is zero");
         }
         let mut ids = std::collections::BTreeSet::new();
         let mut active = std::collections::BTreeSet::new();
@@ -330,6 +347,19 @@ impl Registry {
 
     pub fn format(&self) -> u32 {
         self.format
+    }
+
+    /// The ID the next walk gets (see [`crate::walk::Walks::start`]).
+    pub fn next_walk_id(&self) -> u64 {
+        self.next_walk_id
+    }
+
+    /// Issues [`Self::next_walk_id`] to a walk that starts. The caller checks
+    /// that it isn't `u64::MAX`, which is never issued.
+    pub(crate) fn issue_walk_id(&mut self) -> u64 {
+        let id = self.next_walk_id;
+        self.next_walk_id += 1;
+        id
     }
 
     /// Links a Backfilling index to the walk backfilling it.
@@ -595,6 +625,26 @@ mod tests {
             Registry::decode(&newer.encode()),
             Err(RegistryError::UnsupportedFormat(FORMAT + 1))
         );
+
+        // The walk counter persists with the registry, and its last ID is never
+        // issued.
+        let mut walks = crate::walk::Walks::default();
+        let mut start = |registry: &mut Registry| {
+            walks.start(
+                registry,
+                crate::walk::WalkKind::index_backfill(),
+                crate::walk::Source::EntryStatus,
+                bytes::Bytes::new(),
+            )
+        };
+        assert_eq!(start(&mut reopened), Ok(1));
+        assert_eq!(
+            Registry::decode(&reopened.encode()).unwrap().next_walk_id(),
+            2
+        );
+        reopened.next_walk_id = u64::MAX;
+        assert_eq!(start(&mut reopened), Err(crate::walk::WalkError::Exhausted));
+        assert_eq!(reopened.next_walk_id(), u64::MAX);
     }
 
     #[test]
@@ -630,8 +680,9 @@ mod tests {
             valid
         };
         type Corruption = (&'static str, fn(&mut Registry));
-        let broken: [Corruption; 7] = [
+        let broken: [Corruption; 8] = [
             ("counter below the floor", |r| r.next_id = 10),
+            ("walk counter at zero", |r| r.next_walk_id = 0),
             ("ID not issued", |r| r.next_id = 65),
             ("ID below the floor", |r| r.indexes[0].id = 3),
             ("duplicate ID", |r| r.indexes[1].id = 64),

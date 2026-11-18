@@ -19,10 +19,10 @@ use crate::{ShardingScheme, define_schema};
 define_schema! {
     /// The background migration jobs of each partition replica on the worker
     /// nodes, such as the build of an index: unfinished ones, and finished ones
-    /// up to `worker.storage.migration-job-history-limit`. Each replica keeps its
-    /// own; a replica's rows come from one snapshot of it, separate from the one
-    /// `registry` reads, except `blocked_by`, which its background driver reports
-    /// apart from the snapshot.
+    /// for `worker.storage.finished-migration-jobs-retention` after they finished.
+    /// Each replica keeps its own; a replica's rows come from one snapshot of it,
+    /// separate from the one `registry` reads, except `blocked_by`, which its
+    /// background driver reports apart from the snapshot.
     ///
     /// Jobs that share a walk are each charged the walk's rows examined, slices
     /// and work time, so those columns don't add up across jobs; `rows_filled`

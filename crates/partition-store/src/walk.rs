@@ -19,8 +19,11 @@
 //! inserted after `end` were written after the walk started, so the job's write
 //! path handles them.
 //!
-//! The record is local to a replica and is not replicated. Walk IDs come from one
-//! counter that is never reset, also when the last walk is removed.
+//! Each walk is one record under its own key (see [`crate::registry::records`]),
+//! local to the replica and not replicated: a slice rewrites its walk's key, and
+//! the walk's end deletes it. Walk IDs come from one counter in the registry
+//! ([`crate::registry::Registry::next_walk_id`]) that is never reset, also when
+//! the last walk is removed. [`Walks`] holds a store's walks in memory.
 //!
 //! For example, an index backfill starting over entries `A..E` records `end = E`.
 //! After a slice over `A` and `B`, its cursor is `B`, and `A` and `B` carry the
@@ -41,14 +44,13 @@ use bytes::Bytes;
 
 use restate_util_string::ReString;
 
+use crate::registry::Registry;
+
 mod driver;
 pub(crate) mod engine;
 
 pub use driver::{DriverState, WalkDriver, WalkStatsSnapshot};
 pub(crate) use driver::{PublishedDriverState, WalkStats};
-
-/// The persisted format this binary reads and writes.
-const FORMAT: u32 = 1;
 
 /// The table a walk traverses, stored on the walk as its number.
 ///
@@ -145,7 +147,9 @@ pub struct WalkMember {
     pub uncovered: u64,
 }
 
-/// One walk and its committed progress.
+/// One walk and its committed progress, stored under its own key (see
+/// [`crate::registry::records`]). Persisted tags never change meaning (README
+/// rule 8).
 #[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
 pub struct Walk {
     #[bilrost(1)]
@@ -178,6 +182,23 @@ pub struct Walk {
 }
 
 impl Walk {
+    /// Decodes the record stored under walk ID `key`, which must be its own ID.
+    /// Its invariants are checked with the other walks' ([`Walks::new`]).
+    pub fn decode(key: u64, bytes: &[u8]) -> Result<Self, WalkError> {
+        let walk = <Self as bilrost::OwnedMessage>::decode(bytes)?;
+        if walk.id != key {
+            return Err(WalkError::IdMismatch {
+                key,
+                record: walk.id,
+            });
+        }
+        Ok(walk)
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        bilrost::Message::encode_to_vec(self)
+    }
+
     /// The source, if this binary knows it.
     pub fn source(&self) -> Option<Source> {
         Source::from_number(self.source)
@@ -209,8 +230,6 @@ impl Walk {
 pub enum WalkError {
     #[error("all walk IDs of this store are allocated")]
     Exhausted,
-    #[error("unsupported walk record format {0}; this binary supports format {FORMAT}")]
-    UnsupportedFormat(u32),
     #[error("unsupported walk kind '{}' version {}", .0.name, .0.version)]
     UnsupportedKind(WalkKind),
     #[error(
@@ -224,54 +243,36 @@ pub enum WalkError {
     UnknownId(u64),
     #[error("malformed walk record: {0}")]
     Malformed(#[from] bilrost::DecodeError),
+    #[error("invalid walk record: the key of walk {key} holds walk {record}")]
+    IdMismatch { key: u64, record: u64 },
     #[error("invalid walk record: {0}")]
     Invalid(&'static str),
 }
 
-/// The walks of one partition store and their ID counter.
-#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
+/// The walks of one partition store, in memory. Their IDs come from the
+/// registry's counter, against which they are validated.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Walks {
-    #[bilrost(1)]
-    format: u32,
-    /// The next ID to issue; `u64::MAX` is never issued.
-    #[bilrost(2)]
-    next_id: u64,
-    #[bilrost(3)]
     walks: Vec<Walk>,
 }
 
-impl Default for Walks {
-    fn default() -> Self {
-        Self {
-            format: FORMAT,
-            next_id: 1,
-            walks: Vec::new(),
-        }
-    }
-}
-
 impl Walks {
-    /// Decodes a persisted record and checks its invariants. Walks of a kind or
-    /// source this binary doesn't know decode too, with only their common
+    /// The walks `walks`, loaded from their records, checked against each other
+    /// and `next_id`, the registry's next walk ID. Walks of a kind or source
+    /// this binary doesn't know are accepted too, with only their common
     /// invariants checked: an open resolves them by their policy (see
     /// [`Self::preflight`]).
-    pub fn decode(bytes: &[u8]) -> Result<Self, WalkError> {
-        let walks = <Self as bilrost::OwnedMessage>::decode(bytes)?;
-        if walks.format != FORMAT {
-            return Err(WalkError::UnsupportedFormat(walks.format));
-        }
-        walks.validate()?;
+    pub fn new(walks: Vec<Walk>, next_id: u64) -> Result<Self, WalkError> {
+        let walks = Self { walks };
+        walks.validate(next_id)?;
         Ok(walks)
     }
 
-    fn validate(&self) -> Result<(), WalkError> {
+    fn validate(&self, next_id: u64) -> Result<(), WalkError> {
         let invalid = |reason| Err(WalkError::Invalid(reason));
-        if self.next_id == 0 {
-            return invalid("the ID counter is zero");
-        }
         let mut ids = std::collections::BTreeSet::new();
         for walk in &self.walks {
-            if walk.id == 0 || walk.id >= self.next_id {
+            if walk.id == 0 || walk.id >= next_id {
                 return invalid("a walk ID was not issued by the counter");
             }
             if !ids.insert(walk.id) {
@@ -394,10 +395,6 @@ impl Walks {
         Ok(())
     }
 
-    pub fn encode(&self) -> Vec<u8> {
-        bilrost::Message::encode_to_vec(self)
-    }
-
     pub fn entries(&self) -> &[Walk] {
         &self.walks
     }
@@ -406,22 +403,23 @@ impl Walks {
         self.walks.iter().find(|walk| walk.id == id)
     }
 
-    /// Starts a walk of `kind` over `source` up to `end`, inclusive. The new
-    /// record is checked like a decoded one, so that nothing `start` accepts can
-    /// fail to load again; a rejected walk leaves the record unchanged.
+    /// Starts a walk of `kind` over `source` up to `end`, inclusive, with the
+    /// next ID of `registry`'s walk counter. The new walk is checked like a
+    /// loaded one, so that nothing `start` accepts can fail to load again; a
+    /// rejected walk changes neither the walks nor the counter.
     pub(crate) fn start(
         &mut self,
+        registry: &mut Registry,
         kind: WalkKind,
         source: Source,
         end: Bytes,
     ) -> Result<u64, WalkError> {
-        if self.next_id == u64::MAX {
+        let id = registry.next_walk_id();
+        if id == u64::MAX {
             return Err(WalkError::Exhausted);
         }
-        let id = self.next_id;
-        self.next_id += 1;
         let on_unknown = kind.on_unknown() as u32;
-        self.walks.push(Walk {
+        let walk = Walk {
             id,
             kind,
             source: source as u32,
@@ -430,17 +428,16 @@ impl Walks {
             params: Bytes::new(),
             members: Vec::new(),
             on_unknown,
-        });
-        if !self.walks.last().is_some_and(Walk::is_supported) {
-            let walk = self.walks.pop().expect("just pushed");
-            self.next_id -= 1;
+        };
+        if !walk.is_supported() {
             return Err(WalkError::UnsupportedKind(walk.kind));
         }
-        if let Err(error) = self.validate() {
+        self.walks.push(walk);
+        if let Err(error) = self.validate(id + 1) {
             self.walks.pop();
-            self.next_id -= 1;
             return Err(error);
         }
+        registry.issue_walk_id();
         Ok(id)
     }
 
@@ -482,22 +479,19 @@ mod tests {
 
     #[test]
     fn walks_issue_fresh_ids_validate_and_only_move_forward() {
+        let mut registry = Registry::default();
         let mut walks = Walks::default();
-        let first = walks
-            .start(
+        let start = |walks: &mut Walks, registry: &mut Registry| {
+            walks.start(
+                registry,
                 WalkKind::index_backfill(),
                 Source::EntryStatus,
                 Bytes::from_static(b"e"),
             )
-            .unwrap();
-        let second = walks
-            .start(
-                WalkKind::index_backfill(),
-                Source::EntryStatus,
-                Bytes::from_static(b"e"),
-            )
-            .unwrap();
-        assert_eq!((first, second), (1, 2));
+        };
+        let first = start(&mut walks, &mut registry).unwrap();
+        let second = start(&mut walks, &mut registry).unwrap();
+        assert_eq!((first, second, registry.next_walk_id()), (1, 2, 3));
         walks.advance(second, Bytes::from_static(b"b")).unwrap();
         assert_eq!(
             walks.get(second).unwrap().cursor.as_deref(),
@@ -519,36 +513,34 @@ mod tests {
             "not past end"
         );
 
-        // Removing every walk keeps the counter.
-        walks.remove(first).unwrap();
-        walks.remove(second).unwrap();
-        let reloaded = Walks::decode(&walks.encode()).unwrap();
-        assert!(reloaded.entries().is_empty());
-        let mut reloaded = reloaded;
+        // A walk round trips through its record, under its own ID only.
+        let walk = walks.get(second).unwrap();
+        assert_eq!(Walk::decode(second, &walk.encode()).unwrap(), *walk);
         assert_eq!(
-            reloaded
-                .start(
-                    WalkKind::index_backfill(),
-                    Source::EntryStatus,
-                    Bytes::new(),
-                )
-                .unwrap(),
-            3
+            Walk::decode(first, &walk.encode()),
+            Err(WalkError::IdMismatch {
+                key: first,
+                record: second
+            })
         );
 
-        let corrupt = |change: fn(&mut Walks)| {
-            let mut walks = reloaded.clone();
+        // Removing every walk keeps the counter, which lives in the registry.
+        walks.remove(first).unwrap();
+        walks.remove(second).unwrap();
+        assert!(walks.entries().is_empty());
+        let mut reloaded = Walks::new(Vec::new(), registry.next_walk_id()).unwrap();
+        assert_eq!(start(&mut reloaded, &mut registry).unwrap(), 3);
+
+        let corrupt = |change: fn(&mut Vec<Walk>)| {
+            let mut walks = reloaded.walks.clone();
             change(&mut walks);
-            Walks::decode(&walks.encode())
+            Walks::new(walks, 4)
         };
-        assert_eq!(
-            corrupt(|walks| walks.format = FORMAT + 1),
-            Err(WalkError::UnsupportedFormat(FORMAT + 1))
-        );
-        assert!(corrupt(|walks| walks.walks[0].id = walks.next_id).is_err());
-        assert!(corrupt(|walks| walks.walks.push(walks.walks[0].clone())).is_err());
-        assert!(corrupt(|walks| walks.walks[0].params = Bytes::from_static(b"x")).is_err());
-        assert!(corrupt(|walks| walks.walks[0].cursor = Some(Bytes::from_static(b"z"))).is_err());
+        assert!(corrupt(|walks| walks[0].id = 4).is_err(), "not issued");
+        assert!(corrupt(|walks| walks[0].id = 0).is_err(), "zero");
+        assert!(corrupt(|walks| walks.push(walks[0].clone())).is_err());
+        assert!(corrupt(|walks| walks[0].params = Bytes::from_static(b"x")).is_err());
+        assert!(corrupt(|walks| walks[0].cursor = Some(Bytes::from_static(b"z"))).is_err());
         fn member(joined_at: Option<&'static [u8]>) -> WalkMember {
             WalkMember {
                 index: 64,
@@ -557,24 +549,24 @@ mod tests {
             }
         }
         assert!(
-            corrupt(|walks| walks.walks[0].members = vec![member(None), member(None)]).is_err(),
+            corrupt(|walks| walks[0].members = vec![member(None), member(None)]).is_err(),
             "a member listed twice"
         );
         assert!(
-            corrupt(|walks| walks.walks[0].members = vec![member(Some(b"a"))]).is_err(),
+            corrupt(|walks| walks[0].members = vec![member(Some(b"a"))]).is_err(),
             "a late join before any cursor"
         );
 
-        // A walk of a kind or source this binary doesn't know decodes with its
+        // A walk of a kind or source this binary doesn't know loads with its
         // params and positions unchecked. Its policy decides: a discardable one
         // is removed with its ID kept issued; any refusing one refuses them all.
         let unknown = |on_unknown: OnUnknown| {
-            let mut walks = reloaded.clone();
-            let walk = &mut walks.walks[0];
+            let mut walks = reloaded.walks.clone();
+            let walk = &mut walks[0];
             (walk.source, walk.params, walk.on_unknown) =
                 (99, Bytes::from_static(b"opaque"), on_unknown as u32);
             walk.cursor = Some(Bytes::from_static(b"zz"));
-            Walks::decode(&walks.encode()).unwrap()
+            Walks::new(walks, 4).unwrap()
         };
         // Evidence of a member that left goes; the others keep theirs.
         let mut pruned = reloaded.clone();
@@ -593,7 +585,6 @@ mod tests {
         discardable.preflight().unwrap();
         assert_eq!(discardable.discard_unknown(), [3]);
         assert!(discardable.entries().is_empty());
-        assert_eq!(discardable.next_id, 4, "the ID stays issued");
         assert!(matches!(
             unknown(OnUnknown::Refuse).preflight(),
             Err(WalkError::Refused {
@@ -602,20 +593,18 @@ mod tests {
                 ..
             })
         ));
-        let mut future_policy = reloaded.clone();
-        future_policy.walks[0].kind.version = 2;
-        future_policy.walks[0].on_unknown = 7;
+        let mut future_policy = reloaded.walks.clone();
+        future_policy[0].kind.version = 2;
+        future_policy[0].on_unknown = 7;
         assert!(
-            Walks::decode(&future_policy.encode())
-                .unwrap()
-                .preflight()
-                .is_err(),
+            Walks::new(future_policy, 4).unwrap().preflight().is_err(),
             "a policy this binary doesn't know refuses"
         );
-        // `start` rejects what `decode` would reject, and reserves no ID for it.
-        let before = reloaded.clone();
+        // `start` rejects what loading would reject, and reserves no ID for it.
+        let (before, counter) = (reloaded.clone(), registry.clone());
         assert!(matches!(
             reloaded.start(
+                &mut registry,
                 WalkKind {
                     version: 2,
                     ..WalkKind::index_backfill()
@@ -625,18 +614,10 @@ mod tests {
             ),
             Err(WalkError::UnsupportedKind(_))
         ));
-        assert_eq!(reloaded, before, "a rejected start changes nothing");
-        let mut exhausted = Walks {
-            next_id: u64::MAX,
-            ..Walks::default()
-        };
         assert_eq!(
-            exhausted.start(
-                WalkKind::index_backfill(),
-                Source::EntryStatus,
-                Bytes::new(),
-            ),
-            Err(WalkError::Exhausted)
+            (reloaded, registry),
+            (before, counter),
+            "a rejected start changes nothing"
         );
     }
 }
