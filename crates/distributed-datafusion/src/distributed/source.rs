@@ -17,7 +17,9 @@ use std::sync::Arc;
 
 use bilrost::{Message as _, OwnedMessage};
 use datafusion::arrow::compute::SortOptions;
+use datafusion::arrow::compute::filter_record_batch;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::common::cast::as_boolean_array;
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{DataFusionError, Result, Statistics, exec_err, plan_err};
@@ -32,7 +34,7 @@ use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType, Sched
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::limit::LimitStream;
 use datafusion::physical_plan::metrics::{
-    BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
+    BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -64,6 +66,7 @@ use crate::table_util::{find_sort_columns, make_ordering};
 use crate::{decode_schema, encode_schema};
 
 use super::demand::Demands;
+use super::emission;
 
 #[cfg(test)]
 #[path = "source_tests.rs"]
@@ -743,6 +746,22 @@ impl SourcePlan {
         Some(source)
     }
 
+    /// What a partition read checks before it emits a row: the part of the
+    /// scan's planning-time predicate in the safe subset ([`emission`]). Only
+    /// for table and index scans without a source fetch: the reader stops after
+    /// that many raw rows, which a later filter couldn't make up for.
+    pub(super) fn emission_filter(&self) -> Option<Arc<dyn PhysicalExpr>> {
+        if self.descriptor.limit.is_some()
+            || !matches!(
+                self.descriptor.work,
+                SourceWork::TableScan(_) | SourceWork::IndexScan(_)
+            )
+        {
+            return None;
+        }
+        emission::emission_filter(self.predicate.as_ref()?, &self.schema)
+    }
+
     fn execute(&self, lane: usize, context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
         let Some(binding) = &self.binding else {
             return exec_err!("unbound owner-only storage scan reached the coordinator");
@@ -808,6 +827,8 @@ impl SourcePlan {
         let requested_keys = MetricBuilder::new(&self.metrics).counter("requested_keys", lane);
         let ordering = self.properties.output_ordering().cloned();
         let predicate = self.predicate.clone();
+        let emission = self.emission_filter();
+        let read_rows = MetricBuilder::new(&self.metrics).counter("read_rows", lane);
         let bound = match &self.descriptor.work {
             SourceWork::IndexScan(IndexWork { bound, .. }) => bound.map(|bound| bound as usize),
             _ => None,
@@ -829,13 +850,15 @@ impl SourcePlan {
                 .with_memory_pool(Arc::clone(&context.runtime_env().memory_pool));
             let metrics = ReadMetrics::new(compute, &leaf_metrics, lane);
             let Some(ordering) = ordering else {
-                return prepared
+                let rows = prepared
                     .execute(scope, batch_size, metrics)
-                    .map_err(external);
+                    .map_err(external)?;
+                return Ok(counted(rows, read_rows));
             };
             let (rows, in_order) = prepared
                 .execute_in_order(scope, batch_size, metrics)
                 .map_err(external)?;
+            let rows = counted(rows, read_rows);
             // A read that can't keep its declared order on this snapshot, such as
             // an index read that scans instead, is sorted before it's emitted.
             if in_order.await {
@@ -845,19 +868,55 @@ impl SourcePlan {
             }
         })
         .try_flatten();
+        let rows = Box::pin(RecordBatchStreamAdapter::new(
+            Arc::clone(&self.schema),
+            stream,
+        ));
         // Enforce the physical fetch contract even for registered readers that
         // treat their limit as a hint. Production readers also stop materializing
         // at the bound, rather than relying on cancellation after a full batch.
+        // The fetch counts emitted rows, so it follows the emission filter.
         Ok(Box::pin(LimitStream::new(
-            Box::pin(RecordBatchStreamAdapter::new(
-                Arc::clone(&self.schema),
-                stream,
-            )),
+            match emission {
+                Some(filter) => filtered(rows, filter),
+                None => rows,
+            },
             0,
             self.descriptor.limit.map(|l| l as usize),
             metrics,
         )))
     }
+}
+
+/// `rows`, adding every batch's rows to `read_rows` as the read produces them:
+/// before a fallback's sort keeps its first rows, and before the emission
+/// filter.
+fn counted(rows: SendableRecordBatchStream, read_rows: Count) -> SendableRecordBatchStream {
+    let schema = rows.schema();
+    let counted = rows.inspect_ok(move |batch| read_rows.add(batch.num_rows()));
+    Box::pin(RecordBatchStreamAdapter::new(schema, counted))
+}
+
+/// Keeps the rows of `rows` for which `filter` is true, as `FilterExec` does:
+/// false and NULL drop a row, and an evaluation error fails the stream. Batches
+/// left empty aren't emitted.
+fn filtered(
+    rows: SendableRecordBatchStream,
+    filter: Arc<dyn PhysicalExpr>,
+) -> SendableRecordBatchStream {
+    let schema = rows.schema();
+    let kept = rows.try_filter_map(move |batch| {
+        let kept = filter
+            .evaluate(&batch)
+            .and_then(|mask| mask.into_array(batch.num_rows()))
+            .and_then(|mask| {
+                let mask = as_boolean_array(&mask)?;
+                Ok(filter_record_batch(&batch, mask)?)
+            })
+            .map(|kept| (kept.num_rows() > 0).then_some(kept));
+        std::future::ready(kept)
+    });
+    Box::pin(RecordBatchStreamAdapter::new(schema, kept))
 }
 
 /// Sorts the `rows` that match `predicate` with the query's memory pool. The
