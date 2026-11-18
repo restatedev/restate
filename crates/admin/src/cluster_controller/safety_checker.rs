@@ -8,8 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Checks whether the logs and partitions of the cluster are available given the set of alive
-//! nodes, and which ones would lose availability if a single failure domain failed.
+//! Checks whether the metadata store, logs and partitions of the cluster are available given the
+//! set of alive nodes, and which ones would lose availability if a single failure domain failed.
+//!
+//! ## Metadata store
+//!
+//! The replicated metadata store is available if a majority of its members is alive. Its members
+//! are the metadata servers in the `Member` state of the nodes configuration. Other metadata
+//! stores (etcd, object store, ...) run outside the cluster and aren't checked.
 //!
 //! ## Logs
 //!
@@ -42,7 +48,8 @@
 //! replication of new segments) and the partition replication for partitions. For instance, with
 //! `{zone: 2}` the check reports the logs and partitions that would lose availability if any one
 //! zone failed. Alive nodes without a location at that scope are treated as their own failure
-//! domain.
+//! domain. The metadata store has no replication property, so it's checked against the failure
+//! domains of the logs and partitions, or against single nodes if there are none.
 
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
@@ -53,12 +60,13 @@ use metrics::gauge;
 use restate_core::{Metadata, TaskCenter};
 use restate_types::clock::WallClock;
 use restate_types::cluster_state::ClusterState;
+use restate_types::config::{Configuration, MetadataClientKind};
 use restate_types::identifiers::PartitionId;
 use restate_types::locality::{LocationScope, NodeLocation};
 use restate_types::logs::metadata::{InternalKind, Logs, ProviderConfiguration};
 use restate_types::logs::{LogId, LogletId};
 use restate_types::net::node::NodeState;
-use restate_types::nodes_config::NodesConfiguration;
+use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
 use restate_types::partitions::{PartitionConfiguration, worker_candidate_filter};
 use restate_types::replicated_loglet::logserver_candidate_filter;
 use restate_types::replication::balanced_spread_selector::{
@@ -69,6 +77,7 @@ use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
 
 use crate::metric_definitions::{
     CLUSTER_SAFETY_AT_RISK_PARTITIONS, CLUSTER_SAFETY_LAST_CHECK_TIMESTAMP_SECONDS,
+    CLUSTER_SAFETY_METADATA_AT_RISK, CLUSTER_SAFETY_METADATA_UNAVAILABLE,
     CLUSTER_SAFETY_READ_AT_RISK_LOGS, CLUSTER_SAFETY_READ_UNAVAILABLE_LOGS,
     CLUSTER_SAFETY_UNAVAILABLE_PARTITIONS, CLUSTER_SAFETY_UNCHECKED_LOGS,
     CLUSTER_SAFETY_UNCHECKED_PARTITIONS, CLUSTER_SAFETY_WRITE_AT_RISK_LOGS,
@@ -174,6 +183,9 @@ impl PartitionPlacement {
 
 #[derive(Debug, Default)]
 pub struct SafetyReport {
+    /// Whether the replicated metadata store has a quorum of alive members. `None` if the cluster
+    /// doesn't use the replicated metadata store or none of its members are known.
+    pub metadata_availability: Option<Availability>,
     /// Logs that can't accept writes, neither on their tail segment nor after a reconfiguration.
     pub write_unavailable_logs: Vec<LogId>,
     /// Logs with at least one segment whose records can't be reliably read.
@@ -211,6 +223,7 @@ pub struct DomainImpact {
     pub write_unavailable_logs: Vec<LogId>,
     pub read_unavailable_logs: Vec<LogId>,
     pub unavailable_partitions: Vec<PartitionId>,
+    pub metadata_unavailable: bool,
 }
 
 /// Checks the current logs and the partitions' placements (as returned by `placement_of`)
@@ -233,6 +246,11 @@ pub fn check_current_safety(
         alive.remove(*node_id);
     }
 
+    let metadata_members = match Configuration::pinned().common.metadata_client.kind {
+        MetadataClientKind::Replicated { .. } => metadata_members(&nodes_config),
+        _ => Vec::new(),
+    };
+
     let partition_table = metadata.partition_table_snapshot();
 
     let mut placements = Vec::new();
@@ -249,6 +267,7 @@ pub fn check_current_safety(
         &nodes_config,
         &placements,
         &partition_table.replication_property(&nodes_config),
+        &metadata_members,
         &alive,
     );
     report.num_partitions += unchecked_partitions.len();
@@ -257,11 +276,25 @@ pub fn check_current_safety(
     report
 }
 
+/// The members of the replicated metadata store.
+fn metadata_members(nodes_config: &NodesConfiguration) -> Vec<PlainNodeId> {
+    nodes_config
+        .iter_role(Role::MetadataServer)
+        .filter(|(_, config)| {
+            config.metadata_server_config.metadata_server_state == MetadataServerState::Member
+        })
+        .map(|(node_id, _)| node_id)
+        .collect()
+}
+
+/// Checks the safety of the cluster. `metadata_members` are the members of the replicated
+/// metadata store, empty if it isn't used.
 pub fn check_safety(
     logs: &Logs,
     nodes_config: &NodesConfiguration,
     partitions: &[PartitionPlacement],
     partition_replication: &ReplicationProperty,
+    metadata_members: &[PlainNodeId],
     alive: &AliveNodes,
 ) -> SafetyReport {
     let topology = Topology::new(nodes_config, alive);
@@ -289,6 +322,9 @@ pub fn check_safety(
             alive,
             &topology,
         );
+    }
+    if !metadata_members.is_empty() {
+        check_metadata(&mut report, &mut impacts, metadata_members, &topology);
     }
     report.domain_impacts = impacts
         .into_iter()
@@ -489,7 +525,32 @@ fn check_partitions(
     }
 }
 
-enum Availability {
+/// Checks whether the alive metadata store members form a majority. Must run after the logs and
+/// partitions were checked, since it uses their failure domain scope.
+fn check_metadata(
+    report: &mut SafetyReport,
+    impacts: &mut BTreeMap<DomainId, DomainImpact>,
+    members: &[PlainNodeId],
+    topology: &Topology,
+) {
+    let has_quorum = |lost: Option<DomainId>| {
+        let alive = members
+            .iter()
+            .filter(|node_id| topology.survives(**node_id, lost))
+            .count();
+        alive > members.len() / 2
+    };
+    let scope = report.scope.unwrap_or(LocationScope::Node);
+    let on_loss = |domain| impacts.entry(domain).or_default().metadata_unavailable = true;
+    report.metadata_availability = Some(check_availability(
+        topology.domains_at(scope),
+        has_quorum,
+        on_loss,
+    ));
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Availability {
     Available,
     /// Available, but losing one of the failure domains makes it unavailable.
     AtRisk,
@@ -566,6 +627,17 @@ impl SafetyMetrics {
         ];
         for (name, value) in gauges {
             gauge!(name).set(value as f64);
+        }
+        let metadata_gauges = [
+            (
+                CLUSTER_SAFETY_METADATA_UNAVAILABLE,
+                Availability::Unavailable,
+            ),
+            (CLUSTER_SAFETY_METADATA_AT_RISK, Availability::AtRisk),
+        ];
+        for (name, availability) in metadata_gauges {
+            let value = report.metadata_availability == Some(availability);
+            gauge!(name).set(f64::from(u8::from(value)));
         }
     }
 }
@@ -830,6 +902,7 @@ mod tests {
             nodes_config,
             &[],
             &"{node: 1}".parse().unwrap(),
+            &[],
             alive,
         )
     }
@@ -938,6 +1011,7 @@ mod tests {
                 write_unavailable_logs: vec![LOG],
                 read_unavailable_logs: vec![LOG],
                 unavailable_partitions: vec![],
+                metadata_unavailable: false,
             }
         );
     }
@@ -987,6 +1061,7 @@ mod tests {
                 &nodes_config,
                 &partitions,
                 &replication,
+                &[],
                 &alive(alive_ids),
             )
         };
@@ -1055,6 +1130,7 @@ mod tests {
                 &nodes_config,
                 &partitions,
                 &replication,
+                &[],
                 &alive,
             )
         };

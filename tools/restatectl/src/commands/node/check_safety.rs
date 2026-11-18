@@ -10,6 +10,8 @@
 
 pub(crate) mod legacy;
 
+use std::cmp::Reverse;
+
 use anyhow::bail;
 use cling::prelude::*;
 use crossterm::style::Color;
@@ -25,7 +27,8 @@ use restate_cli_util::_comfy_table::Table;
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::{CliContext, c_print, c_println};
 use restate_core::protobuf::cluster_ctrl_svc::{
-    CheckClusterSafetyRequest, CheckClusterSafetyResponse, new_cluster_ctrl_client,
+    CheckClusterSafetyRequest, CheckClusterSafetyResponse, MetadataAvailability,
+    new_cluster_ctrl_client,
 };
 use restate_types::PlainNodeId;
 use restate_types::locality::{LocationScope, NodeLocation};
@@ -54,11 +57,13 @@ pub struct CheckSafetyOpts {
 }
 
 const HELP: &str = "\
-The verdict is SAFE when all logs and partitions are available and stay available if any one \
-failure domain fails, AT RISK when losing one more failure domain would make some of them \
-unavailable, UNSAFE when some already are, and INCOMPLETE when nothing checked is at risk but \
-some logs or partitions could not be checked. A failure domain is at the greatest scope of a log's \
-or partition's replication, e.g. a zone for {zone: 2}. The failure domains whose loss would make \
+The verdict is SAFE when the metadata store, all logs and partitions are available and stay \
+available if any one failure domain fails, AT RISK when losing one more failure domain would make \
+some of them unavailable, UNSAFE when some already are, and INCOMPLETE when nothing checked is at \
+risk but some logs or partitions could not be checked. A failure domain is at the greatest scope \
+of a log's or partition's replication, e.g. a zone for {zone: 2}. The replicated metadata store \
+is available while a majority of its members is alive, and is checked against the same failure \
+domains. The failure domains whose loss would make \
 something unavailable are listed with their nodes (● alive, ↓ assumed down, ✗ dead). Losing several \
 of them, or a wider failure domain, can make more unavailable: check it with --assume-dead.
 
@@ -91,10 +96,7 @@ async fn check_safety(connection: &ConnectionInfo, opts: &CheckSafetyOpts) -> an
         Presentation::Rich => print_rich(&report),
     }
     if report.verdict == Verdict::Unsafe {
-        bail!(
-            "Some logs or partitions are unavailable{}",
-            report.condition()
-        );
+        bail!("{}{}", report.summary(), report.condition());
     }
     if !opts.assume_dead.is_empty() && report.has_unchecked() {
         bail!(
@@ -133,11 +135,22 @@ struct Node {
     state: NodeState,
 }
 
+/// Whether the replicated metadata store has a majority of alive members.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum MetadataStore {
+    Available,
+    /// Losing a failure domain makes it unavailable
+    AtRisk,
+    Unavailable,
+}
+
 #[derive(Serialize, Default)]
 struct Impact {
     write_unavailable_logs: Vec<u32>,
     read_unavailable_logs: Vec<u32>,
     unavailable_partitions: Vec<u32>,
+    metadata_unavailable: bool,
 }
 
 #[derive(Serialize)]
@@ -170,6 +183,8 @@ struct Partitions {
 #[derive(Serialize)]
 struct Report {
     verdict: Verdict,
+    /// Unset if the cluster doesn't use the replicated metadata store
+    metadata_store: Option<MetadataStore>,
     assume_dead: Vec<PlainNodeId>,
     /// Nodes that are dead, not counting `assume_dead`
     dead_nodes: Vec<PlainNodeId>,
@@ -199,14 +214,25 @@ impl Report {
             at_risk: response.at_risk_partitions,
             unchecked: response.unchecked_partitions,
         };
+        let metadata_store = response
+            .metadata_availability
+            .and_then(|availability| MetadataAvailability::try_from(availability).ok())
+            .and_then(|availability| match availability {
+                MetadataAvailability::Unknown => None,
+                MetadataAvailability::Available => Some(MetadataStore::Available),
+                MetadataAvailability::AtRisk => Some(MetadataStore::AtRisk),
+                MetadataAvailability::Unavailable => Some(MetadataStore::Unavailable),
+            });
         let verdict = if !logs.write_unavailable.is_empty()
             || !logs.read_unavailable.is_empty()
             || !partitions.unavailable.is_empty()
+            || metadata_store == Some(MetadataStore::Unavailable)
         {
             Verdict::Unsafe
         } else if !logs.write_at_risk.is_empty()
             || !logs.read_at_risk.is_empty()
             || !partitions.at_risk.is_empty()
+            || metadata_store == Some(MetadataStore::AtRisk)
         {
             Verdict::AtRisk
         } else if !logs.unchecked.is_empty() || !partitions.unchecked.is_empty() {
@@ -261,6 +287,7 @@ impl Report {
                         write_unavailable_logs: impact.write_unavailable_logs,
                         read_unavailable_logs: impact.read_unavailable_logs,
                         unavailable_partitions: impact.unavailable_partitions,
+                        metadata_unavailable: impact.metadata_unavailable,
                     },
                 })
             })
@@ -269,6 +296,7 @@ impl Report {
 
         Self {
             verdict,
+            metadata_store,
             assume_dead: assume_dead.to_vec(),
             dead_nodes,
             logs,
@@ -330,6 +358,8 @@ impl Report {
                 ),
                 count(self.logs.read_unavailable.len(), "log", " can't be read"),
                 count(self.partitions.unavailable.len(), "partition", " down"),
+                (self.metadata_store == Some(MetadataStore::Unavailable))
+                    .then(|| "the metadata store has no quorum".to_owned()),
             ]
             .into_iter()
             .flatten()
@@ -343,6 +373,8 @@ impl Report {
                     .unique()
                     .count();
                 let affected = [
+                    (self.metadata_store == Some(MetadataStore::AtRisk))
+                        .then(|| "the metadata store".to_owned()),
                     count(logs, "log", ""),
                     count(self.partitions.at_risk.len(), "partition", ""),
                 ]
@@ -353,6 +385,11 @@ impl Report {
             }
             Verdict::Safe if self.logs.total + self.partitions.total == 0 => {
                 "Nothing to check".to_owned()
+            }
+            Verdict::Safe if self.metadata_store.is_some() => {
+                "The metadata store, all logs and partitions are available and tolerate losing \
+                 any one failure domain"
+                    .to_owned()
             }
             Verdict::Safe => {
                 "All logs and partitions are available and tolerate losing any one failure domain"
@@ -380,9 +417,31 @@ impl Report {
         }
     }
 
-    /// The unavailable, at risk and unchecked logs and partitions, most severe first.
+    /// The unavailable, at risk and unchecked metadata store, logs and partitions, most severe
+    /// first.
     fn findings(&self) -> Vec<FindingLine> {
         let one_more = "if one more failure domain failed";
+        let mut lines = Vec::new();
+        let metadata_store = match self.metadata_store {
+            Some(MetadataStore::Unavailable) => Some((
+                Severity::Critical,
+                "less than a majority of its members is alive".to_owned(),
+            )),
+            Some(MetadataStore::AtRisk) => Some((
+                Severity::Warning,
+                format!("would lose the majority of its members {one_more}"),
+            )),
+            Some(MetadataStore::Available) | None => None,
+        };
+        if let Some((severity, message)) = metadata_store {
+            lines.push(FindingLine {
+                first: 0,
+                severity,
+                subject: "metadata store".to_owned(),
+                message,
+                hint: Some(preview::command("metadata-server list-servers")),
+            });
+        }
         let groups = [
             (
                 Severity::Critical,
@@ -434,7 +493,6 @@ impl Report {
             ),
         ];
 
-        let mut lines = Vec::new();
         for (severity, kind, ids, message) in groups {
             if ids.is_empty() {
                 continue;
@@ -458,6 +516,10 @@ impl Report {
                 message,
                 hint,
             });
+        }
+        lines.sort_by_key(|line| Reverse(line.severity));
+        for (index, line) in lines.iter_mut().enumerate() {
+            line.first = index;
         }
         lines
     }
@@ -502,6 +564,25 @@ impl Verdict {
     }
 }
 
+impl MetadataStore {
+    /// e.g. "✓ metadata quorum"
+    fn label(self) -> &'static str {
+        match self {
+            MetadataStore::Available => "✓ metadata quorum",
+            MetadataStore::AtRisk => "▲ metadata quorum at risk",
+            MetadataStore::Unavailable => "✗ no metadata quorum",
+        }
+    }
+
+    fn color(self) -> Rgb {
+        match self {
+            MetadataStore::Available => GREEN,
+            MetadataStore::AtRisk => AMBER,
+            MetadataStore::Unavailable => RED,
+        }
+    }
+}
+
 impl NodeState {
     fn glyph(self) -> &'static str {
         match self {
@@ -521,9 +602,11 @@ impl NodeState {
 }
 
 impl Impact {
-    /// e.g. "✗ 2 logs unwritable · 1 partition down"
+    /// e.g. "✗ metadata store down · 2 logs unwritable · 1 partition down"
     fn describe(&self) -> String {
         let parts = [
+            self.metadata_unavailable
+                .then(|| "metadata store down".to_owned()),
             count(self.write_unavailable_logs.len(), "log", " unwritable"),
             count(self.read_unavailable_logs.len(), "log", " unreadable"),
             count(self.unavailable_partitions.len(), "partition", " down"),
@@ -571,7 +654,7 @@ impl Header {
             ]
         };
         let (logs, partitions) = (&report.logs, &report.partitions);
-        let numbers = vec![
+        let mut numbers = vec![
             ratio(logs.write_unavailable.len(), logs.total, "logs writable"),
             ratio(logs.read_unavailable.len(), logs.total, "logs readable"),
             ratio(
@@ -580,6 +663,12 @@ impl Header {
                 "partitions available",
             ),
         ];
+        if let Some(metadata_store) = report.metadata_store {
+            numbers.push(vec![Span::styled(
+                metadata_store.label(),
+                theme::fg(metadata_store.color()).add_modifier(Modifier::BOLD),
+            )]);
+        }
         let down = report
             .down_nodes()
             .into_iter()
@@ -753,8 +842,17 @@ fn print_plain(report: &Report) {
     let ratio = |unavailable: usize, total: u32| {
         format!("{}/{total}", (total as usize).saturating_sub(unavailable))
     };
+    let metadata_store = report
+        .metadata_store
+        .map(|metadata_store| {
+            format!(
+                " · {}",
+                paint(metadata_store.label(), color(metadata_store.color()))
+            )
+        })
+        .unwrap_or_default();
     c_println!(
-        " {} logs writable · {} logs readable · {} partitions available",
+        " {} logs writable · {} logs readable · {} partitions available{metadata_store}",
         ratio(logs.write_unavailable.len(), logs.total),
         ratio(logs.read_unavailable.len(), logs.total),
         ratio(partitions.unavailable.len(), partitions.total),

@@ -312,6 +312,19 @@ message CheckClusterSafetyResponse {
   repeated uint32 dead_nodes = 11;
   uint32 num_logs = 12;
   uint32 num_partitions = 13;
+  // Whether the members of the replicated metadata store form a quorum, and
+  // keep forming one if a single failure domain fails. Domains are at `scope`,
+  // or nodes if `scope` is unset. Unset if the cluster doesn't use the
+  // replicated metadata store or none of its members are known.
+  optional MetadataAvailability metadata_availability = 14;
+}
+
+enum MetadataAvailability {
+  MetadataAvailability_UNKNOWN = 0;
+  AVAILABLE = 1;
+  // Available, but losing a single failure domain makes it unavailable.
+  AT_RISK = 2;
+  UNAVAILABLE = 3;
 }
 
 message DomainImpact {
@@ -319,6 +332,8 @@ message DomainImpact {
   repeated uint32 write_unavailable_logs = 2;
   repeated uint32 read_unavailable_logs = 3;
   repeated uint32 unavailable_partitions = 4;
+  // Whether the replicated metadata store loses its quorum.
+  bool metadata_unavailable = 5;
 }
 
 message FailureDomain {

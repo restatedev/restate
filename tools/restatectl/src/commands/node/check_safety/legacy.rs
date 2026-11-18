@@ -19,7 +19,9 @@ use restate_cli_util::_comfy_table::Table;
 use restate_cli_util::ui::console::{Styled, StyledTable};
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::{c_println, c_success, c_title, c_warn};
-use restate_core::protobuf::cluster_ctrl_svc::{CheckClusterSafetyResponse, DomainImpact};
+use restate_core::protobuf::cluster_ctrl_svc::{
+    CheckClusterSafetyResponse, DomainImpact, MetadataAvailability,
+};
 use restate_types::PlainNodeId;
 
 /// The maximum number of ids or failure domains to print per row.
@@ -39,6 +41,26 @@ pub fn print(
             .map(|domain| format!("{} ({})", domain.name, domain.scope))
             .collect()
     };
+
+    let metadata_availability = report
+        .metadata_availability
+        .and_then(|availability| MetadataAvailability::try_from(availability).ok())
+        .filter(|availability| *availability != MetadataAvailability::Unknown);
+    if let Some(availability) = metadata_availability {
+        let quorum = match availability {
+            MetadataAvailability::Unavailable => Styled(Style::Danger, "unavailable"),
+            MetadataAvailability::AtRisk => Styled(Style::Warn, "at risk"),
+            _ => Styled(Style::Success, "available"),
+        };
+        let mut metadata = Table::new_styled();
+        metadata.add_kv_row("Quorum:", quorum).add_kv_row(
+            "Critical domains:",
+            list(&critical(|impact| impact.metadata_unavailable), Style::Warn),
+        );
+        c_title!("🗄️", "Metadata store");
+        c_println!("{metadata}");
+        c_println!();
+    }
 
     let mut logs = Table::new_styled();
     logs.add_kv_row(
@@ -103,6 +125,9 @@ pub fn print(
     } else {
         format!(" if nodes {} go down", assume_dead.iter().join(", "))
     };
+    if metadata_availability == Some(MetadataAvailability::Unavailable) {
+        bail!("The metadata store has no quorum{condition}");
+    }
     if !report.write_unavailable_logs.is_empty()
         || !report.read_unavailable_logs.is_empty()
         || !report.unavailable_partitions.is_empty()
@@ -114,6 +139,12 @@ pub fn print(
         bail!(
             "Some logs or partitions could not be checked, so it's unknown whether they stay \
              available{condition}"
+        );
+    }
+    if metadata_availability == Some(MetadataAvailability::AtRisk) {
+        c_warn!(
+            "The metadata store has a quorum{condition}, but losing one more failure domain would \
+            make it unavailable"
         );
     }
     if !report.write_at_risk_logs.is_empty()
