@@ -212,7 +212,7 @@ where
                     limit,
                 })
             }
-            PrimaryRead::Index(index) => anyhow::bail!("unsupported index '{index}'"),
+            PrimaryRead::Index(index) => anyhow::bail!("unsupported index '{}'", index.name()),
         })
     }
 }

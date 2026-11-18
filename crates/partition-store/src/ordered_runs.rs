@@ -40,6 +40,26 @@
 //! first after its prefix. Keys of records the partition doesn't own, left over
 //! from a split, are skipped like in any index read.
 //!
+//! **Backwards** ([`ReadDirection::Backward`]), the same merge yields the reverse
+//! order, oldest first, for a query that asks for it:
+//!
+//! ```text
+//! run (Utils, NULL)  : t6
+//! run (Utils, "call"): t2 t7 t9    ← each run read from its end
+//! run (Utils, "run") : t3 t8
+//!         │ merge, largest key after the run's prefix first
+//!         ▼
+//! t2 t3 t6 t7 t8 t9
+//! ```
+//!
+//! Discovery is the same. Each run then starts at its last key and steps back
+//! with `prev` ([`SnapshotCursor::reposition_back`], [`SnapshotCursor::retreat`]),
+//! checking each key against the selection. Seeks only move forward, so a
+//! condition on the fields after the prefix (a creation-time window) rejects
+//! keys one at a time instead of seeking past them; the step budget still
+//! bounds each step. The cursor seeks in total order, without the prefix
+//! extractor, as a backward seek may target a key past the run's prefix.
+//!
 //! **Bounded steps.** Every run is read ahead before the first key is emitted,
 //! so that the heap can compare them all. Reading ahead may pass any number of
 //! keys the partition doesn't own, so it examines at most
@@ -80,15 +100,18 @@ use std::mem::size_of;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use bytes::Bytes;
+
 use restate_storage_api::StorageError;
-use restate_storage_query_api::scan::CursorStep;
+use restate_storage_query_api::scan::{CursorStep, ReadDirection};
 
 use crate::keys::KeyDecoder;
 use crate::keys::header::{KeyHeader, KeySchema};
 use crate::keys::selection::{KeyMatch, KeySelection, KeySelectionCursor, OrderedKeySchema};
 use crate::query_read::SnapshotCursor;
+use crate::scan::PhysicalScan;
 use crate::table::PhysicalTable;
-use crate::{ReadSnapshot, Result};
+use crate::{ReadSnapshot, Result, ScanMode};
 
 #[cfg(test)]
 mod tests;
@@ -206,16 +229,19 @@ struct Merge<K> {
     primed: bool,
     buffer: usize,
     step_budget: usize,
+    direction: ReadDirection,
 }
 
 struct Run {
     /// The header and the leading fields every key of the run shares.
     prefix: Box<[u8]>,
-    /// Records read ahead, in key order, after the run's head. Reading ahead
-    /// starts once the run's records are consumed and stops at `buffer`, so the
-    /// deque never grows.
+    /// Records read ahead, in the read's direction, after the run's head.
+    /// Reading ahead starts once the run's records are consumed and stops at
+    /// `buffer`, so the deque never grows.
     records: VecDeque<Record>,
-    /// Where the run continues, once its records read ahead are consumed.
+    /// Where the run continues, once its records read ahead are consumed: the
+    /// next key to read, or backwards, the key to read back from (initially
+    /// the run's end, the first key past its prefix).
     resume: Option<Box<[u8]>>,
 }
 
@@ -232,11 +258,13 @@ impl Record {
     }
 }
 
-/// A run's front record, ordered by its key after the run's prefix.
+/// A run's front record, ordered by its key after the run's prefix, in the
+/// read's direction: the head that orders first is emitted first.
 struct Head {
     record: Record,
     prefix: usize,
     run: usize,
+    backward: bool,
 }
 
 impl Head {
@@ -261,7 +289,12 @@ impl PartialOrd for Head {
 
 impl Ord for Head {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.order().cmp(&other.order())
+        let order = self.order().cmp(&other.order());
+        if self.backward {
+            order.reverse()
+        } else {
+            order
+        }
     }
 }
 
@@ -284,12 +317,13 @@ enum Step {
 
 impl ReadSnapshot {
     /// Discovers the runs of `request` whose prefix is its key's header and first
-    /// `run_fields` fields, and prepares to merge them. What the read holds is
-    /// charged to `memory`.
+    /// `run_fields` fields, and prepares to merge them in `direction`. What the
+    /// read holds is charged to `memory`.
     pub fn ordered_runs<T>(
         &self,
         request: Arc<KeySelection<T::Key>>,
         run_fields: usize,
+        direction: ReadDirection,
         limits: OrderedRunsLimits,
         memory: Box<dyn RetainedMemory>,
     ) -> Result<OrderedRunsDiscovery<T>>
@@ -297,7 +331,7 @@ impl ReadSnapshot {
         T: PhysicalTable,
         T::Key: OrderedKeySchema,
     {
-        self.ordered_runs_counted(request, run_fields, limits, memory, &mut 0)
+        self.ordered_runs_counted(request, run_fields, direction, limits, memory, &mut 0)
     }
 
     /// [`Self::ordered_runs`], keeping in `examined` the keys discovery examined
@@ -306,6 +340,7 @@ impl ReadSnapshot {
         &self,
         request: Arc<KeySelection<T::Key>>,
         run_fields: usize,
+        direction: ReadDirection,
         limits: OrderedRunsLimits,
         memory: Box<dyn RetainedMemory>,
         examined: &mut u64,
@@ -337,10 +372,14 @@ impl ReadSnapshot {
             return Ok(OrderedRunsDiscovery::Ready(runs));
         };
         runs.memory.selection(&selection)?;
+        let scan = match direction {
+            ReadDirection::Forward => selection.scan().to_exact(),
+            ReadDirection::Backward => total_order(selection.scan())?,
+        };
         // The cursor's own copy of the bounds, and the iterator's: at most twice
         // their length, for a prefix and the end of its range.
-        runs.memory.grow(3 * selection.scan().bound_bytes())?;
-        let mut cursor = self.physical_cursor(selection.scan().to_exact())?;
+        runs.memory.grow(3 * scan.bound_bytes())?;
+        let mut cursor = self.physical_cursor(scan)?;
         let header = <<T::Key as KeySchema>::Header as KeyHeader>::LENGTH;
         let fields = &<T::Key as OrderedKeySchema>::FIELDS[..run_fields];
 
@@ -376,11 +415,27 @@ impl ReadSnapshot {
                             field.take_encoded(&mut rest)?;
                         }
                         let prefix_len = header + payload.len() - rest.len();
-                        runs.memory.grow(prefix_len + key.len())?;
+                        let prefix = &key[..prefix_len];
+                        // Forward, the run starts at this key; backward, at its
+                        // end, which is no longer than its prefix.
+                        let start: Box<[u8]> = match direction {
+                            ReadDirection::Forward => {
+                                runs.memory.grow(prefix_len + key.len())?;
+                                Box::from(key)
+                            }
+                            ReadDirection::Backward => {
+                                runs.memory.grow(2 * prefix_len)?;
+                                let end = successor(prefix)
+                                    .ok_or(StorageError::DataIntegrityError)?
+                                    .into_boxed_slice();
+                                runs.memory.shrink(prefix_len - end.len());
+                                end
+                            }
+                        };
                         found.push(Run {
-                            prefix: Box::from(&key[..prefix_len]),
+                            prefix: Box::from(prefix),
                             records: VecDeque::new(),
-                            resume: Some(Box::from(key)),
+                            resume: Some(start),
                         });
                         Step::PastRun
                     }
@@ -445,6 +500,7 @@ impl ReadSnapshot {
             primed: false,
             buffer,
             step_budget: limits.step_budget.get(),
+            direction,
         }));
         Ok(OrderedRunsDiscovery::Ready(runs))
     }
@@ -546,6 +602,7 @@ impl<K: KeySchema> Merge<K> {
             record,
             prefix: prefix.len(),
             run,
+            backward: self.direction == ReadDirection::Backward,
         }));
         true
     }
@@ -553,6 +610,19 @@ impl<K: KeySchema> Merge<K> {
     /// Reads up to `buffer` more owned records of `run`, examining at most
     /// `budget` keys.
     fn fill<T: PhysicalTable<Key = K>>(
+        &mut self,
+        run: usize,
+        budget: &mut usize,
+        memory: &mut Accounted,
+        examined: &mut u64,
+    ) -> Result<Fill> {
+        match self.direction {
+            ReadDirection::Forward => self.fill_forward::<T>(run, budget, memory, examined),
+            ReadDirection::Backward => self.fill_backward::<T>(run, budget, memory, examined),
+        }
+    }
+
+    fn fill_forward<T: PhysicalTable<Key = K>>(
         &mut self,
         run: usize,
         budget: &mut usize,
@@ -631,6 +701,99 @@ impl<K: KeySchema> Merge<K> {
         }
         Ok(Fill::Done)
     }
+
+    /// [`Self::fill`] backwards, from the key the run resumes at towards its
+    /// prefix. Seeks only move forward, so every key in between is checked
+    /// against the selection, and the ones it doesn't match are stepped over.
+    fn fill_backward<T: PhysicalTable<Key = K>>(
+        &mut self,
+        run: usize,
+        budget: &mut usize,
+        memory: &mut Accounted,
+        examined: &mut u64,
+    ) -> Result<Fill> {
+        let Self {
+            cursor,
+            selection,
+            runs,
+            buffer,
+            ..
+        } = self;
+        let run = &mut runs[run];
+        let Some(resume) = run.resume.take() else {
+            return Ok(Fill::Done);
+        };
+        let positioned = cursor.reposition_back(&resume)?;
+        let resumed = resume.len();
+        drop(resume);
+        memory.shrink(resumed);
+        if !positioned {
+            return Ok(Fill::Done);
+        }
+        while run.records.len() < *buffer {
+            {
+                let Some((key, value)) = cursor.peek()? else {
+                    return Ok(Fill::Done);
+                };
+                if !key.starts_with(&run.prefix) {
+                    // Past the run's start, it's done. Past its end, only at
+                    // the first key: the run's end may itself be a key.
+                    if key < &run.prefix[..] {
+                        return Ok(Fill::Done);
+                    }
+                } else {
+                    if *budget == 0 {
+                        // Resume from this key in a later step.
+                        memory.grow(key.len())?;
+                        run.resume = Some(Box::from(key));
+                        return Ok(Fill::Paused);
+                    }
+                    *budget -= 1;
+                    *examined += 1;
+                    let matched = selection.evaluate(key)?;
+                    memory.selection(selection)?;
+                    if matches!(matched, KeyMatch::Match)
+                        && T::owns_record(K::decoder(key)?, &cursor.snapshot().metadata())?
+                    {
+                        memory.grow(key.len() + value.len())?;
+                        run.records.push_back(Record {
+                            key: Box::from(key),
+                            value: Box::from(value),
+                        });
+                    }
+                }
+            }
+            cursor.retreat()?;
+        }
+        // Read ahead in full: continue from the previous key, if it is in the run.
+        if let Some((key, _)) = cursor.peek()?
+            && key.starts_with(&run.prefix)
+        {
+            memory.grow(key.len())?;
+            run.resume = Some(Box::from(key));
+        }
+        Ok(Fill::Done)
+    }
+}
+
+/// Exact copies of `scan`'s bounds, read in total order: a backward seek may
+/// target the key just past a run, outside the prefix that prefix seeks stay
+/// within.
+fn total_order(scan: &PhysicalScan<Bytes>) -> Result<PhysicalScan<Bytes>> {
+    let (kind, start, end) = match scan {
+        PhysicalScan::Prefix(kind, prefix) => (
+            *kind,
+            prefix,
+            successor(prefix).ok_or(StorageError::DataIntegrityError)?,
+        ),
+        PhysicalScan::RangeExclusive(kind, _, start, end) => (*kind, start, end.to_vec()),
+    };
+    Ok(PhysicalScan::RangeExclusive(
+        kind,
+        ScanMode::TotalOrder,
+        Bytes::copy_from_slice(start),
+        Bytes::copy_from_slice(&end),
+    ))
 }
 
 /// Makes room for one more run, growing `runs` geometrically up to `max_runs`,

@@ -149,11 +149,12 @@ fn limits(max_runs: usize, buffer: usize) -> OrderedRunsLimits {
 fn merged_from<T: PhysicalTable<Key = EntryByServiceCreatedKey>>(
     snapshot: &ReadSnapshot,
     selection: Selection<Index>,
+    direction: ReadDirection,
     limits: OrderedRunsLimits,
 ) -> Option<Vec<Row>> {
     let request = Arc::new(EntryByServiceCreatedKey::prepare_candidates(&selection).unwrap());
     let OrderedRunsDiscovery::Ready(mut runs) = snapshot
-        .ordered_runs::<T>(request, 2, limits, Box::new(()))
+        .ordered_runs::<T>(request, 2, direction, limits, Box::new(()))
         .unwrap()
     else {
         return None;
@@ -172,9 +173,23 @@ fn merged_from<T: PhysicalTable<Key = EntryByServiceCreatedKey>>(
 fn merged(
     snapshot: &ReadSnapshot,
     selection: Selection<Index>,
+    direction: ReadDirection,
     limits: OrderedRunsLimits,
 ) -> Option<Vec<Row>> {
-    merged_from::<EntryByServiceCreated>(snapshot, selection, limits)
+    merged_from::<EntryByServiceCreated>(snapshot, selection, direction, limits)
+}
+
+/// The rows `filter` admits, sorted by creation time (newest first) and ID, or
+/// in reverse.
+fn expected_in(
+    direction: ReadDirection,
+    filter: impl Fn(&str, Option<&str>, u64) -> bool,
+) -> Vec<Row> {
+    let mut rows = expected(filter);
+    if direction == ReadDirection::Backward {
+        rows.reverse();
+    }
+    rows
 }
 
 /// The rows `filter` admits, sorted by creation time (newest first) and ID.
@@ -212,7 +227,8 @@ fn expected(filter: impl Fn(&str, Option<&str>, u64) -> bool) -> Vec<Row> {
 
 /// The runs of one service, of one handler across services, and of a time window
 /// merge into creation order, newest first, with ties broken by ID, whatever
-/// the buffer size. Too many runs stop discovery before anything is read.
+/// the buffer size; backwards, into the exact reverse, oldest first. Too many
+/// runs stop discovery before anything is read.
 #[restate_core::test]
 async fn runs_merge_into_creation_order() {
     let store = store_with_entries().await;
@@ -227,26 +243,31 @@ async fn runs_merge_into_creation_order() {
         })
     };
 
-    for buffer in [1, 2, 64] {
+    for (direction, buffer) in [ReadDirection::Forward, ReadDirection::Backward]
+        .into_iter()
+        .flat_map(|direction| [1, 2, 64].map(|buffer| (direction, buffer)))
+    {
         // Service A: the state mutation's run, h1 and h2.
         assert_eq!(
             merged(
                 &snapshot,
                 Selection::All.and(service("A")),
+                direction,
                 limits(8, buffer)
             ),
-            Some(expected(|s, _, _| s == "A")),
-            "service only, buffer {buffer}"
+            Some(expected_in(direction, |s, _, _| s == "A")),
+            "service only, {direction:?}, buffer {buffer}"
         );
         // Handler h1 across services A and B.
         assert_eq!(
             merged(
                 &snapshot,
                 Selection::All.and(handler("h1")),
+                direction,
                 limits(8, buffer)
             ),
-            Some(expected(|_, h, _| h == Some("h1"))),
-            "handler only, buffer {buffer}"
+            Some(expected_in(direction, |_, h, _| h == Some("h1"))),
+            "handler only, {direction:?}, buffer {buffer}"
         );
         // Both, within a time window.
         assert_eq!(
@@ -256,28 +277,34 @@ async fn runs_merge_into_creation_order() {
                     .and(service("A"))
                     .and(handler("h1"))
                     .and(window()),
+                direction,
                 limits(8, buffer)
             ),
-            Some(expected(|s, h, t| s == "A"
+            Some(expected_in(direction, |s, h, t| s == "A"
                 && h == Some("h1")
                 && (150..400).contains(&t))),
-            "both and window, buffer {buffer}"
+            "both and window, {direction:?}, buffer {buffer}"
         );
         // No restriction: every run.
         assert_eq!(
-            merged(&snapshot, Selection::All, limits(8, buffer)),
-            Some(expected(|_, _, _| true)),
-            "everything, buffer {buffer}"
+            merged(&snapshot, Selection::All, direction, limits(8, buffer)),
+            Some(expected_in(direction, |_, _, _| true)),
+            "everything, {direction:?}, buffer {buffer}"
         );
     }
     // Five runs exceed a limit of four, and nothing is read; so does discovery
     // that would evaluate more keys than allowed.
-    assert_eq!(merged(&snapshot, Selection::All, limits(4, 2)), None);
     let few_keys = OrderedRunsLimits {
         max_discovery_keys: 2,
         ..limits(8, 2)
     };
-    assert_eq!(merged(&snapshot, Selection::All, few_keys), None);
+    for direction in [ReadDirection::Forward, ReadDirection::Backward] {
+        assert_eq!(
+            merged(&snapshot, Selection::All, direction, limits(4, 2)),
+            None
+        );
+        assert_eq!(merged(&snapshot, Selection::All, direction, few_keys), None);
+    }
 }
 
 /// Charges what a read holds, by step.
@@ -355,7 +382,7 @@ fn held<T: PhysicalTable>(runs: &OrderedRuns<T>) -> usize {
         + merge.selection.retained_bytes()
         // The snapshot cursor's copy of the bounds and the iterator's, charged
         // as a bound rather than measured.
-        + 3 * merge.selection.scan().bound_bytes()
+        + 3 * merge.cursor.scan().bound_bytes()
 }
 
 /// Between steps, a read is charged exactly what it holds, at the capacity it
@@ -365,43 +392,48 @@ fn held<T: PhysicalTable>(runs: &OrderedRuns<T>) -> usize {
 async fn merges_charge_what_they_hold_and_release_it() {
     let store = store_with_entries().await;
     let (snapshot, _closed) = store.query_read(CancellationToken::new()).unwrap();
-    let start = |charged: &Charged| {
+    let start = |charged: &Charged, direction| {
         snapshot.ordered_runs::<EntryByServiceCreated>(
             service_a(),
             2,
+            direction,
             limits(8, 1),
             Box::new(charged.clone()),
         )
     };
 
-    // Service A has three runs and seven records of about 70 bytes each.
-    let charged = Charged::default();
-    let OrderedRunsDiscovery::Ready(mut runs) = start(&charged).unwrap() else {
-        panic!("three runs are within the limit");
-    };
-    let (discovered, _) = charged.now_and_peak();
-    assert_eq!(
-        (runs.retained_bytes(), discovered),
-        (held(&runs), held(&runs))
-    );
-    let mut records = 0;
-    while runs.advance().unwrap() != CursorStep::Done {
-        let (now, _) = charged.now_and_peak();
-        assert_eq!((runs.retained_bytes(), now), (held(&runs), held(&runs)));
-        records += 1;
+    // Service A has three runs and seven records of about 70 bytes each, read
+    // either way.
+    for direction in [ReadDirection::Forward, ReadDirection::Backward] {
+        let charged = Charged::default();
+        let OrderedRunsDiscovery::Ready(mut runs) = start(&charged, direction).unwrap() else {
+            panic!("three runs are within the limit");
+        };
+        let (discovered, _) = charged.now_and_peak();
+        assert_eq!(
+            (runs.retained_bytes(), discovered),
+            (held(&runs), held(&runs))
+        );
+        let mut records = 0;
+        while runs.advance().unwrap() != CursorStep::Done {
+            let (now, _) = charged.now_and_peak();
+            assert_eq!((runs.retained_bytes(), now), (held(&runs), held(&runs)));
+            records += 1;
+        }
+        assert_eq!(records, 7);
+        let (now, peak) = charged.now_and_peak();
+        assert_eq!(
+            (now, runs.retained_bytes()),
+            (0, 0),
+            "an exhausted read holds nothing"
+        );
+        assert!(peak > discovered);
     }
-    assert_eq!(records, 7);
-    let (now, peak) = charged.now_and_peak();
-    assert_eq!(
-        (now, runs.retained_bytes()),
-        (0, 0),
-        "an exhausted read holds nothing"
-    );
-    assert!(peak > discovered);
 
     // Two creation times: the selection seeks past rejected keys, growing its
     // seek storage. Across service A's runs, it seeks during discovery; within
-    // h1 alone, whose first key matches, only while reading ahead.
+    // h1 alone, whose first key matches, only while reading ahead, and
+    // backwards, it steps over them.
     let created_at = || {
         IndexClause::CreatedAt(ValuePredicate::In(vec![
             MillisSinceEpoch::new(BASE + 500),
@@ -415,14 +447,20 @@ async fn merges_charge_what_they_hold_and_release_it() {
             )))
             .and(created_at())
     };
-    let h1 = IndexClause::TargetHandlerName(ValuePredicate::Equal(ReString::from("h1")));
-    for selection in [service_a(), service_a().and(h1)] {
+    let h1 = || IndexClause::TargetHandlerName(ValuePredicate::Equal(ReString::from("h1")));
+    for (selection, direction) in [
+        (service_a(), ReadDirection::Forward),
+        (service_a(), ReadDirection::Backward),
+        (service_a().and(h1()), ReadDirection::Forward),
+        (service_a().and(h1()), ReadDirection::Backward),
+    ] {
         let request = Arc::new(EntryByServiceCreatedKey::prepare_candidates(&selection).unwrap());
         let charged = Charged::default();
         let OrderedRunsDiscovery::Ready(mut runs) = snapshot
             .ordered_runs::<EntryByServiceCreated>(
                 request,
                 2,
+                direction,
                 limits(8, 1),
                 Box::new(charged.clone()),
             )
@@ -447,7 +485,8 @@ async fn merges_charge_what_they_hold_and_release_it() {
 
     // Dropping an unfinished read releases what it holds.
     let charged = Charged::default();
-    let OrderedRunsDiscovery::Ready(mut runs) = start(&charged).unwrap() else {
+    let OrderedRunsDiscovery::Ready(mut runs) = start(&charged, ReadDirection::Backward).unwrap()
+    else {
         panic!("three runs are within the limit");
     };
     assert_eq!(runs.advance().unwrap(), CursorStep::Record);
@@ -464,7 +503,13 @@ async fn merges_charge_what_they_hold_and_release_it() {
         .unwrap(),
     );
     let OrderedRunsDiscovery::Ready(mut runs) = snapshot
-        .ordered_runs::<EntryByServiceCreated>(request, 2, limits(8, 1), Box::new(charged.clone()))
+        .ordered_runs::<EntryByServiceCreated>(
+            request,
+            2,
+            ReadDirection::Forward,
+            limits(8, 1),
+            Box::new(charged.clone()),
+        )
         .unwrap()
     else {
         panic!("no runs are within the limit");
@@ -476,7 +521,13 @@ async fn merges_charge_what_they_hold_and_release_it() {
     let charged = Charged::default();
     let request = Arc::new(EntryByServiceCreatedKey::prepare_candidates(&Selection::All).unwrap());
     let discovery = snapshot
-        .ordered_runs::<EntryByServiceCreated>(request, 2, limits(4, 1), Box::new(charged.clone()))
+        .ordered_runs::<EntryByServiceCreated>(
+            request,
+            2,
+            ReadDirection::Forward,
+            limits(4, 1),
+            Box::new(charged.clone()),
+        )
         .unwrap();
     assert!(matches!(
         discovery,
@@ -485,9 +536,16 @@ async fn merges_charge_what_they_hold_and_release_it() {
     assert_eq!(charged.now_and_peak().0, 0);
 
     // A charge over the limit stops the read, at discovery or while reading ahead.
-    assert!(start(&Charged::with_limit(10)).is_err());
+    let discovered = {
+        let charged = Charged::default();
+        let _runs = start(&charged, ReadDirection::Forward).unwrap();
+        charged.now_and_peak().0
+    };
+    assert!(start(&Charged::with_limit(10), ReadDirection::Forward).is_err());
     let charged_at_limit = Charged::with_limit(discovered + 10);
-    let OrderedRunsDiscovery::Ready(mut runs) = start(&charged_at_limit).unwrap() else {
+    let OrderedRunsDiscovery::Ready(mut runs) =
+        start(&charged_at_limit, ReadDirection::Forward).unwrap()
+    else {
         panic!("discovery fits the limit");
     };
     assert!(runs.advance().is_err());
@@ -534,31 +592,35 @@ async fn reading_ahead_stays_within_the_step_budget() {
         step_budget: NonZeroUsize::MIN,
         ..limits(8, 2)
     };
-    let OrderedRunsDiscovery::Ready(mut runs) = snapshot
-        .ordered_runs::<EvenOnly>(service_a(), 2, budget, Box::new(()))
-        .unwrap()
-    else {
-        panic!("three runs are within the limit");
-    };
-    let mut rows = Vec::new();
-    let mut skipped = 0;
-    loop {
-        let before = runs.examined();
-        let step = runs.advance().unwrap();
-        assert!(runs.examined() - before <= 1, "one key per step");
-        match step {
-            CursorStep::Record => rows.push(row(runs.current().unwrap().0.decode_all().unwrap())),
-            CursorStep::Skipped => skipped += 1,
-            CursorStep::Done => break,
-        }
-    }
     let even = |id: &[u8]| id[id.len() - 1].is_multiple_of(2);
-    let expected: Vec<_> = expected(|s, _, _| s == "A")
-        .into_iter()
-        .filter(|row| even(&row.3))
-        .collect();
-    assert_eq!(rows, expected);
-    assert!(skipped > 0);
+    for direction in [ReadDirection::Forward, ReadDirection::Backward] {
+        let OrderedRunsDiscovery::Ready(mut runs) = snapshot
+            .ordered_runs::<EvenOnly>(service_a(), 2, direction, budget, Box::new(()))
+            .unwrap()
+        else {
+            panic!("three runs are within the limit");
+        };
+        let mut rows = Vec::new();
+        let mut skipped = 0;
+        loop {
+            let before = runs.examined();
+            let step = runs.advance().unwrap();
+            assert!(runs.examined() - before <= 1, "one key per step");
+            match step {
+                CursorStep::Record => {
+                    rows.push(row(runs.current().unwrap().0.decode_all().unwrap()))
+                }
+                CursorStep::Skipped => skipped += 1,
+                CursorStep::Done => break,
+            }
+        }
+        let expected: Vec<_> = expected_in(direction, |s, _, _| s == "A")
+            .into_iter()
+            .filter(|row| even(&row.3))
+            .collect();
+        assert_eq!(rows, expected, "{direction:?}");
+        assert!(skipped > 0);
+    }
 }
 
 /// An exhausted merge releases the snapshot even while the cursor is alive; an
@@ -569,7 +631,13 @@ async fn merges_release_the_snapshot_and_stop_on_cancellation() {
     let store = store_with_entries().await;
     let start = |snapshot: &ReadSnapshot| {
         let OrderedRunsDiscovery::Ready(runs) = snapshot
-            .ordered_runs::<EntryByServiceCreated>(service_a(), 2, limits(8, 1), Box::new(()))
+            .ordered_runs::<EntryByServiceCreated>(
+                service_a(),
+                2,
+                ReadDirection::Forward,
+                limits(8, 1),
+                Box::new(()),
+            )
             .unwrap()
         else {
             panic!("three runs are within the limit");
