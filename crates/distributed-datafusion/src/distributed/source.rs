@@ -746,10 +746,11 @@ impl SourcePlan {
         Some(source)
     }
 
-    /// What a partition read checks before it emits a row: the part of the
-    /// scan's planning-time predicate in the safe subset ([`emission`]). Only
-    /// for table and index scans without a source fetch: the reader stops after
-    /// that many raw rows, which a later filter couldn't make up for.
+    /// What a partition read checks before it emits a row: the scan's whole
+    /// planning-time predicate, if all of it is in the safe subset
+    /// ([`emission`]), else nothing. Only for table and index scans without a
+    /// source fetch: the reader stops after that many raw rows, which a later
+    /// filter couldn't make up for.
     pub(super) fn emission_filter(&self) -> Option<Arc<dyn PhysicalExpr>> {
         if self.descriptor.limit.is_some()
             || !matches!(

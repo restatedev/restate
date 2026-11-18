@@ -624,6 +624,7 @@ async fn invalid_task_and_required_storage_fail_closed() {
         query_headers: vec![],
         redacted_sql: Default::default(),
         planning_duration: Default::default(),
+        analyze: None,
     };
     let id = invalid.id.clone();
     let error = rpc(&connection, QueryTaskRequest::Install(invalid))
@@ -640,7 +641,7 @@ async fn invalid_task_and_required_storage_fail_closed() {
     assert!(!connection.is_closed());
     assert!(matches!(
         rpc(&connection, QueryTaskRequest::Close(QueryTaskClose { id })).await,
-        Ok(QueryTaskReplyBody::Closed(()))
+        Ok(QueryTaskReplyBody::Closed(_))
     ));
     // This is the Datafusion swimlane connection. Ordinary node traffic usually
     // goes over other swimlanes; sending it here on purpose shows that the
