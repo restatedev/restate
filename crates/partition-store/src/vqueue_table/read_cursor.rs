@@ -166,7 +166,8 @@ pub enum EntryStatusScan {
     /// Statuses referenced by the scheduler's stage tables, navigated by the
     /// prepared stage reads. See [`StageReads`].
     Stages(Arc<StageReads>),
-    /// Finished entries through their index, newest finished first, or the
+    /// Finished entries through their index, newest finished first (or oldest
+    /// first, as the [`FinishedRead`] says), or the
     /// `fallback` iteration if the index can't stand in for it on the snapshot.
     /// `execution` is charged for the index read and learns which path it took.
     /// See [`FinishedRead`].
@@ -176,7 +177,8 @@ pub enum EntryStatusScan {
         execution: Arc<EntryIndexExecution>,
     },
     /// Active entries, in Inbox, Running, Suspended or Paused, through their
-    /// index, newest created first, or the `fallback` iteration if the index
+    /// index, newest created first (or oldest first, as the [`ActiveRead`]
+    /// says), or the `fallback` iteration if the index
     /// can't stand in for it on the snapshot. `execution` is charged for the
     /// index read and learns which path it took. See [`ActiveRead`].
     Active {

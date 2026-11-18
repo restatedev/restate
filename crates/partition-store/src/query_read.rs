@@ -407,6 +407,12 @@ impl SnapshotCursor {
         &self.snapshot
     }
 
+    /// The bounds the cursor stays within.
+    #[cfg(test)]
+    pub(crate) fn scan(&self) -> &PhysicalScan<Bytes> {
+        &self.scan
+    }
+
     /// Borrows the current bytes without advancing or copying them.
     pub fn peek(&self) -> Result<Option<(&[u8], &[u8])>> {
         self.snapshot.check_active()?;
@@ -447,6 +453,30 @@ impl SnapshotCursor {
         }
         self.iterator.seek(target);
         Ok(true)
+    }
+
+    /// Moves to the last key at or before `target`, or to the cursor's last key
+    /// when `target` lies past its bounds. Returns `false`, without moving, when
+    /// `target` lies before them. A read that merges runs backwards
+    /// ([`crate::ordered_runs`]) navigates with this and [`Self::retreat`].
+    pub(crate) fn reposition_back(&mut self, target: &[u8]) -> Result<bool> {
+        self.snapshot.check_active()?;
+        if target < self.scan.start().as_ref() {
+            return Ok(false);
+        }
+        if self.scan.contains_key(target) {
+            self.iterator.seek_for_prev(target);
+        } else {
+            self.iterator.seek_to_last();
+        }
+        Ok(true)
+    }
+
+    /// Moves to the previous key.
+    pub(crate) fn retreat(&mut self) -> Result<()> {
+        self.snapshot.check_active()?;
+        self.iterator.prev();
+        Ok(())
     }
 }
 

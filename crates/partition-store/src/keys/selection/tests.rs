@@ -11,7 +11,7 @@
 use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::ops::RangeBounds;
 
-use bytes::BufMut;
+use bytes::{BufMut, BytesMut};
 
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
 use restate_util_string::ReString;
@@ -173,6 +173,26 @@ fn lexicographic_navigation_agrees_with_cartesian_reference() {
                             }
                             match cursor.evaluate(key).unwrap() {
                                 KeyMatch::Match => {
+                                    // Under the key's parent, or parent and
+                                    // child, the end of what the selection may
+                                    // match lies after it, and no further than
+                                    // the first key past that prefix.
+                                    let (parent, child, _) = *row;
+                                    let mut by_parent = Vec::new();
+                                    NavigationKey::prefix(1, &mut by_parent).parent(parent);
+                                    let mut by_child = Vec::new();
+                                    NavigationKey::prefix(1, &mut by_child)
+                                        .parent(parent)
+                                        .child(child);
+                                    for (fields, prefix) in [(1, by_parent), (2, by_child)] {
+                                        let mut past = BytesMut::from(&prefix[..]);
+                                        assert!(super::advance_prefix(&mut past, 0));
+                                        let end = cursor.end_within(&prefix, fields).unwrap();
+                                        assert!(
+                                            key.as_slice() < end && end <= &past[..],
+                                            "{row:?} under {fields} fields"
+                                        );
+                                    }
                                     actual.push(*row);
                                     position += 1;
                                 }
