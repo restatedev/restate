@@ -11,6 +11,7 @@
 mod aggregated_status_stats;
 #[cfg(test)]
 pub(crate) use aggregated_status_stats::legacy_status_gauge_key;
+mod journal_entry_blobs;
 mod registry_fence;
 mod scoped_promise_migration;
 mod scoped_state_migration;
@@ -108,6 +109,13 @@ storage_features! {
     ///
     /// Since v1.8.2
     pub Registry,
+
+    /// Journal entries with a large content store it in the blob table. Enabled with the
+    /// experimental write blob table option, and kept afterwards so that binaries that can't
+    /// read these entries can't open the store.
+    ///
+    /// Since v1.8.2
+    pub JournalEntryBlobs,
 }
 
 trait StorageFeature: Sized + 'static {

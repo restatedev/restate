@@ -89,6 +89,7 @@ pub mod v1 {
     pub mod pb_conversion {
         use std::collections::HashSet;
         use std::str::FromStr;
+        use std::sync::Arc;
 
         use anyhow::anyhow;
         use bytes::{Buf, Bytes};
@@ -112,6 +113,8 @@ pub mod v1 {
         use restate_types::vqueues::{Seq, VQueueId};
         use restate_types::{GenerationalNodeId, LimitKey, Scope, journal_v2};
         use restate_util_string::RestateString;
+
+        use crate::journal_table_v2::{RawEntryMetadata, StoredContent};
 
         use super::dedup_sequence_number::Variant;
         use super::enriched_entry_header::{
@@ -3267,7 +3270,7 @@ pub mod v1 {
 
             fn try_from(value: EntryLite) -> Result<Self, Self::Error> {
                 Ok(Self {
-                    related_blob: value.related_blob.map(TryInto::try_into).transpose()?,
+                    content_blob: value.content_blob.map(TryInto::try_into).transpose()?,
                 })
             }
         }
@@ -3275,7 +3278,7 @@ pub mod v1 {
         impl From<crate::journal_table_v2::StoredEntryLite> for EntryLite {
             fn from(value: crate::journal_table_v2::StoredEntryLite) -> Self {
                 EntryLite {
-                    related_blob: value.related_blob.map(Into::into),
+                    content_blob: value.content_blob.map(Into::into),
                 }
             }
         }
@@ -3287,109 +3290,104 @@ pub mod v1 {
                 let header =
                     restate_types::storage::StoredRawEntryHeader::new(value.append_time.into());
 
-                let related_blob = value.related_blob.map(TryInto::try_into).transpose()?;
+                let content = match value.payload {
+                    // Empty content isn't encoded
+                    None => StoredContent::Inline(Bytes::new()),
+                    Some(entry::Payload::Content(content)) => StoredContent::Inline(content),
+                    Some(entry::Payload::ContentBlob(blob)) => {
+                        StoredContent::Blob(blob.try_into()?)
+                    }
+                };
+
+                let metadata = match EntryType::try_from(value.ty)
+                    .map_err(|e| ConversionError::unexpected_enum_variant("ty", e.0))?
+                    .try_into()?
+                {
+                    journal_v2::EntryType::Notification(ty) => {
+                        let id = match value
+                            .notification_id
+                            .ok_or_else(|| ConversionError::missing_field("notification_id"))?
+                        {
+                            entry::NotificationId::CompletionIdx(c) => {
+                                journal_v2::NotificationId::CompletionId(c)
+                            }
+                            entry::NotificationId::SignalIdx(c) => {
+                                journal_v2::NotificationId::SignalIndex(c)
+                            }
+                            entry::NotificationId::SignalName(s) => {
+                                journal_v2::NotificationId::SignalName(s.into())
+                            }
+                        };
+
+                        let result =
+                            NotificationResultVariant::try_from(value.notification_result_variant)
+                                .map_err(|e| {
+                                    ConversionError::unexpected_enum_variant(
+                                        "notification_result_variant",
+                                        e.0,
+                                    )
+                                })?;
+
+                        RawEntryMetadata::Notification {
+                            ty,
+                            id,
+                            result: result.into(),
+                        }
+                    }
+                    journal_v2::EntryType::Command(ty @ journal_v2::CommandType::Call)
+                    | journal_v2::EntryType::Command(ty @ journal_v2::CommandType::OneWayCall) => {
+                        RawEntryMetadata::Command {
+                            ty,
+                            specific: journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
+                                Arc::new(journal_v2::raw::CallOrSendMetadata::try_from(
+                                    value.call_or_send_command_metadata.ok_or_else(|| {
+                                        ConversionError::missing_field(
+                                            "call_command_journal_entry_additional_metadata",
+                                        )
+                                    })?,
+                                )?),
+                            ),
+                        }
+                    }
+                    journal_v2::EntryType::Command(ty) => RawEntryMetadata::Command {
+                        ty,
+                        specific: journal_v2::raw::RawCommandSpecificMetadata::None,
+                    },
+                };
 
                 Ok(crate::journal_table_v2::StoredEntry(
-                    match EntryType::try_from(value.ty)
-                        .map_err(|e| ConversionError::unexpected_enum_variant("ty", e.0))?
-                        .try_into()?
-                    {
-                        journal_v2::EntryType::Notification(notification_ty) => {
-                            let notification_id = match value
-                                .notification_id
-                                .ok_or_else(|| ConversionError::missing_field("notification_id"))?
-                            {
-                                entry::NotificationId::CompletionIdx(c) => {
-                                    journal_v2::NotificationId::CompletionId(c)
-                                }
-                                entry::NotificationId::SignalIdx(c) => {
-                                    journal_v2::NotificationId::SignalIndex(c)
-                                }
-                                entry::NotificationId::SignalName(s) => {
-                                    journal_v2::NotificationId::SignalName(s.into())
-                                }
-                            };
-
-                            let result_variant = NotificationResultVariant::try_from(
-                                value.notification_result_variant,
-                            )
-                            .map_err(|e| {
-                                ConversionError::unexpected_enum_variant(
-                                    "notification_result_variant",
-                                    e.0,
-                                )
-                            })?;
-
-                            restate_types::storage::StoredRawEntry::new(
-                                header,
-                                related_blob,
-                                journal_v2::raw::RawNotification::new(
-                                    notification_ty,
-                                    notification_id,
-                                    result_variant.into(),
-                                    value.content,
-                                ),
-                            )
-                        }
-                        journal_v2::EntryType::Command(ct @ journal_v2::CommandType::Call)
-                        | journal_v2::EntryType::Command(
-                            ct @ journal_v2::CommandType::OneWayCall,
-                        ) => restate_types::storage::StoredRawEntry::new(
-                            header,
-                            related_blob,
-                            journal_v2::raw::RawCommand::new(ct, value.content)
-                                .with_command_specific_metadata(
-                                journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(Box::new(
-                                    journal_v2::raw::CallOrSendMetadata::try_from(
-                                        value.call_or_send_command_metadata.ok_or_else(|| {
-                                            ConversionError::missing_field(
-                                                "call_command_journal_entry_additional_metadata",
-                                            )
-                                        })?,
-                                    )?,
-                                )),
-                            ),
-                        ),
-                        journal_v2::EntryType::Command(ct) => {
-                            restate_types::storage::StoredRawEntry::new(
-                                header,
-                                related_blob,
-                                journal_v2::raw::RawCommand::new(ct, value.content),
-                            )
-                        }
-                    },
+                    crate::journal_table_v2::StoredUnhydratedRawEntry::from_parts(
+                        header, metadata, content,
+                    ),
                 ))
             }
         }
 
         impl From<crate::journal_table_v2::StoredEntry> for Entry {
             fn from(
-                crate::journal_table_v2::StoredEntry(raw_entry): crate::journal_table_v2::StoredEntry,
+                crate::journal_table_v2::StoredEntry(entry): crate::journal_table_v2::StoredEntry,
             ) -> Self {
-                let ty = EntryType::from(raw_entry.ty());
-                let append_time = raw_entry.header.append_time.into();
+                let ty = EntryType::from(entry.ty());
+                let (header, metadata, content) = entry.into_parts();
+                let append_time = header.append_time.into();
 
                 let mut call_or_send_command_metadata: Option<entry::CallOrSendCommandMetadata> =
                     None;
                 let mut notification_id: Option<entry::NotificationId> = None;
                 let mut notification_result_variant: NotificationResultVariant =
                     NotificationResultVariant::Unknown;
-                let content = match raw_entry.inner {
-                    journal_v2::raw::RawEntry::Command(cmd) => {
-                        match cmd.command_specific_metadata {
-                            journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
-                                call_or_send_metadata,
-                            ) => {
-                                call_or_send_command_metadata =
-                                    Some((*call_or_send_metadata).into())
-                            }
-                            journal_v2::raw::RawCommandSpecificMetadata::None => {}
-                        };
-
-                        cmd.serialized_content
-                    }
-                    journal_v2::raw::RawEntry::Notification(notification) => {
-                        notification_id = Some(match notification.id() {
+                match metadata {
+                    RawEntryMetadata::Command { specific, .. } => match specific {
+                        journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
+                            call_or_send_metadata,
+                        ) => {
+                            call_or_send_command_metadata =
+                                Some(Arc::unwrap_or_clone(call_or_send_metadata).into())
+                        }
+                        journal_v2::raw::RawCommandSpecificMetadata::None => {}
+                    },
+                    RawEntryMetadata::Notification { id, result, .. } => {
+                        notification_id = Some(match id {
                             journal_v2::NotificationId::CompletionId(c) => {
                                 entry::NotificationId::CompletionIdx(c)
                             }
@@ -3401,20 +3399,20 @@ pub mod v1 {
                             }
                         });
 
-                        notification_result_variant = notification.result_variant().into();
-
-                        notification.serialized_content()
+                        notification_result_variant = result.into();
                     }
                 };
 
                 Entry {
                     ty: ty.into(),
-                    content,
+                    payload: Some(match content {
+                        StoredContent::Blob(blob) => entry::Payload::ContentBlob(blob.into()),
+                        StoredContent::Inline(content) => entry::Payload::Content(content),
+                    }),
                     append_time,
                     call_or_send_command_metadata,
                     notification_id,
                     notification_result_variant: notification_result_variant.into(),
-                    related_blob: raw_entry.related_blob.map(Into::into),
                 }
             }
         }

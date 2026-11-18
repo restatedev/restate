@@ -42,7 +42,7 @@ use restate_storage_api::fsm_table::{FsmPosition, ReadFsmTable};
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use restate_storage_api::{Storage, StorageError, Transaction};
 use restate_types::SemanticRestateVersion;
-use restate_types::config::{Configuration, StorageOptions};
+use restate_types::config::{Configuration, WorkerOptions};
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId, WithPartitionKey};
 use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::partitions::Partition;
@@ -54,6 +54,7 @@ use restate_types::storage::StorageEncode;
 use restate_util_string::ReString;
 
 use crate::PartitionStoreSnapshot;
+use crate::blob_table::BlobReader;
 use crate::features::{LoadedStorageFeatures, StorageFeatures};
 use crate::fsm_table::delete_applied_lsn;
 use crate::fsm_table::get_partition_seal;
@@ -713,7 +714,7 @@ impl PartitionStore {
         // this will fetch the value and cache it.
         let storage_features = self.storage_features();
         let published_registry = self.published_registry();
-        let settings = TransactionSettings::from(&Configuration::pinned().worker.storage);
+        let settings = TransactionSettings::new(&Configuration::pinned().worker, storage_features);
 
         PartitionStoreTransaction {
             write_batch_with_index: Some(rocksdb::WriteBatchWithIndex::new(0, true)),
@@ -1062,6 +1063,11 @@ impl StorageRead for PartitionStore {
         self.key_buffer.reserve(min_size);
         &mut self.key_buffer
     }
+
+    #[inline]
+    fn blob_reader(&self) -> BlobReader<'_> {
+        self.partition_db().into()
+    }
 }
 
 impl StorageAccess for PartitionStore {
@@ -1137,14 +1143,20 @@ impl ScanMode {
 pub(crate) struct TransactionSettings {
     /// Probability that a vqueue metadata update is written as a full value instead of a merge.
     pub vqueue_meta_full_write_probability: f64,
+    /// Journal entries with a larger content store it in a blob, if set.
+    pub inline_entry_threshold: Option<usize>,
 }
 
-impl From<&StorageOptions> for TransactionSettings {
-    fn from(opts: &StorageOptions) -> Self {
+impl TransactionSettings {
+    pub fn new(opts: &WorkerOptions, storage_features: StorageFeatures) -> Self {
         Self {
             vqueue_meta_full_write_probability: opts
+                .storage
                 .vqueue_meta_full_write_probability
                 .clamp(0.0, 1.0),
+            inline_entry_threshold: storage_features
+                .is_journal_entry_blobs
+                .then(|| opts.inline_journal_entry_threshold.as_usize()),
         }
     }
 }
@@ -1593,6 +1605,25 @@ impl Transaction for PartitionStoreTransaction<'_> {
     }
 }
 
+impl PartitionStoreTransaction<'_> {
+    /// An iterator over this transaction's write batch on top of the database.
+    fn batch_iterator(
+        &self,
+        cf: &Arc<BoundColumnFamily<'_>>,
+        opts: ReadOptions,
+    ) -> DBRawIteratorWithThreadMode<'_, DB> {
+        let base = self
+            .rocksdb
+            .inner()
+            .as_raw_db()
+            .raw_iterator_cf_opt(cf, opts);
+        self.write_batch_with_index
+            .as_ref()
+            .expect("transaction valid")
+            .iterator_with_base_cf(base, cf)
+    }
+}
+
 impl StorageRead for PartitionStoreTransaction<'_> {
     type Iterator<'b>
         = DBRawIteratorWithThreadMode<'b, DB>
@@ -1617,16 +1648,7 @@ impl StorageRead for PartitionStoreTransaction<'_> {
             }
         };
 
-        let base = self
-            .rocksdb
-            .inner()
-            .as_raw_db()
-            .raw_iterator_cf_opt(cf, opts);
-        let mut iterator = self
-            .write_batch_with_index
-            .as_ref()
-            .expect("transaction valid")
-            .iterator_with_base_cf(base, cf);
+        let mut iterator = self.batch_iterator(cf, opts);
         iterator.seek(start);
         Ok(iterator)
     }
@@ -1656,6 +1678,16 @@ impl StorageRead for PartitionStoreTransaction<'_> {
         self.key_buffer.clear();
         self.key_buffer.reserve(min_size);
         self.key_buffer
+    }
+
+    /// Reads through the write batch, so it sees the blobs written by this transaction.
+    #[inline]
+    fn blob_reader(&self) -> BlobReader<'_> {
+        // Seeks look for exact keys, so the iterator needs no bounds. A blob key is longer than
+        // the prefix extractor, so each seek checks the prefix filters.
+        let mut opts = ReadOptions::default();
+        opts.set_total_order_seek(false);
+        BlobReader::Batch(self.batch_iterator(self.cf_for_key_kind(KeyKind::Blob), opts))
     }
 }
 
@@ -1872,6 +1904,9 @@ pub(crate) trait StorageRead {
     /// Reads the value of `key`, whose kind is `key_kind`, without copying it.
     fn get<K: AsRef<[u8]>>(&self, key_kind: KeyKind, key: K)
     -> Result<Option<DBPinnableSlice<'_>>>;
+
+    /// Point reads of blob payloads, see [`BlobReader`].
+    fn blob_reader(&self) -> BlobReader<'_>;
 
     fn cleared_key_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut;
 

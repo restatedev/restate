@@ -161,6 +161,7 @@ journal_binding!(
 journal_binding!(
     JournalV2Binding,
     JournalV2Table,
-    |value: &mut &[u8]| StoredEntry::decode(value).map(|entry| entry.0),
+    |value: &mut &[u8]| StoredEntry::decode(value)
+        .map(|entry| entry.0.try_into_inline().map_err(Box::new)),
     row::write_v2
 );
