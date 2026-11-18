@@ -55,7 +55,7 @@ use restate_types::identifiers::PartitionId;
 use restate_types::partition_table::Partition;
 use restate_util_string::ReString;
 
-use crate::access::{Access, PrimaryKeys, PrimaryRead, SortedColumn, select_access};
+use crate::access::{Access, IndexRead, PrimaryKeys, PrimaryRead, SortedColumn, select_access};
 use crate::placement::PartitionPlacement;
 use crate::source_registry::{PartitionLocation, PartitionSourceDescriptor, SourceRegistry};
 use crate::statistics::estimate_source_statistics;
@@ -632,17 +632,27 @@ impl SourcePlan {
         {
             return exec_err!("local query source '{table}' cannot read index '{index}'");
         }
+        // An index read, with the order it is planned for.
+        let index_read = |IndexWork {
+                              index, ordering, ..
+                          }: &IndexWork| {
+            IndexRead::new(index.clone(), ordering.as_slice().into())
+        };
         let mut requests: Vec<_> = match work {
             SourceWork::TableScan(work) => work
                 .reads
                 .iter()
                 .map(|read| (read.partition, PrimaryRead::Scan))
                 .collect(),
-            SourceWork::IndexScan(IndexWork { index, work, .. }) => work
-                .reads
-                .iter()
-                .map(|read| (read.partition, PrimaryRead::Index(index.clone())))
-                .collect(),
+            SourceWork::IndexScan(index) => {
+                let read = index_read(index);
+                index
+                    .work
+                    .reads
+                    .iter()
+                    .map(|partition| (partition.partition, PrimaryRead::Index(read.clone())))
+                    .collect()
+            }
             SourceWork::MultiGet(work) => work
                 .reads
                 .iter()
@@ -659,9 +669,7 @@ impl SourcePlan {
         // Scans prepare once from the predicate and share it across partitions.
         let shared = match work {
             SourceWork::TableScan(_) => Some(PrimaryRead::Scan),
-            SourceWork::IndexScan(IndexWork { index, .. }) => {
-                Some(PrimaryRead::Index(index.clone()))
-            }
+            SourceWork::IndexScan(index) => Some(PrimaryRead::Index(index_read(index))),
             _ => None,
         };
         let scan = shared

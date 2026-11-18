@@ -121,7 +121,8 @@ impl CompleteIndex for StageIndex {
 }
 
 /// Finished entries through `finished_entry_by_outcome/1`, newest finished
-/// first, for a query that asks for exactly that order under a LIMIT:
+/// first, or oldest finished first, for a query that asks for exactly that
+/// order under a LIMIT:
 ///
 /// ```sql
 /// SELECT … FROM sys_vqueue_entry_status
@@ -132,8 +133,9 @@ impl CompleteIndex for StageIndex {
 ///
 /// The index holds only Finished entries, so every alternative of the query
 /// must fix the stage to `finished` ([`Self::admits`]); a status condition
-/// narrows the runs it reads but proves nothing alone. Another order, or a
-/// condition outside the allowlist below, reads as before.
+/// narrows the runs it reads but proves nothing alone. Ascending, the index is
+/// read backwards. Another order, or a condition outside the allowlist below,
+/// reads as before.
 pub(crate) struct FinishedIndex;
 
 impl CompleteIndex for FinishedIndex {
@@ -189,8 +191,8 @@ impl CompleteIndex for FinishedIndex {
 }
 
 /// Active entries, those in Inbox, Running, Suspended or Paused, through
-/// `active_entry_by_stage/1`, newest created first, for a query that asks for
-/// exactly that order under a LIMIT:
+/// `active_entry_by_stage/1`, newest created first, or oldest created first,
+/// for a query that asks for exactly that order under a LIMIT:
 ///
 /// ```sql
 /// SELECT … FROM sys_vqueue_entry_status
@@ -201,8 +203,9 @@ impl CompleteIndex for FinishedIndex {
 ///
 /// The index holds only active entries, so every alternative of the query must
 /// fix the stage to some of those stages ([`Self::admits`]); a status condition
-/// is checked on each row and proves nothing. Another order, or a condition
-/// outside the allowlist below, reads as before.
+/// is checked on each row and proves nothing. Ascending, the index is read
+/// backwards. Another order, or a condition outside the allowlist below, reads
+/// as before.
 pub(crate) struct ActiveIndex;
 
 impl CompleteIndex for ActiveIndex {
@@ -408,28 +411,38 @@ impl ScanPartition for EntryStatusScanner {
         };
         let access = match access {
             PrimaryRead::Scan => EntryStatusAccess::Scan(scan()?),
-            PrimaryRead::Index(index) if index.as_str() == FinishedEntryByOutcome::NAME => {
+            PrimaryRead::Index(index) if index.name() == FinishedEntryByOutcome::NAME => {
                 // The planner's choice is fixed; the restriction is derived again
                 // from the shipped predicate, and the predicate stays residual. A
                 // partition that can't read the index scans with the same one.
                 let selection = index_restriction::<FinishedEntryByOutcome>(predicate.as_slice())?
                     .map_or(Selection::Empty, |domains| domains.to_selection());
                 EntryStatusAccess::Finished {
-                    read: Arc::new(FinishedRead::prepare(&selection)?),
+                    read: Arc::new(FinishedRead::prepare(
+                        &selection,
+                        index.direction::<FinishedIndex>()?,
+                    )?),
                     fallback: scan()?,
                 }
             }
-            PrimaryRead::Index(index) if index.as_str() == ActiveEntryByStage::NAME => {
+            PrimaryRead::Index(index) if index.name() == ActiveEntryByStage::NAME => {
                 // As for finished entries.
                 let selection = index_restriction::<ActiveEntryByStage>(predicate.as_slice())?
                     .map_or(Selection::Empty, |domains| domains.to_selection());
                 EntryStatusAccess::Active {
-                    read: Arc::new(ActiveRead::prepare(&selection)?),
+                    read: Arc::new(ActiveRead::prepare(
+                        &selection,
+                        index.direction::<ActiveIndex>()?,
+                    )?),
                     fallback: scan()?,
                 }
             }
             PrimaryRead::Index(index) => {
-                anyhow::ensure!(self.supports_index(&index), "unsupported index '{index}'");
+                anyhow::ensure!(
+                    self.supports_index(index.name()),
+                    "unsupported index '{}'",
+                    index.name()
+                );
                 // The planner's choice is fixed; the restriction is derived again
                 // from the shipped predicate, and the predicate stays residual.
                 let selection = index_restriction::<EntryByQueue>(predicate.as_slice())?

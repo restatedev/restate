@@ -56,6 +56,10 @@ use super::read::EntryStatusScanner;
 /// and first.
 const SPELLINGS: [&str; 3] = ["DESC NULLS LAST", "DESC", "DESC NULLS FIRST"];
 
+/// The ways to ask for the reverse, ascending order: NULLs last, by default
+/// (last), and first.
+const REVERSED: [&str; 3] = ["ASC NULLS LAST", "ASC", "ASC NULLS FIRST"];
+
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn vqueue_entry_status_not_in_returns_non_excluded_rows() {
     use datafusion::arrow::array::Array;
@@ -790,9 +794,6 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
             "{select} WHERE stage IN ('finished', 'running') \
              ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
         ),
-        format!(
-            "{select} WHERE stage = 'finished' ORDER BY transitioned_at ASC NULLS LAST LIMIT 5"
-        ),
         format!("{select} WHERE stage = 'finished' ORDER BY created_at DESC NULLS LAST LIMIT 5"),
         // A condition outside the allowlist.
         format!(
@@ -820,20 +821,24 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
         };
     // The ordered column is never NULL: wherever the query puts NULLs, by
     // default first for DESC, it reads the index in the same plan, but for the
-    // spelling, and gets the same rows.
+    // spelling, and gets the same rows. Ascending, it reads the index
+    // backwards, in one plan for every spelling too.
     let unspelled = |plan: String| plan.replace(" NULLS FIRST", "").replace(" NULLS LAST", "");
     for sql in &indexed {
-        let explained = plan(sql, false).await;
-        assert!(explained.contains(INDEX), "{sql}: {explained}");
         let all = scanned(&sql.replace(" LIMIT", " LIMIT 1000000 --")).await;
-        for spelling in SPELLINGS {
-            let sql = sql.replace("DESC NULLS LAST", spelling);
-            assert_eq!(
-                unspelled(plan(&sql, false).await),
-                unspelled(explained.clone()),
-                "{sql}"
-            );
-            same(&rows(&sql).await, &scanned(&sql).await, &all, &sql);
+        for spellings in [SPELLINGS, REVERSED] {
+            let first = sql.replace("DESC NULLS LAST", spellings[0]);
+            let explained = plan(&first, false).await;
+            assert!(explained.contains(INDEX), "{first}: {explained}");
+            for spelling in spellings {
+                let sql = sql.replace("DESC NULLS LAST", spelling);
+                assert_eq!(
+                    unspelled(plan(&sql, false).await),
+                    unspelled(explained.clone()),
+                    "{sql}"
+                );
+                same(&rows(&sql).await, &scanned(&sql).await, &all, &sql);
+            }
         }
     }
     for sql in &scans {
@@ -848,6 +853,16 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
         "{analyzed}"
     );
     assert!(analyzed.contains("entry_index_skipped=0"), "{analyzed}");
+    // Backwards too.
+    let analyzed = plan(
+        &indexed[0].replace("DESC NULLS LAST", "ASC NULLS LAST"),
+        true,
+    )
+    .await;
+    assert!(
+        analyzed.contains("entry_index_reads=1") && !analyzed.contains("entry_index_scans=1"),
+        "{analyzed}"
+    );
 
     // More runs than one read merges: the partition scans and sorts instead,
     // before returning anything, and says why and what discovery examined.
@@ -1065,7 +1080,6 @@ async fn active_entries_read_through_their_index_match_the_scan() {
         format!("{select} WHERE stage IN ('inbox', 'finished') {newest} LIMIT 5"),
         format!("{select} WHERE stage = 'finished' {newest} LIMIT 5"),
         format!("{select} WHERE stage = 'unknown' {newest} LIMIT 5"),
-        format!("{select} WHERE stage = 'inbox' ORDER BY created_at ASC NULLS LAST LIMIT 5"),
         format!("{select} WHERE stage = 'inbox' ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"),
         // Conditions outside the allowlist: another column, and alternatives
         // that aren't each a single stage or status condition.
@@ -1090,20 +1104,24 @@ async fn active_entries_read_through_their_index_match_the_scan() {
         };
     // The ordered column is never NULL: wherever the query puts NULLs, by
     // default first for DESC, it reads the index in the same plan, but for the
-    // spelling, and gets the same rows.
+    // spelling, and gets the same rows. Ascending, it reads the index
+    // backwards, in one plan for every spelling too.
     let unspelled = |plan: String| plan.replace(" NULLS FIRST", "").replace(" NULLS LAST", "");
     for sql in &indexed {
-        let explained = plan(sql, false).await;
-        assert!(explained.contains(INDEX), "{sql}: {explained}");
         let all = scanned(&sql.replace(" LIMIT", " LIMIT 1000000 --")).await;
-        for spelling in SPELLINGS {
-            let sql = sql.replace("DESC NULLS LAST", spelling);
-            assert_eq!(
-                unspelled(plan(&sql, false).await),
-                unspelled(explained.clone()),
-                "{sql}"
-            );
-            same(&rows(&sql).await, &scanned(&sql).await, &all, &sql);
+        for spellings in [SPELLINGS, REVERSED] {
+            let first = sql.replace("DESC NULLS LAST", spellings[0]);
+            let explained = plan(&first, false).await;
+            assert!(explained.contains(INDEX), "{first}: {explained}");
+            for spelling in spellings {
+                let sql = sql.replace("DESC NULLS LAST", spelling);
+                assert_eq!(
+                    unspelled(plan(&sql, false).await),
+                    unspelled(explained.clone()),
+                    "{sql}"
+                );
+                same(&rows(&sql).await, &scanned(&sql).await, &all, &sql);
+            }
         }
     }
     for sql in &scans {
@@ -1129,6 +1147,16 @@ async fn active_entries_read_through_their_index_match_the_scan() {
         "{analyzed}"
     );
     assert!(analyzed.contains("entry_index_skipped=0"), "{analyzed}");
+    // Backwards too.
+    let analyzed = plan(
+        &indexed[0].replace("DESC NULLS LAST", "ASC NULLS LAST"),
+        true,
+    )
+    .await;
+    assert!(
+        analyzed.contains("entry_index_reads=1") && !analyzed.contains("entry_index_scans=1"),
+        "{analyzed}"
+    );
 
     // More runs than one read merges: the partition scans and sorts instead,
     // before returning anything, and says why and what discovery examined.
