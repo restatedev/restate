@@ -451,18 +451,20 @@ async fn invocations_read_through_the_entry_index_match_v1() {
     }
     assert!(!orphaned().await);
     // The scan-routed pages read the partition's every status, without the
-    // index, and filter them above the scan.
+    // index, and emit only those meeting the scan's predicate: Counter's 300 for
+    // the oldest-first page, none of them scheduled.
     let statuses: u64 = rows(old.as_ref(), "SELECT COUNT(*) FROM sys_invocation_status").await[0]
         [0]
     .parse()
     .unwrap();
-    for sql in [oldest, scheduled] {
+    for (sql, emitted) in [(oldest, 300), (scheduled, 0)] {
         let plan = analyzed(sql).await;
         let source = plan
             .lines()
             .find(|line| line.contains("TableScanExec"))
             .unwrap();
-        assert_eq!(metric(source, "output_rows"), Some(statuses), "{source}");
+        assert_eq!(metric(source, "read_rows"), Some(statuses), "{source}");
+        assert_eq!(metric(source, "output_rows"), Some(emitted), "{source}");
         assert_eq!(metric(source, "entry_index_statuses"), Some(0), "{source}");
     }
     let expected = rows(old.as_ref(), promises).await;

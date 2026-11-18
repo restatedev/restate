@@ -610,13 +610,28 @@ async fn vqueues_view_matches_v1_stage_reads() {
         assert_eq!(times, terminal[..250]);
         assert_eq!(found.iter().collect::<HashSet<_>>().len(), 250);
     }
-    // No index holds finished entries in creation order: V2 scans them.
-    let plan = rows(new.as_ref(), &format!("EXPLAIN {finished}"))
+    // No index holds finished entries in creation order: V2 scans them. The
+    // read checks the page's predicate before emitting: of the 330 statuses
+    // (10 earlier fixture entries, 300 terminal, 20 running), it emits the 300.
+    let plan = rows(new.as_ref(), &format!("EXPLAIN ANALYZE {finished}"))
         .await
         .concat()
         .join("\n");
-    assert!(
-        plan.contains("TableScanExec") && !plan.contains("IndexScanExec"),
-        "{plan}"
+    let source = plan
+        .lines()
+        .find(|line| line.contains("TableScanExec"))
+        .unwrap_or_else(|| panic!("{plan}"));
+    assert!(!plan.contains("IndexScanExec"), "{plan}");
+    let metric = |name: &str| {
+        let (_, value) = source.split_once(&format!("{name}="))?;
+        let digits = value
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(value.len());
+        value[..digits].parse::<u64>().ok()
+    };
+    assert_eq!(
+        (metric("read_rows"), metric("output_rows")),
+        (Some(330), Some(300)),
+        "{source}"
     );
 }

@@ -893,3 +893,153 @@ async fn bounded_fallback_sorts_within_the_query_pool() {
     assert!(error.to_string().contains("Resources exhausted"), "{error}");
     assert_eq!(tight.reserved(), 0);
 }
+
+/// A table or index scan without a source fetch checks its wholly safe
+/// predicate before emitting rows; with a fetch, set at planning or later, or
+/// for other leaves, it emits as before. The check keeps only true rows, drops
+/// empty batches, and fails the read on an evaluation error.
+#[tokio::test]
+async fn partition_reads_filter_before_emitting_only_without_a_fetch() {
+    use datafusion::arrow::array::{Int64Array, StringArray};
+    use datafusion::arrow::datatypes::{DataType, Field};
+    use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::common::ScalarValue;
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_expr::expressions::{BinaryExpr, Column, in_list, lit};
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("stage", DataType::Utf8, true),
+        Field::new("created_at", DataType::Int64, false),
+    ]));
+    let stage = || Arc::new(Column::new("stage", 0)) as Arc<dyn PhysicalExpr>;
+    let created_at = || Arc::new(Column::new("created_at", 1)) as Arc<dyn PhysicalExpr>;
+    // Not running, and recent or exactly at 0.
+    let predicate: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+        in_list(stage(), vec![lit("running")], &true, &schema).unwrap(),
+        Operator::And,
+        Arc::new(BinaryExpr::new(
+            Arc::new(BinaryExpr::new(created_at(), Operator::Gt, lit(5i64))),
+            Operator::Or,
+            Arc::new(BinaryExpr::new(created_at(), Operator::Eq, lit(0i64))),
+        )),
+    ));
+    let scan = |work: SourceWork, limit: Option<u64>| {
+        let descriptor = SourceDescriptor {
+            table: StateTable::identity(),
+            owner: None,
+            ordering: Vec::new(),
+            limit,
+            work,
+        };
+        SourcePlan::new(
+            descriptor,
+            Arc::clone(&schema),
+            Some(Arc::clone(&predicate)),
+            None,
+            None,
+        )
+        .unwrap()
+    };
+    let reads = || {
+        PartitionWork::from_reads(
+            Default::default(),
+            vec![PartitionScan {
+                partition: PartitionId::MIN,
+            }],
+        )
+    };
+    let table = scan(SourceWork::TableScan(reads()), None);
+    let index = scan(
+        SourceWork::IndexScan(IndexWork {
+            index: ReString::from_static("_idx_test"),
+            work: reads(),
+            ordering: Vec::new(),
+            bound: Some(51),
+        }),
+        None,
+    );
+    assert!(table.emission_filter().is_some() && index.emission_filter().is_some());
+    assert!(
+        scan(SourceWork::TableScan(reads()), Some(10))
+            .emission_filter()
+            .is_none()
+    );
+    let fetched = table.with_fetch(Some(10)).unwrap();
+    assert!(fetched.emission_filter().is_none());
+    let lookup = scan(
+        SourceWork::MultiGet(PartitionWork::from_reads(
+            Default::default(),
+            vec![PrimaryLookup {
+                partition: PartitionId::MIN,
+                keys: Arc::new(PrimaryKeys {
+                    count: 1,
+                    encoded: vec![1],
+                }),
+            }],
+        )),
+        None,
+    );
+    assert!(lookup.emission_filter().is_none());
+
+    // Three batches: nothing kept, part kept (NULL stage and running dropped),
+    // everything kept.
+    let batch = |stages: Vec<Option<&str>>, created: Vec<i64>| {
+        RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(StringArray::from(stages)),
+                Arc::new(Int64Array::from(created)),
+            ],
+        )
+        .unwrap()
+    };
+    let rows = |batches: Vec<RecordBatch>| {
+        Box::pin(RecordBatchStreamAdapter::new(
+            Arc::clone(&schema),
+            stream::iter(batches.into_iter().map(Ok)),
+        )) as SendableRecordBatchStream
+    };
+    let input = vec![
+        batch(vec![Some("running"), Some("finished")], vec![9, 3]),
+        batch(
+            vec![Some("finished"), None, Some("running"), Some("inbox")],
+            vec![9, 9, 9, 0],
+        ),
+        batch(vec![Some("paused")], vec![7]),
+    ];
+    let emitted: Vec<RecordBatch> = filtered(rows(input), table.emission_filter().unwrap())
+        .try_collect()
+        .await
+        .unwrap();
+    assert_eq!(
+        emitted
+            .iter()
+            .map(RecordBatch::num_rows)
+            .collect::<Vec<_>>(),
+        [2, 1]
+    );
+    assert_eq!(
+        datafusion::arrow::util::pretty::pretty_format_batches(&emitted)
+            .unwrap()
+            .to_string(),
+        "+----------+------------+\n\
+         | stage    | created_at |\n\
+         +----------+------------+\n\
+         | finished | 9          |\n\
+         | inbox    | 0          |\n\
+         | paused   | 7          |\n\
+         +----------+------------+"
+    );
+
+    // An evaluation error fails the read.
+    let failing: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+        Arc::new(BinaryExpr::new(created_at(), Operator::Divide, lit(0i64))),
+        Operator::Gt,
+        lit(ScalarValue::Int64(Some(1))),
+    ));
+    let error = filtered(rows(vec![batch(vec![Some("finished")], vec![9])]), failing)
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("Divide by zero"), "{error}");
+}
