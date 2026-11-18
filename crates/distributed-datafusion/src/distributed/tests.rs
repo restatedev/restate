@@ -1395,3 +1395,219 @@ async fn a_control_failure_stays_the_error_whatever_the_telemetry() {
         "{errors:#?}"
     );
 }
+
+/// A Close sent while the coordinator still waits on the task, under
+/// ANALYZE, each step held at a barrier and correlated with the owner's
+/// installed task:
+///
+/// - **a blocked Next:** the Close cancels the task (cancellation applied is
+///   the barrier), the Next ends as closed, and the coordinator's own consumer
+///   gets that failure. The closing drops the task's stream and the copy
+///   settles; while the closing is held after that, the read's snapshot
+///   completes. A repeated Close arrives then; released,
+///   the closing finishes once and both Closes get the same report, which
+///   says the task stopped part-way, its one copy cancelled before it merged;
+/// - **an Execute held inside its cancellable work:** the Close cancels it
+///   there, it ends as closed, the consumer gets that failure, and the report
+///   says the task stopped part-way with nothing unsettled.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_close_cancels_a_waiting_task_and_finalizes_it_once() {
+    use bilrost::OwnedMessage;
+    use restate_types::net::distributed_query::TaskOutcome;
+
+    let mut fixture = setup(false).await;
+    let mut transaction = fixture.store.transaction();
+    for key in ["a", "b", "c"] {
+        transaction
+            .put_user_state(
+                &ServiceId::new(None, "service", "object"),
+                &Bytes::copy_from_slice(key.as_bytes()),
+                Bytes::from_static(b"value"),
+            )
+            .unwrap();
+    }
+    transaction.commit().await.unwrap();
+    drop(transaction);
+    let (events, mut events_rx) = tokio::sync::mpsc::unbounded_channel::<WorkerEvent>();
+    fixture.tamper.lock().events = Some(events);
+    let mut seen: Vec<WorkerEvent> = Vec::new();
+    let mut taken: Vec<bool> = Vec::new();
+    // The first event of `kind` for task `id` not yet taken, within 10 s.
+    let mut next_event =
+        async |kind: &str, id: &QueryTaskId, seen: &mut Vec<WorkerEvent>, taken: &mut Vec<bool>| {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(at) = seen
+                    .iter()
+                    .enumerate()
+                    .position(|(at, event)| !taken[at] && event.kind == kind && event.id == *id)
+                {
+                    taken[at] = true;
+                    return seen[at].clone();
+                }
+                let event = tokio::time::timeout_at(deadline, events_rx.recv())
+                    .await
+                    .unwrap_or_else(|_| panic!("no {kind} event: {seen:#?}"))
+                    .unwrap();
+                seen.push(event);
+                taken.push(false);
+            }
+        };
+    let connection = fixture
+        .network
+        .get_connection(OWNER, Swimlane::Datafusion)
+        .in_tc_as_task(
+            &TaskCenter::current(),
+            TaskKind::InPlace,
+            "query-test-connect",
+        )
+        .await
+        .unwrap();
+    let close = |id: &QueryTaskId| {
+        let (connection, id) = (connection.clone(), id.clone());
+        tokio::spawn(async move {
+            rpc(&connection, QueryTaskRequest::Close(QueryTaskClose { id })).await
+        })
+    };
+    let report = |event: &WorkerEvent| {
+        QueryTaskReport::decode(event.report.clone().expect("a report").as_slice()).unwrap()
+    };
+    let engine = fixture.engine(1, 1);
+    let consume = |sql: &'static str| {
+        let engine = Arc::clone(&engine);
+        tokio::spawn(async move {
+            let mut stream = engine
+                .create_session(SessionOptions::default())
+                .unwrap()
+                .execute(sql, QueryOptions {})
+                .await
+                .unwrap()
+                .stream;
+            while let Some(batch) = stream.next().await {
+                if let Err(error) = batch {
+                    return error.to_string();
+                }
+            }
+            "ended".to_owned()
+        })
+    };
+
+    // A blocked Next.
+    let (entered, mut read_entered) = tokio::sync::mpsc::unbounded_channel();
+    *fixture.read_hold.lock() = Some(ReadHold {
+        entered,
+        release: Arc::new(tokio::sync::Notify::new()),
+    });
+    let (entered, mut finalizing) = tokio::sync::mpsc::unbounded_channel();
+    let finalize = Arc::new(tokio::sync::Notify::new());
+    fixture.tamper.lock().finalize_hold = Some(Hold {
+        entered,
+        release: Arc::clone(&finalize),
+    });
+    let consumer = consume("EXPLAIN ANALYZE SELECT * FROM state");
+    let snapshot = tokio::time::timeout(Duration::from_secs(10), read_entered.recv())
+        .await
+        .expect("the read is held")
+        .unwrap();
+    let (task, owner) = {
+        let observations = fixture.observations.lock();
+        (observations[0].id.clone(), observations[0].owner)
+    };
+    assert_eq!(owner, OWNER);
+    let first = close(&task);
+    next_event("cancelled", &task, &mut seen, &mut taken).await;
+    let next = next_event("next", &task, &mut seen, &mut taken).await;
+    assert!(next.outcome.contains("query task closed"), "{seen:#?}");
+    let failure = tokio::time::timeout(Duration::from_secs(10), consumer)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(failure.contains("query task closed"), "{failure}");
+    // Held after its copies settled, with the stream gone: the read's
+    // snapshot completes meanwhile.
+    let held = tokio::time::timeout(Duration::from_secs(10), finalizing.recv())
+        .await
+        .expect("the closing is held")
+        .unwrap();
+    assert_eq!(held, task);
+    let settled = next_event("settled", &task, &mut seen, &mut taken).await;
+    assert_eq!(settled.outcome, "idle=true settled=true");
+    tokio::time::timeout(Duration::from_secs(5), snapshot)
+        .await
+        .expect("the read's snapshot closes while the closing is held");
+    let repeated = close(&task);
+    next_event("close-received", &task, &mut seen, &mut taken).await;
+    next_event("close-received", &task, &mut seen, &mut taken).await;
+    finalize.notify_one();
+    for reply in [first, repeated] {
+        let reply = tokio::time::timeout(Duration::from_secs(10), reply)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(reply, QueryTaskReplyBody::Closed(_)));
+    }
+    let closed = next_event("close", &task, &mut seen, &mut taken).await;
+    let repeated = next_event("close-repeated", &task, &mut seen, &mut taken).await;
+    assert_eq!(closed.report, repeated.report);
+    let sent = report(&closed);
+    assert_eq!(
+        (sent.outcome, sent.unsettled_lanes),
+        (TaskOutcome::Incomplete, 1),
+        "{sent:?}"
+    );
+    *fixture.read_hold.lock() = None;
+    fixture.tamper.lock().finalize_hold = None;
+
+    // An Execute held inside its cancellable work.
+    let (entered, mut execute_entered) = tokio::sync::mpsc::unbounded_channel();
+    fixture.tamper.lock().execute_inside_hold = Some(Hold {
+        entered,
+        release: Arc::new(tokio::sync::Notify::new()),
+    });
+    let consumer = consume("EXPLAIN ANALYZE SELECT * FROM state");
+    let held = tokio::time::timeout(Duration::from_secs(10), execute_entered.recv())
+        .await
+        .expect("the Execute is held")
+        .unwrap();
+    let (installed, owner) = {
+        let observations = fixture.observations.lock();
+        (observations[1].id.clone(), observations[1].owner)
+    };
+    assert_eq!((&held, owner), (&installed, OWNER));
+    let only = close(&installed);
+    next_event("cancelled", &installed, &mut seen, &mut taken).await;
+    let execute = next_event("execute", &installed, &mut seen, &mut taken).await;
+    assert!(execute.outcome.contains("query task closed"), "{seen:#?}");
+    let failure = tokio::time::timeout(Duration::from_secs(10), consumer)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(failure.contains("query task closed"), "{failure}");
+    tokio::time::timeout(Duration::from_secs(10), only)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let closed = next_event("close", &installed, &mut seen, &mut taken).await;
+    let sent = report(&closed);
+    assert_eq!(
+        (sent.outcome, sent.unsettled_lanes),
+        (TaskOutcome::Incomplete, 0),
+        "{sent:?}"
+    );
+
+    // Each task finalized once, counted after every reply was received.
+    while let Ok(event) = events_rx.try_recv() {
+        seen.push(event);
+    }
+    for id in [&task, &installed] {
+        assert_eq!(
+            seen.iter()
+                .filter(|event| event.kind == "finalized" && event.id == *id)
+                .count(),
+            1,
+            "{seen:#?}"
+        );
+    }
+}
