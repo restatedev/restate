@@ -64,9 +64,8 @@ use crate::fsm_table::put_storage_version;
 use crate::fsm_table::seal_partition;
 use crate::fsm_table::{
     PartitionStateMachineKey, get_locally_durable_lsn, get_min_restate_version_from_partition_db,
-    get_registry_from_partition_db, get_state_machine_features_from_partition_db,
-    get_storage_features_from_partition_db, get_storage_version_from_partition_db,
-    is_jc_orphan_cleanup_done, put_jc_orphan_cleanup_done,
+    get_state_machine_features_from_partition_db, get_storage_features_from_partition_db,
+    get_storage_version_from_partition_db, is_jc_orphan_cleanup_done, put_jc_orphan_cleanup_done,
 };
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, FixedLengthTableKey, KeyKind};
 use crate::migrations::MigrationError;
@@ -198,6 +197,8 @@ pub enum TableKind {
     Blob,
     SecondaryIndex,
     Stats,
+    /// The registry, its walks and its migration jobs.
+    Registry,
 }
 
 impl TableKind {
@@ -235,6 +236,7 @@ impl TableKind {
             Self::Blob => &[KeyKind::Blob],
             Self::SecondaryIndex => &[KeyKind::SecondaryIndex],
             Self::Stats => &[KeyKind::Stats],
+            Self::Registry => &[KeyKind::Registry],
         }
     }
 
@@ -332,41 +334,35 @@ impl PartitionStore {
 
     /// The published registry, with the indexes maintained on entry writes.
     /// Opening the partition reconciles the registry and installs it before the
-    /// processor writes. A store used without that (tools and tests) loads it from
-    /// disk on first use. An unreadable registry or walks record is a bug there,
-    /// and panics: writing with no indexes instead would skip the Ready indexes
+    /// processor writes. A store used without that (tools and tests) loads its
+    /// records from disk on first use, with the configured retention for the
+    /// jobs that finish. Unreadable registry or walk records are a bug there,
+    /// and panic: writing with no indexes instead would skip the Ready indexes
     /// and clear the entries' tokens, corrupting the indexes silently, and an open
-    /// would have failed on it.
+    /// would have failed on them.
     pub(crate) fn published_registry(&self) -> Arc<PublishedRegistry> {
         if let Some(published_registry) = self.db.published_registry() {
             return published_registry;
         }
-        let registry = get_registry_from_partition_db(self.partition_db())
-            .unwrap_or_else(|err| {
+        let (records, _) =
+            crate::registry::records::load(self.partition_db()).unwrap_or_else(|err| {
                 panic!(
-                    "the registry of partition {} is unreadable: {err}",
-                    self.partition_id()
-                )
-            })
-            .unwrap_or_default();
-        let walks = crate::fsm_table::get_walks_from_partition_db(self.partition_db())
-            .unwrap_or_else(|err| {
-                panic!(
-                    "the walks of partition {} are unreadable: {err}",
-                    self.partition_id()
-                )
-            })
-            .unwrap_or_default();
-        let (jobs, _) =
-            crate::registry::load_job_records(self.partition_db()).unwrap_or_else(|err| {
-                panic!(
-                    "the job records of partition {} are unreadable: {err}",
+                    "the registry records of partition {} are unreadable: {err}",
                     self.partition_id()
                 )
             });
+        let retention = Configuration::pinned()
+            .worker
+            .storage
+            .finished_migration_jobs_retention
+            .to_std();
         let published_registry = Arc::new(
-            PublishedRegistry::new(&registry, &walks, crate::registry::INDEX_DEFINITIONS)
-                .with_jobs(jobs, crate::job::DEFAULT_HISTORY_LIMIT),
+            PublishedRegistry::new(
+                &records.registry.unwrap_or_default(),
+                &records.walks,
+                crate::registry::INDEX_DEFINITIONS,
+            )
+            .with_jobs(records.jobs, retention),
         );
         self.db
             .install_published_registry(Arc::clone(&published_registry));

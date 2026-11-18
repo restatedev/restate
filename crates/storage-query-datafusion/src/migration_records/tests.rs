@@ -18,8 +18,9 @@ use datafusion::prelude::SessionContext;
 use futures::StreamExt;
 
 use restate_core::TestCoreEnvBuilder;
-use restate_partition_store::fsm_table::PartitionStateMachineKey;
-use restate_partition_store::keys::{EncodeTableKey, KeyKind};
+use restate_partition_store::job::MigrationJobId;
+use restate_partition_store::keys::KeyKind;
+use restate_partition_store::registry::records::RecordKey;
 use restate_partition_store::walk::DriverState;
 use restate_partition_store::{PartitionStoreManager, QueryIoExecutor};
 use restate_rocksdb::RocksDbManager;
@@ -162,7 +163,8 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         disabled: true,
         ..DriverState::default()
     });
-    let finished = replica.jobs.history.entries()[0].clone();
+    let finished = replica.jobs.entries()[0].clone();
+    assert!(finished.status.is_finished() && finished.expires_at.is_some());
     let mut running = finished.clone();
     running.status = MigrationJobStatus::Running;
     let rendered = batches::<MigrationJobsBuilder, _>(
@@ -229,15 +231,9 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         .get_partition_store(PartitionId::from(2))
         .await
         .unwrap();
-    let mut key = Vec::new();
-    PartitionStateMachineKey {
-        partition_id: PartitionId::from(2).into(),
-        // The job history's FSM variable.
-        state_id: 17,
-    }
-    .serialize_to(&mut key);
+    let key = RecordKey::job(PartitionId::from(2), MigrationJobId::for_entry(64));
     let mut tx = store.transaction();
-    tx.raw_put_cf(KeyKind::Fsm, key, b"not a job list");
+    tx.raw_put_cf(KeyKind::Registry, key, b"not a job");
     tx.commit().await.unwrap();
     drop(tx);
     for (table, scanner, schema) in [
@@ -253,7 +249,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
                 .as_ref()
                 .unwrap_err()
                 .to_string()
-                .contains("partition 2 (job history)")
+                .contains("partition 2 (job): job 64: malformed job record")
         );
         let plan = ctx
             .sql(&format!("SELECT * FROM {table}"))
@@ -280,8 +276,29 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].node_id.as_str(), "N1");
         assert!(
-            warnings[0].message.contains("partition 2 (job history)"),
+            warnings[0].message.contains("partition 2 (job): job 64"),
             "{warnings:?}"
         );
     }
+
+    // With a retention of 0, a replica keeps no finished job: its jobs expire as
+    // they finish and the table hides them before compaction removes them,
+    // while its indexes stay listed.
+    config.worker.storage.finished_migration_jobs_retention = std::time::Duration::ZERO.into();
+    let mut store = manager
+        .open(&Partition::new(PartitionId::from(3), KeyRange::FULL), None)
+        .await
+        .unwrap();
+    store
+        .verify_and_run_migrations(restate_core::cancellation_token(), &config)
+        .await
+        .unwrap();
+    assert_eq!(
+        count("SELECT count(*) FROM registry WHERE partition_id = 3").await,
+        3
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM migration_jobs WHERE partition_id = 3").await,
+        0
+    );
 }

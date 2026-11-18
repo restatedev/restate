@@ -23,18 +23,33 @@
 //! from the registry: a missing or partly unknown record is reported as such,
 //! never repaired by guessing, and a rebuilt waiting job is eligible at once.
 //!
-//! Two records hold the jobs of a partition store, each an FSM variable:
-//! - **unfinished jobs** ([`MigrationJobs`] under `MIGRATION_JOBS`), rewritten by
-//!   every slice of their walk;
-//! - **history**, the finished jobs in the order they finished (also a
-//!   [`MigrationJobs`], under `MIGRATION_JOB_HISTORY`), written only when a job
-//!   finishes or the store opens, and trimmed to a configured number of jobs.
+//! **Storage.** Each job is one record with a key of its own for its whole life
+//! (see [`crate::registry::records`]): an operation that changes a job rewrites
+//! that key only. Opening a store loads the unfinished jobs, and every commit
+//! publishes them ([`MigrationJobs`]). Finishing a job rewrites its record a
+//! last time, with its finish time and its expiry, and drops it from memory.
+//!
+//! **Retention.** A finished job expires at [`MigrationJob::expires_at`]: when
+//! it finished plus `worker.storage.finished-migration-jobs-retention` (24 hours
+//! by default) as configured then. A job finished at an unknown time, for example
+//! by an open that found its index Ready, counts from when it was found. Readers
+//! hide an expired record at once, and compaction removes it later. With a
+//! retention of 0, no finished job is shown.
 //!
 //! For example, statistic 70 registers at 10:00: job 70 is `Pending`. Its first
 //! slice at 10:01 makes it `Running` and sets its start. Each slice adds the rows
 //! it examined and filled, and its work time. A failed attempt counts a failure
-//! and keeps its error until the next slice commits. The last slice completes
-//! the job and moves it to history.
+//! and keeps its error until the next slice commits. The last slice, at 10:30,
+//! completes the job; with the default retention, its record expires the next
+//! day at 10:30.
+//!
+//! ```text
+//! Pending ──▶ Running ◀──▶ Waiting          unfinished: published, never expire
+//!    │           │            │
+//!    └───────────┴─────┬──────┘
+//!                      ▼
+//!          Completed or Cancelled ──(retention)──▶ expired: hidden, then compacted away
+//! ```
 //!
 //! **Passes.** A walk from the start of its source to its captured end is a full
 //! pass. A job whose definition can't fill rows (a *passive* one) may end a full
@@ -50,19 +65,12 @@
 //! slice can't record a duration that includes its own commit.
 
 use std::num::NonZeroU32;
-use std::sync::Arc;
+use std::time::Duration;
 
 use restate_util_string::ReString;
 
-/// The persisted format this binary reads and writes.
-const FORMAT: u32 = 1;
-
 /// The longest error a job records, in bytes.
 pub const MAX_ERROR_LEN: usize = 512;
-
-/// How many finished jobs the history keeps unless configured otherwise
-/// (`worker.storage.migration-job-history-limit`).
-pub(crate) const DEFAULT_HISTORY_LIMIT: usize = 100;
 
 /// The shortest wait between two passes of a job that found uncovered rows.
 ///
@@ -107,10 +115,10 @@ impl std::fmt::Display for MigrationJobId {
 
 /// What a migration job does.
 ///
-/// **Compatibility.** A kind this binary doesn't know makes the whole job list
+/// **Compatibility.** A kind this binary doesn't know makes the job's record
 /// unreadable (bilrost rejects unknown enumeration values); opening the store
-/// then rebuilds the list from the registry, losing that job's record. Records
-/// are diagnostics, so a release may add a kind without a version floor.
+/// then replaces it, rebuilt from the registry, or deletes it. Records are
+/// diagnostics, so a release may add a kind without a version floor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, bilrost::Enumeration)]
 pub enum MigrationJobKind {
     #[bilrost(0)]
@@ -123,7 +131,7 @@ pub enum MigrationJobKind {
 /// Where a migration job is in its life.
 ///
 /// **Compatibility.** As for [`MigrationJobKind`]: a status this binary doesn't
-/// know makes the job list unreadable, and opening rebuilds it from the registry.
+/// know makes the job's record unreadable, and opening replaces or deletes it.
 /// A release may add a status without a version floor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, bilrost::Enumeration)]
 pub enum MigrationJobStatus {
@@ -154,12 +162,17 @@ impl MigrationJobStatus {
     }
 }
 
-/// One job and what it did. Every member of a walk is charged the walk's full
-/// committed rows and work time, so those counters are per-job views of a shared
-/// pass, not additive across the jobs of one walk; `rows_filled` is per job.
+/// One job and what it did, stored under its own key (see
+/// [`crate::registry::records`]). Every member of a walk is charged the walk's
+/// full committed rows and work time, so those counters are per-job views of a
+/// shared pass, not additive across the jobs of one walk; `rows_filled` is per
+/// job.
+///
+/// Persisted tags never change meaning (README rule 8).
 #[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
 pub struct MigrationJob {
-    /// A [`MigrationJobId`]; [`MigrationJobs::decode`] rejects 0.
+    /// A [`MigrationJobId`]; [`Self::decode`] rejects 0, and an ID other than
+    /// its key's.
     #[bilrost(1)]
     id: u32,
     #[bilrost(2)]
@@ -235,6 +248,12 @@ pub struct MigrationJob {
     /// When a `Waiting` job may start its next pass; `None` means now.
     #[bilrost(26)]
     pub next_eligible_at: Option<u64>,
+    /// When a finished job's record expires: when it finished (or was found
+    /// finished, if that time is unknown) plus the retention configured then.
+    /// Readers hide it from then on, and compaction removes it. `None` while
+    /// unfinished: unfinished jobs never expire.
+    #[bilrost(27)]
+    pub expires_at: Option<u64>,
 }
 
 impl MigrationJob {
@@ -273,11 +292,36 @@ impl MigrationJob {
             rows_uncovered_previous: None,
             recheck_interval_ms: None,
             next_eligible_at: None,
+            expires_at: None,
         }
     }
 
     pub fn id(&self) -> MigrationJobId {
         MigrationJobId::for_entry(self.id)
+    }
+
+    /// Decodes the record stored under job ID `key`, which must be its own ID.
+    pub fn decode(key: u64, bytes: &[u8]) -> Result<Self, MigrationJobError> {
+        let job = <Self as bilrost::OwnedMessage>::decode(bytes)?;
+        if job.id == 0 {
+            return Err(MigrationJobError::ZeroId);
+        }
+        if u64::from(job.id) != key {
+            return Err(MigrationJobError::IdMismatch {
+                key,
+                record: job.id,
+            });
+        }
+        Ok(job)
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        bilrost::Message::encode_to_vec(self)
+    }
+
+    /// Whether this finished job's record has expired at `now`: readers hide it.
+    pub fn is_expired(&self, now: u64) -> bool {
+        self.expires_at.is_some_and(|at| at <= now)
     }
 
     /// Records a slice that committed at `at`, examining `examined` rows and
@@ -364,67 +408,37 @@ impl MigrationJob {
         self.next_eligible_at.is_none_or(|at| at <= now)
     }
 
-    /// Finishes the job with `status`, at `at` if known, and drops its schedule.
-    pub(crate) fn finish(&mut self, status: MigrationJobStatus, at: Option<u64>) {
+    /// Finishes the job with `status`, at `at` if known, drops its schedule and
+    /// sets when its record expires.
+    pub(crate) fn finish(&mut self, status: MigrationJobStatus, at: Option<u64>, expires_at: u64) {
         debug_assert!(status.is_finished());
         self.status = status;
         self.walk = None;
         self.finished_at = at;
         self.recheck_interval_ms = None;
         self.next_eligible_at = None;
+        self.expires_at = Some(expires_at);
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum MigrationJobError {
-    #[error("unsupported job record format {0}; this binary supports format {FORMAT}")]
-    UnsupportedFormat(u32),
     #[error("malformed job record: {0}")]
     Malformed(#[from] bilrost::DecodeError),
     #[error("invalid job record: a job has ID 0")]
     ZeroId,
+    #[error("invalid job record: the key of job {key} holds job {record}")]
+    IdMismatch { key: u64, record: u32 },
 }
 
-/// A list of jobs: the unfinished jobs of a store, or its history of finished
-/// jobs in the order they finished.
-#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
+/// Jobs in memory, at most one per ID: the unfinished jobs of a store, as
+/// published, or the jobs a report shows.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MigrationJobs {
-    #[bilrost(1)]
-    format: u32,
-    #[bilrost(2)]
     jobs: Vec<MigrationJob>,
 }
 
-impl Default for MigrationJobs {
-    fn default() -> Self {
-        Self {
-            format: FORMAT,
-            jobs: Vec::new(),
-        }
-    }
-}
-
 impl MigrationJobs {
-    pub fn decode(bytes: &[u8]) -> Result<Self, MigrationJobError> {
-        let jobs = <Self as bilrost::OwnedMessage>::decode(bytes)?;
-        if jobs.format != FORMAT {
-            return Err(MigrationJobError::UnsupportedFormat(jobs.format));
-        }
-        if jobs.jobs.iter().any(|job| job.id == 0) {
-            return Err(MigrationJobError::ZeroId);
-        }
-        Ok(jobs)
-    }
-
-    pub fn encode(&self) -> Vec<u8> {
-        bilrost::Message::encode_to_vec(self)
-    }
-
-    /// The size of [`Self::encode`]'s output.
-    pub(crate) fn encoded_len(&self) -> usize {
-        bilrost::Message::encoded_len(self)
-    }
-
     pub fn entries(&self) -> &[MigrationJob] {
         &self.jobs
     }
@@ -449,46 +463,60 @@ impl MigrationJobs {
         let index = self.jobs.iter().position(|job| job.id == id.as_u32())?;
         Some(self.jobs.remove(index))
     }
-
-    /// Appends a finished `job` to this history, then drops the oldest finished
-    /// jobs beyond `limit`. Finish order, not wall-clock time, decides which are
-    /// oldest.
-    pub(crate) fn push_finished(&mut self, job: MigrationJob, limit: usize) {
-        self.jobs.push(job);
-        self.trim(limit);
-    }
-
-    /// Drops the oldest jobs beyond `limit`.
-    pub(crate) fn trim(&mut self, limit: usize) {
-        let excess = self.jobs.len().saturating_sub(limit);
-        self.jobs.drain(..excess);
-    }
 }
 
-/// The unfinished jobs and the history of a store, as committed. The history is
-/// shared: slices that finish no job publish it without copying.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// The jobs one operation, an open, a slice or a failure record, works on:
+/// the store's unfinished jobs, and the ones it finished, whose final records
+/// it writes before they leave memory. Built from the published jobs, the
+/// operation's commit publishes `unfinished`.
+///
+/// ```text
+/// published ──▶ MigrationJobRecords { unfinished, finished: [] }
+///                 finish(70) ──▶ { unfinished − 70, finished: [70 + finished_at + expires_at] }
+///                 commit ──▶ writes the changed unfinished jobs and job 70; publishes `unfinished`
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationJobRecords {
     pub unfinished: MigrationJobs,
-    pub history: Arc<MigrationJobs>,
+    /// Jobs this operation finished, with their expiry. Written, never published.
+    pub finished: Vec<MigrationJob>,
+    /// How long a finished job's record is kept.
+    retention: Duration,
 }
 
 impl MigrationJobRecords {
-    /// Finishes the unfinished job `id` with `status` at `at`, moving it to the
-    /// history, which keeps at most `limit` jobs. A job that isn't unfinished is
-    /// left alone.
+    /// The records of an operation on the `unfinished` jobs; jobs it finishes
+    /// are kept for `retention`.
+    pub(crate) fn new(unfinished: MigrationJobs, retention: Duration) -> Self {
+        Self {
+            unfinished,
+            finished: Vec::new(),
+            retention,
+        }
+    }
+
+    /// Finishes the unfinished job `id` with `status`, at `at` if known, so that
+    /// its record expires one retention after that, or after `now`, this
+    /// operation's time, if the finish time is unknown. A job that isn't
+    /// unfinished is left alone.
     pub(crate) fn finish(
         &mut self,
         id: MigrationJobId,
         status: MigrationJobStatus,
         at: Option<u64>,
-        limit: usize,
+        now: u64,
     ) {
         if let Some(mut job) = self.unfinished.remove(id) {
-            job.finish(status, at);
-            Arc::make_mut(&mut self.history).push_finished(job, limit);
+            job.finish(status, at, expiry(at.unwrap_or(now), self.retention));
+            self.finished.push(job);
         }
     }
+}
+
+/// When the record of a job finished at `at` expires: `retention` later, in
+/// wall-clock milliseconds, saturating.
+pub(crate) fn expiry(at: u64, retention: Duration) -> u64 {
+    at.saturating_add(u64::try_from(retention.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// When and by which Restate version something happened, for the records.
@@ -504,7 +532,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn jobs_record_slices_failures_and_finish_into_a_bounded_history() {
+    fn jobs_record_slices_failures_and_finish_with_an_expiry() {
         let mut job = MigrationJob::index_backfill(
             70,
             ReString::from_static("service_stats/1"),
@@ -577,7 +605,7 @@ mod tests {
         }
         assert_eq!(passive.recheck_interval_ms, Some(RECHECK_CAP_MS));
         passive.record_full_pass(at, 0);
-        passive.finish(MigrationJobStatus::Completed, Some(at));
+        passive.finish(MigrationJobStatus::Completed, Some(at), at + 1);
         assert_eq!(
             (
                 passive.passes,
@@ -588,74 +616,91 @@ mod tests {
             ),
             (24, Some(0), Some(3), None, None)
         );
+        assert!(!passive.is_expired(at) && passive.is_expired(at + 1));
 
-        // Finishing moves a job to the history, which keeps the latest ones.
-        let mut records = MigrationJobRecords::default();
+        // Finishing takes a job out of the unfinished ones, with its expiry one
+        // retention after its finish, or after the operation's time when the
+        // finish time is unknown. A job that isn't unfinished is left alone.
+        let hour = Duration::from_secs(3600);
+        let mut records = MigrationJobRecords::new(MigrationJobs::default(), hour);
         let id = MigrationJobId::for_entry;
-        for index in [70, 71, 72] {
+        for index in [70, 71] {
             records.unfinished.insert(MigrationJob {
                 id: index,
                 ..job.clone()
             });
         }
-        records.finish(id(70), MigrationJobStatus::Completed, Some(2_000), 2);
-        records.finish(id(71), MigrationJobStatus::Cancelled, None, 2);
-        records.finish(id(72), MigrationJobStatus::Completed, Some(1_500), 2);
-        let ids: Vec<_> = records
-            .history
-            .entries()
+        records.finish(id(70), MigrationJobStatus::Completed, Some(2_000), 9_000);
+        records.finish(id(71), MigrationJobStatus::Cancelled, None, 9_000);
+        records.finish(id(72), MigrationJobStatus::Completed, Some(2_000), 9_000);
+        let finished: Vec<_> = records
+            .finished
             .iter()
-            .map(MigrationJob::id)
+            .map(|job| {
+                (
+                    job.id(),
+                    job.status,
+                    job.finished_at,
+                    job.expires_at,
+                    job.walk,
+                )
+            })
             .collect();
         assert_eq!(
-            ids,
-            [id(71), id(72)],
-            "finish order, not time, decides what is trimmed"
-        );
-        let completed = records.history.get(id(72)).unwrap();
-        assert_eq!(
-            (completed.passes, completed.walk),
-            (0, None),
-            "finishing records no pass; the walk's end does"
+            finished,
+            [
+                (
+                    id(70),
+                    MigrationJobStatus::Completed,
+                    Some(2_000),
+                    Some(3_602_000),
+                    None
+                ),
+                (
+                    id(71),
+                    MigrationJobStatus::Cancelled,
+                    None,
+                    Some(3_609_000),
+                    None
+                ),
+            ]
         );
         assert!(records.unfinished.entries().is_empty());
-        Arc::make_mut(&mut records.history).trim(0);
-        assert!(records.history.entries().is_empty());
+        assert_eq!(expiry(u64::MAX - 1, hour), u64::MAX, "saturating");
         assert_eq!(
-            DEFAULT_HISTORY_LIMIT,
-            restate_types::config::StorageOptions::default().migration_job_history_limit as usize,
-            "tools and tests keep what the option keeps by default"
+            expiry(5, Duration::ZERO),
+            5,
+            "a retention of 0 expires at once"
         );
 
-        // Round trip, the ID encodes as the index's `u32`, and an unsupported
-        // format is refused.
-        let encoded = records.unfinished.encode();
-        assert_eq!(MigrationJobs::decode(&encoded).unwrap(), records.unfinished);
+        // Round trip; the ID encodes as the index's `u32` and must be the key's.
+        let finished = &records.finished[0];
+        assert_eq!(
+            MigrationJob::decode(70, &finished.encode()).unwrap(),
+            *finished
+        );
+        assert!(matches!(
+            MigrationJob::decode(71, &finished.encode()),
+            Err(MigrationJobError::IdMismatch {
+                key: 71,
+                record: 70
+            })
+        ));
         #[derive(bilrost::Message)]
         struct PlainId {
             #[bilrost(1)]
             id: u32,
         }
-        let plain = <PlainId as bilrost::OwnedMessage>::decode(
-            bilrost::Message::encode_to_vec(&job).as_slice(),
-        )
-        .unwrap();
+        let plain = <PlainId as bilrost::OwnedMessage>::decode(job.encode().as_slice()).unwrap();
         assert_eq!(plain.id, 70);
-        let newer = MigrationJobs {
-            format: 2,
-            jobs: Vec::new(),
-        };
+        let zero = MigrationJob { id: 0, ..job };
         assert!(matches!(
-            MigrationJobs::decode(&newer.encode()),
-            Err(MigrationJobError::UnsupportedFormat(2))
-        ));
-        let zero = MigrationJobs {
-            format: FORMAT,
-            jobs: vec![MigrationJob { id: 0, ..job }],
-        };
-        assert!(matches!(
-            MigrationJobs::decode(&zero.encode()),
+            MigrationJob::decode(0, &zero.encode()),
             Err(MigrationJobError::ZeroId)
+        ));
+        assert!(matches!(
+            MigrationJob::decode(70, b"not a job"),
+            Err(MigrationJobError::Malformed(_))
         ));
         assert_eq!(
             size_of::<Option<MigrationJobId>>(),

@@ -64,7 +64,12 @@ pub(crate) async fn complete_gauges(store: &mut crate::PartitionStore) {
     // Snapshot reads resolve the Ready index from the persisted registry.
     let partition_id = store.partition_id();
     let mut tx = store.transaction();
-    crate::fsm_table::put_registry(&mut tx, partition_id, &registry).unwrap();
+    crate::registry::records::RecordSink::put(
+        &mut tx,
+        &crate::registry::records::RecordKey::registry(partition_id),
+        &registry,
+    )
+    .unwrap();
     tx.commit().await.unwrap();
     drop(tx);
     store.set_published_registry(PublishedRegistry::new(

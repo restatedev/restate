@@ -41,10 +41,11 @@ use restate_types::state_mut::StateMutationInput;
 use restate_types::vqueues::{EntryId, EntryTargetExt};
 
 use crate::fsm_table::{
-    get_min_restate_version_from_partition_db, get_registry_from_partition_db,
-    get_storage_features_from_partition_db, put_storage_features_json,
+    get_min_restate_version_from_partition_db, get_storage_features_from_partition_db,
+    put_storage_features_json,
 };
 use crate::keys::KeyKind;
+use crate::registry::records::get_registry;
 use crate::registry::{IndexNotReady, IndexStatus, Registry};
 use crate::stats::aggregated::{
     DeploymentStatsBinding, ServiceStatsBinding, StageStatusCounts, VirtualObjectStatsBinding,
@@ -218,7 +219,7 @@ fn keys(store: &PartitionStore, kind: KeyKind) -> Vec<(Vec<u8>, Vec<u8>)> {
 /// Every non-empty gauge, by definition and key payload: comparable across
 /// replicas whatever index IDs their registries issued.
 fn read_all(store: &PartitionStore) -> BTreeMap<(String, Vec<u8>), StageStatusCounts> {
-    let registry = get_registry_from_partition_db(store.partition_db())
+    let registry = get_registry(store.partition_db())
         .unwrap()
         .unwrap_or_default();
     keys(store, KeyKind::Stats)
@@ -235,7 +236,7 @@ fn read_all(store: &PartitionStore) -> BTreeMap<(String, Vec<u8>), StageStatusCo
 }
 
 fn ids(store: &PartitionStore) -> Vec<(u32, IndexStatus)> {
-    let registry = get_registry_from_partition_db(store.partition_db())
+    let registry = get_registry(store.partition_db())
         .unwrap()
         .unwrap_or_default();
     [
@@ -498,7 +499,7 @@ async fn legacy_gauges_are_deleted_before_any_instance_is_built() {
         assert_eq!(ids(&store), registered, "instances_are_kept: case {case}");
         assert_eq!(read_all(&store), expected);
         assert!(
-            get_registry_from_partition_db(store.partition_db())
+            get_registry(store.partition_db())
                 .unwrap()
                 .is_some_and(|registry: Registry| registry.indexes().len() == 3)
         );

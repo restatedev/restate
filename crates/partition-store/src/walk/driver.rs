@@ -293,7 +293,6 @@ impl PartitionStore {
         let started = active.walks().entries().len();
         let waiting = active
             .jobs()
-            .unfinished
             .entries()
             .iter()
             .any(|job| job.status == MigrationJobStatus::Waiting);
@@ -438,7 +437,6 @@ impl WalkDriver {
         let wall = WallClock::now_ms().as_u64();
         let waiting: Vec<_> = active
             .jobs()
-            .unfinished
             .entries()
             .iter()
             .filter(|job| job.status == MigrationJobStatus::Waiting)
