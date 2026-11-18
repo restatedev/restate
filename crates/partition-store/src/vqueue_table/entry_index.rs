@@ -146,6 +146,17 @@ crate::index::macros::define_secondary_index!(
     }
 );
 
+// A query on entries restricts the index through the entry table's stage and
+// creation time; the entry table shows no service or handler.
+crate::keys::macros::define_key_selection!(
+    ActiveEntryByStageKey;
+    [restate_storage_query_api::tables::index::ActiveEntryByStage];
+    stage,
+    target_service_name,
+    target_handler_name,
+    created_at,
+);
+
 /// Every entry by service and handler, newest created first.
 pub(crate) static ENTRY_BY_SERVICE_CREATED: IndexDefinition = IndexDefinition {
     name: EntryByServiceCreated::DEFINITION,
@@ -265,18 +276,21 @@ fn apply_finished_entry_by_outcome(
     }
 }
 
-/// Whether `active_entry_by_stage/1` holds an entry in `stage`: exactly the four
-/// known active stages. A new stage needs a decision here, and a new definition
-/// if it changes this one's meaning.
-fn is_active(stage: Stage) -> bool {
-    match stage {
-        Stage::Inbox | Stage::Running | Stage::Suspended | Stage::Paused => true,
-        Stage::Finished | Stage::Unknown => false,
+impl ActiveEntryByStage {
+    /// Whether `active_entry_by_stage/1` holds an entry in `stage`: exactly the
+    /// four known active stages. A new stage needs a decision here, and a new
+    /// definition if it changes this one's meaning. Queries decide which
+    /// queries the index can serve from this too.
+    pub fn holds(stage: Stage) -> bool {
+        match stage {
+            Stage::Inbox | Stage::Running | Stage::Suspended | Stage::Paused => true,
+            Stage::Finished | Stage::Unknown => false,
+        }
     }
 }
 
 /// Removes the key of `before` and adds the key of `after`, each only if its
-/// entry's stored stage is a known active one ([`is_active`]).
+/// entry's stored stage is a known active one ([`ActiveEntryByStage::holds`]).
 fn apply_active_entry_by_stage(
     storage: &mut PartitionStoreTransaction<'_>,
     id: u32,
@@ -285,7 +299,7 @@ fn apply_active_entry_by_stage(
     after: Option<&EntryStateRef<'_>>,
 ) {
     let project = |entry: &EntryStateRef<'_>| {
-        is_active(entry.stage).then(|| {
+        ActiveEntryByStage::holds(entry.stage).then(|| {
             (
                 entry.stage,
                 Reverse(entry.stats.created_at),

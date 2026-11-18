@@ -10,9 +10,9 @@
 
 mod entry;
 mod entry_index;
-mod finished_read;
 mod inbox;
 mod inbox_reader;
+mod indexed_read;
 mod input;
 mod key_codec;
 mod meta_binding;
@@ -39,8 +39,8 @@ pub use entry_index::{
     ActiveEntryByStage, ActiveEntryByStageKey, EntryByServiceCreated, EntryByServiceCreatedKey,
     FinishedEntryByOutcome, FinishedEntryByOutcomeKey,
 };
-pub use finished_read::FinishedRead;
 pub use inbox::InboxKey;
+pub use indexed_read::{ActiveRead, FinishedRead};
 pub use input::InputPayloadKey;
 pub use meta_binding::{VQueueMetaBinding, VQueueMetaTable};
 pub use meta_cursor::{VQueueMetaCursor, VQueueMetaRecords};

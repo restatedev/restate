@@ -530,6 +530,11 @@ mod tests {
                     "_idx_finished_entry_by_outcome",
                     restate_partition_store::vqueue_table::FinishedEntryByOutcome::INTRODUCED
                 ),
+                (
+                    "_idx_active_entry_by_stage",
+                    restate_partition_store::vqueue_table::ActiveEntryByStage::INTRODUCED
+                ),
+                ("_idx_entry_by_queue", SemanticRestateVersion::new(1, 8, 2)),
             ]
         );
     }

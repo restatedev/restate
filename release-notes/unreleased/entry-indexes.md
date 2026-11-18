@@ -14,7 +14,9 @@ Partitions can now maintain three indexes of their invocations and state mutatio
 With query engine V2, a query on `sys_invocation_status` that names
 its services and asks for their newest invocations under a `LIMIT`, like the UI's page of a
 workflow's invocations, reads only those invocations through the first index instead of every
-invocation of every partition. Other queries, and query engine V1, read as before.
+invocation of every partition. On `sys_vqueue_entry_status`, a query for the newest finished
+entries by when they finished, or for the newest active entries by when they were created, under a
+`LIMIT`, reads the other two. Other queries, and query engine V1, read as before.
 
 Two new experimental options, both off by default, control it:
 

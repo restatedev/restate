@@ -397,6 +397,14 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
             };
             tx.put_invocation_status(&id, &status).unwrap();
             if entry {
+                // The entry's stage follows its invocation's status.
+                let (stage, status) = if sequence.is_multiple_of(3) {
+                    (Stage::Finished, Status::Succeeded)
+                } else if sequence.is_multiple_of(2) {
+                    (Stage::Inbox, Status::New)
+                } else {
+                    (Stage::Running, Status::Started)
+                };
                 let created = UniqueTimestamp::from_unix_millis_unchecked(created);
                 let key =
                     EntryKey::new(false, created.to_unix_millis(), sequence, EntryId::from(id));
@@ -406,8 +414,8 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
                         target: &target.entry_target_ref(),
                     },
                     EntryStateRef {
-                        stage: Stage::Finished,
-                        status: Status::Succeeded,
+                        stage,
+                        status,
                         entry_key: &key,
                         metadata: &EntryMetadata::default(),
                         stats: &EntryStatistics::new(created, key.run_at()),
@@ -710,6 +718,36 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
         .join("\n");
     eprintln!("finished_analyze\n{plan}");
     assert!(plan.contains("_idx_finished_entry_by_outcome"), "{plan}");
+    assert_eq!(
+        plan.matches("tasks_completed=1").count() + plan.matches("tasks_incomplete=1").count(),
+        3,
+        "{plan}"
+    );
+    assert!(plan.contains("entry_index_scans_not_ready=1"), "{plan}");
+    assert!(
+        !plan.contains("entry_index_reads=0,"),
+        "every owner reads the index somewhere: {plan}"
+    );
+
+    // The newest active entries, through `active_entry_by_stage/1`, the same
+    // way: the same rows as a scan, each owner's read shown.
+    let active = "SELECT entry_id, created_at FROM sys_vqueue_entry_status \
+        WHERE stage IN ('inbox', 'running') ORDER BY created_at DESC NULLS LAST LIMIT 20";
+    let unrestricted = active.replacen(
+        "FROM sys_vqueue_entry_status",
+        "FROM (SELECT * FROM sys_vqueue_entry_status LIMIT 1000000) AS sys_vqueue_entry_status",
+        1,
+    );
+    assert_eq!(
+        times(crate::mocks::rows(session.as_ref(), active).await),
+        times(crate::mocks::rows(session.as_ref(), &unrestricted).await)
+    );
+    let plan = crate::mocks::rows(session.as_ref(), &format!("EXPLAIN ANALYZE {active}"))
+        .await
+        .concat()
+        .join("\n");
+    eprintln!("active_analyze\n{plan}");
+    assert!(plan.contains("_idx_active_entry_by_stage"), "{plan}");
     assert_eq!(
         plan.matches("tasks_completed=1").count() + plan.matches("tasks_incomplete=1").count(),
         3,
