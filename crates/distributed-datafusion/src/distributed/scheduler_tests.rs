@@ -204,6 +204,7 @@ impl SchedulerAccess {
                 invoker: requirements.invoker.then(Arc::default),
                 ..Default::default()
             },
+            timing: restate_worker_api::CaptureTiming::admitted_at(tokio::time::Instant::now()),
         })
     }
 }

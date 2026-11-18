@@ -43,7 +43,7 @@ async fn write_states(
 }
 
 /// The text of every row's plan column.
-async fn run(session: &dyn QuerySession, sql: &str) -> (QueryMetadata, String) {
+pub(super) async fn run(session: &dyn QuerySession, sql: &str) -> (QueryMetadata, String) {
     let (metadata, batches) = tokio::time::timeout(Duration::from_secs(20), async {
         let result = session.execute(sql, QueryOptions {}).await.unwrap();
         let metadata = result.metadata;
@@ -67,7 +67,7 @@ async fn run(session: &dyn QuerySession, sql: &str) -> (QueryMetadata, String) {
 }
 
 /// The metrics a line of an aggregated plan shows for `name`.
-fn metric(line: &str, name: &str) -> Option<String> {
+pub(super) fn metric(line: &str, name: &str) -> Option<String> {
     let metrics = &line[line.find("metrics=[")? + "metrics=[".len()..];
     metrics
         .split(", ")
@@ -178,6 +178,30 @@ async fn analyze_shows_what_each_owner_did() {
             Some(partitions.to_string()),
             "{text}"
         );
+        // Its one lane captured each partition in turn, each timed once.
+        assert_eq!(
+            metric(stage[0], "captures"),
+            Some(partitions.to_string()),
+            "{text}"
+        );
+        for step in [
+            "capture_request_age_min",
+            "capture_request_age_max",
+            "capture_avg",
+            "capture_max",
+            "capture_queued_avg",
+            "capture_queued_max",
+            "snapshot_create_avg",
+            "snapshot_create_max",
+            "capture_return_avg",
+            "capture_return_max",
+        ] {
+            assert!(metric(stage[0], step).is_some(), "{step} in {text}");
+        }
+        assert!(
+            metric(stage[0], "invoker_capture_max").is_none(),
+            "no invoker rows were asked for: {text}"
+        );
     }
     assert_eq!(text.matches("tasks_completed=1").count(), 3, "{text}");
     // The coordinator's own operators show the numbers of the copies the
@@ -225,6 +249,27 @@ async fn analyze_shows_what_each_owner_did() {
         "{json}"
     );
     assert!(json.contains("read_rows"), "{json}");
+
+    // A lane that stops early, however far it got, counts only the captures
+    // it took: one per partition it opened.
+    let (_, limited) = run(session.as_ref(), &format!("EXPLAIN ANALYZE {sql} LIMIT 1")).await;
+    let lines = limited.lines().collect::<Vec<_>>();
+    let mut stages = 0;
+    for (at, line) in lines.iter().enumerate() {
+        if line.contains("NetworkCoalesceExec") {
+            let reads = lines[at..]
+                .iter()
+                .find(|line| line.trim_start().starts_with("PartitionReadExec"))
+                .unwrap();
+            assert_eq!(
+                metric(line, "captures"),
+                metric(reads, "partition_scopes"),
+                "{limited}"
+            );
+            stages += 1;
+        }
+    }
+    assert_eq!(stages, 3, "{limited}");
 
     // Plain EXPLAIN executes nothing; a SELECT after an ANALYZE in the same
     // session asks for no report, and its tasks collect nothing.

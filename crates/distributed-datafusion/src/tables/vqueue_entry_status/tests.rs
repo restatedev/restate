@@ -147,6 +147,7 @@ async fn vqueue_entry_status_not_in_returns_non_excluded_rows() {
         partition: PartitionId::MIN,
         storage: Some(snapshot),
         live: Default::default(),
+        timing: restate_worker_api::CaptureTiming::admitted_at(tokio::time::Instant::now()),
     })
     .with_query_io(crate::mocks::query_io());
     let base = |i: u8| EntryId::new(EntryKind::Invocation, [i; 16]).to_base_id(qid.partition_key());

@@ -59,6 +59,7 @@ use restate_types::net::distributed_query::{
     MetricRecord, NodeMetrics, PlanNodeShape, QueryTaskReport, TaskOutcome,
 };
 
+use super::capture_metrics::{CaptureSample, Captures};
 use super::report::{
     Budget, Encoded, Fnv, MAX_BYTES, MAX_LABELS, MAX_NODES, MAX_RECORDS, charge, encode,
 };
@@ -109,6 +110,8 @@ struct State {
     /// The rows, encoded bytes and batches of the task's replies so far; one
     /// batch at a time, under the same lock as the freeze.
     sent: [usize; 3],
+    /// What the task's partition captures took.
+    captures: Captures,
 }
 
 #[derive(Debug)]
@@ -295,6 +298,14 @@ impl AnalyzeCollector {
         }
     }
 
+    /// Adds one partition's capture, once its lane has it back.
+    pub(crate) fn captured(&self, sample: &CaptureSample) {
+        let mut state = self.state.lock();
+        if !state.frozen {
+            state.captures.add(self.installed, sample);
+        }
+    }
+
     /// Registers a copy, before any of its work starts.
     pub(crate) fn begin_copy(self: &Arc<Self>) -> CopyGuard {
         self.state.lock().pending += 1;
@@ -344,25 +355,27 @@ impl AnalyzeCollector {
         };
         let elapsed = Time::new();
         elapsed.add_duration(self.installed.elapsed());
+        let mut task = vec![
+            sent("transport_rows", 0, MetricCategory::Rows),
+            sent("transport_bytes", 1, MetricCategory::Bytes),
+            sent("transport_batches", 2, MetricCategory::Rows),
+            Metric::new(
+                MetricValue::Time {
+                    name: "task_elapsed".into(),
+                    time: elapsed,
+                },
+                None,
+            )
+            .with_type(MetricType::Summary)
+            .with_category(MetricCategory::Timing),
+        ];
+        task.extend(state.captures.metrics());
         Collected {
             by_node,
             left_out: state.left_out,
             unsettled: state.pending + state.unmerged as usize + state.partial as usize,
             ambiguous: state.ambiguous,
-            task: vec![
-                sent("transport_rows", 0, MetricCategory::Rows),
-                sent("transport_bytes", 1, MetricCategory::Bytes),
-                sent("transport_batches", 2, MetricCategory::Rows),
-                Metric::new(
-                    MetricValue::Time {
-                        name: "task_elapsed".into(),
-                        time: elapsed,
-                    },
-                    None,
-                )
-                .with_type(MetricType::Summary)
-                .with_category(MetricCategory::Timing),
-            ],
+            task,
         }
     }
 }

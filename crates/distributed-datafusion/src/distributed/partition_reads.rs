@@ -35,12 +35,14 @@ use datafusion::physical_plan::{
     execute_stream,
 };
 use futures::StreamExt;
+use tokio::time::Instant;
 
 use restate_types::GenerationalNodeId;
 use restate_types::identifiers::PartitionId;
 use restate_types::net::distributed_query::{QueryFailureKind, QueryTaskError};
 
 use crate::distributed::analyze::AnalyzeCollector;
+use crate::distributed::capture_metrics::CaptureSample;
 use crate::source_registry::PartitionLocation;
 use crate::table_providers::PartitionReadContext;
 
@@ -160,7 +162,7 @@ impl PartitionReadExec {
         input: &Arc<dyn ExecutionPlan>,
         partition: PartitionId,
         context: &TaskContext,
-    ) -> Result<PartitionReadContext> {
+    ) -> Result<(PartitionReadContext, Option<CaptureSample>)> {
         let mut requirements = restate_worker_api::PartitionCaptureRequirements::default();
         let mut require_leader = false;
         let mut registry = None;
@@ -195,20 +197,27 @@ impl PartitionReadExec {
         if requirements.storage || requirements.needs_live_state() {
             let registry = registry.expect("participating storage source");
             let query_io = registry.query_io().map_err(external)?;
-            Ok(PartitionReadContext::from_capture(
-                registry
-                    .capture_partition(
-                        partition,
-                        require_leader,
-                        context.session_config().get_extension(),
-                        requirements,
-                    )
-                    .await
-                    .map_err(external)?,
-            )
-            .with_query_io(query_io))
+            let requested = Instant::now();
+            let read = registry
+                .capture_partition(
+                    partition,
+                    require_leader,
+                    context.session_config().get_extension(),
+                    requirements,
+                )
+                .await
+                .map_err(external)?;
+            let sample = CaptureSample {
+                requested,
+                timing: read.timing,
+                resumed: Instant::now(),
+            };
+            Ok((
+                PartitionReadContext::from_capture(read).with_query_io(query_io),
+                Some(sample),
+            ))
         } else {
-            Ok(PartitionReadContext::live(partition))
+            Ok((PartitionReadContext::live(partition), None))
         }
     }
 }
@@ -398,8 +407,11 @@ impl ExecutionPlan for PartitionReadExec {
                     // Registered before any of its work: a failure or a cancellation
                     // from here on leaves it unsettled, which the report says.
                     let mut copy = collector.as_ref().map(|collector| collector.begin_copy());
-                    let scope = Self::admit(&input, partitions[index], &context).await?;
+                    let (scope, sample) = Self::admit(&input, partitions[index], &context).await?;
                     opened.add(1);
+                    if let (Some(collector), Some(sample)) = (&collector, sample) {
+                        collector.captured(&sample);
+                    }
                     let closed = scope.snapshot.as_ref().map(|read| read.closed());
                     let cancel = scope
                         .snapshot

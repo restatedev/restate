@@ -250,6 +250,9 @@ async fn cross_schema_fixture_with(
                                 .0
                         }),
                         live: capture_live(range.start(), &scope_in(range), request.capture),
+                        timing: restate_worker_api::CaptureTiming::admitted_at(
+                            tokio::time::Instant::now(),
+                        ),
                     };
                     let _ = request.response.send(Ok(read));
                 }
