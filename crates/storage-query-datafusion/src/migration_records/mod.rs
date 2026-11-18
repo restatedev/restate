@@ -302,8 +302,8 @@ fn append_index(
     }
 }
 
-/// The unfinished and retained finished jobs of every replica in `report`, at
-/// most `limit` of them.
+/// The unfinished jobs, and the finished ones not expired yet, of every replica
+/// in `report`, at most `limit` of them.
 fn jobs(
     report: &MigrationReport,
     limit: Option<usize>,
@@ -311,14 +311,7 @@ fn jobs(
     report
         .replicas
         .iter()
-        .flat_map(|replica| {
-            let jobs = &replica.jobs;
-            jobs.unfinished
-                .entries()
-                .iter()
-                .chain(jobs.history.entries())
-                .map(move |job| (replica, job))
-        })
+        .flat_map(|replica| replica.jobs.entries().iter().map(move |job| (replica, job)))
         .take(limit.unwrap_or(usize::MAX))
 }
 

@@ -81,7 +81,10 @@ definition name, ID and status (`src/registry.rs`). An index being built points
 to its **walk**, recorded next to the registry (`src/walk.rs`): the walk has its
 own ID and holds the traversal's progress, and several indexes built together
 share one walk. Both records are local to the store, not replicated: two
-replicas of one partition can be at different points, which is normal.
+replicas of one partition can be at different points, which is normal. The
+registry, each walk and each migration job have a key of their own, under one
+key kind (`src/registry/records.rs`), so a slice writes only the records it
+changes.
 
 **Definition families.** Definitions released together are grouped in a
 *family*, switched on by the same configuration options.
@@ -92,7 +95,8 @@ registry (`src/job.rs`): its status, when it started and finished, and what
 its slices did, and when a waiting job may start its next pass. The registry
 decides whether an index is Ready, and the walk holds where its work resumes and
 the evidence for completing it; a job record can be rebuilt from the registry.
-Finished jobs are kept up to `worker.storage.migration-job-history-limit`.
+Finished jobs are kept for `worker.storage.finished-migration-jobs-retention`,
+24 hours by default, then hidden and removed by compaction.
 
 ## The rules
 
@@ -130,9 +134,10 @@ are their foundation.
 7. **Queries read only Ready indexes, resolved in their own snapshot.** A read
    finds the Ready index of a definition in the registry as it was when the read
    was admitted, or fails with `IndexNotReady`.
-8. **Persisted formats are append-only.** Bilrost tags, enum numbers and the keys
-   under which the registry and walks are stored never change meaning. Rename
-   in code freely; never renumber.
+8. **Persisted formats are append-only.** Bilrost tags and enum numbers never
+   change meaning. The registry, walks and jobs are stored under `rg` keys
+   (`src/registry/records.rs`); their key layout and record kinds are
+   append-only too. Rename in code freely; never renumber.
 9. **The `registry` storage feature fences older binaries.** It is set with
    the first registration and records a minimum Restate version, so an older
    binary, which doesn't know tokens and index keys, refuses to open the store

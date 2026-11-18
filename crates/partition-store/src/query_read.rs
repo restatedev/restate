@@ -44,6 +44,7 @@ use std::sync::{Arc, OnceLock};
 use bytes::Bytes;
 use rocksdb::ReadOptions;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
+use zerocopy::IntoBytes;
 
 use restate_core::io::{Cancelled, FutureTask, Gate, OwnedLease, TrackedTask};
 use restate_rocksdb::RocksDbPerfExt;
@@ -56,11 +57,10 @@ use restate_types::sharding::KeyRange;
 use restate_types::storage::StorageCodec;
 
 use crate::features::StorageFeatures;
-use crate::fsm_table::{
-    fsm_variable, migration_jobs_key, registry_key, state_machine_features_key,
-};
-use crate::job::{MigrationJobId, MigrationJobStatus, MigrationJobs};
+use crate::fsm_table::state_machine_features_key;
+use crate::job::{MigrationJob, MigrationJobId, MigrationJobStatus};
 use crate::keys::KeyKind;
+use crate::registry::records::RecordKey;
 use crate::registry::{Index, IndexKind, IndexNotReady, IndexStatus, Registry};
 use crate::scan::PhysicalScan;
 use crate::table::{IndexSource, ReadMetadata};
@@ -87,8 +87,6 @@ struct QuerySnapshot {
     features: StorageFeatures,
     /// The registry as of `snapshot`, decoded on first use.
     registry: OnceLock<std::result::Result<Option<Registry>, String>>,
-    /// The unfinished jobs as of `snapshot`, decoded on first use.
-    jobs: OnceLock<std::result::Result<MigrationJobs, String>>,
     /// The processor's token for ending this read.
     cancel: CancellationToken,
     /// This read's child of the partition gate; `ReadSnapshot::cancel` cancels it.
@@ -137,7 +135,6 @@ impl ReadSnapshot {
                 snapshot,
                 features,
                 registry: OnceLock::new(),
-                jobs: OnceLock::new(),
                 cancel,
                 gate,
                 cancelled,
@@ -207,11 +204,11 @@ impl ReadSnapshot {
             )
         };
         let registry = self.inner.registry.get_or_init(|| {
-            let key = registry_key(self.partition_id());
+            let key = RecordKey::registry(self.partition_id());
             self.inner
                 .snapshot
                 .reader()
-                .get_pinned(KeyKind::Fsm, &key)
+                .get_pinned(KeyKind::Registry, key.as_bytes())
                 .map_err(|err| err.to_string())?
                 .map(|value| Registry::decode(&value).map_err(|err| err.to_string()))
                 .transpose()
@@ -238,21 +235,23 @@ impl ReadSnapshot {
     /// How far the backfill of the Backfilling `index` is in this snapshot, from
     /// its build job's record.
     fn backfill_status(&self, index: &Index) -> String {
-        let jobs = self.inner.jobs.get_or_init(|| {
-            let key = migration_jobs_key(self.partition_id(), fsm_variable::MIGRATION_JOBS);
-            self.inner
-                .snapshot
-                .reader()
-                .get_pinned(KeyKind::Fsm, &key)
-                .map_err(|err| err.to_string())?
-                .map(|value| MigrationJobs::decode(&value).map_err(|err| err.to_string()))
-                .transpose()
-                .map(Option::unwrap_or_default)
-        });
-        let job = jobs
-            .as_ref()
-            .ok()
-            .and_then(|jobs| jobs.get(MigrationJobId::for_entry(index.id)));
+        let id = MigrationJobId::for_entry(index.id);
+        let key = RecordKey::job(self.partition_id(), id);
+        let read = self
+            .inner
+            .snapshot
+            .reader()
+            .get_pinned(KeyKind::Registry, key.as_bytes())
+            .map_err(|err| err.to_string())
+            .and_then(|value| {
+                value
+                    .map(|value| {
+                        MigrationJob::decode(u64::from(id.as_u32()), &value)
+                            .map_err(|err| err.to_string())
+                    })
+                    .transpose()
+            });
+        let job = read.as_ref().ok().and_then(Option::as_ref);
         let Some(walk) = index.walk else {
             // Between passes, or not started yet.
             return match job {
@@ -267,8 +266,8 @@ impl ReadSnapshot {
                 _ => "its backfill has not started".to_owned(),
             };
         };
-        if let Err(err) = jobs {
-            return format!("backfill walk {walk}; unreadable job records: {err}");
+        if let Err(err) = &read {
+            return format!("backfill walk {walk}; unreadable job record: {err}");
         }
         let Some(job) = job else {
             return format!("backfill walk {walk}; its job record is missing");

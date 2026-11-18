@@ -122,6 +122,11 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
         return segments;
     }
 
+    if key_kind == KeyKind::Registry {
+        build_registry_segments(key, &mut segments);
+        return segments;
+    }
+
     if key.len() < 10 {
         return segments;
     }
@@ -533,7 +538,7 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
             }
         }
         #[allow(deprecated)]
-        KeyKind::Stats | KeyKind::LegacyStats | KeyKind::SecondaryIndex => {
+        KeyKind::Stats | KeyKind::LegacyStats | KeyKind::SecondaryIndex | KeyKind::Registry => {
             unreachable!("handled before the standard partition header")
         }
     }
@@ -567,6 +572,29 @@ fn build_secondary_index_segments(key: &[u8], segments: &mut Vec<Segment>) {
             len: key.len() - IndexKeyPrefix::SERIALIZED_LENGTH,
             label: "index_key",
         });
+    }
+}
+
+/// A registry record's key: `rg | padding | partition | record kind | ID`.
+fn build_registry_segments(key: &[u8], segments: &mut Vec<Segment>) {
+    let fields = [
+        (KeySegment::FixedField, 2, "partition_padding"),
+        (KeySegment::Partition, 2, "partition"),
+        (KeySegment::FixedField, 1, "record"),
+        (KeySegment::FixedField, 8, "id"),
+    ];
+    let mut start = KeyKind::SERIALIZED_LENGTH;
+    for (kind, len, label) in fields {
+        if start >= key.len() {
+            return;
+        }
+        segments.push(Segment {
+            kind,
+            start,
+            len: len.min(key.len() - start),
+            label,
+        });
+        start += len;
     }
 }
 
