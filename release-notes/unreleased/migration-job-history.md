@@ -6,7 +6,7 @@
 Each partition replica now keeps a record of its background migrations, the
 backfills that build query indexes and statistics. A record shows when the
 migration was created, started and finished, how many entries it examined and
-filled, how much work time it took, and its failures with the last error.
+changed, how much work time it took, and its failures with the last error.
 Unfinished migrations are always recorded. Finished ones are kept for a
 while, set by a new option under `[worker.storage]`:
 

@@ -18,14 +18,15 @@ use crate::{ShardingScheme, define_schema};
 
 define_schema! {
     /// The background migration jobs of each partition replica on the worker
-    /// nodes, such as the build of an index: unfinished ones, and finished ones
-    /// for `worker.storage.finished-migration-jobs-retention` after they finished.
+    /// nodes, the builds of indexes and the one-time migrations: unfinished ones,
+    /// and finished ones for `worker.storage.finished-migration-jobs-retention`
+    /// after they finished.
     /// Each replica keeps its own; a replica's rows come from one snapshot of it,
     /// separate from the one `registry` reads, except `blocked_by`, which its
     /// background driver reports apart from the snapshot.
     ///
     /// Jobs that share a walk are each charged the walk's rows examined, slices
-    /// and work time, so those columns don't add up across jobs; `rows_filled`
+    /// and work time, so those columns don't add up across jobs; `rows_changed`
     /// is per job. Rows and slices count committed slices only; work time and
     /// failures also count failed attempts.
     migration_jobs {
@@ -39,19 +40,20 @@ define_schema! {
             gen_node_id: ReString => DataType::Utf8,
             /// The partition the replica belongs to.
             partition_id: u32 => DataType::UInt32,
-            /// The job's ID; a build job has its index's ID.
+            /// The job's ID: its registry entry's ID, the index it builds or the
+            /// migration it runs.
             job_id: u32 => DataType::UInt32,
-            /// What the job does: `index_backfill`.
+            /// What the job does: `index_backfill` or `migration`.
             kind: ReString => DataType::Utf8,
-            /// What it builds: for an index backfill, the definition, for example
-            /// `service_stats/1`.
+            /// The definition it runs: the index it builds, for example
+            /// `service_stats/1`, or the migration.
             name: ReString => DataType::Utf8,
             /// `pending` (no slice yet), `running`, `waiting` (between passes),
             /// `completed` or `cancelled`.
             status: ReString => DataType::Utf8,
-            /// `active` when this binary's definition fills rows itself, `passive`
-            /// when only writes and deletions cover them; NULL for a definition this
-            /// binary doesn't know.
+            /// `active` when this binary's definition fills rows itself, as every
+            /// migration does, `passive` when only writes and deletions cover them;
+            /// NULL for a definition this binary doesn't know.
             mode: Option<ReString> => DataType::Utf8,
             /// How far the current pass is through the replica's key range, in percent.
             /// Approximate, never evidence of completion; NULL between passes, before
@@ -90,8 +92,9 @@ define_schema! {
             passes: u32 => DataType::UInt32,
             /// Source rows its committed slices examined.
             rows_examined: u64 => DataType::UInt64,
-            /// Rows its slices filled for this job.
-            rows_filled: u64 => DataType::UInt64,
+            /// Rows its slices changed: for an index backfill, source rows that
+            /// gained its token; for a migration, the rows it changed.
+            rows_changed: u64 => DataType::UInt64,
             /// Rows the last full pass found it couldn't cover; NULL before one ended.
             rows_uncovered: Option<u64> => DataType::UInt64,
             /// The same count for the full pass before, for the trend.

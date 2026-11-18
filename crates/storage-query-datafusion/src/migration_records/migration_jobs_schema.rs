@@ -14,14 +14,15 @@ use crate::table_macro::*;
 
 define_table!(
     /// The background migration jobs of each partition replica on the worker
-    /// nodes, such as the build of an index: unfinished ones, and finished ones
-    /// for `worker.storage.finished-migration-jobs-retention` after they finished.
+    /// nodes, the builds of indexes and the one-time migrations: unfinished ones,
+    /// and finished ones for `worker.storage.finished-migration-jobs-retention`
+    /// after they finished.
     /// Each replica keeps its own; a replica's rows come from one snapshot of it,
     /// separate from the one `registry` reads, except `blocked_by`, which its
     /// background driver reports apart from the snapshot.
     ///
     /// Jobs that share a walk are each charged the walk's rows examined, slices
-    /// and work time, so those columns don't add up across jobs; `rows_filled`
+    /// and work time, so those columns don't add up across jobs; `rows_changed`
     /// is per job. Rows and slices count committed slices only; work time and
     /// failures also count failed attempts.
     migration_jobs(
@@ -34,23 +35,24 @@ define_table!(
         /// The partition the replica belongs to.
         partition_id: DataType::UInt32,
 
-        /// The job's ID; a build job has its index's ID.
+        /// The job's ID: its registry entry's ID, the index it builds or the
+        /// migration it runs.
         job_id: DataType::UInt32,
 
-        /// What the job does: `index_backfill`.
+        /// What the job does: `index_backfill` or `migration`.
         kind: DataType::Utf8,
 
-        /// What it builds: for an index backfill, the definition, for example
-        /// `service_stats/1`.
+        /// The definition it runs: the index it builds, for example
+        /// `service_stats/1`, or the migration.
         name: DataType::Utf8,
 
         /// `pending` (no slice yet), `running`, `waiting` (between passes),
         /// `completed` or `cancelled`.
         status: DataType::Utf8,
 
-        /// `active` when this binary's definition fills rows itself, `passive`
-        /// when only writes and deletions cover them; NULL for a definition this
-        /// binary doesn't know.
+        /// `active` when this binary's definition fills rows itself, as every
+        /// migration does, `passive` when only writes and deletions cover them;
+        /// NULL for a definition this binary doesn't know.
         mode: DataType::Utf8,
 
         /// How far the current pass is through the replica's key range, in percent.
@@ -102,8 +104,9 @@ define_table!(
         /// Source rows its committed slices examined.
         rows_examined: DataType::UInt64,
 
-        /// Rows its slices filled for this job.
-        rows_filled: DataType::UInt64,
+        /// Rows its slices changed: for an index backfill, source rows that
+        /// gained its token; for a migration, the rows it changed.
+        rows_changed: DataType::UInt64,
 
         /// Rows the last full pass found it couldn't cover; NULL before one ended.
         rows_uncovered: DataType::UInt64,

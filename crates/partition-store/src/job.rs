@@ -8,15 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Migration-job records: what each job building an index did, kept on the
-//! replica for operators.
+//! Migration-job records: what each background job did, kept on the replica for
+//! operators.
 //!
-//! A **migration job** is background work that builds derived data, such as an
-//! index, from a table written at the same time. Every index has one **build
-//! job**, whose [`MigrationJobId`] is the index's ID, and a walk runs it a slice
-//! at a time (see [`crate::walk`]). The registry decides whether an index is
-//! Ready, and the walk holds where the work resumes and the evidence for
-//! completing it. A job record reports how the work went: when it started and
+//! A **migration job** is background work over a table written at the same
+//! time: building an index, or running a one-time migration. Every index has one
+//! **build job** and every migration in progress one job, whose
+//! [`MigrationJobId`] is the registry entry's ID, and a walk runs it a slice at a
+//! time (see [`crate::walk`]). The registry decides whether an index is Ready or
+//! a migration Complete, and the walk holds where the work resumes and the
+//! evidence for completing it. A job record reports how the work went: when it started and
 //! finished, the rows and time its slices took, and its failures. It also says
 //! when a waiting job may start its next pass, and keeps the counts its schedule
 //! compares. Nothing in it decides readiness or coverage, so it can be rebuilt
@@ -38,7 +39,7 @@
 //!
 //! For example, statistic 70 registers at 10:00: job 70 is `Pending`. Its first
 //! slice at 10:01 makes it `Running` and sets its start. Each slice adds the rows
-//! it examined and filled, and its work time. A failed attempt counts a failure
+//! it examined and changed, and its work time. A failed attempt counts a failure
 //! and keeps its error until the next slice commits. The last slice, at 10:30,
 //! completes the job; with the default retention, its record expires the next
 //! day at 10:30.
@@ -83,14 +84,15 @@ pub(crate) const RECHECK_FLOOR_MS: u64 = 10 * 60 * 1000;
 /// [`RECHECK_FLOOR_MS`].
 pub(crate) const RECHECK_CAP_MS: u64 = 24 * 60 * 60 * 1000;
 
-/// The ID of a migration job, never 0. A build job has the ID of the index it
-/// builds, and the same 4 bytes are its token in the rows it reflects. Records
-/// store it as a plain `u32`.
+/// The ID of a migration job, never 0: the ID of its registry entry. A build job
+/// has the ID of the index it builds, and the same 4 bytes are its token in the
+/// rows it reflects; a migration's job has the migration's ID. Records store it
+/// as a plain `u32`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MigrationJobId(NonZeroU32);
 
 impl MigrationJobId {
-    /// The job of registry entry `id`: an index's build job has the index's ID.
+    /// The job of registry entry `id`, an index or a migration.
     ///
     /// # Panics
     /// If `id` is 0, which the registry never issues: its IDs start at
@@ -126,6 +128,9 @@ pub enum MigrationJobKind {
     /// Builds an index; the job has the index's ID.
     #[bilrost(1)]
     IndexBackfill,
+    /// Runs a one-time migration; the job has the migration's ID.
+    #[bilrost(2)]
+    Migration,
 }
 
 /// Where a migration job is in its life.
@@ -144,7 +149,7 @@ pub enum MigrationJobStatus {
     /// pass after waiting.
     #[bilrost(2)]
     Running,
-    /// Done: its index is Ready.
+    /// Done: its index is Ready, or its migration Complete.
     #[bilrost(3)]
     Completed,
     /// Stopped before completion: its index was dropped.
@@ -165,7 +170,7 @@ impl MigrationJobStatus {
 /// One job and what it did, stored under its own key (see
 /// [`crate::registry::records`]). Every member of a walk is charged the walk's
 /// full committed rows and work time, so those counters are per-job views of a
-/// shared pass, not additive across the jobs of one walk; `rows_filled` is per
+/// shared pass, not additive across the jobs of one walk; `rows_changed` is per
 /// job.
 ///
 /// Persisted tags never change meaning (README rule 8).
@@ -177,7 +182,7 @@ pub struct MigrationJob {
     id: u32,
     #[bilrost(2)]
     pub kind: MigrationJobKind,
-    /// The index definition it builds.
+    /// The definition it runs: the index it builds or the migration.
     #[bilrost(3)]
     pub name: ReString,
     #[bilrost(4)]
@@ -202,9 +207,10 @@ pub struct MigrationJob {
     /// Source rows committed slices examined.
     #[bilrost(11)]
     pub rows_examined: u64,
-    /// Rows its slices filled, as opposed to rows that already listed its token.
+    /// Rows its slices changed: for an index backfill, source rows that gained
+    /// its token; for a migration, the rows it changed.
     #[bilrost(12)]
-    pub rows_filled: u64,
+    pub rows_changed: u64,
     /// Committed slices.
     #[bilrost(13)]
     pub slices: u64,
@@ -265,9 +271,29 @@ impl MigrationJob {
         at: Option<u64>,
         by: Option<ReString>,
     ) -> Self {
+        Self::new(
+            index_id,
+            MigrationJobKind::IndexBackfill,
+            name,
+            walk,
+            at,
+            by,
+        )
+    }
+
+    /// The `Pending` job of a registry entry `id` of `kind`, running `name` on
+    /// `walk`, created at `at` by `by`.
+    pub(crate) fn new(
+        id: u32,
+        kind: MigrationJobKind,
+        name: ReString,
+        walk: Option<u64>,
+        at: Option<u64>,
+        by: Option<ReString>,
+    ) -> Self {
         Self {
-            id: MigrationJobId::for_entry(index_id).as_u32(),
-            kind: MigrationJobKind::IndexBackfill,
+            id: MigrationJobId::for_entry(id).as_u32(),
+            kind,
             name,
             status: MigrationJobStatus::Pending,
             walk,
@@ -277,7 +303,7 @@ impl MigrationJob {
             finished_at: None,
             passes: 0,
             rows_examined: 0,
-            rows_filled: 0,
+            rows_changed: 0,
             slices: 0,
             work_us: 0,
             last_slice_at: None,
@@ -325,7 +351,7 @@ impl MigrationJob {
     }
 
     /// Records a slice that committed at `at`, examining `examined` rows and
-    /// filling `filled` of them for this job in `work_us`; `pass_start` when it is
+    /// changing `changed` of them for this job in `work_us`; `pass_start` when it is
     /// the first slice of a full pass, which then started when this slice did,
     /// `work_us` before `at`. Only a pending job's first slice sets its start: a
     /// job rebuilt while running keeps its start unknown.
@@ -333,7 +359,7 @@ impl MigrationJob {
         &mut self,
         at: u64,
         examined: u64,
-        filled: u64,
+        changed: u64,
         work_us: u64,
         pass_start: bool,
     ) {
@@ -345,7 +371,7 @@ impl MigrationJob {
         }
         self.status = MigrationJobStatus::Running;
         self.rows_examined = self.rows_examined.saturating_add(examined);
-        self.rows_filled = self.rows_filled.saturating_add(filled);
+        self.rows_changed = self.rows_changed.saturating_add(changed);
         self.slices = self.slices.saturating_add(1);
         self.work_us = self.work_us.saturating_add(work_us);
         self.last_slice_at = Some(at);
@@ -552,7 +578,7 @@ mod tests {
         // only the first slice sets the start.
         job.record_slice(1_300, 28, 28, 900, false);
         assert_eq!(
-            (job.rows_examined, job.rows_filled, job.slices, job.work_us),
+            (job.rows_examined, job.rows_changed, job.slices, job.work_us),
             (156, 128, 2, 2_700)
         );
         assert_eq!(

@@ -62,6 +62,15 @@ define_table_key!(
     )
 );
 
+impl JournalCompletionIdToCommandIndexKey {
+    pub const fn serialized_length_fixed() -> usize {
+        KeyKind::SERIALIZED_LENGTH
+            + std::mem::size_of::<PartitionKey>()
+            + InvocationUuid::RAW_BYTES_LEN
+            + std::mem::size_of::<CompletionId>()
+    }
+}
+
 define_table_key!(
     Journal,
     KeyKind::JournalV2NotificationIdToNotificationIndex,

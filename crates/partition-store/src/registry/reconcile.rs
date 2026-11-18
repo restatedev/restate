@@ -12,8 +12,10 @@
 //! configuration, before the partition processor starts writing:
 //!
 //! 0. **Discard** the walks of a kind or source this binary doesn't know, if they
-//!    allow it (see [`crate::walk::OnUnknown`]); their members are unlinked. A
-//!    walk that doesn't allow it refuses the open before anything changes.
+//!    allow it (see [`crate::walk::OnUnknown`]); their members and their
+//!    migration are unlinked. A walk that doesn't allow it refuses the open
+//!    before anything changes, as does a migration this binary doesn't know
+//!    whose entry says so (see [`super::MigrationOnUnknown`]).
 //! 1. **Retire** maintained indexes of definitions this binary does not know (a
 //!    rollback, or another build): their keys are range-deleted and they become
 //!    Dropped, keeping their IDs reserved.
@@ -21,20 +23,26 @@
 //! 3. **Register** each requested definition that has no maintained index, under
 //!    a fresh ID, with a `Pending` build job.
 //!    Running out of IDs skips the request with an error log.
-//! 4. **Settle the job records** (see [`crate::job`]) with the registry, which
+//! 4. **Migrations**, on a store with the `registry` fence only, set before
+//!    this open or by its registrations above: register each one this binary
+//!    knows that the store hasn't, with a walk and a job, and restart the walk
+//!    of each one in progress that lost it (see [`super::migration`]). A
+//!    migration over an empty source completes at once.
+//! 5. **Settle the job records** (see [`crate::job`]) with the registry, which
 //!    decides. Registering and dropping record their times on the indexes'
 //!    timelines and jobs. Records that disagree follow the registry: a job whose
-//!    index is Ready or dropped is finished at an unknown time, and a
-//!    Backfilling index without a job gets one with unknown times. A job that
+//!    index is Ready or dropped, or whose migration is Complete, is finished at
+//!    an unknown time, and a Backfilling index or a migration in progress
+//!    without a job gets one with unknown times. A job that
 //!    finishes gets its final record, which expires after the configured
 //!    retention. Unreadable job records are rebuilt or deleted, never fail the
 //!    open.
-//! 5. **Start** one walk for the eligible Backfilling indexes that have none,
+//! 6. **Start** one walk for the eligible Backfilling indexes that have none,
 //!    over the entries that exist now (see [`super::backfill`]): new
 //!    registrations, indexes whose definition can fill now, and passive ones
 //!    whose wait is over. A partition without entries has nothing to walk: those
 //!    indexes become Ready instead.
-//! 6. **Fence:** once anything was ever registered, the `registry` storage
+//! 7. **Fence:** once an index was ever registered, the `registry` storage
 //!    feature is in the store's ledger, so older binaries cannot open it.
 //!
 //! ```text
@@ -83,17 +91,19 @@ use restate_rocksdb::{IoMode, Priority};
 use restate_storage_api::StorageError;
 use restate_types::SemanticRestateVersion;
 use restate_types::config::{Configuration, StorageOptions};
-use restate_types::vqueues::EntryKind;
 use restate_util_string::ReString;
 
 use crate::faults::{self, FaultPoint};
 use crate::features::{LoadedStorageFeatures, StorageFeatures};
 use crate::fsm_table::get_min_restate_version_from_partition_db;
-use crate::job::{MigrationJob, MigrationJobId, MigrationJobRecords, MigrationJobStatus, Stamp};
-use crate::keys::{DecodeTableKey, IndexKeyPrefix};
+use crate::job::{
+    MigrationJob, MigrationJobId, MigrationJobKind, MigrationJobRecords, MigrationJobStatus, Stamp,
+};
+use crate::keys::IndexKeyPrefix;
+use crate::migrations::online::{MigrationDefinition, ONLINE_MIGRATIONS};
+use crate::registry::{MigrationOnUnknown, MigrationState};
 use crate::stats::AggregateKeyPrefix;
-use crate::vqueue_table::EntryStatusKey;
-use crate::walk::Walks;
+use crate::walk::{Source, Walks};
 use crate::{MigrationError, PartitionDb, PartitionStore};
 
 use super::records::{self, BatchSink, RecordKey, RecordKind, RecordSink, Records, View};
@@ -117,10 +127,13 @@ pub(crate) struct Requests {
     /// How long the record of a job that finishes is kept
     /// (`worker.storage.finished-migration-jobs-retention`).
     pub(crate) retention: Duration,
+    /// The one-time migrations this binary knows. Each registers once, on a
+    /// fenced store; entries of any other migration follow their policy.
+    pub(crate) migrations: &'static [&'static MigrationDefinition],
 }
 
 impl Default for Requests {
-    /// No requests, with the default retention.
+    /// No requests and no migrations, with the default retention.
     fn default() -> Self {
         Self {
             maintain: Vec::new(),
@@ -128,6 +141,7 @@ impl Default for Requests {
             retention: StorageOptions::default()
                 .finished_migration_jobs_retention
                 .to_std(),
+            migrations: &[],
         }
     }
 }
@@ -140,6 +154,7 @@ impl Requests {
                 .storage
                 .finished_migration_jobs_retention
                 .to_std(),
+            migrations: ONLINE_MIGRATIONS,
             ..Self::default()
         };
         for family in families {
@@ -163,78 +178,140 @@ pub(crate) struct FenceState<'a> {
 impl PartitionStore {
     /// Loads the registry records for opening this partition (see
     /// [`records::load`]) and validates the registry and the walks: their
-    /// formats and invariants, every walk endpoint and cursor against the
-    /// entry-status key schema and this partition's key range, and the links
-    /// between them. Walks also require the `registry` fence in `features`, the
-    /// loaded storage features, which keeps binaries predating the registry out
-    /// of a store with walks. Runs before any cleanup or migration mutates the
-    /// store; an invalid state fails the open with the store unchanged. Also
-    /// returns the IDs of the unreadable job records.
+    /// formats and invariants, every walk endpoint and cursor against its
+    /// source's key schema and this partition's key range, and the links
+    /// between them. Walks and migrations also require the `registry` fence in
+    /// `features`, the loaded storage features, which keeps binaries predating
+    /// the registry out of a store with them. A migration this binary doesn't
+    /// know, and whose entry refuses such binaries, fails the open, as does a
+    /// walk that must not be discarded. Runs before any cleanup or migration
+    /// mutates the store; an invalid state fails the open with the store
+    /// unchanged. Also returns the IDs of the unreadable job records.
     pub(crate) fn validate_registry(
         &self,
         features: &StorageFeatures,
     ) -> Result<(Records, Vec<u64>), MigrationError> {
+        self.validate_registry_knowing(features, ONLINE_MIGRATIONS)
+    }
+
+    /// [`Self::validate_registry`] by a binary that knows `migrations`.
+    fn validate_registry_knowing(
+        &self,
+        features: &StorageFeatures,
+        migrations: &[&'static MigrationDefinition],
+    ) -> Result<(Records, Vec<u64>), MigrationError> {
         let db = self.partition_db();
         let (records, unreadable_jobs) = records::load(db)?;
         let (registry, walks) = (records.registry.as_ref(), &records.walks);
-        // Before anything changes: a walk this binary doesn't know and must not
-        // discard refuses the open. The walk doesn't record which release started
-        // it; the store's minimum Restate version is the closest hint.
-        if let Err(err) = walks.preflight() {
+        let entries = registry.map_or(&[][..], Registry::migrations);
+        // Before anything changes: a migration this binary doesn't know refuses
+        // the open if its entry says so, and so does a walk this binary doesn't
+        // know and must not discard. Neither records which release started it;
+        // the store's minimum Restate version is the closest hint.
+        let refused = match entries.iter().find(|migration| {
+            migration.on_unknown() == MigrationOnUnknown::Refuse
+                && !migrations
+                    .iter()
+                    .any(|known| migration.definition == known.name)
+        }) {
+            Some(migration) => Some(format!(
+                "migration '{}' ({}) belongs to a release this binary predates, and refuses \
+                 binaries that don't know it; open the store with that release or a newer one",
+                migration.definition, migration.id
+            )),
+            None => walks.preflight(migrations).err().map(|err| err.to_string()),
+        };
+        if let Some(reason) = refused {
             let minimum = get_min_restate_version_from_partition_db(db)?;
             return Err(MigrationError::MigrationBarrier(format!(
-                "{err}; this store's minimum Restate version is {minimum}"
+                "{reason}; this store's minimum Restate version is {minimum}"
             )));
         }
         let barrier = |what: String, err: StorageError| {
             MigrationError::MigrationBarrier(format!("invalid {what}: {err}"))
         };
-        if !walks.entries().is_empty() && !features.is_registry {
+        let integrity = |what: String| barrier(what, StorageError::DataIntegrityError);
+        if !(walks.entries().is_empty() && entries.is_empty()) && !features.is_registry {
             return Err(MigrationError::MigrationBarrier(
-                "walks exist without the registry storage feature".to_owned(),
+                "walks or migrations exist without the registry storage feature".to_owned(),
             ));
         }
         for index in registry.iter().flat_map(|registry| registry.indexes()) {
             if let Some(walk) = index.walk
                 && walks.get(walk).is_none()
             {
-                return Err(barrier(
-                    format!("walk link of '{}' ({})", index.definition, index.id),
-                    StorageError::DataIntegrityError,
-                ));
+                return Err(integrity(format!(
+                    "walk link of '{}' ({})",
+                    index.definition, index.id
+                )));
             }
         }
-        // A walk this binary doesn't know keeps its positions opaque; the open
-        // discards it.
-        for walk in walks.entries().iter().filter(|walk| walk.is_supported()) {
-            for member in &walk.members {
-                if registry
-                    .and_then(|registry| registry.get(member.index))
-                    .is_none_or(|index| index.walk != Some(walk.id))
-                {
-                    return Err(barrier(
-                        format!("evidence of walk {} for index {}", walk.id, member.index),
-                        StorageError::DataIntegrityError,
-                    ));
-                }
-            }
-            let joins = walk
-                .members
-                .iter()
-                .filter_map(|member| member.joined_at.as_ref());
-            for key in std::iter::once(&walk.end)
-                .chain(walk.cursor.as_ref())
-                .chain(joins)
+        for migration in entries {
+            if let Some(walk) = migration.walk
+                && walks.get(walk).is_none()
             {
-                validate_cursor(db, key)
-                    .map_err(|err| barrier(format!("position of walk {}", walk.id), err))?;
+                return Err(integrity(format!(
+                    "walk link of migration '{}' ({})",
+                    migration.definition, migration.id
+                )));
             }
-            if registry.is_none_or(|registry| registry.members(walk.id).next().is_none()) {
-                return Err(barrier(
-                    format!("walk {} without members", walk.id),
-                    StorageError::DataIntegrityError,
-                ));
+        }
+        let positions = |walk: &crate::walk::Walk, source: Source, others: &[&bytes::Bytes]| {
+            std::iter::once(&walk.end)
+                .chain(walk.cursor.as_ref())
+                .chain(others.iter().copied())
+                .try_for_each(|key| validate_position(db, source, key))
+                .map_err(|err| barrier(format!("position of walk {}", walk.id), err))
+        };
+        for walk in walks.entries() {
+            let linked = registry.and_then(|registry| registry.migration_of_walk(walk.id));
+            if walk.is_index_backfill() {
+                if let Some(migration) = linked {
+                    return Err(integrity(format!(
+                        "link of migration '{}' to index backfill {}",
+                        migration.definition, walk.id
+                    )));
+                }
+                for member in &walk.members {
+                    if registry
+                        .and_then(|registry| registry.get(member.index))
+                        .is_none_or(|index| index.walk != Some(walk.id))
+                    {
+                        return Err(integrity(format!(
+                            "evidence of walk {} for index {}",
+                            walk.id, member.index
+                        )));
+                    }
+                }
+                let joins: Vec<_> = walk
+                    .members
+                    .iter()
+                    .filter_map(|member| member.joined_at.as_ref())
+                    .collect();
+                positions(walk, Source::EntryStatus, &joins)?;
+                if registry.is_none_or(|registry| registry.members(walk.id).next().is_none()) {
+                    return Err(integrity(format!("walk {} without members", walk.id)));
+                }
+            } else if let Some(definition) = migrations.iter().find(|known| known.runs(walk)) {
+                // A migration's walk runs its own entry, with neither members
+                // nor parameters.
+                if linked.is_none_or(|migration| migration.definition != definition.name)
+                    || registry.is_some_and(|registry| registry.members(walk.id).next().is_some())
+                    || !walk.members.is_empty()
+                    || !walk.params.is_empty()
+                    || walk
+                        .cursor
+                        .as_ref()
+                        .is_some_and(|cursor| *cursor > walk.end)
+                {
+                    return Err(integrity(format!(
+                        "walk {} of migration '{}'",
+                        walk.id, definition.name
+                    )));
+                }
+                positions(walk, definition.source, &[])?;
             }
+            // Any other walk keeps its positions opaque; the open discards it.
         }
         Ok((records, unreadable_jobs))
     }
@@ -259,7 +336,8 @@ impl PartitionStore {
             .gate()
             .try_acquire()
             .ok_or(StorageError::OperationalError)?;
-        let (persisted, unreadable_jobs) = self.validate_registry(features.enabled())?;
+        let (persisted, unreadable_jobs) =
+            self.validate_registry_knowing(features.enabled(), requests.migrations)?;
         let mut registry = persisted.registry.clone().unwrap_or_default();
         let mut walks = persisted.walks.clone();
         let mut jobs = MigrationJobRecords::new(persisted.jobs.clone(), requests.retention);
@@ -270,19 +348,38 @@ impl PartitionStore {
         };
 
         // Walks this binary doesn't know, and may discard: their members restart
-        // under this binary's kind, or are retired below.
-        let discarded = walks.discard_unknown();
+        // under this binary's kind, or are retired below; their migration waits
+        // for a binary that knows it.
+        let discarded = walks.discard_unknown(requests.migrations);
         if !discarded.is_empty() {
+            let on_discarded =
+                |walk: Option<u64>| walk.is_some_and(|walk| discarded.contains(&walk));
             let unlinked: Vec<_> = registry
                 .indexes()
                 .iter()
-                .filter(|index| index.walk.is_some_and(|walk| discarded.contains(&walk)))
+                .filter(|index| on_discarded(index.walk))
                 .map(|index| index.id)
                 .collect();
             for id in &unlinked {
                 registry.unlink(*id).map_err(registry_error)?;
             }
-            warn!(walks = ?discarded, indexes = ?unlinked, "Discarded walks of a kind this binary doesn't know");
+            let waiting: Vec<_> = registry
+                .migrations()
+                .iter()
+                .filter(|migration| on_discarded(migration.walk))
+                .map(|migration| migration.id)
+                .collect();
+            for id in &waiting {
+                registry
+                    .set_migration_walk(*id, None)
+                    .map_err(registry_error)?;
+            }
+            warn!(
+                walks = ?discarded,
+                indexes = ?unlinked,
+                migrations = ?waiting,
+                "Discarded walks of a kind this binary doesn't know"
+            );
         }
 
         let unknown: Vec<_> = registry
@@ -324,12 +421,16 @@ impl PartitionStore {
         }
         // A walk whose members were all dropped has nothing left to backfill;
         // surviving members keep their walk, its position and their evidence,
-        // and the dropped members' evidence goes with them.
+        // and the dropped members' evidence goes with them. A migration's walk
+        // has no members: its entry keeps it.
         let abandoned: Vec<_> = walks
             .entries()
             .iter()
             .map(|walk| walk.id)
-            .filter(|walk| registry.members(*walk).next().is_none())
+            .filter(|walk| {
+                registry.members(*walk).next().is_none()
+                    && registry.migration_of_walk(*walk).is_none()
+            })
             .collect();
         for walk in abandoned {
             walks.remove(walk).map_err(walk_error)?;
@@ -365,6 +466,19 @@ impl PartitionStore {
                 }
                 Err(err) => return Err(registry_error(err)),
             }
+        }
+
+        // Migrations run on a fenced store only: fenced before this open, or by
+        // its registrations above. A migration never sets the fence itself.
+        if features.enabled().is_registry || !registry.indexes().is_empty() {
+            super::migration::reconcile(
+                &db,
+                &mut registry,
+                &mut walks,
+                &mut jobs,
+                requests.migrations,
+                &stamp,
+            )?;
         }
 
         settle_jobs(&registry, &walks, &mut jobs, stamp.at);
@@ -457,7 +571,7 @@ impl PartitionStore {
         // Whatever this or an earlier attempt wrote becomes durable before
         // anything depends on it: registry changes, walks, fence, deletions,
         // effects.
-        if !registry.indexes().is_empty() {
+        if !registry.indexes().is_empty() || !registry.migrations().is_empty() {
             flush(&db).await?;
         }
 
@@ -465,7 +579,8 @@ impl PartitionStore {
         // the records as committed.
         db.install_published_registry(Arc::new(
             PublishedRegistry::new(&registry, &walks, known)
-                .with_jobs(jobs.unfinished, requests.retention),
+                .with_jobs(jobs.unfinished, requests.retention)
+                .with_migrations(requests.migrations),
         ));
         Ok(())
     }
@@ -510,17 +625,20 @@ fn drop_and_record(
 
 /// Brings the job records in line with the registry and the walks, which decide.
 /// The records lag them when they couldn't be read, or when another binary
-/// changed builds without writing records this one reads.
+/// changed builds or migrations without writing records this one reads.
 ///
-/// - An unfinished job whose index is Ready or gone is finished at an unknown
-///   time.
-/// - A job follows its index's walk: `Running` once that walk has a cursor,
+/// - An unfinished job whose index is Ready or whose migration is Complete is
+///   finished, completed, at an unknown time; one whose entry is dropped or gone
+///   is finished, cancelled. A migration in a state this binary doesn't know
+///   leaves its job alone.
+/// - A job follows its entry's walk: `Running` once that walk has a cursor,
 ///   keeping an unknown start if it was still `Pending`; a running job whose
-///   index lost its walk waits, eligible now. A job moved onto a walk that has
+///   entry lost its walk waits, eligible now. A job moved onto a walk that has
 ///   already advanced gets an unknown pass start: the one it had belongs to an
 ///   earlier pass.
-/// - A Backfilling index without a job gets one, with unknown times: following
-///   its walk, or waiting and eligible now without one.
+/// - A Backfilling index or a migration in progress without a job gets one,
+///   with unknown times: following its walk, or waiting and eligible now without
+///   one.
 ///
 /// A job finished here expires one retention after `now`, its finish time
 /// being unknown.
@@ -536,11 +654,8 @@ fn settle_jobs(registry: &Registry, walks: &Walks, jobs: &mut MigrationJobRecord
         .map(MigrationJob::id)
         .collect();
     for id in unfinished {
-        match registry
-            .get(id.as_u32())
-            .map(|index| (index.state, index.walk))
-        {
-            Some((IndexStatus::Backfilling, walk)) => {
+        match Progress::of(registry, id.as_u32()) {
+            Progress::Running(walk) => {
                 if let Some(job) = jobs.unfinished.get_mut(id) {
                     if job.walk != walk && started(walk) {
                         job.pass_started_at = None;
@@ -561,28 +676,77 @@ fn settle_jobs(registry: &Registry, walks: &Walks, jobs: &mut MigrationJobRecord
                     }
                 }
             }
-            Some((IndexStatus::Ready, _)) => {
-                jobs.finish(id, MigrationJobStatus::Completed, None, now);
-            }
-            _ => jobs.finish(id, MigrationJobStatus::Cancelled, None, now),
+            Progress::Done => jobs.finish(id, MigrationJobStatus::Completed, None, now),
+            Progress::Gone => jobs.finish(id, MigrationJobStatus::Cancelled, None, now),
+            Progress::Unknown => {}
         }
     }
-    for index in registry.indexes() {
-        let id = MigrationJobId::for_entry(index.id);
-        if index.state == IndexStatus::Backfilling && jobs.unfinished.get(id).is_none() {
-            let mut job = MigrationJob::index_backfill(
+    let indexes = registry
+        .indexes()
+        .iter()
+        .filter(|index| index.state == IndexStatus::Backfilling)
+        .map(|index| {
+            (
                 index.id,
-                index.definition.clone(),
+                &index.definition,
                 index.walk,
-                None,
-                None,
-            );
-            if index.walk.is_none() {
+                MigrationJobKind::IndexBackfill,
+            )
+        });
+    let migrations = registry
+        .migrations()
+        .iter()
+        .filter(|migration| migration.state() == Some(MigrationState::InProgress))
+        .map(|migration| {
+            let kind = MigrationJobKind::Migration;
+            (migration.id, &migration.definition, migration.walk, kind)
+        });
+    for (entry, name, walk, kind) in indexes.chain(migrations) {
+        if jobs
+            .unfinished
+            .get(MigrationJobId::for_entry(entry))
+            .is_none()
+        {
+            let mut job = MigrationJob::new(entry, kind, name.clone(), walk, None, None);
+            if walk.is_none() {
                 job.wait(None, None);
-            } else if started(index.walk) {
+            } else if started(walk) {
                 job.status = MigrationJobStatus::Running;
             }
             jobs.unfinished.insert(job);
+        }
+    }
+}
+
+/// What the registry says about the job of an entry.
+enum Progress {
+    /// A Backfilling index or a migration in progress, with its walk if any.
+    Running(Option<u64>),
+    /// A Ready index or a Complete migration.
+    Done,
+    /// A dropped index, or no entry at all.
+    Gone,
+    /// A migration in a state this binary doesn't know.
+    Unknown,
+}
+
+impl Progress {
+    fn of(registry: &Registry, id: u32) -> Self {
+        if let Some(index) = registry.get(id) {
+            return match index.state {
+                IndexStatus::Backfilling => Self::Running(index.walk),
+                IndexStatus::Ready => Self::Done,
+                _ => Self::Gone,
+            };
+        }
+        match registry
+            .get_migration(id)
+            .map(|migration| (migration.state(), migration.walk))
+        {
+            Some((Some(MigrationState::InProgress), walk)) => Self::Running(walk),
+            Some((Some(MigrationState::Complete), _)) => Self::Done,
+            Some((None, _)) => Self::Unknown,
+            None => Self::Gone,
         }
     }
 }
@@ -622,18 +786,13 @@ fn append_instance_delete(
     Ok(())
 }
 
-/// A resume cursor must be the exact key of a usable entry status of this
-/// partition. The raw key codec also decodes the `Unknown` entry-kind sentinel,
-/// which no stored entry has.
-fn validate_cursor(db: &PartitionDb, cursor: &[u8]) -> Result<(), StorageError> {
-    if cursor.len() != EntryStatusKey::serialized_length_fixed() {
-        return Err(StorageError::DataIntegrityError);
-    }
-    let mut rest = cursor;
-    let key = EntryStatusKey::deserialize_from(&mut rest)?;
-    if !rest.is_empty()
-        || key.id.kind() == EntryKind::Unknown
-        || !db.partition().key_range.contains(&key.id.partition_key())
+/// A walk's end or cursor must be the exact key of a row of its `source` in
+/// this partition (see [`Source::partition_key`]).
+fn validate_position(db: &PartitionDb, source: Source, key: &[u8]) -> Result<(), StorageError> {
+    if !db
+        .partition()
+        .key_range
+        .contains(&source.partition_key(key)?)
     {
         return Err(StorageError::DataIntegrityError);
     }
@@ -1027,7 +1186,7 @@ mod backfill_tests {
     use crate::job::MigrationJobs;
     use crate::keys::header::{HeaderBounds, IndexScope, KeyHeader, KeySchema};
     use crate::keys::selection::KeySelection;
-    use crate::keys::{KeyDecode, KeyDecoder, KeyKind};
+    use crate::keys::{DecodeTableKey, KeyDecode, KeyDecoder, KeyKind};
     use crate::registry::records::{get_job, get_registry, testing};
     use crate::snapshots::{LocalPartitionSnapshot, SnapshotDir};
     use crate::stats::aggregated::Gauge;
@@ -1035,6 +1194,7 @@ mod backfill_tests {
     use crate::stats::aggregated::backfill::with_entry_target;
     use crate::stats::{StatKind, StatValueCodec};
     use crate::table::{PhysicalTable, ReadMetadata};
+    use crate::vqueue_table::EntryStatusKey;
     use crate::walk::engine::{Slice, SliceBudget};
     use crate::walk::{OnUnknown, Source, Walk, WalkDriver, WalkKind, WalkMember, Walks, engine};
     use crate::{
@@ -1568,7 +1728,10 @@ mod backfill_tests {
         for id in ids {
             let job = committed_job(&store, id);
             assert_eq!(job.status, MigrationJobStatus::Running);
-            assert_eq!((job.rows_examined, job.rows_filled, job.slices), (10, 9, 1));
+            assert_eq!(
+                (job.rows_examined, job.rows_changed, job.slices),
+                (10, 9, 1)
+            );
             assert_eq!((job.failures, job.consecutive_failures), (1, 1));
             assert!(job.last_error.is_some() && job.last_error_at.is_some());
         }
@@ -1605,7 +1768,7 @@ mod backfill_tests {
                 (job.status, job.passes, job.walk),
                 (MigrationJobStatus::Completed, 1, None)
             );
-            assert_eq!((job.rows_examined, job.rows_filled), (SEEDED, SEEDED - 1));
+            assert_eq!((job.rows_examined, job.rows_changed), (SEEDED, SEEDED - 1));
             assert_eq!(
                 (job.consecutive_failures, job.last_error.as_ref()),
                 (0, None)
@@ -2469,7 +2632,7 @@ mod backfill_tests {
             registry.link(id, 1).unwrap();
             registry
         };
-        let cases: [(&str, &str, Registry, Walks); 6] = [
+        let cases: [(&str, &str, Registry, Walks); 7] = [
             (
                 "dangling link",
                 "walk link of",
@@ -2491,6 +2654,12 @@ mod backfill_tests {
                 "position of walk 1",
                 linked.clone(),
                 started(Bytes::from_static(b"not a key")),
+            ),
+            (
+                "an entry-status key cut short",
+                "position of walk 1",
+                linked.clone(),
+                started(end.slice(..end.len() - 1)),
             ),
             (
                 "evidence for an index the walk doesn't link",
@@ -3736,7 +3905,8 @@ mod open_tests {
     use crate::registry::records::{get_registry, testing};
     use crate::stats::StatKind;
     use crate::stats::aggregated::backfill::tests::seed;
-    use crate::walk::{Source, WalkKind, Walks, engine};
+    use crate::vqueue_table::EntryStatusKey;
+    use crate::walk::{WalkKind, Walks, engine};
     use crate::{PartitionStoreManager, PartitionStoreTransaction};
 
     use super::super::backfill::read_chunk;

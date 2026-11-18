@@ -1422,6 +1422,41 @@ impl<'a> PartitionStoreTransaction<'a> {
             .map_err(|err| StorageError::Generic(err.into()))
     }
 
+    /// Whether `key` exists, as an online migration looks it up
+    /// ([`crate::migrations::online`]), and the bytes of key and value read, for
+    /// [`Migrated::read_bytes`]. Reads through this transaction, so it sees the
+    /// writes staged here, and doesn't fill the block cache, so that background
+    /// work doesn't evict what commands read.
+    ///
+    /// ```ignore
+    /// let (exists, read_bytes) = tx.lookup_for_migration(JournalKey { .. })?;
+    /// ```
+    ///
+    /// [`Migrated::read_bytes`]: crate::migrations::online::Migrated::read_bytes
+    #[cfg_attr(not(test), expect(dead_code, reason = "ONLINE_MIGRATIONS is empty"))]
+    pub(crate) fn lookup_for_migration<K: EncodeTableKey>(
+        &mut self,
+        key: K,
+    ) -> Result<(bool, usize)> {
+        self.key_buffer.clear();
+        key.serialize_to(self.key_buffer);
+        let mut options = ReadOptions::default();
+        options.fill_cache(false);
+        let value = self
+            .write_batch_with_index
+            .as_ref()
+            .expect("transaction valid")
+            .get_pinned_from_batch_and_db_cf(
+                self.rocksdb.inner().as_raw_db(),
+                self.cf_for_key_kind(K::KEY_KIND),
+                &*self.key_buffer,
+                &options,
+            )
+            .map_err(|error| StorageError::Generic(error.into()))?;
+        let read = self.key_buffer.len() + value.as_ref().map_or(0, |value| value.len());
+        Ok((value.is_some(), read))
+    }
+
     /// Whether no write is buffered.
     pub(crate) fn is_empty(&self) -> bool {
         self.write_batch_with_index
