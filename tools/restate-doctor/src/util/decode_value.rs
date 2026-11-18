@@ -675,11 +675,33 @@ fn format_registry(registry: &restate_partition_store::registry::Registry) -> St
             )
         })
         .collect::<Vec<_>>();
+    let migrations = registry
+        .migrations()
+        .iter()
+        .map(|m| {
+            let state = m.state().map_or_else(
+                || format!("unknown({})", m.state),
+                |state| format!("{state:?}"),
+            );
+            let walk = m
+                .walk
+                .map(|walk| format!(" walk={walk}"))
+                .unwrap_or_default();
+            format!(
+                "{} {} {state} on_unknown={:?}{walk} {:?}",
+                m.id,
+                m.definition,
+                m.on_unknown(),
+                m.timeline
+            )
+        })
+        .collect::<Vec<_>>();
     format!(
-        "Registry(format={}, next_walk_id={}, [{}])",
+        "Registry(format={}, next_walk_id={}, [{}], migrations=[{}])",
         registry.format(),
         registry.next_walk_id(),
         entries.join("; "),
+        migrations.join("; "),
     )
 }
 
@@ -713,7 +735,7 @@ fn format_walk(w: &restate_partition_store::walk::Walk) -> String {
 fn format_job(j: &restate_partition_store::job::MigrationJob) -> String {
     format!(
         "MigrationJob(id={} {:?} {} {:?} walk={:?} created={:?} created_by={:?} started={:?} \
-         finished={:?} expires={:?} passes={} rows_examined={} rows_filled={} slices={} \
+         finished={:?} expires={:?} passes={} rows_examined={} rows_changed={} slices={} \
          work_us={} last_slice={:?} last_slice_work_us={:?} failures={} \
          consecutive_failures={} last_error={:?} last_error_at={:?} pass_started={:?} \
          last_pass_finished={:?} rows_uncovered={:?} rows_uncovered_previous={:?} \
@@ -730,7 +752,7 @@ fn format_job(j: &restate_partition_store::job::MigrationJob) -> String {
         j.expires_at,
         j.passes,
         j.rows_examined,
-        j.rows_filled,
+        j.rows_changed,
         j.slices,
         j.work_us,
         j.last_slice_at,
@@ -891,7 +913,7 @@ mod tests {
         assert_eq!(decoded.codec, None);
         assert_eq!(
             decoded.to_string(),
-            "Registry(format=1, next_walk_id=1, [])"
+            "Registry(format=1, next_walk_id=1, [], migrations=[])"
         );
 
         /// The persisted registry's layout, with a format this binary does not support.
