@@ -376,6 +376,13 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     /// trim_point is inclusive (will be trimmed)
     async fn trim(&self, trim_point: LogletOffset) -> Result<(), OperationError> {
         trace!("trim() called");
+        // A freshly created loglet client only knows the initial tail (OLDEST) until tail
+        // discovery completes. The trim task clamps the requested trim point to the known
+        // tail, so trimming against an undiscovered tail would silently become a no-op.
+        // Refresh our view of the tail before clamping if it can't cover the trim point.
+        if trim_point > self.known_global_tail.latest_offset().prev_unchecked() {
+            self.find_tail_inner(FindTailFlags::default()).await?;
+        }
         TrimTask::new(&self.my_params, self.known_global_tail.clone())
             .run(trim_point, self.networking.clone())
             .await?;
@@ -458,6 +465,8 @@ mod tests {
     struct TestEnv {
         pub loglet: Arc<dyn Loglet>,
         pub record_cache: RecordCache,
+        pub networking: Networking<restate_core::network::FailingConnector>,
+        pub params: ReplicatedLogletParams,
     }
 
     async fn run_in_test_env<F, O>(
@@ -496,6 +505,7 @@ mod tests {
             .await
             .into_test_result()?;
 
+        let params = loglet_params.clone();
         let loglet = Arc::new(ReplicatedLoglet::new(
             LogId::new(1),
             SegmentIndex::from(1),
@@ -507,6 +517,8 @@ mod tests {
         let env = TestEnv {
             loglet,
             record_cache,
+            networking: node_env.networking.clone(),
+            params,
         };
 
         future(env).await?;
@@ -550,6 +562,58 @@ mod tests {
                     matches_pattern!(Keys::Single(eq(1)))
                 );
 
+                Ok(())
+            },
+        )
+        .await
+    }
+
+    // A fresh client (no sequencer, no discovered tail) must still trim up to the committed tail.
+    #[test(restate_core::test(start_paused = true))]
+    async fn trim_with_undiscovered_tail() -> Result<()> {
+        let loglet_id = LogletId::new_unchecked(122);
+        let params = ReplicatedLogletParams {
+            loglet_id,
+            sequencer: GenerationalNodeId::new(1, 1),
+            replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
+            nodeset: NodeSet::from_single(PlainNodeId::new(1)),
+        };
+        let record_cache = RecordCache::new(1_000_000);
+
+        run_in_test_env(
+            Configuration::default(),
+            params,
+            record_cache,
+            |env| async move {
+                let batch: Arc<[Record]> = vec![
+                    ("record-1", Keys::Single(1)).into(),
+                    ("record-2", Keys::Single(2)).into(),
+                    ("record-3", Keys::Single(3)).into(),
+                ]
+                .into();
+                env.loglet.enqueue_batch(batch).await?.await?;
+
+                // A client for the same loglet that has never discovered the tail. It only knows
+                // the initial tail offset.
+                let mut params = env.params.clone();
+                params.sequencer = GenerationalNodeId::new(2, 1);
+                let fresh = ReplicatedLoglet::new(
+                    LogId::new(1),
+                    SegmentIndex::from(1),
+                    params,
+                    env.networking.clone(),
+                    RecordCache::new(0),
+                );
+                assert_that!(
+                    fresh.last_known_global_tail(),
+                    eq(TailState::Open(LogletOffset::OLDEST))
+                );
+
+                fresh.trim(LogletOffset::new(2)).await?;
+                assert_that!(
+                    env.loglet.get_trim_point().await?,
+                    eq(Some(LogletOffset::new(2)))
+                );
                 Ok(())
             },
         )
