@@ -159,12 +159,16 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
     };
     let rendered = render(&report);
     let sizes = rendered[0].column_by_name("approx_size_bytes").unwrap();
-    assert_eq!((sizes.len(), sizes.null_count()), (6, 6));
+    // Each replica lists its indexes and the migrations this binary runs.
+    let entry_rows = entries(&report, None).count();
+    assert_eq!((sizes.len(), sizes.null_count()), (entry_rows, entry_rows));
 
-    // Migrations follow a replica's indexes: one in progress, with its job, and
-    // one complete, with its completion time; neither has a size.
+    // Migrations follow a replica's indexes, in registration order: one in
+    // progress, with its job, and one complete, with its completion time;
+    // neither has a size.
     let mut replica = report.replicas[0].clone();
     let entries = &mut replica.registry;
+    let first = entries.indexes().len() + entries.migrations().len();
     let by = || ReString::from_static("1.8.2");
     let running = entries
         .register_migration("cleanup/1", MigrationOnUnknown::Keep, 1_000, by())
@@ -183,7 +187,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
     let (kind, status) = (text("kind"), text("status"));
     let (job, completed) = (column("job_id"), column("completed_at"));
     assert_eq!(
-        [3, 4].map(|row| (kind.value(row), status.value(row), job.is_null(row))),
+        [first, first + 1].map(|row| (kind.value(row), status.value(row), job.is_null(row))),
         [
             ("migration", "in_progress", false),
             ("migration", "complete", true)
@@ -191,16 +195,16 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
     );
     assert_eq!(
         job.as_primitive::<datafusion::arrow::datatypes::UInt32Type>()
-            .value(3),
+            .value(first),
         running
     );
     assert_eq!(
         completed
             .as_primitive::<datafusion::arrow::datatypes::TimestampMillisecondType>()
-            .value(4),
+            .value(first + 1),
         2_000
     );
-    assert!(completed.is_null(3) && column("approx_size_bytes").is_null(4));
+    assert!(completed.is_null(first) && column("approx_size_bytes").is_null(first + 1));
 
     // `blocked_by` renders the reason the replica's driver reports for an
     // unfinished job, and NULL for a finished one.
@@ -260,22 +264,29 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         .unwrap();
     assert_eq!(partitions[0].column(0).len(), 2);
     // Both tables honor the row batch size and the total fetch limit, including
-    // an empty projection used for counts.
-    for (scanner, schema) in [
-        (&registry, RegistryBuilder::schema()),
-        (&jobs, MigrationJobsBuilder::schema()),
+    // an empty projection used for counts: full batches, then the rest.
+    let chunks = |rows: usize, size: usize| -> Vec<usize> {
+        (0..rows)
+            .step_by(size)
+            .map(|start| size.min(rows - start))
+            .collect()
+    };
+    let job_rows = report
+        .replicas
+        .iter()
+        .map(|replica| replica.jobs.entries().len())
+        .sum();
+    for (scanner, schema, total) in [
+        (&registry, RegistryBuilder::schema(), entry_rows),
+        (&jobs, MigrationJobsBuilder::schema(), job_rows),
     ] {
-        for (batch_size, limit, expected) in [
-            (4, None, vec![4, 2]),
-            (2, Some(3), vec![2, 1]),
-            (4, Some(0), vec![]),
-        ] {
+        for (batch_size, limit) in [(4, None), (2, Some(3)), (4, Some(0))] {
             let rows: Vec<_> = scanner
                 .scan(Arc::clone(&schema), &[], batch_size, limit)
                 .map(|batch| batch.unwrap().num_rows())
                 .collect()
                 .await;
-            assert_eq!(rows, expected);
+            assert_eq!(rows, chunks(limit.unwrap_or(total).min(total), batch_size));
         }
         let rows: Vec<_> = scanner
             .scan(Arc::new(Schema::empty()), &[], 4, None)
@@ -286,12 +297,18 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
             })
             .collect()
             .await;
-        assert_eq!(rows, [4, 2]);
+        assert_eq!(rows, chunks(total, 4));
     }
 
     // A corrupt record on the second replica: a fully consumed scan of either
     // table still returns the first replica's rows, and reports one warning for
     // this node naming the replica and record.
+    let healthy = report
+        .replicas
+        .iter()
+        .find(|replica| replica.partition_id == PartitionId::from(1))
+        .unwrap();
+    let healthy_entries = healthy.registry.indexes().len() + healthy.registry.migrations().len();
     let mut store = manager
         .get_partition_store(PartitionId::from(2))
         .await
@@ -301,16 +318,29 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
     tx.raw_put_cf(KeyKind::Registry, key, b"not a job");
     tx.commit().await.unwrap();
     drop(tx);
-    for (table, scanner, schema) in [
-        ("registry", &registry, RegistryBuilder::schema()),
-        ("migration_jobs", &jobs, MigrationJobsBuilder::schema()),
+    for (table, scanner, schema, healthy) in [
+        (
+            "registry",
+            &registry,
+            RegistryBuilder::schema(),
+            healthy_entries,
+        ),
+        (
+            "migration_jobs",
+            &jobs,
+            MigrationJobsBuilder::schema(),
+            healthy.jobs.entries().len(),
+        ),
     ] {
         let items: Vec<_> = scanner.scan(schema, &[], 2, None).collect().await;
-        assert_eq!(items.len(), 3, "two healthy batches followed by one error");
-        assert_eq!(items[0].as_ref().unwrap().num_rows(), 2);
-        assert_eq!(items[1].as_ref().unwrap().num_rows(), 1);
+        let (error, rows) = items.split_last().unwrap();
+        let rows: Vec<_> = rows
+            .iter()
+            .map(|batch| batch.as_ref().unwrap().num_rows())
+            .collect();
+        assert_eq!(rows, chunks(healthy, 2), "healthy batches, then one error");
         assert!(
-            items[2]
+            error
                 .as_ref()
                 .unwrap_err()
                 .to_string()
@@ -335,7 +365,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         let batches = collect(plan, ctx.task_ctx()).await.unwrap();
         assert_eq!(
             batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
-            3
+            healthy
         );
         let warnings = warnings[0].lock();
         assert_eq!(warnings.len(), 1);
@@ -359,7 +389,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         .await
         .unwrap();
     assert_eq!(
-        count("SELECT count(*) FROM registry WHERE partition_id = 3").await,
+        count("SELECT count(*) FROM registry WHERE partition_id = 3 AND kind <> 'migration'").await,
         3
     );
     assert_eq!(
