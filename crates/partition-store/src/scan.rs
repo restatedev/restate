@@ -142,6 +142,42 @@ impl<B: AsRef<[u8]>> PhysicalScan<B> {
         }
     }
 
+    /// The same scan, borrowing its bytes.
+    pub(crate) fn by_ref(&self) -> PhysicalScan<&[u8]> {
+        match self {
+            Self::Prefix(key_kind, prefix) => PhysicalScan::Prefix(*key_kind, prefix.as_ref()),
+            Self::RangeExclusive(key_kind, scan_mode, start, end) => {
+                PhysicalScan::RangeExclusive(*key_kind, *scan_mode, start.as_ref(), end.as_ref())
+            }
+        }
+    }
+
+    /// The same scan over copies of its bytes that no other handle shares, each
+    /// allocated at exactly its length.
+    pub(crate) fn to_exact(&self) -> PhysicalScan<Bytes> {
+        match self.by_ref() {
+            PhysicalScan::Prefix(key_kind, prefix) => {
+                PhysicalScan::Prefix(key_kind, Bytes::copy_from_slice(prefix))
+            }
+            PhysicalScan::RangeExclusive(key_kind, scan_mode, start, end) => {
+                PhysicalScan::RangeExclusive(
+                    key_kind,
+                    scan_mode,
+                    Bytes::copy_from_slice(start),
+                    Bytes::copy_from_slice(end),
+                )
+            }
+        }
+    }
+
+    /// The length of its bounds together.
+    pub(crate) fn bound_bytes(&self) -> usize {
+        match self {
+            Self::Prefix(_, prefix) => prefix.as_ref().len(),
+            Self::RangeExclusive(_, _, start, end) => start.as_ref().len() + end.as_ref().len(),
+        }
+    }
+
     /// Whether a potential seek target lies inside this scan's original bounds.
     /// Prefix scans test the byte prefix; range scans use `start <= key < end`.
     /// The target need not be a stored or decodable key. This checks byte bounds,

@@ -48,11 +48,22 @@ crate::index::macros::define_secondary_index!(
     EntryByServiceCreated,
     definition: "entry_by_service_created/1",
     key: EntryByServiceCreatedKey {
-        service_name: ServiceNameCodec => str,
-        handler: Option<StringCodec> => str,
+        target_service_name: ServiceNameCodec => str,
+        target_handler_name: Option<StringCodec> => str,
         created_at: ReverseUniqueTimestampCodec,
         canonical_id: CanonicalEntryIdCodec (primary_key),
     }
+);
+
+// A query on invocations restricts the index through the invocation columns its
+// fields are named after. Every invocation's key has a handler; only state
+// mutations, which a query on invocations skips, have none.
+crate::keys::macros::define_key_selection!(
+    EntryByServiceCreatedKey;
+    [restate_storage_query_api::tables::index::EntryByServiceCreated];
+    target_service_name,
+    target_handler_name => present,
+    created_at,
 );
 
 /// Every entry by service and handler, newest created first.

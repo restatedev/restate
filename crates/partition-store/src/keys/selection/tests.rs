@@ -176,13 +176,13 @@ fn lexicographic_navigation_agrees_with_cartesian_reference() {
                                     actual.push(*row);
                                     position += 1;
                                 }
-                                KeyMatch::Seek(target) => {
-                                    assert!(target.as_ref() > key.as_slice());
-                                    assert!(cursor.scan().contains_key(&target));
+                                KeyMatch::Seek => {
+                                    let target = cursor.seek_target();
+                                    assert!(target > key.as_slice());
+                                    assert!(cursor.scan().contains_key(target));
                                     assert!(target.starts_with(&[1]));
-                                    position = rows.partition_point(|(_, key)| {
-                                        key.as_slice() < target.as_ref()
-                                    });
+                                    position =
+                                        rows.partition_point(|(_, key)| key.as_slice() < target);
                                 }
                                 KeyMatch::Done => break,
                                 KeyMatch::Skip => panic!("fixed_header_uses_ordered_seeks"),
@@ -198,6 +198,55 @@ fn lexicographic_navigation_agrees_with_cartesian_reference() {
             }
         }
     }
+}
+
+/// A cursor owns its bounds, fixed header and seek storage outright: each
+/// allocation is exactly as large as `retained_bytes` says and no other handle
+/// shares it.
+#[test]
+fn cursors_own_exactly_what_they_report() {
+    // Bounds that extend the fixed header by two fields, built by growing a buffer.
+    let mut cursor = NavigationKey::prepare_selection(
+        &Selection::default()
+            .and(NavigationClause::Parent(ValuePredicate::Equal(5)))
+            .and(NavigationClause::Child(ValuePredicate::In(vec![3, 7]))),
+    )
+    .unwrap()
+    .into_cursor(&[1])
+    .unwrap()
+    .unwrap();
+    let mut key = Vec::new();
+    NavigationKey::prefix(1, &mut key)
+        .parent(5)
+        .child(4)
+        .label(None::<&str>);
+    assert!(cursor.scan().contains_key(&key));
+    assert_eq!(cursor.evaluate(&key).unwrap(), KeyMatch::Seek);
+    let reported = cursor.retained_bytes();
+
+    let super::Position {
+        scan,
+        header,
+        offsets,
+        target,
+    } = cursor.position;
+    let super::CursorHeader::Fixed(identity) = header else {
+        panic!("a fixed prefix");
+    };
+    let mut owned = vec![identity];
+    match scan {
+        super::PhysicalScan::Prefix(_, prefix) => owned.push(prefix),
+        super::PhysicalScan::RangeExclusive(_, _, start, end) => owned.extend([start, end]),
+    }
+    let mut measured = offsets.capacity() * size_of::<usize>() + target.capacity();
+    for bytes in owned {
+        let len = bytes.len();
+        let unshared = bytes.try_into_mut().expect("not shared");
+        assert_eq!(unshared.capacity(), len, "allocated at its length");
+        measured += len;
+    }
+    assert!(!target.is_empty(), "the seek used the storage");
+    assert_eq!(reported, measured);
 }
 
 #[test]
@@ -244,11 +293,12 @@ fn live_threshold_seeks_past_rejected_group_suffixes() {
                     );
                 }
             }
-            KeyMatch::Seek(target) => {
-                assert!(target.as_ref() > key.as_slice());
-                assert!(cursor.scan().contains_key(&target));
+            KeyMatch::Seek => {
+                let target = cursor.seek_target();
+                assert!(target > key.as_slice());
+                assert!(cursor.scan().contains_key(target));
                 seeks += 1;
-                position = rows.partition_point(|(_, key)| key.as_slice() < target.as_ref());
+                position = rows.partition_point(|(_, key)| key.as_slice() < target);
             }
             KeyMatch::Done => break,
             KeyMatch::Skip => panic!("fixed_header_uses_ordered_seeks"),

@@ -345,6 +345,14 @@ pub(crate) fn get_registry_from_partition_db(
         .transpose()
 }
 
+/// The key of the partition's persisted state machine features, for reads
+/// through a snapshot.
+pub(crate) fn state_machine_features_key(
+    partition_id: PartitionId,
+) -> [u8; PartitionStateMachineKey::serialized_length_fixed()] {
+    create_key(partition_id, fsm_variable::STATE_MACHINE_FEATURES).to_bytes()
+}
+
 /// The key of the registry, for reads through a snapshot.
 #[allow(dead_code)]
 pub(crate) fn registry_key(

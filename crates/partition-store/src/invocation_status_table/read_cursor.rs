@@ -40,6 +40,7 @@ use crate::keys::{DecodeTableKey, KeyDecode, KeyDecoder, KeyKind};
 use crate::table::{MultiGetCursor, MultiGetTable, PhysicalTable, TableCursor};
 use crate::{ReadSnapshot, Result};
 
+use super::entry_index_read::{EntryIndexCursor, EntryIndexExecution, EntryIndexRead};
 use super::{
     INVOCATION_STATUS_MULTI_GET_BATCH_SIZE, InvocationStatusKey, create_invocation_status_key,
 };
@@ -123,6 +124,14 @@ pub enum InvocationStatusScan {
     Ids(BTreeSet<InvocationId>),
     /// Iteration over stored keys, navigated by the prepared selection.
     Keys(Arc<KeySelection<InvocationStatusKey>>),
+    /// The invocations the entry index finds, newest created first, or the
+    /// `fallback` iteration if the index can't stand in for it on the snapshot.
+    /// `execution` is charged for the index read and learns which path it took.
+    EntryIndex {
+        index: Arc<EntryIndexRead>,
+        fallback: Arc<KeySelection<InvocationStatusKey>>,
+        execution: Arc<EntryIndexExecution>,
+    },
 }
 
 /// Invocation-status records. A caller can step through them with a cursor, or
@@ -145,6 +154,7 @@ enum Mode {
     Empty,
     Scan(Box<TableCursor<InvocationStatusKeys>>),
     Keys(Box<MultiGetCursor<InvocationStatusKeys>>),
+    EntryIndex(Box<EntryIndexCursor>),
 }
 
 impl ReadSnapshot {
@@ -161,6 +171,16 @@ impl ReadSnapshot {
                 InvocationStatusScan::Keys(request) => Mode::Scan(Box::new(
                     <Self as CursorScan<InvocationStatusKeys>>::scan_cursor(self, request)?,
                 )),
+                InvocationStatusScan::EntryIndex {
+                    index,
+                    fallback,
+                    execution,
+                } => match EntryIndexCursor::open(self, &index, &execution)? {
+                    Some(cursor) => Mode::EntryIndex(Box::new(cursor)),
+                    None => Mode::Scan(Box::new(
+                        <Self as CursorScan<InvocationStatusKeys>>::scan_cursor(self, fallback)?,
+                    )),
+                },
             };
         Ok(InvocationStatusCursor { mode })
     }
@@ -183,6 +203,7 @@ impl ReadCursor<InvocationStatusRecords> for InvocationStatusCursor {
             Mode::Empty => CursorStep::Done,
             Mode::Scan(cursor) => cursor.advance()?,
             Mode::Keys(cursor) => cursor.advance()?,
+            Mode::EntryIndex(cursor) => cursor.advance()?,
         };
         if step == CursorStep::Done {
             self.mode = Mode::Empty;
@@ -198,6 +219,7 @@ impl ReadCursor<InvocationStatusRecords> for InvocationStatusCursor {
                 (InvocationId::from_parts(partition, uuid), value)
             }
             Mode::Keys(cursor) => cursor.current()?,
+            Mode::EntryIndex(cursor) => return cursor.current(),
             Mode::Empty => return Err(StorageError::DataIntegrityError),
         };
         Ok((id, super::decode_invocation_status_lazy(value)?))
