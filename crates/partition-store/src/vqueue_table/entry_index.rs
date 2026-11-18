@@ -38,6 +38,7 @@ use restate_storage_api::vqueue_table::{EntryContext, EntryStateRef};
 use restate_types::config::Configuration;
 
 use crate::PartitionStoreTransaction;
+use crate::index::RegisteredIndex;
 use crate::keys::codecs::{
     CanonicalEntryIdCodec, ReverseUniqueTimestampCodec, ServiceNameCodec, StringCodec,
 };
@@ -47,6 +48,7 @@ crate::index::macros::define_secondary_index!(
     /// Entries by service and handler, newest created first.
     EntryByServiceCreated,
     definition: "entry_by_service_created/1",
+    introduced: (1, 8, 2),
     key: EntryByServiceCreatedKey {
         target_service_name: ServiceNameCodec => str,
         target_handler_name: Option<StringCodec> => str,
@@ -68,7 +70,8 @@ crate::keys::macros::define_key_selection!(
 
 /// Every entry by service and handler, newest created first.
 pub(crate) static ENTRY_BY_SERVICE_CREATED: IndexDefinition = IndexDefinition {
-    name: "entry_by_service_created/1",
+    name: EntryByServiceCreated::DEFINITION,
+    introduced: EntryByServiceCreated::INTRODUCED,
     kind: IndexKind::Secondary,
     apply: apply_entry_by_service_created,
     can_fill: true,

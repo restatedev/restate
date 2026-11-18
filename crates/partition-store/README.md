@@ -137,6 +137,13 @@ are their foundation.
    the first registration and records a minimum Restate version, so an older
    binary, which doesn't know tokens and index keys, refuses to open the store
    because of that version floor rather than ignoring them.
+10. **Every definition declares the Restate version that introduced it**
+    (`introduced:` next to `definition:`). A node of an older version can't
+    maintain or read the definition's indexes, so a query coordinator must
+    choose an index only where every node serving its partitions runs at least
+    that version. The V2 planner checks this, against the versions the worker
+    nodes recorded, before it reads an index in place of its primary. The version is code,
+    not stored data: it is never persisted.
 
 ## Don'ts
 

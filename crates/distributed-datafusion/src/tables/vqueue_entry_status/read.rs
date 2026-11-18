@@ -34,6 +34,7 @@ use restate_storage_query_api::selection::{Selection, ValuePredicate};
 use restate_storage_query_api::tables::index::{EntryByQueue, EntryByQueueDomains};
 use restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatus;
 use restate_storage_query_api::{LogicalSchema, RowSink, SelectionSchema};
+use restate_types::SemanticRestateVersion;
 use restate_types::identifiers::{BaseEntryId, PartitionKey};
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::{EntryId, EntryKind};
@@ -73,6 +74,9 @@ pub(crate) struct StageIndex;
 
 impl CompleteIndex for StageIndex {
     type Index = EntryByQueue;
+    /// The stage tables are always maintained; V2 reads them as an index from
+    /// v1.8.2, its first release.
+    const INTRODUCED: SemanticRestateVersion = SemanticRestateVersion::new(1, 8, 2);
 
     /// A conservative first policy: a finite set of queues, or a finite set of
     /// stages without `finished`. The finished stage retains most entries, so

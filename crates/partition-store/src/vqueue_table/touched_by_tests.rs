@@ -40,6 +40,7 @@ crate::index::macros::define_secondary_index!(
     /// A test index of entries by stage, newest transition first.
     InboxIndex,
     definition: "inbox_index/1",
+    introduced: (1, 8, 2),
     key: InboxIndexKey {
         stage: StageRankCodec,
         transitioned_at: ReverseUniqueTimestampCodec,
@@ -140,18 +141,21 @@ static INBOX_A: IndexDefinition = IndexDefinition {
     kind: IndexKind::Secondary,
     apply: apply_inbox_index,
     can_fill: true,
+    introduced: crate::registry::TEST_INTRODUCED,
 };
 static INBOX_B: IndexDefinition = IndexDefinition {
     name: "inbox_b/1",
     kind: IndexKind::Secondary,
     apply: apply_inbox_index,
     can_fill: true,
+    introduced: crate::registry::TEST_INTRODUCED,
 };
 static NOOP: IndexDefinition = IndexDefinition {
     name: "noop/1",
     kind: IndexKind::Aggregate,
     apply: apply_nothing,
     can_fill: true,
+    introduced: crate::registry::TEST_INTRODUCED,
 };
 
 /// Raw keys of index `id`.

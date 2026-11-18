@@ -54,6 +54,8 @@ mod active;
 mod backfill;
 mod reconcile;
 
+#[cfg(test)]
+pub(crate) use active::TEST_INTRODUCED;
 pub(crate) use active::{DEFINITIONS, Family, IndexDefinition, MaintainedIndexes};
 pub(crate) use backfill::{IndexBackfill, start as start_backfill};
 pub(crate) use reconcile::{FAMILIES, FenceState, Requests, load_job_records};

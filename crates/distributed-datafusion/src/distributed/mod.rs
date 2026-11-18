@@ -10,6 +10,7 @@
 
 //! Explicit, owner-bound stages backed by datafusion-distributed's task runtime.
 
+pub(crate) mod demand;
 mod pushdown;
 mod requirements;
 pub(crate) mod source;

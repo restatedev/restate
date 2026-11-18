@@ -5,8 +5,10 @@
 ### What Changed
 
 Partitions can now maintain an index of their invocations and state mutations by service and
-handler, newest created first. It is the groundwork for listing a service's invocations without
-reading every invocation of every partition. Queries don't use it yet.
+handler, newest created first. With query engine V2, a query on `sys_invocation_status` that names
+its services and asks for their newest invocations under a `LIMIT`, like the UI's page of a
+workflow's invocations, reads only those invocations through the index instead of every invocation
+of every partition. Other queries, and query engine V1, read as before.
 
 Two new experimental options, both off by default, control it:
 
@@ -21,6 +23,9 @@ Both take effect when partition processors start.
 ### Impact on Users
 
 - Nothing changes unless the index is turned on.
+- A partition reads through the index only once it has fully migrated to vqueues and its index is
+  complete; until then it reads as before. While some worker node still runs an older version, for
+  example during a rolling upgrade, queries read as before too.
 - With the index on, every invocation and state mutation also writes one small index key when it is
   created and removes it when it is deleted. Status changes don't write to the index.
 - Once a partition has maintained the index, it keeps doing so after restarts, even if

@@ -663,8 +663,22 @@ impl NodesConfiguration {
     /// started with `version` or a newer release, or a pre-release of either. Workers record their
     /// version each time they start; one that hasn't recorded it counts as older.
     pub fn all_workers_run_at_least(&self, version: &SemanticRestateVersion) -> bool {
+        self.workers_run_at_least(version, false)
+    }
+
+    /// Like [`Self::all_workers_run_at_least`], but disabled workers count too: a partition's
+    /// current replica set may still consist of disabled workers until it's reconfigured, so
+    /// whatever reads partition data must assume they serve it.
+    pub fn all_workers_including_disabled_run_at_least(
+        &self,
+        version: &SemanticRestateVersion,
+    ) -> bool {
+        self.workers_run_at_least(version, true)
+    }
+
+    fn workers_run_at_least(&self, version: &SemanticRestateVersion, disabled: bool) -> bool {
         self.iter_role(Role::Worker)
-            .filter(|(_, node)| !node.worker_config.worker_state.is_disabled())
+            .filter(|(_, node)| disabled || !node.worker_config.worker_state.is_disabled())
             .all(|(_, node)| {
                 node.binary_version
                     .as_ref()

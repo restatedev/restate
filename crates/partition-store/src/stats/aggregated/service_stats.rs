@@ -39,6 +39,7 @@ define_aggregated_stat!(
     /// A NULL handler identifies an external state mutation, not a handler rollup.
     table: ServiceStats,
     definition: "service_stats/1",
+    introduced: (1, 8, 2),
     schema: ServiceStatsSchema,
     value: StageStatusGauge,
     key: ServiceStatsKey(

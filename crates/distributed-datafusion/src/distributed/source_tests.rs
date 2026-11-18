@@ -129,6 +129,8 @@ async fn primary_access_codec_validates_keys_scope_and_capability() {
                     partition: PartitionId::MIN,
                 }],
             ),
+            ordering: Vec::new(),
+            bound: Some(51),
         }),
     };
     let mut encoded = Vec::new();
@@ -154,6 +156,30 @@ async fn primary_access_codec_validates_keys_scope_and_capability() {
         index_work.encode_to_vec(),
         "index_work_round_trips"
     );
+    // The fallback bound travels apart from the source's limit; work without
+    // one decodes unbounded.
+    let wire = &source_plan(decoded.as_ref()).unwrap().descriptor;
+    assert!(matches!(
+        (&wire.work, wire.limit),
+        (
+            SourceWork::IndexScan(IndexWork {
+                bound: Some(51),
+                ..
+            }),
+            Some(7)
+        )
+    ));
+    let mut unbounded = index_work.clone();
+    let SourceWork::IndexScan(work) = &mut unbounded.work else {
+        unreachable!()
+    };
+    work.bound = None;
+    assert!(matches!(
+        SourceDescriptor::decode(unbounded.encode_to_vec().as_slice())
+            .unwrap()
+            .work,
+        SourceWork::IndexScan(IndexWork { bound: None, .. })
+    ));
     assert!(
         SourceCodec {
             manager: Some(manager.clone())
@@ -418,11 +444,15 @@ async fn compact_partition_templates_preserve_keys_statistics_and_codec() {
     let converter = DefaultPhysicalProtoConverter {};
     for access in [
         Access::Scan,
-        Access::Index(ReString::from_static("_idx_test")),
+        Access::Index {
+            index: ReString::from_static("_idx_test"),
+            ordering: Vec::new(),
+            bound: None,
+        },
         Access::Primary(Box::new(EntrySelection(keys))),
     ] {
         let lookup = matches!(access, Access::Primary(_));
-        let index = matches!(access, Access::Index(_));
+        let index = matches!(access, Access::Index { .. });
         let plan = plan_partition_access(
             StateTable::identity(),
             &manager,
@@ -534,4 +564,332 @@ async fn compact_partition_templates_preserve_keys_statistics_and_codec() {
             assert_eq!((stages, leaves), (1, 2));
         }
     }
+}
+
+/// A partition read keeps its template's order only when every lane reads one
+/// storage partition, within the configured lanes: an ordered read doesn't open
+/// more partitions at once. The order is the template's actual output order:
+/// remapped through a projection, gone with the ordered column. Rewrites
+/// recompute it.
+#[test]
+fn partition_reads_keep_template_order_only_with_a_lane_per_partition() {
+    use datafusion::arrow::datatypes::{DataType, Field};
+    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_plan::projection::{ProjectionExec, ProjectionExpr};
+    use datafusion::physical_plan::{ChildrenPropertiesMode, ReplaceChildrenOptions};
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("created_at", DataType::Int64, false),
+    ]));
+    let descriptor = SourceDescriptor {
+        table: StateTable::identity(),
+        owner: None,
+        ordering: Vec::new(),
+        limit: None,
+        work: SourceWork::IndexScan(IndexWork {
+            index: ReString::from_static("_idx_test"),
+            work: PartitionWork::from_reads(
+                Default::default(),
+                (0..3)
+                    .map(|partition| PartitionScan {
+                        partition: PartitionId::from(partition),
+                    })
+                    .collect(),
+            ),
+            ordering: vec![SortedColumn {
+                name: "created_at".into(),
+                descending: true,
+                nulls_first: false,
+            }],
+            bound: None,
+        }),
+    };
+    let source = SourcePlan::new(descriptor, Arc::clone(&schema), None, None, None)
+        .unwrap()
+        .into_plan();
+    let column = |name: &str, index| ProjectionExpr::new(Arc::new(Column::new(name, index)), name);
+    let swapped: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [column("created_at", 1), column("id", 0)],
+            Arc::clone(&source),
+        )
+        .unwrap(),
+    );
+    let without: Arc<dyn ExecutionPlan> =
+        Arc::new(ProjectionExec::try_new([column("id", 0)], Arc::clone(&source)).unwrap());
+    let newest_first = SortOptions {
+        descending: true,
+        nulls_first: false,
+    };
+    for (template, parallelism, lanes, ordered_by) in [
+        (&source, 3, 3, Some(("created_at", 1))),
+        (&source, 2, 2, None),
+        (&swapped, 4, 3, Some(("created_at", 0))),
+        (&without, 3, 3, None),
+    ] {
+        let reads: Arc<dyn ExecutionPlan> = Arc::new(
+            PartitionReadExec::new(vec![Arc::clone(template)], parallelism, None).unwrap(),
+        );
+        let rewrite = |template: &Arc<dyn ExecutionPlan>| {
+            Arc::clone(&reads)
+                .replace_children(
+                    vec![Arc::clone(template)],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )
+                .unwrap()
+        };
+        // A rewrite to a template without the ordered column drops the order.
+        assert!(rewrite(&without).properties().output_ordering().is_none());
+        let rewritten = rewrite(template);
+        for plan in [reads, rewritten] {
+            assert_eq!(plan.properties().partitioning.partition_count(), lanes);
+            let declared = plan.properties().output_ordering().map(|ordering| {
+                ordering
+                    .iter()
+                    .map(|expr| {
+                        let column = expr.expr.downcast_ref::<Column>().unwrap();
+                        ((column.name().to_owned(), column.index()), expr.options)
+                    })
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(
+                declared,
+                ordered_by.map(|(name, index)| vec![((name.to_owned(), index), newest_first)]),
+                "parallelism {parallelism}"
+            );
+        }
+    }
+}
+
+/// A bounded sort's demand reaches its scan through filters and column-only
+/// projections, in the scan's columns, with every filter's conditions. A scan
+/// that the plan reaches twice gets no demand, whether its other consumer reads
+/// every row or other rows first.
+#[test]
+fn demands_follow_one_consumer_through_filters_and_projections() {
+    use datafusion::arrow::datatypes::{DataType, Field};
+    use datafusion::common::ScalarValue;
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
+    use datafusion::physical_expr::physical_exprs_bag_equal;
+    use datafusion::physical_plan::filter::FilterExecBuilder;
+    use datafusion::physical_plan::projection::{ProjectionExec, ProjectionExpr};
+
+    use super::super::demand::Demands;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("created_at", DataType::Int64, false),
+        Field::new("service", DataType::Utf8, false),
+        Field::new("status", DataType::Utf8, false),
+    ]));
+    let scan = || {
+        let descriptor = SourceDescriptor {
+            table: StateTable::identity(),
+            owner: None,
+            ordering: Vec::new(),
+            limit: None,
+            work: SourceWork::TableScan(PartitionWork::from_reads(
+                Default::default(),
+                vec![PartitionScan {
+                    partition: PartitionId::MIN,
+                }],
+            )),
+        };
+        SourcePlan::new(descriptor, Arc::clone(&schema), None, None, None)
+            .unwrap()
+            .into_plan()
+    };
+    let column = |name: &str, index| Arc::new(Column::new(name, index)) as Arc<dyn PhysicalExpr>;
+    let equals = |name: &str, index, value: &str| {
+        Arc::new(BinaryExpr::new(
+            column(name, index),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Utf8(Some(value.into())))),
+        )) as Arc<dyn PhysicalExpr>
+    };
+    let newest_first = SortOptions {
+        descending: true,
+        nulls_first: false,
+    };
+    let newest = |expr, fetch, input| {
+        let ordering = LexOrdering::new([PhysicalSortExpr {
+            expr,
+            options: newest_first,
+        }])
+        .unwrap();
+        Arc::new(SortExec::new(ordering, input).with_fetch(fetch)) as Arc<dyn ExecutionPlan>
+    };
+    let filter = |predicate, input| {
+        Arc::new(FilterExec::try_new(predicate, input).unwrap()) as Arc<dyn ExecutionPlan>
+    };
+    let service = || equals("service", 2, "a");
+
+    // Two filters, the far one projecting `[created_at, id]`, then a projection
+    // that swaps and renames the columns.
+    let source = scan();
+    let near = filter(service(), Arc::clone(&source));
+    let far = FilterExecBuilder::new(equals("status", 3, "x"), near)
+        .apply_projection(Some(vec![1, 0]))
+        .unwrap()
+        .build()
+        .unwrap();
+    let renamed = ProjectionExec::try_new(
+        [
+            ProjectionExpr::new(column("id", 1), "ident"),
+            ProjectionExpr::new(column("created_at", 0), "made"),
+        ],
+        Arc::new(far),
+    )
+    .unwrap();
+    let plan = newest(column("made", 1), Some(7), Arc::new(renamed));
+    let demands = Demands::of(&plan);
+    let demand = demands.on(&source).unwrap();
+    assert_eq!(demand.fetch, 7);
+    assert_eq!(
+        demand.ordering,
+        [PhysicalSortExpr {
+            expr: column("created_at", 1),
+            options: newest_first,
+        }]
+    );
+    assert!(physical_exprs_bag_equal(
+        &demand.residual,
+        &[service(), equals("status", 3, "x")]
+    ));
+
+    // A computed column, or a sort without a fetch, demands nothing.
+    let source = scan();
+    let computed = ProjectionExec::try_new(
+        [ProjectionExpr::new(
+            Arc::new(BinaryExpr::new(
+                column("created_at", 1),
+                Operator::Plus,
+                Arc::new(Literal::new(ScalarValue::Int64(Some(1)))),
+            )),
+            "later",
+        )],
+        Arc::clone(&source),
+    )
+    .unwrap();
+    let plan = newest(column("later", 0), Some(7), Arc::new(computed));
+    assert!(Demands::of(&plan).on(&source).is_none());
+    let plan = newest(column("created_at", 1), None, Arc::clone(&source));
+    assert!(Demands::of(&plan).on(&source).is_none());
+
+    // One scan under two consumers: an unbounded one, or another bound. Two
+    // scans are each their consumer's.
+    let union = |left, right| UnionExec::try_new(vec![left, right]).unwrap();
+    let bounded = |fetch, input: &Arc<dyn ExecutionPlan>| {
+        newest(
+            column("created_at", 1),
+            Some(fetch),
+            filter(service(), Arc::clone(input)),
+        )
+    };
+    let shared = scan();
+    for plan in [
+        union(bounded(51, &shared), filter(service(), Arc::clone(&shared))),
+        union(bounded(51, &shared), bounded(1, &shared)),
+    ] {
+        assert!(Demands::of(&plan).on(&shared).is_none());
+    }
+    let (first, second) = (scan(), scan());
+    let plan = union(bounded(51, &first), filter(service(), Arc::clone(&second)));
+    let demands = Demands::of(&plan);
+    assert_eq!(demands.on(&first).map(|demand| demand.fetch), Some(51));
+    assert!(demands.on(&second).is_none());
+}
+
+/// A partition that can't keep its index's order keeps its first `bound`
+/// matches, newest first, within the query's memory pool. A refused
+/// reservation fails the read, and the read releases everything it reserved.
+#[tokio::test]
+async fn bounded_fallback_sorts_within_the_query_pool() {
+    use datafusion::arrow::array::{Int64Array, StringArray};
+    use datafusion::arrow::datatypes::{DataType, Field};
+    use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::common::ScalarValue;
+    use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool};
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("created_at", DataType::Int64, false),
+        Field::new("service", DataType::Utf8, false),
+    ]));
+    // Created in key order, not time order; every other row matches.
+    let created: Vec<i64> = (0..100).map(|n| (n * 37) % 100).collect();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(created.clone())),
+            Arc::new(StringArray::from_iter_values(
+                created.iter().map(|at| if at % 2 == 0 { "a" } else { "b" }),
+            )),
+        ],
+    )
+    .unwrap();
+    let rows = || {
+        Box::pin(RecordBatchStreamAdapter::new(
+            Arc::clone(&schema),
+            stream::iter([Ok(batch.clone())]),
+        )) as SendableRecordBatchStream
+    };
+    let predicate: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+        Arc::new(Column::new("service", 1)),
+        Operator::Eq,
+        Arc::new(Literal::new(ScalarValue::Utf8(Some("a".into())))),
+    ));
+    let ordering = LexOrdering::new([PhysicalSortExpr {
+        expr: Arc::new(Column::new("created_at", 0)),
+        options: SortOptions {
+            descending: true,
+            nulls_first: false,
+        },
+    }])
+    .unwrap();
+    let context = |pool: &Arc<GreedyMemoryPool>| {
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(Arc::clone(pool) as Arc<dyn MemoryPool>)
+            .build()
+            .unwrap();
+        Arc::new(TaskContext::default().with_runtime(Arc::new(runtime)))
+    };
+
+    let roomy = Arc::new(GreedyMemoryPool::new(1 << 20));
+    let kept: Vec<_> = sorted(
+        rows(),
+        Some(Arc::clone(&predicate)),
+        ordering.clone(),
+        Some(3),
+        context(&roomy),
+    )
+    .unwrap()
+    .try_collect::<Vec<_>>()
+    .await
+    .unwrap()
+    .iter()
+    .flat_map(|batch| {
+        let created = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        created.values().to_vec()
+    })
+    .collect();
+    assert_eq!(kept, [98, 96, 94]);
+    assert_eq!(roomy.reserved(), 0);
+
+    let tight = Arc::new(GreedyMemoryPool::new(64));
+    let error = sorted(rows(), Some(predicate), ordering, Some(3), context(&tight))
+        .unwrap()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("Resources exhausted"), "{error}");
+    assert_eq!(tight.reserved(), 0);
 }

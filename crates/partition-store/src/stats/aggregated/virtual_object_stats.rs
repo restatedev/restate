@@ -35,6 +35,7 @@ define_aggregated_stat!(
     /// Workflow and unkeyed service entries do not contribute to this statistic.
     table: VirtualObjectStats,
     definition: "virtual_object_stats/1",
+    introduced: (1, 8, 2),
     schema: VirtualObjectStatsSchema,
     value: StageStatusGauge,
     key: VirtualObjectStatsKey(
