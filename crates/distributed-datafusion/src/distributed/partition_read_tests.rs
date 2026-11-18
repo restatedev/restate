@@ -8,7 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::{BTreeSet, HashMap};
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -18,6 +22,7 @@ use futures::{FutureExt, StreamExt, TryStreamExt};
 use tokio::sync::mpsc;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
+use restate_clock::UniqueTimestamp;
 use restate_core::test_env::TestCoreEnv;
 use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::keys::{EncodeTableKey, KeyKind};
@@ -29,6 +34,7 @@ use restate_storage_query_api::{QueryMetadata, QueryOptions, SessionOptions};
 use restate_types::errors::GenericError;
 use restate_types::partition_table::{Partition, PartitionTable};
 use restate_types::{Version, identifiers::PartitionId};
+use restate_util_string::ReString;
 use restate_worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 
 use crate::context::{DataFusionQueryEngine, SelectPartitions};
@@ -42,7 +48,132 @@ use super::super::tests::{UnusedRuleBook, environment};
 struct CaptureSource {
     inner: Arc<dyn ScanPartition>,
     requirements: restate_worker_api::PartitionCaptureRequirements,
+    gate: Option<Arc<Gate>>,
 }
+
+/// Parks the `park_at`-th admission's requirements call, which a lane makes
+/// after checking that its consumer is still there and before it asks for a
+/// snapshot, until the test releases it, drops the release's sender, or 10 s
+/// pass. It traces which.
+#[derive(Debug)]
+struct Gate {
+    calls: AtomicUsize,
+    park_at: usize,
+    parked: mpsc::UnboundedSender<()>,
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    trace: Arc<Trace>,
+}
+
+impl Gate {
+    fn pass(&self) {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if call == self.park_at {
+            self.trace.push(Event::Parked);
+            let _ = self.parked.send(());
+            let unparked = match self
+                .release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10))
+            {
+                Ok(()) => Unparked::Released,
+                Err(RecvTimeoutError::Timeout) => Unparked::TimedOut,
+                Err(RecvTimeoutError::Disconnected) => Unparked::Disconnected,
+            };
+            self.trace.push(Event::Unparked(unparked));
+        }
+    }
+}
+
+/// Why the gate let its parked call go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Unparked {
+    Released,
+    TimedOut,
+    Disconnected,
+}
+
+/// An execution: its session and its full query timestamp, whose logical part
+/// tells apart executions at the same wall time, mocked or not.
+type Execution = (ReString, UniqueTimestamp);
+
+fn execution(metadata: &QueryMetadata) -> Execution {
+    (metadata.session_id.clone(), metadata.query_ts)
+}
+
+/// What the gate and the dispatcher saw, in order: at most 400 events.
+#[derive(Debug, Default)]
+struct Trace(Mutex<Vec<Event>>);
+
+impl Trace {
+    fn push(&self, event: Event) {
+        let mut events = self.0.lock();
+        if events.len() < 400 {
+            events.push(event);
+        }
+    }
+
+    fn events(&self) -> Vec<Event> {
+        self.0.lock().clone()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Event {
+    /// The gate parked a requirements call.
+    Parked,
+    /// The gate let it go.
+    Unparked(Unparked),
+    /// The dispatcher answered a barrier, after every read queued before it.
+    Barrier,
+    /// The dispatcher received a read.
+    Received(Execution, PartitionId),
+    /// It took the read's snapshot: `live` of its execution's snapshots, and
+    /// `total` in all, were then open.
+    Admitted {
+        execution: Execution,
+        partition: PartitionId,
+        live: usize,
+        total: usize,
+    },
+    /// Whether `oneshot::Sender::send` of its reply succeeded. It fails when
+    /// the lane has dropped its receiver; success doesn't mean the lane used
+    /// the snapshot.
+    Replied {
+        execution: Execution,
+        partition: PartitionId,
+        sent: bool,
+    },
+    /// A snapshot the dispatcher found closed, at a later admission or when
+    /// it stopped.
+    Closed(Execution, PartitionId),
+}
+
+/// The most reads a test's dispatcher admits: past it, it stops and fails the
+/// test, keeping what it recorded.
+const ADMISSIONS: usize = 256;
+
+/// The longest a test's final accounting may take, in all.
+const FINAL: Duration = Duration::from_secs(30);
+
+/// Waits for `future` until `deadline`, and at most 5 s.
+async fn within<F: std::future::Future>(
+    deadline: tokio::time::Instant,
+    future: F,
+    what: &str,
+) -> F::Output {
+    let by = deadline.min(tokio::time::Instant::now() + Duration::from_secs(5));
+    tokio::time::timeout_at(by, future)
+        .await
+        .unwrap_or_else(|_| panic!("{what}"))
+}
+
+/// A snapshot the dispatcher took, until it closes.
+type Open = (
+    Execution,
+    PartitionId,
+    Pin<Box<WaitForCancellationFutureOwned>>,
+);
 
 impl ScanPartition for CaptureSource {
     fn supports_primary_lookup(&self) -> bool {
@@ -59,6 +190,7 @@ impl ScanPartition for CaptureSource {
         Ok(Arc::new(CaptureRead {
             inner: Arc::clone(&self.inner).prepare_read(access, projection, predicate, limit)?,
             requirements: self.requirements,
+            gate: self.gate.clone(),
         }))
     }
 }
@@ -67,10 +199,14 @@ impl ScanPartition for CaptureSource {
 struct CaptureRead {
     inner: Arc<dyn PreparedPartitionRead>,
     requirements: restate_worker_api::PartitionCaptureRequirements,
+    gate: Option<Arc<Gate>>,
 }
 
 impl PreparedPartitionRead for CaptureRead {
     fn capture_requirements(&self) -> restate_worker_api::PartitionCaptureRequirements {
+        if let Some(gate) = &self.gate {
+            gate.pass();
+        }
         self.requirements
     }
 
@@ -182,6 +318,7 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
             invoker: true,
             ..Default::default()
         },
+        gate: None,
     }));
     sources.register_declared_scanner::<ScopedStateSource>(Arc::new(CaptureSource {
         inner: Arc::new(crate::schema_scan::LookupScanner::<
@@ -192,19 +329,27 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
             scheduler: true,
             ..Default::default()
         },
+        gate: None,
     }));
     let admissions = Arc::new(Mutex::new(Vec::<Admission>::new()));
+    // The invariant: the most snapshots of one execution live at once, by
+    // execution, at every admission, late ones included.
+    let per_execution = Arc::new(Mutex::new(HashMap::<Execution, usize>::new()));
+    // Diagnostics: the most snapshots live at once across executions, a
+    // bounded trace of what the dispatcher saw, and the live snapshots, by
+    // query and partition, whenever more than two were live.
     let peak = Arc::new(Mutex::new(0usize));
-    // Diagnostics: a bounded trace of what the dispatcher saw, and the live
-    // snapshots, by query and partition, whenever more than two were live.
     let trace = Arc::new(Mutex::new(Vec::<String>::new()));
     let exceeded = Arc::new(Mutex::new(Vec::<String>::new()));
-    let (opened, mut opened_rx) = mpsc::unbounded_channel();
+    let (opened, mut opened_rx) = mpsc::unbounded_channel::<Execution>();
+    let stop = CancellationToken::new();
     let dispatch = tokio::spawn({
         let admissions = Arc::clone(&admissions);
+        let per_execution = Arc::clone(&per_execution);
         let peak = Arc::clone(&peak);
         let trace = Arc::clone(&trace);
         let exceeded = Arc::clone(&exceeded);
+        let stop = stop.clone();
         async move {
             let started = std::time::Instant::now();
             let event = move |text: String| {
@@ -214,16 +359,27 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
                 }
             };
             let mut active = Vec::new();
-            while let Some(command) = receiver.recv().await {
+            let mut admitted_reads = 0;
+            loop {
+                let command = tokio::select! {
+                    biased;
+                    () = stop.cancelled() => None,
+                    command = receiver.recv() => command,
+                };
                 let request = match command {
-                    ProcessorsManagerCommand::ReadPartition(request) => request,
+                    None => break Ok(()),
+                    Some(ProcessorsManagerCommand::ReadPartition(request)) => request,
                     // A barrier: it is answered after every read queued before it.
-                    ProcessorsManagerCommand::GetState(reply) => {
+                    Some(ProcessorsManagerCommand::GetState(reply)) => {
                         event("barrier".to_owned());
                         let _ = reply.send(Default::default());
                         continue;
                     }
                 };
+                admitted_reads += 1;
+                if admitted_reads > ADMISSIONS {
+                    break Err(format!("more than {ADMISSIONS} admissions"));
+                }
                 let identity = format!(
                     "p{} ts={:?} sql={:?}",
                     u16::from(request.partition),
@@ -240,9 +396,10 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
                 let cancel = CancellationToken::new();
                 let (read, closed) = store.query_read(cancel.clone()).unwrap();
                 active.retain_mut(
-                    |(live, completion): &mut (
+                    |(_, live, completion): &mut (
+                        Execution,
                         String,
-                        std::pin::Pin<Box<WaitForCancellationFutureOwned>>,
+                        Pin<Box<WaitForCancellationFutureOwned>>,
                     )| {
                         let open = completion.as_mut().now_or_never().is_none();
                         if !open {
@@ -251,7 +408,14 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
                         open
                     },
                 );
-                active.push((identity.clone(), Box::pin(read.closed())));
+                let admitted = execution(&request.metadata);
+                active.push((admitted.clone(), identity.clone(), Box::pin(read.closed())));
+                let live = active.iter().filter(|(of, ..)| *of == admitted).count();
+                {
+                    let mut per_execution = per_execution.lock();
+                    let peak = per_execution.entry(admitted.clone()).or_default();
+                    *peak = (*peak).max(live);
+                }
                 {
                     let mut peak = peak.lock();
                     *peak = (*peak).max(active.len());
@@ -260,7 +424,7 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
                     exceeded.lock().push(format!(
                         "{} live at the admission of {identity}: {:#?}",
                         active.len(),
-                        active.iter().map(|(live, _)| live).collect::<Vec<_>>()
+                        active.iter().map(|(_, live, _)| live).collect::<Vec<_>>()
                     ));
                 }
                 admissions.lock().push(Admission {
@@ -276,7 +440,8 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
                         storage: Some(read),
                         live: restate_worker_api::CapturedPartitionState::empty(request.capture),
                     }));
-                opened.send(()).unwrap();
+                // Told only once its admission is recorded and answered.
+                let _ = opened.send(admitted);
             }
         }
     });
@@ -296,6 +461,20 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
         .headers
         .append("x-test-context", "second".parse().unwrap());
     let session = engine.create_session(options).unwrap();
+    // Every execution has its own identity, though the session is the same
+    // and the clock may be mocked.
+    let mut executions = BTreeSet::new();
+    let bounded = |after: &str| {
+        let per_execution = per_execution.lock().clone();
+        assert!(
+            per_execution.values().all(|&live| live <= 2),
+            "parallelism_bounds_actual_snapshot_lifetimes_per_execution: after {after}: \
+             {per_execution:#?}\nglobal peak (diagnostic): {}\nexceeded: {:#?}\ntrace:\n{}",
+            *peak.lock(),
+            exceeded.lock(),
+            trace.lock().join("\n")
+        );
+    };
     #[rustfmt::skip]
     let cases = [
         ("SELECT * FROM state LIMIT 10", 10, 2),
@@ -307,6 +486,11 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
     for (sql, expected_rows, max_scopes) in cases {
         let result = session.execute(sql, QueryOptions {}).await.unwrap();
         let metadata = result.metadata;
+        let current = execution(&metadata);
+        assert!(
+            executions.insert(current.clone()),
+            "every_execution_has_its_own_identity: {sql}"
+        );
         let batches = tokio::time::timeout(
             Duration::from_secs(10),
             result.stream.try_collect::<Vec<_>>(),
@@ -328,12 +512,20 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
         }
         // A query that stops early can leave reads queued at the processors; the
         // barrier queues behind them, so all of this query's reads are counted.
-        // A late read of an earlier query is released here, not counted again.
-        processors.get_state().await.unwrap();
+        // A late read of an earlier execution is released here, not counted
+        // again.
+        tokio::time::timeout(Duration::from_secs(10), processors.get_state())
+            .await
+            .unwrap()
+            .unwrap();
         let (admitted, late): (Vec<_>, Vec<_>) = std::mem::take(&mut *admissions.lock())
             .into_iter()
-            .partition(|read| read.metadata.redacted_sql == metadata.redacted_sql);
+            .partition(|read| execution(&read.metadata) == current);
         for read in late {
+            assert!(
+                executions.contains(&execution(&read.metadata)),
+                "late_reads_belong_to_earlier_executions: {sql}"
+            );
             tokio::time::timeout(Duration::from_secs(5), read.closed)
                 .await
                 .unwrap();
@@ -369,13 +561,7 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
                 .await
                 .unwrap();
         }
-        assert!(
-            *peak.lock() <= 2,
-            "parallelism_bounds_actual_snapshot_lifetimes: peak {} after {sql}\nexceeded: {:#?}\ntrace:\n{}",
-            *peak.lock(),
-            exceeded.lock(),
-            trace.lock().join("\n")
-        );
+        bounded(sql);
         while opened_rx.try_recv().is_ok() {}
     }
     // Keep the result alive but stop polling it. Processor cancellation must
@@ -384,12 +570,37 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
         .execute("SELECT * FROM state", QueryOptions {})
         .await
         .unwrap();
-    result.stream.next().await.unwrap().unwrap();
-    for _ in 0..2 {
-        opened_rx.recv().await.unwrap();
+    let idle = execution(&result.metadata);
+    assert!(
+        executions.insert(idle.clone()),
+        "every_execution_has_its_own_identity: idle consumer"
+    );
+    tokio::time::timeout(Duration::from_secs(10), result.stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    // Its two reads, told apart by execution from any late one; the wait is
+    // bounded as a whole.
+    let by = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut seen = 0;
+    while seen < 2 {
+        let of = tokio::time::timeout_at(by, opened_rx.recv())
+            .await
+            .expect("the idle consumer's two reads are admitted")
+            .unwrap();
+        seen += usize::from(of == idle);
     }
-    let admitted = std::mem::take(&mut *admissions.lock());
+    let (admitted, late): (Vec<_>, Vec<_>) = std::mem::take(&mut *admissions.lock())
+        .into_iter()
+        .partition(|read| execution(&read.metadata) == idle);
     assert_eq!(admitted.len(), 2);
+    for read in late {
+        assert!(executions.contains(&execution(&read.metadata)));
+        tokio::time::timeout(Duration::from_secs(5), read.closed)
+            .await
+            .unwrap();
+    }
     for read in &admitted {
         read.cancel.cancel();
     }
@@ -398,11 +609,18 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
             .await
             .expect("idle_consumer_must_not_block_processor_shutdown");
     }
-    let error = result.stream.try_collect::<Vec<_>>().await.unwrap_err();
+    let error = tokio::time::timeout(
+        Duration::from_secs(10),
+        result.stream.try_collect::<Vec<_>>(),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
     assert!(
         error.to_string().contains("cancelled"),
         "cancellation_is_terminal: {error}"
     );
+    bounded("the idle consumer");
     // A worker reports it as a cancelled task failure, through the wire format.
     let reply = crate::distributed::worker::task_reply(
         Err(error),
@@ -425,5 +643,344 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
         restate_types::net::distributed_query::QueryFailureKind::CANCELLED,
         "cancellation_is_reported_as_such: {failure}"
     );
-    dispatch.abort();
+    // Final accounting, once nothing more is admitted: a barrier, then the
+    // dispatcher stops and is awaited, every snapshot it took since the last
+    // check closes, and the per-execution bound held to the end.
+    let deadline = tokio::time::Instant::now() + FINAL;
+    within(deadline, processors.get_state(), "the final barrier")
+        .await
+        .unwrap();
+    stop.cancel();
+    let stopped = within(deadline, dispatch, "the dispatcher stops").await;
+    assert_eq!(stopped.unwrap(), Ok(()));
+    let remaining = std::mem::take(&mut *admissions.lock());
+    for read in remaining {
+        within(deadline, read.closed, "every snapshot closes").await;
+    }
+    bounded("the end");
+}
+
+/// A lane can pass its check that the consumer is still there, then ask for
+/// its snapshot only after the query has ended: here it's held between the two
+/// while another lane satisfies the query's LIMIT, the test's barrier passes,
+/// and the next query holds its two snapshots. Its late snapshot then overlaps
+/// them: per query, at most two snapshots are live, but across queries three
+/// can be, briefly, until the abandoned lane's cancellation drops it.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_abandoned_lane_can_admit_after_its_query_ended() {
+    RocksDbManager::init();
+    let core = TestCoreEnv::create_with_single_node(1, 1).await;
+    let stores = PartitionStoreManager::create(true).await.unwrap();
+    let table = PartitionTable::with_equally_sized_partitions(Version::MIN, 4);
+    let partitions = Partitions(
+        table
+            .iter()
+            .map(|(id, partition)| (*id, partition.clone()))
+            .collect(),
+    );
+    for (id, partition) in &partitions.0 {
+        let mut store = stores.open(partition, None).await.unwrap();
+        let mut tx = store.transaction();
+        for n in 0..100 {
+            let mut key = Vec::new();
+            StateKey {
+                partition_key: partition.key_range.start(),
+                service_name: "svc".into(),
+                service_key: "object".into(),
+                state_key: Bytes::from(format!("{}-{n}", u16::from(*id))),
+            }
+            .serialize_to(&mut key);
+            tx.raw_put_cf(KeyKind::State, key, b"value".as_slice());
+        }
+        tx.commit().await.unwrap();
+    }
+    let (commands, mut receiver) = mpsc::channel(32);
+    let processors = ProcessorsManagerHandle::new(
+        commands,
+        Arc::new(UnusedRuleBook),
+        crate::distributed::tests::TestInvokers::empty(),
+    );
+    let trace = Arc::new(Trace::default());
+    let (parked, mut parked_rx) = mpsc::unbounded_channel();
+    // Dropped on any failure, the sender unblocks a parked gate at once.
+    let (release, released) = std::sync::mpsc::channel();
+    // Each admission asks both layouts for their requirements: the third call
+    // is the second admission's.
+    let gate = Arc::new(Gate {
+        calls: Default::default(),
+        park_at: 3,
+        parked,
+        release: std::sync::Mutex::new(released),
+        trace: Arc::clone(&trace),
+    });
+    let sources = SourceRegistry::local_only(core.metadata);
+    sources.register_processor_reads(processors.clone(), crate::mocks::query_io());
+    let requirements = |invoker, scheduler| restate_worker_api::PartitionCaptureRequirements {
+        storage: true,
+        invoker,
+        scheduler,
+        ..Default::default()
+    };
+    sources.register_declared_scanner::<LegacyStateSource>(Arc::new(CaptureSource {
+        inner: Arc::new(crate::schema_scan::LookupScanner::<
+            restate_partition_store::state_table::StateBinding,
+        >::new()),
+        requirements: requirements(true, false),
+        gate: Some(Arc::clone(&gate)),
+    }));
+    sources.register_declared_scanner::<ScopedStateSource>(Arc::new(CaptureSource {
+        inner: Arc::new(crate::schema_scan::LookupScanner::<
+            restate_partition_store::state_table::ScopedStateBinding,
+        >::new()),
+        requirements: requirements(false, true),
+        gate: Some(Arc::clone(&gate)),
+    }));
+    // The dispatcher: every snapshot it takes, kept until the test sees it
+    // close, and what was live whenever more than two were. Stopped, it
+    // returns the snapshots it still saw open.
+    let exceeded = Arc::new(Mutex::new(
+        Vec::<(Execution, Vec<(Execution, PartitionId)>)>::new(),
+    ));
+    // The invariant, apart from the bounded trace: the most snapshots of one
+    // execution live at once, at every admission.
+    let per_execution = Arc::new(Mutex::new(HashMap::<Execution, usize>::new()));
+    let closures = Arc::new(Mutex::new(Vec::<Open>::new()));
+    let (opened, mut opened_rx) = mpsc::unbounded_channel::<(Execution, PartitionId)>();
+    let stop = CancellationToken::new();
+    let dispatch = tokio::spawn({
+        let trace = Arc::clone(&trace);
+        let exceeded = Arc::clone(&exceeded);
+        let per_execution = Arc::clone(&per_execution);
+        let closures = Arc::clone(&closures);
+        let stop = stop.clone();
+        async move {
+            let prune = |active: &mut Vec<Open>| {
+                active.retain_mut(|(execution, partition, completion)| {
+                    let open = completion.as_mut().now_or_never().is_none();
+                    if !open {
+                        trace.push(Event::Closed(execution.clone(), *partition));
+                    }
+                    open
+                });
+            };
+            let mut active = Vec::new();
+            let mut admitted_reads = 0;
+            let outcome = loop {
+                let command = tokio::select! {
+                    biased;
+                    () = stop.cancelled() => None,
+                    command = receiver.recv() => command,
+                };
+                let request = match command {
+                    None => break Ok(()),
+                    Some(ProcessorsManagerCommand::ReadPartition(request)) => request,
+                    Some(ProcessorsManagerCommand::GetState(reply)) => {
+                        trace.push(Event::Barrier);
+                        let _ = reply.send(Default::default());
+                        continue;
+                    }
+                };
+                let (admitted, partition) = (execution(&request.metadata), request.partition);
+                trace.push(Event::Received(admitted.clone(), partition));
+                admitted_reads += 1;
+                if admitted_reads > ADMISSIONS {
+                    break Err(format!("more than {ADMISSIONS} admissions"));
+                }
+                let store = tokio::select! {
+                    biased;
+                    () = stop.cancelled() => break Ok(()),
+                    store = stores.get_partition_store(partition) => store.unwrap(),
+                };
+                let (read, closed) = store.query_read(CancellationToken::new()).unwrap();
+                closures
+                    .lock()
+                    .push((admitted.clone(), partition, Box::pin(closed)));
+                prune(&mut active);
+                active.push((admitted.clone(), partition, Box::pin(read.closed())));
+                let live = active.iter().filter(|(of, ..)| *of == admitted).count();
+                {
+                    let mut per_execution = per_execution.lock();
+                    let peak = per_execution.entry(admitted.clone()).or_default();
+                    *peak = (*peak).max(live);
+                }
+                trace.push(Event::Admitted {
+                    execution: admitted.clone(),
+                    partition,
+                    live,
+                    total: active.len(),
+                });
+                if active.len() > 2 {
+                    exceeded.lock().push((
+                        admitted.clone(),
+                        active
+                            .iter()
+                            .map(|(execution, partition, _)| (execution.clone(), *partition))
+                            .collect(),
+                    ));
+                }
+                let sent = request
+                    .response
+                    .send(Ok(restate_worker_api::CapturedPartitionRead {
+                        partition,
+                        storage: Some(read),
+                        live: restate_worker_api::CapturedPartitionState::empty(request.capture),
+                    }))
+                    .is_ok();
+                trace.push(Event::Replied {
+                    execution: admitted.clone(),
+                    partition,
+                    sent,
+                });
+                let _ = opened.send((admitted, partition));
+            };
+            prune(&mut active);
+            (outcome, active)
+        }
+    });
+    let env = environment(2, 2);
+    env.register_table::<StateTable>(
+        "public",
+        "state",
+        StateTable::create_provider(partitions, &sources),
+    )
+    .unwrap();
+    let engine = DataFusionQueryEngine::from_env(env, None);
+    let session = engine.create_session(SessionOptions::default()).unwrap();
+
+    // The first query's LIMIT is met by one lane; the other is held at its
+    // second admission's requirements, after its consumer check.
+    let result = session
+        .execute("SELECT * FROM state LIMIT 10", QueryOptions {})
+        .await
+        .unwrap();
+    let ended = execution(&result.metadata);
+    let rows: usize = tokio::time::timeout(
+        Duration::from_secs(10),
+        result.stream.try_collect::<Vec<_>>(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .iter()
+    .map(|batch| batch.num_rows())
+    .sum();
+    assert_eq!(rows, 10);
+    tokio::time::timeout(Duration::from_secs(10), parked_rx.recv())
+        .await
+        .expect("a lane is held within 10 s")
+        .expect("a lane is held between its check and its admission");
+    tokio::time::timeout(Duration::from_secs(10), processors.get_state())
+        .await
+        .unwrap()
+        .unwrap();
+
+    // The next query holds two snapshots: its consumer doesn't pull.
+    let result = session
+        .execute("SELECT * FROM state", QueryOptions {})
+        .await
+        .unwrap();
+    let next = execution(&result.metadata);
+    assert_ne!(ended, next, "every execution has its own identity");
+    let idle = result.stream;
+    let by = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut seen = 0;
+    while seen < 2 {
+        let (of, _) = tokio::time::timeout_at(by, opened_rx.recv())
+            .await
+            .expect("the next execution's two reads are admitted")
+            .unwrap();
+        seen += usize::from(of == next);
+    }
+
+    // Released, the abandoned lane admits its snapshot while those two are live.
+    release.send(()).unwrap();
+    let (late, partition) = tokio::time::timeout(Duration::from_secs(10), opened_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let events = trace.events();
+    let exceeded = exceeded.lock().clone();
+    eprintln!("late admission: {late:?} p{partition}\nexceeded: {exceeded:#?}\ntrace: {events:#?}");
+    assert_eq!(late, ended, "the late admission is the ended execution's");
+    assert!(
+        events.contains(&Event::Unparked(Unparked::Released)),
+        "released, not timed out or disconnected: {events:#?}"
+    );
+    let [(at, live)] = exceeded.as_slice() else {
+        panic!("one overlap: {exceeded:#?}\n{events:#?}")
+    };
+    assert_eq!(at, &ended);
+    assert_eq!(live.len(), 3, "{live:?}");
+    assert_eq!(
+        live.iter().filter(|(of, _)| *of == next).count(),
+        2,
+        "{live:?}"
+    );
+    // Per execution, at most two at every admission.
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, Event::Admitted { live, .. } if *live > 2)),
+        "{events:#?}"
+    );
+    // The ended execution's first admission, the barrier, then the parked
+    // lane's, whose reply couldn't be sent: the lane had dropped its receiver.
+    let barrier = events.iter().position(|event| *event == Event::Barrier);
+    let first = events.iter().position(
+        |event| matches!(event, Event::Admitted { execution, .. } if *execution == ended),
+    );
+    let parked = events.iter().rposition(|event| {
+        matches!(event, Event::Admitted { execution, partition: at, .. }
+            if *execution == ended && *at == partition)
+    });
+    let (Some(first), Some(barrier), Some(parked)) = (first, barrier, parked) else {
+        panic!("{events:#?}")
+    };
+    assert!(first < barrier && barrier < parked, "{events:#?}");
+    let reply = events[parked..].iter().find_map(|event| match event {
+        Event::Replied {
+            execution,
+            partition: at,
+            sent,
+        } if *execution == ended && *at == partition => Some(*sent),
+        _ => None,
+    });
+    assert_eq!(reply, Some(false), "{events:#?}");
+
+    // Cleanup, within one deadline: with the idle output dropped, every
+    // snapshot taken closes, the rejected one and the next execution's
+    // included. Stopped, the dispatcher takes no more, and whatever it took
+    // since, or still saw open, closes too. The per-execution bound held at
+    // every admission, to the end.
+    drop(idle);
+    let deadline = tokio::time::Instant::now() + FINAL;
+    within(deadline, processors.get_state(), "the final barrier")
+        .await
+        .unwrap();
+    let taken = std::mem::take(&mut *closures.lock());
+    assert!(
+        taken
+            .iter()
+            .any(|(of, at, _)| *of == ended && *at == partition)
+    );
+    assert!(taken.iter().filter(|(of, ..)| *of == next).count() >= 2);
+    stop.cancel();
+    let (outcome, open) = within(deadline, dispatch, "the dispatcher stops")
+        .await
+        .unwrap();
+    assert_eq!(outcome, Ok(()));
+    let rest = std::mem::take(&mut *closures.lock());
+    for (of, at, closed) in taken.into_iter().chain(open).chain(rest) {
+        within(
+            deadline,
+            closed,
+            &format!("the snapshot of {of:?} on {at} closes"),
+        )
+        .await;
+    }
+    let per_execution = per_execution.lock().clone();
+    assert!(
+        per_execution.values().all(|&live| live <= 2),
+        "{per_execution:#?}"
+    );
 }

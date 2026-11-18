@@ -113,10 +113,12 @@ pub enum ScanReason {
 /// it when it opens.
 pub struct EntryIndexExecution(Mutex<Option<Execution>>);
 
-struct Execution {
-    memory: Box<dyn RetainedMemory>,
-    chosen: Box<dyn FnOnce(EntryIndexPath) + Send>,
-    fetched: Box<dyn Fn(usize, u64) + Send>,
+pub(crate) struct Execution {
+    pub(crate) memory: Box<dyn RetainedMemory>,
+    pub(crate) chosen: Box<dyn FnOnce(EntryIndexPath) + Send>,
+    pub(crate) fetched: Box<dyn Fn(usize, u64) + Send>,
+    /// Learns how many references the read skipped: missing or stale.
+    pub(crate) skipped: Box<dyn Fn(u64) + Send>,
 }
 
 impl EntryIndexExecution {
@@ -135,13 +137,32 @@ impl EntryIndexExecution {
             memory,
             chosen: Box::new(chosen),
             fetched: Box::new(fetched),
+            skipped: Box::new(|_| {}),
         })))
+    }
+
+    /// Also tells `skipped` how many references the read skips, for a read that
+    /// skips stale ones rather than failing on them.
+    pub fn with_skipped(self, skipped: impl Fn(u64) + Send + 'static) -> Self {
+        if let Some(execution) = self.0.lock().expect("not poisoned").as_mut() {
+            execution.skipped = Box::new(skipped);
+        }
+        self
+    }
+
+    /// What the read charges and reports; a read takes it once, as it opens.
+    pub(crate) fn take(&self) -> Result<Execution> {
+        self.0
+            .lock()
+            .expect("not poisoned")
+            .take()
+            .ok_or_else(|| StorageError::Generic(anyhow::anyhow!("an index read opens once")))
     }
 }
 
 /// One charge shared by the merge of the runs and the cursor's own state.
 #[derive(Clone)]
-struct SharedMemory(Arc<Mutex<Box<dyn RetainedMemory>>>);
+pub(crate) struct SharedMemory(pub(crate) Arc<Mutex<Box<dyn RetainedMemory>>>);
 
 impl RetainedMemory for SharedMemory {
     fn grow(&mut self, bytes: usize) -> Result<()> {
@@ -154,19 +175,19 @@ impl RetainedMemory for SharedMemory {
 }
 
 /// What the cursor itself holds, released when it is dropped.
-struct Held {
-    memory: SharedMemory,
-    bytes: usize,
+pub(crate) struct Held {
+    pub(crate) memory: SharedMemory,
+    pub(crate) bytes: usize,
 }
 
 impl Held {
-    fn grow(&mut self, bytes: usize) -> Result<()> {
+    pub(crate) fn grow(&mut self, bytes: usize) -> Result<()> {
         self.memory.grow(bytes)?;
         self.bytes += bytes;
         Ok(())
     }
 
-    fn shrink(&mut self, bytes: usize) {
+    pub(crate) fn shrink(&mut self, bytes: usize) {
         self.memory.shrink(bytes);
         self.bytes -= bytes;
     }
@@ -277,14 +298,8 @@ impl EntryIndexCursor {
             memory,
             chosen,
             fetched,
-        } = execution
-            .0
-            .lock()
-            .expect("not poisoned")
-            .take()
-            .ok_or_else(|| {
-                StorageError::Generic(anyhow::anyhow!("an entry-index read opens once"))
-            })?;
+            ..
+        } = execution.take()?;
         let memory = SharedMemory(Arc::new(Mutex::new(memory)));
         // Discovery's work counts even if it fails: the error stays the read's.
         let mut discovered = 0;
@@ -552,6 +567,68 @@ impl EntryIndexCursor {
     }
 }
 
+/// A charge for the entry-index reads' tests.
+#[cfg(test)]
+pub(crate) mod counting {
+    use std::sync::{Arc, Mutex};
+
+    use restate_storage_api::StorageError;
+
+    use crate::Result;
+    use crate::ordered_runs::RetainedMemory;
+
+    /// Counts what a read charges. It refuses a charge that would pass
+    /// `limit`, or one of exactly `refuse` bytes, and records the refusal.
+    #[derive(Clone, Default)]
+    pub(crate) struct Counting(Arc<Mutex<Charge>>);
+
+    #[derive(Default)]
+    pub(crate) struct Charge {
+        pub(crate) now: usize,
+        pub(crate) peak: usize,
+        pub(crate) limit: Option<usize>,
+        pub(crate) refuse: Option<usize>,
+        pub(crate) refused: Option<usize>,
+    }
+
+    impl Counting {
+        pub(crate) fn with(charge: Charge) -> Self {
+            Self(Arc::new(Mutex::new(charge)))
+        }
+
+        pub(crate) fn now(&self) -> usize {
+            self.0.lock().unwrap().now
+        }
+
+        pub(crate) fn refused(&self) -> Option<usize> {
+            self.0.lock().unwrap().refused
+        }
+
+        pub(crate) fn peak(&self) -> usize {
+            self.0.lock().unwrap().peak
+        }
+    }
+
+    impl RetainedMemory for Counting {
+        fn grow(&mut self, bytes: usize) -> Result<()> {
+            let mut charge = self.0.lock().unwrap();
+            if charge.limit.is_some_and(|limit| charge.now + bytes > limit)
+                || charge.refuse == Some(bytes)
+            {
+                charge.refused = Some(bytes);
+                return Err(StorageError::Generic(anyhow::anyhow!("refused")));
+            }
+            charge.now += bytes;
+            charge.peak = charge.peak.max(charge.now);
+            Ok(())
+        }
+
+        fn shrink(&mut self, bytes: usize) {
+            self.0.lock().unwrap().now -= bytes;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use futures::FutureExt;
@@ -579,54 +656,8 @@ mod tests {
 
     use crate::PartitionStoreManager;
 
+    use super::counting::{Charge, Counting};
     use super::*;
-
-    /// Counts what a read charges. It refuses a charge that would pass
-    /// `limit`, or one of exactly `refuse` bytes, and records the refusal.
-    #[derive(Clone, Default)]
-    struct Counting(Arc<Mutex<Charge>>);
-
-    #[derive(Default)]
-    struct Charge {
-        now: usize,
-        peak: usize,
-        limit: Option<usize>,
-        refuse: Option<usize>,
-        refused: Option<usize>,
-    }
-
-    impl Counting {
-        fn with(charge: Charge) -> Self {
-            Self(Arc::new(Mutex::new(charge)))
-        }
-
-        fn now(&self) -> usize {
-            self.0.lock().unwrap().now
-        }
-
-        fn refused(&self) -> Option<usize> {
-            self.0.lock().unwrap().refused
-        }
-    }
-
-    impl RetainedMemory for Counting {
-        fn grow(&mut self, bytes: usize) -> Result<()> {
-            let mut charge = self.0.lock().unwrap();
-            if charge.limit.is_some_and(|limit| charge.now + bytes > limit)
-                || charge.refuse == Some(bytes)
-            {
-                charge.refused = Some(bytes);
-                return Err(StorageError::Generic(anyhow::anyhow!("refused")));
-            }
-            charge.now += bytes;
-            charge.peak = charge.peak.max(charge.now);
-            Ok(())
-        }
-
-        fn shrink(&mut self, bytes: usize) {
-            self.0.lock().unwrap().now -= bytes;
-        }
-    }
 
     /// An execution charging `memory`, the path it takes, and the index keys it
     /// examines.
@@ -784,7 +815,7 @@ mod tests {
         let measuring = Counting::default();
         let (opening, _, _) = execution(&measuring);
         drop(EntryIndexCursor::open(&snapshot, &read, &opening).unwrap());
-        let peak = measuring.0.lock().unwrap().peak;
+        let peak = measuring.peak();
         let refusing = Counting::with(Charge {
             limit: Some(peak - 1),
             ..Default::default()

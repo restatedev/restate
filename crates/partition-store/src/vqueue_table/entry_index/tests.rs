@@ -22,7 +22,7 @@ use restate_storage_api::vqueue_table::{
 use restate_types::identifiers::PartitionId;
 use restate_types::partitions::Partition;
 use restate_types::sharding::KeyRange;
-use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, HandlerRef, VQueueId};
+use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, HandlerRef, Seq, VQueueId};
 
 use crate::fsm_table::get_registry_from_partition_db;
 use crate::index::SecondaryIndexKey;
@@ -704,4 +704,148 @@ async fn partial_indexes_follow_each_entry_stage() {
             active_key(Stage::Running, 0),
         ]
     );
+}
+
+// `finished_entry_by_outcome/1` as it was accepted, before its key fields took
+// the entry table's names (`outcome` → `status`, `finished_at` →
+// `transitioned_at`).
+crate::index::macros::define_secondary_index!(
+    AcceptedFinishedEntryByOutcome,
+    definition: "finished_entry_by_outcome/1",
+    introduced: (1, 8, 2),
+    key: AcceptedFinishedEntryByOutcomeKey {
+        outcome: StatusCodec,
+        target_service_name: ServiceNameCodec => str,
+        target_handler_name: Option<StringCodec> => str,
+        finished_at: ReverseUniqueTimestampCodec,
+        canonical_id: CanonicalEntryIdCodec (primary_key),
+    }
+);
+
+/// Renaming the finished index's key fields changed no byte. Over every
+/// stored status, a handler or none, timestamps tied at a millisecond and apart
+/// only by their logical clock, and two incarnations, today's keys are exactly
+/// the bytes the change that introduced the index wrote
+/// (`finished_entry_by_outcome_v1.keys`): its header, with zero padding, the
+/// partition and the index, then every field. Both declarations decode those
+/// bytes to the values encoded.
+#[test]
+fn finished_keys_encode_as_before_their_fields_were_renamed() {
+    use std::cmp::Reverse;
+
+    use zerocopy::IntoBytes;
+
+    let mut frozen = include_str!("finished_entry_by_outcome_v1.keys")
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .map(|line| {
+            let (case, hex) = line.rsplit_once(' ').unwrap();
+            let bytes: Vec<u8> = (0..hex.len())
+                .step_by(2)
+                .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
+                .collect();
+            (case.to_owned(), bytes)
+        });
+    let scope = IndexScope {
+        partition: PartitionId::MIN,
+        index: 7,
+    };
+    const BASE: u64 = 1_744_010_000_000;
+    let statuses = [
+        Status::Unknown,
+        Status::New,
+        Status::Scheduled,
+        Status::Started,
+        Status::BackingOff,
+        Status::Yielded,
+        Status::Killed,
+        Status::Cancelled,
+        Status::Failed,
+        Status::Succeeded,
+    ];
+    let qid = VQueueId::custom(7, "q");
+    let mut compared = 0;
+    for status in statuses {
+        for handler in [Some("call"), None] {
+            for (millis, logical) in [(0, 0), (0, 1), (1, 0)] {
+                let at = UniqueTimestamp::from_parts_unchecked(BASE + millis, logical);
+                for seq in [1, 2] {
+                    let kind = if handler.is_some() {
+                        EntryKind::Invocation
+                    } else {
+                        EntryKind::StateMutation
+                    };
+                    let canonical =
+                        EntryKey::new(false, at.to_unix_millis(), seq, EntryId::new(kind, [3; 16]))
+                            .to_canonical_entry_id(qid.partition_key());
+                    let (case, frozen) = frozen.next().unwrap();
+                    assert_eq!(
+                        case,
+                        format!(
+                            "{status:?} {} +{millis}ms/{logical} seq{seq}",
+                            handler.unwrap_or("-")
+                        )
+                    );
+                    let (mut renamed, mut accepted) = (Vec::new(), Vec::new());
+                    FinishedEntryByOutcomeKey::borrowed(
+                        status,
+                        "Utils",
+                        handler,
+                        Reverse(at),
+                        canonical,
+                    )
+                    .encode_key(scope, &mut renamed);
+                    AcceptedFinishedEntryByOutcomeKey::borrowed(
+                        status,
+                        "Utils",
+                        handler,
+                        Reverse(at),
+                        canonical,
+                    )
+                    .encode_key(scope, &mut accepted);
+                    assert_eq!((&renamed, &accepted), (&frozen, &frozen), "{case}");
+                    let (prefix, payload) = IndexKeyPrefix::decode_prefix(&frozen).unwrap();
+                    assert_eq!(
+                        prefix.as_bytes(),
+                        IndexKeyPrefix::new(PartitionId::MIN, 7).as_bytes()
+                    );
+                    let new = payload
+                        .into_decoder::<FinishedEntryByOutcomeKey>()
+                        .decode_all()
+                        .unwrap();
+                    let old = payload
+                        .into_decoder::<AcceptedFinishedEntryByOutcomeKey>()
+                        .decode_all()
+                        .unwrap();
+                    let encoded = (status, "Utils", handler, Reverse(at), canonical);
+                    assert_eq!(
+                        (
+                            new.status,
+                            new.target_service_name.as_str(),
+                            new.target_handler_name.as_deref(),
+                            new.transitioned_at,
+                            new.canonical_id
+                        ),
+                        encoded,
+                        "{case}"
+                    );
+                    assert_eq!(
+                        (
+                            old.outcome,
+                            old.target_service_name.as_str(),
+                            old.target_handler_name.as_deref(),
+                            old.finished_at,
+                            old.canonical_id
+                        ),
+                        encoded,
+                        "{case}"
+                    );
+                    assert_eq!(new.canonical_id.seq(), Seq::new(seq), "{case}");
+                    compared += 1;
+                }
+            }
+        }
+    }
+    assert!(frozen.next().is_none());
+    assert_eq!(compared, 10 * 2 * 3 * 2);
 }
