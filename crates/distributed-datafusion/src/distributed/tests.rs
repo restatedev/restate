@@ -146,6 +146,8 @@ struct Fixture<N> {
 
 /// A test's hold on the owner's state reads: each read tells `entered` its
 /// snapshot's completion, then waits for `release` before its first row.
+/// `entered` comes as the read is built, during the task's Execute: a Next
+/// waits on the read only once the worker has received it (`next-received`).
 #[derive(Clone)]
 struct ReadHold {
     entered: tokio::sync::mpsc::UnboundedSender<tokio_util::sync::WaitForCancellationFutureOwned>,
@@ -1234,6 +1236,7 @@ async fn a_close_ends_a_blocked_execute_or_next_once() {
         .unwrap();
     let task = fixture.observations.lock()[0].id.clone();
     assert_eq!(fixture.observations.lock()[0].owner, OWNER);
+    next_event("next-received", &task, &mut seen, &mut taken).await;
     consumer.abort();
     let next = next_event("next", &task, &mut seen, &mut taken).await;
     let close = next_event("close", &task, &mut seen, &mut taken).await;
@@ -1506,6 +1509,7 @@ async fn a_close_cancels_a_waiting_task_and_finalizes_it_once() {
         (observations[0].id.clone(), observations[0].owner)
     };
     assert_eq!(owner, OWNER);
+    next_event("next-received", &task, &mut seen, &mut taken).await;
     let first = close(&task);
     next_event("cancelled", &task, &mut seen, &mut taken).await;
     let next = next_event("next", &task, &mut seen, &mut taken).await;
