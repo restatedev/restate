@@ -699,10 +699,9 @@ async fn migration_tables_serve_the_default_engine_rows() {
         let mut actual = rows(session.as_ref(), sql).await;
         actual.sort();
         assert_eq!(&actual, expected, "{sql}");
-        assert_eq!(actual.len(), 6, "{sql}");
     }
-    // Index sizes are estimated when the query selects them; completed jobs
-    // aren't blocked.
+    // Both list the six statistics, whose sizes are estimated when the query
+    // selects them, and their six completed jobs, which aren't blocked.
     for sql in [
         "SELECT COUNT(*) FROM cluster.registry
          WHERE status = 'ready' AND approx_size_bytes IS NOT NULL",

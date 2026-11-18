@@ -18,7 +18,8 @@
 //! commands, paces and retries the slices, records the work on a job in
 //! `restate.cluster.migration_jobs`, and marks the migration `complete` in
 //! `restate.cluster.registry` once the walk is through. The journal
-//! completion-index cleanup, `jc_orphan_cleanup/1`, is the worked example.
+//! completion-index cleanup, `jc_orphan_cleanup/1` in
+//! `migrations/online/jc_orphan_cleanup.rs`, is the worked example.
 //!
 //! # 1. Is an online migration the right kind?
 //!
@@ -172,6 +173,8 @@
 //! Operators follow it in `restate.cluster.migration_jobs` (kind `migration`)
 //! and see it complete in `restate.cluster.registry`.
 
+mod jc_orphan_cleanup;
+
 use restate_storage_api::StorageError;
 use restate_util_string::ReString;
 
@@ -180,14 +183,16 @@ use crate::registry::MigrationOnUnknown;
 use crate::walk::engine::SliceRunner;
 use crate::walk::{OnUnknown, Source, Walk, WalkKind};
 
+use self::jc_orphan_cleanup::JcOrphanCleanup;
+
 /// The online migrations this binary knows, one line each:
 /// `&MigrationDefinition::of::<MyCleanup>()`. Each registers at the next open of
 /// every store that carries the `registry` storage feature.
-pub(crate) const ONLINE_MIGRATIONS: &[&MigrationDefinition] = &[];
+pub(crate) const ONLINE_MIGRATIONS: &[&MigrationDefinition] =
+    &[&MigrationDefinition::of::<JcOrphanCleanup>()];
 
 /// A one-time change to the rows of one source table, run online; see the
 /// module documentation for how to write one.
-#[cfg_attr(not(test), expect(dead_code, reason = "ONLINE_MIGRATIONS is empty"))]
 pub(crate) trait OnlineMigration: Default + 'static {
     /// The versioned name, `"name/N"`, such as `"jc_orphan_cleanup/1"`. Never
     /// renamed or reused: a changed migration is a new version.
@@ -214,7 +219,6 @@ pub(crate) trait OnlineMigration: Default + 'static {
 }
 
 /// What [`OnlineMigration::migrate`] did with one row.
-#[cfg_attr(not(test), expect(dead_code, reason = "ONLINE_MIGRATIONS is empty"))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Migrated {
     /// Whether it changed anything: counted as the job's `rows_changed`.
@@ -246,7 +250,6 @@ impl MigrationDefinition {
     /// # Panics
     /// At compile time, in a constant such as [`ONLINE_MIGRATIONS`], if `M::NAME`
     /// isn't `"name/N"` with `N > 0` and no leading zero.
-    #[cfg_attr(not(test), expect(dead_code, reason = "ONLINE_MIGRATIONS is empty"))]
     pub(crate) const fn of<M: OnlineMigration>() -> Self {
         Self {
             name: M::NAME,
@@ -285,7 +288,6 @@ impl MigrationDefinition {
 
 /// Splits a migration name `"name/N"` into `("name", N)`, panicking on any
 /// other shape: at compile time, where definitions are constants.
-#[cfg_attr(not(test), expect(dead_code, reason = "ONLINE_MIGRATIONS is empty"))]
 const fn split_name(name: &'static str) -> (&'static str, u32) {
     let bytes = name.as_bytes();
     let mut at = bytes.len();
