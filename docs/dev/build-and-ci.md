@@ -133,7 +133,7 @@ Triggered on: PRs, pushes to `main`, `release/*`, and `hotfix/*` branches, and a
 | Job | Runner | Purpose |
 |-----|--------|---------|
 | `workspace-hack-check` | warp-ubuntu-latest-x64-4x | Verifies `cargo-hakari` workspace-hack is up to date |
-| `build-and-test` | warp-ubuntu-latest-x64-16x | Runs `just verify` (lint + test + doctest) |
+| `build-and-test` | warp-ubuntu-latest-x64-16x | Runs `just verify` (lint + test + doctest) and checks that `cli/src/commands/sql_tables.rs` is up to date |
 | `docker` | warp-ubuntu-latest-x64-16x | Builds Docker image, uploads as tarball artifact |
 | `docker-pr-cache` | warp-ubuntu-latest-x64-16x | Main pushes only. Builds the `release-lite` dependency layer (the `builder` stage) that PR `docker` builds restore from the cache |
 
@@ -148,7 +148,7 @@ Triggered on: PRs, pushes to `main`, `release/*`, and `hotfix/*` branches, and a
 | `sdk-rust` | SDK-Rust integration tests |
 | `e2e` | End-to-end tests from `restatedev/e2e` |
 
-Experimental feature tests (`e2e-vqueues`, `e2e-experimental-kafka-ingestion`, etc.) run with `continue-on-error: true` and don't block merges.
+Experimental feature tests (currently `e2e-bilrost-schema`) run with `continue-on-error: true` and don't block merges.
 
 A new push to a PR cancels that PR's CI run that is still in progress.
 
