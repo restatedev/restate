@@ -217,10 +217,12 @@ impl WorkerChannel for RestateWorkerChannel {
                 .collect(),
             redacted_sql: metadata.redacted_sql.clone(),
             planning_duration: metadata.planning_duration,
+            // Reports aren't requested yet.
+            analyze: None,
         };
         let reply = rpc(&self.connection, QueryTaskRequest::Install(install)).await?;
         match reply {
-            QueryTaskReplyBody::Installed(QueryTaskInstalled { schema: actual }) => {
+            QueryTaskReplyBody::Installed(QueryTaskInstalled { schema: actual, .. }) => {
                 if decode_schema(&actual).map_err(|err| DataFusionError::External(err.into()))?
                     != *schema
                 {
@@ -345,7 +347,7 @@ impl TaskGuard {
                     })
                 )
                 .await?,
-                QueryTaskReplyBody::Closed(())
+                QueryTaskReplyBody::Closed(_)
             ) {
                 return exec_err!("unexpected task close response");
             }

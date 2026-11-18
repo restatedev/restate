@@ -40,7 +40,7 @@ use restate_storage_api::StorageError;
 use restate_storage_query_api::QueryMetadata;
 use restate_types::GenerationalNodeId;
 use restate_types::net::distributed_query::{
-    DistributedQueryService, PartitionReadError, QueryFailureKind, QueryTaskError,
+    DistributedQueryService, PartitionReadError, QueryFailureKind, QueryTaskClosed, QueryTaskError,
     QueryTaskExecute, QueryTaskId, QueryTaskInstall, QueryTaskInstalled, QueryTaskReply,
     QueryTaskReplyBody, QueryTaskRequest,
 };
@@ -152,14 +152,14 @@ impl DistributedQueryServer {
                                         owner: self.scanners.node_id(), plan: datafusion::physical_plan::displayable(task.plan.as_ref()).indent(true).to_string(), output: Arc::clone(&task.output),
                                     });
                                     tasks.insert(key, Arc::new(task));
-                                    reply.send(QueryTaskReplyBody::Installed(QueryTaskInstalled { schema }).into());
+                                    reply.send(QueryTaskReplyBody::Installed(QueryTaskInstalled { schema, analyze: None }).into());
                                 }
                                 Err(error) => reply.send(task_reply(Err(error), origin)),
                             }
                         }
                         QueryTaskRequest::Close(request) => {
                             if let Some(task) = tasks.remove(&(peer, request.id)) { task.cancel.cancel(); }
-                            reply.send(QueryTaskReplyBody::Closed(()).into());
+                            reply.send(QueryTaskReplyBody::Closed(QueryTaskClosed::default()).into());
                         }
                         QueryTaskRequest::Execute(request) => {
                             let task = tasks.get(&(peer, request.id.clone())).cloned();
