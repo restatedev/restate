@@ -21,7 +21,7 @@ define_schema! {
     /// nodes, such as the build of an index: unfinished ones, and finished ones
     /// up to `worker.storage.migration-job-history-limit`. Each replica keeps its
     /// own; a replica's rows come from one snapshot of it, separate from the one
-    /// `indexes` reads, except `blocked_by`, which its background driver reports
+    /// `registry` reads, except `blocked_by`, which its background driver reports
     /// apart from the snapshot.
     ///
     /// Jobs that share a walk are each charged the walk's rows examined, slices

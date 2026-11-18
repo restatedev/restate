@@ -42,7 +42,7 @@ use crate::PartitionStoreTransaction;
 use crate::job::{DEFAULT_HISTORY_LIMIT, MigrationJobRecords};
 use crate::walk::Walks;
 
-use super::{IndexKind, IndexRegistry};
+use super::{IndexKind, Registry};
 
 /// Applies an entry change to one index `id` of a definition. `before` is
 /// `None` for insertions and for entries the index does not reflect yet.
@@ -88,7 +88,7 @@ pub(crate) const TEST_INTRODUCED: SemanticRestateVersion = SemanticRestateVersio
 
 /// The definitions this binary maintains. Opening a store retires the indexes of
 /// any other definition.
-pub(crate) const DEFINITIONS: &[&IndexDefinition] = &[
+pub(crate) const INDEX_DEFINITIONS: &[&IndexDefinition] = &[
     &crate::vqueue_table::SERVICE_STATS,
     &crate::vqueue_table::DEPLOYMENT_STATS,
     &crate::vqueue_table::VIRTUAL_OBJECT_STATS,
@@ -105,18 +105,19 @@ struct Active {
     walk: Option<u64>,
 }
 
-/// The Backfilling and Ready indexes of known definitions, built from the
-/// committed registry and walks whenever a commit changes them, and shared by
-/// every transaction.
+/// The committed registry, walks and job records, published to every
+/// transaction and handle after each commit that changes them, together with
+/// the indexes writes maintain: the Backfilling and Ready indexes of known
+/// definitions.
 #[derive(Default)]
-pub(crate) struct MaintainedIndexes {
-    /// Sorted by ID.
+pub(crate) struct PublishedRegistry {
+    /// The indexes writes maintain, sorted by ID.
     entries: Vec<Active>,
     /// The list every written entry stores: the Backfilling IDs as sorted
     /// big-endian `u32`s. Empty when every index is Ready.
     maintaining: Vec<u8>,
-    /// The committed records this set was built from.
-    registry: IndexRegistry,
+    /// The committed registry and walks, from which `entries` is derived.
+    registry: Registry,
     walks: Walks,
     /// The committed job records, which slices update, and how many finished
     /// jobs their history keeps.
@@ -124,7 +125,7 @@ pub(crate) struct MaintainedIndexes {
     history_limit: usize,
 }
 
-impl std::fmt::Debug for MaintainedIndexes {
+impl std::fmt::Debug for PublishedRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list()
             .entries(
@@ -136,11 +137,12 @@ impl std::fmt::Debug for MaintainedIndexes {
     }
 }
 
-impl MaintainedIndexes {
-    /// Maintained indexes whose definition is in `known`, with a matching kind.
-    /// Others are not maintained; opening a store retires them before writes.
+impl PublishedRegistry {
+    /// Publishes `registry` and `walks`, without job records. Writes maintain
+    /// the indexes whose definition is in `known`, with a matching kind; opening a
+    /// store retires the others before writes.
     pub(crate) fn new(
-        registry: &IndexRegistry,
+        registry: &Registry,
         walks: &Walks,
         known: &[&'static IndexDefinition],
     ) -> Self {
@@ -148,7 +150,7 @@ impl MaintainedIndexes {
             .with_jobs(MigrationJobRecords::default(), DEFAULT_HISTORY_LIMIT)
     }
 
-    /// This set with the committed `jobs`, keeping at most `history_limit`
+    /// Adds the committed `jobs`, whose history keeps at most `history_limit`
     /// finished jobs.
     pub(crate) fn with_jobs(mut self, jobs: MigrationJobRecords, history_limit: usize) -> Self {
         self.jobs = jobs;
@@ -156,11 +158,11 @@ impl MaintainedIndexes {
         self
     }
 
-    /// The set of the same definitions after a commit changed the registry, the
-    /// walks or the jobs to `registry`, `walks` and `jobs`.
+    /// What to publish once a commit changed the registry, the walks or the jobs
+    /// to `registry`, `walks` and `jobs`, for the same known definitions.
     pub(crate) fn successor(
         &self,
-        registry: IndexRegistry,
+        registry: Registry,
         walks: Walks,
         jobs: MigrationJobRecords,
     ) -> Self {
@@ -168,9 +170,9 @@ impl MaintainedIndexes {
         Self::build(registry, walks, &known).with_jobs(jobs, self.history_limit)
     }
 
-    fn build(registry: IndexRegistry, walks: Walks, known: &[&'static IndexDefinition]) -> Self {
+    fn build(registry: Registry, walks: Walks, known: &[&'static IndexDefinition]) -> Self {
         let mut entries: Vec<_> = registry
-            .entries()
+            .indexes()
             .iter()
             .filter(|index| index.is_maintained())
             .filter_map(|index| {
@@ -204,7 +206,7 @@ impl MaintainedIndexes {
     }
 
     /// The committed registry.
-    pub(crate) fn registry(&self) -> &IndexRegistry {
+    pub(crate) fn registry(&self) -> &Registry {
         &self.registry
     }
 
@@ -313,7 +315,7 @@ mod tests {
                 ActiveEntryByStage::INTRODUCED,
             ),
         ];
-        let carried = DEFINITIONS
+        let carried = INDEX_DEFINITIONS
             .iter()
             .map(|definition| (definition.name, definition.introduced.clone()))
             .collect::<Vec<_>>();
@@ -322,7 +324,7 @@ mod tests {
             "each definition carries its declared version"
         );
         let binary = SemanticRestateVersion::current();
-        for definition in DEFINITIONS {
+        for definition in INDEX_DEFINITIONS {
             assert_eq!(
                 definition.introduced.to_string(),
                 "1.8.2",

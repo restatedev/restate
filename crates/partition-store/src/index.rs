@@ -106,7 +106,7 @@ pub fn ready_index_scope<I: RegisteredIndex>(
     crate::keys::header::IndexScope {
         partition: store.partition_id(),
         index: store
-            .maintained_indexes()
+            .published_registry()
             .ready_index(I::DEFINITION, crate::registry::IndexKind::Secondary)
             .unwrap(),
     }

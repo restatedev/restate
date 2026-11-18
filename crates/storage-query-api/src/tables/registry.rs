@@ -17,13 +17,13 @@ use restate_util_string::ReString;
 use crate::{ShardingScheme, define_schema};
 
 define_schema! {
-    /// The indexes and statistics of each partition replica on the worker nodes,
-    /// with their status. Each replica keeps its own: two replicas of a partition
-    /// can be at different points. A replica's rows come from one snapshot of it,
-    /// separate from the one `migration_jobs` reads, except `approx_size_bytes`,
-    /// estimated over the replica's current data.
-    indexes {
-        name: "indexes",
+    /// The registry of each partition replica on the worker nodes: its indexes and
+    /// statistics, with their status. Each replica keeps its own: two replicas of a
+    /// partition can be at different points. A replica's rows come from one snapshot
+    /// of it, separate from the one `migration_jobs` reads, except
+    /// `approx_size_bytes`, estimated over the replica's current data.
+    registry {
+        name: "registry",
         sharding: ShardingScheme::ByNode(Some(Role::Worker)),
         sharding_columns { plain_node_id: PlainNodeId, gen_node_id: GenerationalNodeId },
         columns {
@@ -38,8 +38,8 @@ define_schema! {
             definition: ReString => DataType::Utf8,
             /// `secondary` (one key per entry) or `aggregate` (counters, a statistic).
             kind: ReString => DataType::Utf8,
-            /// The index's ID in this replica, the prefix of its keys.
-            index_id: u32 => DataType::UInt32,
+            /// The entry's ID in this replica; for an index, the prefix of its keys.
+            id: u32 => DataType::UInt32,
             /// `backfilling` (maintained but incomplete: queries don't read it),
             /// `ready` or `dropped`.
             status: ReString => DataType::Utf8,

@@ -331,7 +331,7 @@ pub(crate) fn get_storage_features_from_partition_db(
 #[allow(dead_code)]
 pub(crate) fn get_registry_from_partition_db(
     db: &PartitionDb,
-) -> Result<Option<crate::registry::IndexRegistry>> {
+) -> Result<Option<crate::registry::Registry>> {
     let key = create_key(db.partition().id(), fsm_variable::INDEX_REGISTRY);
     db.rocksdb()
         .inner()
@@ -339,7 +339,7 @@ pub(crate) fn get_registry_from_partition_db(
         .get_pinned_cf(db.cf_handle(), key.to_bytes())
         .map_err(|err| StorageError::Generic(err.into()))?
         .map(|value| {
-            crate::registry::IndexRegistry::decode(&value)
+            crate::registry::Registry::decode(&value)
                 .map_err(|err| StorageError::Conversion(err.into()))
         })
         .transpose()
@@ -366,7 +366,7 @@ pub(crate) fn registry_key(
 pub(crate) fn put_registry<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
-    registry: &crate::registry::IndexRegistry,
+    registry: &crate::registry::Registry,
 ) -> Result<()> {
     let key = PartitionStateMachineKey {
         partition_id: partition_id.into(),
@@ -381,7 +381,7 @@ pub(crate) fn append_registry_to_wb(
     cf_handle: &std::sync::Arc<rocksdb::BoundColumnFamily<'_>>,
     wb: &mut rocksdb::WriteBatch,
     partition_id: PartitionId,
-    registry: &crate::registry::IndexRegistry,
+    registry: &crate::registry::Registry,
 ) {
     let key = create_key(partition_id, fsm_variable::INDEX_REGISTRY);
     wb.put_cf(cf_handle, key.to_bytes(), registry.encode());

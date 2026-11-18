@@ -13,8 +13,8 @@
 //! # Concepts
 //!
 //! - **Read snapshot** ([`ReadSnapshot`]): what a read sees of a partition: a
-//!   RocksDB snapshot together with the storage features and the index registry
-//!   as they were when the processor admitted the read. A read therefore never
+//!   RocksDB snapshot together with the storage features and the registry as
+//!   they were when the processor admitted the read. A read therefore never
 //!   sees an index in a state newer than its data. Clones share all of it.
 //! - **Cancellation**: the processor's token or the read's child gate ends the
 //!   read; from then on data reads and cursor steps fail. Parent cancellation
@@ -61,7 +61,7 @@ use crate::fsm_table::{
 };
 use crate::job::{MigrationJobId, MigrationJobStatus, MigrationJobs};
 use crate::keys::KeyKind;
-use crate::registry::{Index, IndexKind, IndexNotReady, IndexRegistry, IndexStatus};
+use crate::registry::{Index, IndexKind, IndexNotReady, IndexStatus, Registry};
 use crate::scan::PhysicalScan;
 use crate::table::{IndexSource, ReadMetadata};
 use crate::{PartitionDb, PartitionReadSnapshot, PartitionSnapshotScan, Result};
@@ -73,7 +73,7 @@ pub use executor::QueryIoExecutor;
 pub use report::{IndexSizes, MigrationReport, ReplicaMigrations, UnreadableReplica};
 
 /// A read's view of one partition, admitted by its processor: the RocksDB
-/// snapshot plus the storage features and the index registry of that moment.
+/// snapshot plus the storage features and the registry of that moment.
 /// Clones share the snapshot, its admission, cancellation and completion. Direct
 /// reads block the caller; [`Self::scan`] runs on the shared query IO pool.
 #[derive(Clone)]
@@ -86,7 +86,7 @@ struct QuerySnapshot {
     snapshot: PartitionReadSnapshot,
     features: StorageFeatures,
     /// The registry as of `snapshot`, decoded on first use.
-    registry: OnceLock<std::result::Result<Option<IndexRegistry>, String>>,
+    registry: OnceLock<std::result::Result<Option<Registry>, String>>,
     /// The unfinished jobs as of `snapshot`, decoded on first use.
     jobs: OnceLock<std::result::Result<MigrationJobs, String>>,
     /// The processor's token for ending this read.
@@ -213,7 +213,7 @@ impl ReadSnapshot {
                 .reader()
                 .get_pinned(KeyKind::Fsm, &key)
                 .map_err(|err| err.to_string())?
-                .map(|value| IndexRegistry::decode(&value).map_err(|err| err.to_string()))
+                .map(|value| Registry::decode(&value).map_err(|err| err.to_string()))
                 .transpose()
         });
         let registry = registry
@@ -252,7 +252,7 @@ impl ReadSnapshot {
         let job = jobs
             .as_ref()
             .ok()
-            .and_then(|jobs| jobs.get(MigrationJobId::for_index(index.id)));
+            .and_then(|jobs| jobs.get(MigrationJobId::for_entry(index.id)));
         let Some(walk) = index.walk else {
             // Between passes, or not started yet.
             return match job {

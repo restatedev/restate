@@ -64,7 +64,7 @@ use crate::walk::engine::{self, Settlement, SourceEntry, Staged, WalkJob, walk_e
 use crate::walk::{Source, WalkKind, Walks};
 use crate::{PartitionDb, PartitionStoreTransaction};
 
-use super::{IndexDefinition, IndexRegistry, MaintainedIndexes, RegistryError};
+use super::{IndexDefinition, PublishedRegistry, Registry, RegistryError};
 
 /// A Backfilling index: its definition and index ID.
 type Member = (&'static IndexDefinition, u32);
@@ -75,7 +75,7 @@ pub(crate) struct IndexBackfill {
 }
 
 impl IndexBackfill {
-    pub(crate) fn new(active: &MaintainedIndexes, walk: u64) -> Result<Self, StorageError> {
+    pub(crate) fn new(active: &PublishedRegistry, walk: u64) -> Result<Self, StorageError> {
         let members = active.members(walk)?;
         if members.len() > 64 {
             return Err(StorageError::Generic(anyhow::anyhow!(
@@ -145,7 +145,7 @@ impl WalkJob for IndexBackfill {
 
     fn finish(
         &self,
-        registry: &mut IndexRegistry,
+        registry: &mut Registry,
         settled: &[(u32, Settlement)],
         at: u64,
     ) -> Result<(), StorageError> {
@@ -162,7 +162,7 @@ impl WalkJob for IndexBackfill {
 }
 
 /// Makes the Backfilling index `id` Ready at `at`.
-fn set_ready(registry: &mut IndexRegistry, id: u32, at: u64) -> Result<(), StorageError> {
+fn set_ready(registry: &mut Registry, id: u32, at: u64) -> Result<(), StorageError> {
     registry
         .set_ready(id)
         .map_err(|err| StorageError::Conversion(err.into()))?;
@@ -174,7 +174,7 @@ fn set_ready(registry: &mut IndexRegistry, id: u32, at: u64) -> Result<(), Stora
 
 /// Creates the `Pending` build job of index `id`, registered at `stamp`.
 pub(crate) fn register_job(
-    registry: &IndexRegistry,
+    registry: &Registry,
     jobs: &mut MigrationJobRecords,
     id: u32,
     stamp: &Stamp,
@@ -203,7 +203,7 @@ pub(crate) fn register_job(
 /// the caller commits them.
 pub(crate) fn start(
     db: &PartitionDb,
-    registry: &mut IndexRegistry,
+    registry: &mut Registry,
     walks: &mut Walks,
     jobs: &mut MigrationJobRecords,
     ids: &[u32],
@@ -220,7 +220,7 @@ pub(crate) fn start(
         ),
     };
     for id in ids {
-        let job_id = MigrationJobId::for_index(*id);
+        let job_id = MigrationJobId::for_entry(*id);
         let job = jobs
             .unfinished
             .get_mut(job_id)
