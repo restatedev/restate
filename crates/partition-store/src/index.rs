@@ -74,6 +74,13 @@ pub trait SecondaryIndex {
 pub trait RegisteredIndex: SecondaryIndex<Scope = crate::keys::header::IndexScope> {
     /// The name of its registry definition, including the version.
     const DEFINITION: &'static str;
+    /// The Restate version that introduced the definition. A node of an older
+    /// version can neither maintain nor read its indexes, so a query coordinator
+    /// must choose one only where every node serving its partitions runs at least
+    /// this version. The V2 planner checks this before it reads an index in place
+    /// of its primary.
+    /// Code, not stored data: it is never persisted.
+    const INTRODUCED: restate_types::SemanticRestateVersion;
 }
 
 /// A complete secondary key, including its required primary-key suffix.

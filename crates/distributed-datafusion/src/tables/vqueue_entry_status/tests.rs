@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -540,4 +541,82 @@ async fn vqueues_view_matches_v1_stage_reads() {
             }
         }
     }
+
+    // The UI's finished page: more terminal entries than it shows, newest
+    // created first, with newer running entries it rejects. Entries are created
+    // in pairs at the same time, and one pair straddles the page's LIMIT.
+    let finished = include_str!("../../ui_queries/vqueues_finished_newest.sql");
+    let qid = VQueueId::custom(11, "finished");
+    let terminal = [
+        Status::Succeeded,
+        Status::Failed,
+        Status::Cancelled,
+        Status::Killed,
+    ];
+    let mut created_of = HashMap::new();
+    let mut tx = store.transaction();
+    for n in 0..320u64 {
+        let (stage, status) = if n < 300 {
+            (Stage::Finished, terminal[n as usize % terminal.len()])
+        } else {
+            (Stage::Running, Status::Started)
+        };
+        let at = MillisSinceEpoch::new(1_744_020_000_000 + n.div_ceil(2) * 3);
+        let entry_id = EntryId::new(EntryKind::Invocation, (1_000 + u128::from(n)).to_be_bytes());
+        if stage == Stage::Finished {
+            created_of.insert(entry_id.display(11).to_string(), at);
+        }
+        let entry_key = EntryKey::new(false, at, 100 + n, entry_id);
+        let stats = EntryStatistics::new(
+            UniqueTimestamp::try_from_unix_millis(at).unwrap(),
+            entry_key.run_at(),
+        );
+        let metadata = EntryMetadata::default();
+        let value = EntryValue {
+            status,
+            metadata: metadata.clone(),
+            stats: stats.clone(),
+        };
+        tx.put_vqueue_inbox(&qid, stage, &entry_key, &value);
+        tx.create_vqueue_entry_status(
+            &EntryContext {
+                qid: &qid,
+                target: &EntryTargetRef::Service {
+                    scope: None,
+                    service: "svc",
+                    handler: "run",
+                },
+            },
+            EntryStateRef {
+                stage,
+                status,
+                entry_key: &entry_key,
+                metadata: &metadata,
+                stats: &stats,
+            },
+        );
+    }
+    tx.commit().await.unwrap();
+    drop(tx);
+    let [old, new] = differential_sessions(&manager).await;
+    // Both return the newest 250 creation times of the terminal entries, each
+    // entry once.
+    let mut terminal: Vec<_> = created_of.values().copied().collect();
+    terminal.sort_by(|a, b| b.cmp(a));
+    assert_eq!(terminal[249], terminal[250], "the LIMIT splits a pair");
+    for session in [&old, &new] {
+        let found = rows(session.as_ref(), finished).await;
+        let times: Vec<_> = found.iter().map(|row| created_of[&row[0]]).collect();
+        assert_eq!(times, terminal[..250]);
+        assert_eq!(found.iter().collect::<HashSet<_>>().len(), 250);
+    }
+    // No index holds finished entries in creation order: V2 scans them.
+    let plan = rows(new.as_ref(), &format!("EXPLAIN {finished}"))
+        .await
+        .concat()
+        .join("\n");
+    assert!(
+        plan.contains("TableScanExec") && !plan.contains("IndexScanExec"),
+        "{plan}"
+    );
 }

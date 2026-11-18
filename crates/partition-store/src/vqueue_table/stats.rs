@@ -35,6 +35,7 @@ use crate::stats::{EncodeStatKey, Stat};
 /// Counts by service, handler and entry kind.
 pub(crate) static SERVICE_STATS: IndexDefinition = IndexDefinition {
     name: ServiceStats::DEFINITION,
+    introduced: ServiceStats::INTRODUCED,
     kind: IndexKind::Aggregate,
     apply: apply_service_stats,
     can_fill: true,
@@ -43,6 +44,7 @@ pub(crate) static SERVICE_STATS: IndexDefinition = IndexDefinition {
 /// Counts by pinned deployment and service.
 pub(crate) static DEPLOYMENT_STATS: IndexDefinition = IndexDefinition {
     name: DeploymentStats::DEFINITION,
+    introduced: DeploymentStats::INTRODUCED,
     kind: IndexKind::Aggregate,
     apply: apply_deployment_stats,
     can_fill: true,
@@ -51,6 +53,7 @@ pub(crate) static DEPLOYMENT_STATS: IndexDefinition = IndexDefinition {
 /// Counts by virtual object, handler and entry kind.
 pub(crate) static VIRTUAL_OBJECT_STATS: IndexDefinition = IndexDefinition {
     name: VirtualObjectStats::DEFINITION,
+    introduced: VirtualObjectStats::INTRODUCED,
     kind: IndexKind::Aggregate,
     apply: apply_virtual_object_stats,
     can_fill: true,

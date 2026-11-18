@@ -16,20 +16,27 @@ use std::fmt::{self, Formatter};
 use std::sync::Arc;
 
 use bilrost::{Message as _, OwnedMessage};
+use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{DataFusionError, Result, Statistics, exec_err, plan_err};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
+use datafusion::physical_expr::expressions::col;
+use datafusion::physical_expr::{
+    EquivalenceProperties, LexOrdering, PhysicalExpr, PhysicalSortExpr,
+};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType, SchedulingType};
+use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::limit::LimitStream;
 use datafusion::physical_plan::metrics::{
     BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
+use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion::physical_plan::streaming::{PartitionStream, StreamingTableExec};
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, StatisticsArgs,
@@ -46,7 +53,7 @@ use restate_types::identifiers::PartitionId;
 use restate_types::partition_table::Partition;
 use restate_util_string::ReString;
 
-use crate::access::{Access, PrimaryKeys, PrimaryRead, select_access};
+use crate::access::{Access, PrimaryKeys, PrimaryRead, SortedColumn, select_access};
 use crate::placement::PartitionPlacement;
 use crate::source_registry::{PartitionLocation, PartitionSourceDescriptor, SourceRegistry};
 use crate::statistics::estimate_source_statistics;
@@ -55,6 +62,8 @@ use crate::table_providers::{
 };
 use crate::table_util::{find_sort_columns, make_ordering};
 use crate::{decode_schema, encode_schema};
+
+use super::demand::Demands;
 
 #[cfg(test)]
 #[path = "source_tests.rs"]
@@ -130,6 +139,14 @@ struct IndexWork {
     index: ReString,
     #[bilrost(2)]
     work: PartitionWork<PartitionScan>,
+    /// The order of each partition's rows, as the index declares it.
+    #[bilrost(3)]
+    ordering: Vec<SortedColumn>,
+    /// How many rows a partition that can't keep the order keeps, sorted: the
+    /// query's bound, proven where the partition's predicate is every condition
+    /// above it. Unbounded otherwise.
+    #[bilrost(4)]
+    bound: Option<u64>,
 }
 
 /// Workers that predate a variant decode it as `Unknown` and fail the query.
@@ -294,7 +311,10 @@ impl PhysicalOptimizerRule for PrimaryAccessRule {
         let plan = plan
             .transform_down(|plan| shard_joins::group_join(plan, config))?
             .data;
+        // While the planner's bounded sorts still sit above their sources.
+        let demands = Demands::of(&plan);
         plan.transform_up(|plan| {
+            let demand = demands.on(&plan);
             let Some(scan) = plan.downcast_ref::<TableScanExec>() else {
                 return Ok(Transformed::no(plan));
             };
@@ -304,8 +324,8 @@ impl PhysicalOptimizerRule for PrimaryAccessRule {
             let SourceWork::TableScan(work) = &scan.0.descriptor.work else {
                 unreachable!("table scan planning")
             };
-            let access =
-                select_access(&planning.source, scan.0.predicate.as_ref()).map_err(external)?;
+            let access = select_access(&planning.source, scan.0.predicate.as_ref(), demand)
+                .map_err(external)?;
             Ok(Transformed::yes(plan_partition_access(
                 planning.source.table.clone(),
                 &planning.source.manager,
@@ -408,9 +428,15 @@ pub(crate) fn plan_partition_access(
                         .collect(),
                 )),
                 Access::Scan => SourceWork::TableScan(scans(reads)),
-                Access::Index(index) => SourceWork::IndexScan(IndexWork {
+                Access::Index {
+                    index,
+                    ordering,
+                    bound,
+                } => SourceWork::IndexScan(IndexWork {
                     index: index.clone(),
                     work: scans(reads),
+                    ordering: ordering.clone(),
+                    bound: bound.map(|bound| bound as u64),
                 }),
             };
             let descriptor = SourceDescriptor {
@@ -533,10 +559,23 @@ impl SourcePlan {
             .transpose()?;
         // Point lookups do not automatically inherit the table iterator's SQL
         // ordering (notably string IDs versus their physical key representation).
-        let ordering = match descriptor.work {
+        let ordering = match &descriptor.work {
             SourceWork::TableScan(_) => {
                 make_ordering(find_sort_columns(&descriptor.ordering, &schema))
             }
+            // An index read's order is its own, up to the first unprojected column.
+            SourceWork::IndexScan(IndexWork { ordering, .. }) => ordering
+                .iter()
+                .map_while(|column| {
+                    Some(PhysicalSortExpr {
+                        expr: col(&column.name, &schema).ok()?,
+                        options: SortOptions {
+                            descending: column.descending,
+                            nulls_first: column.nulls_first,
+                        },
+                    })
+                })
+                .collect(),
             _ => make_ordering(vec![]),
         };
         let properties = Arc::new(
@@ -596,7 +635,7 @@ impl SourcePlan {
                 .iter()
                 .map(|read| (read.partition, PrimaryRead::Scan))
                 .collect(),
-            SourceWork::IndexScan(IndexWork { index, work }) => work
+            SourceWork::IndexScan(IndexWork { index, work, .. }) => work
                 .reads
                 .iter()
                 .map(|read| (read.partition, PrimaryRead::Index(index.clone())))
@@ -767,6 +806,12 @@ impl SourcePlan {
         let leaf_metrics = self.metrics.clone();
         let requests = MetricBuilder::new(&self.metrics).counter("storage_requests", lane);
         let requested_keys = MetricBuilder::new(&self.metrics).counter("requested_keys", lane);
+        let ordering = self.properties.output_ordering().cloned();
+        let predicate = self.predicate.clone();
+        let bound = match &self.descriptor.work {
+            SourceWork::IndexScan(IndexWork { bound, .. }) => bound.map(|bound| bound as usize),
+            _ => None,
+        };
         let stream = stream::once(async move {
             if !matches!(
                 manager
@@ -778,13 +823,26 @@ impl SourcePlan {
             }
             requests.add(1);
             requested_keys.add(num_keys);
-            prepared
-                .execute(
-                    scope.as_ref().clone(),
-                    batch_size,
-                    ReadMetrics::new(compute, &leaf_metrics, lane),
-                )
-                .map_err(external)
+            let scope = scope
+                .as_ref()
+                .clone()
+                .with_memory_pool(Arc::clone(&context.runtime_env().memory_pool));
+            let metrics = ReadMetrics::new(compute, &leaf_metrics, lane);
+            let Some(ordering) = ordering else {
+                return prepared
+                    .execute(scope, batch_size, metrics)
+                    .map_err(external);
+            };
+            let (rows, in_order) = prepared
+                .execute_in_order(scope, batch_size, metrics)
+                .map_err(external)?;
+            // A read that can't keep its declared order on this snapshot, such as
+            // an index read that scans instead, is sorted before it's emitted.
+            if in_order.await {
+                Ok(rows)
+            } else {
+                sorted(rows, predicate, ordering, bound, context)
+            }
         })
         .try_flatten();
         // Enforce the physical fetch contract even for registered readers that
@@ -800,6 +858,53 @@ impl SourcePlan {
             metrics,
         )))
     }
+}
+
+/// Sorts the `rows` that match `predicate` with the query's memory pool. The
+/// plan above applies the predicate again.
+/// - Unbounded, it sorts every match, spilling as the pool requires.
+/// - Bounded, it keeps only the first `bound` matches (a top-K, which doesn't
+///   spill): a reservation the pool refuses fails the read.
+fn sorted(
+    rows: SendableRecordBatchStream,
+    predicate: Option<Arc<dyn PhysicalExpr>>,
+    ordering: LexOrdering,
+    bound: Option<usize>,
+    context: Arc<TaskContext>,
+) -> Result<SendableRecordBatchStream> {
+    /// Hands out one stream to the sort.
+    #[derive(derive_more::Debug)]
+    struct Rows(
+        SchemaRef,
+        #[debug(skip)] std::sync::Mutex<Option<SendableRecordBatchStream>>,
+    );
+    impl PartitionStream for Rows {
+        fn schema(&self) -> &SchemaRef {
+            &self.0
+        }
+        fn execute(&self, _: Arc<TaskContext>) -> SendableRecordBatchStream {
+            self.1
+                .lock()
+                .expect("not poisoned")
+                .take()
+                .expect("the sort reads its input once")
+        }
+    }
+    let schema = rows.schema();
+    let mut input: Arc<dyn ExecutionPlan> = Arc::new(StreamingTableExec::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Rows(schema, std::sync::Mutex::new(Some(rows))))],
+        None,
+        [],
+        false,
+        None,
+    )?);
+    if let Some(predicate) = predicate {
+        input = Arc::new(FilterExec::try_new(predicate, input)?);
+    }
+    SortExec::new(ordering, input)
+        .with_fetch(bound)
+        .execute(0, context)
 }
 
 fn source_plan(plan: &dyn ExecutionPlan) -> Option<&SourcePlan> {
@@ -840,8 +945,13 @@ macro_rules! impl_access_exec {
                         write!(f, ", keys={keys}")?;
                         Some(work.placement)
                     }
-                    SourceWork::IndexScan(IndexWork { index, work }) => {
+                    SourceWork::IndexScan(IndexWork {
+                        index, work, bound, ..
+                    }) => {
                         write!(f, ", index={index}")?;
+                        if let Some(bound) = bound {
+                            write!(f, ", fallback_fetch={bound}")?;
+                        }
                         work.fmt_summary(f, |read| read.partition)?;
                         Some(work.placement)
                     }

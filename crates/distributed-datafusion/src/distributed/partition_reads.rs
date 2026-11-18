@@ -19,7 +19,7 @@ use std::sync::Arc;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Result, Statistics, exec_err, plan_err};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_expr::{EquivalenceProperties, PhysicalSortExpr};
 use datafusion::physical_plan::execution_plan::{
     Boundedness, EmissionType, SchedulingType, reset_plan_states,
 };
@@ -52,6 +52,8 @@ pub(super) struct PartitionReadExec {
     owner: Option<GenerationalNodeId>,
     parallelism: usize,
     fetch: Option<usize>,
+    /// The order of each lane's rows ([`Self::lane_ordering`]).
+    ordering: Vec<PhysicalSortExpr>,
     properties: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
 }
@@ -89,26 +91,53 @@ impl PartitionReadExec {
             return plan_err!("partition read has no storage partitions");
         }
         let parallelism = parallelism.max(1).min(partitions.len());
-        let properties = Arc::new(
-            PlanProperties::new(
-                // Template ordering is local to a storage partition, not across the
-                // partitions concatenated by a scheduling lane.
-                EquivalenceProperties::new(input.schema()),
-                Partitioning::UnknownPartitioning(parallelism),
-                EmissionType::Incremental,
-                Boundedness::Bounded,
-            )
-            .with_scheduling_type(SchedulingType::Cooperative),
-        );
+        let ordering = Self::lane_ordering(&input, parallelism, partitions.len());
         Ok(Self {
+            properties: Self::properties(&input, &ordering, parallelism),
             input,
             partitions: partitions.into_iter().collect(),
             owner: owner.flatten(),
             parallelism,
             fetch,
-            properties,
+            ordering,
             metrics: Default::default(),
         })
+    }
+
+    /// The order of each lane's rows: the template's own output order, when every
+    /// lane reads exactly one storage partition. The order holds within a storage
+    /// partition, not across the partitions a lane concatenates, so lanes that
+    /// concatenate keep none. The configured lanes still bound how many partitions
+    /// are read at once.
+    fn lane_ordering(
+        input: &Arc<dyn ExecutionPlan>,
+        lanes: usize,
+        partitions: usize,
+    ) -> Vec<PhysicalSortExpr> {
+        let properties = input.properties();
+        if lanes != partitions || properties.output_partitioning().partition_count() != 1 {
+            return Vec::new();
+        }
+        properties
+            .output_ordering()
+            .map(|ordering| ordering.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn properties(
+        input: &Arc<dyn ExecutionPlan>,
+        ordering: &[PhysicalSortExpr],
+        parallelism: usize,
+    ) -> Arc<PlanProperties> {
+        Arc::new(
+            PlanProperties::new(
+                EquivalenceProperties::new_with_orderings(input.schema(), [ordering.to_vec()]),
+                Partitioning::UnknownPartitioning(parallelism),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            )
+            .with_scheduling_type(SchedulingType::Cooperative),
+        )
     }
 
     pub(super) fn owner(&self) -> Option<GenerationalNodeId> {
@@ -275,15 +304,8 @@ impl ExecutionPlan for PartitionReadExec {
         // planning inputs. Preserve the selected partition universe across these
         // native rewrites rather than rediscovering it through those wrappers.
         let mut plan = self.as_ref().clone();
-        plan.properties = Arc::new(
-            PlanProperties::new(
-                EquivalenceProperties::new(input.schema()),
-                Partitioning::UnknownPartitioning(self.parallelism),
-                EmissionType::Incremental,
-                Boundedness::Bounded,
-            )
-            .with_scheduling_type(SchedulingType::Cooperative),
-        );
+        plan.ordering = Self::lane_ordering(&input, self.parallelism, self.partitions.len());
+        plan.properties = Self::properties(&input, &plan.ordering, self.parallelism);
         plan.input = input;
         Ok(Arc::new(plan))
     }

@@ -16,6 +16,7 @@
 ///     /// Current entry counts by service, handler and entry kind.
 ///     table: ServiceStats,                    // the physical table, a marker type
 ///     definition: "service_stats/1",          // the registry definition
+///     introduced: (1, 8, 2),                  // the Restate version that added it
 ///     schema: ServiceStatsSchema,             // the logical columns the fields bind to
 ///     value: StageStatusGauge,                // the `Aggregate`: counters per stage and status
 ///     key: ServiceStatsKey(
@@ -45,6 +46,7 @@ macro_rules! define_aggregated_stat {
         $(#[$meta:meta])*
         table: $stat:ident,
         definition: $definition:literal,
+        introduced: ($major:literal, $minor:literal, $patch:literal),
         schema: $schema:ty,
         value: $kind:ty,
         key: $key:ident(
@@ -56,6 +58,8 @@ macro_rules! define_aggregated_stat {
 
         impl crate::stats::Stat for $stat {
             const DEFINITION: &'static str = $definition;
+            const INTRODUCED: restate_types::SemanticRestateVersion =
+                restate_types::SemanticRestateVersion::new($major, $minor, $patch);
             const STAT_KIND: crate::stats::StatKind = <$kind as crate::stats::aggregated::Aggregate>::STAT_KIND;
             type OwnedKey = $key;
             type Value = <$kind as crate::stats::aggregated::Aggregate>::Output;

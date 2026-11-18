@@ -103,18 +103,23 @@ pub struct EntryIndexExecution(Mutex<Option<Execution>>);
 struct Execution {
     memory: Box<dyn RetainedMemory>,
     chosen: Box<dyn FnOnce(EntryIndexPath) + Send>,
+    fetched: Box<dyn Fn(usize) + Send>,
 }
 
 impl EntryIndexExecution {
     /// `memory` is charged for what the index read holds. `chosen` learns which
-    /// path the read takes before it returns any row.
+    /// path the read takes before it returns any row. `fetched` learns how many
+    /// statuses each multi-get requests, once it returns: the window's slots,
+    /// before any is inspected or charged.
     pub fn new(
         memory: Box<dyn RetainedMemory>,
         chosen: impl FnOnce(EntryIndexPath) + Send + 'static,
+        fetched: impl Fn(usize) + Send + 'static,
     ) -> Self {
         Self(Mutex::new(Some(Execution {
             memory,
             chosen: Box::new(chosen),
+            fetched: Box::new(fetched),
         })))
     }
 }
@@ -202,6 +207,8 @@ pub(super) struct EntryIndexCursor {
     /// Window position the cursor is on.
     current: Option<usize>,
     held: Held,
+    /// Learns how many statuses each multi-get requests.
+    fetched: Box<dyn Fn(usize) + Send>,
     /// How the read ended, once it holds nothing.
     ended: Option<Ended>,
     /// Last: the runs and the fetched window are dropped before the snapshot.
@@ -226,7 +233,11 @@ impl EntryIndexCursor {
         read: &EntryIndexRead,
         execution: &EntryIndexExecution,
     ) -> Result<Option<Self>> {
-        let Execution { memory, chosen } = execution
+        let Execution {
+            memory,
+            chosen,
+            fetched,
+        } = execution
             .0
             .lock()
             .expect("not poisoned")
@@ -234,7 +245,8 @@ impl EntryIndexCursor {
             .ok_or_else(|| {
                 StorageError::Generic(anyhow::anyhow!("an entry-index read opens once"))
             })?;
-        let cursor = Self::try_open(snapshot, read, SharedMemory(Arc::new(Mutex::new(memory))))?;
+        let memory = SharedMemory(Arc::new(Mutex::new(memory)));
+        let cursor = Self::try_open(snapshot, read, memory, fetched)?;
         chosen(match cursor {
             Some(_) => EntryIndexPath::Index,
             None => EntryIndexPath::Scan,
@@ -246,6 +258,7 @@ impl EntryIndexCursor {
         snapshot: &ReadSnapshot,
         read: &EntryIndexRead,
         memory: SharedMemory,
+        fetched: Box<dyn Fn(usize) + Send>,
     ) -> Result<Option<Self>> {
         if !EntryIndexRead::usable(snapshot)? {
             return Ok(None);
@@ -280,6 +293,7 @@ impl EntryIndexCursor {
             results_bytes: 0,
             current: None,
             held,
+            fetched,
             ended: None,
             snapshot: Some(snapshot.clone()),
         }))
@@ -379,6 +393,7 @@ impl EntryIndexCursor {
             .multi_get_pinned(KeyKind::InvocationStatus, keys, false)
             .map_err(|error| StorageError::Generic(error.into()))?
             .into_owned();
+        (self.fetched)(self.window.len());
         let mut bytes = 0;
         for slot in 0..self.window.len() {
             let value = fetched
@@ -527,9 +542,13 @@ mod tests {
         std::sync::mpsc::Receiver<EntryIndexPath>,
     ) {
         let (chosen, path) = std::sync::mpsc::channel();
-        let execution = EntryIndexExecution::new(Box::new(memory.clone()), move |taken| {
-            let _ = chosen.send(taken);
-        });
+        let execution = EntryIndexExecution::new(
+            Box::new(memory.clone()),
+            move |taken| {
+                let _ = chosen.send(taken);
+            },
+            |_| {},
+        );
         (execution, path)
     }
 
