@@ -23,6 +23,7 @@ metrics:
 | `restate_cluster_safety_unchecked_partitions` | Partitions whose placement or leader isn't known yet |
 | `restate_cluster_safety_metadata_unavailable` | 1 if the replicated metadata store lost its majority, 0 otherwise |
 | `restate_cluster_safety_metadata_at_risk` | 1 if the replicated metadata store would lose its majority if one failure domain failed, 0 otherwise |
+| `restate_cluster_safety_metadata_unchecked` | 1 if the replicated metadata store can't be checked because its members aren't known, 0 otherwise |
 | `restate_cluster_safety_last_check_timestamp_seconds` | Unix timestamp of the last completed check |
 
 To check whether it's safe to stop nodes, run:
@@ -53,7 +54,9 @@ nodes with the `metadata-server` role. They stay at 0 if you use etcd, an object
 store, or DynamoDB for metadata. The metadata store is checked against the same
 failure domains as logs and partitions: with `{zone: 2}` replication,
 `restate_cluster_safety_metadata_at_risk` is 1 if losing any one zone would take
-down a majority of the metadata servers.
+down a majority of the metadata servers. On clusters created by older versions,
+the members of the metadata store may not be recorded, in which case
+`restate_cluster_safety_metadata_unchecked` is 1 and the store isn't checked.
 
 Partitions whose placement is frozen can't be moved to other nodes, so they
 become unavailable once all of their replicas are down. Expect

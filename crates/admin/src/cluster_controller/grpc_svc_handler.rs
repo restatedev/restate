@@ -793,8 +793,8 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             num_logs: report.num_logs as u32,
             num_partitions: report.num_partitions as u32,
             metadata_availability: report
-                .metadata_availability
-                .map(|availability| MetadataAvailability::from(availability).into()),
+                .metadata_store
+                .map(|status| MetadataAvailability::from(status).into()),
         }))
     }
 }
@@ -807,12 +807,14 @@ fn scope_name(scope: LocationScope) -> String {
     scope.to_string().to_lowercase()
 }
 
-impl From<safety_checker::Availability> for MetadataAvailability {
-    fn from(availability: safety_checker::Availability) -> Self {
-        match availability {
-            safety_checker::Availability::Available => Self::Available,
-            safety_checker::Availability::AtRisk => Self::AtRisk,
-            safety_checker::Availability::Unavailable => Self::Unavailable,
+impl From<safety_checker::MetadataStatus> for MetadataAvailability {
+    fn from(status: safety_checker::MetadataStatus) -> Self {
+        use safety_checker::{Availability, MetadataStatus};
+        match status {
+            MetadataStatus::Checked(Availability::Available) => Self::Available,
+            MetadataStatus::Checked(Availability::AtRisk) => Self::AtRisk,
+            MetadataStatus::Checked(Availability::Unavailable) => Self::Unavailable,
+            MetadataStatus::Unchecked => Self::Unchecked,
         }
     }
 }

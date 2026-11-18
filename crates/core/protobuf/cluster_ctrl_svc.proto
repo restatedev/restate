@@ -315,7 +315,7 @@ message CheckClusterSafetyResponse {
   // Whether the members of the replicated metadata store form a quorum, and
   // keep forming one if a single failure domain fails. Domains are at `scope`,
   // or nodes if `scope` is unset. Unset if the cluster doesn't use the
-  // replicated metadata store or none of its members are known.
+  // replicated metadata store.
   optional MetadataAvailability metadata_availability = 14;
 }
 
@@ -325,6 +325,9 @@ enum MetadataAvailability {
   // Available, but losing a single failure domain makes it unavailable.
   AT_RISK = 2;
   UNAVAILABLE = 3;
+  // None of the members of the metadata store are known, e.g. because the
+  // cluster was created by a version that didn't record them.
+  UNCHECKED = 4;
 }
 
 message DomainImpact {

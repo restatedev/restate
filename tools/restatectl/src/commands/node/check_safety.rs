@@ -60,7 +60,7 @@ const HELP: &str = "\
 The verdict is SAFE when the metadata store, all logs and partitions are available and stay \
 available if any one failure domain fails, AT RISK when losing one more failure domain would make \
 some of them unavailable, UNSAFE when some already are, and INCOMPLETE when nothing checked is at \
-risk but some logs or partitions could not be checked. A failure domain is at the greatest scope \
+risk but some could not be checked. A failure domain is at the greatest scope \
 of a log's or partition's replication, e.g. a zone for {zone: 2}. The replicated metadata store \
 is available while a majority of its members is alive, and is checked against the same failure \
 domains. The failure domains whose loss would make \
@@ -100,8 +100,8 @@ async fn check_safety(connection: &ConnectionInfo, opts: &CheckSafetyOpts) -> an
     }
     if !opts.assume_dead.is_empty() && report.has_unchecked() {
         bail!(
-            "Some logs or partitions could not be checked, so it's unknown whether they stay \
-             available{}",
+            "Some logs, partitions or the metadata store could not be checked, so it's unknown \
+             whether they stay available{}",
             report.condition()
         );
     }
@@ -143,6 +143,8 @@ enum MetadataStore {
     /// Losing a failure domain makes it unavailable
     AtRisk,
     Unavailable,
+    /// None of its members are known
+    Unchecked,
 }
 
 #[derive(Serialize, Default)]
@@ -222,6 +224,7 @@ impl Report {
                 MetadataAvailability::Available => Some(MetadataStore::Available),
                 MetadataAvailability::AtRisk => Some(MetadataStore::AtRisk),
                 MetadataAvailability::Unavailable => Some(MetadataStore::Unavailable),
+                MetadataAvailability::Unchecked => Some(MetadataStore::Unchecked),
             });
         let verdict = if !logs.write_unavailable.is_empty()
             || !logs.read_unavailable.is_empty()
@@ -235,7 +238,10 @@ impl Report {
             || metadata_store == Some(MetadataStore::AtRisk)
         {
             Verdict::AtRisk
-        } else if !logs.unchecked.is_empty() || !partitions.unchecked.is_empty() {
+        } else if !logs.unchecked.is_empty()
+            || !partitions.unchecked.is_empty()
+            || metadata_store == Some(MetadataStore::Unchecked)
+        {
             Verdict::Incomplete
         } else {
             Verdict::Safe
@@ -306,7 +312,9 @@ impl Report {
     }
 
     fn has_unchecked(&self) -> bool {
-        !self.logs.unchecked.is_empty() || !self.partitions.unchecked.is_empty()
+        !self.logs.unchecked.is_empty()
+            || !self.partitions.unchecked.is_empty()
+            || self.metadata_store == Some(MetadataStore::Unchecked)
     }
 
     /// e.g. " if N3 goes down"
@@ -383,7 +391,10 @@ impl Report {
                 .join(" and ");
                 format!("Losing one more failure domain would make {affected} unavailable")
             }
-            Verdict::Safe if self.logs.total + self.partitions.total == 0 => {
+            Verdict::Safe
+                if self.logs.total + self.partitions.total == 0
+                    && self.metadata_store.is_none() =>
+            {
                 "Nothing to check".to_owned()
             }
             Verdict::Safe if self.metadata_store.is_some() => {
@@ -396,7 +407,9 @@ impl Report {
                     .to_owned()
             }
             Verdict::Incomplete => {
+                let metadata_unchecked = self.metadata_store == Some(MetadataStore::Unchecked);
                 let unchecked = [
+                    metadata_unchecked.then(|| "the metadata store".to_owned()),
                     count(self.logs.unchecked.len(), "log", ""),
                     count(self.partitions.unchecked.len(), "partition", ""),
                 ]
@@ -404,13 +417,13 @@ impl Report {
                 .flatten()
                 .join(" and ");
                 let checked = self.logs.total + self.partitions.total
-                    - (self.logs.unchecked.len() + self.partitions.unchecked.len()) as u32;
+                    - (self.logs.unchecked.len() + self.partitions.unchecked.len()) as u32
+                    + u32::from(self.metadata_store.is_some() && !metadata_unchecked);
                 if checked == 0 {
                     format!("Nothing could be checked: {unchecked} not checked")
                 } else {
                     format!(
-                        "All checked logs and partitions are available and not at risk, \
-                         {unchecked} not checked"
+                        "Everything checked is available and not at risk, {unchecked} not checked"
                     )
                 }
             }
@@ -430,6 +443,10 @@ impl Report {
             Some(MetadataStore::AtRisk) => Some((
                 Severity::Warning,
                 format!("would lose the majority of its members {one_more}"),
+            )),
+            Some(MetadataStore::Unchecked) => Some((
+                Severity::Info,
+                "not checked, none of its members are known".to_owned(),
             )),
             Some(MetadataStore::Available) | None => None,
         };
@@ -571,13 +588,14 @@ impl MetadataStore {
             MetadataStore::Available => "✓ metadata quorum",
             MetadataStore::AtRisk => "▲ metadata quorum at risk",
             MetadataStore::Unavailable => "✗ no metadata quorum",
+            MetadataStore::Unchecked => "? metadata quorum unknown",
         }
     }
 
     fn color(self) -> Rgb {
         match self {
             MetadataStore::Available => GREEN,
-            MetadataStore::AtRisk => AMBER,
+            MetadataStore::AtRisk | MetadataStore::Unchecked => AMBER,
             MetadataStore::Unavailable => RED,
         }
     }

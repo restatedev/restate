@@ -50,6 +50,7 @@ pub fn print(
         let quorum = match availability {
             MetadataAvailability::Unavailable => Styled(Style::Danger, "unavailable"),
             MetadataAvailability::AtRisk => Styled(Style::Warn, "at risk"),
+            MetadataAvailability::Unchecked => Styled(Style::Warn, "unchecked, members unknown"),
             _ => Styled(Style::Success, "available"),
         };
         let mut metadata = Table::new_styled();
@@ -134,12 +135,22 @@ pub fn print(
     {
         bail!("Some logs or partitions are unavailable{condition}");
     }
+    let metadata_unchecked = metadata_availability == Some(MetadataAvailability::Unchecked);
+    if metadata_unchecked && !assume_dead.is_empty() {
+        bail!(
+            "The metadata store could not be checked, so it's unknown whether it keeps its \
+             quorum{condition}"
+        );
+    }
     let unchecked = !report.unchecked_logs.is_empty() || !report.unchecked_partitions.is_empty();
     if unchecked && !assume_dead.is_empty() {
         bail!(
             "Some logs or partitions could not be checked, so it's unknown whether they stay \
              available{condition}"
         );
+    }
+    if metadata_unchecked {
+        c_warn!("The metadata store could not be checked, none of its members are known");
     }
     if metadata_availability == Some(MetadataAvailability::AtRisk) {
         c_warn!(
