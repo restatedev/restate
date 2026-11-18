@@ -72,7 +72,8 @@ pub trait CompleteIndex: 'static {
 
     /// Whether the index pays off only for a query that wants the first rows in
     /// exactly its declared [`Self::ORDERING`]: a bounded sort above the source
-    /// whose whole order, null placement included, is the declared one. The read
+    /// whose whole order is the declared one, null placement included where a
+    /// column can be NULL ([`IndexOrder::never_null`]). The read
     /// then stops early. Without such a demand, reading every candidate and its
     /// primary record can cost more than the scan it replaces.
     const NEEDS_ORDERED_DEMAND: bool = false;
@@ -96,6 +97,13 @@ type PrimaryColumn<B> = <PrimaryOf<B> as SelectionSchema>::Column;
 pub struct IndexOrder<C> {
     pub column: C,
     pub options: SortOptions,
+    /// Whether the source sets this column on every row it returns, through
+    /// the index and when its partition scans instead. Then where a query puts
+    /// NULLs changes nothing: `created_at DESC`, which is `NULLS FIRST`, and
+    /// `created_at DESC NULLS LAST` read the index alike, and the read's rows
+    /// are in the order the query asked for. Proven by the source's row
+    /// writer, not by its schema: every generated column is nullable.
+    pub never_null: bool,
 }
 
 /// One column of a declared order, by its SQL name, sent with index work.
@@ -235,21 +243,22 @@ fn select<B: CompleteIndex>(
     }))
 }
 
-/// Whether `demand` asks for exactly the index's declared order.
+/// Whether `demand` asks for exactly the index's declared order, where NULLs go
+/// included unless the column is never NULL.
 fn orders<B: CompleteIndex>(demand: &Demand) -> bool {
-    let declared = ordering::<B>();
+    let declared = ordering::<B>(None);
     !declared.is_empty()
         && demand.ordering.len() == declared.len()
         && demand
             .ordering
             .iter()
-            .zip(&declared)
-            .all(|(sort, declared)| {
+            .zip(declared.iter().zip(B::ORDERING))
+            .all(|(sort, (declared, order))| {
                 sort.expr
                     .downcast_ref::<Column>()
                     .is_some_and(|column| column.name() == declared.name)
                     && sort.options.descending == declared.descending
-                    && sort.options.nulls_first == declared.nulls_first
+                    && (order.never_null || sort.options.nulls_first == declared.nulls_first)
             })
 }
 
@@ -257,15 +266,25 @@ fn introduced<B: CompleteIndex>() -> SemanticRestateVersion {
     B::INTRODUCED
 }
 
-fn ordering<B: CompleteIndex>() -> Vec<SortedColumn> {
+/// The index's declared order, with NULLs placed as `demand` asks where it
+/// orders the index and a column is never NULL: the same rows in the same
+/// order, so that the planner adds no sort for the query's own spelling.
+fn ordering<B: CompleteIndex>(demand: Option<&Demand>) -> Vec<SortedColumn> {
+    let asked = demand
+        .filter(|demand| orders::<B>(demand))
+        .map(|demand| &demand.ordering);
     B::ORDERING
         .iter()
-        .map(|order| SortedColumn {
+        .enumerate()
+        .map(|(at, order)| SortedColumn {
             name: <<B::Index as IndexSchema>::Primary as SelectionSchema>::sql_name(order.column)
                 .expect("an ordered column has a SQL name")
                 .to_owned(),
             descending: order.options.descending,
-            nulls_first: order.options.nulls_first,
+            nulls_first: match asked {
+                Some(asked) if order.never_null => asked[at].options.nulls_first,
+                _ => order.options.nulls_first,
+            },
         })
         .collect()
 }
@@ -279,7 +298,7 @@ pub(crate) struct DeclaredIndex {
     identity: &'static str,
     select: SelectIndex,
     orders: fn(&Demand) -> bool,
-    ordering: fn() -> Vec<SortedColumn>,
+    ordering: fn(Option<&Demand>) -> Vec<SortedColumn>,
     introduced: fn() -> SemanticRestateVersion,
 }
 
@@ -298,14 +317,17 @@ impl DeclaredIndex {
         (self.select)(filters, demand)
     }
 
-    /// Whether `demand` asks for exactly the index's declared order.
+    /// Whether `demand` asks for exactly the index's declared order (see
+    /// [`IndexOrder::never_null`]).
     pub(crate) fn orders(&self, demand: &Demand) -> bool {
         (self.orders)(demand)
     }
 
-    /// The order of a partition's rows read through the index, if declared.
-    pub(crate) fn ordering(&self) -> Vec<SortedColumn> {
-        (self.ordering)()
+    /// The order of a partition's rows read through the index, if declared,
+    /// with NULLs where `demand` puts them if that changes nothing (see
+    /// [`IndexOrder::never_null`]).
+    pub(crate) fn ordering(&self, demand: Option<&Demand>) -> Vec<SortedColumn> {
+        (self.ordering)(demand)
     }
 
     /// The Restate version that introduced reading the index
@@ -373,7 +395,7 @@ pub(crate) fn select_access(
                 .map(|demand| demand.fetch);
             return Ok(Access::Index {
                 index: ReString::from_static(index.identity()),
-                ordering: index.ordering(),
+                ordering: index.ordering(demand),
                 bound,
             });
         }
@@ -716,6 +738,47 @@ mod tests {
         assert_eq!(chosen(Some(&scheduled)), "scan");
         assert_eq!(chosen(Some(&typed)), "index None");
         assert_eq!(chosen(Some(&newest(&service))), "index Some(51)");
+        // `created_at` is never NULL: `DESC`, which puts NULLs first, reads the
+        // index too, and the read delivers that placement, so no sort is added.
+        let nulls_first = Demand {
+            ordering: vec![PhysicalSortExpr {
+                options: SortOptions {
+                    descending: true,
+                    nulls_first: true,
+                },
+                ..newest(&service).ordering[0].clone()
+            }],
+            ..newest(&service)
+        };
+        let Access::Index {
+            ordering, bound, ..
+        } = select_access(&source, Some(&service), Some(&nulls_first)).unwrap()
+        else {
+            panic!("the index reads either placement");
+        };
+        assert_eq!((ordering[0].nulls_first, bound), (true, Some(51)));
+        // A column that can be NULL keeps its placement: the other one needs a
+        // sort.
+        struct Nullable;
+        impl CompleteIndex for Nullable {
+            type Index = restate_storage_query_api::tables::index::EntryByServiceCreated;
+            const INTRODUCED: SemanticRestateVersion = SemanticRestateVersion::new(1, 8, 2);
+            const ORDERING: &'static [IndexOrder<PrimaryColumn<Self>>] = &[IndexOrder {
+                column: restate_storage_query_api::tables::invocation_status::InvocationStatusColumn::CreatedAt,
+                options: SortOptions {
+                    descending: true,
+                    nulls_first: false,
+                },
+                never_null: false,
+            }];
+            fn useful(
+                _: &restate_storage_query_api::tables::index::EntryByServiceCreatedDomains,
+            ) -> bool {
+                true
+            }
+        }
+        assert!(orders::<Nullable>(&newest(&service)) && !orders::<Nullable>(&nulls_first));
+        assert!(!super::ordering::<Nullable>(Some(&nulls_first))[0].nulls_first);
         // Complete primary keys come first, whatever the versions.
         let older = [(Worker, Some("1.8.1"), false)];
         assert_eq!(plan_with(&older, &id).await, "primary");

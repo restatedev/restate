@@ -121,6 +121,7 @@ async fn persisted_invocations_match_v1_for_scans_lookups_and_projections() {
         partition: PartitionId::MIN,
         storage: Some(snapshot),
         live: Default::default(),
+        timing: restate_worker_api::CaptureTiming::admitted_at(tokio::time::Instant::now()),
     })
     .with_query_io(crate::mocks::query_io());
     let schema = InvocationStatusSchema::arrow_schema();
@@ -317,7 +318,8 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         ORDER BY created_at DESC NULLS LAST LIMIT 1000";
     // The newest rows of named services, under conditions on what the read
     // navigates, the service type and the key's presence: read through the
-    // index. Rows that share a creation time differ only in it.
+    // index, wherever NULLs go, as `created_at` is never NULL. Rows that share a
+    // creation time differ only in it.
     let indexed = [
         page.to_owned(),
         page.replace("LIMIT 51", "LIMIT 9 OFFSET 40"),
@@ -334,14 +336,15 @@ async fn invocations_read_through_the_entry_index_match_v1() {
             BASE + 400
         ),
         newest_counter.clone(),
+        page.replace("DESC NULLS LAST", "DESC NULLS FIRST"),
+        page.replace("DESC NULLS LAST", "DESC"),
     ];
-    // Scanned: another order, a tie-breaker, nulls first, a condition outside
-    // the allowlist, no LIMIT, or a view above the table.
+    // Scanned: another order, a tie-breaker, a condition outside the
+    // allowlist, no LIMIT, or a view above the table.
     let scans = [
         oldest.to_owned(),
         scheduled.to_owned(),
         page.replace("NULLS LAST", "NULLS LAST, id"),
-        page.replace("NULLS LAST", "NULLS FIRST"),
         page.replace("target_service_key IS NOT NULL", "status = 'invoked'"),
         "SELECT target_service_name, COUNT(*) FROM sys_invocation_status \
          WHERE target_service_name IN ('Promises', 'Utils', 'Missing') \

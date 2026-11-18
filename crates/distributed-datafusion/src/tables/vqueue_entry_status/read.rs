@@ -126,7 +126,7 @@ impl CompleteIndex for StageIndex {
 /// ```sql
 /// SELECT … FROM sys_vqueue_entry_status
 /// WHERE stage = 'finished' [AND status IN ('failed', 'killed')]
-/// ORDER BY transitioned_at DESC NULLS LAST
+/// ORDER BY transitioned_at DESC [NULLS FIRST | NULLS LAST]
 /// LIMIT 50
 /// ```
 ///
@@ -143,12 +143,16 @@ impl CompleteIndex for FinishedIndex {
     /// The read merges its runs by the time each entry entered Finished, newest
     /// first. The index keeps the full timestamp, whose millisecond is the
     /// entry's `transitioned_at`: the read checks that for every row.
+    ///
+    /// `transitioned_at` is never NULL: every entry has a transition time from
+    /// its creation on, and the row writer always sets it (`row.rs`).
     const ORDERING: &'static [IndexOrder<VqueueEntryStatusColumn>] = &[IndexOrder {
         column: VqueueEntryStatusColumn::TransitionedAt,
         options: SortOptions {
             descending: true,
             nulls_first: false,
         },
+        never_null: true,
     }];
 
     /// Where the index isn't maintained, every partition would scan and sort
@@ -191,7 +195,7 @@ impl CompleteIndex for FinishedIndex {
 /// ```sql
 /// SELECT … FROM sys_vqueue_entry_status
 /// WHERE stage IN ('inbox', 'paused') [AND status = 'backing-off']
-/// ORDER BY created_at DESC NULLS LAST
+/// ORDER BY created_at DESC [NULLS FIRST | NULLS LAST]
 /// LIMIT 50
 /// ```
 ///
@@ -208,12 +212,16 @@ impl CompleteIndex for ActiveIndex {
     /// The read merges its runs by creation time, newest first. The index
     /// keeps the full timestamp, whose millisecond is the entry's `created_at`:
     /// the read checks that for every row.
+    ///
+    /// `created_at` is never NULL: every entry has a creation time, and the row
+    /// writer always sets it (`row.rs`).
     const ORDERING: &'static [IndexOrder<VqueueEntryStatusColumn>] = &[IndexOrder {
         column: VqueueEntryStatusColumn::CreatedAt,
         options: SortOptions {
             descending: true,
             nulls_first: false,
         },
+        never_null: true,
     }];
 
     /// Where the index isn't maintained, every partition would scan and sort

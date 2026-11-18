@@ -175,6 +175,7 @@ mod tests {
                 scheduler: Some(live.clone().into()),
                 ..Default::default()
             },
+            timing: restate_worker_api::CaptureTiming::admitted_at(tokio::time::Instant::now()),
         });
         live[0].1.waiting_inbox = 99;
         for _ in 0..2 {
@@ -201,6 +202,7 @@ mod tests {
                 scheduler: Some(live.into()),
                 ..Default::default()
             },
+            timing: restate_worker_api::CaptureTiming::admitted_at(tokio::time::Instant::now()),
         });
         let batches = prepared
             .execute(newer, 1, ReadMetrics::default())
@@ -225,6 +227,7 @@ mod tests {
             partition: PartitionId::MIN,
             storage: None,
             live: CapturedPartitionState::empty(prepared.capture_requirements()),
+            timing: restate_worker_api::CaptureTiming::admitted_at(tokio::time::Instant::now()),
         });
         assert!(
             prepared

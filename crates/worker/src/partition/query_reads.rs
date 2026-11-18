@@ -16,13 +16,14 @@
 //! then waits for them to be released.
 
 use tokio::sync::{mpsc, watch};
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use restate_partition_store::PartitionStore;
 use restate_types::GenerationalNodeId;
 use restate_worker_api::{
-    CapturedPartitionRead, CapturedPartitionState, PartitionCaptureRequirements,
-    PartitionReadError, PartitionReadRequest,
+    CaptureSpan, CaptureTiming, CapturedPartitionRead, CapturedPartitionState,
+    PartitionCaptureRequirements, PartitionReadError, PartitionReadRequest,
 };
 
 /// Whether a processor admits query reads: not before its loop starts, and not
@@ -93,6 +94,7 @@ impl QueryReads {
             PartitionCaptureRequirements,
         ) -> Result<CapturedPartitionState, PartitionReadError>,
     ) {
+        let mut timing = CaptureTiming::admitted_at(Instant::now());
         let error = if request.partition != store.partition_id() {
             Some(PartitionReadError::PartitionMismatch {
                 requested: request.partition,
@@ -122,8 +124,12 @@ impl QueryReads {
             return;
         }
         let storage = if request.capture.storage {
+            let start = Instant::now();
             match store.query_read(self.cancel.child_token()) {
-                Ok((read, _)) => Some(read),
+                Ok((read, _)) => {
+                    timing.snapshot = Some(CaptureSpan::since(start));
+                    Some(read)
+                }
                 Err(_) => {
                     let _ = request
                         .response
@@ -155,6 +161,7 @@ impl QueryReads {
                 partition: request.partition,
                 storage,
                 live,
+                timing,
             })
         });
         let _ = request.response.send(read);
@@ -232,7 +239,122 @@ mod tests {
         }
     }
 
+    /// An invoker whose status scan ends without rows once `0` is notified.
+    struct SlowInvoker(Arc<tokio::sync::Notify>);
+
+    impl restate_worker_api::PartitionQueryAccess for SlowInvoker {
+        fn scan_invoker_status(
+            &self,
+            _: PartitionId,
+            _: KeyRange,
+        ) -> restate_worker_api::PartitionQueryStream<
+            restate_worker_api::invoker::InvocationStatusReport,
+        > {
+            let done = Arc::clone(&self.0);
+            let scan = futures::stream::once(async move { done.notified().await });
+            futures::StreamExt::boxed(futures::StreamExt::filter_map(scan, |()| async { None }))
+        }
+
+        fn scan_scheduler_status(
+            &self,
+            _: PartitionId,
+            _: KeyRange,
+        ) -> restate_worker_api::PartitionQueryStream<restate_worker_api::SchedulerStatusEntry>
+        {
+            unreachable!("the processor captures the scheduler")
+        }
+
+        fn scan_user_limit_counters(
+            &self,
+            _: PartitionId,
+            _: KeyRange,
+        ) -> restate_worker_api::PartitionQueryStream<restate_worker_api::UserLimitCounterEntry>
+        {
+            unreachable!("the processor captures the user limits")
+        }
+    }
+
     use super::*;
+
+    /// A request that waits for its processor's turn, say behind a commit, shows
+    /// that wait as its time to admission, apart from its snapshot and from the
+    /// invoker read that follows the processor's answer. The clock moves only
+    /// when the test moves it.
+    #[restate_core::test]
+    async fn capture_timing_separates_the_wait_for_a_turn_from_the_snapshot() {
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        let store = manager
+            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+            .await
+            .unwrap();
+        let (ppm_tx, mut ppm_rx) = mpsc::channel(1);
+        let invoker_done = Arc::new(tokio::sync::Notify::new());
+        let handle = ProcessorsManagerHandle::new(
+            ppm_tx,
+            Arc::new(RuleBookCacheHandle::detached()),
+            Arc::new(SlowInvoker(Arc::clone(&invoker_done))),
+        );
+        let (_query_tx, query_rx) = mpsc::channel(1);
+        let (ready_tx, _ready_rx) = watch::channel(QueryReadiness::Initializing);
+        let mut reads = QueryReads::new(query_rx, ready_tx);
+        reads.mark_ready();
+        let metadata = Arc::new(QueryMetadata {
+            session_id: "timed".into(),
+            query_ts: UniqueTimestamp::MIN,
+            headers: Default::default(),
+            redacted_sql: "SELECT * FROM sys_invocation".into(),
+            planning_duration: Duration::ZERO,
+        });
+
+        tokio::time::pause();
+        let requested = Instant::now();
+        let mut capture = Box::pin(handle.capture_partition(
+            PartitionId::MIN,
+            false,
+            metadata,
+            PartitionCaptureRequirements {
+                storage: true,
+                invoker: true,
+                ..Default::default()
+            },
+        ));
+        assert!(capture.as_mut().now_or_never().is_none());
+        let ProcessorsManagerCommand::ReadPartition(request) = ppm_rx.recv().await.unwrap() else {
+            panic!("expected admission")
+        };
+        // The processor's turn, a command batch's commit say, holds the request.
+        tokio::time::advance(Duration::from_millis(40)).await;
+        reads.admit(&store, Leading::Yes, None, request, |_| {
+            panic!("the processor owns none of the requested state")
+        });
+        // With the answer, the handle reads the invoker's rows, which take 7ms.
+        assert!(capture.as_mut().now_or_never().is_none());
+        tokio::time::advance(Duration::from_millis(7)).await;
+        invoker_done.notify_one();
+        let read = capture.await.unwrap();
+        let timing = read.timing;
+        assert_eq!(
+            timing.admitted - requested,
+            Duration::from_millis(40),
+            "the_wait_for_the_turn_is_the_time_to_admission"
+        );
+        let snapshot = timing
+            .snapshot
+            .expect("a storage capture times its snapshot");
+        assert_eq!(
+            (snapshot.start, snapshot.duration()),
+            (timing.admitted, Duration::ZERO),
+            "the_snapshot_is_taken_at_admission_and_its_call_is_timed_on_its_own"
+        );
+        let invoker = timing.invoker.expect("an invoker capture times its read");
+        assert_eq!(
+            (invoker.start, invoker.duration()),
+            (snapshot.end, Duration::from_millis(7)),
+            "the_invoker_is_read_after_the_answer_and_timed_on_its_own"
+        );
+        assert!(read.live.invoker.unwrap().is_empty());
+    }
 
     #[restate_core::test]
     async fn processor_query_admission_preserves_metadata_and_drains_after_cancellation() {
@@ -460,6 +582,7 @@ mod tests {
             partition: PartitionId::MIN,
             storage: None,
             live: Default::default(),
+            timing: CaptureTiming::admitted_at(Instant::now()),
         }));
         assert_eq!(
             capture.await.unwrap_err(),
@@ -497,6 +620,7 @@ mod tests {
             partition: PartitionId::MIN,
             storage: Some(snapshot),
             live: Default::default(),
+            timing: CaptureTiming::admitted_at(Instant::now()),
         }));
         assert!(
             capture.as_mut().now_or_never().is_none(),

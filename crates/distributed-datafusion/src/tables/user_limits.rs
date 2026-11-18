@@ -134,6 +134,7 @@ mod tests {
                 user_limits: Some(entries.into()),
                 ..Default::default()
             },
+            timing: restate_worker_api::CaptureTiming::admitted_at(tokio::time::Instant::now()),
         });
         let scanner = Arc::new(SysUserLimitsTable::create_local_scanner());
         let schema = UserLimits::arrow_schema();

@@ -52,6 +52,10 @@ use crate::table_providers::{PartitionReadContext, ScanPartition};
 
 use super::read::EntryStatusScanner;
 
+/// The ways to ask for a descending order: NULLs last, by default (first),
+/// and first.
+const SPELLINGS: [&str; 3] = ["DESC NULLS LAST", "DESC", "DESC NULLS FIRST"];
+
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn vqueue_entry_status_not_in_returns_non_excluded_rows() {
     use datafusion::arrow::array::Array;
@@ -147,6 +151,7 @@ async fn vqueue_entry_status_not_in_returns_non_excluded_rows() {
         partition: PartitionId::MIN,
         storage: Some(snapshot),
         live: Default::default(),
+        timing: restate_worker_api::CaptureTiming::admitted_at(tokio::time::Instant::now()),
     })
     .with_query_io(crate::mocks::query_io());
     let base = |i: u8| EntryId::new(EntryKind::Invocation, [i; 16]).to_base_id(qid.partition_key());
@@ -767,6 +772,10 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
              ORDER BY transitioned_at DESC NULLS LAST LIMIT 4",
             BASE + 10_300
         ),
+        // Renamed above the source, the column is still never NULL.
+        "SELECT entry_id, status, transitioned_at AS finished FROM sys_vqueue_entry_status \
+         WHERE stage = 'finished' ORDER BY finished DESC NULLS LAST LIMIT 6"
+            .into(),
     ];
     let scans = [
         // Status alone doesn't prove the stage.
@@ -790,6 +799,11 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
             "{select} WHERE stage = 'finished' AND num_attempts = 0 \
              ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
         ),
+        // An outer join can add NULLs: nothing is asked of the source.
+        "SELECT e.entry_id, e.status, e.transitioned_at FROM (SELECT 1 AS one) AS o \
+         LEFT JOIN sys_vqueue_entry_status AS e ON e.stage = 'finished' \
+         ORDER BY e.transitioned_at DESC LIMIT 5"
+            .into(),
     ];
     // Tie-aware: the transition times in order, and every row a qualifying one.
     let same =
@@ -804,11 +818,23 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
                 "{sql}"
             );
         };
+    // The ordered column is never NULL: wherever the query puts NULLs, by
+    // default first for DESC, it reads the index in the same plan, but for the
+    // spelling, and gets the same rows.
+    let unspelled = |plan: String| plan.replace(" NULLS FIRST", "").replace(" NULLS LAST", "");
     for sql in &indexed {
         let explained = plan(sql, false).await;
         assert!(explained.contains(INDEX), "{sql}: {explained}");
         let all = scanned(&sql.replace(" LIMIT", " LIMIT 1000000 --")).await;
-        same(&rows(sql).await, &scanned(sql).await, &all, sql);
+        for spelling in SPELLINGS {
+            let sql = sql.replace("DESC NULLS LAST", spelling);
+            assert_eq!(
+                unspelled(plan(&sql, false).await),
+                unspelled(explained.clone()),
+                "{sql}"
+            );
+            same(&rows(&sql).await, &scanned(&sql).await, &all, &sql);
+        }
     }
     for sql in &scans {
         let explained = plan(sql, false).await;
@@ -879,7 +905,10 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
     drop(tx);
     for sql in &indexed[..2] {
         let all = scanned(&sql.replace(" LIMIT", " LIMIT 1000000 --")).await;
-        same(&rows(sql).await, &scanned(sql).await, &all, sql);
+        for spelling in SPELLINGS {
+            let sql = sql.replace("DESC NULLS LAST", spelling);
+            same(&rows(&sql).await, &scanned(&sql).await, &all, &sql);
+        }
     }
     let analyzed = plan(&indexed[0], true).await;
     assert!(
@@ -1059,11 +1088,23 @@ async fn active_entries_read_through_their_index_match_the_scan() {
                 "{sql}"
             );
         };
+    // The ordered column is never NULL: wherever the query puts NULLs, by
+    // default first for DESC, it reads the index in the same plan, but for the
+    // spelling, and gets the same rows.
+    let unspelled = |plan: String| plan.replace(" NULLS FIRST", "").replace(" NULLS LAST", "");
     for sql in &indexed {
         let explained = plan(sql, false).await;
         assert!(explained.contains(INDEX), "{sql}: {explained}");
         let all = scanned(&sql.replace(" LIMIT", " LIMIT 1000000 --")).await;
-        same(&rows(sql).await, &scanned(sql).await, &all, sql);
+        for spelling in SPELLINGS {
+            let sql = sql.replace("DESC NULLS LAST", spelling);
+            assert_eq!(
+                unspelled(plan(&sql, false).await),
+                unspelled(explained.clone()),
+                "{sql}"
+            );
+            same(&rows(&sql).await, &scanned(&sql).await, &all, &sql);
+        }
     }
     for sql in &scans {
         let explained = plan(sql, false).await;
@@ -1125,7 +1166,10 @@ async fn active_entries_read_through_their_index_match_the_scan() {
     drop(tx);
     for sql in &indexed[..2] {
         let all = scanned(&sql.replace(" LIMIT", " LIMIT 1000000 --")).await;
-        same(&rows(sql).await, &scanned(sql).await, &all, sql);
+        for spelling in SPELLINGS {
+            let sql = sql.replace("DESC NULLS LAST", spelling);
+            same(&rows(&sql).await, &scanned(&sql).await, &all, &sql);
+        }
     }
     let analyzed = plan(&indexed[0], true).await;
     assert!(

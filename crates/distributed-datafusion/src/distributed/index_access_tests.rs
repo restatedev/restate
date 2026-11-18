@@ -695,67 +695,63 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
 
     // The newest finished entries, through `finished_entry_by_outcome/1` on
     // every owner, except the partition whose index was reset, which scans
-    // and sorts: the same rows as a scan, each owner's read shown.
+    // and sorts: the same rows as a scan, each owner's read shown. Then the
+    // newest active entries, through `active_entry_by_stage/1`, the same way.
+    // Neither ordered column is ever NULL, so each query reads the same with
+    // NULLs placed last, first, or by default (first, for DESC): in the same
+    // plan, but for the spelling.
     let finished = "SELECT entry_id, transitioned_at FROM sys_vqueue_entry_status \
         WHERE stage = 'finished' ORDER BY transitioned_at DESC NULLS LAST LIMIT 20";
-    let unrestricted = finished.replacen(
-        "FROM sys_vqueue_entry_status",
-        "FROM (SELECT * FROM sys_vqueue_entry_status LIMIT 1000000) AS sys_vqueue_entry_status",
-        1,
-    );
+    let active = "SELECT entry_id, created_at FROM sys_vqueue_entry_status \
+        WHERE stage IN ('inbox', 'running') ORDER BY created_at DESC NULLS LAST LIMIT 20";
     let times = |rows: Vec<Vec<String>>| {
         rows.into_iter()
             .map(|row| row[1].clone())
             .collect::<Vec<_>>()
     };
-    assert_eq!(
-        times(crate::mocks::rows(session.as_ref(), finished).await),
-        times(crate::mocks::rows(session.as_ref(), &unrestricted).await)
-    );
-    let plan = crate::mocks::rows(session.as_ref(), &format!("EXPLAIN ANALYZE {finished}"))
-        .await
-        .concat()
-        .join("\n");
-    eprintln!("finished_analyze\n{plan}");
-    assert!(plan.contains("_idx_finished_entry_by_outcome"), "{plan}");
-    assert_eq!(
-        plan.matches("tasks_completed=1").count() + plan.matches("tasks_incomplete=1").count(),
-        3,
-        "{plan}"
-    );
-    assert!(plan.contains("entry_index_scans_not_ready=1"), "{plan}");
-    assert!(
-        !plan.contains("entry_index_reads=0,"),
-        "every owner reads the index somewhere: {plan}"
-    );
-
-    // The newest active entries, through `active_entry_by_stage/1`, the same
-    // way: the same rows as a scan, each owner's read shown.
-    let active = "SELECT entry_id, created_at FROM sys_vqueue_entry_status \
-        WHERE stage IN ('inbox', 'running') ORDER BY created_at DESC NULLS LAST LIMIT 20";
-    let unrestricted = active.replacen(
-        "FROM sys_vqueue_entry_status",
-        "FROM (SELECT * FROM sys_vqueue_entry_status LIMIT 1000000) AS sys_vqueue_entry_status",
-        1,
-    );
-    assert_eq!(
-        times(crate::mocks::rows(session.as_ref(), active).await),
-        times(crate::mocks::rows(session.as_ref(), &unrestricted).await)
-    );
-    let plan = crate::mocks::rows(session.as_ref(), &format!("EXPLAIN ANALYZE {active}"))
-        .await
-        .concat()
-        .join("\n");
-    eprintln!("active_analyze\n{plan}");
-    assert!(plan.contains("_idx_active_entry_by_stage"), "{plan}");
-    assert_eq!(
-        plan.matches("tasks_completed=1").count() + plan.matches("tasks_incomplete=1").count(),
-        3,
-        "{plan}"
-    );
-    assert!(plan.contains("entry_index_scans_not_ready=1"), "{plan}");
-    assert!(
-        !plan.contains("entry_index_reads=0,"),
-        "every owner reads the index somewhere: {plan}"
-    );
+    let unspelled = |plan: String| plan.replace(" NULLS FIRST", "").replace(" NULLS LAST", "");
+    for (sql, index) in [
+        (finished, "_idx_finished_entry_by_outcome"),
+        (active, "_idx_active_entry_by_stage"),
+    ] {
+        let explained = async |sql: &str| {
+            let plan = crate::mocks::rows(session.as_ref(), &format!("EXPLAIN {sql}"))
+                .await
+                .concat()
+                .join("\n");
+            unspelled(plan)
+        };
+        let expected = explained(sql).await;
+        for spelling in ["DESC NULLS LAST", "DESC", "DESC NULLS FIRST"] {
+            let sql = sql.replace("DESC NULLS LAST", spelling);
+            let unrestricted = sql.replacen(
+                "FROM sys_vqueue_entry_status",
+                "FROM (SELECT * FROM sys_vqueue_entry_status LIMIT 1000000) AS sys_vqueue_entry_status",
+                1,
+            );
+            assert_eq!(
+                times(crate::mocks::rows(session.as_ref(), &sql).await),
+                times(crate::mocks::rows(session.as_ref(), &unrestricted).await),
+                "{sql}"
+            );
+            assert_eq!(explained(&sql).await, expected, "{sql}");
+            let plan = crate::mocks::rows(session.as_ref(), &format!("EXPLAIN ANALYZE {sql}"))
+                .await
+                .concat()
+                .join("\n");
+            eprintln!("{index} {spelling}\n{plan}");
+            assert!(plan.contains(index), "{plan}");
+            assert_eq!(
+                plan.matches("tasks_completed=1").count()
+                    + plan.matches("tasks_incomplete=1").count(),
+                3,
+                "{plan}"
+            );
+            assert!(plan.contains("entry_index_scans_not_ready=1"), "{plan}");
+            assert!(
+                !plan.contains("entry_index_reads=0,"),
+                "every owner reads the index somewhere: {plan}"
+            );
+        }
+    }
 }
