@@ -182,6 +182,7 @@ pub fn sys_invocation_table_docs() -> TableDocs {
         status("stage"),
         status("effective_status"),
         status("completed"),
+        status("completion_failure_code"),
     ];
     TableDocs {
         name: "sys_invocation",

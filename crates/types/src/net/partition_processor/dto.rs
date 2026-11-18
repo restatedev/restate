@@ -16,6 +16,7 @@ use bytestring::ByteString;
 
 use crate::Scope;
 use crate::errors;
+use crate::errors::GONE_INVOCATION_ERROR;
 use crate::identifiers::IdempotencyId;
 use crate::identifiers::ServiceId;
 use crate::identifiers::{DeploymentId, InvocationId, PartitionProcessorRpcRequestId};
@@ -305,6 +306,7 @@ pub(super) enum OutputResponse {
     #[bilrost(tag(5))]
     Failure(InvocationError),
 }
+
 impl From<invocation::client::InvocationOutput> for InvocationOutput {
     fn from(value: invocation::client::InvocationOutput) -> Self {
         Self {
@@ -317,10 +319,14 @@ impl From<invocation::client::InvocationOutput> for InvocationOutput {
                     body,
                 },
                 InvocationOutputResponse::Failure(error) => OutputResponse::Failure(error.into()),
+                InvocationOutputResponse::Gone => {
+                    OutputResponse::Failure(GONE_INVOCATION_ERROR.into())
+                }
             },
         }
     }
 }
+
 impl TryFrom<InvocationOutput> for crate::invocation::client::InvocationOutput {
     type Error = DecodeError;
     fn try_from(value: InvocationOutput) -> Result<Self, Self::Error> {
@@ -334,6 +340,12 @@ impl TryFrom<InvocationOutput> for crate::invocation::client::InvocationOutput {
                 }
                 OutputResponse::Success { target, body } => {
                     InvocationOutputResponse::Success(target.try_into()?, body)
+                }
+                OutputResponse::Failure(error)
+                    if error.code == GONE_INVOCATION_ERROR.code()
+                        && error.message == GONE_INVOCATION_ERROR.message() =>
+                {
+                    InvocationOutputResponse::Gone
                 }
                 OutputResponse::Failure(error) => InvocationOutputResponse::Failure(error.into()),
             },

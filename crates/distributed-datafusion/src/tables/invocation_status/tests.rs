@@ -23,8 +23,9 @@ use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, InvocationStatus,
-    PreFlightInvocationMetadata, ScheduledInvocation, StatusTimestamps, WriteInvocationStatusTable,
+    CompletedInvocation, CompletedResult, CompletionStatus, InFlightInvocationMetadata,
+    InboxedInvocation, InvocationStatus, PreFlightInvocationMetadata, ResponseResultRef,
+    ScheduledInvocation, StatusTimestamps, WriteInvocationStatusTable,
 };
 use restate_storage_api::vqueue_table::stats::EntryStatistics;
 use restate_storage_api::vqueue_table::{
@@ -32,8 +33,9 @@ use restate_storage_api::vqueue_table::{
 };
 use restate_storage_query_api::QuerySession;
 use restate_storage_query_api::tables::invocation_status::InvocationStatus as InvocationStatusSchema;
+use restate_types::blob::BlobId;
 use restate_types::config::Configuration;
-use restate_types::errors::KILLED_INVOCATION_ERROR;
+use restate_types::errors::{KILLED_INVOCATION_ERROR, codes};
 use restate_types::identifiers::{
     InvocationId, InvocationUuid, PartitionId, ServiceId, WithPartitionKey,
 };
@@ -76,13 +78,34 @@ async fn persisted_invocations_match_v1_for_scans_lookups_and_projections() {
         metadata
     };
     for (index, id) in ids.iter().enumerate() {
-        let status = match index % 6 {
+        // Completed with the result stored in the output blob, or a kill
+        let completed = |response_result| {
+            InvocationStatus::Completed(CompletedInvocation {
+                response_result,
+                execution_time: Some(due),
+                ..CompletedInvocation::mock_neo()
+            })
+        };
+        let blob_id = BlobId::generate_journal_entry_blob_id(MillisSinceEpoch::new(0), 1, id);
+        let status = match index % 9 {
             0 => InvocationStatus::Invoked(in_flight()),
             1 => {
                 let mut completed = CompletedInvocation::mock_neo();
                 completed.execution_time = Some(due);
                 InvocationStatus::Completed(completed)
             }
+            6 => completed(ResponseResultRef::Failure(KILLED_INVOCATION_ERROR)),
+            7 => completed(ResponseResultRef::Completed(CompletedResult {
+                blob_id,
+                status: CompletionStatus::Failure {
+                    code: codes::INTERNAL,
+                    message: "boom".into(),
+                },
+            })),
+            8 => completed(ResponseResultRef::Completed(CompletedResult {
+                blob_id,
+                status: CompletionStatus::Success,
+            })),
             2 => InvocationStatus::Paused(in_flight()),
             3 => InvocationStatus::Suspended {
                 metadata: in_flight(),
@@ -138,7 +161,7 @@ async fn persisted_invocations_match_v1_for_scans_lookups_and_projections() {
         }
     }
     // Without entries, no invocation has a stage or effective status, and
-    // whether it `completed` comes from its status: one in six did. V1 agrees.
+    // whether it `completed` comes from its status: 13 of the 32 did. V1 agrees.
     for engine in [new.as_ref(), old.as_ref()] {
         assert_eq!(
             rows(
@@ -147,7 +170,7 @@ async fn persisted_invocations_match_v1_for_scans_lookups_and_projections() {
                  GROUP BY stage, effective_status, completed ORDER BY completed"
             )
             .await,
-            [["", "", "false", "26"], ["", "", "true", "6"]]
+            [["", "", "false", "19"], ["", "", "true", "13"]]
         );
     }
     // `sys_invocation` shows each invocation's `canonical_id` as its status does.
@@ -298,8 +321,7 @@ async fn invocations_read_through_the_entry_index_match_v1() {
             completed.timestamps = StatusTimestamps::init(created);
             completed.creation_seq = Some(Seq::new(index));
             let outcome = if index.is_multiple_of(9) {
-                completed.response_result =
-                    restate_types::invocation::ResponseResult::Failure(KILLED_INVOCATION_ERROR);
+                completed.response_result = ResponseResultRef::Failure(KILLED_INVOCATION_ERROR);
                 Status::Killed
             } else {
                 Status::Succeeded

@@ -35,10 +35,12 @@ use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::Transaction;
+use restate_storage_api::blob_table::{RawParts, ReadBlobTable};
 use restate_storage_api::inbox_table::ReadInboxTable;
 use restate_storage_api::invocation_status_table::{
-    InFlightInvocationMetadata, InvocationStatus, InvocationStatusDiscriminants,
-    ReadInvocationStatusTable, WriteInvocationStatusTable,
+    CompletedInvocation, CompletedResult, CompletionStatus, InFlightInvocationMetadata,
+    InvocationStatus, InvocationStatusDiscriminants, ReadInvocationStatusTable, ResponseResultRef,
+    WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_table::{JournalEntry, ReadJournalTable};
 use restate_storage_api::outbox_table::ReadOutboxTable;
@@ -68,6 +70,7 @@ use restate_types::journal::{CompleteAwakeableEntry, EntryResult, InvokeRequest}
 use restate_types::journal::{Entry, EntryType};
 use restate_types::journal_events::Event;
 use restate_types::journal_v2::raw::TryFromEntry;
+use restate_types::journal_v2::{EntryMetadata, OutputCommand, OutputResult};
 use restate_types::logs::{Keys, SequenceNumber};
 use restate_types::partitions::{Partition, PartitionFeatureChange, PersistedFeatures};
 use restate_types::sharding::KeyRange;
@@ -76,6 +79,7 @@ use restate_types::vqueues::Seq;
 use restate_wal_protocol::v2::Command;
 use restate_worker_api::invoker::{Effect, EffectKind};
 
+use crate::ResolveResponseResult;
 use crate::partition::processor::ProcessorRawContext;
 use crate::partition::types::InvokerEffectKind;
 
@@ -95,6 +99,14 @@ pub struct TestEnv {
 impl TestEnv {
     pub async fn shutdown(self) {
         TaskCenter::shutdown_node("test complete", 0).await;
+    }
+
+    /// Stores the content of every journal entry in the blob table however small, so every
+    /// output too. Takes effect with the write blob table feature.
+    pub fn always_write_output_blobs() {
+        let mut config = Configuration::pinned().as_ref().clone();
+        config.worker.inline_journal_entry_threshold = restate_memory::ByteCount::ZERO;
+        restate_types::config::set_current_config(config);
     }
 
     pub async fn create() -> Self {
@@ -139,10 +151,23 @@ impl TestEnv {
             storage_options.data_dir("db").display()
         );
         let manager = PartitionStoreManager::create(true).await.unwrap();
-        let rocksdb_storage = manager
+        let mut rocksdb_storage = manager
             .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
             .await
             .unwrap();
+        // The experimental option enables both the partition feature and the storage feature
+        if processor
+            .fsm()
+            .features()
+            .is_invocation_status_output_blob_enabled()
+        {
+            let mut config = Configuration::pinned().as_ref().clone();
+            config.common.experimental.set_write_blob_table(true);
+            rocksdb_storage
+                .verify_and_run_migrations(Default::default(), &config)
+                .await
+                .unwrap();
+        }
 
         Self {
             processor,
@@ -1509,6 +1534,334 @@ async fn inconsistent_state_mutation_cleanup() -> TestResult {
             .count()
             .await,
         0
+    );
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
+/// A terminal failure reported by the invoker must classify ABORTED as cancelled in the retained
+/// vqueue entry, independently of the blob table feature.
+#[test(restate_core::test)]
+async fn invoker_failure_retained_vqueue_status() -> TestResult {
+    let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+        PartitionFeatureChange::EnableVqueues,
+    ]))
+    .await;
+
+    for (code, expected_status) in [
+        (codes::ABORTED, vqueue_table::Status::Cancelled),
+        (codes::INTERNAL, vqueue_table::Status::Failed),
+    ] {
+        let invocation_id = InvocationId::mock_generate(&InvocationTarget::mock_service());
+        test_env
+            .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
+                invocation_id,
+                invocation_target: InvocationTarget::mock_service(),
+                completion_retention_duration: Duration::from_secs(120),
+                ..ServiceInvocation::mock()
+            }))
+            .await;
+
+        let entry_id = BaseEntryId::from(invocation_id);
+        let header = test_env
+            .storage
+            .transaction()
+            .get_vqueue_entry_status(&entry_id)
+            .await?
+            .expect("invocation must have a vqueue entry");
+        test_env
+            .apply_multiple([
+                run_decision(header.vqueue_id(), *header.entry_key()),
+                fixtures::pinned_deployment(invocation_id, ServiceProtocolVersion::V4),
+                commands::InvokerEffectCommand::test_envelope(Effect {
+                    invocation_id,
+                    kind: InvokerEffectKind::Failed(InvocationError::new(code, "sdk error")),
+                }),
+            ])
+            .await;
+
+        assert_that!(
+            test_env
+                .storage
+                .get_invocation_status(&invocation_id)
+                .await?,
+            pat!(InvocationStatus::Completed(_))
+        );
+        let header = test_env
+            .storage
+            .transaction()
+            .get_vqueue_entry_status(&entry_id)
+            .await?
+            .expect("retained invocation must keep its vqueue entry");
+        assert_eq!(header.stage(), Stage::Finished);
+        assert_eq!(header.status(), expected_status);
+    }
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
+/// With the blob table, killed and failed invocations end their journal with an Output entry
+/// whose result is read back from the output blob, like completed ones do.
+#[test(restate_core::test)]
+async fn output_entry_on_kill_and_failure() -> TestResult {
+    let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+        PartitionFeatureChange::EnableInvocationStatusOutputBlob,
+    ]))
+    .await;
+
+    // Multi-byte characters, so truncating by bytes would split one. Over the inline threshold.
+    let long_message = format!("{}{}", "é".repeat(150), "x".repeat(5000));
+    // (kill, failure message), inlined unless the message is long
+    for (kill, message) in [(true, ""), (false, "boom"), (false, long_message.as_str())] {
+        let invocation_id = InvocationId::mock_generate(&InvocationTarget::mock_service());
+        let (end, expected_error) = if kill {
+            (
+                commands::TerminateInvocationCommand::test_envelope(InvocationTermination {
+                    invocation_id,
+                    flavor: TerminationFlavor::Kill,
+                    response_sink: None,
+                }),
+                KILLED_INVOCATION_ERROR,
+            )
+        } else {
+            let error = InvocationError::new(codes::INTERNAL, message.to_owned());
+            (
+                commands::InvokerEffectCommand::test_envelope(Effect {
+                    invocation_id,
+                    kind: InvokerEffectKind::Failed(error.clone()),
+                }),
+                error,
+            )
+        };
+        test_env
+            .apply_multiple([
+                commands::InvokeCommand::test_envelope(ServiceInvocation {
+                    invocation_id,
+                    invocation_target: InvocationTarget::mock_service(),
+                    completion_retention_duration: Duration::from_secs(120),
+                    journal_retention_duration: Duration::from_secs(120),
+                    ..ServiceInvocation::mock()
+                }),
+                fixtures::pinned_deployment(invocation_id, ServiceProtocolVersion::V5),
+                end,
+            ])
+            .await;
+        test_env
+            .verify_journal_components(
+                invocation_id,
+                [
+                    journal_v2::CommandType::Input.into(),
+                    journal_v2::CommandType::Output.into(),
+                ],
+            )
+            .await;
+        // Every journal ends with the Output, hydrated from the blob if needed
+        assert_eq!(
+            test_env.read_journal_to_vec(invocation_id, 2).await[1],
+            journal_v2::Entry::from(OutputCommand {
+                result: OutputResult::Failure(expected_error.clone().into()),
+                name: Default::default(),
+            })
+        );
+
+        let InvocationStatus::Completed(CompletedInvocation {
+            response_result, ..
+        }) = test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await?
+        else {
+            panic!("expected a completed invocation");
+        };
+        let output_entry = journal_table_v2::ReadJournalTable::get_journal_entry(
+            &mut test_env.storage,
+            invocation_id,
+            1,
+        )
+        .await?
+        .expect("output entry");
+
+        let ResponseResultRef::Completed(CompletedResult { blob_id, status }) = response_result
+        else {
+            // Inlined in both the status and the journal
+            let expected = if kill {
+                ResponseResultRef::Failure(KILLED_INVOCATION_ERROR)
+            } else {
+                ResponseResultRef::Failure(expected_error)
+            };
+            assert_eq!(response_result, expected);
+            assert_eq!(output_entry.content_blob(), None);
+            continue;
+        };
+        assert_eq!(message, long_message);
+        // The status keeps the first 200 characters, the blob the full message
+        assert_eq!(
+            status,
+            CompletionStatus::Failure {
+                code: codes::INTERNAL,
+                message: format!("{}{}", "é".repeat(150), "x".repeat(50)).into(),
+            }
+        );
+        // The status points to the blob storing the content of the Output entry
+        assert_eq!(
+            output_entry.content_blob().map(|blob| blob.id),
+            Some(blob_id)
+        );
+        // Referenced by both the completed status and the journal
+        let (_, ref_count, _) = test_env
+            .storage
+            .get_blob::<RawParts>(blob_id)
+            .await?
+            .expect("output blob");
+        assert_eq!(ref_count, 2);
+    }
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
+/// Unpinned invocations get no synthesized Output on kill/failure: their Input can still be in
+/// the v1 journal table, so appending to v2 would split the journal. The result is inlined.
+#[test(restate_core::test)]
+async fn no_output_entry_on_kill_and_failure_of_unpinned_v1_journal() -> TestResult {
+    // Without journal v2 as default, the Input is written to the v1 table
+    let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
+        PartitionFeatureChange::EnableInvocationStatusOutputBlob,
+    ]))
+    .await;
+
+    let failure = InvocationError::new(codes::INTERNAL, "x".repeat(5000));
+    for (kill, expected) in [
+        (true, ResponseResultRef::Failure(KILLED_INVOCATION_ERROR)),
+        (false, ResponseResultRef::Failure(failure.clone())),
+    ] {
+        let invocation_id = InvocationId::mock_generate(&InvocationTarget::mock_service());
+        let end = if kill {
+            commands::TerminateInvocationCommand::test_envelope(InvocationTermination {
+                invocation_id,
+                flavor: TerminationFlavor::Kill,
+                response_sink: None,
+            })
+        } else {
+            commands::InvokerEffectCommand::test_envelope(Effect {
+                invocation_id,
+                kind: InvokerEffectKind::Failed(failure.clone()),
+            })
+        };
+        test_env
+            .apply_multiple([
+                commands::InvokeCommand::test_envelope(ServiceInvocation {
+                    invocation_id,
+                    invocation_target: InvocationTarget::mock_service(),
+                    completion_retention_duration: Duration::from_secs(120),
+                    journal_retention_duration: Duration::from_secs(120),
+                    ..ServiceInvocation::mock()
+                }),
+                end,
+            ])
+            .await;
+
+        let InvocationStatus::Completed(CompletedInvocation {
+            response_result,
+            journal_metadata,
+            ..
+        }) = test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await?
+        else {
+            panic!("expected a completed invocation");
+        };
+        assert_eq!(response_result, expected);
+        // The journal is still only the Input, in the v1 table
+        assert_eq!(journal_metadata.length, 1);
+        std::assert!(
+            ReadJournalTable::get_journal_entry(&mut test_env.storage, &invocation_id, 0)
+                .await?
+                .is_some()
+        );
+        for index in 0..2 {
+            std::assert!(
+                journal_table_v2::ReadJournalTable::get_journal_entry(
+                    &mut test_env.storage,
+                    invocation_id,
+                    index,
+                )
+                .await?
+                .is_none()
+            );
+        }
+    }
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
+/// A large output is stored in a blob even if the journal is dropped right away. The completed
+/// status keeps the blob alive.
+#[test(restate_core::test)]
+async fn output_blob_outlives_dropped_journal() -> TestResult {
+    let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+        PartitionFeatureChange::EnableInvocationStatusOutputBlob,
+    ]))
+    .await;
+
+    let invocation_id = InvocationId::mock_generate(&InvocationTarget::mock_service());
+    let result = Bytes::from(vec![7; 5000]);
+    test_env
+        .apply_multiple([
+            commands::InvokeCommand::test_envelope(ServiceInvocation {
+                invocation_id,
+                invocation_target: InvocationTarget::mock_service(),
+                completion_retention_duration: Duration::from_secs(120),
+                journal_retention_duration: Duration::ZERO,
+                ..ServiceInvocation::mock()
+            }),
+            fixtures::pinned_deployment(invocation_id, ServiceProtocolVersion::V5),
+            fixtures::invoker_entry_effect(
+                invocation_id,
+                OutputCommand {
+                    result: OutputResult::Success(result.clone()),
+                    name: Default::default(),
+                },
+            ),
+        ])
+        .await;
+
+    let InvocationStatus::Completed(CompletedInvocation {
+        response_result, ..
+    }) = test_env
+        .storage
+        .get_invocation_status(&invocation_id)
+        .await?
+    else {
+        panic!("expected a completed invocation");
+    };
+    let ResponseResultRef::Completed(CompletedResult { blob_id, .. }) = response_result else {
+        panic!("expected the output in a blob, got {response_result:?}");
+    };
+    // The journal is gone, and released its reference
+    let input_entry = journal_table_v2::ReadJournalTable::get_journal_entry(
+        &mut test_env.storage,
+        invocation_id,
+        0,
+    )
+    .await?;
+    assert_eq!(input_entry, None);
+    let (_, ref_count, _) = test_env
+        .storage
+        .get_blob::<RawParts>(blob_id)
+        .await?
+        .expect("output blob");
+    assert_eq!(ref_count, 1);
+    assert_eq!(
+        response_result.resolve(&mut test_env.storage).await?,
+        Some(ResponseResult::Success(result))
     );
 
     test_env.shutdown().await;

@@ -278,6 +278,7 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
         SqlColumnDoc { name: "stage", ty: "Utf8", description: "The stage of the invocation's vqueue entry. Choices are 'inbox', 'running', 'paused', 'suspended', and 'finished'; NULL for a stage this version doesn't know, or for an invocation without an entry. Since v1.8.2." },
         SqlColumnDoc { name: "effective_status", ty: "Utf8", description: "What the invocation is doing now, the effective status of its vqueue entry, which also tells its stage. In the inbox: `new`, `scheduled`, `backing-off`, `ready` or `yielded`; then `running`, `suspended` or `paused`; once finished, its outcome: `succeeded`, `failed`, `killed` or `cancelled`. NULL if this version can't tell from the entry's stored stage and status what it is doing, or for an invocation without an entry; no status name selects such an invocation. Since v1.8.2." },
         SqlColumnDoc { name: "completed", ty: "Boolean", description: "Whether the invocation has finished: `status = 'completed'`, which follows its effective status, or for an invocation without one, its stored status. Since v1.8.2." },
+        SqlColumnDoc { name: "completion_failure_code", ty: "UInt32", description: "If `status = 'completed' AND completion_result = 'failure'`, this contains the error code" },
     ] },
 ];
 
