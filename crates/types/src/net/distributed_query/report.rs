@@ -26,6 +26,8 @@
 //! worker executed, so the coordinator attaches metrics only to the same nodes,
 //! and the metrics of each node by its position in that shape.
 
+use bytes::Bytes;
+
 use restate_util_string::ReString;
 
 /// Asks for a report when installing a task, and acknowledges the request in
@@ -36,8 +38,12 @@ pub struct QueryTaskAnalyze {}
 /// The answer to `Close`: the task's report, if it was asked for and built.
 #[derive(Debug, Clone, Default, PartialEq, bilrost::Message)]
 pub struct QueryTaskClosed {
+    /// A [`QueryTaskReport`], encoded on its own. The coordinator decodes it
+    /// only after checking its size, so a malformed or oversized report spoils
+    /// only itself, not the reply that carries it. On the wire it's the same as
+    /// the report inline.
     #[bilrost(1)]
-    pub report: Option<QueryTaskReport>,
+    pub report: Option<Bytes>,
 }
 
 /// What a task did. Built within a budget: whatever didn't fit is counted in
@@ -64,6 +70,14 @@ pub struct QueryTaskReport {
     /// missing from the metrics.
     #[bilrost(7)]
     pub unsettled_lanes: u32,
+    /// Nodes that occur more than once in the plan and share one set of
+    /// metrics: their numbers can't be told apart, so none are reported.
+    #[bilrost(8)]
+    pub ambiguous_nodes: u32,
+    /// FNV-1a of the plan bytes the task was installed with, so that the report
+    /// attaches only to the plan the coordinator sent for that task.
+    #[bilrost(9)]
+    pub plan_digest: u64,
 }
 
 /// How a task's execution ended, as far as its streams tell.
@@ -81,13 +95,17 @@ pub enum TaskOutcome {
     Failed = 3,
 }
 
-/// One node of an executed plan: its name and how many children it has.
+/// One node of an executed plan: its name, how many children it has, and a
+/// hash of its configuration as displayed (predicate, order, fetch, source),
+/// so that two nodes of the same kind can't be swapped unnoticed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, bilrost::Message)]
 pub struct PlanNodeShape {
     #[bilrost(1)]
     pub name: ReString,
     #[bilrost(2)]
     pub children: u32,
+    #[bilrost(3)]
+    pub identity: u64,
 }
 
 /// The metrics of the node at pre-order position `ordinal`.

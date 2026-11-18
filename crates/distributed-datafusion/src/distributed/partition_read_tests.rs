@@ -195,21 +195,42 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
     }));
     let admissions = Arc::new(Mutex::new(Vec::<Admission>::new()));
     let peak = Arc::new(Mutex::new(0usize));
+    // Diagnostics: a bounded trace of what the dispatcher saw, and the live
+    // snapshots, by query and partition, whenever more than two were live.
+    let trace = Arc::new(Mutex::new(Vec::<String>::new()));
+    let exceeded = Arc::new(Mutex::new(Vec::<String>::new()));
     let (opened, mut opened_rx) = mpsc::unbounded_channel();
     let dispatch = tokio::spawn({
         let admissions = Arc::clone(&admissions);
         let peak = Arc::clone(&peak);
+        let trace = Arc::clone(&trace);
+        let exceeded = Arc::clone(&exceeded);
         async move {
+            let started = std::time::Instant::now();
+            let event = move |text: String| {
+                let mut trace = trace.lock();
+                if trace.len() < 400 {
+                    trace.push(format!("{:>8}us {text}", started.elapsed().as_micros()));
+                }
+            };
             let mut active = Vec::new();
             while let Some(command) = receiver.recv().await {
                 let request = match command {
                     ProcessorsManagerCommand::ReadPartition(request) => request,
                     // A barrier: it is answered after every read queued before it.
                     ProcessorsManagerCommand::GetState(reply) => {
+                        event("barrier".to_owned());
                         let _ = reply.send(Default::default());
                         continue;
                     }
                 };
+                let identity = format!(
+                    "p{} ts={:?} sql={:?}",
+                    u16::from(request.partition),
+                    request.metadata.query_ts,
+                    request.metadata.redacted_sql
+                );
+                event(format!("admit {identity}"));
                 let store = stores.get_partition_store(request.partition).await.unwrap();
                 assert!(
                     request.capture.storage && request.capture.invoker && request.capture.scheduler
@@ -219,14 +240,28 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
                 let cancel = CancellationToken::new();
                 let (read, closed) = store.query_read(cancel.clone()).unwrap();
                 active.retain_mut(
-                    |completion: &mut std::pin::Pin<Box<WaitForCancellationFutureOwned>>| {
-                        completion.as_mut().now_or_never().is_none()
+                    |(live, completion): &mut (
+                        String,
+                        std::pin::Pin<Box<WaitForCancellationFutureOwned>>,
+                    )| {
+                        let open = completion.as_mut().now_or_never().is_none();
+                        if !open {
+                            event(format!("closed {live}"));
+                        }
+                        open
                     },
                 );
-                active.push(Box::pin(read.closed()));
+                active.push((identity.clone(), Box::pin(read.closed())));
                 {
                     let mut peak = peak.lock();
                     *peak = (*peak).max(active.len());
+                }
+                if active.len() > 2 {
+                    exceeded.lock().push(format!(
+                        "{} live at the admission of {identity}: {:#?}",
+                        active.len(),
+                        active.iter().map(|(live, _)| live).collect::<Vec<_>>()
+                    ));
                 }
                 admissions.lock().push(Admission {
                     partition: request.partition,
@@ -336,7 +371,10 @@ async fn partition_scopes_bound_open_reads_share_layouts_and_cancel_idle_consume
         }
         assert!(
             *peak.lock() <= 2,
-            "parallelism_bounds_actual_snapshot_lifetimes"
+            "parallelism_bounds_actual_snapshot_lifetimes: peak {} after {sql}\nexceeded: {:#?}\ntrace:\n{}",
+            *peak.lock(),
+            exceeded.lock(),
+            trace.lock().join("\n")
         );
         while opened_rx.try_recv().is_ok() {}
     }

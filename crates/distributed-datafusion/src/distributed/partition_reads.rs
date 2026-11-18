@@ -40,6 +40,7 @@ use restate_types::GenerationalNodeId;
 use restate_types::identifiers::PartitionId;
 use restate_types::net::distributed_query::{QueryFailureKind, QueryTaskError};
 
+use crate::distributed::analyze::AnalyzeCollector;
 use crate::source_registry::PartitionLocation;
 use crate::table_providers::PartitionReadContext;
 
@@ -383,6 +384,8 @@ impl ExecutionPlan for PartitionReadExec {
         let parallelism = self.parallelism;
         let fetch = self.fetch;
         let opened = MetricBuilder::new(&self.metrics).counter("partition_scopes", lane);
+        // Only a task asked for a report collects what its copies did.
+        let collector = context.session_config().get_extension::<AnalyzeCollector>();
         let mut output = RecordBatchReceiverStream::builder(self.schema(), 1);
         let tx = output.tx();
         output.spawn(async move {
@@ -392,6 +395,9 @@ impl ExecutionPlan for PartitionReadExec {
                     if remaining == 0 || tx.is_closed() {
                         break;
                     }
+                    // Registered before any of its work: a failure or a cancellation
+                    // from here on leaves it unsettled, which the report says.
+                    let mut copy = collector.as_ref().map(|collector| collector.begin_copy());
                     let scope = Self::admit(&input, partitions[index], &context).await?;
                     opened.add(1);
                     let closed = scope.snapshot.as_ref().map(|read| read.closed());
@@ -412,25 +418,37 @@ impl ExecutionPlan for PartitionReadExec {
                         context.window_functions().clone(),
                         context.runtime_env(),
                     ));
-                    let input = Arc::clone(&input);
+                    let executed = reset_plan_states(Arc::clone(&input))?;
+                    let template = Arc::clone(&input);
                     let tx = tx.clone();
                     let run = async move {
-                        let mut stream = execute_stream(reset_plan_states(input)?, scoped_context)?;
-                        while remaining > 0
-                            && let Some(batch) = stream.next().await
-                        {
+                        let mut stream = execute_stream(Arc::clone(&executed), scoped_context)?;
+                        let mut ended = false;
+                        while remaining > 0 {
+                            let Some(batch) = stream.next().await else {
+                                ended = true;
+                                break;
+                            };
                             let mut batch = batch?;
                             if batch.num_rows() > remaining {
                                 batch = batch.slice(0, remaining);
                             }
                             remaining -= batch.num_rows();
                             if tx.send(Ok(batch)).await.is_err() {
-                                return Ok(0);
+                                remaining = 0;
+                                break;
                             }
                         }
-                        Ok::<_, datafusion::common::DataFusionError>(remaining)
+                        drop(stream);
+                        // The copy can hold its scope open, so it must not outlive
+                        // its stream: only its metrics' handles are kept.
+                        if let Some(copy) = copy.as_mut() {
+                            copy.observe(&template, &executed, ended);
+                        }
+                        Ok::<_, datafusion::common::DataFusionError>((remaining, copy))
                     };
-                    remaining = if let Some(cancel) = cancel {
+                    let copy;
+                    (remaining, copy) = if let Some(cancel) = cancel {
                         // Poll cancellation independently of the consumer, including
                         // while blocked sending a full output buffer. Dropping the
                         // native subtree closes its storage batch channels.
@@ -447,6 +465,10 @@ impl ExecutionPlan for PartitionReadExec {
                     drop(_cancel_on_drop);
                     if let Some(closed) = closed {
                         closed.await;
+                    }
+                    // Its storage is released: merge what it did, and settle it.
+                    if let Some(copy) = copy {
+                        copy.finish();
                     }
                 }
                 Ok(())

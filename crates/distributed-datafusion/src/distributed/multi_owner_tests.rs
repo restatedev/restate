@@ -82,6 +82,8 @@ use super::DistributedQueryServer;
 use super::tests::environment;
 use super::worker::TaskObservation;
 
+#[path = "analyze_tests.rs"]
+mod analyze;
 #[path = "index_access_tests.rs"]
 mod index_access;
 #[path = "invocation_tests.rs"]

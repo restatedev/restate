@@ -245,40 +245,38 @@ async fn stage_index_access_matches_scans_across_windows_and_owners() {
                 "unordered_limits_count_qualifying_rows: {sql}: {rows:?}"
             );
             // The leaf reports the index work: every reference of the queue was
-            // fetched and matched; navigation evaluated at least those keys.
-            // Coordinator plans do not show remote tasks' metrics.
-            if !distributed {
-                let sql = format!(
-                    "EXPLAIN ANALYZE SELECT entry_id FROM sys_vqueue_entry_status WHERE vqueue_id = '{}'",
-                    busy
-                );
-                let plan = crate::mocks::rows(session.as_ref(), &sql)
-                    .await
-                    .concat()
-                    .join("\n");
-                let metric = |name: &str| -> u64 {
-                    let at = plan
-                        .find(&format!("{name}="))
-                        .unwrap_or_else(|| panic!("{name} missing: {plan}"));
-                    plan[at + name.len() + 1..]
-                        .split(|c: char| !c.is_ascii_digit())
-                        .next()
-                        .unwrap()
-                        .parse()
-                        .unwrap()
-                };
-                assert_eq!(
-                    [
-                        metric("index_references"),
-                        metric("primary_keys_fetched"),
-                        metric("primary_missing"),
-                        metric("primary_mismatched"),
-                    ],
-                    [600, 600, 0, 0],
-                    "index_work_metrics: distributed={distributed}: {plan}"
-                );
-                assert!(metric("index_keys_visited") >= 600, "{plan}");
-            }
+            // fetched and matched; navigation evaluated at least those keys. A
+            // remote task reports it to the coordinator.
+            let sql = format!(
+                "EXPLAIN ANALYZE SELECT entry_id FROM sys_vqueue_entry_status WHERE vqueue_id = '{}'",
+                busy
+            );
+            let plan = crate::mocks::rows(session.as_ref(), &sql)
+                .await
+                .concat()
+                .join("\n");
+            let metric = |name: &str| -> u64 {
+                let at = plan
+                    .find(&format!("{name}="))
+                    .unwrap_or_else(|| panic!("{name} missing: {plan}"));
+                plan[at + name.len() + 1..]
+                    .split(|c: char| !c.is_ascii_digit())
+                    .next()
+                    .unwrap()
+                    .parse()
+                    .unwrap()
+            };
+            assert_eq!(
+                [
+                    metric("index_references"),
+                    metric("primary_keys_fetched"),
+                    metric("primary_missing"),
+                    metric("primary_mismatched"),
+                ],
+                [600, 600, 0, 0],
+                "index_work_metrics: distributed={distributed}: {plan}"
+            );
+            assert!(metric("index_keys_visited") >= 600, "{plan}");
 
             // An unrestricted ordered limit keeps the scan and its sort.
             let sql = "SELECT entry_id FROM sys_vqueue_entry_status ORDER BY entry_id LIMIT 5";
@@ -457,6 +455,21 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
         }
         // Without an entry: found only where the partition scans.
         put(&page(&format!("probe{p}")), BASE - 1_000, false);
+        // The declared Doss page's service: more invocations than its LIMIT,
+        // on two partitions and two handlers.
+        let doss = match partition {
+            0 => 300,
+            1 => 20,
+            _ => 0,
+        };
+        for k in 0..doss {
+            let handler = if k % 2 == 0 { "a" } else { "b" };
+            put(
+                &InvocationTarget::service("Doss", handler),
+                BASE + k * 7,
+                true,
+            );
+        }
         if partition == MANY {
             for handler in 0..257u64 {
                 put(
@@ -601,5 +614,74 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
             parallelism == 4,
             "parallelism {parallelism}: {plan}"
         );
+    }
+
+    // The repository's exact UI queries and the declared Doss query, under
+    // EXPLAIN ANALYZE across the three owners: every stage's task reports, and
+    // none of its numbers is missing, invalid or misattributed.
+    const DOSS: &str = "SELECT\n        ss.id AS id\n      FROM sys_invocation_status ss\n      WHERE ss.target_service_name IN ('Doss')\n      LIMIT 250 ";
+    let env = environment(4, 8).with_distributed_execution(fixture.network.clone());
+    env.register_tables(crate::UserTables::new(
+        fixture.partitions.clone(),
+        fixture.scanners.clone(),
+    ))
+    .await
+    .unwrap();
+    let session = DataFusionQueryEngine::from_env(env, None)
+        .create_session(SessionOptions::default())
+        .unwrap();
+    // Doss without ORDER BY: any 250 of its 320 invocations, each once.
+    let all: BTreeSet<_> = crate::mocks::rows(
+        session.as_ref(),
+        "SELECT id FROM sys_invocation_status WHERE target_service_name = 'Doss'",
+    )
+    .await
+    .concat()
+    .into_iter()
+    .collect();
+    assert_eq!(all.len(), 320);
+    let page = crate::mocks::rows(session.as_ref(), DOSS).await.concat();
+    assert_eq!(page.len(), 250);
+    assert_eq!(page.iter().collect::<BTreeSet<_>>().len(), 250);
+    assert!(page.iter().all(|id| all.contains(id)));
+    for (name, sql) in [
+        (
+            "service_oldest",
+            include_str!("../ui_queries/service_oldest.sql"),
+        ),
+        (
+            "service_scheduled_newest",
+            include_str!("../ui_queries/service_scheduled_newest.sql"),
+        ),
+        (
+            "vqueues_finished_newest",
+            include_str!("../ui_queries/vqueues_finished_newest.sql"),
+        ),
+        ("workflow_page", exact),
+        ("doss", DOSS),
+    ] {
+        let plan = crate::mocks::rows(session.as_ref(), &format!("EXPLAIN ANALYZE {sql}"))
+            .await
+            .concat()
+            .join("\n");
+        eprintln!("corpus_analyze name={name}\n{plan}");
+        let stages = plan.matches("NetworkCoalesceExec").count();
+        assert!(stages > 0, "{name}: {plan}");
+        assert_eq!(
+            plan.matches("tasks_completed=1").count() + plan.matches("tasks_incomplete=1").count(),
+            stages,
+            "{name}: {plan}"
+        );
+        for marker in [
+            "metrics_missing",
+            "metrics_invalid",
+            "metrics_unsupported",
+            "metrics_shape_mismatch",
+            "metrics_wrong_owner",
+            "metrics_ambiguous",
+            "tasks_failed",
+        ] {
+            assert!(!plan.contains(marker), "{name}: {marker}: {plan}");
+        }
     }
 }

@@ -478,7 +478,10 @@ async fn merges_charge_what_they_hold_and_release_it() {
     let discovery = snapshot
         .ordered_runs::<EntryByServiceCreated>(request, 2, limits(4, 1), Box::new(charged.clone()))
         .unwrap();
-    assert!(matches!(discovery, OrderedRunsDiscovery::TooManyRuns));
+    assert!(matches!(
+        discovery,
+        OrderedRunsDiscovery::TooManyRuns { examined } if examined > 0
+    ));
     assert_eq!(charged.now_and_peak().0, 0);
 
     // A charge over the limit stops the read, at discovery or while reading ahead.

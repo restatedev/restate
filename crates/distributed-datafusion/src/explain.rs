@@ -41,8 +41,11 @@ use datafusion::physical_plan::{
     PlanProperties, ReplaceChildrenOptions, SendableRecordBatchStream, displayable,
 };
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
+use datafusion_distributed::DistributedExec;
 
 use restate_platform::sync::Mutex;
+
+use crate::distributed::analyze_view::ReportView;
 
 const INLINE_VALUES: usize = 8;
 const SAMPLE_VALUES: usize = 3;
@@ -61,17 +64,30 @@ impl QueryPlanner for ExplainPlanner {
         let planner = DefaultPhysicalPlanner::default();
         if let LogicalPlan::Analyze(analyze) = plan {
             let native = planner.create_physical_plan(plan, session).await?;
-            if analyze.verbose || analyze.format != ExplainFormat::Indent {
-                return Ok(native);
-            }
+            let compact = !analyze.verbose && analyze.format == ExplainFormat::Indent;
             let Some(analyze) = native.downcast_ref::<AnalyzeExec>() else {
                 return Ok(native);
             };
             // Install presentation only after native planning/optimization. The
             // native AnalyzeExec still owns execution, cancellation and rendering
             // of metrics/statistics, including all statement/session filters.
-            let Ok(input) = ExplainDisplay::default().analyze_input(Arc::clone(analyze.input()))
-            else {
+            let input = Arc::clone(analyze.input());
+            let input = if input.is::<DistributedExec>() {
+                // Remote stages show what their tasks report, once executed; a
+                // compact display applies to that completed tree.
+                Arc::new(ReportView::new(
+                    input,
+                    if compact {
+                        compact_analyze
+                    } else {
+                        |plan| plan
+                    },
+                ))
+            } else if !compact {
+                return Ok(native);
+            } else if let Ok(input) = ExplainDisplay::default().analyze_input(input) {
+                input
+            } else {
                 // A display-only expression copy must not make a valid query fail.
                 return Ok(native);
             };
@@ -172,6 +188,14 @@ impl QueryPlanner for ExplainPlanner {
             native_explain.verbose(),
         )))
     }
+}
+
+/// The compact display of an executed ANALYZE tree, or the tree itself if its
+/// expressions can't be copied for display.
+fn compact_analyze(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    ExplainDisplay::default()
+        .analyze_input(Arc::clone(&plan))
+        .unwrap_or(plan)
 }
 
 /// A display tree over the original, optimized ANALYZE input. Only `fmt_as`

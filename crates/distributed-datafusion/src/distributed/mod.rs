@@ -10,12 +10,11 @@
 
 //! Explicit, owner-bound stages backed by datafusion-distributed's task runtime.
 
+pub(crate) mod analyze;
+pub(crate) mod analyze_view;
 pub(crate) mod demand;
 pub(crate) mod emission;
 mod pushdown;
-// Stopgap: the worker's task reports (ANALYZE slice 1b) use this; until then
-// only its tests do.
-#[allow(dead_code)]
 pub(crate) mod report;
 mod requirements;
 pub(crate) mod source;
