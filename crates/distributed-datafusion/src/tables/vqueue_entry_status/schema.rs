@@ -14,8 +14,12 @@ crate::tables::table_adapter!(pub(crate) SysVqueueEntryStatusTable, SysVqueueEnt
 
 impl crate::sharding::PartitionSource for SysVqueueEntryStatusTable {
     const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> = Some(super::read::select_primary);
-    const INDEXES: &'static [crate::access::IndexAccess<Self::Schema>] =
-        &[crate::access::IndexAccess::of::<super::read::StageIndex>()];
+    // A few queues read the stage tables; else finished entries newest
+    // finished first read their index.
+    const INDEXES: &'static [crate::access::IndexAccess<Self::Schema>] = &[
+        crate::access::IndexAccess::of::<super::read::StageIndex>(),
+        crate::access::IndexAccess::of::<super::read::FinishedIndex>(),
+    ];
     const ORDERING: &'static [restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatusColumn] = &[
         restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatusColumn::PartitionKey,
     ];

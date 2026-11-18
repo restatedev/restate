@@ -684,4 +684,40 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
             assert!(!plan.contains(marker), "{name}: {marker}: {plan}");
         }
     }
+
+    // The newest finished entries, through `finished_entry_by_outcome/1` on
+    // every owner, except the partition whose index was reset, which scans
+    // and sorts: the same rows as a scan, each owner's read shown.
+    let finished = "SELECT entry_id, transitioned_at FROM sys_vqueue_entry_status \
+        WHERE stage = 'finished' ORDER BY transitioned_at DESC NULLS LAST LIMIT 20";
+    let unrestricted = finished.replacen(
+        "FROM sys_vqueue_entry_status",
+        "FROM (SELECT * FROM sys_vqueue_entry_status LIMIT 1000000) AS sys_vqueue_entry_status",
+        1,
+    );
+    let times = |rows: Vec<Vec<String>>| {
+        rows.into_iter()
+            .map(|row| row[1].clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        times(crate::mocks::rows(session.as_ref(), finished).await),
+        times(crate::mocks::rows(session.as_ref(), &unrestricted).await)
+    );
+    let plan = crate::mocks::rows(session.as_ref(), &format!("EXPLAIN ANALYZE {finished}"))
+        .await
+        .concat()
+        .join("\n");
+    eprintln!("finished_analyze\n{plan}");
+    assert!(plan.contains("_idx_finished_entry_by_outcome"), "{plan}");
+    assert_eq!(
+        plan.matches("tasks_completed=1").count() + plan.matches("tasks_incomplete=1").count(),
+        3,
+        "{plan}"
+    );
+    assert!(plan.contains("entry_index_scans_not_ready=1"), "{plan}");
+    assert!(
+        !plan.contains("entry_index_reads=0,"),
+        "every owner reads the index somewhere: {plan}"
+    );
 }

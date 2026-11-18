@@ -108,13 +108,27 @@ crate::index::macros::define_secondary_index!(
     FinishedEntryByOutcome,
     definition: "finished_entry_by_outcome/1",
     introduced: (1, 8, 2),
+    // `status` is the stored status, the outcome; `transitioned_at` is when
+    // the entry entered Finished. Named after the entry table's columns, so
+    // that a query's conditions on them restrict the index.
     key: FinishedEntryByOutcomeKey {
-        outcome: StatusCodec,
+        status: StatusCodec,
         target_service_name: ServiceNameCodec => str,
         target_handler_name: Option<StringCodec> => str,
-        finished_at: ReverseUniqueTimestampCodec,
+        transitioned_at: ReverseUniqueTimestampCodec,
         canonical_id: CanonicalEntryIdCodec (primary_key),
     }
+);
+
+// A query on entries restricts the index through the entry table's status and
+// transition time; the entry table shows no service or handler.
+crate::keys::macros::define_key_selection!(
+    FinishedEntryByOutcomeKey;
+    [restate_storage_query_api::tables::index::FinishedEntryByOutcome];
+    status,
+    target_service_name,
+    target_handler_name,
+    transitioned_at,
 );
 
 crate::index::macros::define_secondary_index!(

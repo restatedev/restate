@@ -10,6 +10,7 @@
 
 mod entry;
 mod entry_index;
+mod finished_read;
 mod inbox;
 mod inbox_reader;
 mod input;
@@ -38,6 +39,7 @@ pub use entry_index::{
     ActiveEntryByStage, ActiveEntryByStageKey, EntryByServiceCreated, EntryByServiceCreatedKey,
     FinishedEntryByOutcome, FinishedEntryByOutcomeKey,
 };
+pub use finished_read::FinishedRead;
 pub use inbox::InboxKey;
 pub use input::InputPayloadKey;
 pub use meta_binding::{VQueueMetaBinding, VQueueMetaTable};
