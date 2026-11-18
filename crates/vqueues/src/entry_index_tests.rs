@@ -19,10 +19,14 @@ use std::time::Duration;
 
 use restate_clock::{RoughTimestamp, UniqueTimestamp};
 use restate_partition_store::index::{RegisteredIndex, SecondaryIndexKey};
+use restate_partition_store::keys::IndexKeyPrefix;
 use restate_partition_store::keys::KeyKind;
 use restate_partition_store::keys::header::IndexScope;
 use restate_partition_store::registry::IndexKind;
-use restate_partition_store::vqueue_table::{EntryByServiceCreated, EntryByServiceCreatedKey};
+use restate_partition_store::vqueue_table::{
+    ActiveEntryByStage, ActiveEntryByStageKey, EntryByServiceCreated, EntryByServiceCreatedKey,
+    FinishedEntryByOutcome, FinishedEntryByOutcomeKey,
+};
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
@@ -71,9 +75,17 @@ fn target(case: u8) -> EntryTargetRef<'static> {
     }
 }
 
-/// An empty store that tracks the entry indexes, and the scope of the Ready
-/// index by service and handler.
-async fn tracking_store() -> (PartitionStore, IndexScope) {
+/// The scopes of the three Ready entry indexes.
+#[derive(Clone, Copy)]
+struct Scopes {
+    /// By service and handler.
+    all: IndexScope,
+    finished: IndexScope,
+    active: IndexScope,
+}
+
+/// An empty store that tracks the entry indexes, and their scopes.
+async fn tracking_store() -> (PartitionStore, Scopes) {
     RocksDbManager::init();
     let mut store = PartitionStoreManager::create(true)
         .await
@@ -91,19 +103,71 @@ async fn tracking_store() -> (PartitionStore, IndexScope) {
         .await
         .unwrap();
     let (snapshot, _) = store.query_read(Default::default()).unwrap();
-    let index = snapshot
-        .ready_index(EntryByServiceCreated::DEFINITION, IndexKind::Secondary)
-        .unwrap();
-    drop(snapshot);
-    let scope = IndexScope {
+    let scope = |definition| IndexScope {
         partition: store.partition_id(),
-        index,
+        index: snapshot
+            .ready_index(definition, IndexKind::Secondary)
+            .unwrap(),
     };
-    (store, scope)
+    let scopes = Scopes {
+        all: scope(EntryByServiceCreated::DEFINITION),
+        finished: scope(FinishedEntryByOutcome::DEFINITION),
+        active: scope(ActiveEntryByStage::DEFINITION),
+    };
+    drop(snapshot);
+    (store, scopes)
+}
+
+/// The keys of the index of `scope`.
+fn index_keys(store: &PartitionStore, scope: IndexScope) -> Vec<Vec<u8>> {
+    all_index_keys(store)
+        .into_iter()
+        .filter(|key| IndexKeyPrefix::decode_prefix(key).unwrap().0.index_id_raw() == scope.index)
+        .collect()
+}
+
+/// The key of an entry in the active index.
+fn active_key(
+    scope: IndexScope,
+    stage: Stage,
+    target: &EntryTargetRef<'_>,
+    created_at: UniqueTimestamp,
+    id: CanonicalEntryId,
+) -> Vec<Vec<u8>> {
+    let mut key = Vec::new();
+    ActiveEntryByStageKey::borrowed(
+        stage,
+        target.service(),
+        target.handler(),
+        Reverse(created_at),
+        id,
+    )
+    .encode_key(scope, &mut key);
+    vec![key]
+}
+
+/// The key of an entry in the finished index.
+fn finished_key(
+    scope: IndexScope,
+    status: Status,
+    target: &EntryTargetRef<'_>,
+    finished_at: UniqueTimestamp,
+    id: CanonicalEntryId,
+) -> Vec<Vec<u8>> {
+    let mut key = Vec::new();
+    FinishedEntryByOutcomeKey::borrowed(
+        status,
+        target.service(),
+        target.handler(),
+        Reverse(finished_at),
+        id,
+    )
+    .encode_key(scope, &mut key);
+    vec![key]
 }
 
 /// Every secondary index key in the store.
-fn index_keys(store: &PartitionStore) -> Vec<Vec<u8>> {
+fn all_index_keys(store: &PartitionStore) -> Vec<Vec<u8>> {
     let db = store.partition_db();
     let mut options = rocksdb::ReadOptions::default();
     options.set_total_order_seek(true);
@@ -153,7 +217,8 @@ fn sequence(store: &PartitionStore) -> u64 {
 /// that don't change the key write only the entry status.
 #[restate_core::test]
 async fn entry_index_follows_vqueue_operations() {
-    let (mut store, scope) = tracking_store().await;
+    let (mut store, scopes) = tracking_store().await;
+    let scope = scopes.all;
     let mut cache = VQueuesMetaCache::new_empty(16);
     let at = |logical| UniqueTimestamp::try_from_parts(100, logical).unwrap();
 
@@ -169,7 +234,14 @@ async fn entry_index_follows_vqueue_operations() {
         let qid = VQueueId::custom(3337, format!("index-{case}"));
         let entry_id = EntryId::new(kind, [case + 1; EntryId::REMAINDER_LEN]);
         let base_id = entry_id.to_base_id(qid.partition_key());
-        let expected = expected_key(scope, &target, at(0), base_id.canonicalize(Seq::new(1)));
+        let canonical = base_id.canonicalize(Seq::new(1));
+        let expected = expected_key(scope, &target, at(0), canonical);
+        // The active key of the entry in its stored stage, and its finished key
+        // with its stored status and transition time.
+        let active = |stage| active_key(scopes.active, stage, &target, at(0), canonical);
+        let finished = |status, finished_at| {
+            finished_key(scopes.finished, status, &target, finished_at, canonical)
+        };
 
         let mut tx = store.transaction();
         VQueue::<VQueueEvent, _>::get_or_insert_with(&qid, &mut tx, &mut cache, || {
@@ -187,7 +259,16 @@ async fn entry_index_follows_vqueue_operations() {
         );
         tx.commit().await.unwrap();
         drop(tx);
-        assert_eq!(index_keys(&store), expected, "case {case}: enqueued");
+        assert_eq!(index_keys(&store, scope), expected, "case {case}: enqueued");
+        assert_eq!(
+            index_keys(&store, scopes.active),
+            active(Stage::Inbox),
+            "case {case}"
+        );
+        assert!(
+            index_keys(&store, scopes.finished).is_empty(),
+            "case {case}"
+        );
 
         // Metadata and status changes write only the entry status.
         let before = sequence(&store);
@@ -220,7 +301,12 @@ async fn entry_index_follows_vqueue_operations() {
         tx.commit().await.unwrap();
         drop(tx);
         assert_eq!(sequence(&store), before + 1, "case {case}: status");
-        assert_eq!(index_keys(&store), expected, "case {case}: updated");
+        assert_eq!(index_keys(&store, scope), expected, "case {case}: updated");
+        assert_eq!(
+            index_keys(&store, scopes.active),
+            active(Stage::Inbox),
+            "case {case}"
+        );
 
         if case % 3 < 2 {
             // Yielding and running change stage and transition time, not the key.
@@ -239,7 +325,19 @@ async fn entry_index_follows_vqueue_operations() {
                 );
             tx.commit().await.unwrap();
             drop(tx);
-            assert_eq!(index_keys(&store), expected, "case {case}: yielded");
+            assert_eq!(index_keys(&store, scope), expected, "case {case}: yielded");
+            let stage = store
+                .transaction()
+                .get_vqueue_entry_status(&base_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .stage();
+            assert_eq!(
+                index_keys(&store, scopes.active),
+                active(stage),
+                "case {case}: yielded"
+            );
             let mut tx = store.transaction();
             let header = tx.get_vqueue_entry_status(&base_id).await.unwrap().unwrap();
             VQueue::<VQueueEvent, _>::get(&qid, &mut tx, &mut cache, None)
@@ -249,7 +347,12 @@ async fn entry_index_follows_vqueue_operations() {
                 .run_entry(at(2), &header, &target, WaitStats::default());
             tx.commit().await.unwrap();
             drop(tx);
-            assert_eq!(index_keys(&store), expected, "case {case}: ran");
+            assert_eq!(index_keys(&store, scope), expected, "case {case}: ran");
+            assert_eq!(
+                index_keys(&store, scopes.active),
+                active(Stage::Running),
+                "case {case}: ran"
+            );
         }
 
         let mut tx = store.transaction();
@@ -279,8 +382,15 @@ async fn entry_index_follows_vqueue_operations() {
         drop(tx);
 
         if case % 3 == 0 {
-            // A retained finished entry keeps its key until it is deleted.
-            assert_eq!(index_keys(&store), expected, "case {case}: retained");
+            // A retained finished entry keeps its key until it is deleted, and
+            // moves from the active index to the finished one.
+            assert_eq!(index_keys(&store, scope), expected, "case {case}: retained");
+            assert!(index_keys(&store, scopes.active).is_empty(), "case {case}");
+            assert_eq!(
+                index_keys(&store, scopes.finished),
+                finished(Status::Succeeded, at(3)),
+                "case {case}: retained"
+            );
             let mut tx = store.transaction();
             let header = tx.get_vqueue_entry_status(&base_id).await.unwrap().unwrap();
             assert_eq!(header.stage(), Stage::Finished);
@@ -300,7 +410,7 @@ async fn entry_index_follows_vqueue_operations() {
             drop(tx);
         }
         assert!(
-            index_keys(&store).is_empty(),
+            all_index_keys(&store).is_empty(),
             "case {case} left index keys behind"
         );
         assert!(
@@ -321,7 +431,8 @@ async fn entry_index_follows_vqueue_operations() {
 /// status.
 #[restate_core::test]
 async fn entry_index_moves_with_the_sequence_and_ignores_the_rest() {
-    let (mut store, scope) = tracking_store().await;
+    let (mut store, scopes) = tracking_store().await;
+    let scope = scopes.all;
     for case in [0, 1] {
         let target = target(case);
         let qid = VQueueId::custom(3337, "incarnations");
@@ -364,7 +475,7 @@ async fn entry_index_moves_with_the_sequence_and_ignores_the_rest() {
         tx.create_vqueue_entry_status(&context, states[0]);
         tx.commit().await.unwrap();
         drop(tx);
-        assert_eq!(index_keys(&store), expected[0], "case {case}");
+        assert_eq!(index_keys(&store, scope), expected[0], "case {case}");
 
         // Two sequence changes in one transaction leave only the last key.
         let mut tx = store.transaction();
@@ -374,9 +485,25 @@ async fn entry_index_moves_with_the_sequence_and_ignores_the_rest() {
         tx.update_vqueue_entry_status(&context, StoredEntryRef::from_header(&stored), states[2]);
         tx.commit().await.unwrap();
         drop(tx);
-        assert_eq!(index_keys(&store), expected[2], "case {case}");
+        assert_eq!(index_keys(&store, scope), expected[2], "case {case}");
+        let active = |stage| {
+            active_key(
+                scopes.active,
+                stage,
+                &target,
+                at,
+                keys[2].to_canonical_entry_id(qid.partition_key()),
+            )
+        };
+        assert_eq!(
+            index_keys(&store, scopes.active),
+            active(Stage::Inbox),
+            "case {case}"
+        );
 
-        // None of these changes the key: each writes the entry status alone.
+        // None of these changes the first index's key: each writes the entry
+        // status alone, except the stage change, which also moves the active key
+        // (a delete and a put).
         let rescheduled_key = keys[2].set_run_at(Some(RoughTimestamp::MAX));
         let rescheduled = EntryStateRef {
             entry_key: &rescheduled_key,
@@ -396,15 +523,28 @@ async fn entry_index_moves_with_the_sequence_and_ignores_the_rest() {
             stage: Stage::Running,
             ..later
         };
-        for (change, after) in [
-            ("unchanged", states[2]),
-            ("schedule", rescheduled),
-            ("status", scheduled),
-            ("transition time", later),
-            ("stage", running),
+        for (change, after, writes, stage) in [
+            ("unchanged", states[2], 1, Stage::Inbox),
+            ("schedule", rescheduled, 1, Stage::Inbox),
+            ("status", scheduled, 1, Stage::Inbox),
+            ("transition time", later, 1, Stage::Inbox),
+            ("stage", running, 3, Stage::Running),
         ] {
-            assert_eq!(update(&mut store, after).await, 1, "case {case}: {change}");
-            assert_eq!(index_keys(&store), expected[2], "case {case}: {change}");
+            assert_eq!(
+                update(&mut store, after).await,
+                writes,
+                "case {case}: {change}"
+            );
+            assert_eq!(
+                index_keys(&store, scope),
+                expected[2],
+                "case {case}: {change}"
+            );
+            assert_eq!(
+                index_keys(&store, scopes.active),
+                active(stage),
+                "case {case}: {change}"
+            );
         }
 
         let mut tx = store.transaction();
@@ -412,6 +552,6 @@ async fn entry_index_moves_with_the_sequence_and_ignores_the_rest() {
         tx.delete_vqueue_entry_status(&context, StoredEntryRef::from_header(&stored));
         tx.commit().await.unwrap();
         drop(tx);
-        assert!(index_keys(&store).is_empty(), "case {case}");
+        assert!(all_index_keys(&store).is_empty(), "case {case}");
     }
 }

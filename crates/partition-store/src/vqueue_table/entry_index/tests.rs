@@ -75,12 +75,34 @@ fn index_keys(store: &PartitionStore) -> Vec<Vec<u8>> {
     keys
 }
 
-/// The keys without their index header: comparable across replicas whatever
-/// partition and index IDs they have.
-fn payloads(store: &PartitionStore) -> Vec<Vec<u8>> {
-    index_keys(store)
+/// The entry indexes' keys without their index header, by definition:
+/// comparable across replicas whatever partition and index IDs they have.
+fn payloads(store: &PartitionStore) -> Vec<(&'static str, Vec<Vec<u8>>)> {
+    let registry = get_registry_from_partition_db(store.partition_db())
+        .unwrap()
+        .unwrap_or_default();
+    ENTRY_INDEXES
+        .definitions
+        .iter()
+        .map(|definition| {
+            let keys = registry
+                .maintained(definition.name)
+                .map_or_else(Vec::new, |index| {
+                    keys_of(store, index.id)
+                        .into_iter()
+                        .map(|key| key[IndexKeyPrefix::SERIALIZED_LENGTH..].to_vec())
+                        .collect()
+                });
+            (definition.name, keys)
+        })
+        .collect()
+}
+
+/// How many keys each entry index holds, by definition.
+fn counts(store: &PartitionStore) -> Vec<(&'static str, usize)> {
+    payloads(store)
         .into_iter()
-        .map(|key| key[IndexKeyPrefix::SERIALIZED_LENGTH..].to_vec())
+        .map(|(name, keys)| (name, keys.len()))
         .collect()
 }
 
@@ -187,7 +209,7 @@ async fn keys_order_entries_and_change_only_on_create_and_delete() {
     };
     // "Other" sorts before "Utils"; within Utils the state mutation (NULL
     // handler) comes first, then "call" newest first, then "run".
-    assert_eq!(index_keys(&store), expected(&[4, 3, 1, 0, 2]));
+    assert_eq!(keys_of(&store, id), expected(&[4, 3, 1, 0, 2]));
 
     // Running an entry changes its stage, status and transition time, not its key.
     let mut tx = store.transaction();
@@ -212,7 +234,7 @@ async fn keys_order_entries_and_change_only_on_create_and_delete() {
         },
     );
     tx.commit().await.unwrap();
-    assert_eq!(index_keys(&store), expected(&[4, 3, 1, 0, 2]));
+    assert_eq!(keys_of(&store, id), expected(&[4, 3, 1, 0, 2]));
 
     // Deleting an entry removes exactly its key.
     let mut tx = store.transaction();
@@ -227,13 +249,14 @@ async fn keys_order_entries_and_change_only_on_create_and_delete() {
         StoredEntryRef::from_header(&header),
     );
     tx.commit().await.unwrap();
-    assert_eq!(index_keys(&store), expected(&[4, 3, 0, 2]));
+    assert_eq!(keys_of(&store, id), expected(&[4, 3, 0, 2]));
 }
 
-/// Backfilling existing entries gives the same keys as maintaining the index
+/// Backfilling existing entries gives the same keys as maintaining the indexes
 /// from the start: invocations through their invocation status, state
 /// mutations through their input. A reset deletes the keys; tracking again
-/// rebuilds them under a new ID.
+/// rebuilds them under new IDs. On a store whose first index is already Ready,
+/// the two later ones get their own full pass, and the first stays as it was.
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     RocksDbManager::init();
@@ -252,6 +275,8 @@ async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     open(&mut reference, &tracking()).await;
     seed(&mut store).await;
     seed(&mut reference).await;
+    unusual(&mut store).await;
+    unusual(&mut reference).await;
     assert_eq!(index(&store), None);
     assert!(index_keys(&store).is_empty());
 
@@ -259,8 +284,15 @@ async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     open(&mut store, &config).await;
     let (built, status) = index(&store).unwrap();
     assert_eq!(status, IndexStatus::Ready);
-    // 48 invocations and a state mutation on each of three partition keys.
-    assert_eq!(payloads(&reference).len(), 147);
+    // 48 invocations and a state mutation on each of three partition keys, each
+    // in either the finished or the active index, and the two unusual entries:
+    // the Finished one in the finished index, the one in an unknown stage in
+    // neither.
+    let [all, finished, active] = <[_; 3]>::try_from(counts(&reference))
+        .unwrap()
+        .map(|(_, count)| count);
+    assert_eq!((all, finished + active), (149, 148));
+    assert!(finished > 0 && active > 0, "{:?}", counts(&reference));
     assert_eq!(payloads(&store), payloads(&reference));
 
     // A reset deletes the keys and the maintained index.
@@ -276,4 +308,400 @@ async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     assert_eq!(status, IndexStatus::Ready);
     assert!(rebuilt > built);
     assert_eq!(payloads(&store), payloads(&reference));
+
+    // A store of the previous release: only the first index, Ready.
+    let mut late = manager
+        .open(&Partition::new(PartitionId::from(3), KeyRange::FULL), None)
+        .await
+        .unwrap();
+    open(&mut late, &Configuration::default()).await;
+    seed(&mut late).await;
+    unusual(&mut late).await;
+    maintain_only(&mut late, &[&ENTRY_BY_SERVICE_CREATED]).await;
+    engine::run_all(&mut late, 3).await.unwrap();
+    let (first, status) = index(&late).unwrap();
+    assert_eq!(status, IndexStatus::Ready);
+    let before = payloads(&late);
+    assert_eq!(before[0], payloads(&reference)[0]);
+    assert!(before[1].1.is_empty() && before[2].1.is_empty());
+    // This release adds the other two: they backfill on their own, and the
+    // first keeps its ID and keys.
+    open(&mut late, &tracking()).await;
+    assert_eq!(index(&late), Some((first, IndexStatus::Ready)));
+    for definition in [&FINISHED_ENTRY_BY_OUTCOME, &ACTIVE_ENTRY_BY_STAGE] {
+        let id = maintained(&late, definition);
+        let registry = get_registry_from_partition_db(late.partition_db())
+            .unwrap()
+            .unwrap();
+        assert_eq!(registry.get(id).unwrap().state, IndexStatus::Ready);
+    }
+    assert_eq!(payloads(&late), payloads(&reference));
+}
+
+/// Two entries the shared seed lacks, with resolvable invocations: one Finished
+/// with a status that isn't an outcome, and one in a stage this binary doesn't
+/// know.
+async fn unusual(store: &mut PartitionStore) {
+    use restate_storage_api::invocation_status_table::{
+        InFlightInvocationMetadata, InvocationStatus, WriteInvocationStatusTable,
+    };
+    use restate_types::identifiers::{InvocationId, InvocationUuid};
+    use restate_types::invocation::InvocationTarget;
+    use restate_types::vqueues::EntryTargetExt;
+
+    let qid = VQueueId::custom(13, "unusual");
+    let mut tx = store.transaction();
+    for (byte, stage, status) in [
+        (1u8, Stage::Finished, Status::Started),
+        (2, Stage::Unknown, Status::New),
+    ] {
+        let id = InvocationId::from_parts(13, InvocationUuid::from_bytes([byte; 16]));
+        let target = InvocationTarget::service("unusual", "run");
+        let mut metadata = InFlightInvocationMetadata::mock_with_vqueue(13);
+        metadata.vqueue_id = Some(qid.clone());
+        metadata.invocation_target = target.clone();
+        tx.put_invocation_status(&id, &InvocationStatus::Invoked(metadata))
+            .unwrap();
+        let created = UniqueTimestamp::try_from_parts(200, u16::from(byte).into()).unwrap();
+        let key = EntryKey::new(
+            false,
+            created.to_unix_millis(),
+            u64::from(byte),
+            EntryId::from(id),
+        );
+        tx.create_vqueue_entry_status(
+            &EntryContext {
+                qid: &qid,
+                target: &target.entry_target_ref(),
+            },
+            EntryStateRef {
+                stage,
+                status,
+                entry_key: &key,
+                metadata: &EntryMetadata::default(),
+                stats: &EntryStatistics::new(created, key.run_at()),
+            },
+        );
+    }
+    tx.commit().await.unwrap();
+}
+
+/// Reconciles `store`'s registry to maintain only `definitions`, as an earlier
+/// release that knew only those would.
+async fn maintain_only(store: &mut PartitionStore, definitions: &[&'static IndexDefinition]) {
+    use crate::features::LoadedStorageFeatures;
+    use crate::fsm_table::{
+        get_min_restate_version_from_partition_db, get_storage_features_from_partition_db,
+        get_storage_version_from_partition_db,
+    };
+    use crate::registry::{FenceState, Requests};
+    use restate_types::SemanticRestateVersion;
+
+    let db = store.partition_db().clone();
+    let mut features = LoadedStorageFeatures::load(
+        get_storage_features_from_partition_db(&db).unwrap(),
+        get_storage_version_from_partition_db(&db).unwrap(),
+        SemanticRestateVersion::current(),
+    )
+    .unwrap();
+    let mut min = get_min_restate_version_from_partition_db(&db).unwrap();
+    store
+        .reconcile_registry(
+            definitions,
+            &Requests {
+                maintain: definitions.to_vec(),
+                ..Default::default()
+            },
+            FenceState {
+                features: &mut features,
+                current_version: SemanticRestateVersion::current(),
+                min_restate_version: &mut min,
+            },
+        )
+        .await
+        .unwrap();
+}
+
+/// The ID of the maintained index of `definition`.
+fn maintained(store: &PartitionStore, definition: &IndexDefinition) -> u32 {
+    get_registry_from_partition_db(store.partition_db())
+        .unwrap()
+        .unwrap()
+        .maintained(definition.name)
+        .unwrap()
+        .id
+}
+
+/// The keys of index `id`, in storage order.
+fn keys_of(store: &PartitionStore, id: u32) -> Vec<Vec<u8>> {
+    index_keys(store)
+        .into_iter()
+        .filter(|key| IndexKeyPrefix::decode_prefix(key).unwrap().0.index_id_raw() == id)
+        .collect()
+}
+
+/// The two partial indexes key each entry as its stored state says. Finished
+/// entries, whatever their stored status, by status, service, handler and
+/// newest transition first; entries in the four known active stages by stage,
+/// service, handler and newest created first. A move between stages moves or
+/// removes the key once; an entry in an unknown stage has no key in either, and
+/// leaving or entering an unknown stage adds or removes its active key once.
+#[restate_core::test]
+async fn partial_indexes_follow_each_entry_stage() {
+    RocksDbManager::init();
+    let manager = PartitionStoreManager::create(true).await.unwrap();
+    let mut store = manager
+        .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+        .await
+        .unwrap();
+    open(&mut store, &tracking()).await;
+    let [all, finished, active] = [
+        &ENTRY_BY_SERVICE_CREATED,
+        &FINISHED_ENTRY_BY_OUTCOME,
+        &ACTIVE_ENTRY_BY_STAGE,
+    ]
+    .map(|definition| maintained(&store, definition));
+
+    let qid = VQueueId::custom(7, "q");
+    let call = EntryTargetRef::Service {
+        scope: None,
+        service: "Utils",
+        handler: "call",
+    };
+    let run = EntryTargetRef::Service {
+        scope: None,
+        service: "Utils",
+        handler: "run",
+    };
+    let mutation = EntryTargetRef::VirtualObject {
+        scope: None,
+        service: "Utils",
+        key: "k",
+        handler: HandlerRef::StateMutation,
+    };
+    let other = EntryTargetRef::Service {
+        scope: None,
+        service: "Other",
+        handler: "call",
+    };
+    let at = |millis: u64| {
+        UniqueTimestamp::try_from_unix_millis(MillisSinceEpoch::new(1_744_010_000_000 + millis))
+            .unwrap()
+    };
+    // (target, kind, id byte, created at, stage, status, transitioned at)
+    let entries = [
+        (
+            &call,
+            EntryKind::Invocation,
+            1,
+            1_000,
+            Stage::Inbox,
+            Status::New,
+            1_000,
+        ),
+        (
+            &call,
+            EntryKind::Invocation,
+            2,
+            3_000,
+            Stage::Running,
+            Status::Started,
+            3_500,
+        ),
+        (
+            &run,
+            EntryKind::Invocation,
+            3,
+            2_000,
+            Stage::Suspended,
+            Status::Started,
+            2_500,
+        ),
+        (
+            &mutation,
+            EntryKind::StateMutation,
+            4,
+            500,
+            Stage::Paused,
+            Status::New,
+            600,
+        ),
+        (
+            &other,
+            EntryKind::Invocation,
+            5,
+            9_000,
+            Stage::Finished,
+            Status::Succeeded,
+            9_900,
+        ),
+        // A Finished entry with a status that isn't an outcome still belongs.
+        (
+            &call,
+            EntryKind::Invocation,
+            6,
+            4_000,
+            Stage::Finished,
+            Status::Started,
+            8_000,
+        ),
+        (
+            &run,
+            EntryKind::Invocation,
+            7,
+            5_000,
+            Stage::Unknown,
+            Status::New,
+            5_000,
+        ),
+    ]
+    .map(
+        |(target, kind, byte, created, stage, status, transitioned)| {
+            let key = EntryKey::new(
+                false,
+                at(created).to_unix_millis(),
+                u64::from(byte),
+                EntryId::new(kind, [byte; 16]),
+            );
+            let mut stats = EntryStatistics::new(at(created), key.run_at());
+            stats.transitioned_at = at(transitioned);
+            (target, key, stats, stage, status)
+        },
+    );
+    let mut tx = store.transaction();
+    for (target, key, stats, stage, status) in &entries {
+        tx.create_vqueue_entry_status(
+            &EntryContext { qid: &qid, target },
+            EntryStateRef {
+                stage: *stage,
+                status: *status,
+                entry_key: key,
+                metadata: &EntryMetadata::default(),
+                stats,
+            },
+        );
+    }
+    tx.commit().await.unwrap();
+
+    let canonical = |i: usize| entries[i].1.to_canonical_entry_id(qid.partition_key());
+    let finished_key = |status: Status, i: usize, transitioned: u64| {
+        let target = entries[i].0;
+        let mut bytes = Vec::new();
+        FinishedEntryByOutcomeKey::borrowed(
+            status,
+            target.service(),
+            target.handler(),
+            Reverse(at(transitioned)),
+            canonical(i),
+        )
+        .encode_key(
+            IndexScope {
+                partition: PartitionId::MIN,
+                index: finished,
+            },
+            &mut bytes,
+        );
+        bytes
+    };
+    let active_key = |stage: Stage, i: usize| {
+        let target = entries[i].0;
+        let mut bytes = Vec::new();
+        ActiveEntryByStageKey::borrowed(
+            stage,
+            target.service(),
+            target.handler(),
+            Reverse(entries[i].2.created_at),
+            canonical(i),
+        )
+        .encode_key(
+            IndexScope {
+                partition: PartitionId::MIN,
+                index: active,
+            },
+            &mut bytes,
+        );
+        bytes
+    };
+    assert_eq!(
+        keys_of(&store, all).len(),
+        7,
+        "every entry is in the first index"
+    );
+    // Statuses in their codec order: Started (70) before Succeeded (80).
+    assert_eq!(
+        keys_of(&store, finished),
+        [
+            finished_key(Status::Started, 5, 8_000),
+            finished_key(Status::Succeeded, 4, 9_900)
+        ]
+    );
+    // Stages in rank order: Inbox, Paused, Running, Suspended.
+    assert_eq!(
+        keys_of(&store, active),
+        [
+            active_key(Stage::Inbox, 0),
+            active_key(Stage::Paused, 3),
+            active_key(Stage::Running, 1),
+            active_key(Stage::Suspended, 2),
+        ]
+    );
+
+    // Moves: Inbox → Running, Running → Finished (killed), Unknown → Inbox,
+    // Suspended → Unknown. Then the Finished "other" entry is deleted.
+    let moves = [
+        (0, Stage::Running, Status::Started, 1_100),
+        (1, Stage::Finished, Status::Killed, 7_000),
+        (6, Stage::Inbox, Status::New, 5_100),
+        (2, Stage::Unknown, Status::New, 2_600),
+    ];
+    let mut tx = store.transaction();
+    for (i, stage, status, transitioned) in moves {
+        let (target, key, stats, ..) = &entries[i];
+        let header = tx
+            .get_vqueue_entry_status(&key.entry_id().to_base_id(qid.partition_key()))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut moved = stats.clone();
+        moved.transitioned_at = at(transitioned);
+        tx.update_vqueue_entry_status(
+            &EntryContext { qid: &qid, target },
+            StoredEntryRef::from_header(&header),
+            EntryStateRef {
+                stage,
+                status,
+                entry_key: key,
+                metadata: &EntryMetadata::default(),
+                stats: &moved,
+            },
+        );
+    }
+    let (target, key, ..) = &entries[4];
+    let header = tx
+        .get_vqueue_entry_status(&key.entry_id().to_base_id(qid.partition_key()))
+        .await
+        .unwrap()
+        .unwrap();
+    tx.delete_vqueue_entry_status(
+        &EntryContext { qid: &qid, target },
+        StoredEntryRef::from_header(&header),
+    );
+    tx.commit().await.unwrap();
+
+    assert_eq!(keys_of(&store, all).len(), 6);
+    assert_eq!(
+        keys_of(&store, finished),
+        [
+            finished_key(Status::Killed, 1, 7_000),
+            finished_key(Status::Started, 5, 8_000),
+        ]
+    );
+    assert_eq!(
+        keys_of(&store, active),
+        [
+            active_key(Stage::Inbox, 6),
+            active_key(Stage::Paused, 3),
+            active_key(Stage::Running, 0),
+        ]
+    );
 }
