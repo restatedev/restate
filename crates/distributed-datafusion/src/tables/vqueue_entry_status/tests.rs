@@ -891,3 +891,249 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
         "{analyzed}"
     );
 }
+
+/// Active entries newest created first, through `active_entry_by_stage/1` when
+/// every alternative fixes the stage to some of Inbox, Running, Suspended and
+/// Paused: the same rows as the current-status scan, ties included, with the
+/// read's path and work shown. A query that doesn't prove its rows active, or
+/// wants another order, reads as before; so does one on a few queues, which
+/// reads the stage tables first, and one without the order.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn active_entries_read_through_their_index_match_the_scan() {
+    use restate_types::vqueues::HandlerRef;
+
+    RocksDbManager::init();
+    let manager = PartitionStoreManager::create(true).await.unwrap();
+    let mut store = manager
+        .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+        .await
+        .unwrap();
+    let mut config = Configuration::default();
+    config.common.experimental.set_track_entry_indexes(true);
+    store
+        .verify_and_run_migrations(CancellationToken::new(), &config)
+        .await
+        .unwrap();
+    // The planner reads the index only where it's maintained.
+    Configuration::set(config.clone());
+
+    const BASE: u64 = 1_744_010_000_000;
+    let qid = VQueueId::custom(7, "q");
+    let stages = [
+        (Stage::Inbox, Status::New),
+        (Stage::Running, Status::Started),
+        (Stage::Suspended, Status::Yielded),
+        (Stage::Paused, Status::BackingOff),
+        (Stage::Inbox, Status::BackingOff),
+        (Stage::Finished, Status::Succeeded),
+    ];
+    let mut tx = store.transaction();
+    for n in 0..144u64 {
+        let (stage, status) = stages[(n % 6) as usize];
+        // Pairs share a creation millisecond, apart by their logical clock:
+        // ties for the LIMIT to split.
+        let created = UniqueTimestamp::from_parts_unchecked(BASE + n / 2, n % 2);
+        let kind = if n % 5 == 0 {
+            EntryKind::StateMutation
+        } else {
+            EntryKind::Invocation
+        };
+        let key = EntryKey::new(
+            false,
+            created.to_unix_millis(),
+            n + 1,
+            EntryId::new(kind, [n as u8; 16]),
+        );
+        let service = ["Utils", "Promises", "Counter"][(n % 3) as usize];
+        let handler = if kind == EntryKind::StateMutation {
+            HandlerRef::StateMutation
+        } else {
+            HandlerRef::UserHandler(["call", "run"][(n % 2) as usize])
+        };
+        tx.create_vqueue_entry_status(
+            &EntryContext {
+                qid: &qid,
+                target: &EntryTargetRef::VirtualObject {
+                    scope: None,
+                    service,
+                    key: "k",
+                    handler,
+                },
+            },
+            EntryStateRef {
+                stage,
+                status,
+                entry_key: &key,
+                metadata: &EntryMetadata::default(),
+                stats: &EntryStatistics::new(created, key.run_at()),
+            },
+        );
+    }
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let session = crate::mocks::v2_session(
+        &manager,
+        vec![(
+            PartitionId::MIN,
+            Partition::new(PartitionId::MIN, KeyRange::FULL),
+        )],
+        2,
+    )
+    .await;
+    let rows = async |sql: &str| crate::mocks::rows(session.as_ref(), sql).await;
+    let plan = async |sql: &str, analyze: bool| {
+        let mode = if analyze {
+            "EXPLAIN ANALYZE"
+        } else {
+            "EXPLAIN"
+        };
+        rows(&format!("{mode} {sql}")).await.concat().join("\n")
+    };
+    // The same query over a scan the index can't serve.
+    let scanned = async |sql: &str| {
+        rows(&sql.replacen(
+            "FROM sys_vqueue_entry_status",
+            "FROM (SELECT * FROM sys_vqueue_entry_status LIMIT 1000000) AS sys_vqueue_entry_status",
+            1,
+        ))
+        .await
+    };
+    let queue = rows("SELECT vqueue_id FROM sys_vqueue_entry_status LIMIT 1").await[0][0].clone();
+    const INDEX: &str = "_idx_active_entry_by_stage";
+    const STAGES: &str = "_idx_entry_by_queue";
+    let select = "SELECT entry_id, status, created_at FROM sys_vqueue_entry_status";
+    let newest = "ORDER BY created_at DESC NULLS LAST";
+    let indexed = [
+        format!(
+            "{select} WHERE stage IN ('inbox', 'running', 'suspended', 'paused') {newest} LIMIT 7"
+        ),
+        // The status is checked on each row, and rejected ones are refilled.
+        format!(
+            "{select} WHERE stage IN ('inbox', 'paused') AND status = 'backing-off' \
+             {newest} LIMIT 5 OFFSET 2"
+        ),
+        format!("{select} WHERE stage = 'running' {newest} LIMIT 3"),
+        // Millisecond bounds keep or leave both logical values of the
+        // millisecond at the bound.
+        format!(
+            "{select} WHERE stage IN ('inbox', 'running') \
+             AND created_at < to_timestamp_millis({}) {newest} LIMIT 4",
+            BASE + 30
+        ),
+        format!(
+            "{select} WHERE stage IN ('inbox', 'running', 'suspended', 'paused') \
+             AND created_at <= to_timestamp_millis({}) {newest} LIMIT 3",
+            BASE + 30
+        ),
+        // Alternatives, each of active stages.
+        format!("{select} WHERE stage = 'inbox' OR stage = 'suspended' {newest} LIMIT 6"),
+    ];
+    let scans = [
+        // Status alone doesn't prove the stage.
+        format!("{select} WHERE status = 'new' {newest} LIMIT 5"),
+        format!("{select} WHERE stage = 'inbox' OR status = 'new' {newest} LIMIT 5"),
+        format!("{select} WHERE stage IN ('inbox', 'finished') {newest} LIMIT 5"),
+        format!("{select} WHERE stage = 'finished' {newest} LIMIT 5"),
+        format!("{select} WHERE stage = 'unknown' {newest} LIMIT 5"),
+        format!("{select} WHERE stage = 'inbox' ORDER BY created_at ASC NULLS LAST LIMIT 5"),
+        format!("{select} WHERE stage = 'inbox' ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"),
+        // Conditions outside the allowlist: another column, and alternatives
+        // that aren't each a single stage or status condition.
+        format!("{select} WHERE stage = 'inbox' AND num_attempts = 0 {newest} LIMIT 5"),
+        format!(
+            "{select} WHERE (stage = 'inbox' AND status = 'new') OR stage = 'suspended' \
+             {newest} LIMIT 6"
+        ),
+    ];
+    // Tie-aware: the creation times in order, and every row a qualifying one.
+    let same =
+        |actual: &[Vec<String>], expected: &[Vec<String>], all: &[Vec<String>], sql: &str| {
+            let times =
+                |rows: &[Vec<String>]| rows.iter().map(|row| row[2].clone()).collect::<Vec<_>>();
+            assert_eq!(times(actual), times(expected), "{sql}");
+            assert!(actual.iter().all(|row| all.contains(row)), "{sql}");
+            assert_eq!(
+                actual.iter().collect::<HashSet<_>>().len(),
+                actual.len(),
+                "{sql}"
+            );
+        };
+    for sql in &indexed {
+        let explained = plan(sql, false).await;
+        assert!(explained.contains(INDEX), "{sql}: {explained}");
+        let all = scanned(&sql.replace(" LIMIT", " LIMIT 1000000 --")).await;
+        same(&rows(sql).await, &scanned(sql).await, &all, sql);
+    }
+    for sql in &scans {
+        let explained = plan(sql, false).await;
+        assert!(!explained.contains(INDEX), "{sql}: {explained}");
+    }
+    // A few queues read the stage tables first; without the order, a few
+    // active stages read them too.
+    for sql in [
+        format!("{select} WHERE vqueue_id = '{queue}' AND stage = 'inbox' {newest} LIMIT 5"),
+        format!("{select} WHERE stage IN ('inbox', 'paused') LIMIT 5"),
+    ] {
+        let explained = plan(&sql, false).await;
+        assert!(
+            explained.contains(STAGES) && !explained.contains(INDEX),
+            "{sql}: {explained}"
+        );
+    }
+    // The read went through the index and skipped nothing.
+    let analyzed = plan(&indexed[0], true).await;
+    assert!(
+        analyzed.contains("entry_index_reads=1") && !analyzed.contains("entry_index_scans=1"),
+        "{analyzed}"
+    );
+    assert!(analyzed.contains("entry_index_skipped=0"), "{analyzed}");
+
+    // More runs than one read merges: the partition scans and sorts instead,
+    // before returning anything, and says why and what discovery examined.
+    let mut tx = store.transaction();
+    for handler in 0..260u64 {
+        let created = UniqueTimestamp::from_parts_unchecked(BASE + 1_000 + handler, 0);
+        let mut remainder = [0; 16];
+        remainder[..3].copy_from_slice(&[200, handler as u8, (handler >> 8) as u8]);
+        let key = EntryKey::new(
+            false,
+            created.to_unix_millis(),
+            1_000 + handler,
+            EntryId::new(EntryKind::Invocation, remainder),
+        );
+        let name = format!("h{handler}");
+        tx.create_vqueue_entry_status(
+            &EntryContext {
+                qid: &qid,
+                target: &EntryTargetRef::Service {
+                    scope: None,
+                    service: "Many",
+                    handler: &name,
+                },
+            },
+            EntryStateRef {
+                stage: Stage::Inbox,
+                status: Status::New,
+                entry_key: &key,
+                metadata: &EntryMetadata::default(),
+                stats: &EntryStatistics::new(created, key.run_at()),
+            },
+        );
+    }
+    tx.commit().await.unwrap();
+    drop(tx);
+    for sql in &indexed[..2] {
+        let all = scanned(&sql.replace(" LIMIT", " LIMIT 1000000 --")).await;
+        same(&rows(sql).await, &scanned(sql).await, &all, sql);
+    }
+    let analyzed = plan(&indexed[0], true).await;
+    assert!(
+        analyzed.contains("entry_index_scans_too_many_runs=1"),
+        "{analyzed}"
+    );
+    assert!(
+        !analyzed.contains("entry_index_keys_examined=0"),
+        "{analyzed}"
+    );
+}

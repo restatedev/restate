@@ -146,6 +146,17 @@ crate::index::macros::define_secondary_index!(
     }
 );
 
+// A query on entries restricts the index through the entry table's stage and
+// creation time; the entry table shows no service or handler.
+crate::keys::macros::define_key_selection!(
+    ActiveEntryByStageKey;
+    [restate_storage_query_api::tables::index::ActiveEntryByStage];
+    stage,
+    target_service_name,
+    target_handler_name,
+    created_at,
+);
+
 /// Every entry by service and handler, newest created first.
 pub(crate) static ENTRY_BY_SERVICE_CREATED: IndexDefinition = IndexDefinition {
     name: EntryByServiceCreated::DEFINITION,
