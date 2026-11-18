@@ -148,7 +148,7 @@ Triggered on: PRs, pushes to `main`, `release/*`, and `hotfix/*` branches, and a
 | `sdk-rust` | SDK-Rust integration tests |
 | `e2e` | End-to-end tests from `restatedev/e2e` |
 
-Experimental feature tests (currently `e2e-bilrost-schema`) run with `continue-on-error: true` and don't block merges.
+Experimental feature tests (currently `e2e-bilrost-schema` and `e2e-write-blob-table`) run with `continue-on-error: true` and don't block merges.
 
 A new push to a PR cancels that PR's CI run that is still in progress.
 

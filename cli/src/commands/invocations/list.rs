@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashSet;
-use std::fmt;
 use std::str::FromStr;
 use std::time::Instant;
 
@@ -53,7 +52,9 @@ pub enum SortOrder {
 #[derive(Clone, Debug)]
 pub enum CompletionResult {
     Success,
+    /// Also matches killed invocations, which are failures too.
     Failure,
+    Killed,
 }
 
 impl FromStr for CompletionResult {
@@ -63,18 +64,21 @@ impl FromStr for CompletionResult {
         match s.to_lowercase().as_str() {
             "success" => Ok(Self::Success),
             "failure" => Ok(Self::Failure),
+            "killed" => Ok(Self::Killed),
             _ => Err(format!(
-                "invalid completion result '{s}', expected 'success' or 'failure'"
+                "invalid completion result '{s}', expected 'success', 'failure' or 'killed'"
             )),
         }
     }
 }
 
-impl fmt::Display for CompletionResult {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl CompletionResult {
+    /// SQL predicate selecting this result on the given `completion_result` column.
+    pub fn sql_filter(&self, column: &str) -> String {
         match self {
-            CompletionResult::Success => write!(f, "success"),
-            CompletionResult::Failure => write!(f, "failure"),
+            CompletionResult::Success => format!("{column} = 'success'"),
+            CompletionResult::Failure => format!("{column} IN ('failure', 'killed')"),
+            CompletionResult::Killed => format!("{column} = 'killed'"),
         }
     }
 }
@@ -154,7 +158,7 @@ pub struct List {
     /// Filter by status, comma-separated. Completed invocations are hidden unless selected here or with --all
     #[clap(long, ignore_case = true, value_delimiter = ',', value_parser = StatusParser)]
     status: Vec<InvocationState>,
-    /// Filter completed invocations by result: 'success' or 'failure'. Implies --status=completed.
+    /// Filter completed invocations by result: 'success', 'failure' (includes killed) or 'killed'. Implies --status=completed.
     #[clap(long, ignore_case = true, conflicts_with_all = ["all", "status"])]
     completion_result: Option<CompletionResult>,
     /// Filter by the deployment the invocations run on (`dp_...`)
@@ -255,7 +259,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     if let Some(completion) = &opts.completion_result {
         // --completion-result implies completed status
         active_filters.push("status = 'completed'".to_owned());
-        active_filters.push(format!("inv.completion_result = '{completion}'"));
+        active_filters.push(completion.sql_filter("inv.completion_result"));
     } else if opts.all {
         // No filter
     } else if statuses.is_empty() {

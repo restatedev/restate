@@ -49,7 +49,7 @@ pub struct Purge {
     /// Act on at most this many of the matching invocations, leaving the others untouched
     #[clap(long, default_value_t = DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT)]
     limit: usize,
-    /// Only purge completed invocations with this result: 'success' or 'failure'
+    /// Only purge completed invocations with this result: 'success', 'failure' (includes killed) or 'killed'
     #[clap(long, ignore_case = true)]
     completion_result: Option<CompletionResult>,
     #[clap(flatten)]
@@ -63,7 +63,7 @@ pub async fn run_purge(State(env): State<CliEnv>, opts: &Purge) -> Result<()> {
     let completion_filter = opts
         .completion_result
         .as_ref()
-        .map(|result| format!(" AND completion_result = '{result}'"))
+        .map(|result| format!(" AND {}", result.sql_filter("completion_result")))
         .unwrap_or_default();
     let filter = format!(
         "{} AND status = 'completed'{completion_filter} LIMIT {}",

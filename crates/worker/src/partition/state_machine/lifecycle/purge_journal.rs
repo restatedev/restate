@@ -129,23 +129,46 @@ mod tests {
     use bytes::Bytes;
     use bytestring::ByteString;
     use googletest::prelude::{all, assert_that, contains, eq, none, ok, pat, some};
+    use restate_storage_api::blob_table::{RawParts, ReadBlobTable};
     use restate_storage_api::invocation_status_table::{
-        InvocationStatusDiscriminants, ReadInvocationStatusTable,
+        CompletedInvocation, CompletedResult, InvocationStatusDiscriminants,
+        ReadInvocationStatusTable, ResponseResultRef,
     };
     use restate_storage_api::journal_table_v2::ReadJournalTable;
+    use restate_types::blob::BlobId;
     use restate_types::identifiers::PartitionProcessorRpcRequestId;
     use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
     use restate_types::invocation::{
         InvocationTarget, PurgeInvocationRequest, ServiceInvocation, ServiceInvocationResponseSink,
     };
     use restate_types::journal_v2::{CommandType, OutputCommand, OutputResult};
+    use restate_types::partitions::PersistedFeatures;
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_wal_protocol::v2::{Command, commands};
+    use rstest::rstest;
     use std::time::Duration;
 
+    async fn blob_ref_count(test_env: &mut TestEnv, blob_id: BlobId) -> u64 {
+        let (_, ref_count, _) = test_env
+            .storage()
+            .get_blob::<RawParts>(blob_id)
+            .await
+            .unwrap()
+            .expect("blob exists");
+        ref_count
+    }
+
+    #[rstest]
     #[restate_core::test]
-    async fn purge_journal_then_invocation() {
-        let mut test_env = TestEnv::create().await;
+    async fn purge_journal_then_invocation(
+        #[values(false, true)] invocation_status_output_blob: bool,
+    ) {
+        TestEnv::always_write_output_blobs();
+        let mut test_env = TestEnv::create_with_features(PersistedFeatures {
+            invocation_status_output_blob,
+            ..Default::default()
+        })
+        .await;
 
         let idempotency_key = ByteString::from_static("my-idempotency-key");
         let completion_retention = Duration::from_secs(60) * 60 * 24;
@@ -194,6 +217,8 @@ mod tests {
             }))
         );
 
+        let expected_commands = [CommandType::Input.into(), CommandType::Output.into()];
+
         // InvocationStatus contains completed
         assert_that!(
             test_env
@@ -209,11 +234,26 @@ mod tests {
 
         // We also retain the journal here
         test_env
-            .verify_journal_components(
-                invocation_id,
-                [CommandType::Input.into(), CommandType::Output.into()],
-            )
+            .verify_journal_components(invocation_id, expected_commands)
             .await;
+
+        // With the blob table, both the completed status and the Output entry reference the blob
+        let blob_id = match test_env
+            .storage()
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap()
+        {
+            InvocationStatus::Completed(CompletedInvocation {
+                response_result: ResponseResultRef::Completed(CompletedResult { blob_id, .. }),
+                ..
+            }) => Some(blob_id),
+            _ => None,
+        };
+        assert_eq!(blob_id.is_some(), invocation_status_output_blob);
+        if let Some(blob_id) = blob_id {
+            assert_eq!(blob_ref_count(&mut test_env, blob_id).await, 2);
+        }
 
         // Now let's purge the journal
         test_env
@@ -249,6 +289,11 @@ mod tests {
                 })))
             }))
         );
+
+        // Dropping the journal released its reference to the blob
+        if let Some(blob_id) = blob_id {
+            assert_eq!(blob_ref_count(&mut test_env, blob_id).await, 1);
+        }
 
         // And InvocationStatus still contains completed, but without commands and length
         assert_that!(

@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_storage_api::protobuf_types::v1::invocation_status_v2::Status;
+use restate_storage_api::protobuf_types::v1::invocation_status_v2::{CompletionStatus, Status};
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use restate_storage_api::protobuf_types::v1::source::Source;
 use restate_storage_query_api::tables::invocation_status::{
@@ -190,22 +190,55 @@ pub(super) fn append_row(
         }
     }
     if state == Status::Completed
-        && (row.is_completion_result_defined() || row.is_completion_failure_defined())
+        && (row.is_completion_result_defined()
+            || row.is_completion_failure_defined()
+            || row.is_completion_failure_code_defined())
     {
-        use restate_storage_api::protobuf_types::v1::response_result::ResponseResult;
-        match status.response_result()? {
-            ResponseResult::ResponseSuccess(_) => {
+        match status.completion_status()? {
+            Some(CompletionStatus::Success) => {
                 row.completion_result("success");
             }
-            ResponseResult::ResponseFailure(failure) => {
+            Some(CompletionStatus::Killed) => {
+                row.completion_result("killed");
+            }
+            Some(CompletionStatus::Failure) => {
                 row.completion_result("failure");
+                let code = status.inner.failure_status_code();
                 if row.is_completion_failure_defined() {
-                    let message = str::from_utf8(failure.failure_message.as_ref())
-                        .map_err(|_| ConversionError::invalid_data_static("failure_message"))?;
-                    row.fmt_completion_failure(format_args!(
-                        "[{}] {}",
-                        failure.failure_code, message
-                    ));
+                    match status.failure_message()? {
+                        Some(message) if !message.is_empty() => {
+                            row.fmt_completion_failure(format_args!("[{code}] {message}"))
+                        }
+                        _ => row.fmt_completion_failure(format_args!("[{code}]")),
+                    }
+                }
+                if row.is_completion_failure_code_defined() {
+                    row.completion_failure_code(code);
+                }
+            }
+            // The result is embedded in statuses written without the blob table
+            None => {
+                use restate_storage_api::protobuf_types::v1::response_result::ResponseResult;
+                match status.response_result()? {
+                    ResponseResult::ResponseSuccess(_) => {
+                        row.completion_result("success");
+                    }
+                    ResponseResult::ResponseFailure(failure) => {
+                        row.completion_result("failure");
+                        if row.is_completion_failure_defined() {
+                            let message = str::from_utf8(failure.failure_message.as_ref())
+                                .map_err(|_| {
+                                    ConversionError::invalid_data_static("failure_message")
+                                })?;
+                            row.fmt_completion_failure(format_args!(
+                                "[{}] {}",
+                                failure.failure_code, message
+                            ));
+                        }
+                        if row.is_completion_failure_code_defined() {
+                            row.completion_failure_code(failure.failure_code);
+                        }
+                    }
                 }
             }
         }

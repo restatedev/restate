@@ -26,7 +26,8 @@ use strum::IntoDiscriminant;
 use restate_limiter::{Level, LimitKey};
 use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, InFlightInvocationMetadata, InvocationStatus, WriteInvocationStatusTable,
+    CompletedInvocation, CompletedResult, CompletionStatus, InFlightInvocationMetadata,
+    InvocationStatus, ResponseResultRef, WriteInvocationStatusTable,
 };
 use restate_storage_api::state_table::WriteStateTable;
 use restate_storage_api::vqueue_table::stats::WaitStats;
@@ -36,8 +37,9 @@ use restate_storage_api::vqueue_table::{
 };
 use restate_storage_query_api::errors::QueryExecutionError;
 use restate_types::Scope;
+use restate_types::blob::BlobId;
 use restate_types::clock::UniqueTimestamp;
-use restate_types::errors::InvocationError;
+use restate_types::errors::{InvocationError, codes};
 use restate_types::identifiers::InvocationUuid;
 use restate_types::identifiers::{
     BaseEntryId, DeploymentId, InvocationId, PartitionId, PartitionKey, ServiceId,
@@ -605,6 +607,7 @@ async fn query_sys_invocation_status_completed() {
     let invocation_id_1 = InvocationId::from_parts(0, InvocationUuid::from_u128(1));
     let invocation_id_2 = InvocationId::from_parts(0, InvocationUuid::from_u128(2));
     let invocation_id_3 = InvocationId::from_parts(0, InvocationUuid::from_u128(3));
+    let invocation_id_4 = InvocationId::from_parts(0, InvocationUuid::from_u128(4));
 
     let completion_retention_duration_1 = Duration::from_secs(100);
     let journal_retention_duration_1 = Duration::from_secs(50);
@@ -642,6 +645,26 @@ async fn query_sys_invocation_status_completed() {
         &InvocationStatus::Completed(CompletedInvocation {
             completion_retention_duration: Duration::from_secs(10),
             journal_retention_duration: Duration::from_secs(10),
+            // The output is stored in a blob, the status keeps only the failure code and message
+            response_result: ResponseResultRef::Completed(CompletedResult {
+                blob_id: BlobId::generate_journal_entry_blob_id(
+                    MillisSinceEpoch::new(0),
+                    1,
+                    &invocation_id_3,
+                ),
+                status: CompletionStatus::Failure {
+                    code: codes::INTERNAL,
+                    message: "boom".into(),
+                },
+            }),
+            ..completed_invocation_1.clone()
+        }),
+    )
+    .unwrap();
+    tx.put_invocation_status(
+        &invocation_id_4,
+        &InvocationStatus::Completed(CompletedInvocation {
+            response_result: ResponseResultRef::Killed,
             ..completed_invocation_1
         }),
     )
@@ -654,6 +677,9 @@ async fn query_sys_invocation_status_completed() {
             "SELECT
                 id,
                 canonical_id,
+                completion_result,
+                completion_failure,
+                completion_failure_code,
                 completed_at + completion_retention AS completion_expiration,
                 completed_at + journal_retention AS journal_expiration
             FROM sys_invocation_status
@@ -685,8 +711,18 @@ async fn query_sys_invocation_status_completed() {
                 {
                     "id" => LargeStringArray: eq(invocation_id_3.to_string()),
                     "canonical_id" => LargeStringArray: eq(BaseEntryId::from(invocation_id_3).canonicalize(Seq::new(7)).to_string()),
+                    "completion_result" => LargeStringArray: eq("failure"),
+                    "completion_failure" => LargeStringArray: eq("[500] boom"),
+                    "completion_failure_code" => UInt32Array: eq(500),
                     "completion_expiration" => TimestampMillisecondArray: eq((completed_on + Duration::from_secs(10)).as_u64() as i64),
                     "journal_expiration" => TimestampMillisecondArray: eq((completed_on + Duration::from_secs(10)).as_u64() as i64),
+                }
+            ),
+            row!(
+                2,
+                {
+                    "id" => LargeStringArray: eq(invocation_id_4.to_string()),
+                    "completion_result" => LargeStringArray: eq("killed"),
                 }
             ),
         )

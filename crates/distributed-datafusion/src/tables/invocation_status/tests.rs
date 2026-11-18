@@ -23,15 +23,18 @@ use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, InvocationStatus,
-    PreFlightInvocationMetadata, ScheduledInvocation, StatusTimestamps, WriteInvocationStatusTable,
+    CompletedInvocation, CompletedResult, CompletionStatus, InFlightInvocationMetadata,
+    InboxedInvocation, InvocationStatus, PreFlightInvocationMetadata, ResponseResultRef,
+    ScheduledInvocation, StatusTimestamps, WriteInvocationStatusTable,
 };
 use restate_storage_api::vqueue_table::stats::EntryStatistics;
 use restate_storage_api::vqueue_table::{
     EntryContext, EntryKey, EntryMetadata, EntryStateRef, Stage, Status, WriteVQueueTable,
 };
 use restate_storage_query_api::tables::invocation_status::InvocationStatus as InvocationStatusSchema;
+use restate_types::blob::BlobId;
 use restate_types::config::Configuration;
+use restate_types::errors::codes;
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionId, WithPartitionKey};
 use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType, WorkflowHandlerType};
 use restate_types::partition_table::Partition;
@@ -60,9 +63,29 @@ async fn persisted_invocations_match_v1_for_scans_lookups_and_projections() {
         .map(|index| InvocationId::from_parts(index, InvocationUuid::from_u128(index.into())))
         .collect();
     for (index, id) in ids.iter().enumerate() {
-        let status = match index % 6 {
+        // Completed with the result stored in the output blob, or a kill
+        let completed = |response_result| {
+            InvocationStatus::Completed(CompletedInvocation {
+                response_result,
+                ..CompletedInvocation::mock_neo()
+            })
+        };
+        let blob_id = BlobId::generate_journal_entry_blob_id(MillisSinceEpoch::new(0), 1, id);
+        let status = match index % 9 {
             0 => InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
             1 => InvocationStatus::Completed(CompletedInvocation::mock_neo()),
+            6 => completed(ResponseResultRef::Killed),
+            7 => completed(ResponseResultRef::Completed(CompletedResult {
+                blob_id,
+                status: CompletionStatus::Failure {
+                    code: codes::INTERNAL,
+                    message: "boom".into(),
+                },
+            })),
+            8 => completed(ResponseResultRef::Completed(CompletedResult {
+                blob_id,
+                status: CompletionStatus::Success,
+            })),
             2 => InvocationStatus::Paused(InFlightInvocationMetadata::mock()),
             3 => InvocationStatus::Suspended {
                 metadata: InFlightInvocationMetadata::mock(),

@@ -167,6 +167,7 @@ pub fn sys_invocation_table_docs() -> TableDocs {
         },
         status("completion_result"),
         status("completion_failure"),
+        status("completion_failure_code"),
     ];
     TableDocs {
         name: "sys_invocation",

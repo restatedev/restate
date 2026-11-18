@@ -24,6 +24,7 @@ mod subscription_integration;
 
 use std::sync::Arc;
 
+use bytes::Bytes;
 use codederror::CodedError;
 use tracing::{info, warn};
 
@@ -42,10 +43,18 @@ use restate_ingestion_client::SessionOptions;
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::snapshots::SnapshotRepository;
+use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
+use restate_storage_api::StorageError;
+use restate_storage_api::blob_table::{BlobDecoder, Header, ReadBlobTable};
+use restate_storage_api::invocation_status_table::{CompletedResult, ResponseResultRef};
 use restate_types::Version;
 use restate_types::Versioned;
 use restate_types::config::{AutomaticSnapshots, Configuration};
+use restate_types::errors::KILLED_INVOCATION_ERROR;
 use restate_types::health::HealthStatus;
+use restate_types::invocation::ResponseResult;
+use restate_types::journal_v2::raw::RawCommand;
+use restate_types::journal_v2::{CommandType, OutputCommand};
 use restate_types::net::connect_opts::GrpcConnectionOptions;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
@@ -256,5 +265,43 @@ where
         }
 
         Ok(())
+    }
+}
+
+pub(crate) trait ResolveResponseResult {
+    /// The full result, read from the output blob if needed. `None` if the blob is gone.
+    fn resolve<S: ReadBlobTable>(
+        &self,
+        storage: &mut S,
+    ) -> impl Future<Output = Result<Option<ResponseResult>, StorageError>>;
+}
+
+impl ResolveResponseResult for ResponseResultRef {
+    async fn resolve<S: ReadBlobTable>(
+        &self,
+        storage: &mut S,
+    ) -> Result<Option<ResponseResult>, StorageError> {
+        match self {
+            Self::Success(bytes) => Ok(Some(ResponseResult::Success(bytes.clone()))),
+            Self::Failure(err) => Ok(Some(ResponseResult::Failure(err.clone()))),
+            Self::Killed => Ok(Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR))),
+            Self::Completed(CompletedResult { blob_id, .. }) => {
+                storage.get_blob::<OutputBlob>(*blob_id).await
+            }
+        }
+    }
+}
+
+/// The output blob holds the content of the Output entry, shared with the journal.
+struct OutputBlob;
+
+impl BlobDecoder for OutputBlob {
+    type Type = ResponseResult;
+
+    fn decode_blob(_header: impl Header, raw: &[u8]) -> Result<Self::Type, StorageError> {
+        let output = RawCommand::new(CommandType::Output, Bytes::copy_from_slice(raw))
+            .decode::<ServiceProtocolV4Codec, OutputCommand>()
+            .map_err(|err| StorageError::Conversion(err.into()))?;
+        Ok(output.result.into())
     }
 }
