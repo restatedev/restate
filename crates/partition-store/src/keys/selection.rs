@@ -1127,6 +1127,48 @@ impl<K> KeySelectionCursor<K> {
         &self.position.target
     }
 
+    /// The end of what the selection may match among the keys that start with
+    /// `prefix`, a key's header and first `fields` fields: every key it matches
+    /// there sorts before it, and it sorts no later than the first key past
+    /// `prefix`. Built like the end of the scan interval, from the bounds of the
+    /// fields after `prefix`, in the seek storage, and lent until the next
+    /// evaluation. A read that goes backwards starts there.
+    pub(crate) fn end_within(&mut self, prefix: &[u8], fields: usize) -> Result<&[u8]> {
+        let target = &mut self.position.target;
+        target.clear();
+        target.extend_from_slice(prefix);
+        let literals = &self.selection.literals;
+        for field in self.selection.fields.iter().skip(fields) {
+            let FieldBounds::Interval { lower, upper } = field.bounds(literals) else {
+                break;
+            };
+            if let (Included(lo), Included(hi)) = (lower, upper)
+                && lo == hi
+            {
+                target.extend_from_slice(hi);
+                continue;
+            }
+            match upper {
+                Included(value) => target.extend_from_slice(value),
+                Excluded(value) => {
+                    target.extend_from_slice(value);
+                    return Ok(&target[..]);
+                }
+                Unbounded => {}
+            }
+            break;
+        }
+        // Past every key that starts with the bytes so far, carrying no further
+        // than `prefix`; without a carry, past every key under `prefix`.
+        if !advance_prefix(target, prefix.len()) {
+            target.truncate(prefix.len());
+            if !advance_prefix(target, 0) {
+                return Err(StorageError::DataIntegrityError);
+            }
+        }
+        Ok(&target[..])
+    }
+
     /// The bytes this cursor holds of its own, at capacity: its bounds and fixed
     /// header, allocated at their exact length and not shared, and its seek
     /// storage, which only grows. The selection, including a list of headers it

@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Entries newest first through an entry index whose keys each name one entry
-//! status:
+//! Entries newest first, or oldest first ([`ReadDirection::Backward`]), through
+//! an entry index whose keys each name one entry status:
 //!
 //! - `finished_entry_by_outcome/1` holds one key per entry whose stored stage
 //!   is Finished, sorted by stored status, service and handler, then by the
@@ -50,7 +50,7 @@ use restate_clock::UniqueTimestamp;
 use restate_rocksdb::reads::{OwnedPinnedBatch, ReadSnapshot as RocksReadSnapshot};
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{RawStatusHeaderRef, Stage, Status};
-use restate_storage_query_api::scan::CursorStep;
+use restate_storage_query_api::scan::{CursorStep, ReadDirection};
 use restate_storage_query_api::selection::Selection;
 use restate_storage_query_api::tables::index::{
     ActiveEntryByStage as ActiveIndex, FinishedEntryByOutcome as FinishedIndex,
@@ -74,7 +74,8 @@ use super::{
     FinishedEntryByOutcome, FinishedEntryByOutcomeKey,
 };
 
-/// An entry index whose keys each name one entry status, read newest first: a
+/// An entry index whose keys each name one entry status, read newest first or
+/// backwards: a
 /// run is its entries of one value of its three leading fields, a stage or
 /// status, a service and a handler.
 pub(crate) trait EntryIndex: RegisteredIndex + PhysicalTable<Key: OrderedKeySchema> {
@@ -137,12 +138,14 @@ const KEY_LEN: usize = EntryStatusKey::serialized_length_fixed();
 /// caller keeps its predicate.
 pub struct FinishedRead {
     index: Arc<KeySelection<FinishedEntryByOutcomeKey>>,
+    direction: ReadDirection,
 }
 
 impl FinishedRead {
-    pub fn prepare(selection: &Selection<FinishedIndex>) -> Result<Self> {
+    pub fn prepare(selection: &Selection<FinishedIndex>, direction: ReadDirection) -> Result<Self> {
         Ok(Self {
             index: Arc::new(FinishedEntryByOutcomeKey::prepare_candidates(selection)?),
+            direction,
         })
     }
 }
@@ -153,12 +156,14 @@ impl FinishedRead {
 /// matches: the caller keeps its predicate.
 pub struct ActiveRead {
     index: Arc<KeySelection<ActiveEntryByStageKey>>,
+    direction: ReadDirection,
 }
 
 impl ActiveRead {
-    pub fn prepare(selection: &Selection<ActiveIndex>) -> Result<Self> {
+    pub fn prepare(selection: &Selection<ActiveIndex>, direction: ReadDirection) -> Result<Self> {
         Ok(Self {
             index: Arc::new(ActiveEntryByStageKey::prepare_candidates(selection)?),
+            direction,
         })
     }
 }
@@ -228,7 +233,7 @@ impl IndexedCursor<FinishedEntryByOutcome> {
         read: &FinishedRead,
         execution: &EntryIndexExecution,
     ) -> Result<Option<Self>> {
-        Self::open(snapshot, &read.index, execution)
+        Self::open(snapshot, &read.index, read.direction, execution)
     }
 }
 
@@ -238,7 +243,7 @@ impl IndexedCursor<ActiveEntryByStage> {
         read: &ActiveRead,
         execution: &EntryIndexExecution,
     ) -> Result<Option<Self>> {
-        Self::open(snapshot, &read.index, execution)
+        Self::open(snapshot, &read.index, read.direction, execution)
     }
 }
 
@@ -248,6 +253,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
     fn open(
         snapshot: &ReadSnapshot,
         index: &Arc<KeySelection<I::Key>>,
+        direction: ReadDirection,
         execution: &EntryIndexExecution,
     ) -> Result<Option<Self>> {
         let Execution {
@@ -259,7 +265,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
         let memory = SharedMemory(Arc::new(Mutex::new(memory)));
         // Discovery's work counts even if it fails: the error stays the read's.
         let mut discovered = 0;
-        let opened = match Self::try_open(snapshot, index, memory, &mut discovered) {
+        let opened = match Self::try_open(snapshot, index, direction, memory, &mut discovered) {
             Ok(opened) => opened,
             Err(error) => {
                 if discovered > 0 {
@@ -305,6 +311,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
     fn try_open(
         snapshot: &ReadSnapshot,
         index: &Arc<KeySelection<I::Key>>,
+        direction: ReadDirection,
         memory: SharedMemory,
         discovered: &mut u64,
     ) -> Result<std::result::Result<(OrderedRuns<I>, Held), (ScanReason, u64)>> {
@@ -322,6 +329,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
             match snapshot.ordered_runs_counted::<I>(
                 Arc::clone(index),
                 RUN_FIELDS,
+                direction,
                 LIMITS,
                 Box::new(memory),
                 discovered,
@@ -608,10 +616,21 @@ mod tests {
         charge: Charge,
         stop: Stop,
     ) -> Run {
+        run_in(store, selection, ReadDirection::Forward, charge, stop)
+    }
+
+    /// [`run`] in `direction`.
+    fn run_in(
+        store: &PartitionStore,
+        selection: Selection<FinishedIndex>,
+        direction: ReadDirection,
+        charge: Charge,
+        stop: Stop,
+    ) -> Run {
         run_scan(
             store,
             |execution| EntryStatusScan::Finished {
-                read: Arc::new(FinishedRead::prepare(&selection).unwrap()),
+                read: Arc::new(FinishedRead::prepare(&selection, direction).unwrap()),
                 fallback: scan_all(),
                 execution,
             },
@@ -627,10 +646,21 @@ mod tests {
         charge: Charge,
         stop: Stop,
     ) -> Run {
+        active_in(store, selection, ReadDirection::Forward, charge, stop)
+    }
+
+    /// [`active`] in `direction`.
+    fn active_in(
+        store: &PartitionStore,
+        selection: Selection<ActiveIndex>,
+        direction: ReadDirection,
+        charge: Charge,
+        stop: Stop,
+    ) -> Run {
         run_scan(
             store,
             |execution| EntryStatusScan::Active {
-                read: Arc::new(ActiveRead::prepare(&selection).unwrap()),
+                read: Arc::new(ActiveRead::prepare(&selection, direction).unwrap()),
                 fallback: scan_all(),
                 execution,
             },
@@ -867,6 +897,21 @@ mod tests {
         assert_eq!(all.statuses(), ids.len());
         assert_eq!(all.reported, all.reported_at_end);
         assert_eq!((all.held, all.closed), (0, true));
+        // Backwards, the exact reverse, oldest finished first, and released at
+        // its end the same way.
+        let oldest = run_in(
+            &store,
+            Selection::All,
+            ReadDirection::Backward,
+            Charge::default(),
+            Stop::End,
+        );
+        assert_eq!(oldest.rows, ids.iter().rev().cloned().collect::<Vec<_>>());
+        assert_eq!(
+            (oldest.path, oldest.ended.clone(), oldest.held_at_end),
+            (Some(EntryIndexPath::Index { runs: 4 }), Some(Ok(())), 0)
+        );
+        assert_eq!(oldest.statuses(), ids.len());
         // Stopped after one record, as past a LIMIT, it holds its window until
         // dropped, then releases everything and tells its work once. Here the
         // merge read every key ahead of the first record.
@@ -896,7 +941,7 @@ mod tests {
         // A refused charge fails the read with the refusal, never a scan in
         // its place; every charge is released and the snapshot completes.
         // Refused for the read's own state, as it opens: no work, no path.
-        let fixed = FinishedRead::prepare(&Selection::All)
+        let fixed = FinishedRead::prepare(&Selection::All, ReadDirection::Forward)
             .unwrap()
             .index
             .retained_bytes()
@@ -1139,6 +1184,22 @@ mod tests {
         );
         assert_eq!((all.held_at_end, all.closed_at_end), (0, true));
         assert_eq!((all.held, all.closed), (0, true));
+        // Backwards, oldest created first: the exact reverse, ties included,
+        // as the logical clock orders entries created in one millisecond.
+        let oldest = active_in(
+            &store,
+            Selection::All,
+            ReadDirection::Backward,
+            Charge::default(),
+            Stop::End,
+        );
+        let mut reversed = expected(&entries, &|_| true);
+        reversed.reverse();
+        assert_eq!(shown(&oldest), reversed);
+        assert_eq!(
+            (oldest.path, oldest.held_at_end, oldest.closed_at_end),
+            (Some(EntryIndexPath::Index { runs: 8 }), 0, true)
+        );
         // A stage set narrows the runs.
         let some = Selection::All.and(ActiveEntryByStageClause::Stage(ValuePredicate::In(vec![
             Stage::Inbox,

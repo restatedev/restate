@@ -8,7 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Invocations found through the entry index, newest created first.
+//! Invocations found through the entry index, newest created first or,
+//! backwards ([`ReadDirection::Backward`]), oldest first.
 //!
 //! The entry index `entry_by_service_created/1` holds one key per vqueue entry,
 //! sorted by service, handler and creation time, newest first. A query that
@@ -51,7 +52,7 @@ use std::sync::{Arc, Mutex};
 use restate_rocksdb::reads::{OwnedPinnedBatch, ReadSnapshot as RocksReadSnapshot};
 use restate_storage_api::StorageError;
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
-use restate_storage_query_api::scan::CursorStep;
+use restate_storage_query_api::scan::{CursorStep, ReadDirection};
 use restate_storage_query_api::selection::Selection;
 use restate_storage_query_api::tables::index::EntryByServiceCreated as EntryIndex;
 use restate_types::identifiers::InvocationId;
@@ -90,8 +91,8 @@ const KEY_LEN: usize = InvocationStatusKey::serialized_length_fixed();
 /// How a read of the entry index went.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryIndexPath {
-    /// Through the index, merging `runs` runs: the invocations come newest
-    /// created first.
+    /// Through the index, merging `runs` runs: the invocations come in creation
+    /// order, newest first or, read backwards, oldest first.
     Index { runs: usize },
     /// A scan of the invocation statuses, in key order.
     Scan(ScanReason),
@@ -200,21 +201,24 @@ impl Drop for Held {
 }
 
 /// A read of invocations through the entry index, restricted by the index's
-/// columns. The restriction may admit more entries than the query matches: the
-/// caller keeps its predicate.
+/// columns, newest created first or, backwards, oldest first. The restriction
+/// may admit more entries than the query matches: the caller keeps its
+/// predicate.
 pub struct EntryIndexRead {
     index: Arc<KeySelection<EntryByServiceCreatedKey>>,
+    direction: ReadDirection,
 }
 
 impl EntryIndexRead {
-    pub fn prepare(selection: &Selection<EntryIndex>) -> Result<Self> {
+    pub fn prepare(selection: &Selection<EntryIndex>, direction: ReadDirection) -> Result<Self> {
         Ok(Self {
             index: Arc::new(EntryByServiceCreatedKey::prepare_candidates(selection)?),
+            direction,
         })
     }
 
     /// Why a read on `snapshot` can't go through the index, if it can't. It can,
-    /// and so return the invocations newest created first, once the partition
+    /// and so return the invocations in creation order, once the partition
     /// has fully migrated to vqueues, so every invocation has its entry, and the
     /// index is Ready.
     pub fn unusable(snapshot: &ReadSnapshot) -> Result<Option<ScanReason>> {
@@ -355,6 +359,7 @@ impl EntryIndexCursor {
         let discovery = snapshot.ordered_runs_counted::<EntryByServiceCreated>(
             Arc::clone(&read.index),
             RUN_FIELDS,
+            read.direction,
             LIMITS,
             Box::new(memory),
             discovered,
@@ -749,50 +754,63 @@ mod tests {
         drop(tx);
 
         let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
-        let read = EntryIndexRead::prepare(&Selection::All.and(
-            EntryByServiceCreatedClause::TargetServiceName(ValuePredicate::Equal("S".into())),
-        ))
-        .unwrap();
+        let service = || {
+            Selection::All.and(EntryByServiceCreatedClause::TargetServiceName(
+                ValuePredicate::Equal("S".into()),
+            ))
+        };
+        let read = EntryIndexRead::prepare(&service(), ReadDirection::Forward).unwrap();
         let fixed = read.index.retained_bytes()
             + WINDOW * std::mem::size_of::<(InvocationId, Seq, MillisSinceEpoch)>()
             + WINDOW * KEY_LEN;
         assert!(read.index.retained_bytes() > 0);
 
-        let memory = Counting::default();
-        let (opening, path, examined) = execution(&memory);
-        let mut cursor = EntryIndexCursor::open(&snapshot, &read, &opening)
-            .unwrap()
-            .unwrap();
-        // One service, one handler: one run.
-        assert_eq!(path.try_recv(), Ok(EntryIndexPath::Index { runs: 1 }));
-        let (mut created, mut fetched) = (Vec::new(), 0);
-        loop {
-            let statuses = (0..cursor.window.len())
-                .filter_map(|slot| cursor.results.as_ref().map(|_| slot))
-                .map(|slot| cursor.value(slot).unwrap().map_or(0, <[u8]>::len))
-                .sum::<usize>();
-            assert_eq!(cursor.results_bytes, statuses);
-            assert_eq!(
-                memory.now(),
-                fixed + statuses + cursor.runs.as_ref().unwrap().retained_bytes(),
-                "the charge is what the read holds"
-            );
-            fetched = fetched.max(statuses);
-            match cursor.advance().unwrap() {
-                CursorStep::Record => created.push(cursor.current().unwrap().1.inner.creation_time),
-                CursorStep::Skipped => {}
-                CursorStep::Done => break,
+        // Newest first, and backwards, oldest first.
+        let backward = EntryIndexRead::prepare(&service(), ReadDirection::Backward).unwrap();
+        let mut all = 0;
+        for read in [&read, &backward] {
+            let memory = Counting::default();
+            let (opening, path, examined) = execution(&memory);
+            let mut cursor = EntryIndexCursor::open(&snapshot, read, &opening)
+                .unwrap()
+                .unwrap();
+            // One service, one handler: one run.
+            assert_eq!(path.try_recv(), Ok(EntryIndexPath::Index { runs: 1 }));
+            let (mut created, mut fetched) = (Vec::new(), 0);
+            loop {
+                let statuses = (0..cursor.window.len())
+                    .filter_map(|slot| cursor.results.as_ref().map(|_| slot))
+                    .map(|slot| cursor.value(slot).unwrap().map_or(0, <[u8]>::len))
+                    .sum::<usize>();
+                assert_eq!(cursor.results_bytes, statuses);
+                assert_eq!(
+                    memory.now(),
+                    fixed + statuses + cursor.runs.as_ref().unwrap().retained_bytes(),
+                    "the charge is what the read holds"
+                );
+                fetched = fetched.max(statuses);
+                match cursor.advance().unwrap() {
+                    CursorStep::Record => {
+                        created.push(cursor.current().unwrap().1.inner.creation_time)
+                    }
+                    CursorStep::Skipped => {}
+                    CursorStep::Done => break,
+                }
             }
+            assert!(fetched > 0);
+            assert_eq!(created.len(), 30);
+            // Every entry's key, at least, once the read is done.
+            all = examined.load(std::sync::atomic::Ordering::Relaxed);
+            assert!(all >= 30, "{all}");
+            if read.direction == ReadDirection::Forward {
+                assert!(created.is_sorted_by(|newer, older| newer > older));
+            } else {
+                assert!(created.is_sorted_by(|older, newer| older < newer));
+            }
+            assert_eq!(memory.now(), 0, "everything is released at the end");
+            assert!(cursor.snapshot.is_none() && cursor.advance().unwrap() == CursorStep::Done);
         }
-        assert!(fetched > 0);
-        assert_eq!(created.len(), 30);
-        // Every entry's key, at least, once the read is done.
-        let all = examined.load(std::sync::atomic::Ordering::Relaxed);
-        assert!(all >= 30, "{all}");
-        assert!(created.is_sorted_by(|newer, older| newer > older));
-        assert_eq!(memory.now(), 0, "everything is released at the end");
-        assert!(cursor.snapshot.is_none() && cursor.advance().unwrap() == CursorStep::Done);
-        drop(cursor);
+        let memory = Counting::default();
 
         // Dropped part-way through a window, it releases everything too, and
         // tells what it examined until then.
@@ -981,9 +999,12 @@ mod tests {
         tx.commit().await.unwrap();
         drop(tx);
         let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
-        let read_big = EntryIndexRead::prepare(&Selection::All.and(
-            EntryByServiceCreatedClause::TargetServiceName(ValuePredicate::Equal("Big".into())),
-        ))
+        let read_big = EntryIndexRead::prepare(
+            &Selection::All.and(EntryByServiceCreatedClause::TargetServiceName(
+                ValuePredicate::Equal("Big".into()),
+            )),
+            ReadDirection::Forward,
+        )
         .unwrap();
         let (opening, _, examined) = execution(&memory);
         let mut cursor = EntryIndexCursor::open(&snapshot, &read_big, &opening)

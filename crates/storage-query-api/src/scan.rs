@@ -98,6 +98,16 @@ pub enum CursorStep {
     Done,
 }
 
+/// Which way a read goes through an index: in its key order, or against it.
+/// For an index keyed `service | created_at ↓`, forward reads a service's
+/// entries newest first and backward reads them oldest first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReadDirection {
+    #[default]
+    Forward,
+    Backward,
+}
+
 /// Caller-driven, blocking physical reads. A cursor owns its storage lifetime,
 /// can move between work submissions, and never dispatches background work.
 pub trait ReadCursor<T: Table>: Send + 'static {

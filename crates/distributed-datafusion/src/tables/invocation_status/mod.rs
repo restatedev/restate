@@ -81,7 +81,8 @@ const MAX_INDEXED_SERVICES: usize = 64;
 /// invocation once its partition has fully migrated to vqueues and the index is
 /// Ready; until then, each partition's read scans instead, before returning
 /// anything. Its policy: the query names its services, so the read merges only
-/// their runs, and asks for the newest of them, so the read stops early:
+/// their runs, and asks for the newest of them, or the oldest, so the read
+/// stops early:
 ///
 /// ```sql
 /// SELECT id FROM sys_invocation_status
@@ -90,7 +91,8 @@ const MAX_INDEXED_SERVICES: usize = 64;
 /// LIMIT 51
 /// ```
 ///
-/// Oldest first, another order, or a condition outside the allowlist below,
+/// Oldest first (`ORDER BY created_at ASC … LIMIT 250`) reads each run from
+/// its oldest end. Another order, or a condition outside the allowlist below,
 /// such as `status = 'scheduled'`, scans instead.
 struct EntryIndex;
 
@@ -323,14 +325,22 @@ impl ScanPartition for StatusScanner {
         };
         let access = match access {
             PrimaryRead::Scan => StatusAccess::Scan(scan()?),
-            PrimaryRead::Index(index) => {
-                anyhow::ensure!(self.supports_index(&index), "unsupported index '{index}'");
-                // The planner's choice is fixed; the restriction is derived again
-                // from the shipped predicate, and the predicate stays residual.
+            PrimaryRead::Index(read) => {
+                anyhow::ensure!(
+                    self.supports_index(read.name()),
+                    "unsupported index '{}'",
+                    read.name()
+                );
+                // The planner's choice is fixed, its order too; the restriction is
+                // derived again from the shipped predicate, and the predicate stays
+                // residual.
                 let selection = index_restriction::<EntryByServiceCreated>(predicate.as_slice())?
                     .map_or(Selection::Empty, |domains| domains.to_selection());
                 StatusAccess::EntryIndex {
-                    index: Arc::new(EntryIndexRead::prepare(&selection)?),
+                    index: Arc::new(EntryIndexRead::prepare(
+                        &selection,
+                        read.direction::<EntryIndex>()?,
+                    )?),
                     fallback: scan()?,
                 }
             }

@@ -22,6 +22,7 @@ use datafusion::physical_expr::{physical_exprs_bag_equal, split_conjunction};
 use datafusion::physical_plan::PhysicalExpr;
 
 use restate_partition_store::lookup::{LookupBinding, LookupCandidates, LookupTable};
+use restate_storage_query_api::scan::ReadDirection;
 use restate_storage_query_api::schema::index::{IndexSchema, PrimarySchema, index_restriction};
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::static_conjuncts;
@@ -71,11 +72,12 @@ pub trait CompleteIndex: 'static {
     }
 
     /// Whether the index pays off only for a query that wants the first rows in
-    /// exactly its declared [`Self::ORDERING`]: a bounded sort above the source
-    /// whose whole order is the declared one, null placement included where a
-    /// column can be NULL ([`IndexOrder::never_null`]). The read
-    /// then stops early. Without such a demand, reading every candidate and its
-    /// primary record can cost more than the scan it replaces.
+    /// exactly its declared [`Self::ORDERING`] or its exact reverse: a bounded
+    /// sort above the source whose whole order is one of them, null placement
+    /// included where a column can be NULL ([`IndexOrder::never_null`]). The
+    /// read, forward or backward, then stops early. Without such a demand,
+    /// reading every candidate and its primary record can cost more than the
+    /// scan it replaces.
     const NEEDS_ORDERED_DEMAND: bool = false;
 
     /// Whether the index's policy admits a condition the query applies to the
@@ -234,7 +236,7 @@ fn select<B: CompleteIndex>(
     }
     // Every condition, whether the source or a filter above applies it.
     Ok(demand.is_some_and(|demand| {
-        orders::<B>(demand)
+        orders::<B>(demand).is_some()
             && filters
                 .iter()
                 .flat_map(split_conjunction)
@@ -243,36 +245,63 @@ fn select<B: CompleteIndex>(
     }))
 }
 
-/// Whether `demand` asks for exactly the index's declared order, where NULLs go
-/// included unless the column is never NULL.
-fn orders<B: CompleteIndex>(demand: &Demand) -> bool {
+/// Which way a read of the index returns rows in `demand`'s order, if one
+/// does: forward for exactly the declared order, backward for its exact
+/// reverse, where NULLs go included unless the column is never NULL.
+fn orders<B: CompleteIndex>(demand: &Demand) -> Option<ReadDirection> {
+    if B::ORDERING.is_empty() {
+        return None;
+    }
+    let mut columns = Vec::with_capacity(demand.ordering.len());
+    for sort in demand.ordering.iter() {
+        columns.push((sort.expr.downcast_ref::<Column>()?.name(), sort.options));
+    }
+    direction_of::<B>(&columns)
+}
+
+/// Which way `columns`, each a name and its sort options, run through the
+/// index's declared order: forward, backward (every column reversed, NULLs too
+/// unless never NULL), or neither. An index without a declared order reads
+/// forward, unordered.
+fn direction_of<B: CompleteIndex>(columns: &[(&str, SortOptions)]) -> Option<ReadDirection> {
     let declared = ordering::<B>(None);
-    !declared.is_empty()
-        && demand.ordering.len() == declared.len()
-        && demand
-            .ordering
+    if columns.len() != declared.len()
+        || columns
             .iter()
-            .zip(declared.iter().zip(B::ORDERING))
-            .all(|(sort, (declared, order))| {
-                sort.expr
-                    .downcast_ref::<Column>()
-                    .is_some_and(|column| column.name() == declared.name)
-                    && sort.options.descending == declared.descending
-                    && (order.never_null || sort.options.nulls_first == declared.nulls_first)
-            })
+            .zip(&declared)
+            .any(|((name, _), declared)| *name != declared.name)
+    {
+        return None;
+    }
+    let runs = |backward: bool| {
+        columns.iter().zip(declared.iter().zip(B::ORDERING)).all(
+            |((_, options), (declared, order))| {
+                options.descending == (declared.descending != backward)
+                    && (order.never_null
+                        || options.nulls_first == (declared.nulls_first != backward))
+            },
+        )
+    };
+    if runs(false) {
+        Some(ReadDirection::Forward)
+    } else if runs(true) {
+        Some(ReadDirection::Backward)
+    } else {
+        None
+    }
 }
 
 fn introduced<B: CompleteIndex>() -> SemanticRestateVersion {
     B::INTRODUCED
 }
 
-/// The index's declared order, with NULLs placed as `demand` asks where it
-/// orders the index and a column is never NULL: the same rows in the same
+/// The order of the index's read for `demand`: its declared order, or the
+/// exact reverse where `demand` asks for that ([`orders`]). NULLs go where
+/// `demand` puts them if a column is never NULL: the same rows in the same
 /// order, so that the planner adds no sort for the query's own spelling.
 fn ordering<B: CompleteIndex>(demand: Option<&Demand>) -> Vec<SortedColumn> {
-    let asked = demand
-        .filter(|demand| orders::<B>(demand))
-        .map(|demand| &demand.ordering);
+    let asked = demand.and_then(|demand| Some((&demand.ordering, orders::<B>(demand)?)));
+    let backward = matches!(asked, Some((_, ReadDirection::Backward)));
     B::ORDERING
         .iter()
         .enumerate()
@@ -280,13 +309,37 @@ fn ordering<B: CompleteIndex>(demand: Option<&Demand>) -> Vec<SortedColumn> {
             name: <<B::Index as IndexSchema>::Primary as SelectionSchema>::sql_name(order.column)
                 .expect("an ordered column has a SQL name")
                 .to_owned(),
-            descending: order.options.descending,
+            descending: order.options.descending != backward,
             nulls_first: match asked {
-                Some(asked) if order.never_null => asked[at].options.nulls_first,
-                _ => order.options.nulls_first,
+                Some((asked, _)) if order.never_null => asked[at].options.nulls_first,
+                _ => order.options.nulls_first != backward,
             },
         })
         .collect()
+}
+
+/// Which way to read `B` for work shipped with `ordering`: the order the
+/// coordinator planned for, and declared to DataFusion. Any other order fails
+/// the read: nothing downstream checks that rows come in the declared order.
+fn shipped_direction<B: CompleteIndex>(ordering: &[SortedColumn]) -> anyhow::Result<ReadDirection> {
+    let columns: Vec<_> = ordering
+        .iter()
+        .map(|column| {
+            (
+                column.name.as_str(),
+                SortOptions {
+                    descending: column.descending,
+                    nulls_first: column.nulls_first,
+                },
+            )
+        })
+        .collect();
+    direction_of::<B>(&columns).ok_or_else(|| {
+        anyhow::anyhow!(
+            "index '{}' can't return rows in the order {ordering:?}",
+            <B::Index as LogicalSchema>::NAME
+        )
+    })
 }
 
 /// Whether the planner reads an index for a source's filters, under a demand.
@@ -297,7 +350,7 @@ type SelectIndex = fn(&[Arc<dyn PhysicalExpr>], Option<&Demand>) -> anyhow::Resu
 pub(crate) struct DeclaredIndex {
     identity: &'static str,
     select: SelectIndex,
-    orders: fn(&Demand) -> bool,
+    orders: fn(&Demand) -> Option<ReadDirection>,
     ordering: fn(Option<&Demand>) -> Vec<SortedColumn>,
     introduced: fn() -> SemanticRestateVersion,
 }
@@ -317,15 +370,15 @@ impl DeclaredIndex {
         (self.select)(filters, demand)
     }
 
-    /// Whether `demand` asks for exactly the index's declared order (see
-    /// [`IndexOrder::never_null`]).
-    pub(crate) fn orders(&self, demand: &Demand) -> bool {
+    /// Which way a read of the index returns rows in exactly `demand`'s order,
+    /// if one does (see [`IndexOrder::never_null`]).
+    pub(crate) fn orders(&self, demand: &Demand) -> Option<ReadDirection> {
         (self.orders)(demand)
     }
 
-    /// The order of a partition's rows read through the index, if declared,
-    /// with NULLs where `demand` puts them if that changes nothing (see
-    /// [`IndexOrder::never_null`]).
+    /// The order of a partition's rows read through the index, if declared:
+    /// reversed where `demand` asks for the reverse, with NULLs where `demand`
+    /// puts them if that changes nothing (see [`IndexOrder::never_null`]).
     pub(crate) fn ordering(&self, demand: Option<&Demand>) -> Vec<SortedColumn> {
         (self.ordering)(demand)
     }
@@ -390,7 +443,8 @@ pub(crate) fn select_access(
                 .collect::<Vec<_>>();
             let bound = demand
                 .filter(|demand| {
-                    index.orders(demand) && physical_exprs_bag_equal(&demand.residual, &conditions)
+                    index.orders(demand).is_some()
+                        && physical_exprs_bag_equal(&demand.residual, &conditions)
                 })
                 .map(|demand| demand.fetch);
             return Ok(Access::Index {
@@ -494,13 +548,39 @@ impl PrimaryKeys {
 
 /// Scans prepare navigation from the predicate. Lookups carry the selected
 /// source's complete keys; native operators retain SQL residual evaluation.
-/// Index reads name a declared index; the scanner derives its restriction from
-/// the predicate and never chooses another access path.
+/// Index reads name a declared index and the order planned for it; the scanner
+/// derives its restriction from the predicate and never chooses another access
+/// path.
 #[derive(Debug, Clone)]
 pub enum PrimaryRead {
     Scan,
     MultiGet(Arc<PrimaryKeys>),
-    Index(ReString),
+    Index(IndexRead),
+}
+
+/// A read of a declared index, in the order the coordinator planned for it.
+#[derive(Debug, Clone)]
+pub struct IndexRead {
+    name: ReString,
+    ordering: Arc<[SortedColumn]>,
+}
+
+impl IndexRead {
+    pub(crate) fn new(name: ReString, ordering: Arc<[SortedColumn]>) -> Self {
+        Self { name, ordering }
+    }
+
+    /// The index's name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Which way to read `B`, the declared index this read names: forward for
+    /// its declared order, backward for the exact reverse. Any other order is
+    /// an error.
+    pub fn direction<B: CompleteIndex>(&self) -> anyhow::Result<ReadDirection> {
+        shipped_direction::<B>(&self.ordering)
+    }
 }
 
 #[cfg(test)]
@@ -705,9 +785,9 @@ mod tests {
         ] {
             assert_eq!(plan_with(nodes, &service).await, expected, "{nodes:?}");
         }
-        // The index pays off only for its own order and conditions that keep
-        // most candidates; the fallback bound needs every condition above the
-        // source in its predicate.
+        // The index pays off only for its own order, or its exact reverse, and
+        // conditions that keep most candidates; the fallback bound needs every
+        // condition above the source in its predicate.
         let condition = |column: &str, value: &str| {
             predicate(col(column).eq(lit(ScalarValue::LargeUtf8(Some(value.into())))))
         };
@@ -734,7 +814,7 @@ mod tests {
             _ => "scan".to_owned(),
         };
         assert_eq!(chosen(None), "scan");
-        assert_eq!(chosen(Some(&oldest)), "scan");
+        assert_eq!(chosen(Some(&oldest)), "index Some(51)");
         assert_eq!(chosen(Some(&scheduled)), "scan");
         assert_eq!(chosen(Some(&typed)), "index None");
         assert_eq!(chosen(Some(&newest(&service))), "index Some(51)");
@@ -757,6 +837,18 @@ mod tests {
             panic!("the index reads either placement");
         };
         assert_eq!((ordering[0].nulls_first, bound), (true, Some(51)));
+        // The exact reverse reads it backwards, oldest first, with the same
+        // bound: the order shipped to workers says so.
+        let Access::Index {
+            ordering, bound, ..
+        } = select_access(&source, Some(&service), Some(&oldest)).unwrap()
+        else {
+            panic!("the index reads backwards");
+        };
+        assert_eq!(
+            (ordering[0].descending, ordering[0].nulls_first, bound),
+            (false, false, Some(51))
+        );
         // A column that can be NULL keeps its placement: the other one needs a
         // sort.
         struct Nullable;
@@ -777,8 +869,44 @@ mod tests {
                 true
             }
         }
-        assert!(orders::<Nullable>(&newest(&service)) && !orders::<Nullable>(&nulls_first));
+        let spelled = |descending, nulls_first| Demand {
+            ordering: vec![PhysicalSortExpr {
+                options: SortOptions {
+                    descending,
+                    nulls_first,
+                },
+                ..newest(&service).ordering[0].clone()
+            }],
+            ..newest(&service)
+        };
+        use ReadDirection::{Backward, Forward};
+        // DESC NULLS LAST, DESC NULLS FIRST, ASC NULLS FIRST, ASC NULLS LAST.
+        let spellings = [(true, false), (true, true), (false, true), (false, false)];
+        assert_eq!(
+            spellings.map(|(descending, nulls)| orders::<Nullable>(&spelled(descending, nulls))),
+            [Some(Forward), None, Some(Backward), None]
+        );
         assert!(!super::ordering::<Nullable>(Some(&nulls_first))[0].nulls_first);
+        assert!(super::ordering::<Nullable>(Some(&spelled(false, true)))[0].nulls_first);
+        // A worker reads in the direction of the order shipped to it, and
+        // refuses any other order.
+        let shipped = |descending, nulls_first| {
+            IndexRead::new(
+                ReString::from_static("i"),
+                vec![SortedColumn {
+                    name: "created_at".to_owned(),
+                    descending,
+                    nulls_first,
+                }]
+                .into(),
+            )
+            .direction::<Nullable>()
+            .ok()
+        };
+        assert_eq!(
+            spellings.map(|(descending, nulls)| shipped(descending, nulls)),
+            [Some(Forward), None, Some(Backward), None]
+        );
         // Complete primary keys come first, whatever the versions.
         let older = [(Worker, Some("1.8.1"), false)];
         assert_eq!(plan_with(&older, &id).await, "primary");
