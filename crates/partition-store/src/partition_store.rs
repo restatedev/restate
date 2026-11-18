@@ -65,7 +65,7 @@ use crate::fsm_table::seal_partition;
 use crate::fsm_table::{
     PartitionStateMachineKey, get_locally_durable_lsn, get_min_restate_version_from_partition_db,
     get_state_machine_features_from_partition_db, get_storage_features_from_partition_db,
-    get_storage_version_from_partition_db, is_jc_orphan_cleanup_done, put_jc_orphan_cleanup_done,
+    get_storage_version_from_partition_db,
 };
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, FixedLengthTableKey, KeyKind};
 use crate::migrations::MigrationError;
@@ -857,19 +857,6 @@ impl PartitionStore {
         seal_partition(self, seal).await
     }
 
-    /// Returns `true` if the one-time cleanup of orphaned `jc` index entries has not yet been
-    /// performed on this partition store.
-    pub async fn needs_jc_orphan_cleanup(&mut self) -> Result<bool> {
-        is_jc_orphan_cleanup_done(self, self.partition_id())
-            .await
-            .map(|done| !done)
-    }
-
-    /// Marks the one-time `jc` orphan cleanup as complete so it won't run again.
-    pub async fn mark_jc_orphan_cleanup_done(&mut self) -> Result<()> {
-        put_jc_orphan_cleanup_done(self, self.partition_id()).await
-    }
-
     #[instrument(level = "info", skip_all, fields(partition_id = %self.partition().id()))]
     pub async fn verify_and_run_migrations(
         &mut self,
@@ -1420,6 +1407,40 @@ impl<'a> PartitionStoreTransaction<'a> {
             .expect("transaction valid")
             .rollback_to_save_point()
             .map_err(|err| StorageError::Generic(err.into()))
+    }
+
+    /// Whether `key` exists, as an online migration looks it up
+    /// ([`crate::migrations::online`]), and the bytes of key and value read, for
+    /// [`Migrated::read_bytes`]. Reads through this transaction, so it sees the
+    /// writes staged here, and doesn't fill the block cache, so that background
+    /// work doesn't evict what commands read.
+    ///
+    /// ```ignore
+    /// let (exists, read_bytes) = tx.lookup_for_migration(JournalKey { .. })?;
+    /// ```
+    ///
+    /// [`Migrated::read_bytes`]: crate::migrations::online::Migrated::read_bytes
+    pub(crate) fn lookup_for_migration<K: EncodeTableKey>(
+        &mut self,
+        key: K,
+    ) -> Result<(bool, usize)> {
+        self.key_buffer.clear();
+        key.serialize_to(self.key_buffer);
+        let mut options = ReadOptions::default();
+        options.fill_cache(false);
+        let value = self
+            .write_batch_with_index
+            .as_ref()
+            .expect("transaction valid")
+            .get_pinned_from_batch_and_db_cf(
+                self.rocksdb.inner().as_raw_db(),
+                self.cf_for_key_kind(K::KEY_KIND),
+                &*self.key_buffer,
+                &options,
+            )
+            .map_err(|error| StorageError::Generic(error.into()))?;
+        let read = self.key_buffer.len() + value.as_ref().map_or(0, |value| value.len());
+        Ok((value.is_some(), read))
     }
 
     /// Whether no write is buffered.

@@ -89,13 +89,14 @@ pub(crate) mod fsm_variable {
     /// *Since v1.6*
     pub(crate) const PARTITION_CONFIG_STATE: u64 = 7;
 
-    /// Set to 1 once the one-time cleanup of orphaned `jc` index entries has completed.
-    /// These orphans were caused by a bug in `delete_journal` that used the wrong scan
-    /// prefix when deleting `JournalCompletionIdToCommandIndex` entries.
-    ///
-    /// Can be removed in v1.8 once we are confident this cleanup has been executed on all
-    /// deployments.
+    /// Retired: the marker that releases v1.7.0 to v1.7.8 set once their
+    /// startup cleanup of orphaned `jc` keys had run. Never read, and never to
+    /// be reused: it can be stale after a rollback to v1.6, which still created
+    /// orphans, so it doesn't prove the store has none. The online migration
+    /// `jc_orphan_cleanup/1` cleans them up instead
+    /// ([`crate::migrations::online`]).
     /// *Since v1.7.0*
+    #[allow(dead_code)]
     pub(crate) const JC_ORPHAN_CLEANUP_DONE: u64 = 8;
 
     /// Cluster-global rule book persisted per-partition. Each partition writes
@@ -428,26 +429,6 @@ pub(crate) fn append_min_restate_version_to_wb(
     .map_err(|err| StorageError::Generic(err.into()))?;
     wb.put_cf(cf_handle, key.to_bytes(), value);
     Ok(())
-}
-
-pub(crate) async fn is_jc_orphan_cleanup_done<S: StorageAccess>(
-    storage: &mut S,
-    partition_id: PartitionId,
-) -> Result<bool> {
-    get::<SequenceNumber, _>(storage, partition_id, fsm_variable::JC_ORPHAN_CLEANUP_DONE)
-        .map(|opt| opt.is_some())
-}
-
-pub(crate) async fn put_jc_orphan_cleanup_done<S: StorageAccess>(
-    storage: &mut S,
-    partition_id: PartitionId,
-) -> Result<()> {
-    put(
-        storage,
-        partition_id,
-        fsm_variable::JC_ORPHAN_CLEANUP_DONE,
-        &SequenceNumber::from(1u64),
-    )
 }
 
 pub(crate) async fn get_partition_seal<S: StorageAccess>(

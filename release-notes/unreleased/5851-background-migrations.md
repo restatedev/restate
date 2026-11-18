@@ -10,13 +10,13 @@ under `[worker.storage]` control this background work:
 
 - `disable-background-migrations` (default `false`) pauses it. Indexes and statistics stay up to
   date for entries written from then on, and the ones already complete stay usable; the ones still
-  being built wait until the option is removed.
+  being built, and one-time cleanups in progress, wait until the option is removed.
 - `background-migrations-throttling` (unset by default) limits how many existing entries each
   partition replica processes per unit of time, with an optional burst. A lower rate reduces the
-  disk and CPU load of the background work, and the build takes correspondingly longer.
+  disk and CPU load of the background work, and the work takes correspondingly longer.
 - `background-migrations-max-slice-entries` (default `1000`) caps how many existing entries one
-  slice of an index or statistic build processes. The build runs in short slices between the
-  partition's commands, which wait while a slice runs, so a lower value keeps that wait shorter.
+  slice of background work processes. The work runs in short slices between the partition's
+  commands, which wait while a slice runs, so a lower value keeps that wait shorter.
 
 All three take effect when partition processors start. A slice's writes also stay within
 `max-command-batch-bytes` under `[worker]` (default 1 MiB), which slices follow the same way
@@ -28,7 +28,9 @@ Enabling an index or a statistic on a partition with many entries must not stop 
 serving, and operators need a way to pause or slow the work on a loaded cluster.
 
 ### Impact on Users
-- Nothing runs in the background unless an index or a statistic is being built.
+- Nothing runs in the background unless an index or a statistic is being built, or a one-time
+  cleanup of stored data, such as the removal of leftover journal completion-index entries, is
+  in progress.
 - By default, the background work aims to use about a tenth of a partition's processing time while
   the partition is busy, and up to half while it is idle. These are pacing targets, not guarantees
   of resource use.

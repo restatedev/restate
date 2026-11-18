@@ -341,7 +341,6 @@ pub(super) fn reconcile(
 
 /// Stages one slice of migration `M`'s walk, as the job of entry `id`: the
 /// [`crate::migrations::online::MigrationDefinition::run`] of `M`.
-#[cfg_attr(not(test), expect(dead_code, reason = "ONLINE_MIGRATIONS is empty"))]
 pub(crate) fn run<M: OnlineMigration>(
     tx: &mut PartitionStoreTransaction<'_>,
     input: &SliceInput<'_>,
@@ -357,7 +356,6 @@ pub(crate) fn run<M: OnlineMigration>(
 
 /// An [`OnlineMigration`] as the one job of its walk. A fresh value runs each
 /// slice ([`run`]), so nothing it decided outlives the slice's transaction.
-#[cfg_attr(not(test), expect(dead_code, reason = "ONLINE_MIGRATIONS is empty"))]
 struct MigrationWalk<M> {
     migration: M,
     /// The migration's entry ID, which is its job's ID.
