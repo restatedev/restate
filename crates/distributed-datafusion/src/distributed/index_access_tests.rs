@@ -244,18 +244,22 @@ async fn stage_index_access_matches_scans_across_windows_and_owners() {
                 rows.len() == 1 && qualifying.contains(&rows[0][0]),
                 "unordered_limits_count_qualifying_rows: {sql}: {rows:?}"
             );
-            // The leaf reports the index work: every reference of the queue was
-            // fetched and matched; navigation evaluated at least those keys. A
-            // remote task reports it to the coordinator.
-            let sql = format!(
-                "EXPLAIN ANALYZE SELECT entry_id FROM sys_vqueue_entry_status WHERE vqueue_id = '{}'",
-                busy
-            );
-            let plan = crate::mocks::rows(session.as_ref(), &sql)
-                .await
-                .concat()
-                .join("\n");
-            let metric = |name: &str| -> u64 {
+            // The leaf reports the index work: with the deployment, which the
+            // stage records don't hold exactly, every reference of the queue
+            // was fetched and matched; navigation evaluated at least those
+            // keys. A remote task reports it to the coordinator.
+            let analyze = async |columns: &str| {
+                let sql = format!(
+                    "EXPLAIN ANALYZE SELECT {columns} FROM sys_vqueue_entry_status \
+                     WHERE vqueue_id = '{busy}'"
+                );
+                crate::mocks::rows(session.as_ref(), &sql)
+                    .await
+                    .concat()
+                    .join("\n")
+            };
+            let plan = analyze("entry_id, deployment").await;
+            let metric = |plan: &str, name: &str| -> u64 {
                 let at = plan
                     .find(&format!("{name}="))
                     .unwrap_or_else(|| panic!("{name} missing: {plan}"));
@@ -268,15 +272,24 @@ async fn stage_index_access_matches_scans_across_windows_and_owners() {
             };
             assert_eq!(
                 [
-                    metric("index_references"),
-                    metric("primary_keys_fetched"),
-                    metric("primary_missing"),
-                    metric("primary_mismatched"),
+                    metric(&plan, "index_references"),
+                    metric(&plan, "primary_keys_fetched"),
+                    metric(&plan, "primary_missing"),
+                    metric(&plan, "primary_mismatched"),
                 ],
                 [600, 600, 0, 0],
                 "index_work_metrics: distributed={distributed}: {plan}"
             );
-            assert!(metric("index_keys_visited") >= 600, "{plan}");
+            assert!(metric(&plan, "index_keys_visited") >= 600, "{plan}");
+            // Without it, the stage records alone: the same keys, no status
+            // fetched, no value decoded for a key column.
+            let plan = analyze("entry_id").await;
+            assert!(
+                metric(&plan, "stage_keys_visited") >= 600
+                    && metric(&plan, "stage_values_decoded") == 0
+                    && !plan.contains("primary_keys_fetched"),
+                "covered_reads_fetch_nothing: distributed={distributed}: {plan}"
+            );
 
             // An unrestricted ordered limit keeps the scan and its sort.
             let sql = "SELECT entry_id FROM sys_vqueue_entry_status ORDER BY entry_id LIMIT 5";
@@ -408,9 +421,11 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
                 let created = UniqueTimestamp::from_unix_millis_unchecked(created);
                 let key =
                     EntryKey::new(false, created.to_unix_millis(), sequence, EntryId::from(id));
+                let qid = VQueueId::custom(id.partition_key(), "q");
+                let stats = EntryStatistics::new(created, key.run_at());
                 tx.create_vqueue_entry_status(
                     &EntryContext {
-                        qid: &VQueueId::custom(id.partition_key(), "q"),
+                        qid: &qid,
                         target: &target.entry_target_ref(),
                     },
                     EntryStateRef {
@@ -418,7 +433,18 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
                         status,
                         entry_key: &key,
                         metadata: &EntryMetadata::default(),
-                        stats: &EntryStatistics::new(created, key.run_at()),
+                        stats: &stats,
+                    },
+                );
+                // And its stage record, as the scheduler writes it.
+                tx.put_vqueue_inbox(
+                    &qid,
+                    stage,
+                    &key,
+                    &EntryValue {
+                        status,
+                        metadata: EntryMetadata::default(),
+                        stats,
                     },
                 );
             }
@@ -660,6 +686,26 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
     .into_iter()
     .collect();
     assert_eq!(all.len(), 320);
+    // The UI's finished page on `sys_vqueues`, read from the finished stage
+    // records of every partition: the newest 250 creation times of the finished
+    // entries, ties included, each entry once and a finished one.
+    let finished = include_str!("../ui_queries/vqueues_finished_newest.sql");
+    let found = crate::mocks::rows(
+        session.as_ref(),
+        &finished.replace("v.entry_id AS id", "v.entry_id AS id, v.created_at"),
+    )
+    .await;
+    let newest = crate::mocks::rows(
+        session.as_ref(),
+        "SELECT entry_id, created_at FROM sys_vqueue_entry_status WHERE stage = 'finished' \
+         ORDER BY created_at DESC",
+    )
+    .await;
+    let times = |rows: &[Vec<String>]| rows.iter().map(|row| row[1].clone()).collect::<Vec<_>>();
+    assert_eq!(found.len(), 250);
+    assert_eq!(times(&found), times(&newest[..250]));
+    assert_eq!(found.iter().collect::<BTreeSet<_>>().len(), 250);
+    assert!(found.iter().all(|row| newest.contains(row)));
     let page = crate::mocks::rows(session.as_ref(), DOSS).await.concat();
     assert_eq!(page.len(), 250);
     assert_eq!(page.iter().collect::<BTreeSet<_>>().len(), 250);

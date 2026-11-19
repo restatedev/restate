@@ -97,13 +97,13 @@ pub struct StageReadCounters {
 }
 
 /// A stage key's reference to an entry status, with the tuple it must match.
-struct Reference {
-    id: BaseEntryId,
-    stage: Stage,
-    qid: VQueueId,
-    has_lock: bool,
-    run_at: RoughTimestamp,
-    seq: Seq,
+pub(super) struct Reference {
+    pub(super) id: BaseEntryId,
+    pub(super) stage: Stage,
+    pub(super) qid: VQueueId,
+    pub(super) has_lock: bool,
+    pub(super) run_at: RoughTimestamp,
+    pub(super) seq: Seq,
 }
 
 impl Reference {
@@ -118,14 +118,14 @@ impl Reference {
 
 macro_rules! stage_cursors {
     ($($variant:ident: $table:ty, $key:ty, $field:ident;)+) => {
-        enum StageCursor {
+        pub(super) enum StageCursor {
             $($variant(TableCursor<$table>),)+
         }
 
         impl StageCursor {
-            const STAGES: &[Stage] = &[$(Stage::$variant,)+];
+            pub(super) const STAGES: &[Stage] = &[$(Stage::$variant,)+];
 
-            fn open(snapshot: &ReadSnapshot, reads: &StageReads, stage: Stage) -> Result<Self> {
+            pub(super) fn open(snapshot: &ReadSnapshot, reads: &StageReads, stage: Stage) -> Result<Self> {
                 Ok(match stage {
                     $(Stage::$variant => Self::$variant(<ReadSnapshot as CursorScan<$table>>::scan_cursor(
                         snapshot,
@@ -135,19 +135,27 @@ macro_rules! stage_cursors {
                 })
             }
 
-            fn advance(&mut self) -> Result<CursorStep> {
+            pub(super) fn advance(&mut self) -> Result<CursorStep> {
                 match self {
                     $(Self::$variant(cursor) => cursor.advance(),)+
                 }
             }
 
-            fn evaluated(&self) -> u64 {
+            pub(super) fn evaluated(&self) -> u64 {
                 match self {
                     $(Self::$variant(cursor) => cursor.evaluated(),)+
                 }
             }
 
-            fn reference(&self) -> Result<Reference> {
+            /// The stage value of the current key: status, metadata and
+            /// statistics as of the scheduler's last write of the key.
+            pub(super) fn value(&self) -> Result<&[u8]> {
+                match self {
+                    $(Self::$variant(cursor) => Ok(cursor.current()?.1),)+
+                }
+            }
+
+            pub(super) fn reference(&self) -> Result<Reference> {
                 let (key, kind, stage) = match self {
                     $(Self::$variant(cursor) => (
                         cursor.current()?.0.remaining,
@@ -288,13 +296,14 @@ impl StagesCursor {
         let (keys, remainder) = self.key_buf.as_chunks::<KEY_LEN>();
         debug_assert!(remainder.is_empty());
         let reader = self.snapshot.storage_snapshot().reader();
+        // Charged as requested, so a failed multi-get counts too.
+        self.counters.fetched += self.ids.len() as u64;
         self.results = Some(
             reader
                 .multi_get_pinned(KeyKind::VQueueEntryStatus, keys, true)
                 .map_err(|error| StorageError::Generic(error.into()))?
                 .into_owned(),
         );
-        self.counters.fetched += self.ids.len() as u64;
         Ok(())
     }
 

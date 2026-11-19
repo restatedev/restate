@@ -1342,7 +1342,7 @@ experimental! {
     /// This option only controls what SQL can see. V2 reads a table through a
     /// complete index whenever a query restricts the indexed columns, with or
     /// without it: for example `sys_vqueues` and `sys_vqueue_entry_status` through
-    /// the scheduler's queue stages when filtering by queue or by active stages.
+    /// the scheduler's queue stages when filtering by queue or by stage.
     ///
     /// Since v1.8.2
     query_index_tables,

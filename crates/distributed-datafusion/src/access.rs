@@ -17,6 +17,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use datafusion::arrow::compute::SortOptions;
+use datafusion::arrow::datatypes::Schema;
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::{physical_exprs_bag_equal, split_conjunction};
 use datafusion::physical_plan::PhysicalExpr;
@@ -61,6 +62,20 @@ pub trait CompleteIndex: 'static {
     /// [`index_restriction`]) makes reading the index worthwhile. Proven-empty
     /// restrictions never reach this policy: the primary scan reads nothing too.
     fn useful(restriction: &<Self::Index as SelectionSchema>::Domains) -> bool;
+
+    /// The primary columns a read of the index produces from what the index
+    /// itself holds, its keys and the values stored with them, which always
+    /// equal the primary record's. A query that needs no other column, its
+    /// conditions' included, reads the index alone without fetching a primary
+    /// record: a covered read ([`covers`]).
+    const COVERS: &'static [PrimaryColumn<Self>] = &[];
+
+    /// Whether a covered read pays off for `restriction`: as [`Self::useful`]
+    /// says, unless the whole index costs less to read than the primary's scan,
+    /// so that any restriction does.
+    fn useful_covered(restriction: &<Self::Index as SelectionSchema>::Domains) -> bool {
+        Self::useful(restriction)
+    }
 
     /// Whether the index holds every row the query can return. An index of
     /// every row of its primary does. A partial index, which holds only some,
@@ -220,8 +235,16 @@ impl<P> IndexAccess<P> {
 fn select<B: CompleteIndex>(
     filters: &[Arc<dyn PhysicalExpr>],
     demand: Option<&Demand>,
+    projection: &Schema,
 ) -> anyhow::Result<bool> {
-    if !index_restriction::<B::Index>(filters)?.is_some_and(|restriction| B::useful(&restriction)) {
+    let covered = covers::<B>(projection);
+    if !index_restriction::<B::Index>(filters)?.is_some_and(|restriction| {
+        if covered {
+            B::useful_covered(&restriction)
+        } else {
+            B::useful(&restriction)
+        }
+    }) {
         return Ok(false);
     }
     let alternatives = <PrimaryOf<B> as SelectionSchema>::analyze(
@@ -243,6 +266,18 @@ fn select<B: CompleteIndex>(
                 .chain(demand.residual.iter())
                 .all(B::residual_allowed)
     }))
+}
+
+/// Whether `projection`, a scan's columns, its conditions' included, lies in
+/// the columns the index holds ([`CompleteIndex::COVERS`]): the coordinator and
+/// the worker read the same projection, so they agree on a covered read.
+pub(crate) fn covers<B: CompleteIndex>(projection: &Schema) -> bool {
+    !B::COVERS.is_empty()
+        && projection.fields().iter().all(|field| {
+            B::COVERS
+                .iter()
+                .any(|&column| PrimaryOf::<B>::sql_name(column) == Some(field.name()))
+        })
 }
 
 /// Which way a read of the index returns rows in `demand`'s order, if one
@@ -343,7 +378,7 @@ fn shipped_direction<B: CompleteIndex>(ordering: &[SortedColumn]) -> anyhow::Res
 }
 
 /// Whether the planner reads an index for a source's filters, under a demand.
-type SelectIndex = fn(&[Arc<dyn PhysicalExpr>], Option<&Demand>) -> anyhow::Result<bool>;
+type SelectIndex = fn(&[Arc<dyn PhysicalExpr>], Option<&Demand>, &Schema) -> anyhow::Result<bool>;
 
 /// A declared index of a registered source.
 #[derive(Clone, Copy)]
@@ -361,13 +396,15 @@ impl DeclaredIndex {
         self.identity
     }
 
-    /// Whether the planner reads the index for `filters` under `demand`.
+    /// Whether the planner reads the index for `filters` under `demand`, for a
+    /// scan of `projection`.
     pub(crate) fn select(
         &self,
         filters: &[Arc<dyn PhysicalExpr>],
         demand: Option<&Demand>,
+        projection: &Schema,
     ) -> anyhow::Result<bool> {
-        (self.select)(filters, demand)
+        (self.select)(filters, demand, projection)
     }
 
     /// Which way a read of the index returns rows in exactly `demand`'s order,
@@ -426,6 +463,7 @@ pub(crate) fn select_access(
     source: &PartitionSourceDescriptor,
     predicate: Option<&Arc<dyn PhysicalExpr>>,
     demand: Option<&Demand>,
+    projection: &Schema,
 ) -> anyhow::Result<Access> {
     let filters = predicate.map(std::slice::from_ref).unwrap_or_default();
     if let Some(select) = source.primary_access
@@ -435,7 +473,7 @@ pub(crate) fn select_access(
     }
     let nodes = source.manager.metadata().nodes_config_ref();
     for index in &source.indexes {
-        if index.select(filters, demand)? && workers_know(&nodes, &index.introduced()) {
+        if index.select(filters, demand, projection)? && workers_know(&nodes, &index.introduced()) {
             let conditions = filters
                 .iter()
                 .flat_map(split_conjunction)
@@ -722,7 +760,14 @@ mod tests {
             config.set_version(version);
             env.metadata_writer.update(Arc::new(config)).await.unwrap();
             assert_eq!(env.metadata.nodes_config_ref().version(), version);
-            match select_access(&source, Some(predicate), Some(&newest(predicate))).unwrap() {
+            match select_access(
+                &source,
+                Some(predicate),
+                Some(&newest(predicate)),
+                &Schema::empty(),
+            )
+            .unwrap()
+            {
                 Access::Index { index, bound, .. } => format!("index {index} {bound:?}"),
                 Access::Primary(_) => "primary".to_owned(),
                 Access::Scan => "scan".to_owned(),
@@ -807,8 +852,13 @@ mod tests {
         typed
             .residual
             .push(condition("target_service_ty", "workflow"));
-        let chosen = |demand: Option<&Demand>| match select_access(&source, Some(&service), demand)
-            .unwrap()
+        let chosen = |demand: Option<&Demand>| match select_access(
+            &source,
+            Some(&service),
+            demand,
+            &Schema::empty(),
+        )
+        .unwrap()
         {
             Access::Index { bound, .. } => format!("index {bound:?}"),
             _ => "scan".to_owned(),
@@ -832,7 +882,13 @@ mod tests {
         };
         let Access::Index {
             ordering, bound, ..
-        } = select_access(&source, Some(&service), Some(&nulls_first)).unwrap()
+        } = select_access(
+            &source,
+            Some(&service),
+            Some(&nulls_first),
+            &Schema::empty(),
+        )
+        .unwrap()
         else {
             panic!("the index reads either placement");
         };
@@ -841,7 +897,7 @@ mod tests {
         // bound: the order shipped to workers says so.
         let Access::Index {
             ordering, bound, ..
-        } = select_access(&source, Some(&service), Some(&oldest)).unwrap()
+        } = select_access(&source, Some(&service), Some(&oldest), &Schema::empty()).unwrap()
         else {
             panic!("the index reads backwards");
         };
@@ -912,7 +968,7 @@ mod tests {
         assert_eq!(plan_with(&older, &id).await, "primary");
         assert_eq!(plan_with(&older, &service).await, "scan");
         assert!(matches!(
-            select_access(&source, Some(&id), None).unwrap(),
+            select_access(&source, Some(&id), None, &Schema::empty()).unwrap(),
             Access::Primary(_)
         ));
     }

@@ -381,8 +381,13 @@ fn group_partitions(
         }
         let mut by_owner = BTreeMap::new();
         for (owner, partitions) in groups {
-            let access = select_access(&planning.source, scan.0.predicate.as_ref(), None)
-                .map_err(external)?;
+            let access = select_access(
+                &planning.source,
+                scan.0.predicate.as_ref(),
+                None,
+                &scan.0.schema,
+            )
+            .map_err(external)?;
             let lowered = plan_partition_access(
                 planning.source.table.clone(),
                 &planning.source.manager,
