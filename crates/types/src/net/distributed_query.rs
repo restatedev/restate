@@ -33,7 +33,7 @@
 //! execution, …), the cause's own message and, for admission failures, typed
 //! details, for example that the partition's leader moved and to which node.
 //! The coordinator reports it once, for example as
-//! `N2:1: storage: 'service_stats/1' is not ready on partition 12`.
+//! `N2:1: storage: 'service_stats/1' is not complete on partition 12`.
 //!
 //! For example, a coordinator reading output partitions 0 and 1 from a worker
 //! installs the task, executes it over `0..2`, sends `Next` for each partition

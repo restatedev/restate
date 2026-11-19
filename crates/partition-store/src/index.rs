@@ -32,8 +32,8 @@
 //!
 //! - **Registered index** ([`RegisteredIndex`]): an index whose builds the
 //!   registry keeps under a versioned definition name. Each replica's registry
-//!   issues the index ID of its build, and a read resolves the Ready one
-//!   ([`ready_index_scope`]).
+//!   issues the index ID of its build, and a read resolves the Complete one
+//!   ([`complete_index_scope`]).
 //! - **Scope** ([`SecondaryIndex::Scope`]): where one partition's keys of the
 //!   index live: the partition plus the index ID.
 //!
@@ -62,8 +62,8 @@ pub trait SecondaryIndex {
     /// registry keeps ([`RegisteredIndex`]).
     type Scope: KeyScope;
 
-    /// The scope a read covers; a registered definition resolves its Ready index and
-    /// fails with `IndexNotReady` when there is none.
+    /// The scope a read covers; a registered definition resolves its Complete index and
+    /// fails with `IndexNotComplete` when there is none.
     fn scope(metadata: &ReadMetadata<'_>) -> crate::Result<Self::Scope>;
 
     /// The key prefix of `scope`.
@@ -98,16 +98,16 @@ pub trait SecondaryIndexKey: KeyEncode {
     }
 }
 
-/// The Ready index for definition `I` in `store`.
+/// The Complete index for definition `I` in `store`.
 #[cfg(any(test, feature = "test-util"))]
-pub fn ready_index_scope<I: RegisteredIndex>(
+pub fn complete_index_scope<I: RegisteredIndex>(
     store: &crate::PartitionStore,
 ) -> crate::keys::header::IndexScope {
     crate::keys::header::IndexScope {
         partition: store.partition_id(),
         index: store
             .published_registry()
-            .ready_index(I::DEFINITION, crate::registry::IndexKind::Secondary)
+            .complete_index(I::DEFINITION, crate::registry::IndexKind::Secondary)
             .unwrap(),
     }
 }

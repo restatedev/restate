@@ -339,7 +339,7 @@ impl PartitionStore {
     /// processor writes. A store used without that (tools and tests) loads its
     /// records from disk on first use, with the configured retention for the
     /// jobs that finish. Unreadable registry or walk records are a bug there,
-    /// and panic: writing with no indexes instead would skip the Ready indexes
+    /// and panic: writing with no indexes instead would skip the Complete indexes
     /// and clear the entries' tokens, corrupting the indexes silently, and an open
     /// would have failed on them.
     pub(crate) fn published_registry(&self) -> Arc<PublishedRegistry> {

@@ -2788,13 +2788,13 @@ mod tests {
         reached.await.unwrap();
     }
 
-    /// Whether the service gauges are Ready in a new snapshot of `store`.
-    fn ready(store: &restate_partition_store::PartitionStore) -> bool {
+    /// Whether the service gauges are Complete in a new snapshot of `store`.
+    fn complete(store: &restate_partition_store::PartitionStore) -> bool {
         use restate_partition_store::registry::IndexKind;
 
         let snapshot = store.query_read(Default::default()).unwrap().0;
         snapshot
-            .ready_index("service_stats/1", IndexKind::Aggregate)
+            .complete_index("service_stats/1", IndexKind::Aggregate)
             .is_ok()
     }
 
@@ -2840,7 +2840,7 @@ mod tests {
         reached.await.unwrap();
         // The observer reads the store directly, not through the processor.
         let store = stores.get_partition_store(PartitionId::MIN).await.unwrap();
-        assert!(!ready(&store));
+        assert!(!complete(&store));
         assert_eq!(
             store.walk_stats(),
             restate_partition_store::walk::WalkStatsSnapshot::default()
@@ -2856,7 +2856,7 @@ mod tests {
                 "{stats:?}"
             );
         }
-        assert!(!ready(&store));
+        assert!(!complete(&store));
 
         // A query read admitted while a step waits makes that step busy; the next
         // one is quiet again.
@@ -2883,12 +2883,12 @@ mod tests {
             );
         }
 
-        // Unheld, the backfill runs to its end: Ready, each entry counted once, as
+        // Unheld, the backfill runs to its end: Complete, each entry counted once, as
         // a read admitted by the processor shows.
         let (idle, _) = faults.pause(FaultPoint::WalksIdle);
         drop(resume);
         idle.await.unwrap();
-        assert!(ready(&store));
+        assert!(complete(&store));
         let snapshot = read().await.unwrap();
         assert_eq!(service_total(&snapshot), 300);
         let done = store.walk_stats();
@@ -3060,7 +3060,7 @@ mod tests {
         idle.await.unwrap();
         let done = store.walk_stats();
         assert_eq!((done.examined, done.fence_skips), (300, 3), "{done:?}");
-        assert!(ready(&store));
+        assert!(complete(&store));
         let snapshot = store.query_read(Default::default()).unwrap().0;
         assert_eq!(service_total(&snapshot), 300);
         drop((snapshot, store));
@@ -3137,7 +3137,7 @@ mod tests {
         idle.await.unwrap();
         let store = stores.get_partition_store(PartitionId::MIN).await.unwrap();
         assert_eq!(store.walk_stats().examined, 300 - 16);
-        assert!(ready(&store));
+        assert!(complete(&store));
         let snapshot = store.query_read(Default::default()).unwrap().0;
         assert_eq!(service_total(&snapshot), 300, "every entry counted once");
         drop((snapshot, store));

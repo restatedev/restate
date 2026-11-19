@@ -48,7 +48,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         .await;
     RocksDbManager::init();
     let manager = PartitionStoreManager::create(true).await.unwrap();
-    // Two replicas open with the status gauges: three statistics each, Ready at
+    // Two replicas open with the status gauges: three statistics each, Complete at
     // once over empty partitions, their jobs completed without a pass.
     let mut config = Configuration::default();
     config.common.experimental.set_track_status_gauges(true);
@@ -116,7 +116,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         count(
             "SELECT count(*) FROM registry
              WHERE plain_node_id = 'N1' AND gen_node_id = 'N1:1'
-               AND kind = 'aggregate' AND status = 'ready' AND job_id IS NULL
+               AND kind = 'aggregate' AND status = 'complete' AND job_id IS NULL
                AND registered_at IS NOT NULL AND registered_by_version IS NOT NULL
                AND approx_size_bytes IS NOT NULL"
         )
@@ -203,7 +203,8 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
     assert!(completed.is_null(3) && column("approx_size_bytes").is_null(4));
 
     // `blocked_by` renders the reason the replica's driver reports for an
-    // unfinished job, and NULL for a finished one.
+    // unfinished job, and NULL for a finished one. A job whose migration this
+    // binary doesn't know can't progress, whatever the driver reports.
     let mut replica = report.replicas[0].clone();
     replica.driver = Some(DriverState {
         disabled: true,
@@ -216,6 +217,8 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
     // A migration's job is active, whatever its name.
     let mut migration = finished.clone();
     (migration.kind, migration.name) = (MigrationJobKind::Migration, "cleanup/1".into());
+    let mut later = replica.clone();
+    later.unknown_migrations = vec![running.id().as_u32()];
     let rendered = batches::<MigrationJobsBuilder, _>(
         MigrationJobsBuilder::schema(),
         16,
@@ -223,6 +226,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
             (&replica, &running),
             (&replica, &finished),
             (&replica, &migration),
+            (&later, &running),
         ]
         .into_iter(),
         |builder, (replica, job)| {
@@ -236,8 +240,8 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         .unwrap()
         .as_string::<i32>();
     assert_eq!(
-        (reasons.value(0), reasons.is_null(1)),
-        ("background-migrations-disabled", true)
+        (reasons.value(0), reasons.is_null(1), reasons.value(3)),
+        ("background-migrations-disabled", true, "unknown-migration")
     );
     let column = |name| {
         rendered[0]

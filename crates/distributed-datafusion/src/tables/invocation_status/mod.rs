@@ -485,9 +485,9 @@ impl StatusRead {
                 StatusAccess::EntryIndex { index, fallback } => {
                     // Why a read scanned, and how much of the index a read
                     // examined: the runs it merged and the keys it went through.
-                    let (not_migrated, not_ready, too_many_runs) = (
+                    let (not_migrated, not_complete, too_many_runs) = (
                         metrics.counter("entry_index_scans_not_migrated"),
-                        metrics.counter("entry_index_scans_not_ready"),
+                        metrics.counter("entry_index_scans_not_complete"),
                         metrics.counter("entry_index_scans_too_many_runs"),
                     );
                     let runs = metrics.counter("entry_index_runs");
@@ -507,7 +507,7 @@ impl StatusRead {
                                         index_scans.add(1);
                                         match reason {
                                             ScanReason::NotMigrated => not_migrated.add(1),
-                                            ScanReason::NotReady => not_ready.add(1),
+                                            ScanReason::NotComplete => not_complete.add(1),
                                             ScanReason::TooManyRuns => too_many_runs.add(1),
                                         }
                                     }

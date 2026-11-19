@@ -68,11 +68,13 @@ define_table!(
         /// yet.
         eta: TimestampMillisecond,
 
-        /// Why the job isn't progressing right now, as its replica's background
-        /// driver last observed: `background-migrations-disabled`,
-        /// `snapshot-export`, `failure-backoff` or `throttled`. Read live, apart
-        /// from the other columns. NULL when the driver reports no reason, which
-        /// doesn't prove progress, and for finished jobs.
+        /// Why the job isn't progressing right now: `unknown-migration` when the
+        /// node's release doesn't know the job's migration (only a release that
+        /// knows it runs it), otherwise what its replica's background driver
+        /// last observed: `background-migrations-disabled`, `snapshot-export`,
+        /// `failure-backoff` or `throttled`. Read live, apart from the other
+        /// columns. NULL when there is no known reason, which doesn't prove
+        /// progress, and for finished jobs.
         blocked_by: DataType::Utf8,
 
         /// When the job was created; NULL if unknown.

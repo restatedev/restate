@@ -619,18 +619,24 @@ async fn vqueues_view_matches_v1_stage_reads() {
         assert_eq!(times, terminal[..250]);
         assert_eq!(found.iter().collect::<HashSet<_>>().len(), 250);
     }
-    // No index holds finished entries in creation order: V2 scans them. The
-    // read checks the page's predicate before emitting: of the 330 statuses
-    // (10 earlier fixture entries, 300 terminal, 20 running), it emits the 300.
+    // The page needs only columns the stage records hold, so V2 reads the
+    // Finished stage records alone, as V1 does, and fetches no status. The read
+    // checks the page's predicate before emitting: of the 302 records (2 of the
+    // earlier fixture, 300 terminal), it emits the 300.
     let plan = rows(new.as_ref(), &format!("EXPLAIN ANALYZE {finished}"))
         .await
         .concat()
         .join("\n");
     let source = plan
         .lines()
-        .find(|line| line.contains("TableScanExec"))
+        .find(|line| line.contains("IndexScanExec"))
         .unwrap_or_else(|| panic!("{plan}"));
-    assert!(!plan.contains("IndexScanExec"), "{plan}");
+    assert!(
+        source.contains("index=_idx_entry_by_queue")
+            && source.contains("stage_values_decoded=302")
+            && !source.contains("primary_keys_fetched"),
+        "{plan}"
+    );
     let metric = |name: &str| {
         let (_, value) = source.split_once(&format!("{name}="))?;
         let digits = value
@@ -640,7 +646,7 @@ async fn vqueues_view_matches_v1_stage_reads() {
     };
     assert_eq!(
         (metric("read_rows"), metric("output_rows")),
-        (Some(330), Some(300)),
+        (Some(302), Some(300)),
         "{source}"
     );
 }
@@ -1207,5 +1213,477 @@ async fn active_entries_read_through_their_index_match_the_scan() {
     assert!(
         !analyzed.contains("entry_index_keys_examined=0"),
         "{analyzed}"
+    );
+}
+
+/// `_idx_entry_by_queue`, the scheduler's stage records, holds every column of
+/// an entry status but the metadata exactly as the status does, so a query of
+/// `sys_vqueue_entry_status` or `sys_vqueues` that restricts stages or queues
+/// and needs no metadata column reads the records alone: the same rows as the
+/// scan, no status fetched, no value decoded for key columns. With the
+/// deployment, the read fetches each record's status and shows its current
+/// deployment, as before, even for an entry pinned since its last stage write.
+/// Unrestricted queries and entry-ID lookups keep their accesses.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_stage_index_covers_both_tables() {
+    use restate_limiter::LimitKey;
+    use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
+    use restate_storage_api::vqueue_table::{ReadVQueueTable, StoredEntryRef};
+    use restate_types::LockName;
+    use restate_types::vqueues::HandlerRef;
+
+    RocksDbManager::init();
+    let manager = PartitionStoreManager::create(true).await.unwrap();
+    let mut store = manager
+        .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+        .await
+        .unwrap();
+    const BASE: u64 = 1_744_040_000_000;
+    let at = |seconds: u64| {
+        UniqueTimestamp::try_from_unix_millis(MillisSinceEpoch::new(BASE + seconds * 1_000))
+            .unwrap()
+    };
+    let (a, b) = (VQueueId::custom(7, "a"), VQueueId::custom(7, "b"));
+    let target = |kind: EntryKind| EntryTargetRef::VirtualObject {
+        scope: None,
+        service: "Counter",
+        key: "k",
+        handler: match kind {
+            EntryKind::StateMutation => HandlerRef::StateMutation,
+            _ => HandlerRef::UserHandler("add"),
+        },
+    };
+    // Queue, stage, status, lock, run time, kind and deployment of each entry,
+    // written as the scheduler writes them: the status and its stage record,
+    // with the same tuple, status, metadata and statistics.
+    let entries = [
+        (
+            &a,
+            Stage::Inbox,
+            Status::New,
+            false,
+            5,
+            EntryKind::Invocation,
+            None,
+        ),
+        (
+            &a,
+            Stage::Inbox,
+            Status::BackingOff,
+            false,
+            1,
+            EntryKind::Invocation,
+            Some("dp_a"),
+        ),
+        (
+            &a,
+            Stage::Inbox,
+            Status::New,
+            false,
+            3,
+            EntryKind::StateMutation,
+            None,
+        ),
+        (
+            &a,
+            Stage::Running,
+            Status::Started,
+            true,
+            0,
+            EntryKind::Invocation,
+            None,
+        ),
+        (
+            &a,
+            Stage::Suspended,
+            Status::Started,
+            true,
+            0,
+            EntryKind::Invocation,
+            Some("dp_a"),
+        ),
+        (
+            &b,
+            Stage::Paused,
+            Status::BackingOff,
+            false,
+            0,
+            EntryKind::Invocation,
+            Some("dp_b"),
+        ),
+        (
+            &b,
+            Stage::Finished,
+            Status::Succeeded,
+            false,
+            0,
+            EntryKind::Invocation,
+            Some("dp_a"),
+        ),
+        (
+            &b,
+            Stage::Finished,
+            Status::Failed,
+            false,
+            0,
+            EntryKind::Invocation,
+            Some("dp_b"),
+        ),
+        (
+            &b,
+            Stage::Running,
+            Status::Started,
+            true,
+            0,
+            EntryKind::Invocation,
+            Some("dp_b"),
+        ),
+    ];
+    let mut tx = store.transaction();
+    for (qid, lock) in [(&a, "Counter/k"), (&b, "Counter/j")] {
+        tx.create_vqueue(
+            qid,
+            &VQueueMeta::new(
+                at(0),
+                None,
+                LimitKey::None,
+                VQueueLink::Lock(LockName::parse(lock).unwrap()),
+            ),
+        );
+    }
+    let mut ids = Vec::new();
+    for (n, &(qid, stage, status, has_lock, run_at, kind, deployment)) in entries.iter().enumerate()
+    {
+        let n = n as u64;
+        let key = EntryKey::new(
+            has_lock,
+            at(run_at).to_unix_millis(),
+            n + 1,
+            EntryId::new(kind, [n as u8 + 1; 16]),
+        );
+        let mut stats = EntryStatistics::new(at(n), key.run_at());
+        stats.transitioned_at = at(20 + n);
+        stats.num_attempts = n as u32;
+        stats.num_errors = (n % 2) as u32;
+        let metadata = EntryMetadata {
+            deployment: deployment.map(|deployment| deployment.to_restring()),
+            ..Default::default()
+        };
+        tx.create_vqueue_entry_status(
+            &EntryContext {
+                qid,
+                target: &target(kind),
+            },
+            EntryStateRef {
+                stage,
+                status,
+                entry_key: &key,
+                metadata: &metadata,
+                stats: &stats,
+            },
+        );
+        tx.put_vqueue_inbox(
+            qid,
+            stage,
+            &key,
+            &EntryValue {
+                status,
+                metadata,
+                stats,
+            },
+        );
+        ids.push((
+            key.entry_id().to_base_id(7),
+            key.entry_id().display(7).to_string(),
+        ));
+    }
+    tx.commit().await.unwrap();
+    drop(tx);
+    // The running entry of `a` is pinned to a deployment, as the processor
+    // pins one: its status only.
+    let (pinned_id, pinned) = ids[3].clone();
+    let mut tx = store.transaction();
+    let header = tx
+        .get_vqueue_entry_status(&pinned_id)
+        .await
+        .unwrap()
+        .unwrap();
+    tx.update_vqueue_entry_status(
+        &EntryContext {
+            qid: &a,
+            target: &target(EntryKind::Invocation),
+        },
+        StoredEntryRef::from_header(&header),
+        EntryStateRef {
+            metadata: &EntryMetadata {
+                deployment: Some("dp_new".to_restring()),
+                ..Default::default()
+            },
+            ..EntryStateRef::from_header(&header)
+        },
+    );
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let session = crate::mocks::v2_session(
+        &manager,
+        vec![(
+            PartitionId::MIN,
+            Partition::new(PartitionId::MIN, KeyRange::FULL),
+        )],
+        2,
+    )
+    .await;
+    let rows = async |sql: &str| crate::mocks::rows(session.as_ref(), sql).await;
+    let sorted = async |sql: &str| {
+        let mut rows = rows(sql).await;
+        rows.sort();
+        rows
+    };
+    // The same query over a scan of every status: the view and the table over a
+    // subquery that no index serves.
+    let view = include_str!("../../catalog/vqueues.sql")
+        .split_once(" AS SELECT")
+        .unwrap()
+        .1
+        .replace(
+            "restate.public.sys_vqueue_entry_status AS es",
+            "(SELECT * FROM restate.public.sys_vqueue_entry_status LIMIT 1000000) AS es",
+        );
+    let scanned = |sql: &str| {
+        format!(
+            "WITH sys_vqueues AS (SELECT{view}), \
+             statuses AS (SELECT * FROM sys_vqueue_entry_status LIMIT 1000000) {}",
+            sql.replace("FROM sys_vqueue_entry_status", "FROM statuses")
+        )
+    };
+    let analyze = async |sql: &str| {
+        rows(&format!("EXPLAIN ANALYZE {sql}"))
+            .await
+            .concat()
+            .join("\n")
+    };
+
+    // Covered: the stage records alone.
+    for (sql, decoded) in [
+        (
+            "SELECT entry_id, status FROM sys_vqueue_entry_status WHERE stage = 'finished'".to_owned(),
+            2,
+        ),
+        (
+            "SELECT entry_id, num_attempts, num_errors FROM sys_vqueue_entry_status \
+             WHERE stage IN ('running', 'suspended')"
+                .to_owned(),
+            3,
+        ),
+        (
+            format!("SELECT stage, count(*) FROM sys_vqueue_entry_status WHERE vqueue_id = '{a}' GROUP BY stage"),
+            0,
+        ),
+        (
+            "SELECT v.entry_id AS id FROM sys_vqueues v WHERE v.stage = 'finished' \
+             AND (v.stage = 'finished' AND v.status IN ('succeeded', 'failed', 'cancelled', 'killed')) \
+             ORDER BY v.created_at DESC NULLS LAST LIMIT 250"
+                .to_owned(),
+            2,
+        ),
+        (
+            "SELECT id, COUNT(*) AS workload FROM sys_vqueues \
+             WHERE stage IN ('inbox', 'running', 'suspended', 'paused') \
+             GROUP BY id ORDER BY workload DESC LIMIT 251"
+                .to_owned(),
+            0,
+        ),
+        (
+            "SELECT MIN(v.transitioned_at) AS oldest_inboxed_at FROM sys_vqueues v \
+             WHERE v.id IN (SELECT vm.id FROM sys_vqueue_meta vm \
+             WHERE vm.service_name = 'Counter' AND vm.lock_name = 'Counter/k' AND vm.scope IS NULL) \
+             AND v.stage = 'inbox'"
+                .to_owned(),
+            3,
+        ),
+        (
+            format!(
+                "SELECT id AS vqueue_id, entry_id AS id, entry_kind AS kind, stage, status, has_lock, \
+                 run_at, sequence_number, created_at, transitioned_at \
+                 FROM sys_vqueues WHERE id = '{a}' AND stage = 'inbox' LIMIT 26"
+            ),
+            3,
+        ),
+    ] {
+        let expected = sorted(&scanned(&sql)).await;
+        assert!(!expected.is_empty(), "{sql}");
+        assert_eq!(sorted(&sql).await, expected, "{sql}");
+        let plan = analyze(&sql).await;
+        assert!(
+            plan.contains("index=_idx_entry_by_queue")
+                && plan.contains(&format!("stage_values_decoded={decoded}"))
+                && !plan.contains("primary_keys_fetched"),
+            "covered: {sql}: {plan}"
+        );
+    }
+
+    // With the deployment: each record's status, its current deployment.
+    for (sql, expected) in [
+        (
+            format!(
+                "SELECT entry_id, deployment FROM sys_vqueues WHERE id = '{a}' AND entry_id = '{pinned}'"
+            ),
+            "dp_new",
+        ),
+        (
+            format!(
+                "SELECT entry_id, deployment FROM sys_vqueue_entry_status \
+                 WHERE vqueue_id = '{a}' AND stage = 'running'"
+            ),
+            "dp_new",
+        ),
+    ] {
+        assert_eq!(
+            rows(&sql).await,
+            [[pinned.clone(), expected.to_owned()]],
+            "{sql}"
+        );
+    }
+    let sql = format!("SELECT entry_id, deployment FROM sys_vqueues WHERE id = '{a}'");
+    assert_eq!(sorted(&sql).await, sorted(&scanned(&sql)).await);
+    let plan = analyze(&sql).await;
+    assert!(
+        plan.contains("index=_idx_entry_by_queue")
+            && plan.contains("primary_keys_fetched=5")
+            && !plan.contains("stage_keys_visited"),
+        "fetched: {plan}"
+    );
+
+    // Unrestricted, and entry IDs: the scan and the lookup, as before.
+    for (sql, access) in [
+        (
+            "SELECT entry_id, status FROM sys_vqueue_entry_status".to_owned(),
+            "TableScanExec",
+        ),
+        (
+            format!("SELECT status FROM sys_vqueues WHERE entry_id = '{pinned}'"),
+            "MultiGetExec",
+        ),
+    ] {
+        assert_eq!(sorted(&sql).await, sorted(&scanned(&sql)).await, "{sql}");
+        let plan = analyze(&sql).await;
+        assert!(
+            plan.contains(access) && !plan.contains("IndexScanExec"),
+            "{sql}: {plan}"
+        );
+    }
+    assert_eq!(
+        sorted("SELECT * FROM sys_vqueues").await,
+        sorted(&scanned("SELECT * FROM sys_vqueues")).await
+    );
+
+    // A read that fetches statuses first rejects the records that fail the
+    // conditions their values answer; a condition on the deployment is checked
+    // on the fetched status only, and qualifies the rows after. Conditions on
+    // the key alone install no check: navigation applies them already.
+    for (sql, work) in [
+        (
+            format!(
+                "SELECT entry_id, deployment FROM sys_vqueues WHERE id = '{a}' AND status = 'new'"
+            ),
+            &[
+                "index_keys_visited=5",
+                "index_keys_rejected=3",
+                "primary_keys_fetched=2",
+            ][..],
+        ),
+        (
+            "SELECT entry_id FROM sys_vqueue_entry_status \
+             WHERE deployment = 'dp_new' AND stage = 'running'"
+                .to_owned(),
+            &["index_keys_visited=2", "primary_keys_fetched=2"],
+        ),
+        (
+            "SELECT entry_id FROM sys_vqueue_entry_status \
+             WHERE stage IN ('inbox', 'running') AND (status = 'new' OR deployment = 'dp_new')"
+                .to_owned(),
+            &["index_keys_visited=5", "primary_keys_fetched=5"],
+        ),
+    ] {
+        let expected = sorted(&scanned(&sql)).await;
+        assert!(!expected.is_empty(), "{sql}");
+        assert_eq!(sorted(&sql).await, expected, "{sql}");
+        let plan = analyze(&sql).await;
+        let rejects = work
+            .iter()
+            .any(|metric| metric.starts_with("index_keys_rejected"));
+        assert!(
+            work.iter().all(|metric| plan.contains(metric))
+                && plan.contains("index_keys_rejected=") == rejects,
+            "{sql}: {plan}"
+        );
+    }
+    assert_eq!(
+        rows("SELECT entry_id FROM sys_vqueue_entry_status WHERE deployment = 'dp_new' AND stage = 'running'")
+            .await,
+        [[pinned.clone()]]
+    );
+
+    // A condition that can fail installs no check, whatever the others say: a
+    // record a status condition would reject must still reach the division, as
+    // it does when every status is fetched. The physical order is fixed here:
+    // the division first.
+    let schema = VqueueEntryStatus::arrow_schema();
+    let df_schema = DFSchema::try_from(schema.as_ref().clone()).unwrap();
+    let physical = |expr| {
+        SessionContext::new()
+            .create_physical_expr(expr, &df_schema)
+            .unwrap()
+    };
+    let failed = || col("status").eq(lit(ScalarValue::LargeUtf8(Some("failed".to_owned()))));
+    let dividing = physical(
+        (col("num_attempts") / col("num_errors"))
+            .gt(lit(0u32))
+            .and(failed()),
+    );
+    let comparing = physical(col("num_attempts").gt(lit(0u32)).and(failed()));
+    // Conditions on the key alone: navigation applies them.
+    let keyed = physical(
+        col("stage")
+            .eq(lit(ScalarValue::LargeUtf8(Some("running".to_owned()))))
+            .and(col("has_lock").eq(lit(true))),
+    );
+    let prefilters = |predicate| {
+        super::read::covered_prefilter(Some(predicate), &schema)
+            .unwrap()
+            .is_some()
+    };
+    assert_eq!(
+        [
+            prefilters(&dividing),
+            prefilters(&comparing),
+            prefilters(&keyed)
+        ],
+        [false, true, false],
+        "only_safe_value_conditions_prefilter"
+    );
+    let outcome = async |sql: &str| {
+        let result = session
+            .execute(sql, Default::default())
+            .await
+            .map_err(|error| error.to_string())?;
+        let batches: Vec<RecordBatch> = result
+            .stream
+            .try_collect()
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>(batches.iter().map(RecordBatch::num_rows).sum::<usize>())
+    };
+    let sql = format!(
+        "SELECT entry_id, deployment FROM sys_vqueues \
+         WHERE id = '{a}' AND num_attempts / num_errors > 0 AND status = 'backing-off'"
+    );
+    let (read, scan) = (outcome(&sql).await, outcome(&scanned(&sql)).await);
+    assert!(
+        [&read, &scan].iter().all(|outcome| outcome
+            .as_ref()
+            .is_err_and(|error| error.contains("Divide by zero"))),
+        "{read:?} {scan:?}"
     );
 }

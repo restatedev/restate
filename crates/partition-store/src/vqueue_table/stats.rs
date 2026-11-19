@@ -224,7 +224,7 @@ mod tests {
             partition: tx.partition_id(),
             index: tx
                 .published_registry()
-                .ready_index(S::DEFINITION, IndexKind::Aggregate)
+                .complete_index(S::DEFINITION, IndexKind::Aggregate)
                 .unwrap(),
         };
         let mut encoded = Vec::new();

@@ -17,8 +17,10 @@
 //! walks its source table in small slices between the partition processor's
 //! commands, paces and retries the slices, records the work on a job in
 //! `restate.cluster.migration_jobs`, and marks the migration `complete` in
-//! `restate.cluster.registry` once the walk is through. The journal
-//! completion-index cleanup, `jc_orphan_cleanup/1`, is the worked example.
+//! `restate.cluster.registry` once the walk is through. The test migrations at
+//! the bottom of this module, `Mark` and its variants, are the worked example:
+//! each is the size of a migration's file, and their tests are the ones §7 asks
+//! for.
 //!
 //! # 1. Is an online migration the right kind?
 //!
@@ -37,12 +39,12 @@
 //!
 //! # 2. Name and version
 //!
-//! [`OnlineMigration::NAME`] is `"name/N"`, such as `"jc_orphan_cleanup/1"`. A
-//! store runs each name once, ever, and keeps its entry forever. So a name is
-//! never renamed or reused: a migration whose rows, change or source differ in
-//! any way is a new version, `"jc_orphan_cleanup/2"`, which runs once more on
-//! every store. The name's halves also name the kind of its walks
-//! (`jc_orphan_cleanup` version 1); a malformed name fails compilation.
+//! [`OnlineMigration::NAME`] is `"name/N"`, such as `"my_cleanup/1"`. A
+//! store registers each name once, ever, and keeps its entry forever. So a name
+//! is never renamed or reused: a migration whose rows, change, source or policy
+//! (§6) differ in any way is a new version, `"my_cleanup/2"`, which runs
+//! once more on every store. The name's halves also name the kind of its walks
+//! (`my_cleanup` version 1); a malformed name fails compilation.
 //!
 //! # 3. Why it is safe, and what you must make true
 //!
@@ -58,13 +60,44 @@
 //!                     cursor = C   end = E   never visited
 //! ```
 //!
-//! Three things are yours to make true:
+//! Five things are yours to make true:
 //!
 //! - **Foreground writes need no migration.** Rows written behind the cursor
 //!   (`B` rewritten after the walk passed it) or beyond the end (`F`, `G`) are
 //!   never visited. From the release that adds the migration on, commands must
 //!   write rows that are already in the migrated form, or never write what the
 //!   migration removes.
+//! - **Commands don't depend on how far the walk got.** Every replica of the
+//!   partition runs the walk on its own, at its own pace, and a node may have
+//!   background migrations paused. So for a while replicas hold the same row in
+//!   different forms (`C'` is `C` migrated):
+//!
+//!   ```text
+//!   replica 1   A'   B'   C'   D    E     cursor = C
+//!   replica 2   A'   B    C    D    E     cursor = A
+//!   ```
+//!
+//!   Every replica applies the same commands, and a command must do the same on
+//!   each, so it can't depend on whether it reads `C` or `C'`:
+//!
+//!   - Safe: deleting leftovers that no command reads, or converting rows that
+//!     commands read alike in both forms.
+//!   - Safe: the tokens of index builds. A backfill adds its token to an
+//!     entry's `touched_by` at its own pace on each replica, and a write reads
+//!     the tokens only to keep that replica's indexes right, never to decide
+//!     what happens to the entry.
+//!   - Unsafe: deleting rows that a command still looks up. The command finds
+//!     `C` on replica 2 only, acts on it there, and the replicas diverge. A
+//!     leftover is safe to delete only while no command can reach it: if a
+//!     command can bring it back into use, that command must delete it first.
+//! - **Don't change rows the processor keeps in memory.** The partition
+//!   processor caches some rows between commands, such as vqueue metadata, and
+//!   updates them on the assumption that its copy matches the store. A walk
+//!   that deletes or rewrites such a row leaves the cache describing a row that
+//!   is gone: the vqueue cache would merge its next update onto a deleted key.
+//!   Change such rows in a startup migration, which runs before the processor
+//!   starts, as the cleanup of obsolete vqueue metadata
+//!   (`VqueueMetadataCleanupV1`) does.
 //! - **Decide from what the transaction reads now.** The row you get was read
 //!   in this slice, and lookups through `tx`
 //!   ([`PartitionStoreTransaction::lookup_for_migration`]) see the committed
@@ -76,7 +109,8 @@
 //!   that makes a cache in `self` across a slice's rows safe.
 //! - **Migrating twice changes nothing.** A walk restarts from the beginning
 //!   when it was lost, for example after a binary that doesn't know the migration
-//!   ran the store; a failed slice is retried. Each row may be visited again:
+//!   ran the store, and a `Rerun` migration runs again even after it completed
+//!   (§6); a failed slice is retried. Each row may be visited again:
 //!   for a row already in the migrated form, change nothing and report
 //!   `changed: false`.
 //!
@@ -129,22 +163,30 @@
 //!
 //! # 6. Choose `ON_UNKNOWN`
 //!
-//! A binary that doesn't know the migration, after a rollback, finds its entry
-//! and applies [`MigrationOnUnknown`]:
+//! After a rollback, a binary that doesn't know the migration finds its entry
+//! and applies [`MigrationOnUnknown`]. Choose by what that binary's writes do to
+//! the rows the migration changed:
 //!
-//! - `Keep` if such a binary may run the store: its writes neither misread the
-//!   migrated rows nor break what the migration established, or only undo it in
-//!   a harmless way, like a cleanup that may leave some garbage again. It leaves
-//!   the entry, and if the migration is in progress, its walk is discarded and
-//!   restarts from the beginning when a binary that knows the migration opens
-//!   the store. Most migrations are `Keep`.
-//! - `Refuse` if such a binary must not run the store: it fails to open it. This
-//!   blocks rollbacks below the release that adds the migration once it has
-//!   registered; say so in the release note.
+//! | That binary's writes | Choose | What that binary does with the entry |
+//! |---|---|---|
+//! | keep what the migration established, or undo it harmlessly, like a cleanup that may leave some garbage again | `Keep` | Leaves it. A walk in progress is discarded, and restarts from the beginning once a binary that knows the migration opens the store |
+//! | may undo it, and something local relies on it being complete, such as an index build that reads what it adds (never a command, see §3) | `Rerun` | As `Keep`, and sets a Complete entry back to in progress, so that the next binary that knows the migration runs it again from the beginning |
+//! | must not happen at all | `Refuse` | Fails to open the store. This blocks rollbacks below the release that adds the migration once it has registered; say so in the release note |
 //!
-//! No version floor is needed for either: binaries older than the registry
-//! can't open a fenced store, and every other binary reads the policy from the
-//! entry.
+//! Most migrations are `Keep`. `Rerun` costs one more pass after each rollback
+//! below the migration's release. A store keeps the policy its entry registered
+//! with, so a changed policy is a new version (§2), like any other change.
+//!
+//! No version floor is needed for any of them: binaries older than the
+//! registry can't open a fenced store, and every other binary reads the policy
+//! from the entry.
+//!
+//! A binary without the migration's code doesn't know it, and that includes a
+//! later release that removed the code. So never remove a `Rerun` or `Refuse`
+//! migration from [`ONLINE_MIGRATIONS`]: every store would rerun it with no
+//! binary to run it, or refuse to open. Retiring them needs a mechanism that
+//! doesn't exist yet. Removing a `Keep` migration only leaves the entries that
+//! hadn't completed in progress, which is harmless.
 //!
 //! # 7. Test it
 //!
@@ -167,7 +209,7 @@
 //! large slice, on two stores with the same rows; foreground writes between
 //! slices, behind the cursor and beyond the end; a failed slice
 //! (`fail_next_slice`) commits nothing and its retry does the work; and an
-//! empty source. The worked example's tests show each.
+//! empty source. The tests at the bottom of this module show each.
 //!
 //! # 8. Release note
 //!
@@ -193,7 +235,7 @@ pub(crate) const ONLINE_MIGRATIONS: &[&MigrationDefinition] = &[];
 /// module documentation for how to write one.
 #[cfg_attr(not(test), expect(dead_code, reason = "ONLINE_MIGRATIONS is empty"))]
 pub(crate) trait OnlineMigration: Default + 'static {
-    /// The versioned name, `"name/N"`, such as `"jc_orphan_cleanup/1"`. Never
+    /// The versioned name, `"name/N"`, such as `"my_cleanup/1"`. Never
     /// renamed or reused: a changed migration is a new version.
     const NAME: &'static str;
     /// The table it walks, row by row in key order.
@@ -261,8 +303,7 @@ impl MigrationDefinition {
         }
     }
 
-    /// The kind of its walks: `jc_orphan_cleanup` version 1 for
-    /// `"jc_orphan_cleanup/1"`.
+    /// The kind of its walks: `my_cleanup` version 1 for `"my_cleanup/1"`.
     pub(crate) fn walk_kind(&self) -> WalkKind {
         WalkKind {
             name: ReString::from_static(self.walk.0),
@@ -270,11 +311,11 @@ impl MigrationDefinition {
         }
     }
 
-    /// The policy of its walks: a kept entry's walk is discarded by a binary
-    /// that doesn't know the migration, a refusing one refuses too.
+    /// The policy of its walks: the walk of a kept or rerun entry is discarded
+    /// by a binary that doesn't know the migration, a refusing one refuses too.
     pub(crate) fn walk_policy(&self) -> OnUnknown {
         match self.on_unknown {
-            MigrationOnUnknown::Keep => OnUnknown::Discard,
+            MigrationOnUnknown::Keep | MigrationOnUnknown::Rerun => OnUnknown::Discard,
             MigrationOnUnknown::Refuse => OnUnknown::Refuse,
         }
     }
@@ -319,6 +360,7 @@ const fn split_name(name: &'static str) -> (&'static str, u32) {
 /// ```
 #[cfg(test)]
 pub(crate) mod testing {
+    use std::num::NonZeroUsize;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU16, Ordering};
     use std::time::Duration;
@@ -336,11 +378,14 @@ pub(crate) mod testing {
         get_min_restate_version_from_partition_db, get_storage_features_from_partition_db,
         get_storage_version_from_partition_db,
     };
-    use crate::job::MigrationJob;
+    use crate::job::{MigrationJob, MigrationJobId};
     use crate::registry::records::{get_job, get_registry};
     use crate::registry::{FenceState, IndexDefinition, IndexKind, Migration, Requests};
     use crate::walk::engine::{self, Slice, SliceBudget, SliceError};
-    use crate::{MigrationError, PartitionStore, PartitionStoreManager, PartitionStoreTransaction};
+    use crate::{
+        IndexSizes, MigrationError, PartitionStore, PartitionStoreManager,
+        PartitionStoreTransaction, QueryIoExecutor,
+    };
 
     use super::{MigrationDefinition, OnlineMigration};
 
@@ -373,7 +418,7 @@ pub(crate) mod testing {
         /// Whether opens register an index, which fences the store.
         fenced: bool,
         known: &'static [&'static MigrationDefinition],
-        _manager: Arc<PartitionStoreManager>,
+        manager: Arc<PartitionStoreManager>,
     }
 
     impl Harness {
@@ -398,7 +443,7 @@ pub(crate) mod testing {
                 store,
                 fenced: false,
                 known,
-                _manager: manager,
+                manager,
             }
         }
 
@@ -512,12 +557,31 @@ pub(crate) mod testing {
         pub(crate) fn job<M: OnlineMigration>(&self) -> Option<MigrationJob> {
             get_job(self.store.partition_db(), self.entry::<M>()?.id)
         }
+
+        /// Why `M`'s job isn't progressing, as `restate.cluster.migration_jobs`
+        /// shows it: from this node's migration report, which holds this store
+        /// alone.
+        pub(crate) async fn blocked_by<M: OnlineMigration>(&self) -> Option<&'static str> {
+            let executor = QueryIoExecutor::new(NonZeroUsize::MIN);
+            let report = self
+                .manager
+                .migration_report(&executor, IndexSizes::Skip)
+                .unwrap()
+                .await
+                .unwrap();
+            let [replica] = &report.replicas[..] else {
+                panic!("the harness's node has one replica");
+            };
+            let id = replica.registry.migration(M::NAME)?.id;
+            let job = replica.jobs.get(MigrationJobId::for_entry(id))?;
+            replica.blocked_by(job, tokio::time::Instant::now())
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use bytes::BytesMut;
+    use bytes::{Bytes, BytesMut};
 
     use restate_storage_api::Transaction;
     use restate_types::identifiers::InvocationUuid;
@@ -526,7 +590,8 @@ mod tests {
     use crate::journal_table_v2::JournalCompletionIdToCommandIndexKey;
     use crate::keys::{EncodeTableKey, KeyKind};
     use crate::registry::MigrationState::{Complete, InProgress};
-    use crate::registry::records;
+    use crate::registry::{IndexKind, IndexStatus, Registry, records};
+    use crate::walk::WalkMember;
     use crate::walk::engine::{Slice, SliceBudget};
     use crate::{MigrationError, PartitionStore, StorageAccess};
 
@@ -589,6 +654,29 @@ mod tests {
         }
     }
 
+    /// `Mark` under another name, run again after a binary that doesn't know it.
+    #[derive(Default)]
+    struct MarkOrRerun(Mark);
+
+    impl OnlineMigration for MarkOrRerun {
+        const NAME: &'static str = "mark_or_rerun/1";
+        const SOURCE: Source = Mark::SOURCE;
+        const ON_UNKNOWN: MigrationOnUnknown = MigrationOnUnknown::Rerun;
+        type Row = <Mark as OnlineMigration>::Row;
+
+        fn decode(key: &[u8], value: &[u8]) -> Result<Self::Row, StorageError> {
+            Mark::decode(key, value)
+        }
+
+        fn migrate(
+            &mut self,
+            tx: &mut PartitionStoreTransaction<'_>,
+            row: &Self::Row,
+        ) -> Result<Migrated, StorageError> {
+            self.0.migrate(tx, row)
+        }
+    }
+
     /// Walks the entry statuses, of which these stores have none.
     #[derive(Default)]
     struct Empty;
@@ -614,6 +702,7 @@ mod tests {
 
     const MARK: &MigrationDefinition = &MigrationDefinition::of::<Mark>();
     const REFUSE: &MigrationDefinition = &MigrationDefinition::of::<MarkOrRefuse>();
+    const RERUN: &MigrationDefinition = &MigrationDefinition::of::<MarkOrRerun>();
     const EMPTY: &MigrationDefinition = &MigrationDefinition::of::<Empty>();
 
     /// The completion-index row that [`seed`] writes at `partition_key`.
@@ -866,5 +955,221 @@ mod tests {
         assert_eq!(store.entry::<Mark>().unwrap().state(), Some(Complete));
         store.knowing(&[]);
         assert!(store.open().await.is_err());
+    }
+
+    #[test]
+    fn walks_run_only_with_the_links_their_kind_expects() {
+        let walk = |kind: WalkKind, source: Source| Walk {
+            id: 1,
+            kind,
+            source: source as u32,
+            end: Bytes::new(),
+            cursor: None,
+            params: Bytes::new(),
+            members: Vec::new(),
+            on_unknown: OnUnknown::Discard as u32,
+        };
+        let backfill = walk(WalkKind::index_backfill(), Source::EntryStatus);
+        let marks = walk(MARK.walk_kind(), Mark::SOURCE);
+        let mut evidence = marks.clone();
+        evidence.members.push(WalkMember {
+            index: 64,
+            joined_at: None,
+            uncovered: 1,
+        });
+        let gone = WalkKind {
+            name: ReString::from_static("gone"),
+            version: 1,
+        };
+        let unknown = walk(gone, Mark::SOURCE);
+        // A registry whose `migrations` link walk 1, and an index too if `index`.
+        let linking = |migrations: &[&str], index: bool| {
+            let mut registry = Registry::default();
+            if index {
+                let id = registry.register("idx/1", IndexKind::Secondary).unwrap();
+                registry.link(id, 1).unwrap();
+            }
+            for name in migrations {
+                let (keep, by) = (MigrationOnUnknown::Keep, ReString::from_static("1.9.0"));
+                let id = registry.register_migration(name, keep, 0, by).unwrap();
+                registry.set_migration_walk(id, Some(1)).unwrap();
+            }
+            registry
+        };
+        let cases = [
+            ("an index backfill", &backfill, linking(&[], true), true),
+            (
+                "... a migration links",
+                &backfill,
+                linking(&["later/1"], true),
+                false,
+            ),
+            (
+                "a known migration's walk",
+                &marks,
+                linking(&[Mark::NAME], false),
+                true,
+            ),
+            (
+                "... nothing links: inconsistent",
+                &marks,
+                linking(&[], false),
+                true,
+            ),
+            (
+                "... another migration links",
+                &marks,
+                linking(&["later/1"], false),
+                false,
+            ),
+            (
+                "... a second one links",
+                &marks,
+                linking(&[Mark::NAME, "later/1"], false),
+                false,
+            ),
+            (
+                "... an index links",
+                &marks,
+                linking(&[Mark::NAME], true),
+                false,
+            ),
+            (
+                "... with member evidence",
+                &evidence,
+                linking(&[Mark::NAME], false),
+                false,
+            ),
+            (
+                "an unknown kind",
+                &unknown,
+                linking(&["gone/1"], false),
+                false,
+            ),
+        ];
+        for (case, walk, registry, known) in cases {
+            assert_eq!(walk.is_known(Some(&registry), &[MARK]), known, "{case}");
+        }
+    }
+
+    #[restate_core::test]
+    async fn walks_linked_as_a_later_release_may_follow_their_policy() {
+        let mut store = Harness::fenced(&[MARK]).await;
+        let rows = seed(store.store(), [1, 2, 3]).await;
+        store.open().await.unwrap();
+        store.slice::<Mark>(2).await.unwrap();
+        let walk = store.entry::<Mark>().unwrap().walk.unwrap();
+
+        // A later release runs a migration of its own and an index build on
+        // Mark's walk too. This binary can't run that walk.
+        let db = store.store().partition_db().clone();
+        let (records, _) = records::load(&db).unwrap();
+        let (mut registry, mut walks) = (records.registry.unwrap(), records.walks);
+        let by = ReString::from_static("1.9.0");
+        let keep = MigrationOnUnknown::Keep;
+        let later = registry.register_migration("later/1", keep, 1, by).unwrap();
+        registry.set_migration_walk(later, Some(walk)).unwrap();
+        let build = registry
+            .register("later_index/1", IndexKind::Secondary)
+            .unwrap();
+        registry.link(build, walk).unwrap();
+        let mut policy = |on_unknown: OnUnknown| {
+            let shared = walks.entries_mut().iter_mut().find(|w| w.id == walk);
+            shared.unwrap().on_unknown = on_unknown as u32;
+            records::testing::overwrite(&db, &registry, &walks);
+        };
+
+        // If the walk refuses, the open fails and changes nothing.
+        policy(OnUnknown::Refuse);
+        let before = records::get_registry(&db).unwrap();
+        assert!(matches!(
+            store.open().await,
+            Err(MigrationError::MigrationBarrier(reason))
+                if reason.contains(&format!("walk {walk}")) && reason.contains("can't run")
+        ));
+        assert_eq!(records::get_registry(&db).unwrap(), before);
+
+        // If it may be discarded, the open removes it. Mark restarts from the
+        // beginning with a walk of its own, the unknown migration waits
+        // unlinked, and the unknown build is retired.
+        policy(OnUnknown::Discard);
+        store.open().await.unwrap();
+        let reopened = records::get_registry(&db).unwrap().unwrap();
+        let restarted = reopened.migration(Mark::NAME).unwrap().walk;
+        assert!(restarted.is_some_and(|restarted| restarted != walk));
+        let waiting = reopened.get_migration(later).unwrap();
+        assert_eq!((waiting.state(), waiting.walk), (Some(InProgress), None));
+        assert_eq!(reopened.get(build).unwrap().state, IndexStatus::Dropped);
+        store.run::<Mark>(10).await.unwrap();
+        assert_eq!(marked(store.store(), &rows), [true; 3]);
+        assert_eq!(store.entry::<Mark>().unwrap().state(), Some(Complete));
+    }
+
+    #[restate_core::test]
+    async fn a_rerun_migration_runs_again_after_a_binary_that_doesnt_know_it() {
+        let mut store = Harness::fenced(&[MARK, RERUN]).await;
+        let mut rows = seed(store.store(), [1, 2]).await;
+        store.open().await.unwrap();
+        store.run::<Mark>(10).await.unwrap();
+        store.run::<MarkOrRerun>(10).await.unwrap();
+        let done = store.entry::<MarkOrRerun>().unwrap();
+        assert_eq!(done.state(), Some(Complete));
+        // A binary that knows it leaves it Complete.
+        store.open().await.unwrap();
+        assert_eq!(store.entry::<MarkOrRerun>().unwrap(), done);
+
+        // A binary that doesn't know either migration keeps the kept one
+        // Complete, and sets the rerun one back in progress, with its ID, without
+        // its completion and with the reset recorded. It rebuilds the rerun one's
+        // job, waiting, which says why it doesn't progress, and opening again
+        // changes neither.
+        store.knowing(&[]);
+        store.open().await.unwrap();
+        assert_eq!(store.entry::<Mark>().unwrap().state(), Some(Complete));
+        let reset = store.entry::<MarkOrRerun>().unwrap();
+        assert_eq!(
+            (reset.id, reset.state(), reset.walk),
+            (done.id, Some(InProgress), None)
+        );
+        assert_eq!(
+            (reset.timeline.completed_at, &reset.timeline.registered_at),
+            (None, &done.timeline.registered_at)
+        );
+        assert!(reset.timeline.reset_at.is_some() && reset.timeline.reset_by.is_some());
+        let job = store.job::<MarkOrRerun>().unwrap();
+        assert_eq!((job.status, job.walk), (MigrationJobStatus::Waiting, None));
+        assert_eq!(
+            store.blocked_by::<MarkOrRerun>().await,
+            Some("unknown-migration")
+        );
+        store.open().await.unwrap();
+        assert_eq!(store.entry::<MarkOrRerun>().unwrap(), reset);
+        assert_eq!(store.job::<MarkOrRerun>().unwrap(), job);
+        // Its commands undo the migration on a row it changed, and write a new
+        // row the old way.
+        seed(store.store(), [1]).await;
+        rows.extend(seed(store.store(), [3]).await);
+        assert_eq!(marked(store.store(), &rows), [false, true, false]);
+
+        // A binary that knows it again runs it from the beginning: it changes
+        // the two rows the other binary wrote, and completes for good, keeping
+        // the time of the reset.
+        store.knowing(&[MARK, RERUN]);
+        store.open().await.unwrap();
+        assert!(store.entry::<MarkOrRerun>().unwrap().walk.is_some());
+        assert_eq!(store.blocked_by::<MarkOrRerun>().await, None);
+        store.run::<MarkOrRerun>(10).await.unwrap();
+        assert_eq!(marked(store.store(), &rows), [true; 3]);
+        let job = store.job::<MarkOrRerun>().unwrap();
+        assert_eq!(
+            (job.status, job.rows_changed),
+            (MigrationJobStatus::Completed, 2)
+        );
+        store.open().await.unwrap();
+        let rerun = store.entry::<MarkOrRerun>().unwrap();
+        assert_eq!(
+            (rerun.state(), rerun.timeline.reset_at),
+            (Some(Complete), reset.timeline.reset_at)
+        );
     }
 }

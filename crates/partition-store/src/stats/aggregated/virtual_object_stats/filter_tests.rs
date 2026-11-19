@@ -28,7 +28,7 @@ use crate::scan::PhysicalScan;
 use crate::stats::Stat;
 use crate::stats::aggregated::test_util::read_stats;
 use crate::stats::aggregated::{
-    AggregatedStatsMut, StageStatus, complete_gauges, ready_index_scope,
+    AggregatedStatsMut, StageStatus, complete_gauges, complete_index_scope,
 };
 
 use super::{VirtualObjectStats, VirtualObjectStatsKey};
@@ -42,7 +42,7 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
         .await
         .unwrap();
     complete_gauges(&mut store).await;
-    let partition = ready_index_scope::<VirtualObjectStats>(&store);
+    let partition = complete_index_scope::<VirtualObjectStats>(&store);
     let mut tx = store.transaction();
     for service in ["A", "B", "LargeState", "Z"] {
         // Key comparisons are lexical: "10000" is below "9999".

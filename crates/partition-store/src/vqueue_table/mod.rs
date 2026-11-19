@@ -23,6 +23,7 @@ mod reader;
 mod running_reader;
 mod stage_index;
 mod stage_reads;
+mod stage_rows;
 mod stats;
 #[cfg(test)]
 mod touched_by_tests;
@@ -51,7 +52,10 @@ pub use stage_index::{
     PausedIndexBinding, PausedIndexTable, RunningIndexBinding, RunningIndexTable,
     SuspendedIndexBinding, SuspendedIndexTable,
 };
-pub use stage_reads::{StageReadCounters, StageReads};
+pub use stage_reads::{StagePrefilter, StageReadCounters, StageReads};
+pub use stage_rows::{
+    StageRowCounters, StageRowRecords, StageRowRef, StageRowScan, StageRowsCursor,
+};
 pub(crate) use stats::{DEPLOYMENT_STATS, SERVICE_STATS, STATUS_GAUGES, VIRTUAL_OBJECT_STATS};
 
 use anyhow::Context;

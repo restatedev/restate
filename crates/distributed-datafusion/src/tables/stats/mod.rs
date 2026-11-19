@@ -9,9 +9,9 @@
 // by the Apache License, Version 2.0.
 
 //! The statistics tables read registered status-gauge instances, which a replica
-//! admits only once they are Ready. Their sources carry `.v2` identities, distinct
+//! admits only once they are Complete. Their sources carry `.v2` identities, distinct
 //! from the table names that sources had before the registry: a worker without
-//! Ready admission does not know them and fails the work instead of reading its
+//! that admission does not know them and fails the work instead of reading its
 //! own gauges, and a worker with it rejects work from an older coordinator.
 
 mod aggregated_stat_table;

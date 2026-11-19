@@ -14,13 +14,16 @@ use std::sync::Arc;
 
 use bilrost::{Message, OwnedMessage};
 use datafusion::arrow::compute::SortOptions;
-use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::logical_expr::Operator;
+use datafusion::physical_expr::conjunction_opt;
 use datafusion::physical_expr::expressions::{BinaryExpr, Column, InListExpr, Literal};
+use datafusion::physical_expr::utils::{collect_columns, split_conjunction};
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::metrics::Count;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
+use strum::VariantArray;
 
 use restate_partition_store::ReadSnapshot;
 use restate_partition_store::index::RegisteredIndex;
@@ -31,7 +34,8 @@ use restate_partition_store::keys::selection::KeySelection;
 use restate_partition_store::vqueue_table::{
     ActiveEntryByStage as StoredActiveIndex, ActiveRead, EntryStatusCursor, EntryStatusKey,
     EntryStatusKeys, EntryStatusRecords, EntryStatusScan,
-    FinishedEntryByOutcome as StoredFinishedIndex, FinishedRead, StageReads,
+    FinishedEntryByOutcome as StoredFinishedIndex, FinishedRead, StagePrefilter, StageReads,
+    StageRowRecords, StageRowScan, StageRowsCursor,
 };
 use restate_storage_api::vqueue_table::Stage;
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
@@ -53,14 +57,19 @@ use restate_types::identifiers::{BaseEntryId, PartitionKey};
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::{EntryId, EntryKind};
 
-use crate::access::{CompleteIndex, IndexOrder, PrimaryKeys, PrimaryRead, PrimarySelection};
+use crate::access::{
+    CompleteIndex, IndexOrder, PrimaryKeys, PrimaryRead, PrimarySelection, covers,
+};
 use crate::batches::{BatchSink, Batches, scan_rows_into};
+use crate::distributed::emission::emission_filter;
 use crate::schema_scan::compile_selection;
 use crate::table_providers::{
     InOrder, PartitionReadContext, PreparedPartitionRead, ReadMetrics, ScanPartition,
 };
 
-use super::row::append_vqueue_entry_status_row;
+use super::row::{
+    EntryPlace, EntryState, append_entry_row, append_vqueue_entry_status_row, covered_row,
+};
 
 /// Complete physical locators, independently of the SQL string representation.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, bilrost::Message)]
@@ -82,6 +91,130 @@ struct EntryKeys {
 #[derive(Debug)]
 pub(crate) struct EntrySelection(pub(crate) Vec<BaseEntryId>);
 
+/// The columns a stage record holds exactly as its entry status does: its
+/// key's, and its value's status and statistics, which the scheduler writes
+/// with every stage change. Not the metadata (deployment, needed memory, retry
+/// counts): the scheduler doesn't rewrite the record when only that changes.
+const STAGE_COVERS: &[VqueueEntryStatusColumn] = &[
+    VqueueEntryStatusColumn::PartitionKey,
+    VqueueEntryStatusColumn::EntryId,
+    VqueueEntryStatusColumn::VqueueId,
+    VqueueEntryStatusColumn::Stage,
+    VqueueEntryStatusColumn::Status,
+    VqueueEntryStatusColumn::HasLock,
+    VqueueEntryStatusColumn::NextAt,
+    VqueueEntryStatusColumn::SequenceNumber,
+    VqueueEntryStatusColumn::EntryKind,
+    VqueueEntryStatusColumn::CreatedAt,
+    VqueueEntryStatusColumn::TransitionedAt,
+    VqueueEntryStatusColumn::NumAttempts,
+    VqueueEntryStatusColumn::NumErrors,
+    VqueueEntryStatusColumn::NumPauses,
+    VqueueEntryStatusColumn::NumSuspensions,
+    VqueueEntryStatusColumn::NumYields,
+    VqueueEntryStatusColumn::FirstAttemptAt,
+    VqueueEntryStatusColumn::LatestAttemptAt,
+    VqueueEntryStatusColumn::FirstRunnableAt,
+    VqueueEntryStatusColumn::LatestAttemptBlockedOnInvokerConcurrency,
+    VqueueEntryStatusColumn::LatestAttemptBlockedOnThrottlingRules,
+    VqueueEntryStatusColumn::LatestAttemptBlockedOnInvokerThrottling,
+    VqueueEntryStatusColumn::LatestAttemptBlockedOnInvokerMemory,
+    VqueueEntryStatusColumn::LatestAttemptBlockedOnConcurrencyRules,
+    VqueueEntryStatusColumn::LatestAttemptBlockedOnLock,
+    VqueueEntryStatusColumn::LatestAttemptBlockedOnDeploymentConcurrency,
+    VqueueEntryStatusColumn::TotalBlockedOnInvokerConcurrency,
+    VqueueEntryStatusColumn::TotalBlockedOnThrottlingRules,
+    VqueueEntryStatusColumn::TotalBlockedOnInvokerThrottling,
+    VqueueEntryStatusColumn::TotalBlockedOnInvokerMemory,
+    VqueueEntryStatusColumn::TotalBlockedOnConcurrencyRules,
+    VqueueEntryStatusColumn::TotalBlockedOnLock,
+    VqueueEntryStatusColumn::TotalBlockedOnDeploymentConcurrency,
+    VqueueEntryStatusColumn::CanonicalId,
+];
+
+/// Of [`STAGE_COVERS`], the columns of the stage key: a covered read of only
+/// these decodes no stage value.
+const STAGE_KEY_COLUMNS: &[VqueueEntryStatusColumn] = &[
+    VqueueEntryStatusColumn::PartitionKey,
+    VqueueEntryStatusColumn::EntryId,
+    VqueueEntryStatusColumn::VqueueId,
+    VqueueEntryStatusColumn::Stage,
+    VqueueEntryStatusColumn::HasLock,
+    VqueueEntryStatusColumn::NextAt,
+    VqueueEntryStatusColumn::SequenceNumber,
+    VqueueEntryStatusColumn::EntryKind,
+    VqueueEntryStatusColumn::CanonicalId,
+];
+
+/// The query's conditions on columns a stage record holds exactly
+/// ([`STAGE_COVERS`]), as a check of the record before its status is fetched:
+/// only the conjuncts that read no other column are checked, which every row
+/// the query keeps passes. `None` without such conditions, or if any part of
+/// the predicate, over `schema`, could fail: a rejected record must still reach
+/// a failing condition, as it does when every status is fetched (see
+/// [`emission`](crate::distributed::emission)). `None` too if none of them
+/// reads the record's value: navigation applies most conditions on the key
+/// (queue, stage, lock, run time, sequence, IDs), so such a check would decode
+/// every value to reject little more. One navigation doesn't apply, such as on
+/// the entry kind, is then left to the fetched statuses.
+pub(super) fn covered_prefilter(
+    predicate: Option<&Arc<dyn PhysicalExpr>>,
+    schema: &Schema,
+) -> anyhow::Result<Option<StagePrefilter>> {
+    let Some(predicate) =
+        predicate.filter(|predicate| emission_filter(predicate, schema).is_some())
+    else {
+        return Ok(None);
+    };
+    let names = |columns: &[VqueueEntryStatusColumn]| -> Vec<&str> {
+        columns
+            .iter()
+            .filter_map(|&column| VqueueEntryStatus::sql_name(column))
+            .collect()
+    };
+    let (covered, keys) = (names(STAGE_COVERS), names(STAGE_KEY_COLUMNS));
+    let conjuncts: Vec<_> = split_conjunction(predicate)
+        .into_iter()
+        .filter(|conjunct| {
+            collect_columns(conjunct)
+                .iter()
+                .all(|column| covered.contains(&column.name()))
+        })
+        .cloned()
+        .collect();
+    let reads_values = conjuncts.iter().any(|conjunct| {
+        collect_columns(conjunct)
+            .iter()
+            .any(|column| !keys.contains(&column.name()))
+    });
+    let Some(conjuncts) = conjunction_opt(conjuncts).filter(|_| reads_values) else {
+        return Ok(None);
+    };
+    let selection = compile_selection::<VqueueEntryStatus>(Some(&conjuncts))?;
+    if matches!(selection, Selection::All) {
+        return Ok(None);
+    }
+    Ok(Some(Arc::new(move |id, row| {
+        // Prefiltered reads always decode the value.
+        let Some(value) = &row.value else {
+            return true;
+        };
+        let place = EntryPlace {
+            qid: &row.qid,
+            stage: row.stage,
+            has_lock: row.has_lock,
+            next_run_at: row.run_at,
+            seq: row.seq,
+        };
+        let state = EntryState {
+            status: value.status,
+            metadata: &value.metadata,
+            stats: &value.stats,
+        };
+        covered_row(id, &place, &state).matches(&selection)
+    })))
+}
+
 /// The scheduler's stage tables, read as `_idx_entry_by_queue` for a finite set
 /// of queues. They hold exactly one key per current entry status, maintained
 /// unconditionally by the scheduler. A conservative policy: a queue's entries
@@ -94,6 +227,8 @@ impl CompleteIndex for QueueIndex {
     /// v1.8.2, its first release.
     const INTRODUCED: SemanticRestateVersion = SemanticRestateVersion::new(1, 8, 2);
 
+    const COVERS: &'static [VqueueEntryStatusColumn] = STAGE_COVERS;
+
     fn useful(restriction: &EntryByQueueDomains) -> bool {
         matches!(
             restriction.vqueue_id.to_predicate(),
@@ -102,20 +237,34 @@ impl CompleteIndex for QueueIndex {
     }
 }
 
-/// The stage tables again, for a finite set of stages without `finished`, when
-/// no other index fits ([`ActiveIndex`] reads such stages in creation order).
-/// The finished stage retains most entries, so reading it through the stage
-/// tables would fetch most statuses by random lookups.
+/// The stage tables again, for a finite set of stages, when no other index fits
+/// ([`ActiveIndex`] reads active stages in creation order). A read that fetches
+/// statuses avoids `finished`, which retains most entries and would be fetched
+/// by random lookups; a covered read fetches none, so it reads any stages. A
+/// query without a stage or queue restriction scans the statuses, as before:
+/// the stage tables hold the same entries, but only under the scheduler's
+/// stage/status correspondence, which every stage-table read relies on.
 pub(crate) struct StageIndex;
 
 impl CompleteIndex for StageIndex {
     type Index = EntryByQueue;
     const INTRODUCED: SemanticRestateVersion = QueueIndex::INTRODUCED;
 
+    const COVERS: &'static [VqueueEntryStatusColumn] = STAGE_COVERS;
+
     fn useful(restriction: &EntryByQueueDomains) -> bool {
         matches!(
             restriction.stage.to_predicate(),
             Some(ValuePredicate::In(stages)) if !stages.is_empty() && !stages.contains(&Stage::Finished)
+        )
+    }
+
+    fn useful_covered(restriction: &EntryByQueueDomains) -> bool {
+        // An unrestricted stage is every value the column can take.
+        matches!(
+            restriction.stage.to_predicate(),
+            Some(ValuePredicate::In(stages))
+                if !stages.is_empty() && stages.len() < Stage::VARIANTS.len()
         )
     }
 }
@@ -447,7 +596,28 @@ impl ScanPartition for EntryStatusScanner {
                 // from the shipped predicate, and the predicate stays residual.
                 let selection = index_restriction::<EntryByQueue>(predicate.as_slice())?
                     .map_or(Selection::Empty, |domains| domains.to_selection());
-                EntryStatusAccess::Stages(Arc::new(StageReads::prepare(&selection)?))
+                let reads = StageReads::prepare(&selection)?;
+                if covers::<StageIndex>(&projection) {
+                    // The stage records alone, values only for columns beyond
+                    // their keys.
+                    let values = projection.fields().iter().any(|field| {
+                        !STAGE_KEY_COLUMNS.iter().any(|&column| {
+                            VqueueEntryStatus::sql_name(column) == Some(field.name())
+                        })
+                    });
+                    EntryStatusAccess::Covered(StageRowScan {
+                        reads: Arc::new(reads),
+                        values,
+                    })
+                } else {
+                    // Fetched, after a check of the conditions the records
+                    // answer themselves.
+                    let reads = match covered_prefilter(predicate.as_ref(), &projection)? {
+                        Some(prefilter) => reads.with_prefilter(prefilter),
+                        None => reads,
+                    };
+                    EntryStatusAccess::Stages(Arc::new(reads))
+                }
             }
             PrimaryRead::MultiGet(keys) => EntryStatusAccess::MultiGet(decode_keys(&keys)?.into()),
         };
@@ -470,7 +640,10 @@ struct EntryStatusRead {
 enum EntryStatusAccess {
     Scan(#[debug(skip)] Arc<KeySelection<EntryStatusKey>>),
     MultiGet(Arc<[BaseEntryId]>),
+    /// Statuses referenced by the stage tables, fetched.
     Stages(#[debug(skip)] Arc<StageReads>),
+    /// The stage tables alone, for a query they cover ([`StageIndex::COVERS`]).
+    Covered(#[debug(skip)] StageRowScan),
     /// Finished entries through their index, or the fallback scan where a
     /// partition can't read it.
     Finished {
@@ -549,9 +722,21 @@ impl EntryStatusRead {
         metrics: ReadMetrics,
         chosen: Option<tokio::sync::oneshot::Sender<EntryIndexPath>>,
     ) -> anyhow::Result<SendableRecordBatchStream> {
-        anyhow::ensure!(batch_size > 0, "batch size must be positive");
-        let index_metrics = matches!(self.access, EntryStatusAccess::Stages(_))
-            .then(|| IndexMetrics::new(&metrics));
+        // Each multi-get fetches at most one batch of rows' statuses, the batch
+        // already lowered to a LIMIT the read is given: a bound per call, not
+        // on all the read fetches.
+        let Some(window) = NonZeroUsize::new(batch_size) else {
+            anyhow::bail!("batch size must be positive");
+        };
+        let index_metrics = match &self.access {
+            EntryStatusAccess::Stages(reads) if reads.prefiltered() => {
+                Some(IndexMetrics::new(&metrics).with_rejections(&metrics))
+            }
+            EntryStatusAccess::Stages(_) => Some(IndexMetrics::new(&metrics)),
+            _ => None,
+        };
+        let stage_metrics = matches!(self.access, EntryStatusAccess::Covered(_))
+            .then(|| StageRowMetrics::new(&metrics));
         // What an entry index read did: its path and why, the runs it merged,
         // the index keys it went through, the statuses it fetched and the stale
         // references it skipped.
@@ -559,7 +744,7 @@ impl EntryStatusRead {
             let memory = context.retained_memory("entry index read");
             let reads = metrics.counter("entry_index_reads");
             let scans = metrics.counter("entry_index_scans");
-            let not_ready = metrics.counter("entry_index_scans_not_ready");
+            let not_complete = metrics.counter("entry_index_scans_not_complete");
             let too_many_runs = metrics.counter("entry_index_scans_too_many_runs");
             let runs = metrics.counter("entry_index_runs");
             let examined = metrics.counter("entry_index_keys_examined");
@@ -577,8 +762,8 @@ impl EntryStatusRead {
                             EntryIndexPath::Scan(reason) => {
                                 scans.add(1);
                                 match reason {
-                                    ScanReason::NotReady | ScanReason::NotMigrated => {
-                                        not_ready.add(1)
+                                    ScanReason::NotComplete | ScanReason::NotMigrated => {
+                                        not_complete.add(1)
                                     }
                                     ScanReason::TooManyRuns => too_many_runs.add(1),
                                 }
@@ -610,6 +795,50 @@ impl EntryStatusRead {
                 return Ok(());
             }
             let filter = match access {
+                EntryStatusAccess::Covered(scan) => {
+                    let Some(counters) = stage_metrics else {
+                        return datafusion::common::internal_err!("a covered read has no metrics");
+                    };
+                    return scan_rows_into::<CountedStageRowRecords, VqueueEntryStatus, _>(
+                        store,
+                        &executor,
+                        Arc::new(CountedStageRowScan {
+                            scan,
+                            metrics: counters,
+                        }),
+                        BatchSink::new(
+                            Batches::<VqueueEntryStatus>::new(
+                                projection,
+                                batch_size,
+                                limit,
+                                metrics.elapsed_compute,
+                            ),
+                            tx.clone(),
+                        ),
+                        move |(id, row), batches: &mut Batches<VqueueEntryStatus>| {
+                            let state = row.value.as_ref().map(|value| EntryState {
+                                status: value.status,
+                                metadata: &value.metadata,
+                                stats: &value.stats,
+                            });
+                            let place = EntryPlace {
+                                qid: &row.qid,
+                                stage: row.stage,
+                                has_lock: row.has_lock,
+                                next_run_at: row.run_at,
+                                seq: row.seq,
+                            };
+                            if let ControlFlow::Break(result) = batches.append_with(|builder| {
+                                append_entry_row(builder, &id, &place, state.as_ref());
+                                Ok(())
+                            }) {
+                                result?;
+                            }
+                            Ok(())
+                        },
+                    )
+                    .await;
+                }
                 EntryStatusAccess::MultiGet(keys) => {
                     let ownership = store.partition_key_range();
                     if keys
@@ -658,6 +887,7 @@ impl EntryStatusRead {
                 Arc::new(CountedEntryStatusScan {
                     scan: filter,
                     metrics: index_metrics,
+                    window,
                 }),
                 BatchSink::new(
                     Batches::<VqueueEntryStatus>::new(
@@ -697,6 +927,9 @@ pub(crate) struct IndexMetrics {
     primary_missing: Count,
     /// References whose primary record names another tuple or incarnation.
     primary_mismatched: Count,
+    /// Index keys a prefilter rejected before their primary records were
+    /// fetched, for reads with one.
+    rejected: Option<Count>,
 }
 
 impl IndexMetrics {
@@ -707,6 +940,15 @@ impl IndexMetrics {
             primary_fetched: metrics.counter("primary_keys_fetched"),
             primary_missing: metrics.counter("primary_missing"),
             primary_mismatched: metrics.counter("primary_mismatched"),
+            rejected: None,
+        }
+    }
+
+    /// Also counts the keys a prefilter rejects.
+    fn with_rejections(self, metrics: &ReadMetrics) -> Self {
+        Self {
+            rejected: Some(metrics.counter("index_keys_rejected")),
+            ..self
         }
     }
 }
@@ -726,6 +968,9 @@ impl Drop for CountedCursor {
             metrics.primary_fetched.add(counters.fetched as usize);
             metrics.primary_missing.add(counters.missing as usize);
             metrics.primary_mismatched.add(counters.mismatched as usize);
+            if let Some(rejected) = &metrics.rejected {
+                rejected.add(counters.rejected as usize);
+            }
         }
     }
 }
@@ -755,6 +1000,8 @@ impl Table for CountedEntryStatusRecords {
 pub(crate) struct CountedEntryStatusScan {
     scan: EntryStatusScan,
     metrics: Option<IndexMetrics>,
+    /// The most statuses one multi-get fetches: the query's row batch size.
+    window: NonZeroUsize,
 }
 
 impl CursorScan<CountedEntryStatusRecords> for ReadSnapshot {
@@ -764,10 +1011,92 @@ impl CursorScan<CountedEntryStatusRecords> for ReadSnapshot {
         &self,
         request: Arc<CountedEntryStatusScan>,
     ) -> restate_storage_api::Result<CountedCursor> {
-        let CountedEntryStatusScan { scan, metrics } = Arc::unwrap_or_clone(request);
-        Ok(CountedCursor {
-            cursor: self.entry_status_cursor(scan)?,
+        let CountedEntryStatusScan {
+            scan,
             metrics,
+            window,
+        } = Arc::unwrap_or_clone(request);
+        Ok(CountedCursor {
+            cursor: self.entry_status_cursor_with_window(scan, window)?,
+            metrics,
+        })
+    }
+}
+
+/// Leaf metrics of a covered read of the stage tables. Rows produced are the
+/// leaf's `output_rows`.
+#[derive(Clone)]
+pub(crate) struct StageRowMetrics {
+    /// Stage keys evaluated by navigation, including rejected keys.
+    keys_visited: Count,
+    /// Stage values decoded.
+    values_decoded: Count,
+}
+
+impl StageRowMetrics {
+    fn new(metrics: &ReadMetrics) -> Self {
+        Self {
+            keys_visited: metrics.counter("stage_keys_visited"),
+            values_decoded: metrics.counter("stage_values_decoded"),
+        }
+    }
+}
+
+/// Records a covered read's work when the cursor is dropped, which also covers
+/// reads stopped early by a limit, a closed consumer or cancellation.
+pub(crate) struct CountedStageRows {
+    cursor: StageRowsCursor,
+    metrics: StageRowMetrics,
+}
+
+impl Drop for CountedStageRows {
+    fn drop(&mut self) {
+        let counters = self.cursor.counters();
+        let count = |value: u64| usize::try_from(value).unwrap_or(usize::MAX);
+        self.metrics.keys_visited.add(count(counters.visited));
+        self.metrics.values_decoded.add(count(counters.values));
+    }
+}
+
+impl ReadCursor<CountedStageRowRecords> for CountedStageRows {
+    fn advance(&mut self) -> restate_storage_api::Result<CursorStep> {
+        self.cursor.advance()
+    }
+
+    fn current(&self) -> restate_storage_api::Result<<StageRowRecords as Table>::Record<'_>> {
+        self.cursor.current()
+    }
+}
+
+/// Stage records read through [`CountedStageRows`], so that the query IO pool's
+/// worker, which opens and drives the cursor, records the read's counters when
+/// it drops it.
+pub(crate) struct CountedStageRowRecords;
+
+impl Table for CountedStageRowRecords {
+    type Record<'a> = <StageRowRecords as Table>::Record<'a>;
+    type Scan = CountedStageRowScan;
+}
+
+/// A covered stage-record request, with the metrics its cursor records.
+pub(crate) struct CountedStageRowScan {
+    scan: StageRowScan,
+    metrics: StageRowMetrics,
+}
+
+impl CursorScan<CountedStageRowRecords> for ReadSnapshot {
+    type Cursor = CountedStageRows;
+
+    fn scan_cursor(
+        &self,
+        request: Arc<CountedStageRowScan>,
+    ) -> restate_storage_api::Result<CountedStageRows> {
+        Ok(CountedStageRows {
+            cursor: <Self as CursorScan<StageRowRecords>>::scan_cursor(
+                self,
+                Arc::new(request.scan.clone()),
+            )?,
+            metrics: request.metrics.clone(),
         })
     }
 }

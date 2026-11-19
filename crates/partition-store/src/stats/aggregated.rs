@@ -45,7 +45,7 @@ pub mod test_util;
 
 pub(crate) mod backfill;
 
-/// Registers the status gauges as Ready, for tests that write every entry
+/// Registers the status gauges as Complete, for tests that write every entry
 /// afterwards and therefore need no backfill.
 #[cfg(test)]
 pub(crate) async fn complete_gauges(store: &mut crate::PartitionStore) {
@@ -59,9 +59,9 @@ pub(crate) async fn complete_gauges(store: &mut crate::PartitionStore) {
         let id = registry
             .register(definition.name, IndexKind::Aggregate)
             .unwrap();
-        registry.set_ready(id).unwrap();
+        registry.set_complete(id).unwrap();
     }
-    // Snapshot reads resolve the Ready index from the persisted registry.
+    // Snapshot reads resolve the Complete index from the persisted registry.
     let partition_id = store.partition_id();
     let mut tx = store.transaction();
     crate::registry::records::RecordSink::put(
@@ -79,14 +79,14 @@ pub(crate) async fn complete_gauges(store: &mut crate::PartitionStore) {
     ));
 }
 
-/// The Ready index of statistic `S` in `store`.
+/// The Complete index of statistic `S` in `store`.
 #[cfg(test)]
-pub(crate) fn ready_index_scope<S: Stat>(store: &crate::PartitionStore) -> IndexScope {
+pub(crate) fn complete_index_scope<S: Stat>(store: &crate::PartitionStore) -> IndexScope {
     IndexScope {
         partition: store.partition_id(),
         index: store
             .published_registry()
-            .ready_index(S::DEFINITION, crate::registry::IndexKind::Aggregate)
+            .complete_index(S::DEFINITION, crate::registry::IndexKind::Aggregate)
             .unwrap(),
     }
 }

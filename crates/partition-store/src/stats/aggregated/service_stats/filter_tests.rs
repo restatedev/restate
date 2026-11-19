@@ -32,7 +32,7 @@ use crate::keys::selection::KeyMatch;
 use crate::scan::PhysicalScan;
 use crate::stats::aggregated::test_util::read_stats;
 use crate::stats::aggregated::{
-    AggregatedStatsMut, StageStatus, complete_gauges, ready_index_scope,
+    AggregatedStatsMut, StageStatus, complete_gauges, complete_index_scope,
 };
 use crate::stats::{Stat, encode_header};
 use crate::{PartitionStore, PartitionStoreManager};
@@ -369,7 +369,7 @@ async fn service_stats_filters_run_before_value_materialization() {
         .await
         .unwrap();
     complete_gauges(&mut store).await;
-    let scope = ready_index_scope::<ServiceStats>(&store);
+    let scope = complete_index_scope::<ServiceStats>(&store);
     let mut tx = store.transaction();
     for row in ROWS {
         AggregatedStatsMut::new(&mut tx, scope.index).increment_stage_status::<ServiceStats, _>(

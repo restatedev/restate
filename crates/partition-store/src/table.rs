@@ -22,7 +22,7 @@
 //!   membership seek while ranges and prefixes stay residual.
 //! - **Read metadata** ([`ReadMetadata`]): what a read may touch: the partition's
 //!   key range, the storage features in force and the registry as the snapshot
-//!   saw it, so that an index is only read in a state the snapshot saw as Ready.
+//!   saw it, so that an index is only read in a state the snapshot saw as Complete.
 //! - **Record**: one key, handed to the caller as a decoder positioned after the
 //!   header plus the value bytes, undecoded.
 //! - **Multi-get cursor** ([`MultiGetCursor`]): the records of a finite ID set,
@@ -61,7 +61,7 @@ use crate::keys::selection::{KeyMatch, KeySelection, KeySelectionCursor};
 use crate::keys::{EncodeTableKey, KeyDecoder, KeyKind};
 use crate::partition_db::PhysicalPartition;
 use crate::query_read::SnapshotCursor;
-use crate::registry::{IndexKind, IndexNotReady, PublishedRegistry};
+use crate::registry::{IndexKind, IndexNotComplete, PublishedRegistry};
 use crate::{ReadSnapshot, Result};
 
 #[cfg(test)]
@@ -80,8 +80,8 @@ pub struct ReadMetadata<'a> {
 /// Where a read resolves the index IDs of registered indexes.
 #[derive(Clone, Copy)]
 pub(crate) enum IndexSource<'a> {
-    /// The registry as of the read's snapshot, so the ID and readiness match the
-    /// data it reads.
+    /// The registry as of the read's snapshot, so the index's ID and status
+    /// match the data it reads.
     Snapshot(&'a ReadSnapshot),
     /// The store's installed indexes, for reads that are not snapshot-bound.
     #[allow(dead_code)] // Used by reads that are not snapshot-bound.
@@ -89,22 +89,24 @@ pub(crate) enum IndexSource<'a> {
 }
 
 impl ReadMetadata<'_> {
-    /// The index ID of the Ready index of `definition` this read may use.
-    /// Anything else fails with [`crate::registry::IndexNotReady`]: an incomplete index is never
+    /// The index ID of the Complete index of `definition` this read may use.
+    /// Anything else fails with [`crate::registry::IndexNotComplete`]: an incomplete index is never
     /// read as complete.
-    pub(crate) fn ready_index(&self, definition: &str, kind: IndexKind) -> Result<u32> {
+    pub(crate) fn complete_index(&self, definition: &str, kind: IndexKind) -> Result<u32> {
         match self.indexes {
-            IndexSource::Snapshot(snapshot) => snapshot.ready_index(definition, kind),
-            IndexSource::Store(active) => active.ready_index(definition, kind).map_err(|reason| {
-                StorageError::Generic(
-                    IndexNotReady {
-                        definition: definition.into(),
-                        partition: self.partition.partition_id,
-                        reason,
-                    }
-                    .into(),
-                )
-            }),
+            IndexSource::Snapshot(snapshot) => snapshot.complete_index(definition, kind),
+            IndexSource::Store(active) => {
+                active.complete_index(definition, kind).map_err(|reason| {
+                    StorageError::Generic(
+                        IndexNotComplete {
+                            definition: definition.into(),
+                            partition: self.partition.partition_id,
+                            reason,
+                        }
+                        .into(),
+                    )
+                })
+            }
         }
     }
 }
@@ -324,11 +326,21 @@ pub(crate) struct MultiGetCursor<T: MultiGetTable>(KeyBatchCursor<IdKey<T>, IdKe
 
 impl<T: MultiGetTable> MultiGetCursor<T> {
     pub(crate) fn new(snapshot: ReadSnapshot, ids: BTreeSet<T::Id>) -> Self {
+        Self::with_batch_size(snapshot, ids, T::BATCH_SIZE)
+    }
+
+    /// [`Self::new`], with at most `batch_size` IDs per multi-get instead of
+    /// [`MultiGetTable::BATCH_SIZE`].
+    pub(crate) fn with_batch_size(
+        snapshot: ReadSnapshot,
+        ids: BTreeSet<T::Id>,
+        batch_size: NonZeroUsize,
+    ) -> Self {
         let keys: IdKeys<T> = ids.into_iter().map(IdKey);
         Self(KeyBatchCursor::new(
             snapshot,
             keys,
-            T::BATCH_SIZE,
+            batch_size.min(T::BATCH_SIZE),
             T::Key::KEY_KIND,
         ))
     }

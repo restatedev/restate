@@ -172,6 +172,20 @@ pub struct EntryValue {
     pub stats: EntryStatistics,
 }
 
+/// Borrowing version of [`EntryValue`], for reading stage values without
+/// copying the deployment.
+///
+/// NOTE: keep in sync with [`EntryValue`]
+#[derive(Clone, bilrost::Message)]
+pub struct EntryValueRef<'a> {
+    #[bilrost(tag(1), encoding(fixed))]
+    pub status: Status,
+    #[bilrost(tag(2))]
+    pub metadata: EntryMetadataRef<'a>,
+    #[bilrost(tag(3))]
+    pub stats: EntryStatistics,
+}
+
 impl EntryValue {
     pub const fn weight(&self) -> NonZeroU16 {
         // The reasoning here is to give queues that need to resume invocations more

@@ -25,7 +25,7 @@
 //! ```
 //!
 //! The index finds every invocation only once the partition has fully migrated
-//! to vqueues and the index is Ready ([`EntryIndexRead::unusable`]). Both are
+//! to vqueues and the index is Complete ([`EntryIndexRead::unusable`]). Both are
 //! read through the query's own snapshot when the read opens. If either doesn't
 //! hold, or finding the runs takes more than one read allows, the read scans the
 //! invocation statuses instead, before it returns anything: the result is
@@ -104,8 +104,8 @@ pub enum ScanReason {
     /// The partition hasn't fully migrated to vqueues: an invocation may have no
     /// entry.
     NotMigrated,
-    /// The index isn't Ready on the read's snapshot.
-    NotReady,
+    /// The index isn't Complete on the read's snapshot.
+    NotComplete,
     /// Finding the runs takes more than one read allows.
     TooManyRuns,
 }
@@ -220,15 +220,15 @@ impl EntryIndexRead {
     /// Why a read on `snapshot` can't go through the index, if it can't. It can,
     /// and so return the invocations in creation order, once the partition
     /// has fully migrated to vqueues, so every invocation has its entry, and the
-    /// index is Ready.
+    /// index is Complete.
     pub fn unusable(snapshot: &ReadSnapshot) -> Result<Option<ScanReason>> {
         Ok(if !snapshot.fully_migrated_to_vqueues()? {
             Some(ScanReason::NotMigrated)
         } else if snapshot
-            .ready_index(EntryByServiceCreated::DEFINITION, IndexKind::Secondary)
+            .complete_index(EntryByServiceCreated::DEFINITION, IndexKind::Secondary)
             .is_err()
         {
-            Some(ScanReason::NotReady)
+            Some(ScanReason::NotComplete)
         } else {
             None
         })
@@ -1025,7 +1025,7 @@ mod tests {
         );
         drop(snapshot);
 
-        // Not Ready: a migrated partition that doesn't maintain the index scans.
+        // Not Complete: a migrated partition that doesn't maintain the index scans.
         let mut plain = manager
             .open(&Partition::new(PartitionId::from(1), KeyRange::FULL), None)
             .await
@@ -1047,7 +1047,7 @@ mod tests {
         );
         assert_eq!(
             path.try_recv(),
-            Ok(EntryIndexPath::Scan(ScanReason::NotReady))
+            Ok(EntryIndexPath::Scan(ScanReason::NotComplete))
         );
         drop(snapshot);
 

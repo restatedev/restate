@@ -15,12 +15,12 @@
 //! time: building an index, or running a one-time migration. Every index has one
 //! **build job** and every migration in progress one job, whose
 //! [`MigrationJobId`] is the registry entry's ID, and a walk runs it a slice at a
-//! time (see [`crate::walk`]). The registry decides whether an index is Ready or
-//! a migration Complete, and the walk holds where the work resumes and the
+//! time (see [`crate::walk`]). The registry decides whether an index or a
+//! migration is Complete, and the walk holds where the work resumes and the
 //! evidence for completing it. A job record reports how the work went: when it started and
 //! finished, the rows and time its slices took, and its failures. It also says
 //! when a waiting job may start its next pass, and keeps the counts its schedule
-//! compares. Nothing in it decides readiness or coverage, so it can be rebuilt
+//! compares. Nothing in it decides completion or coverage, so it can be rebuilt
 //! from the registry: a missing or partly unknown record is reported as such,
 //! never repaired by guessing, and a rebuilt waiting job is eligible at once.
 //!
@@ -33,7 +33,7 @@
 //! **Retention.** A finished job expires at [`MigrationJob::expires_at`]: when
 //! it finished plus `worker.storage.finished-migration-jobs-retention` (24 hours
 //! by default) as configured then. A job finished at an unknown time, for example
-//! by an open that found its index Ready, counts from when it was found. Readers
+//! by an open that found its index Complete, counts from when it was found. Readers
 //! hide an expired record at once, and compaction removes it later. With a
 //! retention of 0, no finished job is shown.
 //!
@@ -149,7 +149,7 @@ pub enum MigrationJobStatus {
     /// pass after waiting.
     #[bilrost(2)]
     Running,
-    /// Done: its index is Ready, or its migration Complete.
+    /// Done: its index or its migration is Complete.
     #[bilrost(3)]
     Completed,
     /// Stopped before completion: its index was dropped.

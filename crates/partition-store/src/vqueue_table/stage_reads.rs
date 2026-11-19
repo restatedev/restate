@@ -20,16 +20,19 @@
 //! base entry ID and emitted only if it names the same stage, tuple and
 //! incarnation; a missing status or a different tuple is skipped and counted.
 //! Malformed stage keys or fetched status values, and storage errors, are
-//! errors; stage values are not read.
+//! errors. Stage values are read only for a [`StagePrefilter`], which rejects
+//! references before their statuses are fetched.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use bilrost::BorrowedMessage;
 use bytes::BytesMut;
 
 use restate_clock::RoughTimestamp;
 use restate_rocksdb::reads::{OwnedPinnedBatch, ReadSnapshot as RocksReadSnapshot};
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::{RawStatusHeaderRef, Stage};
+use restate_storage_api::vqueue_table::{EntryValueRef, RawStatusHeaderRef, Stage};
 use restate_storage_query_api::SchemaBinding;
 use restate_storage_query_api::scan::{CursorScan, CursorStep, ReadCursor};
 use restate_storage_query_api::selection::Selection;
@@ -49,7 +52,13 @@ use super::stage_index::{
     PausedIndexBinding, PausedIndexTable, RunningIndexBinding, RunningIndexTable,
     SuspendedIndexBinding, SuspendedIndexTable, decode_stage_key,
 };
+use super::stage_rows::StageRowRef;
 use super::{ENTRY_STATUS_MULTI_GET_BATCH_SIZE, EntryStatusKey};
+
+/// A check of a stage record, its key and value, before its status is fetched:
+/// a status is fetched only for records it accepts. It must accept every record
+/// whose status the query could need; the query keeps its own conditions.
+pub type StagePrefilter = Arc<dyn Fn(&BaseEntryId, &StageRowRef<'_>) -> bool + Send + Sync>;
 
 /// Prepared stage-table navigation for one entry-status query: one key selection
 /// per stage. Stages excluded by the selection read nothing.
@@ -59,6 +68,7 @@ pub struct StageReads {
     suspended: Arc<KeySelection<SuspendedKey>>,
     paused: Arc<KeySelection<PausedKey>>,
     finished: Arc<KeySelection<FinishedKey>>,
+    prefilter: Option<StagePrefilter>,
 }
 
 impl StageReads {
@@ -71,7 +81,21 @@ impl StageReads {
             suspended: Arc::clone(SuspendedIndexBinding::prepare(selection)?.request()),
             paused: Arc::clone(PausedIndexBinding::prepare(selection)?.request()),
             finished: Arc::clone(FinishedIndexBinding::prepare(selection)?.request()),
+            prefilter: None,
         })
+    }
+
+    /// Fetches the statuses of only the stage records `prefilter` accepts.
+    pub fn with_prefilter(self, prefilter: StagePrefilter) -> Self {
+        Self {
+            prefilter: Some(prefilter),
+            ..self
+        }
+    }
+
+    /// Whether the reads check records with a prefilter.
+    pub fn prefiltered(&self) -> bool {
+        self.prefilter.is_some()
     }
 }
 
@@ -84,8 +108,12 @@ pub struct StageReadCounters {
     /// Stage keys evaluated by navigation, including keys its field predicates
     /// reject and a final key proving a stage exhausted.
     pub visited: u64,
-    /// Stage keys accepted by navigation: the references to fetch.
+    /// Stage keys accepted by navigation and the prefilter: the references to
+    /// fetch.
     pub references: u64,
+    /// Stage keys accepted by navigation that the prefilter rejected, after
+    /// decoding their values.
+    pub rejected: u64,
     /// Distinct entry-status keys requested by multi-gets.
     pub fetched: u64,
     /// References whose entry status does not exist.
@@ -97,13 +125,13 @@ pub struct StageReadCounters {
 }
 
 /// A stage key's reference to an entry status, with the tuple it must match.
-struct Reference {
-    id: BaseEntryId,
-    stage: Stage,
-    qid: VQueueId,
-    has_lock: bool,
-    run_at: RoughTimestamp,
-    seq: Seq,
+pub(super) struct Reference {
+    pub(super) id: BaseEntryId,
+    pub(super) stage: Stage,
+    pub(super) qid: VQueueId,
+    pub(super) has_lock: bool,
+    pub(super) run_at: RoughTimestamp,
+    pub(super) seq: Seq,
 }
 
 impl Reference {
@@ -118,14 +146,14 @@ impl Reference {
 
 macro_rules! stage_cursors {
     ($($variant:ident: $table:ty, $key:ty, $field:ident;)+) => {
-        enum StageCursor {
+        pub(super) enum StageCursor {
             $($variant(TableCursor<$table>),)+
         }
 
         impl StageCursor {
-            const STAGES: &[Stage] = &[$(Stage::$variant,)+];
+            pub(super) const STAGES: &[Stage] = &[$(Stage::$variant,)+];
 
-            fn open(snapshot: &ReadSnapshot, reads: &StageReads, stage: Stage) -> Result<Self> {
+            pub(super) fn open(snapshot: &ReadSnapshot, reads: &StageReads, stage: Stage) -> Result<Self> {
                 Ok(match stage {
                     $(Stage::$variant => Self::$variant(<ReadSnapshot as CursorScan<$table>>::scan_cursor(
                         snapshot,
@@ -135,19 +163,27 @@ macro_rules! stage_cursors {
                 })
             }
 
-            fn advance(&mut self) -> Result<CursorStep> {
+            pub(super) fn advance(&mut self) -> Result<CursorStep> {
                 match self {
                     $(Self::$variant(cursor) => cursor.advance(),)+
                 }
             }
 
-            fn evaluated(&self) -> u64 {
+            pub(super) fn evaluated(&self) -> u64 {
                 match self {
                     $(Self::$variant(cursor) => cursor.evaluated(),)+
                 }
             }
 
-            fn reference(&self) -> Result<Reference> {
+            /// The stage value of the current key: status, metadata and
+            /// statistics as of the scheduler's last write of the key.
+            pub(super) fn value(&self) -> Result<&[u8]> {
+                match self {
+                    $(Self::$variant(cursor) => Ok(cursor.current()?.1),)+
+                }
+            }
+
+            pub(super) fn reference(&self) -> Result<Reference> {
                 let (key, kind, stage) = match self {
                     $(Self::$variant(cursor) => (
                         cursor.current()?.0.remaining,
@@ -178,10 +214,11 @@ stage_cursors! {
 }
 
 /// Navigates the stage tables one key per step, then fetches and checks a window
-/// of references. Windows hold at most [`ENTRY_STATUS_MULTI_GET_BATCH_SIZE`]
-/// references and reuse their buffers.
+/// of references. Windows hold at most `window_size` references, itself at most
+/// [`ENTRY_STATUS_MULTI_GET_BATCH_SIZE`], and reuse their buffers.
 pub(super) struct StagesCursor {
     reads: Arc<StageReads>,
+    window_size: usize,
     /// Index of the next stage to open in [`StageCursor::STAGES`].
     next_stage: usize,
     keys: Option<StageCursor>,
@@ -203,10 +240,15 @@ pub(super) struct StagesCursor {
 }
 
 impl StagesCursor {
-    pub(super) fn new(snapshot: ReadSnapshot, reads: Arc<StageReads>) -> Self {
+    pub(super) fn new(
+        snapshot: ReadSnapshot,
+        reads: Arc<StageReads>,
+        window: NonZeroUsize,
+    ) -> Self {
         Self {
             snapshot,
             reads,
+            window_size: window.min(ENTRY_STATUS_MULTI_GET_BATCH_SIZE).get(),
             next_stage: 0,
             keys: None,
             window: Vec::new(),
@@ -240,7 +282,7 @@ impl StagesCursor {
         }
         loop {
             let exhausted = self.keys.is_none() && self.next_stage == StageCursor::STAGES.len();
-            if self.window.len() == ENTRY_STATUS_MULTI_GET_BATCH_SIZE.get() || exhausted {
+            if self.window.len() == self.window_size || exhausted {
                 if self.window.is_empty() {
                     return Ok(CursorStep::Done);
                 }
@@ -261,8 +303,25 @@ impl StagesCursor {
                 }
                 CursorStep::Skipped => return Ok(CursorStep::Skipped),
                 CursorStep::Record => {
+                    let reference = keys.reference()?;
+                    if let Some(prefilter) = &self.reads.prefilter {
+                        let value = EntryValueRef::decode_borrowed(keys.value()?)
+                            .map_err(StorageError::BilrostDecode)?;
+                        let row = StageRowRef {
+                            stage: reference.stage,
+                            qid: VQueueIdRef::from(&reference.qid),
+                            has_lock: reference.has_lock,
+                            run_at: reference.run_at,
+                            seq: reference.seq,
+                            value: Some(value),
+                        };
+                        if !prefilter(&reference.id, &row) {
+                            self.counters.rejected += 1;
+                            return Ok(CursorStep::Skipped);
+                        }
+                    }
                     self.counters.references += 1;
-                    self.window.push(keys.reference()?);
+                    self.window.push(reference);
                     return Ok(CursorStep::Skipped);
                 }
             }
@@ -288,13 +347,14 @@ impl StagesCursor {
         let (keys, remainder) = self.key_buf.as_chunks::<KEY_LEN>();
         debug_assert!(remainder.is_empty());
         let reader = self.snapshot.storage_snapshot().reader();
+        // Charged as requested, so a failed multi-get counts too.
+        self.counters.fetched += self.ids.len() as u64;
         self.results = Some(
             reader
                 .multi_get_pinned(KeyKind::VQueueEntryStatus, keys, true)
                 .map_err(|error| StorageError::Generic(error.into()))?
                 .into_owned(),
         );
-        self.counters.fetched += self.ids.len() as u64;
         Ok(())
     }
 
@@ -470,6 +530,7 @@ mod tests {
             StageReadCounters {
                 visited: 3,
                 references: 3,
+                rejected: 0,
                 fetched: 2,
                 missing: 0,
                 mismatched: 1,
@@ -503,6 +564,34 @@ mod tests {
             read(Selection::Empty),
             (vec![], StageReadCounters::default()),
             "empty_selections_read_nothing"
+        );
+
+        // A query's window: its first row costs that many fetches, not a full
+        // window, and the read still returns every row, window after window.
+        let windowed = |window: usize| {
+            snapshot
+                .entry_status_cursor_with_window(
+                    EntryStatusScan::Stages(Arc::new(StageReads::prepare(&queue(&a)).unwrap())),
+                    NonZeroUsize::new(window).unwrap(),
+                )
+                .unwrap()
+        };
+        let mut cursor = windowed(2);
+        while cursor.advance().unwrap() != CursorStep::Record {}
+        assert_eq!(
+            cursor.stage_counters().unwrap().fetched,
+            2,
+            "a_window_bounds_the_first_fetch"
+        );
+        let mut cursor = windowed(7);
+        let mut rows = 0;
+        while cursor.advance().unwrap() != CursorStep::Done {
+            rows += usize::from(cursor.current().is_ok());
+        }
+        assert_eq!(
+            (rows, cursor.stage_counters().unwrap().fetched),
+            (602, 603),
+            "small_windows_read_every_reference"
         );
     }
 }

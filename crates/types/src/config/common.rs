@@ -1270,11 +1270,11 @@ experimental! {
     ///
     /// To build these statistics, first enable
     /// `experimental-enable-track-status-gauges` on workers, and wait until the
-    /// statistics are Ready on every partition (see `restate.cluster.registry`);
-    /// this option doesn't start that or wait for it. A query fails if a partition
-    /// it reads has missing or incomplete statistics, instead of returning a
-    /// partial total. Enable this only once all nodes are upgraded: an older node
-    /// can't serve the tables.
+    /// statistics are complete on every partition (status `complete` in
+    /// `restate.cluster.registry`); this option doesn't start that or wait for
+    /// it. A query fails if a partition it reads has missing or incomplete
+    /// statistics, instead of returning a partial total. Enable this only once
+    /// all nodes are upgraded: an older node can't serve the tables.
     ///
     /// Since v1.8.2
     query_stats_tables,
@@ -1342,7 +1342,7 @@ experimental! {
     /// This option only controls what SQL can see. V2 reads a table through a
     /// complete index whenever a query restricts the indexed columns, with or
     /// without it: for example `sys_vqueues` and `sys_vqueue_entry_status` through
-    /// the scheduler's queue stages when filtering by queue or by active stages.
+    /// the scheduler's queue stages when filtering by queue or by stage.
     ///
     /// Since v1.8.2
     query_index_tables,

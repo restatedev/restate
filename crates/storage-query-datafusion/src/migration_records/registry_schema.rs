@@ -40,8 +40,8 @@ define_table!(
         id: DataType::UInt32,
 
         /// For an index, `backfilling` (maintained but incomplete: queries don't
-        /// read it), `ready` or `dropped`; for a migration, `in_progress` or
-        /// `complete`.
+        /// read it), `complete` (queries read it) or `dropped`; for a migration,
+        /// `in_progress` or `complete`.
         status: DataType::Utf8,
 
         /// The job, while the index is backfilling or the migration in progress;
@@ -54,13 +54,14 @@ define_table!(
         /// The Restate version that registered it; NULL if unknown.
         registered_by_version: DataType::Utf8,
 
-        /// When the index became Ready; NULL until then, if unknown, and for a
-        /// migration.
-        ready_at: TimestampMillisecond,
-
-        /// When the migration completed; NULL until then, if unknown, and for an
-        /// index.
+        /// When the index or the migration completed; NULL until then, or if
+        /// unknown.
         completed_at: TimestampMillisecond,
+
+        /// When a release that doesn't know the migration last set it back to in
+        /// progress, so that a release that knows it runs it again; NULL if that
+        /// never happened, and for an index.
+        reset_at: TimestampMillisecond,
 
         /// When it was dropped; NULL unless dropped, or if unknown.
         dropped_at: TimestampMillisecond,

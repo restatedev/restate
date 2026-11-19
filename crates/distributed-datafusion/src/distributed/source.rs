@@ -331,8 +331,13 @@ impl PhysicalOptimizerRule for PrimaryAccessRule {
             let SourceWork::TableScan(work) = &scan.0.descriptor.work else {
                 unreachable!("table scan planning")
             };
-            let access = select_access(&planning.source, scan.0.predicate.as_ref(), demand)
-                .map_err(external)?;
+            let access = select_access(
+                &planning.source,
+                scan.0.predicate.as_ref(),
+                demand,
+                &scan.0.schema,
+            )
+            .map_err(external)?;
             Ok(Transformed::yes(plan_partition_access(
                 planning.source.table.clone(),
                 &planning.source.manager,
