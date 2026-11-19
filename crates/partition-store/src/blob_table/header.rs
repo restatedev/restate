@@ -35,7 +35,7 @@ pub struct BlobFlags(u8);
 #[repr(C)]
 struct KnownFields {
     kind: BlobKind,
-    ref_count: zerocopy::big_endian::U16,
+    ref_count: zerocopy::big_endian::U64,
 }
 
 impl KnownFields {
@@ -48,7 +48,7 @@ impl KnownFields {
 ///   [1 byte]  version
 ///   [1 byte]  flags
 ///   [1 byte]  fields_len (N)
-///   [N bytes] field block: known fields (kind, ref_count u16 BE) followed by
+///   [N bytes] field block: known fields (kind, ref_count u64 BE) followed by
 ///             fields unknown to this version, which are preserved as-is
 ///   [rest]    payload
 #[derive(Debug, Clone, Copy)]
@@ -56,12 +56,12 @@ pub struct BlobHeader<'a> {
     version: u8,
     flags: BlobFlags,
     kind: BlobKind,
-    ref_count: u16,
+    ref_count: u64,
     extension: &'a [u8],
 }
 
 impl BlobHeader<'static> {
-    pub fn new(kind: BlobKind, ref_count: u16) -> Self {
+    pub fn new(kind: BlobKind, ref_count: u64) -> Self {
         Self {
             version: BlobHeader::VERSION,
             flags: BlobFlags::default(),
@@ -145,7 +145,7 @@ impl Header for BlobHeader<'_> {
         self.kind
     }
 
-    fn ref_count(&self) -> u16 {
+    fn ref_count(&self) -> u64 {
         self.ref_count
     }
 }
@@ -158,8 +158,8 @@ impl Header for BlobHeader<'_> {
 /// again. Composing updates preserves this, so the merge result does not depend on how RocksDB
 /// groups operands into full and partial merges.
 ///
-/// The one exception is clamping the stored ref count at `u16::MAX`, which requires more than
-/// `u16::MAX` live references.
+/// The one exception is clamping the stored ref count at `u64::MAX`, which requires more than
+/// `u64::MAX` live references.
 #[derive(Debug, Default, Clone, Copy, Eq, PartialEq, bilrost::Message)]
 pub(super) struct HeaderUpdate {
     #[bilrost(tag(1))]
@@ -193,24 +193,25 @@ impl HeaderUpdate {
     }
 
     fn apply(&self, header: &mut BlobHeader<'_>) {
-        let ref_count = i64::from(header.ref_count);
+        // i128 holds any u64 ref count plus any i64 delta without overflowing
+        let ref_count = i128::from(header.ref_count);
         if ref_count == 0 {
             // tombstone, never updated again
             return;
         }
-        if ref_count.saturating_add(self.floor) <= 0 {
+        if ref_count + i128::from(self.floor) <= 0 {
             header.ref_count = 0;
             return;
         }
 
-        let ref_count = ref_count.saturating_add(self.delta);
-        if ref_count > i64::from(u16::MAX) {
+        let ref_count = ref_count + i128::from(self.delta);
+        if ref_count > i128::from(u64::MAX) {
             warn!(
                 "blob ref count {ref_count} exceeds the maximum, clamping to {}",
-                u16::MAX
+                u64::MAX
             );
         }
-        header.ref_count = ref_count.clamp(1, u16::MAX.into()) as u16;
+        header.ref_count = ref_count.clamp(1, u64::MAX.into()) as u64;
     }
 }
 
@@ -351,14 +352,14 @@ mod tests {
             })
     }
 
-    fn blob_value(ref_count: u16) -> Vec<u8> {
+    fn blob_value(ref_count: u64) -> Vec<u8> {
         let mut value = Vec::new();
-        BlobHeader::new(BlobKind::Output, ref_count).encode(&mut value);
+        BlobHeader::new(BlobKind::Journal, ref_count).encode(&mut value);
         value.extend_from_slice(b"payload");
         value
     }
 
-    fn ref_count(value: &[u8]) -> u16 {
+    fn ref_count(value: &[u8]) -> u64 {
         BlobHeader::decode(value).unwrap().0.ref_count()
     }
 
@@ -386,12 +387,18 @@ mod tests {
         );
 
         // merged update applied to a header
-        let mut header = BlobHeader::new(BlobKind::Output, 2);
+        let mut header = BlobHeader::new(BlobKind::Journal, 2);
         merge_all([inc(3), dec(1)]).apply(&mut header);
         assert_eq!(header.ref_count(), 4);
+        // counts past u16 are kept, and the count clamps at u64::MAX
         inc(u16::MAX).apply(&mut header);
-        assert_eq!(header.ref_count(), u16::MAX);
+        assert_eq!(header.ref_count(), 4 + u64::from(u16::MAX));
+        let mut saturated = BlobHeader::new(BlobKind::Journal, u64::MAX - 1);
+        inc(u16::MAX).apply(&mut saturated);
+        assert_eq!(saturated.ref_count(), u64::MAX);
         dec(u16::MAX).apply(&mut header);
+        assert_eq!(header.ref_count(), 4);
+        merge_all([dec(u16::MAX), dec(u16::MAX)]).apply(&mut header);
         assert_eq!(header.ref_count(), 0);
         // a tombstone is never revived
         inc(1).apply(&mut header);
@@ -401,7 +408,7 @@ mod tests {
     #[test]
     fn merge_is_independent_of_grouping() {
         let (inc, dec) = (HeaderUpdate::increment, HeaderUpdate::decrement);
-        let cases: [(u16, &[HeaderUpdate], u16); 4] = [
+        let cases: [(u64, &[HeaderUpdate], u64); 4] = [
             (1, &[dec(1), inc(1)], 0),
             (2, &[dec(1), inc(1)], 2),
             (3, &[dec(2), inc(5), dec(4)], 2),
@@ -443,9 +450,9 @@ mod tests {
     #[test]
     fn full_merge_keeps_unknown_fields() {
         let extension = [0xDE, 0xAD, 0xBE, 0xEF];
-        let mut value = vec![BlobHeader::VERSION, 0x80, 3 + extension.len() as u8];
-        value.push(BlobKind::Output as u8);
-        value.extend_from_slice(&2u16.to_be_bytes());
+        let mut value = vec![BlobHeader::VERSION, 0x80, 9 + extension.len() as u8];
+        value.push(BlobKind::Journal as u8);
+        value.extend_from_slice(&2u64.to_be_bytes());
         value.extend_from_slice(&extension);
         value.extend_from_slice(b"payload");
 
@@ -458,12 +465,12 @@ mod tests {
         // only ref_count changed; flags, unknown fields and payload are preserved
         let (header, payload) = BlobHeader::decode(&merged).unwrap();
         assert_eq!(header.ref_count(), 4);
-        assert_eq!(header.kind(), BlobKind::Output);
+        assert_eq!(header.kind(), BlobKind::Journal);
         assert_eq!(header.flags, BlobFlags(0x80));
         assert_eq!(header.extension, extension);
         assert_eq!(payload, b"payload");
-        assert_eq!(merged[..5], value[..5]);
-        assert_eq!(merged[6..], value[6..]);
+        assert_eq!(merged[..4], value[..4]);
+        assert_eq!(merged[12..], value[12..]);
 
         // reaching zero drops the payload but keeps the full header
         let dec = HeaderUpdate::decrement(10).encode_to_vec();

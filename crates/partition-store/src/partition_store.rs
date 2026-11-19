@@ -42,7 +42,7 @@ use restate_storage_api::fsm_table::{FsmPosition, ReadFsmTable};
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use restate_storage_api::{Storage, StorageError, Transaction};
 use restate_types::SemanticRestateVersion;
-use restate_types::config::{Configuration, StorageOptions};
+use restate_types::config::{Configuration, WorkerOptions};
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId, WithPartitionKey};
 use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::partitions::Partition;
@@ -713,7 +713,7 @@ impl PartitionStore {
         // this will fetch the value and cache it.
         let storage_features = self.storage_features();
         let published_registry = self.published_registry();
-        let settings = TransactionSettings::from(&Configuration::pinned().worker.storage);
+        let settings = TransactionSettings::new(&Configuration::pinned().worker, storage_features);
 
         PartitionStoreTransaction {
             write_batch_with_index: Some(rocksdb::WriteBatchWithIndex::new(0, true)),
@@ -1124,14 +1124,20 @@ impl ScanMode {
 pub(crate) struct TransactionSettings {
     /// Probability that a vqueue metadata update is written as a full value instead of a merge.
     pub vqueue_meta_full_write_probability: f64,
+    /// Journal entries with a larger content store it in a blob, if set.
+    pub inline_entry_threshold: Option<usize>,
 }
 
-impl From<&StorageOptions> for TransactionSettings {
-    fn from(opts: &StorageOptions) -> Self {
+impl TransactionSettings {
+    pub fn new(opts: &WorkerOptions, storage_features: StorageFeatures) -> Self {
         Self {
             vqueue_meta_full_write_probability: opts
+                .storage
                 .vqueue_meta_full_write_probability
                 .clamp(0.0, 1.0),
+            inline_entry_threshold: storage_features
+                .is_journal_entry_blobs
+                .then(|| opts.inline_journal_entry_threshold.as_usize()),
         }
     }
 }
@@ -1579,6 +1585,25 @@ impl Transaction for PartitionStoreTransaction<'_> {
     }
 }
 
+impl PartitionStoreTransaction<'_> {
+    /// An iterator over this transaction's write batch on top of the database.
+    fn batch_iterator(
+        &self,
+        cf: &Arc<BoundColumnFamily<'_>>,
+        opts: ReadOptions,
+    ) -> DBRawIteratorWithThreadMode<'_, DB> {
+        let base = self
+            .rocksdb
+            .inner()
+            .as_raw_db()
+            .raw_iterator_cf_opt(cf, opts);
+        self.write_batch_with_index
+            .as_ref()
+            .expect("transaction valid")
+            .iterator_with_base_cf(base, cf)
+    }
+}
+
 impl StorageRead for PartitionStoreTransaction<'_> {
     type Iterator<'b>
         = DBRawIteratorWithThreadMode<'b, DB>
@@ -1603,16 +1628,7 @@ impl StorageRead for PartitionStoreTransaction<'_> {
             }
         };
 
-        let base = self
-            .rocksdb
-            .inner()
-            .as_raw_db()
-            .raw_iterator_cf_opt(cf, opts);
-        let mut iterator = self
-            .write_batch_with_index
-            .as_ref()
-            .expect("transaction valid")
-            .iterator_with_base_cf(base, cf);
+        let mut iterator = self.batch_iterator(cf, opts);
         iterator.seek(start);
         Ok(iterator)
     }
@@ -1757,6 +1773,9 @@ pub(crate) trait StorageIterator {
     #[allow(clippy::type_complexity)]
     fn item(&self) -> Result<Option<(&[u8], &[u8])>>;
 
+    /// Moves to the first entry at or after `key`.
+    fn seek(&mut self, key: &[u8]);
+
     /// Moves to the next entry.
     fn next(&mut self);
 }
@@ -1774,6 +1793,11 @@ impl<D: rocksdb::DBAccess> StorageIterator for DBRawIteratorWithThreadMode<'_, D
     }
 
     #[inline]
+    fn seek(&mut self, key: &[u8]) {
+        DBRawIteratorWithThreadMode::seek(self, key)
+    }
+
+    #[inline]
     fn next(&mut self) {
         DBRawIteratorWithThreadMode::next(self)
     }
@@ -1783,6 +1807,11 @@ impl<H> StorageIterator for ReadIterator<'_, H> {
     #[inline]
     fn item(&self) -> Result<Option<(&[u8], &[u8])>> {
         ReadIterator::item(self).map_err(|err| StorageError::Generic(err.into()))
+    }
+
+    #[inline]
+    fn seek(&mut self, key: &[u8]) {
+        ReadIterator::seek(self, key)
     }
 
     #[inline]

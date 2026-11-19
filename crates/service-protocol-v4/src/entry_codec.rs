@@ -10,6 +10,7 @@
 
 use std::fmt::Debug;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use assert2::assert;
 use bytes::Bytes;
@@ -154,7 +155,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 }
                 .encode_to_vec(),
             )
-            .with_command_specific_metadata(RawCommandSpecificMetadata::CallOrSend(Box::new(
+            .with_command_specific_metadata(RawCommandSpecificMetadata::CallOrSend(Arc::new(
                 CallOrSendMetadata {
                     invocation_id,
                     invocation_target,
@@ -205,7 +206,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 }
                 .encode_to_vec(),
             )
-            .with_command_specific_metadata(RawCommandSpecificMetadata::CallOrSend(Box::new(
+            .with_command_specific_metadata(RawCommandSpecificMetadata::CallOrSend(Arc::new(
                 CallOrSendMetadata {
                     invocation_id,
                     invocation_target,

@@ -11,22 +11,28 @@
 use crate::mocks::*;
 use crate::row;
 use bytes::Bytes;
-use datafusion::arrow::array::{Int64Array, LargeStringArray, UInt32Array};
+use datafusion::arrow::array::{Int64Array, LargeStringArray, UInt32Array, UInt64Array};
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::StreamExt;
 use googletest::all;
 use googletest::prelude::{assert_that, eq};
 use prost::Message;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
+use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::Transaction;
 use restate_storage_api::journal_table::{JournalEntry, WriteJournalTable};
+use restate_storage_api::journal_table_v2;
+use restate_types::config::Configuration;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::enriched::{
     CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
 };
 use restate_types::journal::{Entry, EntryType, InputEntry};
+use restate_types::journal_v2::{self, OutputCommand, OutputResult};
 use restate_types::service_protocol;
+use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
+use restate_types::time::MillisSinceEpoch;
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_entries() {
@@ -196,5 +202,73 @@ async fn select_count_star() {
                 "count" => Int64Array: eq(3)
             }
         ),)
+    );
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_blob_output_entry() {
+    let mut engine = MockQueryEngine::create().await;
+    let mut config = Configuration::pinned().as_ref().clone();
+    config.common.experimental.set_write_blob_table(true);
+    engine
+        .partition_store()
+        .verify_and_run_migrations(Default::default(), &config)
+        .await
+        .unwrap();
+
+    let mut tx = engine.partition_store().transaction();
+    let invocation_id = InvocationId::mock_random();
+    let threshold = config.worker.inline_journal_entry_threshold.as_usize();
+    let output = Bytes::from(vec![b'a'; threshold + 1]);
+    let raw_entry = journal_v2::Entry::from(OutputCommand {
+        result: OutputResult::Success(output.clone()),
+        name: "my-output".into(),
+    })
+    .encode::<ServiceProtocolV4Codec>();
+    let raw_length = raw_entry.serialized_length() as u64;
+    let blob_id = journal_table_v2::WriteJournalTable::put_journal_entry(
+        &mut tx,
+        &invocation_id,
+        0,
+        &StoredRawEntry::new(
+            StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+            raw_entry,
+        ),
+        &[],
+    )
+    .unwrap();
+    assert!(blob_id.is_some());
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let records = engine
+        .execute(
+            "SELECT entry_type, raw_length, name, entry_lite_json, entry_json FROM sys_journal",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_that!(
+        records,
+        all!(row!(
+            0,
+            {
+                "entry_type" => LargeStringArray: eq("Command: Output"),
+                // Known without reading the blob
+                "raw_length" => UInt64Array: eq(raw_length),
+                "name" => LargeStringArray: eq("my-output"),
+                "entry_lite_json" => LargeStringArray: eq(r#"{"Command":{"Output":{"result":"Success"}}}"#),
+                // The result is read back from the blob
+                "entry_json" => LargeStringArray: eq(serde_json::to_string(&journal_v2::Entry::from(OutputCommand {
+                    result: OutputResult::Success(output),
+                    name: "my-output".into(),
+                })).unwrap()),
+            }
+        ))
     );
 }

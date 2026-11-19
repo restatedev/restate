@@ -147,16 +147,18 @@ where
             };
 
             if let Some(leader) = ctx.leader {
-                leader.record_journal_entry_usage(
-                    entry.ty().prometheus_label(),
-                    entry.inner.serialized_length(),
-                );
+                leader
+                    .record_journal_entry_usage(entry.ty().prometheus_label(), entry.content_len());
             }
 
             match entry.ty() {
                 EntryType::Command(_) => {
-                    // If it's a command, figure out the completion ids and add them to the list of missing completions
-                    let cmd = entry.decode::<ServiceProtocolV4Codec, journal_v2::Command>()?;
+                    // If it's a command, figure out the completion ids and add them to the list of missing completions.
+                    // The clone is cheap: the content is ref-counted `Bytes` (empty if stored in a blob).
+                    let cmd = ctx
+                        .storage
+                        .hydrate_journal_entry(entry.clone())?
+                        .decode::<ServiceProtocolV4Codec, journal_v2::Command>()?;
                     let related_completion_ids = cmd.related_completion_ids();
                     for completion_id in &related_completion_ids {
                         missing_completions.insert(*completion_id);
@@ -164,31 +166,27 @@ where
                     new_journal_commands += 1;
 
                     // Now copy to the new journal
-                    journal_table_v2::WriteJournalTable::put_journal_entry(
+                    journal_table_v2::WriteJournalTable::copy_journal_entry(
                         ctx.storage,
                         &new_invocation_id,
                         new_journal_index,
-                        &entry,
+                        entry,
                         &related_completion_ids,
                     )?;
                 }
                 EntryType::Notification(_) => {
-                    let id = entry
-                        .inner
-                        .try_as_notification_ref()
-                        .expect("storage corruption")
-                        .id();
+                    let id = entry.notification_id().expect("storage corruption");
                     // If it's a completion, remove it from the list of missing completions
                     if let NotificationId::CompletionId(completion_id) = id {
                         missing_completions.remove(&completion_id);
                     }
 
                     // Now copy to the new journal
-                    journal_table_v2::WriteJournalTable::put_journal_entry(
+                    journal_table_v2::WriteJournalTable::copy_journal_entry(
                         ctx.storage,
                         &new_invocation_id,
                         new_journal_index,
-                        &entry,
+                        entry,
                         &[],
                     )?;
                 }
@@ -205,22 +203,21 @@ where
         {
             if let Some(entry) =
                 ReadJournalTable::get_journal_entry(ctx.storage, invocation_id, i).await?
-                && let Some(notification) = entry.inner.try_as_notification_ref()
-                && let NotificationId::CompletionId(completion_id) = notification.id()
+                && let Some(NotificationId::CompletionId(completion_id)) = entry.notification_id()
                 && missing_completions.remove(&completion_id)
             {
                 if let Some(leader) = ctx.leader {
                     leader.record_journal_entry_usage(
                         entry.ty().prometheus_label(),
-                        entry.inner.serialized_length(),
+                        entry.content_len(),
                     );
                 }
                 // Copy over this notification
-                journal_table_v2::WriteJournalTable::put_journal_entry(
+                journal_table_v2::WriteJournalTable::copy_journal_entry(
                     ctx.storage,
                     &new_invocation_id,
                     new_journal_index,
-                    &entry,
+                    entry,
                     &[],
                 )?;
 

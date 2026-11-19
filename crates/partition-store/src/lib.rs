@@ -11,6 +11,7 @@
 #![doc = include_str!("../README.md")]
 
 pub mod blob_table;
+mod budgeted_reads;
 mod compaction_filter;
 pub mod deduplication_table;
 mod durable_lsn_tracking;

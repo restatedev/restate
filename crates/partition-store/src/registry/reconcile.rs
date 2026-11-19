@@ -389,6 +389,18 @@ impl PartitionStore {
                 "Discarded walks of a kind this binary doesn't know"
             );
         }
+        // This binary's writes may undo the Complete migrations it doesn't know;
+        // those whose entry says so run again once a binary that knows them
+        // opens the store.
+        let rerun = super::migration::rerun_unknown(&mut registry, requests.migrations)
+            .map_err(registry_error)?;
+        if !rerun.is_empty() {
+            warn!(
+                migrations = ?rerun,
+                "Set migrations this binary doesn't know back to in progress, so that a binary \
+                 that knows them runs them again"
+            );
+        }
 
         let unknown: Vec<_> = registry
             .indexes()

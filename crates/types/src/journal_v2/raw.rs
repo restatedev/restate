@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -152,7 +153,8 @@ pub struct CallOrSendMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RawCommandSpecificMetadata {
-    CallOrSend(Box<CallOrSendMetadata>),
+    /// Shared so cloning the entry doesn't copy the metadata.
+    CallOrSend(Arc<CallOrSendMetadata>),
     None,
 }
 

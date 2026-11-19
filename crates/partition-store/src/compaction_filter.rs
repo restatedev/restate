@@ -115,10 +115,10 @@ mod tests {
             .to_bytes()
         });
         let mut live_blob = Vec::new();
-        BlobHeader::new(BlobKind::Output, 1).encode(&mut live_blob);
+        BlobHeader::new(BlobKind::Journal, 1).encode(&mut live_blob);
         live_blob.extend_from_slice(b"payload");
         let mut dead_blob = Vec::new();
-        BlobHeader::new(BlobKind::Output, 0).encode(&mut dead_blob);
+        BlobHeader::new(BlobKind::Journal, 0).encode(&mut dead_blob);
         db.put(blob_keys[0], dead_blob.as_slice()).unwrap();
         db.put(blob_keys[1], live_blob.as_slice()).unwrap();
         db.put(blob_keys[2], [0]).unwrap();

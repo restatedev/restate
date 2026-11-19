@@ -885,7 +885,6 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 0,
                 &StoredRawEntry::new(
                     StoredRawEntryHeader::new(self.record_created_at),
-                    None,
                     new_raw_entry,
                 ),
                 &[],
@@ -1396,7 +1395,6 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
             let stored_entry = StoredRawEntry::new(
                 StoredRawEntryHeader::new(self.record_created_at),
-                None,
                 new_raw_entry,
             );
 
@@ -2220,11 +2218,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 *invocation_id,
                 journal_length,
             )?
-            .try_filter_map(|(_, journal_entry)| async {
-                if let Some(cmd) = journal_entry.inner.try_as_command()
-                    && let journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
-                        call_or_send_metadata,
-                    ) = cmd.command_specific_metadata()
+            .try_filter_map(|(_, journal_entry)| async move {
+                if let Some(journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
+                    call_or_send_metadata,
+                )) = journal_entry.command_specific_metadata()
                 {
                     return Ok(Some(call_or_send_metadata.invocation_id));
                 }
@@ -4292,7 +4289,11 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 .await?
                 .unwrap_or_else(|| panic!("There should be a journal entry at index {i}"));
                 if entry.ty() == journal_v2::EntryType::Command(CommandType::Output) {
-                    let cmd = entry.decode::<ServiceProtocolV4Codec, OutputCommand>()?;
+                    let cmd = journal_table_v2::ReadJournalTable::hydrate_journal_entry(
+                        self.storage,
+                        entry,
+                    )?
+                    .decode::<ServiceProtocolV4Codec, OutputCommand>()?;
                     return Ok(Some(match cmd.result {
                         OutputResult::Success(s) => ResponseResult::Success(s),
                         OutputResult::Failure(f) => ResponseResult::Failure(f.into()),
@@ -5131,13 +5132,18 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             )?);
 
             while let Some((_, entry)) = journal.try_next().await? {
-                match &entry.inner {
-                    RawEntry::Command(cmd) if cmd.command_type() == CommandType::Sleep => {
-                        let sleep = cmd.decode::<ServiceProtocolV4Codec, SleepCommand>()?;
+                match entry.ty() {
+                    journal_v2::EntryType::Command(CommandType::Sleep) => {
+                        let sleep = self
+                            .storage
+                            .hydrate_journal_entry(entry)?
+                            .decode::<ServiceProtocolV4Codec, SleepCommand>()?;
                         sleeps.insert(sleep.completion_id, sleep.wake_up_time);
                     }
-                    RawEntry::Notification(notification) => {
-                        if let NotificationId::CompletionId(completion_id) = notification.id() {
+                    journal_v2::EntryType::Notification(_) => {
+                        if let Some(NotificationId::CompletionId(completion_id)) =
+                            entry.notification_id()
+                        {
                             sleeps.remove(&completion_id);
                         }
                     }
