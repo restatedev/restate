@@ -26,7 +26,7 @@ use restate_metadata_store::{
 };
 use restate_types::cluster::cluster_state::LegacyClusterState;
 use restate_types::cluster_state::ClusterState;
-use restate_types::config::Configuration;
+use restate_types::config::{Configuration, LeaderHandoverPolicy};
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
@@ -48,6 +48,10 @@ use restate_types::replication::balanced_spread_selector::{
 use restate_types::replication::{NodeSet, ReplicationProperty};
 use restate_types::{GenerationalNodeId, NodeId, PlainNodeId, Version, Versioned};
 
+use super::leader_handover::{
+    self, Context, DropReason, HandoverKind, HandoverOptions, OrUnknown, PartitionHandover,
+    Progress,
+};
 use crate::cluster_controller::safety_checker::PartitionPlacement;
 
 #[derive(Debug, thiserror::Error)]
@@ -73,6 +77,8 @@ struct PartitionState {
     placement_policy: PlacementPolicy,
     current: PartitionConfiguration,
     next: Option<PartitionConfiguration>,
+    /// Replay rates and deferred handovers, see [`leader_handover`].
+    handover: PartitionHandover,
 }
 
 impl PartitionState {
@@ -88,7 +94,28 @@ impl PartitionState {
             placement_policy,
             current,
             next,
+            handover: PartitionHandover::default(),
         }
+    }
+
+    /// Alive members of the current and the next replica set.
+    fn alive_members<'a>(
+        &'a self,
+        cluster_state: &'a ClusterState,
+    ) -> impl Iterator<Item = PlainNodeId> + 'a {
+        self.current
+            .replica_set()
+            .iter()
+            .chain(self.next.iter().flat_map(|next| next.replica_set().iter()))
+            .copied()
+            .filter(|node_id| cluster_state.is_alive(NodeId::from(*node_id)))
+    }
+
+    fn versions(&self) -> leader_handover::ConfigurationVersions {
+        (
+            self.current.version(),
+            self.next.as_ref().map(PartitionConfiguration::version),
+        )
     }
 
     /// Returns true if the partition configuration was updated. Policy changes do not affect the
@@ -164,6 +191,15 @@ impl PartitionState {
             });
         }
     }
+}
+
+/// Why a pending reconfiguration can be completed, see
+/// [`Scheduler::should_complete_reconfiguration`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompletionReason {
+    NextReplicaSetEmpty,
+    AllCurrentWorkersDisabled,
+    NextReplicaActive,
 }
 
 struct PartitionConfigurationUpdate {
@@ -431,6 +467,9 @@ impl<T: TransportConnect> Scheduler<T> {
 
         self.dead_nodes.update(nodes_config, &self.cluster_state);
 
+        let handover_options = HandoverOptions::from(&Configuration::pinned().admin);
+        self.sample_replay_rates(legacy_cluster_state, &handover_options);
+
         // prioritise leadership changes over partition reconfiguration
         // when a pp leader shuts down, the time until we instruct a new leader is partition unavailability.
         // instructing a new leader when we already have the metadata requires no new metadata operations and can be done nearly instantly
@@ -441,6 +480,7 @@ impl<T: TransportConnect> Scheduler<T> {
             legacy_cluster_state,
             nodes_config,
             partition_table,
+            &handover_options,
         );
         self.instruct_nodes(legacy_cluster_state)?;
 
@@ -449,6 +489,7 @@ impl<T: TransportConnect> Scheduler<T> {
             legacy_cluster_state,
             nodes_config,
             partition_table,
+            &handover_options,
         )
         .await?;
         // we may have chosen new leaders, so we instruct again
@@ -511,12 +552,34 @@ impl<T: TransportConnect> Scheduler<T> {
         Ok(())
     }
 
+    /// Samples the replay rate of every replica of every partition, so that a rate already exists
+    /// when a handover is first checked.
+    fn sample_replay_rates(
+        &mut self,
+        legacy_cluster_state: &LegacyClusterState,
+        options: &HandoverOptions,
+    ) {
+        for (partition_id, partition) in &mut self.partitions {
+            partition.handover.rates.sample(
+                *partition_id,
+                partition.current.replica_set(),
+                partition
+                    .next
+                    .as_ref()
+                    .map(PartitionConfiguration::replica_set),
+                legacy_cluster_state,
+                options.probe_interval,
+            );
+        }
+    }
+
     fn ensure_valid_leaders(
         &mut self,
         cluster_state: &ClusterState,
         legacy_cluster_state: &LegacyClusterState,
         nodes_config: &NodesConfiguration,
         partition_table: &PartitionTable,
+        handover_options: &HandoverOptions,
     ) {
         for partition_id in partition_table.iter_ids() {
             // select the leader based on the observed cluster state
@@ -525,6 +588,7 @@ impl<T: TransportConnect> Scheduler<T> {
                 cluster_state,
                 legacy_cluster_state,
                 nodes_config,
+                handover_options,
             );
         }
     }
@@ -535,6 +599,7 @@ impl<T: TransportConnect> Scheduler<T> {
         legacy_cluster_state: &LegacyClusterState,
         nodes_config: &NodesConfiguration,
         partition_table: &PartitionTable,
+        handover_options: &HandoverOptions,
     ) -> Result<(), Error> {
         let mut transitions = PartitionConfigurationTransitions::default();
         let result = self
@@ -543,6 +608,7 @@ impl<T: TransportConnect> Scheduler<T> {
                 legacy_cluster_state,
                 nodes_config,
                 partition_table,
+                handover_options,
                 &mut transitions,
             )
             .await;
@@ -560,6 +626,7 @@ impl<T: TransportConnect> Scheduler<T> {
         legacy_cluster_state: &LegacyClusterState,
         nodes_config: &NodesConfiguration,
         partition_table: &PartitionTable,
+        handover_options: &HandoverOptions,
         transitions: &mut PartitionConfigurationTransitions,
     ) -> Result<(), Error> {
         let mut membership_updates = self.replica_set_states.membership_update_batch();
@@ -661,14 +728,22 @@ impl<T: TransportConnect> Scheduler<T> {
                 }
             };
 
-            let partition_state = occupied_entry.get();
-
-            if Self::should_complete_reconfiguration(
+            let partition_state = occupied_entry.get_mut();
+            let completion = Self::should_complete_reconfiguration(
                 partition_id,
                 nodes_config,
                 partition_state,
                 legacy_cluster_state,
                 &self.cluster_state,
+            );
+
+            if Self::gate_reconfiguration_completion(
+                partition_id,
+                partition_state,
+                completion,
+                legacy_cluster_state,
+                &self.cluster_state,
+                handover_options,
             ) {
                 let CompleteReconfigurationResult {
                     configuration: partition_configuration_update,
@@ -704,13 +779,15 @@ impl<T: TransportConnect> Scheduler<T> {
                 cluster_state,
                 legacy_cluster_state,
                 nodes_config,
+                handover_options,
             );
         }
 
         Ok(())
     }
 
-    /// Checks whether a pending reconfiguration should be completed. Conditions for doing this are:
+    /// Checks whether a pending reconfiguration should be completed and returns why. Conditions
+    /// for doing this are:
     ///
     /// * The next configuration is empty
     /// * All workers in the current configuration are disabled
@@ -726,11 +803,9 @@ impl<T: TransportConnect> Scheduler<T> {
         partition_state: &PartitionState,
         legacy_cluster_state: &LegacyClusterState,
         cluster_state: &ClusterState,
-    ) -> bool {
+    ) -> Option<CompletionReason> {
         // we can only complete the reconfiguration if a next configuration has been set
-        let Some(next) = partition_state.next.as_ref() else {
-            return false;
-        };
+        let next = partition_state.next.as_ref()?;
 
         let all_current_workers_disabled = partition_state
             .current
@@ -749,7 +824,132 @@ impl<T: TransportConnect> Scheduler<T> {
                 && legacy_cluster_state.is_partition_processor_active(&partition_id, node_id)
         });
 
-        next.replica_set().is_empty() || all_current_workers_disabled || any_next_pp_active
+        if next.replica_set().is_empty() {
+            Some(CompletionReason::NextReplicaSetEmpty)
+        } else if all_current_workers_disabled {
+            Some(CompletionReason::AllCurrentWorkersDisabled)
+        } else if any_next_pp_active {
+            Some(CompletionReason::NextReplicaActive)
+        } else {
+            None
+        }
+    }
+
+    /// Decides whether a pending reconfiguration completes now, given why it can be completed
+    /// (see [`Self::should_complete_reconfiguration`]).
+    ///
+    /// With the `catch-up-time` leader handover policy, a completion that would remove a leading
+    /// current leader is deferred until the least lagging alive member of the new replica set is
+    /// close enough to the log tail. All other completions happen right away.
+    fn gate_reconfiguration_completion(
+        partition_id: PartitionId,
+        partition: &mut PartitionState,
+        completion: Option<CompletionReason>,
+        legacy_cluster_state: &LegacyClusterState,
+        cluster_state: &ClusterState,
+        options: &HandoverOptions,
+    ) -> bool {
+        let leader = partition.target_leader;
+        let drop_deferral = |partition: &mut PartitionState, reason| {
+            leader_handover::drop_deferral(
+                &mut partition.handover.reconfiguration,
+                partition_id,
+                HandoverKind::Reconfiguration,
+                leader,
+                reason,
+            )
+        };
+
+        let Some(completion) = completion else {
+            drop_deferral(partition, DropReason::ReconfigurationNotReady);
+            return false;
+        };
+        let ungated = match completion {
+            CompletionReason::NextReplicaSetEmpty | CompletionReason::AllCurrentWorkersDisabled => {
+                Some(DropReason::ReconfigurationUngated)
+            }
+            CompletionReason::NextReplicaActive
+                if options.policy == LeaderHandoverPolicy::Immediate =>
+            {
+                Some(DropReason::PolicyImmediate)
+            }
+            CompletionReason::NextReplicaActive if partition.leadership_policy.freeze.is_some() => {
+                Some(DropReason::LeadershipFrozen)
+            }
+            CompletionReason::NextReplicaActive => None,
+        };
+        if let Some(reason) = ungated {
+            drop_deferral(partition, reason);
+            return true;
+        }
+        // a reconfiguration that can complete always has a next configuration
+        let Some(next) = partition.next.as_ref() else {
+            return true;
+        };
+
+        let is_alive = |node_id: PlainNodeId| cluster_state.is_alive(NodeId::from(node_id));
+        let progress = Progress::new(
+            partition_id,
+            legacy_cluster_state,
+            &partition.handover.rates,
+            partition.alive_members(cluster_state),
+        );
+        let current_leader = partition.target_leader.or_else(|| {
+            progress.leading(
+                partition
+                    .current
+                    .replica_set()
+                    .iter()
+                    .copied()
+                    .filter(|node_id| is_alive(*node_id)),
+            )
+        });
+        let gated_leader = match current_leader {
+            None => Err(DropReason::NoLeader),
+            Some(leader) if !is_alive(leader) => Err(DropReason::LeaderDied),
+            Some(leader)
+                if !legacy_cluster_state
+                    .runs_partition_processor_leader(&leader, &partition_id) =>
+            {
+                Err(DropReason::LeaderNotLeading)
+            }
+            Some(leader) if next.replica_set().contains(leader) => {
+                Err(DropReason::LeaderInNewReplicaSet)
+            }
+            Some(leader) => Ok(leader),
+        };
+        let leader = match gated_leader {
+            Ok(leader) => leader,
+            Err(reason) => {
+                drop_deferral(partition, reason);
+                return true;
+            }
+        };
+
+        let Some(candidate) = progress.least_lagging(
+            next.replica_set()
+                .iter()
+                .copied()
+                .filter(|node_id| is_alive(*node_id)),
+        ) else {
+            return true;
+        };
+        let ctx = Context {
+            partition_id,
+            kind: HandoverKind::Reconfiguration,
+            leader,
+            candidate,
+            versions: partition.versions(),
+            tail: progress.tail(),
+        };
+        let candidate_progress = progress.of(candidate);
+        leader_handover::evaluate(
+            &mut partition.handover.reconfiguration,
+            &ctx,
+            candidate_progress.as_ref(),
+            options,
+        )
+        .is_proceed()
     }
 
     async fn load_partition_configuration(
@@ -1039,13 +1239,9 @@ impl<T: TransportConnect> Scheduler<T> {
 
     /// Selects a leader based on the leadership policy, observed cluster state and replica set.
     ///
-    /// Scores each alive replica in a single pass. Higher score wins:
-    /// - 3: matches affinity + caught up
-    /// - 2: caught up (no affinity match)
-    /// - 1: matches affinity + alive (not caught up)
-    /// - 0: alive only (baseline)
-    ///
-    /// Ties are broken by the replica set order: the first node with the highest score wins.
+    /// With the `immediate` leader handover policy, the [preferred replica](Self::preferred_replica)
+    /// becomes the target leader right away. With `catch-up-time`, see
+    /// [`Self::select_leader_after_catch_up`].
     ///
     /// If `freeze` is set, the current target leader is kept unchanged.
     fn select_leader(
@@ -1054,6 +1250,7 @@ impl<T: TransportConnect> Scheduler<T> {
         cluster_state: &ClusterState,
         legacy_cluster_state: &LegacyClusterState,
         nodes_config: &NodesConfiguration,
+        handover_options: &HandoverOptions,
     ) {
         let Some(partition) = self.partitions.get_mut(partition_id) else {
             return;
@@ -1061,12 +1258,76 @@ impl<T: TransportConnect> Scheduler<T> {
 
         // Freeze: keep the current target leader, do not elect a new one.
         if partition.leadership_policy.freeze.is_some() {
+            leader_handover::drop_deferral(
+                &mut partition.handover.leader_switch,
+                *partition_id,
+                HandoverKind::LeaderSwitch,
+                partition.target_leader,
+                DropReason::LeadershipFrozen,
+            );
             return;
         }
 
+        let best = Self::preferred_replica(
+            partition_id,
+            partition,
+            cluster_state,
+            legacy_cluster_state,
+            nodes_config,
+        );
+
+        if handover_options.policy == LeaderHandoverPolicy::Immediate {
+            leader_handover::drop_deferral(
+                &mut partition.handover.leader_switch,
+                *partition_id,
+                HandoverKind::LeaderSwitch,
+                partition.target_leader,
+                DropReason::PolicyImmediate,
+            );
+
+            if let Some(best) = best
+                && partition.target_leader != Some(best)
+            {
+                debug!(
+                    "Selecting node {} as partition processor leader for partition {partition_id}: leader handover policy is immediate",
+                    best
+                );
+                partition.target_leader = Some(best);
+            }
+
+            // keep the current target leader as we couldn't find any suitable substitute
+            return;
+        }
+
+        Self::select_leader_after_catch_up(
+            *partition_id,
+            partition,
+            best,
+            cluster_state,
+            legacy_cluster_state,
+            handover_options,
+        );
+    }
+
+    /// The replica that should lead the partition, irrespective of how far it is behind.
+    ///
+    /// Scores each alive replica in a single pass. Higher score wins:
+    /// - 3: matches affinity + caught up
+    /// - 2: caught up (no affinity match)
+    /// - 1: matches affinity + alive (not caught up)
+    /// - 0: alive only (baseline)
+    ///
+    /// Ties are broken by the replica set order: the first node with the highest score wins.
+    fn preferred_replica(
+        partition_id: &PartitionId,
+        partition: &PartitionState,
+        cluster_state: &ClusterState,
+        legacy_cluster_state: &LegacyClusterState,
+        nodes_config: &NodesConfiguration,
+    ) -> Option<PlainNodeId> {
         let affinity = partition.leadership_policy.affinity.as_ref();
 
-        let best = partition
+        partition
             .current
             .replica_set()
             .iter()
@@ -1085,19 +1346,206 @@ impl<T: TransportConnect> Scheduler<T> {
                     (true, false) => 1,
                     (false, false) => 0,
                 })
-            });
+            })
+    }
 
-        if let Some(best) = best
-            && partition.target_leader != Some(best)
-        {
-            debug!(
-                "Selecting node {} as partition processor leader for partition {partition_id}",
-                best
+    /// Leader selection with the `catch-up-time` leader handover policy, which hands leadership
+    /// to a replica only once it is close to the log tail:
+    ///
+    /// * No target leader: see [`Self::pick_leader_without_target`].
+    /// * Target leader dead: fail over to the preferred replica right away.
+    /// * Target leader campaigning (told to lead, not reporting leader mode yet): switch to the
+    ///   preferred replica only if it is no further behind.
+    /// * Target leader leading: switch to the preferred replica once it is close enough to the
+    ///   log tail, see [`leader_handover::evaluate`].
+    fn select_leader_after_catch_up(
+        partition_id: PartitionId,
+        partition: &mut PartitionState,
+        preferred: Option<PlainNodeId>,
+        cluster_state: &ClusterState,
+        legacy_cluster_state: &LegacyClusterState,
+        options: &HandoverOptions,
+    ) {
+        let is_alive = |node_id: PlainNodeId| cluster_state.is_alive(NodeId::from(node_id));
+        let drop_deferral = |deferral: &mut _, leader, reason| {
+            leader_handover::drop_deferral(
+                deferral,
+                partition_id,
+                HandoverKind::LeaderSwitch,
+                leader,
+                reason,
+            )
+        };
+        let versions = partition.versions();
+        let progress = Progress::new(
+            partition_id,
+            legacy_cluster_state,
+            &partition.handover.rates,
+            partition.alive_members(cluster_state),
+        );
+
+        let Some(leader) = partition.target_leader else {
+            drop_deferral(
+                &mut partition.handover.leader_switch,
+                None,
+                DropReason::NoLeader,
             );
-            partition.target_leader = Some(best);
+            partition.target_leader = Self::pick_leader_without_target(
+                partition_id,
+                &partition.current,
+                preferred,
+                &progress,
+                legacy_cluster_state,
+                is_alive,
+                options,
+            );
+            return;
+        };
+
+        // keep the current target leader if there is no alive replica
+        let Some(preferred) = preferred else {
+            return;
+        };
+
+        if !is_alive(leader) {
+            drop_deferral(
+                &mut partition.handover.leader_switch,
+                Some(leader),
+                DropReason::LeaderDied,
+            );
+            debug!(
+                "Selecting node {preferred} as partition processor leader for partition {partition_id}: current leader {leader} is dead"
+            );
+            partition.target_leader = Some(preferred);
+            return;
         }
 
-        // keep the current target leader as we couldn't find any suitable substitute
+        if leader == preferred {
+            drop_deferral(
+                &mut partition.handover.leader_switch,
+                Some(leader),
+                DropReason::LeaderIsPreferred,
+            );
+            return;
+        }
+
+        if !legacy_cluster_state.runs_partition_processor_leader(&leader, &partition_id) {
+            drop_deferral(
+                &mut partition.handover.leader_switch,
+                Some(leader),
+                DropReason::LeaderNotLeading,
+            );
+            // An unknown lag counts as infinite, so that two unknown lags switch as before.
+            let preferred_lag = progress.lag(preferred);
+            let leader_lag = progress.lag(leader);
+            if preferred_lag.unwrap_or(u64::MAX) <= leader_lag.unwrap_or(u64::MAX) {
+                info!(
+                    %partition_id,
+                    %leader,
+                    candidate = %preferred,
+                    leader_lag = %OrUnknown(leader_lag),
+                    candidate_lag = %OrUnknown(preferred_lag),
+                    "Switching campaigning partition processor leader to the preferred replica, which is no further behind"
+                );
+                partition.target_leader = Some(preferred);
+            }
+            return;
+        }
+
+        if partition
+            .handover
+            .leader_switch
+            .as_ref()
+            .is_some_and(|deferral| deferral.candidate() != preferred)
+        {
+            drop_deferral(
+                &mut partition.handover.leader_switch,
+                Some(leader),
+                DropReason::CandidateNotPreferred,
+            );
+        }
+        let ctx = Context {
+            partition_id,
+            kind: HandoverKind::LeaderSwitch,
+            leader,
+            candidate: preferred,
+            versions,
+            tail: progress.tail(),
+        };
+        let candidate_progress = progress.of(preferred);
+        if leader_handover::evaluate(
+            &mut partition.handover.leader_switch,
+            &ctx,
+            candidate_progress.as_ref(),
+            options,
+        )
+        .is_proceed()
+        {
+            partition.target_leader = Some(preferred);
+        }
+    }
+
+    /// Picks a leader for a partition without a target leader, e.g. after a cluster controller
+    /// failover or after a reconfiguration removed the leader. Waits for the first status poll,
+    /// then keeps an alive replica that reports leader mode. Otherwise it takes the preferred
+    /// replica if it is close enough to the log tail, else the least lagging alive replica, else
+    /// (no lag known) the preferred replica.
+    fn pick_leader_without_target(
+        partition_id: PartitionId,
+        current: &PartitionConfiguration,
+        preferred: Option<PlainNodeId>,
+        progress: &Progress<'_>,
+        legacy_cluster_state: &LegacyClusterState,
+        is_alive: impl Fn(PlainNodeId) -> bool,
+        options: &HandoverOptions,
+    ) -> Option<PlainNodeId> {
+        if legacy_cluster_state.last_refreshed.is_none() {
+            debug!(
+                %partition_id,
+                "Waiting for the first status poll before selecting a partition processor leader"
+            );
+            return None;
+        }
+
+        let alive = || {
+            current
+                .replica_set()
+                .iter()
+                .copied()
+                .filter(|node_id| is_alive(*node_id))
+        };
+        if let Some(leading) = progress.leading(alive()) {
+            info!(
+                %partition_id,
+                leader = %leading,
+                "Selecting partition processor leader without a current leader: keeping the replica that reports leader mode"
+            );
+            return Some(leading);
+        }
+
+        let preferred = preferred?;
+        let (leader, case) = if progress
+            .of(preferred)
+            .is_some_and(|p| p.is_close_enough(options.max_catch_up_time))
+        {
+            (preferred, "preferred replica is close enough")
+        } else if let Some(least_lagging) = progress
+            .least_lagging(alive())
+            .filter(|node_id| progress.lag(*node_id).is_some())
+        {
+            (least_lagging, "least lagging replica")
+        } else {
+            (preferred, "no lag known, preferred replica")
+        };
+        info!(
+            %partition_id,
+            %leader,
+            %preferred,
+            case,
+            lags = %progress.display_lags(alive()),
+            "Selecting partition processor leader without a current leader"
+        );
+        Some(leader)
     }
 
     fn instruct_nodes(&self, legacy_cluster_state: &LegacyClusterState) -> Result<(), Error> {
@@ -1228,8 +1676,15 @@ fn matches_affinity(
 
 #[cfg(test)]
 mod tests {
+    use restate_core::TestCoreEnvBuilder;
     use restate_core::network::FailingConnector;
+    use restate_types::cluster::cluster_state::{
+        AliveNode, NodeState as LegacyNodeState, PartitionProcessorStatus, ReplayStatus, RunMode,
+    };
     use restate_types::cluster_state::NodeState;
+    use restate_types::config::AdminOptions;
+    use restate_types::identifiers::LeaderEpoch;
+    use restate_types::logs::Lsn;
     use restate_types::metadata::Precondition;
     use restate_types::nodes_config::WorkerConfig;
     use restate_types::partitions::placement_policy::{PlacementFreeze, PlacementPolicy};
@@ -1398,6 +1853,7 @@ mod tests {
                 &LegacyClusterState::empty(),
                 &ClusterState::default(),
             )
+            .is_some()
         );
         let completed = Scheduler::<FailingConnector>::complete_reconfiguration(
             &metadata_store_client,
@@ -1416,10 +1872,6 @@ mod tests {
 
     #[restate_core::test]
     async fn select_leader_picks_first_node_with_highest_score() {
-        use restate_core::TestCoreEnvBuilder;
-        use restate_types::cluster::cluster_state::{
-            AliveNode, NodeState as LegacyNodeState, PartitionProcessorStatus, ReplayStatus,
-        };
         use restate_types::time::MillisSinceEpoch;
 
         let builder = TestCoreEnvBuilder::with_incoming_only_connector();
@@ -1457,6 +1909,7 @@ mod tests {
         let nodes_config = NodesConfiguration::new_for_testing();
         let legacy_cluster_state = |caught_up: &[PlainNodeId]| {
             let mut legacy = LegacyClusterState::empty();
+            legacy.last_refreshed = Some(std::time::Instant::now());
             for node_id in &nodes {
                 let replay_status = if caught_up.contains(node_id) {
                     ReplayStatus::Active
@@ -1486,6 +1939,7 @@ mod tests {
                 &cluster_state,
                 &legacy_cluster_state(caught_up),
                 &nodes_config,
+                &HandoverOptions::from(&AdminOptions::default()),
             );
             scheduler.partitions[&partition_id].target_leader
         };
@@ -1600,5 +2054,380 @@ mod tests {
             grace_period,
             now
         ));
+    }
+
+    const PID: PartitionId = PartitionId::MIN;
+
+    fn n(node_id: u32) -> PlainNodeId {
+        PlainNodeId::from(node_id)
+    }
+
+    /// The status of a replica `at` seconds into a test, which applied the log up to `applied`
+    /// while the log tail (the next free LSN) is `tail`.
+    #[derive(Clone, Copy)]
+    struct Replica {
+        at: u64,
+        applied: u64,
+        tail: u64,
+        replay_status: ReplayStatus,
+        leading: bool,
+    }
+
+    fn replica(at: u64, applied: u64, tail: u64) -> Replica {
+        Replica {
+            at,
+            applied,
+            tail,
+            replay_status: ReplayStatus::Active,
+            leading: false,
+        }
+    }
+
+    impl Replica {
+        fn leading(self) -> Self {
+            Self {
+                leading: true,
+                ..self
+            }
+        }
+
+        fn catching_up(self) -> Self {
+            Self {
+                replay_status: ReplayStatus::CatchingUp,
+                ..self
+            }
+        }
+
+        fn status(self) -> PartitionProcessorStatus {
+            PartitionProcessorStatus {
+                updated_at: restate_types::time::MillisSinceEpoch::new(1_000_000 + self.at * 1000),
+                effective_mode: if self.leading {
+                    RunMode::Leader
+                } else {
+                    RunMode::Follower
+                },
+                last_observed_leader_epoch: self.leading.then_some(LeaderEpoch::INITIAL),
+                last_applied_log_lsn: Some(Lsn::new(self.applied)),
+                replay_status: self.replay_status,
+                target_tail_lsn: Some(Lsn::new(self.tail)),
+                ..Default::default()
+            }
+        }
+    }
+
+    fn replica_set(nodes: &[u32]) -> PartitionConfiguration {
+        PartitionConfiguration::new(
+            ReplicationProperty::new_unchecked(u8::try_from(nodes.len()).unwrap()),
+            nodes.iter().copied().map(PlainNodeId::from).collect(),
+            HashMap::default(),
+        )
+    }
+
+    /// A scheduler with a single partition. Its passes mirror `on_cluster_state_change` without
+    /// metadata store writes.
+    struct Fixture {
+        scheduler: Scheduler<FailingConnector>,
+        epoch_metadata: EpochMetadata,
+        cluster_state: ClusterState,
+        nodes_config: NodesConfiguration,
+        options: HandoverOptions,
+        polled: bool,
+    }
+
+    impl Fixture {
+        fn new(current: &[u32], next: Option<&[u32]>, policy: LeaderHandoverPolicy) -> Self {
+            let builder = TestCoreEnvBuilder::with_incoming_only_connector();
+            let mut scheduler = Scheduler::new(
+                builder.metadata_writer.clone(),
+                builder.networking,
+                PartitionReplicaSetStates::default(),
+            );
+            let mut epoch_metadata = EpochMetadata::new(replica_set(current), None);
+            if let Some(next) = next {
+                epoch_metadata = epoch_metadata.reconfigure(replica_set(next));
+            }
+            let (_, _, current, next, leadership_policy, placement_policy) =
+                epoch_metadata.clone().into_inner();
+            scheduler.partitions.insert(
+                PID,
+                PartitionState::new(current, next, leadership_policy, placement_policy),
+            );
+            let cluster_state = ClusterState::default();
+            let mut fixture = Self {
+                scheduler,
+                epoch_metadata,
+                cluster_state,
+                nodes_config: NodesConfiguration::new_for_testing(),
+                options: HandoverOptions {
+                    policy,
+                    ..HandoverOptions::from(&AdminOptions::default())
+                },
+                polled: true,
+            };
+            for node_id in 1..=4 {
+                fixture.set_alive(node_id, true);
+            }
+            fixture
+        }
+
+        fn set_alive(&mut self, node_id: u32, alive: bool) {
+            self.cluster_state.clone().updater().upsert_node_state(
+                GenerationalNodeId::new(node_id, 1),
+                if alive {
+                    NodeState::Alive
+                } else {
+                    NodeState::Dead
+                },
+            );
+        }
+
+        fn state(&self) -> &PartitionState {
+            &self.scheduler.partitions[&PID]
+        }
+
+        fn restore(&mut self, state: PartitionState) {
+            self.scheduler.partitions.insert(PID, state);
+        }
+
+        fn set_target_leader(&mut self, node_id: Option<u32>) {
+            self.scheduler
+                .partitions
+                .get_mut(&PID)
+                .unwrap()
+                .target_leader = node_id.map(n);
+        }
+
+        fn completed(&self) -> bool {
+            self.state().next.is_none()
+        }
+
+        fn select_leader(&mut self, legacy_cluster_state: &LegacyClusterState) {
+            self.scheduler.select_leader(
+                &PID,
+                &self.cluster_state,
+                legacy_cluster_state,
+                &self.nodes_config,
+                &self.options,
+            );
+        }
+
+        /// One scheduling pass with the given replica statuses; returns the target leader.
+        fn pass(&mut self, replicas: &[(u32, Replica)]) -> Option<PlainNodeId> {
+            let mut legacy = LegacyClusterState::empty();
+            legacy.last_refreshed = self.polled.then(std::time::Instant::now);
+            for (node_id, replica) in replicas {
+                legacy.nodes.insert(
+                    n(*node_id),
+                    LegacyNodeState::Alive(AliveNode {
+                        last_heartbeat_at: replica.status().updated_at,
+                        generational_node_id: GenerationalNodeId::new(*node_id, 1),
+                        partitions: [(PID, replica.status())].into_iter().collect(),
+                        uptime: Duration::ZERO,
+                    }),
+                );
+            }
+
+            self.scheduler.sample_replay_rates(&legacy, &self.options);
+            self.select_leader(&legacy);
+            let partition = self.scheduler.partitions.get_mut(&PID).unwrap();
+            let completion = Scheduler::<FailingConnector>::should_complete_reconfiguration(
+                PID,
+                &self.nodes_config,
+                partition,
+                &legacy,
+                &self.cluster_state,
+            );
+            if Scheduler::<FailingConnector>::gate_reconfiguration_completion(
+                PID,
+                partition,
+                completion,
+                &legacy,
+                &self.cluster_state,
+                &self.options,
+            ) {
+                let (_, _, current, next, leadership_policy, placement_policy) = self
+                    .epoch_metadata
+                    .clone()
+                    .complete_reconfiguration()
+                    .into_inner();
+                partition.update(current, next, leadership_policy, placement_policy);
+            }
+            self.select_leader(&legacy);
+            self.state().target_leader
+        }
+    }
+
+    #[restate_core::test]
+    async fn leader_switch_waits_for_catch_up() {
+        let mut f = Fixture::new(&[1, 2], None, LeaderHandoverPolicy::CatchUpTime);
+        f.set_target_leader(Some(2));
+        // N2 leads with lag 0. N1 is first in the replica set and active, but 500k records behind.
+        // It replays 30k records/s while the log grows by 10k records/s.
+        let at = |t: u64, n1_applied: u64| {
+            let tail = 1_000_001 + t * 10_000;
+            [
+                (1, replica(t, n1_applied, tail)),
+                (2, replica(t, tail - 1, tail).leading()),
+            ]
+        };
+        assert_eq!(f.pass(&at(0, 500_000)), Some(n(2)));
+        assert!(f.state().handover.leader_switch.is_some());
+        assert_eq!(f.pass(&at(5, 650_000)), Some(n(2)));
+        // probe: 300k records behind at 30k records/s; passes with the same statuses change nothing
+        assert_eq!(f.pass(&at(10, 800_000)), Some(n(2)));
+        assert_eq!(f.pass(&at(10, 800_000)), Some(n(2)));
+        let deferred = f.state().clone();
+
+        // the current leader dies during the deferral: failover in the same pass
+        f.set_alive(2, false);
+        assert_eq!(f.pass(&at(11, 830_000)[..1]), Some(n(1)));
+        assert!(f.state().handover.leader_switch.is_none());
+
+        // the candidate restarts and stops being the preferred replica
+        f.restore(deferred.clone());
+        f.set_alive(2, true);
+        let [(_, n1), n2] = at(11, 830_000);
+        assert_eq!(f.pass(&[(1, n1.catching_up()), n2]), Some(n(2)));
+        assert!(f.state().handover.leader_switch.is_none());
+
+        // round 1 ends 100k records behind (3.3 s); N1 takes over once it is close enough
+        f.restore(deferred);
+        assert_eq!(f.pass(&at(20, 1_100_000)), Some(n(2)));
+        assert_eq!(f.pass(&at(24, 1_220_000)), Some(n(1)));
+        assert!(f.state().handover.leader_switch.is_none());
+
+        // with the immediate policy, N1 takes over at once
+        let mut f = Fixture::new(&[1, 2], None, LeaderHandoverPolicy::Immediate);
+        f.set_target_leader(Some(2));
+        assert_eq!(f.pass(&at(0, 500_000)), Some(n(1)));
+    }
+
+    #[restate_core::test]
+    async fn leader_selection_without_leading_target() {
+        let mut f = Fixture::new(&[1, 2], None, LeaderHandoverPolicy::CatchUpTime);
+        // no leader is assigned before the first status poll
+        f.polled = false;
+        assert_eq!(
+            f.pass(&[(1, replica(0, 100, 101)), (2, replica(0, 100, 101))]),
+            None
+        );
+        f.polled = true;
+        // a replica that reports leader mode is kept, although N1 is preferred; as N1 is not
+        // close enough, rule 3 defers the switch to it
+        assert_eq!(
+            f.pass(&[
+                (1, replica(0, 50, 101)),
+                (2, replica(0, 100, 101).leading())
+            ]),
+            Some(n(2))
+        );
+        assert!(f.state().handover.leader_switch.is_some());
+        // otherwise the least lagging replica, as the preferred one is not close enough
+        f.set_target_leader(None);
+        assert_eq!(
+            f.pass(&[(1, replica(0, 50, 101)), (2, replica(0, 90, 101))]),
+            Some(n(2))
+        );
+        // N2 campaigns: the preferred N1 takes over only once it is no further behind
+        assert_eq!(
+            f.pass(&[(1, replica(1, 95, 111)), (2, replica(1, 100, 111))]),
+            Some(n(2))
+        );
+        assert_eq!(
+            f.pass(&[(1, replica(2, 110, 121)), (2, replica(2, 110, 121))]),
+            Some(n(1))
+        );
+        // the preferred replica if it is close enough, or if no lag is known
+        f.set_target_leader(None);
+        assert_eq!(
+            f.pass(&[(1, replica(3, 120, 121)), (2, replica(3, 120, 121))]),
+            Some(n(1))
+        );
+        f.set_target_leader(None);
+        assert_eq!(f.pass(&[]), Some(n(1)));
+    }
+
+    #[restate_core::test]
+    async fn reconfiguration_completion_waits_for_catch_up() {
+        use LeaderHandoverPolicy::{CatchUpTime, Immediate};
+
+        // N1 leads and is replaced; N2 stays but is 500k records behind; N3 joins
+        let far = [
+            (1, replica(0, 1_000_000, 1_000_001).leading()),
+            (2, replica(0, 500_000, 1_000_001)),
+            (3, replica(0, 0, 1_000_001).catching_up()),
+        ];
+        let close = [
+            (1, replica(1, 1_000_100, 1_000_101).leading()),
+            (2, replica(1, 1_000_100, 1_000_101)),
+            (3, replica(1, 0, 1_000_101).catching_up()),
+        ];
+        let mut f = Fixture::new(&[1, 2], Some(&[2, 3]), CatchUpTime);
+        f.set_target_leader(Some(1));
+        assert_eq!(f.pass(&far), Some(n(1)));
+        assert!(!f.completed());
+        assert!(f.state().handover.reconfiguration.is_some());
+        // completed once N2 is close enough, and N2 gets leadership in the same pass
+        assert_eq!(f.pass(&close), Some(n(2)));
+        assert!(f.completed());
+        assert!(f.state().handover.reconfiguration.is_none());
+
+        // the remaining member is close enough at once
+        let mut f = Fixture::new(&[1, 2], Some(&[2, 3]), CatchUpTime);
+        f.set_target_leader(Some(1));
+        assert_eq!(f.pass(&close), Some(n(2)));
+        assert!(f.completed());
+
+        // the leader is dead
+        let mut f = Fixture::new(&[1, 2], Some(&[2, 3]), CatchUpTime);
+        f.set_target_leader(Some(1));
+        f.set_alive(1, false);
+        assert_eq!(f.pass(&far[1..]), Some(n(2)));
+        assert!(f.completed());
+
+        // a follower is replaced
+        let mut f = Fixture::new(&[1, 2], Some(&[1, 3]), CatchUpTime);
+        f.set_target_leader(Some(1));
+        let [n1, n2, (_, n3)] = far;
+        assert_eq!(
+            f.pass(&[
+                n1,
+                n2,
+                (
+                    3,
+                    Replica {
+                        replay_status: ReplayStatus::Active,
+                        ..n3
+                    }
+                )
+            ]),
+            Some(n(1))
+        );
+        assert!(f.completed());
+
+        // both are replaced: held until a member of the new set is close enough
+        let both = |t: u64, n3_applied: u64| {
+            let tail = 1_000_001 + t * 100;
+            [
+                (1, replica(t, tail - 1, tail).leading()),
+                (2, replica(t, tail - 1, tail)),
+                (3, replica(t, n3_applied, tail)),
+                (4, replica(t, 0, tail).catching_up()),
+            ]
+        };
+        let mut f = Fixture::new(&[1, 2], Some(&[3, 4]), CatchUpTime);
+        f.set_target_leader(Some(1));
+        assert_eq!(f.pass(&both(0, 500_000)), Some(n(1)));
+        assert!(!f.completed());
+        assert_eq!(f.pass(&both(1, 1_000_000)), Some(n(1)));
+        assert!(!f.completed());
+        assert_eq!(f.pass(&both(2, 1_000_200)), Some(n(3)));
+        assert!(f.completed());
+
+        // with the immediate policy, the reconfiguration completes at once
+        let mut f = Fixture::new(&[1, 2], Some(&[2, 3]), Immediate);
+        f.set_target_leader(Some(1));
+        assert_eq!(f.pass(&far), Some(n(2)));
+        assert!(f.completed());
     }
 }
