@@ -59,13 +59,36 @@
 //!                     cursor = C   end = E   never visited
 //! ```
 //!
-//! Three things are yours to make true:
+//! Four things are yours to make true:
 //!
 //! - **Foreground writes need no migration.** Rows written behind the cursor
 //!   (`B` rewritten after the walk passed it) or beyond the end (`F`, `G`) are
 //!   never visited. From the release that adds the migration on, commands must
 //!   write rows that are already in the migrated form, or never write what the
 //!   migration removes.
+//! - **Commands don't depend on how far the walk got.** Every replica of the
+//!   partition runs the walk on its own, at its own pace, and a node may have
+//!   background migrations paused. So for a while replicas hold the same row in
+//!   different forms (`C'` is `C` migrated):
+//!
+//!   ```text
+//!   replica 1   A'   B'   C'   D    E     cursor = C
+//!   replica 2   A'   B    C    D    E     cursor = A
+//!   ```
+//!
+//!   Every replica applies the same commands, and a command must do the same on
+//!   each, so it can't depend on whether it reads `C` or `C'`:
+//!
+//!   - Safe: deleting leftovers that no command reads, or converting rows that
+//!     commands read alike in both forms.
+//!   - Safe: the tokens of index builds. A backfill adds its token to an
+//!     entry's `touched_by` at its own pace on each replica, and a write reads
+//!     the tokens only to keep that replica's indexes right, never to decide
+//!     what happens to the entry.
+//!   - Unsafe: deleting rows that a command still looks up. The command finds
+//!     `C` on replica 2 only, acts on it there, and the replicas diverge. A
+//!     leftover is safe to delete only while no command can reach it: if a
+//!     command can bring it back into use, that command must delete it first.
 //! - **Decide from what the transaction reads now.** The row you get was read
 //!   in this slice, and lookups through `tx`
 //!   ([`PartitionStoreTransaction::lookup_for_migration`]) see the committed
