@@ -133,6 +133,14 @@ pub struct MigrationTimeline {
     /// The Restate version that completed it.
     #[bilrost(4)]
     pub completed_by: Option<ReString>,
+    /// When an open by a binary that didn't know the migration last set it
+    /// back to InProgress, so that one that knows it runs it again (see
+    /// [`MigrationOnUnknown::Rerun`]).
+    #[bilrost(5)]
+    pub reset_at: Option<u64>,
+    /// The Restate version that last set it back to InProgress.
+    #[bilrost(6)]
+    pub reset_by: Option<ReString>,
 }
 
 /// One migration definition run in this store: its ID, state, policy and,
@@ -140,7 +148,7 @@ pub struct MigrationTimeline {
 /// (README rule 8).
 #[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
 pub struct Migration {
-    /// The versioned name, such as `"jc_orphan_cleanup/1"`.
+    /// The versioned name, such as `"my_cleanup/1"`.
     #[bilrost(1)]
     pub definition: ReString,
     #[bilrost(2)]
@@ -278,13 +286,15 @@ impl Registry {
     }
 }
 
-/// Sets back to InProgress each Complete migration that isn't one of `known`
-/// and whose policy is `Rerun`, and returns their IDs: this binary's writes may
-/// undo them (see [`MigrationOnUnknown::Rerun`]). Their timelines forget the
-/// completion; a Complete entry has no walk to unlink.
+/// Sets back to InProgress, at `stamp`, each Complete migration that isn't one
+/// of `known` and whose policy is `Rerun`, and returns their IDs: this binary's
+/// writes may undo them (see [`MigrationOnUnknown::Rerun`]). Their timelines
+/// forget the completion and record the reset; a Complete entry has no walk to
+/// unlink.
 pub(super) fn rerun_unknown(
     registry: &mut Registry,
     known: &[&'static MigrationDefinition],
+    stamp: &Stamp,
 ) -> Vec<u32> {
     registry
         .migrations
@@ -300,6 +310,8 @@ pub(super) fn rerun_unknown(
             migration.state = MigrationState::InProgress as u32;
             migration.timeline.completed_at = None;
             migration.timeline.completed_by = None;
+            migration.timeline.reset_at = Some(stamp.at);
+            migration.timeline.reset_by = Some(stamp.by.clone());
             migration.id
         })
         .collect()

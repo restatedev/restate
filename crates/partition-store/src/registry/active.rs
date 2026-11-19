@@ -175,6 +175,23 @@ impl PublishedRegistry {
         self
     }
 
+    /// The IDs of the migrations in `registry` that this binary doesn't know, a
+    /// later release's: no walk of theirs runs here, so their jobs can't
+    /// progress.
+    pub(crate) fn unknown_migrations(&self, registry: &Registry) -> Vec<u32> {
+        registry
+            .migrations()
+            .iter()
+            .filter(|migration| {
+                !self
+                    .migrations
+                    .iter()
+                    .any(|known| migration.definition == known.name)
+            })
+            .map(|migration| migration.id)
+            .collect()
+    }
+
     /// What to publish once a commit changed the walks or the jobs to `walks`
     /// and `jobs`, and the registry to `registry` if it changed it, for the same
     /// known definitions and retention.

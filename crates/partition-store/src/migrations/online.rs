@@ -17,8 +17,10 @@
 //! walks its source table in small slices between the partition processor's
 //! commands, paces and retries the slices, records the work on a job in
 //! `restate.cluster.migration_jobs`, and marks the migration `complete` in
-//! `restate.cluster.registry` once the walk is through. The journal
-//! completion-index cleanup, `jc_orphan_cleanup/1`, is the worked example.
+//! `restate.cluster.registry` once the walk is through. The test migrations at
+//! the bottom of this module, `Mark` and its variants, are the worked example:
+//! each is the size of a migration's file, and their tests are the ones §7 asks
+//! for.
 //!
 //! # 1. Is an online migration the right kind?
 //!
@@ -37,12 +39,12 @@
 //!
 //! # 2. Name and version
 //!
-//! [`OnlineMigration::NAME`] is `"name/N"`, such as `"jc_orphan_cleanup/1"`. A
+//! [`OnlineMigration::NAME`] is `"name/N"`, such as `"my_cleanup/1"`. A
 //! store registers each name once, ever, and keeps its entry forever. So a name
 //! is never renamed or reused: a migration whose rows, change, source or policy
-//! (§6) differ in any way is a new version, `"jc_orphan_cleanup/2"`, which runs
+//! (§6) differ in any way is a new version, `"my_cleanup/2"`, which runs
 //! once more on every store. The name's halves also name the kind of its walks
-//! (`jc_orphan_cleanup` version 1); a malformed name fails compilation.
+//! (`my_cleanup` version 1); a malformed name fails compilation.
 //!
 //! # 3. Why it is safe, and what you must make true
 //!
@@ -58,7 +60,7 @@
 //!                     cursor = C   end = E   never visited
 //! ```
 //!
-//! Four things are yours to make true:
+//! Five things are yours to make true:
 //!
 //! - **Foreground writes need no migration.** Rows written behind the cursor
 //!   (`B` rewritten after the walk passed it) or beyond the end (`F`, `G`) are
@@ -88,6 +90,14 @@
 //!     `C` on replica 2 only, acts on it there, and the replicas diverge. A
 //!     leftover is safe to delete only while no command can reach it: if a
 //!     command can bring it back into use, that command must delete it first.
+//! - **Don't change rows the processor keeps in memory.** The partition
+//!   processor caches some rows between commands, such as vqueue metadata, and
+//!   updates them on the assumption that its copy matches the store. A walk
+//!   that deletes or rewrites such a row leaves the cache describing a row that
+//!   is gone: the vqueue cache would merge its next update onto a deleted key.
+//!   Change such rows in a startup migration, which runs before the processor
+//!   starts, as the cleanup of obsolete vqueue metadata
+//!   (`VqueueMetadataCleanupV1`) does.
 //! - **Decide from what the transaction reads now.** The row you get was read
 //!   in this slice, and lookups through `tx`
 //!   ([`PartitionStoreTransaction::lookup_for_migration`]) see the committed
@@ -199,7 +209,7 @@
 //! large slice, on two stores with the same rows; foreground writes between
 //! slices, behind the cursor and beyond the end; a failed slice
 //! (`fail_next_slice`) commits nothing and its retry does the work; and an
-//! empty source. The worked example's tests show each.
+//! empty source. The tests at the bottom of this module show each.
 //!
 //! # 8. Release note
 //!
@@ -225,7 +235,7 @@ pub(crate) const ONLINE_MIGRATIONS: &[&MigrationDefinition] = &[];
 /// module documentation for how to write one.
 #[cfg_attr(not(test), expect(dead_code, reason = "ONLINE_MIGRATIONS is empty"))]
 pub(crate) trait OnlineMigration: Default + 'static {
-    /// The versioned name, `"name/N"`, such as `"jc_orphan_cleanup/1"`. Never
+    /// The versioned name, `"name/N"`, such as `"my_cleanup/1"`. Never
     /// renamed or reused: a changed migration is a new version.
     const NAME: &'static str;
     /// The table it walks, row by row in key order.
@@ -293,8 +303,7 @@ impl MigrationDefinition {
         }
     }
 
-    /// The kind of its walks: `jc_orphan_cleanup` version 1 for
-    /// `"jc_orphan_cleanup/1"`.
+    /// The kind of its walks: `my_cleanup` version 1 for `"my_cleanup/1"`.
     pub(crate) fn walk_kind(&self) -> WalkKind {
         WalkKind {
             name: ReString::from_static(self.walk.0),
@@ -368,11 +377,14 @@ pub(crate) mod testing {
         get_min_restate_version_from_partition_db, get_storage_features_from_partition_db,
         get_storage_version_from_partition_db,
     };
-    use crate::job::MigrationJob;
+    use crate::job::{MigrationJob, MigrationJobId};
     use crate::registry::records::{get_job, get_registry};
     use crate::registry::{FenceState, IndexDefinition, IndexKind, Migration, Requests};
     use crate::walk::engine::{self, Slice, SliceBudget, SliceError};
-    use crate::{MigrationError, PartitionStore, PartitionStoreManager, PartitionStoreTransaction};
+    use crate::{
+        MigrationError, PartitionStore, PartitionStoreManager, PartitionStoreTransaction,
+        ReplicaMigrations,
+    };
 
     use super::{MigrationDefinition, OnlineMigration};
 
@@ -543,6 +555,26 @@ pub(crate) mod testing {
         /// `M`'s job record, as stored.
         pub(crate) fn job<M: OnlineMigration>(&self) -> Option<MigrationJob> {
             get_job(self.store.partition_db(), self.entry::<M>()?.id)
+        }
+
+        /// Why `M`'s job isn't progressing, as `restate.cluster.migration_jobs`
+        /// shows it for this replica.
+        pub(crate) fn blocked_by<M: OnlineMigration>(&self) -> Option<&'static str> {
+            let db = self.store.partition_db();
+            let active = self.store.published_registry();
+            let replica = ReplicaMigrations {
+                partition_id: db.partition().id(),
+                key_range: db.partition().key_range,
+                registry: active.registry().clone(),
+                walks: active.walks().clone(),
+                jobs: active.jobs().clone(),
+                index_sizes: Default::default(),
+                driver: db.driver_state().get(),
+                unknown_migrations: active.unknown_migrations(active.registry()),
+            };
+            let id = active.registry().migration(M::NAME)?.id;
+            let job = active.jobs().get(MigrationJobId::for_entry(id))?;
+            replica.blocked_by(job, tokio::time::Instant::now())
         }
     }
 }
@@ -1087,9 +1119,10 @@ mod tests {
         assert_eq!(store.entry::<MarkOrRerun>().unwrap(), done);
 
         // A binary that doesn't know either migration keeps the kept one
-        // Complete, and sets the rerun one back in progress, with its ID and
-        // without its completion. It rebuilds the rerun one's job, waiting, and
-        // opening again changes neither.
+        // Complete, and sets the rerun one back in progress, with its ID, without
+        // its completion and with the reset recorded. It rebuilds the rerun one's
+        // job, waiting, which says why it doesn't progress, and opening again
+        // changes neither.
         store.knowing(&[]);
         store.open().await.unwrap();
         assert_eq!(store.entry::<Mark>().unwrap().state(), Some(Complete));
@@ -1102,8 +1135,10 @@ mod tests {
             (reset.timeline.completed_at, &reset.timeline.registered_at),
             (None, &done.timeline.registered_at)
         );
+        assert!(reset.timeline.reset_at.is_some() && reset.timeline.reset_by.is_some());
         let job = store.job::<MarkOrRerun>().unwrap();
         assert_eq!((job.status, job.walk), (MigrationJobStatus::Waiting, None));
+        assert_eq!(store.blocked_by::<MarkOrRerun>(), Some("unknown-migration"));
         store.open().await.unwrap();
         assert_eq!(store.entry::<MarkOrRerun>().unwrap(), reset);
         assert_eq!(store.job::<MarkOrRerun>().unwrap(), job);
@@ -1114,10 +1149,12 @@ mod tests {
         assert_eq!(marked(store.store(), &rows), [false, true, false]);
 
         // A binary that knows it again runs it from the beginning: it changes
-        // the two rows the other binary wrote, and completes for good.
+        // the two rows the other binary wrote, and completes for good, keeping
+        // the time of the reset.
         store.knowing(&[MARK, RERUN]);
         store.open().await.unwrap();
         assert!(store.entry::<MarkOrRerun>().unwrap().walk.is_some());
+        assert_eq!(store.blocked_by::<MarkOrRerun>(), None);
         store.run::<MarkOrRerun>(10).await.unwrap();
         assert_eq!(marked(store.store(), &rows), [true; 3]);
         let job = store.job::<MarkOrRerun>().unwrap();
@@ -1126,9 +1163,10 @@ mod tests {
             (MigrationJobStatus::Completed, 2)
         );
         store.open().await.unwrap();
+        let rerun = store.entry::<MarkOrRerun>().unwrap();
         assert_eq!(
-            store.entry::<MarkOrRerun>().unwrap().state(),
-            Some(Complete)
+            (rerun.state(), rerun.timeline.reset_at),
+            (Some(Complete), reset.timeline.reset_at)
         );
     }
 }
