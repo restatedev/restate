@@ -409,6 +409,8 @@ impl PartitionStore {
         let key_range = self.partition_key_range();
         let snapshot = self.db.read_snapshot()?;
         Ok(PartitionStoreSnapshot::new(
+            self.db.gate(),
+            self.db.rocksdb().executor(),
             snapshot,
             &mut self.key_buffer,
             storage_features,
@@ -1788,6 +1790,7 @@ pub(crate) trait StorageIterator {
     fn item(&self) -> Result<Option<(&[u8], &[u8])>>;
 
     /// Moves to the first entry at or after `key`.
+    #[allow(dead_code)] // Not called at the moment.
     fn seek(&mut self, key: &[u8]);
 
     /// Moves to the next entry.
