@@ -42,7 +42,19 @@
 //!
 //! Two kinds of jobs run on walks: index backfills, whose members are the
 //! indexes linked to the walk (see [`crate::registry`]), and one-time
-//! migrations, one per walk (see `crate::migrations::online`).
+//! migrations, one per walk (see `crate::migrations::online`). A later release
+//! may link a walk otherwise, for example a migration's walk that also fills
+//! the indexes that require it. This binary can't run such a walk, so it treats
+//! it like a walk of a kind it doesn't know: the walk's [`OnUnknown`] policy
+//! decides (`Walk::is_known`).
+//!
+//! ```text
+//! entries linking the walk          kind                   this binary
+//! indexes only                      index_backfill/1       runs it
+//! one known migration only          the migration's        runs it
+//! a migration and indexes, or       any                    applies the walk's policy:
+//!   several migrations                                       Refuse, or Discard
+//! ```
 
 use bytes::{Bytes, BytesMut};
 
@@ -161,9 +173,10 @@ impl Source {
 pub enum OnUnknown {
     /// The open fails without changing anything.
     Refuse = 0,
-    /// The open removes the walk and unlinks its members and its migration:
-    /// members of known definitions start a pass of this binary's own kind, the
-    /// others are retired; the migration waits for a binary that knows it.
+    /// The open removes the walk and unlinks the entries linking it: members of
+    /// known definitions start a pass of this binary's own kind, the others are
+    /// retired; a known migration restarts with a walk of its own, the others
+    /// wait for a binary that knows them.
     Discard = 1,
 }
 
@@ -282,10 +295,33 @@ impl Walk {
         self.kind == WalkKind::index_backfill() && self.source() == Some(Source::EntryStatus)
     }
 
-    /// Whether this binary can run the walk: an index backfill, or a walk of one
-    /// of the `migrations` it knows.
-    pub(crate) fn is_known(&self, migrations: &[&MigrationDefinition]) -> bool {
-        self.is_index_backfill() || migrations.iter().any(|migration| migration.runs(self))
+    /// Whether this binary can run the walk, given the `registry` entries that
+    /// link it: an index backfill that no migration links, or the walk of one of
+    /// the `migrations` it knows, linked by no index and no other migration,
+    /// without member evidence. Anything else is a later release's walk, and its
+    /// policy applies (see the module documentation).
+    ///
+    /// A known migration's walk that no migration links still counts as known,
+    /// so that the open rejects it as inconsistent rather than discarding it.
+    pub(crate) fn is_known(
+        &self,
+        registry: Option<&Registry>,
+        migrations: &[&MigrationDefinition],
+    ) -> bool {
+        let linking_migrations = registry.map_or(0, |registry| {
+            registry
+                .migrations()
+                .iter()
+                .filter(|migration| migration.walk == Some(self.id))
+                .count()
+        });
+        if self.is_index_backfill() {
+            return linking_migrations == 0;
+        }
+        migrations.iter().any(|migration| migration.runs(self))
+            && linking_migrations <= 1
+            && self.members.is_empty()
+            && registry.is_none_or(|registry| registry.members(self.id).next().is_none())
     }
 
     /// The evidence of member `index`, if it differs from the default.
@@ -389,10 +425,15 @@ impl Walks {
     }
 
     /// Checks, before an open changes anything, that every walk this binary
-    /// doesn't know, knowing `migrations`, may be discarded.
-    pub(crate) fn preflight(&self, migrations: &[&MigrationDefinition]) -> Result<(), WalkError> {
+    /// doesn't know, knowing `migrations` and the entries of `registry`, may be
+    /// discarded.
+    pub(crate) fn preflight(
+        &self,
+        registry: Option<&Registry>,
+        migrations: &[&MigrationDefinition],
+    ) -> Result<(), WalkError> {
         match self.walks.iter().find(|walk| {
-            !walk.is_known(migrations)
+            !walk.is_known(registry, migrations)
                 && OnUnknown::from_number(walk.on_unknown) == OnUnknown::Refuse
         }) {
             Some(walk) => Err(WalkError::Refused {
@@ -404,17 +445,22 @@ impl Walks {
         }
     }
 
-    /// Removes the walks this binary doesn't know, knowing `migrations`,
-    /// returning their IDs, which stay issued. Run [`Self::preflight`] first: it
-    /// refuses the ones that must stay.
-    pub(crate) fn discard_unknown(&mut self, migrations: &[&MigrationDefinition]) -> Vec<u64> {
+    /// Removes the walks this binary doesn't know, knowing `migrations` and the
+    /// entries of `registry`, returning their IDs, which stay issued. Run
+    /// [`Self::preflight`] first: it refuses the ones that must stay.
+    pub(crate) fn discard_unknown(
+        &mut self,
+        registry: Option<&Registry>,
+        migrations: &[&MigrationDefinition],
+    ) -> Vec<u64> {
         let discarded = self
             .walks
             .iter()
-            .filter(|walk| !walk.is_known(migrations))
+            .filter(|walk| !walk.is_known(registry, migrations))
             .map(|walk| walk.id)
             .collect();
-        self.walks.retain(|walk| walk.is_known(migrations));
+        self.walks
+            .retain(|walk| walk.is_known(registry, migrations));
         discarded
     }
 
@@ -694,11 +740,11 @@ mod tests {
         );
 
         let mut discardable = unknown(OnUnknown::Discard);
-        discardable.preflight(&[]).unwrap();
-        assert_eq!(discardable.discard_unknown(&[]), [3]);
+        discardable.preflight(None, &[]).unwrap();
+        assert_eq!(discardable.discard_unknown(None, &[]), [3]);
         assert!(discardable.entries().is_empty());
         assert!(matches!(
-            unknown(OnUnknown::Refuse).preflight(&[]),
+            unknown(OnUnknown::Refuse).preflight(None, &[]),
             Err(WalkError::Refused {
                 id: 3,
                 table: 99,
@@ -711,10 +757,22 @@ mod tests {
         assert!(
             Walks::new(future_policy, 4)
                 .unwrap()
-                .preflight(&[])
+                .preflight(None, &[])
                 .is_err(),
             "a policy this binary doesn't know refuses"
         );
+        // A later release may link a migration to an index backfill, which this
+        // binary can't run: the walk's own policy applies, `Discard`.
+        let mut later = registry.clone();
+        let by = ReString::from_static("1.9.0");
+        let keep = crate::registry::MigrationOnUnknown::Keep;
+        let migration = later.register_migration("later/1", keep, 1, by).unwrap();
+        later.set_migration_walk(migration, Some(3)).unwrap();
+        let walk = reloaded.get(3).unwrap();
+        assert!(walk.is_known(Some(&registry), &[]) && !walk.is_known(Some(&later), &[]));
+        let mut discardable = reloaded.clone();
+        discardable.preflight(Some(&later), &[]).unwrap();
+        assert_eq!(discardable.discard_unknown(Some(&later), &[]), [3]);
         // `start` rejects what loading would reject, and reserves no ID for it.
         let (before, counter) = (reloaded.clone(), registry.clone());
         assert!(matches!(

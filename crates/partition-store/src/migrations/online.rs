@@ -551,7 +551,7 @@ mod tests {
     use crate::journal_table_v2::JournalCompletionIdToCommandIndexKey;
     use crate::keys::{EncodeTableKey, KeyKind};
     use crate::registry::MigrationState::{Complete, InProgress};
-    use crate::registry::records;
+    use crate::registry::{IndexKind, IndexStatus, records};
     use crate::walk::engine::{Slice, SliceBudget};
     use crate::{MigrationError, PartitionStore, StorageAccess};
 
@@ -915,6 +915,58 @@ mod tests {
         assert_eq!(store.entry::<Mark>().unwrap().state(), Some(Complete));
         store.knowing(&[]);
         assert!(store.open().await.is_err());
+    }
+
+    #[restate_core::test]
+    async fn walks_linked_as_a_later_release_may_follow_their_policy() {
+        let mut store = Harness::fenced(&[MARK]).await;
+        let rows = seed(store.store(), [1, 2, 3]).await;
+        store.open().await.unwrap();
+        store.slice::<Mark>(2).await.unwrap();
+        let walk = store.entry::<Mark>().unwrap().walk.unwrap();
+
+        // A later release runs a migration of its own and an index build on
+        // Mark's walk too. This binary can't run that walk.
+        let db = store.store().partition_db().clone();
+        let (records, _) = records::load(&db).unwrap();
+        let (mut registry, mut walks) = (records.registry.unwrap(), records.walks);
+        let by = ReString::from_static("1.9.0");
+        let keep = MigrationOnUnknown::Keep;
+        let later = registry.register_migration("later/1", keep, 1, by).unwrap();
+        registry.set_migration_walk(later, Some(walk)).unwrap();
+        let build = registry
+            .register("later_index/1", IndexKind::Secondary)
+            .unwrap();
+        registry.link(build, walk).unwrap();
+        let mut policy = |on_unknown: OnUnknown| {
+            let shared = walks.entries_mut().iter_mut().find(|w| w.id == walk);
+            shared.unwrap().on_unknown = on_unknown as u32;
+            records::testing::overwrite(&db, &registry, &walks);
+        };
+
+        // If the walk refuses, the open fails and changes nothing.
+        policy(OnUnknown::Refuse);
+        let before = records::get_registry(&db).unwrap();
+        assert!(matches!(
+            store.open().await,
+            Err(MigrationError::MigrationBarrier(reason)) if reason.contains(&format!("walk {walk}"))
+        ));
+        assert_eq!(records::get_registry(&db).unwrap(), before);
+
+        // If it may be discarded, the open removes it. Mark restarts from the
+        // beginning with a walk of its own, the unknown migration waits
+        // unlinked, and the unknown build is retired.
+        policy(OnUnknown::Discard);
+        store.open().await.unwrap();
+        let reopened = records::get_registry(&db).unwrap().unwrap();
+        let restarted = reopened.migration(Mark::NAME).unwrap().walk;
+        assert!(restarted.is_some_and(|restarted| restarted != walk));
+        let waiting = reopened.get_migration(later).unwrap();
+        assert_eq!((waiting.state(), waiting.walk), (Some(InProgress), None));
+        assert_eq!(reopened.get(build).unwrap().state, IndexStatus::Dropped);
+        store.run::<Mark>(10).await.unwrap();
+        assert_eq!(marked(store.store(), &rows), [true; 3]);
+        assert_eq!(store.entry::<Mark>().unwrap().state(), Some(Complete));
     }
 
     #[restate_core::test]

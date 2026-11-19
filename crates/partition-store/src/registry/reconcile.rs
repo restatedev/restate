@@ -219,7 +219,10 @@ impl PartitionStore {
                  binaries that don't know it; open the store with that release or a newer one",
                 migration.definition, migration.id
             )),
-            None => walks.preflight(migrations).err().map(|err| err.to_string()),
+            None => walks
+                .preflight(registry, migrations)
+                .err()
+                .map(|err| err.to_string()),
         };
         if let Some(reason) = refused {
             let minimum = get_min_restate_version_from_partition_db(db)?;
@@ -272,14 +275,13 @@ impl PartitionStore {
                 .map_err(|err| barrier(format!("position of walk {}", walk.id), err))
         };
         for walk in walks.entries() {
+            // A walk this binary can't run keeps its positions opaque: the open
+            // discards it, or refused above.
+            if !walk.is_known(registry, migrations) {
+                continue;
+            }
             let linked = registry.and_then(|registry| registry.migration_of_walk(walk.id));
             if walk.is_index_backfill() {
-                if let Some(migration) = linked {
-                    return Err(integrity(format!(
-                        "link of migration '{}' to index backfill {}",
-                        migration.definition, walk.id
-                    )));
-                }
                 for member in &walk.members {
                     if registry
                         .and_then(|registry| registry.get(member.index))
@@ -301,11 +303,8 @@ impl PartitionStore {
                     return Err(integrity(format!("walk {} without members", walk.id)));
                 }
             } else if let Some(definition) = migrations.iter().find(|known| known.runs(walk)) {
-                // A migration's walk runs its own entry, with neither members
-                // nor parameters.
+                // A migration's walk runs its own entry, without parameters.
                 if linked.is_none_or(|migration| migration.definition != definition.name)
-                    || registry.is_some_and(|registry| registry.members(walk.id).next().is_some())
-                    || !walk.members.is_empty()
                     || !walk.params.is_empty()
                     || walk
                         .cursor
@@ -319,7 +318,6 @@ impl PartitionStore {
                 }
                 positions(walk, definition.source, &[])?;
             }
-            // Any other walk keeps its positions opaque; the open discards it.
         }
         Ok((records, unreadable_jobs))
     }
@@ -355,10 +353,11 @@ impl PartitionStore {
             by: ReString::from(current_version.to_string()),
         };
 
-        // Walks this binary doesn't know, and may discard: their members restart
-        // under this binary's kind, or are retired below; their migration waits
-        // for a binary that knows it.
-        let discarded = walks.discard_unknown(requests.migrations);
+        // Walks this binary can't run, and may discard: their members restart
+        // under this binary's kind, or are retired below; a known migration
+        // restarts with a walk of its own below, the others wait for a binary
+        // that knows them.
+        let discarded = walks.discard_unknown(Some(&registry), requests.migrations);
         if !discarded.is_empty() {
             let on_discarded =
                 |walk: Option<u64>| walk.is_some_and(|walk| discarded.contains(&walk));
@@ -386,7 +385,7 @@ impl PartitionStore {
                 walks = ?discarded,
                 indexes = ?unlinked,
                 migrations = ?waiting,
-                "Discarded walks of a kind this binary doesn't know"
+                "Discarded walks this binary can't run"
             );
         }
         // This binary's writes may undo the Complete migrations it doesn't know;

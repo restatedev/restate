@@ -365,9 +365,10 @@ impl Registry {
                 return invalid("only a Backfilling index can be backfilled");
             }
         }
+        // Several entries may link one walk: a later release's walk may run a
+        // migration and the builds that require it. The open decides whether
+        // this binary can run such a walk (`crate::walk::Walk::is_known`).
         let mut definitions = std::collections::BTreeSet::new();
-        let mut walks: std::collections::BTreeSet<_> =
-            self.indexes.iter().filter_map(|entry| entry.walk).collect();
         for migration in &self.migrations {
             issued(migration.id)?;
             if !definitions.insert(&migration.definition) {
@@ -379,9 +380,6 @@ impl Registry {
             }
             if migration.walk.is_some() && migration.state() == Some(MigrationState::Complete) {
                 return invalid("a Complete migration has a walk");
-            }
-            if migration.walk.is_some_and(|walk| !walks.insert(walk)) {
-                return invalid("a migration shares its walk");
             }
         }
         Ok(())
@@ -762,7 +760,7 @@ mod tests {
             valid
         };
         type Corruption = (&'static str, fn(&mut Registry));
-        let broken: [Corruption; 14] = [
+        let broken: [Corruption; 13] = [
             ("counter below the floor", |r| r.next_id = 10),
             ("walk counter at zero", |r| r.next_walk_id = 0),
             ("ID not issued", |r| r.next_id = 65),
@@ -782,9 +780,6 @@ mod tests {
             ("walk on a Complete migration", |r| {
                 r.migrations[0].state = MigrationState::Complete as u32
             }),
-            ("migration on an index's walk", |r| {
-                r.migrations[0].walk = Some(1)
-            }),
             ("migration registered twice", |r| {
                 let twice = Migration {
                     id: 67,
@@ -796,6 +791,11 @@ mod tests {
             }),
         ];
         assert!(Registry::decode(&valid.encode()).is_ok());
+        // Entries sharing a walk load: a later release's walk may run a
+        // migration and the builds that require it.
+        let mut shared = valid.clone();
+        shared.migrations[0].walk = Some(1);
+        assert!(Registry::decode(&shared.encode()).is_ok());
         for (case, corrupt) in broken {
             let mut registry = valid.clone();
             corrupt(&mut registry);
