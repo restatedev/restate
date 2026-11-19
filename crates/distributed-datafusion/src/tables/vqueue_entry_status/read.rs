@@ -722,7 +722,12 @@ impl EntryStatusRead {
         metrics: ReadMetrics,
         chosen: Option<tokio::sync::oneshot::Sender<EntryIndexPath>>,
     ) -> anyhow::Result<SendableRecordBatchStream> {
-        anyhow::ensure!(batch_size > 0, "batch size must be positive");
+        // Each multi-get fetches at most one batch of rows' statuses, the batch
+        // already lowered to a LIMIT the read is given: a bound per call, not
+        // on all the read fetches.
+        let Some(window) = NonZeroUsize::new(batch_size) else {
+            anyhow::bail!("batch size must be positive");
+        };
         let index_metrics = match &self.access {
             EntryStatusAccess::Stages(reads) if reads.prefiltered() => {
                 Some(IndexMetrics::new(&metrics).with_rejections(&metrics))
@@ -882,6 +887,7 @@ impl EntryStatusRead {
                 Arc::new(CountedEntryStatusScan {
                     scan: filter,
                     metrics: index_metrics,
+                    window,
                 }),
                 BatchSink::new(
                     Batches::<VqueueEntryStatus>::new(
@@ -994,6 +1000,8 @@ impl Table for CountedEntryStatusRecords {
 pub(crate) struct CountedEntryStatusScan {
     scan: EntryStatusScan,
     metrics: Option<IndexMetrics>,
+    /// The most statuses one multi-get fetches: the query's row batch size.
+    window: NonZeroUsize,
 }
 
 impl CursorScan<CountedEntryStatusRecords> for ReadSnapshot {
@@ -1003,9 +1011,13 @@ impl CursorScan<CountedEntryStatusRecords> for ReadSnapshot {
         &self,
         request: Arc<CountedEntryStatusScan>,
     ) -> restate_storage_api::Result<CountedCursor> {
-        let CountedEntryStatusScan { scan, metrics } = Arc::unwrap_or_clone(request);
+        let CountedEntryStatusScan {
+            scan,
+            metrics,
+            window,
+        } = Arc::unwrap_or_clone(request);
         Ok(CountedCursor {
-            cursor: self.entry_status_cursor(scan)?,
+            cursor: self.entry_status_cursor_with_window(scan, window)?,
             metrics,
         })
     }

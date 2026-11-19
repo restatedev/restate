@@ -225,7 +225,23 @@ impl ReadSnapshot {
         &self,
         scan: impl Into<EntryStatusScan>,
     ) -> Result<EntryStatusCursor> {
+        self.entry_status_cursor_with_window(scan, ENTRY_STATUS_MULTI_GET_BATCH_SIZE)
+    }
+
+    /// [`Self::entry_status_cursor`], fetching at most `window` statuses per
+    /// multi-get, and never more than [`ENTRY_STATUS_MULTI_GET_BATCH_SIZE`]. A
+    /// query passes its row batch size, which execution already lowers to a
+    /// LIMIT the read is given. This bounds each multi-get, not what a read
+    /// fetches in all: it refills windows until its consumer stops it, skips
+    /// missing statuses, and rows a filter above the read rejects fill its
+    /// batches without counting toward the query's result.
+    pub fn entry_status_cursor_with_window(
+        &self,
+        scan: impl Into<EntryStatusScan>,
+        window: NonZeroUsize,
+    ) -> Result<EntryStatusCursor> {
         self.check_active()?;
+        let window = window.min(ENTRY_STATUS_MULTI_GET_BATCH_SIZE);
         let filter = match scan.into() {
             EntryStatusScan::Filter(filter) => filter,
             EntryStatusScan::Keys(request) => {
@@ -237,7 +253,7 @@ impl ReadSnapshot {
             }
             EntryStatusScan::Stages(reads) => {
                 return Ok(EntryStatusCursor {
-                    mode: Mode::Stages(Box::new(StagesCursor::new(self.clone(), reads))),
+                    mode: Mode::Stages(Box::new(StagesCursor::new(self.clone(), reads, window))),
                     first: true,
                 });
             }
@@ -246,7 +262,7 @@ impl ReadSnapshot {
                 fallback,
                 execution,
             } => {
-                let cursor = IndexedCursor::finished(self, &read, &execution)?;
+                let cursor = IndexedCursor::finished(self, &read, &execution, window)?;
                 return self.indexed_or(cursor, fallback);
             }
             EntryStatusScan::Active {
@@ -254,14 +270,14 @@ impl ReadSnapshot {
                 fallback,
                 execution,
             } => {
-                let cursor = IndexedCursor::active(self, &read, &execution)?;
+                let cursor = IndexedCursor::active(self, &read, &execution, window)?;
                 return self.indexed_or(cursor, fallback);
             }
         };
         let scan = match filter {
             ScanEntryIdFilter::EntryIdSet(ids) => {
                 return Ok(EntryStatusCursor {
-                    mode: Mode::Keys(MultiGetCursor::new(self.clone(), ids)),
+                    mode: Mode::Keys(MultiGetCursor::with_batch_size(self.clone(), ids, window)),
                     first: true,
                 });
             }
