@@ -18,6 +18,7 @@ use std::sync::{Arc, OnceLock};
 use std::task::{Context, Waker};
 use std::time::Duration;
 
+use futures::FutureExt;
 use rocksdb::{ErrorKind, ReadOptions, ReadTier};
 use tokio::time::timeout;
 
@@ -889,6 +890,91 @@ async fn prepared_iteration_runs_while_cached_then_on_a_worker() -> anyhow::Resu
     timeout(DEADLINE, gate.drain()).await?;
 
     drop((snapshot, scope, db));
+    Ok(())
+}
+
+#[tokio::test]
+async fn prepared_get_reads_from_memory_or_on_a_worker() -> anyhow::Result<()> {
+    let tempdir = restate_test_util::tempdir()?;
+    let cache = rocksdb::Cache::new_lru_cache(1 << 20);
+    let db = standalone_with(spec_with(&tempdir.path().join("db"), OneRowBlocks(cache)))?;
+    let raw = db.inner().as_raw_db();
+    let other = db.inner().cf_handle("other").unwrap();
+    {
+        // "other" stays in the memtable. "data" is flushed, and not cached yet.
+        let data = db.inner().cf_handle("data").unwrap();
+        raw.put_cf(&data, [1], [10])?;
+        raw.put_cf(&other, [1], [20])?;
+        raw.flush_cf(&data)?;
+    }
+    let scope = test_scope(&db, false);
+    let snapshot = ReadSnapshot::new(&scope, scope.gate())?;
+    let executor = crate::SinglePoolExecutor::new("test", NonZeroUsize::MIN);
+    let gate = scope.gate().child();
+
+    // In memory: the lookup is answered on this thread, also for a missing key.
+    let Inline::Done(Ok(Some(value))) =
+        snapshot.prepare_get(&gate, Cf::Other, &[1]).call_cached()?
+    else {
+        panic!("the lookup should have been answered from memory");
+    };
+    assert_eq!(&*value, [20]);
+    assert!(matches!(
+        snapshot.prepare_get(&gate, Cf::Other, &[9]).call_cached()?,
+        Inline::Done(Ok(None))
+    ));
+    assert!(gate.is_idle());
+
+    // Flushed and not in the block cache: the lookup is handed back, and a
+    // worker answers it.
+    let Inline::WouldBlock(rest) = snapshot.prepare_get(&gate, Cf::Data, &[1]).call_cached()?
+    else {
+        panic!("the lookup should have needed the disk");
+    };
+    let read = executor.spawn_cancellable(rest.with_read_perf("test"))?;
+    assert_eq!(timeout(DEADLINE, read).await???.as_deref(), Some(&[10][..]));
+
+    // The worker's read left the value in the block cache, so the lookup is now
+    // answered before `call_cached_or_spawn` returns.
+    let read = snapshot
+        .prepare_get(&gate, Cf::Data, &[1])
+        .with_read_perf("test")
+        .call_cached_or_spawn(&executor)?;
+    let cached = read.now_or_never().expect("answered from memory")??;
+    assert_eq!(cached.as_deref(), Some(&[10][..]));
+
+    // A scope's lookup sees the latest data, and a snapshot's doesn't.
+    raw.put_cf(&other, [2], [30])?;
+    let latest = scope
+        .prepare_get(&gate, Cf::Other, &[2])
+        .call_cached_or_spawn(&executor)?;
+    assert_eq!(
+        timeout(DEADLINE, latest).await???.as_deref(),
+        Some(&[30][..])
+    );
+    let old = snapshot
+        .prepare_get(&gate, Cf::Other, &[2])
+        .call_cached_or_spawn(&executor)?;
+    assert!(timeout(DEADLINE, old).await???.is_none());
+
+    // A value holds its own clone of the snapshot it was read through.
+    drop((snapshot, cached));
+    assert_eq!(&*value, [20]);
+    drop(value);
+
+    // Once the gate is sealed, a lookup isn't admitted.
+    gate.seal();
+    assert_matches!(
+        scope
+            .prepare_get(&gate, Cf::Other, &[1])
+            .call_cached()
+            .map(drop),
+        Err(AdmissionClosed)
+    );
+    timeout(DEADLINE, gate.drain()).await?;
+
+    drop(other);
+    drop((scope, db));
     Ok(())
 }
 

@@ -25,12 +25,12 @@ use restate_memory::{
     ClaimedMemoryPool, LentMemoryPool, LocalMemoryLease, OutOfMemory, PinHandle,
     PinnableMemoryStream, ReserveMemory,
 };
+use restate_rocksdb::IterAction;
 use restate_rocksdb::reads::{InlineVisitor, IterationError, IterationOutcome, IteratorVisitor};
-use restate_rocksdb::{IterAction, RocksDbPerfExt};
 use restate_storage_api::{BudgetedReadError, StorageError};
 
 use crate::keys::KeyKind;
-use crate::partition_store::StorageRead;
+use crate::offloaded_reads::OffloadedRead;
 use crate::scan::PhysicalScan;
 use crate::{PartitionReadSnapshot, TableScanIterationDecision};
 
@@ -48,47 +48,51 @@ pub(crate) type Row<T> = Result<T, BudgetedReadError>;
 ///
 /// Waits for the budget if needed, without holding on to the value: it's read
 /// again afterwards, as it may have changed unless `storage` is a snapshot.
+///
+/// The value is read on the calling task if it's in memory, and by a worker
+/// of `executor` otherwise (see [`OffloadedRead`]). `name` labels the read's
+/// perf metrics, which don't include what `decode` reads.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn budgeted_get<S, B, T>(
     storage: &S,
     name: &'static str,
     key_kind: KeyKind,
     key: &[u8],
     budget: &mut B,
+    executor: &(impl IoExecutor + Sync),
     cost: impl Fn(&[u8]) -> usize,
     decode: impl FnOnce(&[u8], LocalMemoryLease) -> Result<T, StorageError>,
 ) -> Row<Option<T>>
 where
-    S: StorageRead,
+    S: OffloadedRead,
     B: ReserveMemory,
 {
-    async move {
-        let mut reserved: Option<LocalMemoryLease> = None;
-        loop {
-            let cost = {
-                let Some(value) = storage.get(key_kind, key)? else {
-                    return Ok(None);
-                };
-
-                let cost = cost(&value);
-                match &mut reserved {
-                    // Reserved while waiting, and the value hasn't grown since.
-                    Some(lease) if lease.size() >= cost => lease.shrink(lease.size() - cost),
-                    _ => {
-                        drop(reserved.take());
-                        reserved = budget.try_reserve(cost);
-                    }
-                }
-                if let Some(lease) = reserved.take() {
-                    return Ok(Some(decode(&value, lease)?));
-                }
-                cost
+    let mut reserved: Option<LocalMemoryLease> = None;
+    loop {
+        let cost = {
+            let read = storage.get_cached_or_offload(name, key_kind, key, executor)?;
+            let Some(value) = read.await? else {
+                return Ok(None);
             };
-            // The value is dropped: it isn't kept in memory while waiting.
-            reserved = Some(budget.reserve(cost).await?);
-        }
+            let value = value.as_ref();
+
+            let cost = cost(value);
+            match &mut reserved {
+                // Reserved while waiting, and the value hasn't grown since.
+                Some(lease) if lease.size() >= cost => lease.shrink(lease.size() - cost),
+                _ => {
+                    drop(reserved.take());
+                    reserved = budget.try_reserve(cost);
+                }
+            }
+            if let Some(lease) = reserved.take() {
+                return Ok(Some(decode(value, lease)?));
+            }
+            cost
+        };
+        // The value is dropped: it isn't kept in memory while waiting.
+        reserved = Some(budget.reserve(cost).await?);
     }
-    .with_read_perf(name)
-    .await
 }
 
 /// A budgeted scan of a snapshot that has been prepared but hasn't read

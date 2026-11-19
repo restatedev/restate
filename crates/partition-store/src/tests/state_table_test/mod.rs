@@ -82,13 +82,19 @@ async fn prefix_scans<T: ReadStateTable>(table: &T) {
 }
 
 async fn verify_budgeted_point_reads_after_delete(store: &mut PartitionStore) {
+    let executor = low_pri_executor(store);
     let service_id = ServiceId::with_partition_key(1337, "svc-1", "key-1");
     let mut budget = LocalMemoryPool::unlimited();
 
     // A deleted or absent key reads as `None`, a present one comes with its lease.
     for (key, expected) in [("k2", None), ("absent", None), ("k1", Some("v1"))] {
         let got = store
-            .get_user_state_budgeted(&service_id, &ByteString::from_static(key), &mut budget)
+            .get_user_state_budgeted(
+                &service_id,
+                &ByteString::from_static(key),
+                &mut budget,
+                &executor,
+            )
             .await
             .expect("point read should not fail")
             .map(|(value, lease)| {
@@ -198,6 +204,7 @@ impl Wake for WakeCounter {
 #[restate_core::test]
 async fn budgeted_point_reads_are_lazy_and_snapshot_consistent() {
     let mut store = storage_test_environment().await;
+    let executor = low_pri_executor(&store);
     for scope in [None, Some(Scope::try_from_static("scope").unwrap())] {
         let service_id = ServiceId::new(scope, "svc", "key");
         let k1 = Bytes::from_static(b"k1");
@@ -226,7 +233,7 @@ async fn budgeted_point_reads_are_lazy_and_snapshot_consistent() {
         let mut budget = LendableMemoryPool::new(budget);
         let mut frozen = Box::pin(
             snapshot
-                .get_user_states_budgeted(&service_id, &keys, budget.claim().await)
+                .get_user_states_budgeted(&service_id, &keys, budget.claim().await, &executor)
                 .unwrap(),
         );
         assert_eq!(pool.used(), ByteCount::ZERO);
@@ -238,7 +245,7 @@ async fn budgeted_point_reads_are_lazy_and_snapshot_consistent() {
         txn.commit().await.unwrap();
         drop(txn);
         let (value, lease) = store
-            .get_user_state_budgeted(&service_id, &keys[0], &mut live_budget)
+            .get_user_state_budgeted(&service_id, &keys[0], &mut live_budget, &executor)
             .await
             .unwrap()
             .unwrap();
@@ -259,6 +266,7 @@ async fn budgeted_point_reads_are_lazy_and_snapshot_consistent() {
 #[restate_core::test]
 async fn budgeted_point_reads_wait_wake_and_cancel() {
     let mut store = storage_test_environment().await;
+    let executor = low_pri_executor(&store);
     let mut txn = store.transaction();
     populate_data(&mut txn);
     txn.commit().await.unwrap();
@@ -277,7 +285,7 @@ async fn budgeted_point_reads_wait_wake_and_cancel() {
     // Cancellation while waiting must not leak a reservation.
     let mut stream = Box::pin(
         snapshot
-            .get_user_states_budgeted(&service_id, &keys, budget.claim().await)
+            .get_user_states_budgeted(&service_id, &keys, budget.claim().await, &executor)
             .unwrap(),
     );
     assert!(stream.as_mut().poll_next(&mut cx).is_pending());
@@ -286,7 +294,7 @@ async fn budgeted_point_reads_wait_wake_and_cancel() {
 
     let mut stream = Box::pin(
         snapshot
-            .get_user_states_budgeted(&service_id, &keys, budget.claim().await)
+            .get_user_states_budgeted(&service_id, &keys, budget.claim().await, &executor)
             .unwrap(),
     );
     assert!(stream.as_mut().poll_next(&mut cx).is_pending());
@@ -312,7 +320,8 @@ async fn budgeted_point_reads_wait_wake_and_cancel() {
     let (_pool, mut budget) = bounded_budget(8, 8);
     let first_held = budget.try_reserve(4).unwrap();
     let second_held = budget.try_reserve(4).unwrap();
-    let mut read = Box::pin(store.get_user_state_budgeted(&service_id, &keys[0], &mut budget));
+    let mut read =
+        Box::pin(store.get_user_state_budgeted(&service_id, &keys[0], &mut budget, &executor));
     assert!(read.as_mut().poll(&mut cx).is_pending());
     let mut txn = writer.transaction();
     txn.put_user_state(&service_id, &Bytes::from_static(b"k1"), b"longer")
@@ -446,6 +455,7 @@ async fn budgeted_scans_continue_on_a_storage_worker() {
 #[restate_core::test]
 async fn budgeted_point_reads_reject_infeasible_reservations() {
     let mut store = storage_test_environment().await;
+    let executor = low_pri_executor(&store);
     let mut txn = store.transaction();
     populate_data(&mut txn);
     txn.commit().await.unwrap();
@@ -463,7 +473,7 @@ async fn budgeted_point_reads_reject_infeasible_reservations() {
         let mut budget = LendableMemoryPool::new(budget);
         let mut stream = Box::pin(
             snapshot
-                .get_user_states_budgeted(&service_id, &keys, budget.claim().await)
+                .get_user_states_budgeted(&service_id, &keys, budget.claim().await, &executor)
                 .unwrap(),
         );
         let retained = if pin_first {

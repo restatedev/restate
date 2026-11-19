@@ -60,6 +60,7 @@ pub enum StorageTaskKind {
     OpenDb,
     CloseDb,
     BackgroundIterator,
+    Get,
     MultiGet,
     ReadProperties,
 }
@@ -105,6 +106,7 @@ impl Admission for Cancelled {
 /// |---|---|---|---|
 /// | `&C`, for a shared handle `C` | [`RocksDb::prepare`](crate::RocksDb::prepare) (the database), [`StorageOp::with_context`] | a clone of `C` | `&C` |
 /// | a [`ReadIterator`](crate::reads::ReadIterator) | [`ReadIterator::prepare`](crate::reads::ReadIterator::prepare) | the same iterator, made owned, at the same position | `&mut ReadIterator<'_, _>` |
+/// | a [`Lookup`](crate::reads::Lookup) | [`ReadSnapshot::prepare_get`](crate::reads::ReadSnapshot::prepare_get) | a clone of the snapshot or scope, and a copy of the key | both |
 /// | `()` | operations that need nothing, such as deleting a column family | nothing | nothing |
 /// | [`Cooperative<C>`] | [`StorageOp::with_context_cancellable_async`], [`ReadSnapshot::prepare_iteration`](crate::reads::ReadSnapshot::prepare_iteration) | [`Cancellable<C::Owned>`] | the owned context and a required [`Cancelled`] observer |
 ///

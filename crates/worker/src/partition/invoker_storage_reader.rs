@@ -21,10 +21,8 @@ use restate_memory::{
 };
 use restate_partition_store::{PartitionStore, PartitionStoreSnapshot};
 use restate_rocksdb::SinglePoolExecutor;
-use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
-use restate_storage_api::{
-    BudgetedReadError, StorageError, journal_table as journal_table_v1, journal_table_v2,
-};
+use restate_storage_api::invocation_status_table::InvocationStatus;
+use restate_storage_api::{BudgetedReadError, StorageError, journal_table as journal_table_v1};
 use restate_types::identifiers::{InvocationId, ServiceId};
 use restate_types::schema::invocation_target::StatePreloadPolicy;
 use restate_worker_api::invoker::JournalMetadata;
@@ -107,13 +105,13 @@ impl InvocationReader for InvokerStorageReader {
         if journal_kind == JournalKind::V2 {
             let result = self
                 .storage
-                .get_journal_v2_entry_budgeted(*invocation_id, entry_index, budget)
+                .get_journal_v2_entry_budgeted(*invocation_id, entry_index, budget, &self.executor)
                 .await?;
             Ok(result.map(|(entry, lease)| (JournalEntry::JournalV2(entry), lease)))
         } else {
             let result = self
                 .storage
-                .get_journal_v1_entry_budgeted(invocation_id, entry_index, budget)
+                .get_journal_v1_entry_budgeted(invocation_id, entry_index, budget, &self.executor)
                 .await?;
             Ok(result.map(|(je, lease)| {
                 let entry = match je {
@@ -137,7 +135,7 @@ impl InvocationReader for InvokerStorageReader {
     ) -> Result<Option<(Bytes, LocalMemoryLease)>, InvokerStorageReaderError> {
         Ok(self
             .storage
-            .get_user_state_budgeted(service_id, key, budget)
+            .get_user_state_budgeted(service_id, key, budget, &self.executor)
             .await?)
     }
 }
@@ -170,7 +168,11 @@ impl InvocationReaderTransaction for InvokerStorageReaderTransaction<'_> {
         &mut self,
         invocation_id: &InvocationId,
     ) -> Result<Option<JournalMetadata>, Self::Error> {
-        let invocation_status = self.snapshot.get_invocation_status(invocation_id).await?;
+        // These reads leave their disk reads to a storage worker.
+        let invocation_status = self
+            .snapshot
+            .get_invocation_status_cached_or_offload(invocation_id, self.executor)
+            .await?;
 
         let random_seed = invocation_status
             .get_random_seed()
@@ -178,13 +180,12 @@ impl InvocationReaderTransaction for InvokerStorageReaderTransaction<'_> {
 
         if let InvocationStatus::Invoked(invoked_status) = invocation_status {
             // Check if using journal v2 by seeing if v2 has any entries
-            let journal_v2_entry = journal_table_v2::ReadJournalTable::get_journal_entry(
-                &mut self.snapshot,
-                *invocation_id,
-                0, // Just check first entry to determine version
-            )
-            .await?;
-            let journal_kind = if journal_v2_entry.is_some() {
+            let has_journal_v2 = self
+                .snapshot
+                // Just check first entry to determine version
+                .has_journal_v2_entry_cached_or_offload(*invocation_id, 0, self.executor)
+                .await?;
+            let journal_kind = if has_journal_v2 {
                 JournalKind::V2
             } else {
                 JournalKind::V1
@@ -270,6 +271,7 @@ impl InvocationReaderTransaction for InvokerStorageReaderTransaction<'_> {
                     service_id,
                     eager_keys.as_ref(),
                     budget,
+                    self.executor,
                 )?;
                 let stream = PinnableMapErr::new(stream, InvokerStorageReaderError::from);
                 (Either::Right(stream), true)
