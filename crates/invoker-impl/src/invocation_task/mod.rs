@@ -31,7 +31,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, instrument};
 
-use restate_memory::{LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
+use restate_memory::{LocalMemoryLease, LocalMemoryPool, OutOfMemoryKind, PinnableMemoryStream};
 use restate_service_client::{ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::LimitKey;
 use restate_types::deployment::PinnedDeployment;
@@ -115,7 +115,29 @@ where
 
     let mut stream = std::pin::pin!(state.into_inner());
     while let Some(result) = stream.as_mut().next().await {
-        let (key, value, lease) = result.map_err(InvokerError::from_state_reader)?;
+        let (key, value, lease) = match result {
+            Ok(row) => row,
+            // The stream reserves an entry's budget before yielding it, so an entry
+            // that doesn't fit next to the collected (pinned) ones fails with
+            // `UpperBoundExceeded` before the size check below can truncate. Both mean
+            // the same: the rest of the state is served lazily.
+            Err(err)
+                if err
+                    .budget_exhaustion()
+                    .is_some_and(|oom| oom.kind == OutOfMemoryKind::UpperBoundExceeded) =>
+            {
+                debug!(
+                    "Eager state doesn't fit in the invocation's memory budget after {} entries ({}), \
+                     sending partial state",
+                    entries.len(),
+                    ByteCount::from(total_size),
+                );
+                counter!(INVOKER_EAGER_STATE_TRUNCATED).increment(1);
+                is_partial = true;
+                break;
+            }
+            Err(err) => return Err(InvokerError::from_state_reader(err)),
+        };
         let entry_size = key.len() + value.len();
 
         // Check if adding this entry would exceed the limit
