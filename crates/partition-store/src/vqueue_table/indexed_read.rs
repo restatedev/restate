@@ -201,6 +201,8 @@ pub(super) struct IndexedCursor<I: EntryIndex> {
     /// `None` once the read ended: it holds nothing then.
     runs: Option<OrderedRuns<I>>,
     runs_done: bool,
+    /// The most references a window holds.
+    window_size: usize,
     window: Vec<Reference>,
     /// Next window position to check, once the window is fetched.
     next: Option<usize>,
@@ -232,8 +234,9 @@ impl IndexedCursor<FinishedEntryByOutcome> {
         snapshot: &ReadSnapshot,
         read: &FinishedRead,
         execution: &EntryIndexExecution,
+        window: NonZeroUsize,
     ) -> Result<Option<Self>> {
-        Self::open(snapshot, &read.index, read.direction, execution)
+        Self::open(snapshot, &read.index, read.direction, execution, window)
     }
 }
 
@@ -242,20 +245,24 @@ impl IndexedCursor<ActiveEntryByStage> {
         snapshot: &ReadSnapshot,
         read: &ActiveRead,
         execution: &EntryIndexExecution,
+        window: NonZeroUsize,
     ) -> Result<Option<Self>> {
-        Self::open(snapshot, &read.index, read.direction, execution)
+        Self::open(snapshot, &read.index, read.direction, execution, window)
     }
 }
 
 impl<I: EntryIndex> IndexedCursor<I> {
     /// The cursor, or `None` if the read scans instead. Nothing is held then.
     /// Either way, `execution` learns the path before this returns.
+    /// `window` bounds a window's references, at most [`WINDOW`].
     fn open(
         snapshot: &ReadSnapshot,
         index: &Arc<KeySelection<I::Key>>,
         direction: ReadDirection,
         execution: &EntryIndexExecution,
+        window: NonZeroUsize,
     ) -> Result<Option<Self>> {
+        let window_size = window.get().min(WINDOW);
         let Execution {
             memory,
             chosen,
@@ -265,7 +272,14 @@ impl<I: EntryIndex> IndexedCursor<I> {
         let memory = SharedMemory(Arc::new(Mutex::new(memory)));
         // Discovery's work counts even if it fails: the error stays the read's.
         let mut discovered = 0;
-        let opened = match Self::try_open(snapshot, index, direction, memory, &mut discovered) {
+        let opened = match Self::try_open(
+            snapshot,
+            index,
+            direction,
+            memory,
+            window_size,
+            &mut discovered,
+        ) {
             Ok(opened) => opened,
             Err(error) => {
                 if discovered > 0 {
@@ -278,9 +292,10 @@ impl<I: EntryIndex> IndexedCursor<I> {
             Ok((runs, held)) => Ok(Self {
                 runs: Some(runs),
                 runs_done: false,
-                window: Vec::with_capacity(WINDOW),
+                window_size,
+                window: Vec::with_capacity(window_size),
                 next: None,
-                key_buf: Vec::with_capacity(WINDOW * KEY_LEN),
+                key_buf: Vec::with_capacity(window_size * KEY_LEN),
                 results: None,
                 results_bytes: 0,
                 current: None,
@@ -313,6 +328,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
         index: &Arc<KeySelection<I::Key>>,
         direction: ReadDirection,
         memory: SharedMemory,
+        window_size: usize,
         discovered: &mut u64,
     ) -> Result<std::result::Result<(OrderedRuns<I>, Held), (ScanReason, u64)>> {
         if let Some(reason) = unusable::<I>(snapshot)? {
@@ -323,7 +339,9 @@ impl<I: EntryIndex> IndexedCursor<I> {
             bytes: 0,
         };
         held.grow(
-            index.retained_bytes() + WINDOW * std::mem::size_of::<Reference>() + WINDOW * KEY_LEN,
+            index.retained_bytes()
+                + window_size * std::mem::size_of::<Reference>()
+                + window_size * KEY_LEN,
         )?;
         Ok(
             match snapshot.ordered_runs_counted::<I>(
@@ -408,7 +426,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
             self.results = None;
             self.held.shrink(std::mem::take(&mut self.results_bytes));
         }
-        if self.window.len() == WINDOW || (self.runs_done && !self.window.is_empty()) {
+        if self.window.len() == self.window_size || (self.runs_done && !self.window.is_empty()) {
             self.fetch()?;
             self.next = Some(0);
             return Ok(CursorStep::Skipped);

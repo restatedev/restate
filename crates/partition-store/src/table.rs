@@ -326,11 +326,21 @@ pub(crate) struct MultiGetCursor<T: MultiGetTable>(KeyBatchCursor<IdKey<T>, IdKe
 
 impl<T: MultiGetTable> MultiGetCursor<T> {
     pub(crate) fn new(snapshot: ReadSnapshot, ids: BTreeSet<T::Id>) -> Self {
+        Self::with_batch_size(snapshot, ids, T::BATCH_SIZE)
+    }
+
+    /// [`Self::new`], with at most `batch_size` IDs per multi-get instead of
+    /// [`MultiGetTable::BATCH_SIZE`].
+    pub(crate) fn with_batch_size(
+        snapshot: ReadSnapshot,
+        ids: BTreeSet<T::Id>,
+        batch_size: NonZeroUsize,
+    ) -> Self {
         let keys: IdKeys<T> = ids.into_iter().map(IdKey);
         Self(KeyBatchCursor::new(
             snapshot,
             keys,
-            T::BATCH_SIZE,
+            batch_size.min(T::BATCH_SIZE),
             T::Key::KEY_KIND,
         ))
     }
