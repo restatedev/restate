@@ -360,6 +360,7 @@ const fn split_name(name: &'static str) -> (&'static str, u32) {
 /// ```
 #[cfg(test)]
 pub(crate) mod testing {
+    use std::num::NonZeroUsize;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU16, Ordering};
     use std::time::Duration;
@@ -377,11 +378,14 @@ pub(crate) mod testing {
         get_min_restate_version_from_partition_db, get_storage_features_from_partition_db,
         get_storage_version_from_partition_db,
     };
-    use crate::job::MigrationJob;
+    use crate::job::{MigrationJob, MigrationJobId};
     use crate::registry::records::{get_job, get_registry};
     use crate::registry::{FenceState, IndexDefinition, IndexKind, Migration, Requests};
     use crate::walk::engine::{self, Slice, SliceBudget, SliceError};
-    use crate::{MigrationError, PartitionStore, PartitionStoreManager, PartitionStoreTransaction};
+    use crate::{
+        IndexSizes, MigrationError, PartitionStore, PartitionStoreManager,
+        PartitionStoreTransaction, QueryIoExecutor,
+    };
 
     use super::{MigrationDefinition, OnlineMigration};
 
@@ -414,7 +418,7 @@ pub(crate) mod testing {
         /// Whether opens register an index, which fences the store.
         fenced: bool,
         known: &'static [&'static MigrationDefinition],
-        _manager: Arc<PartitionStoreManager>,
+        manager: Arc<PartitionStoreManager>,
     }
 
     impl Harness {
@@ -439,7 +443,7 @@ pub(crate) mod testing {
                 store,
                 fenced: false,
                 known,
-                _manager: manager,
+                manager,
             }
         }
 
@@ -552,6 +556,25 @@ pub(crate) mod testing {
         /// `M`'s job record, as stored.
         pub(crate) fn job<M: OnlineMigration>(&self) -> Option<MigrationJob> {
             get_job(self.store.partition_db(), self.entry::<M>()?.id)
+        }
+
+        /// Why `M`'s job isn't progressing, as `restate.cluster.migration_jobs`
+        /// shows it: from this node's migration report, which holds this store
+        /// alone.
+        pub(crate) async fn blocked_by<M: OnlineMigration>(&self) -> Option<&'static str> {
+            let executor = QueryIoExecutor::new(NonZeroUsize::MIN);
+            let report = self
+                .manager
+                .migration_report(&executor, IndexSizes::Skip)
+                .unwrap()
+                .await
+                .unwrap();
+            let [replica] = &report.replicas[..] else {
+                panic!("the harness's node has one replica");
+            };
+            let id = replica.registry.migration(M::NAME)?.id;
+            let job = replica.jobs.get(MigrationJobId::for_entry(id))?;
+            replica.blocked_by(job, tokio::time::Instant::now())
         }
     }
 }
@@ -1096,9 +1119,10 @@ mod tests {
         assert_eq!(store.entry::<MarkOrRerun>().unwrap(), done);
 
         // A binary that doesn't know either migration keeps the kept one
-        // Complete, and sets the rerun one back in progress, with its ID and
-        // without its completion. It rebuilds the rerun one's job, waiting, and
-        // opening again changes neither.
+        // Complete, and sets the rerun one back in progress, with its ID, without
+        // its completion and with the reset recorded. It rebuilds the rerun one's
+        // job, waiting, which says why it doesn't progress, and opening again
+        // changes neither.
         store.knowing(&[]);
         store.open().await.unwrap();
         assert_eq!(store.entry::<Mark>().unwrap().state(), Some(Complete));
@@ -1111,8 +1135,13 @@ mod tests {
             (reset.timeline.completed_at, &reset.timeline.registered_at),
             (None, &done.timeline.registered_at)
         );
+        assert!(reset.timeline.reset_at.is_some() && reset.timeline.reset_by.is_some());
         let job = store.job::<MarkOrRerun>().unwrap();
         assert_eq!((job.status, job.walk), (MigrationJobStatus::Waiting, None));
+        assert_eq!(
+            store.blocked_by::<MarkOrRerun>().await,
+            Some("unknown-migration")
+        );
         store.open().await.unwrap();
         assert_eq!(store.entry::<MarkOrRerun>().unwrap(), reset);
         assert_eq!(store.job::<MarkOrRerun>().unwrap(), job);
@@ -1123,10 +1152,12 @@ mod tests {
         assert_eq!(marked(store.store(), &rows), [false, true, false]);
 
         // A binary that knows it again runs it from the beginning: it changes
-        // the two rows the other binary wrote, and completes for good.
+        // the two rows the other binary wrote, and completes for good, keeping
+        // the time of the reset.
         store.knowing(&[MARK, RERUN]);
         store.open().await.unwrap();
         assert!(store.entry::<MarkOrRerun>().unwrap().walk.is_some());
+        assert_eq!(store.blocked_by::<MarkOrRerun>().await, None);
         store.run::<MarkOrRerun>(10).await.unwrap();
         assert_eq!(marked(store.store(), &rows), [true; 3]);
         let job = store.job::<MarkOrRerun>().unwrap();
@@ -1135,9 +1166,10 @@ mod tests {
             (MigrationJobStatus::Completed, 2)
         );
         store.open().await.unwrap();
+        let rerun = store.entry::<MarkOrRerun>().unwrap();
         assert_eq!(
-            store.entry::<MarkOrRerun>().unwrap().state(),
-            Some(Complete)
+            (rerun.state(), rerun.timeline.reset_at),
+            (Some(Complete), reset.timeline.reset_at)
         );
     }
 }
