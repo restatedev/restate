@@ -15,7 +15,9 @@
 //!    allow it (see [`crate::walk::OnUnknown`]); their members and their
 //!    migration are unlinked. A walk that doesn't allow it refuses the open
 //!    before anything changes, as does a migration this binary doesn't know
-//!    whose entry says so (see [`super::MigrationOnUnknown`]).
+//!    whose entry says so (see [`super::MigrationOnUnknown`]). A Complete
+//!    migration this binary doesn't know whose entry says `Rerun` goes back to
+//!    InProgress, to run again under a binary that knows it.
 //! 1. **Retire** maintained indexes of definitions this binary does not know (a
 //!    rollback, or another build): their keys are range-deleted and they become
 //!    Dropped, keeping their IDs reserved.
@@ -387,6 +389,17 @@ impl PartitionStore {
                 indexes = ?unlinked,
                 migrations = ?waiting,
                 "Discarded walks of a kind this binary doesn't know"
+            );
+        }
+        // This binary's writes may undo the Complete migrations it doesn't know;
+        // those whose entry says so run again once a binary that knows them
+        // opens the store.
+        let rerun = super::migration::rerun_unknown(&mut registry, requests.migrations);
+        if !rerun.is_empty() {
+            warn!(
+                migrations = ?rerun,
+                "Set migrations this binary doesn't know back to in progress, so that a binary \
+                 that knows them runs them again"
             );
         }
 

@@ -38,10 +38,10 @@
 //! # 2. Name and version
 //!
 //! [`OnlineMigration::NAME`] is `"name/N"`, such as `"jc_orphan_cleanup/1"`. A
-//! store runs each name once, ever, and keeps its entry forever. So a name is
-//! never renamed or reused: a migration whose rows, change or source differ in
-//! any way is a new version, `"jc_orphan_cleanup/2"`, which runs once more on
-//! every store. The name's halves also name the kind of its walks
+//! store registers each name once, ever, and keeps its entry forever. So a name
+//! is never renamed or reused: a migration whose rows, change, source or policy
+//! (§6) differ in any way is a new version, `"jc_orphan_cleanup/2"`, which runs
+//! once more on every store. The name's halves also name the kind of its walks
 //! (`jc_orphan_cleanup` version 1); a malformed name fails compilation.
 //!
 //! # 3. Why it is safe, and what you must make true
@@ -58,13 +58,36 @@
 //!                     cursor = C   end = E   never visited
 //! ```
 //!
-//! Three things are yours to make true:
+//! Four things are yours to make true:
 //!
 //! - **Foreground writes need no migration.** Rows written behind the cursor
 //!   (`B` rewritten after the walk passed it) or beyond the end (`F`, `G`) are
 //!   never visited. From the release that adds the migration on, commands must
 //!   write rows that are already in the migrated form, or never write what the
 //!   migration removes.
+//! - **Commands don't depend on how far the walk got.** Every replica of the
+//!   partition runs the walk on its own, at its own pace, and a node may have
+//!   background migrations paused. So for a while replicas hold the same row in
+//!   different forms (`C'` is `C` migrated):
+//!
+//!   ```text
+//!   replica 1   A'   B'   C'   D    E     cursor = C
+//!   replica 2   A'   B    C    D    E     cursor = A
+//!   ```
+//!
+//!   Every replica applies the same commands, and a command must do the same on
+//!   each, so it can't depend on whether it reads `C` or `C'`:
+//!
+//!   - Safe: deleting leftovers that no command reads, or converting rows that
+//!     commands read alike in both forms.
+//!   - Safe: the tokens of index builds. A backfill adds its token to an
+//!     entry's `touched_by` at its own pace on each replica, and a write reads
+//!     the tokens only to keep that replica's indexes right, never to decide
+//!     what happens to the entry.
+//!   - Unsafe: deleting rows that a command still looks up. The command finds
+//!     `C` on replica 2 only, acts on it there, and the replicas diverge. A
+//!     leftover is safe to delete only while no command can reach it: if a
+//!     command can bring it back into use, that command must delete it first.
 //! - **Decide from what the transaction reads now.** The row you get was read
 //!   in this slice, and lookups through `tx`
 //!   ([`PartitionStoreTransaction::lookup_for_migration`]) see the committed
@@ -76,7 +99,8 @@
 //!   that makes a cache in `self` across a slice's rows safe.
 //! - **Migrating twice changes nothing.** A walk restarts from the beginning
 //!   when it was lost, for example after a binary that doesn't know the migration
-//!   ran the store; a failed slice is retried. Each row may be visited again:
+//!   ran the store, and a `Rerun` migration runs again even after it completed
+//!   (§6); a failed slice is retried. Each row may be visited again:
 //!   for a row already in the migrated form, change nothing and report
 //!   `changed: false`.
 //!
@@ -129,22 +153,30 @@
 //!
 //! # 6. Choose `ON_UNKNOWN`
 //!
-//! A binary that doesn't know the migration, after a rollback, finds its entry
-//! and applies [`MigrationOnUnknown`]:
+//! After a rollback, a binary that doesn't know the migration finds its entry
+//! and applies [`MigrationOnUnknown`]. Choose by what that binary's writes do to
+//! the rows the migration changed:
 //!
-//! - `Keep` if such a binary may run the store: its writes neither misread the
-//!   migrated rows nor break what the migration established, or only undo it in
-//!   a harmless way, like a cleanup that may leave some garbage again. It leaves
-//!   the entry, and if the migration is in progress, its walk is discarded and
-//!   restarts from the beginning when a binary that knows the migration opens
-//!   the store. Most migrations are `Keep`.
-//! - `Refuse` if such a binary must not run the store: it fails to open it. This
-//!   blocks rollbacks below the release that adds the migration once it has
-//!   registered; say so in the release note.
+//! | That binary's writes | Choose | What that binary does with the entry |
+//! |---|---|---|
+//! | keep what the migration established, or undo it harmlessly, like a cleanup that may leave some garbage again | `Keep` | Leaves it. A walk in progress is discarded, and restarts from the beginning once a binary that knows the migration opens the store |
+//! | may undo it, and something local relies on it being complete, such as an index build that reads what it adds (never a command, see §3) | `Rerun` | As `Keep`, and sets a Complete entry back to in progress, so that the next binary that knows the migration runs it again from the beginning |
+//! | must not happen at all | `Refuse` | Fails to open the store. This blocks rollbacks below the release that adds the migration once it has registered; say so in the release note |
 //!
-//! No version floor is needed for either: binaries older than the registry
-//! can't open a fenced store, and every other binary reads the policy from the
-//! entry.
+//! Most migrations are `Keep`. `Rerun` costs one more pass after each rollback
+//! below the migration's release. A store keeps the policy its entry registered
+//! with, so a changed policy is a new version (§2), like any other change.
+//!
+//! No version floor is needed for any of them: binaries older than the
+//! registry can't open a fenced store, and every other binary reads the policy
+//! from the entry.
+//!
+//! A binary without the migration's code doesn't know it, and that includes a
+//! later release that removed the code. So never remove a `Rerun` or `Refuse`
+//! migration from [`ONLINE_MIGRATIONS`]: every store would rerun it with no
+//! binary to run it, or refuse to open. Retiring them needs a mechanism that
+//! doesn't exist yet. Removing a `Keep` migration only leaves the entries that
+//! hadn't completed in progress, which is harmless.
 //!
 //! # 7. Test it
 //!
@@ -270,11 +302,11 @@ impl MigrationDefinition {
         }
     }
 
-    /// The policy of its walks: a kept entry's walk is discarded by a binary
-    /// that doesn't know the migration, a refusing one refuses too.
+    /// The policy of its walks: the walk of a kept or rerun entry is discarded
+    /// by a binary that doesn't know the migration, a refusing one refuses too.
     pub(crate) fn walk_policy(&self) -> OnUnknown {
         match self.on_unknown {
-            MigrationOnUnknown::Keep => OnUnknown::Discard,
+            MigrationOnUnknown::Keep | MigrationOnUnknown::Rerun => OnUnknown::Discard,
             MigrationOnUnknown::Refuse => OnUnknown::Refuse,
         }
     }
@@ -589,6 +621,29 @@ mod tests {
         }
     }
 
+    /// `Mark` under another name, run again after a binary that doesn't know it.
+    #[derive(Default)]
+    struct MarkOrRerun(Mark);
+
+    impl OnlineMigration for MarkOrRerun {
+        const NAME: &'static str = "mark_or_rerun/1";
+        const SOURCE: Source = Mark::SOURCE;
+        const ON_UNKNOWN: MigrationOnUnknown = MigrationOnUnknown::Rerun;
+        type Row = <Mark as OnlineMigration>::Row;
+
+        fn decode(key: &[u8], value: &[u8]) -> Result<Self::Row, StorageError> {
+            Mark::decode(key, value)
+        }
+
+        fn migrate(
+            &mut self,
+            tx: &mut PartitionStoreTransaction<'_>,
+            row: &Self::Row,
+        ) -> Result<Migrated, StorageError> {
+            self.0.migrate(tx, row)
+        }
+    }
+
     /// Walks the entry statuses, of which these stores have none.
     #[derive(Default)]
     struct Empty;
@@ -614,6 +669,7 @@ mod tests {
 
     const MARK: &MigrationDefinition = &MigrationDefinition::of::<Mark>();
     const REFUSE: &MigrationDefinition = &MigrationDefinition::of::<MarkOrRefuse>();
+    const RERUN: &MigrationDefinition = &MigrationDefinition::of::<MarkOrRerun>();
     const EMPTY: &MigrationDefinition = &MigrationDefinition::of::<Empty>();
 
     /// The completion-index row that [`seed`] writes at `partition_key`.
@@ -866,5 +922,64 @@ mod tests {
         assert_eq!(store.entry::<Mark>().unwrap().state(), Some(Complete));
         store.knowing(&[]);
         assert!(store.open().await.is_err());
+    }
+
+    #[restate_core::test]
+    async fn a_rerun_migration_runs_again_after_a_binary_that_doesnt_know_it() {
+        let mut store = Harness::fenced(&[MARK, RERUN]).await;
+        let mut rows = seed(store.store(), [1, 2]).await;
+        store.open().await.unwrap();
+        store.run::<Mark>(10).await.unwrap();
+        store.run::<MarkOrRerun>(10).await.unwrap();
+        let done = store.entry::<MarkOrRerun>().unwrap();
+        assert_eq!(done.state(), Some(Complete));
+        // A binary that knows it leaves it Complete.
+        store.open().await.unwrap();
+        assert_eq!(store.entry::<MarkOrRerun>().unwrap(), done);
+
+        // A binary that doesn't know either migration keeps the kept one
+        // Complete, and sets the rerun one back in progress, with its ID and
+        // without its completion. It rebuilds the rerun one's job, waiting, and
+        // opening again changes neither.
+        store.knowing(&[]);
+        store.open().await.unwrap();
+        assert_eq!(store.entry::<Mark>().unwrap().state(), Some(Complete));
+        let reset = store.entry::<MarkOrRerun>().unwrap();
+        assert_eq!(
+            (reset.id, reset.state(), reset.walk),
+            (done.id, Some(InProgress), None)
+        );
+        assert_eq!(
+            (reset.timeline.completed_at, &reset.timeline.registered_at),
+            (None, &done.timeline.registered_at)
+        );
+        let job = store.job::<MarkOrRerun>().unwrap();
+        assert_eq!((job.status, job.walk), (MigrationJobStatus::Waiting, None));
+        store.open().await.unwrap();
+        assert_eq!(store.entry::<MarkOrRerun>().unwrap(), reset);
+        assert_eq!(store.job::<MarkOrRerun>().unwrap(), job);
+        // Its commands undo the migration on a row it changed, and write a new
+        // row the old way.
+        seed(store.store(), [1]).await;
+        rows.extend(seed(store.store(), [3]).await);
+        assert_eq!(marked(store.store(), &rows), [false, true, false]);
+
+        // A binary that knows it again runs it from the beginning: it changes
+        // the two rows the other binary wrote, and completes for good.
+        store.knowing(&[MARK, RERUN]);
+        store.open().await.unwrap();
+        assert!(store.entry::<MarkOrRerun>().unwrap().walk.is_some());
+        store.run::<MarkOrRerun>(10).await.unwrap();
+        assert_eq!(marked(store.store(), &rows), [true; 3]);
+        let job = store.job::<MarkOrRerun>().unwrap();
+        assert_eq!(
+            (job.status, job.rows_changed),
+            (MigrationJobStatus::Completed, 2)
+        );
+        store.open().await.unwrap();
+        assert_eq!(
+            store.entry::<MarkOrRerun>().unwrap().state(),
+            Some(Complete)
+        );
     }
 }

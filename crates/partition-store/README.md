@@ -155,11 +155,13 @@ are their foundation.
     that version. The V2 planner checks this, against the versions the worker
     nodes recorded, before it reads an index in place of its primary. The version is code,
     not stored data: it is never persisted.
-11. **A migration's name is never reused.** A store runs each `name/N` once and
+11. **A migration's name is never reused.** A store registers each `name/N` once and
     keeps its entry forever, so a migration that changes in any way is a new
     version, `name/N+1`, which runs again on every store. From the release that
     adds it, foreground writes must already produce the migrated form: the walk
-    never visits rows written behind its cursor or after its end.
+    never visits rows written behind its cursor or after its end. Each replica
+    migrates at its own pace, so what a command does must never depend on
+    whether a row is migrated yet.
 
 ## Don'ts
 

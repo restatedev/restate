@@ -15,7 +15,7 @@
 //! | Entry | Life | Run by | Defined in |
 //! |---|---|---|---|
 //! | [`Index`] | Backfilling ─▶ Ready ─▶ Dropped | its build job, on a walk | an index definition, below |
-//! | [`Migration`] | InProgress ─▶ Complete | its job, on a walk | an `OnlineMigration` (`migrations::online`) |
+//! | [`Migration`] | InProgress ─▶ Complete, and back for `Rerun` | its job, on a walk | an `OnlineMigration` (`migrations::online`) |
 //!
 //! This page describes indexes; [`migration`] describes migrations.
 //!
@@ -721,7 +721,7 @@ mod tests {
         );
 
         // Migrations take IDs from the same counter, register once, and complete
-        // for good. A state or policy number a later release adds is kept.
+        // once. A state or policy number a later release adds is kept.
         let by = || ReString::from_static("1.8.2");
         let keep = MigrationOnUnknown::Keep;
         let migration = registry.register_migration("m/1", keep, 1, by()).unwrap();

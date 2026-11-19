@@ -19,7 +19,10 @@
 //!
 //! ```text
 //! open (fenced) ──register──▶ InProgress ──walk exhausted──▶ Complete (kept forever)
-//!                   │              └─ walk lost: the next open restarts one
+//!                   │          │    ▲                           │
+//!                   │          │    └───────────────────────────┘ Rerun only: an open by
+//!                   │          │                                  a binary that doesn't know it
+//!                   │          └─ walk lost: the next open restarts one
 //!                   └─ empty source ──────────────────────────▶ Complete (no walk, no job)
 //! ```
 //!
@@ -32,8 +35,9 @@
 //!   finishes `Completed`. Expiring job records never restart a migration.
 //! - **Unknown definitions**, a newer release's migrations, follow the entry's
 //!   [`MigrationOnUnknown`]: `Keep` leaves the entry as it is, unlinked from its
-//!   walk if the open discarded that walk; `Refuse` fails the open, naming the
-//!   migration.
+//!   walk if the open discarded that walk; `Rerun` does the same, but also sets a
+//!   Complete entry back to InProgress, so that the next binary that knows it
+//!   runs it again; `Refuse` fails the open, naming the migration.
 //!
 //! The adapter at the bottom runs an `OnlineMigration` as a `WalkJob`: a fresh
 //! value of the migration per slice, one job, the entry's completion.
@@ -61,7 +65,9 @@ use super::{Registry, RegistryError};
 pub enum MigrationState {
     /// Registered; its walk runs, or the next open restarts one.
     InProgress = 1,
-    /// Done, for good: kept forever, never run again.
+    /// Done: kept forever, and never run again, unless its policy is `Rerun` and
+    /// a binary that doesn't know it opens the store (see
+    /// [`MigrationOnUnknown::Rerun`]).
     Complete = 2,
 }
 
@@ -90,14 +96,24 @@ pub enum MigrationOnUnknown {
     /// follows the walk's own policy, `Discard`: the entry is unlinked, and the
     /// next binary that knows the migration restarts it from the beginning.
     Keep = 1,
+    /// Like `Keep`, and the open also sets a Complete entry back to InProgress:
+    /// the binary's writes may undo the migration, so the next binary that knows
+    /// it runs it again from the beginning. It keeps the entry's ID. Only a
+    /// Complete entry goes back: a state a later release adds is kept as it is.
+    ///
+    /// For example, a migration that fills a new field of every row, which an
+    /// index build reads, completes on 1.9. After a rollback to 1.8.2, whose
+    /// commands write rows without the field, the migration is in progress
+    /// again, and 1.9 fills the rows 1.8.2 wrote before the index relies on them.
+    Rerun = 2,
 }
 
 impl MigrationOnUnknown {
     pub fn from_number(number: u32) -> Self {
-        if number == Self::Keep as u32 {
-            Self::Keep
-        } else {
-            Self::Refuse
+        match number {
+            1 => Self::Keep,
+            2 => Self::Rerun,
+            _ => Self::Refuse,
         }
     }
 }
@@ -235,7 +251,8 @@ impl Registry {
     }
 
     /// Completes the in-progress migration `id` at `at` by `by`: unlinks its walk
-    /// and makes it Complete, for good.
+    /// and makes it Complete, which it stays unless its policy is `Rerun` (see
+    /// [`MigrationOnUnknown::Rerun`]).
     pub fn complete(&mut self, id: u32, at: u64, by: ReString) -> Result<(), RegistryError> {
         let migration = self.in_progress(id)?;
         migration.state = MigrationState::Complete as u32;
@@ -259,6 +276,33 @@ impl Registry {
         }
         Ok(migration)
     }
+}
+
+/// Sets back to InProgress each Complete migration that isn't one of `known`
+/// and whose policy is `Rerun`, and returns their IDs: this binary's writes may
+/// undo them (see [`MigrationOnUnknown::Rerun`]). Their timelines forget the
+/// completion; a Complete entry has no walk to unlink.
+pub(super) fn rerun_unknown(
+    registry: &mut Registry,
+    known: &[&'static MigrationDefinition],
+) -> Vec<u32> {
+    registry
+        .migrations
+        .iter_mut()
+        .filter(|migration| {
+            migration.on_unknown() == MigrationOnUnknown::Rerun
+                && migration.state() == Some(MigrationState::Complete)
+                && !known
+                    .iter()
+                    .any(|definition| migration.definition == definition.name)
+        })
+        .map(|migration| {
+            migration.state = MigrationState::InProgress as u32;
+            migration.timeline.completed_at = None;
+            migration.timeline.completed_by = None;
+            migration.id
+        })
+        .collect()
 }
 
 /// Registers each of the `known` definitions that this store hasn't, and
