@@ -23,6 +23,7 @@
 //! errors. Stage values are read only for a [`StagePrefilter`], which rejects
 //! references before their statuses are fetched.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use bilrost::BorrowedMessage;
@@ -213,10 +214,11 @@ stage_cursors! {
 }
 
 /// Navigates the stage tables one key per step, then fetches and checks a window
-/// of references. Windows hold at most [`ENTRY_STATUS_MULTI_GET_BATCH_SIZE`]
-/// references and reuse their buffers.
+/// of references. Windows hold at most `window_size` references, itself at most
+/// [`ENTRY_STATUS_MULTI_GET_BATCH_SIZE`], and reuse their buffers.
 pub(super) struct StagesCursor {
     reads: Arc<StageReads>,
+    window_size: usize,
     /// Index of the next stage to open in [`StageCursor::STAGES`].
     next_stage: usize,
     keys: Option<StageCursor>,
@@ -238,10 +240,15 @@ pub(super) struct StagesCursor {
 }
 
 impl StagesCursor {
-    pub(super) fn new(snapshot: ReadSnapshot, reads: Arc<StageReads>) -> Self {
+    pub(super) fn new(
+        snapshot: ReadSnapshot,
+        reads: Arc<StageReads>,
+        window: NonZeroUsize,
+    ) -> Self {
         Self {
             snapshot,
             reads,
+            window_size: window.min(ENTRY_STATUS_MULTI_GET_BATCH_SIZE).get(),
             next_stage: 0,
             keys: None,
             window: Vec::new(),
@@ -275,7 +282,7 @@ impl StagesCursor {
         }
         loop {
             let exhausted = self.keys.is_none() && self.next_stage == StageCursor::STAGES.len();
-            if self.window.len() == ENTRY_STATUS_MULTI_GET_BATCH_SIZE.get() || exhausted {
+            if self.window.len() == self.window_size || exhausted {
                 if self.window.is_empty() {
                     return Ok(CursorStep::Done);
                 }
@@ -557,6 +564,34 @@ mod tests {
             read(Selection::Empty),
             (vec![], StageReadCounters::default()),
             "empty_selections_read_nothing"
+        );
+
+        // A query's window: its first row costs that many fetches, not a full
+        // window, and the read still returns every row, window after window.
+        let windowed = |window: usize| {
+            snapshot
+                .entry_status_cursor_with_window(
+                    EntryStatusScan::Stages(Arc::new(StageReads::prepare(&queue(&a)).unwrap())),
+                    NonZeroUsize::new(window).unwrap(),
+                )
+                .unwrap()
+        };
+        let mut cursor = windowed(2);
+        while cursor.advance().unwrap() != CursorStep::Record {}
+        assert_eq!(
+            cursor.stage_counters().unwrap().fetched,
+            2,
+            "a_window_bounds_the_first_fetch"
+        );
+        let mut cursor = windowed(7);
+        let mut rows = 0;
+        while cursor.advance().unwrap() != CursorStep::Done {
+            rows += usize::from(cursor.current().is_ok());
+        }
+        assert_eq!(
+            (rows, cursor.stage_counters().unwrap().fetched),
+            (602, 603),
+            "small_windows_read_every_reference"
         );
     }
 }
