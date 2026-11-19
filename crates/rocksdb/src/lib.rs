@@ -49,9 +49,9 @@ use restate_util_lifecycle::Scope;
 
 // re-exports
 pub use self::background::{
-    Admission, Async, Cancellable, CancellableAsync, Cooperative, Gated, GlobalExecutor, Guarded,
-    Mapped, MappedOk, OpContext, OpFn, Priority, ReadPerf, SinglePoolExecutor, StorageOp,
-    StorageTaskKind, SyncOpFn, Ungated,
+    Admission, Async, CachedOpFn, Cancellable, CancellableAsync, Cooperative, Gated,
+    GlobalExecutor, Guarded, Inline, Mapped, MappedOk, OpContext, OpFn, Priority, ReadPerf,
+    SinglePoolExecutor, StorageOp, StorageTaskKind, SyncOpFn, Ungated,
 };
 pub use self::cf_handles::CfHandles;
 pub use self::db_env::DbEnv;
@@ -63,9 +63,7 @@ use self::iterator::RocksIterator;
 pub use self::perf::{
     RocksDbPerf, RocksDbPerfExt, RocksDbPerfStreamExt, RocksDbReadPerfGuard, RocksDbWritePerfGuard,
 };
-use self::reads::{
-    ColumnFamilies, Iteration, IterationOptions, IteratorVisitor, OwnedReadIterator, ScopedReads,
-};
+use self::reads::ColumnFamilies;
 pub use self::rock_access::RocksAccess;
 pub use restate_util_lifecycle::KeepAlive;
 
@@ -609,60 +607,6 @@ impl RocksDb {
         };
         let op = StorageOp::with_context(scope, gate, StorageTaskKind::BackgroundIterator, iterate);
         database.executor.pool(priority).dispatch(op)
-    }
-
-    /// Prepares an iteration over one of `scope`'s column families, handing
-    /// each item to `visitor` (see [`ReadIterator::prepare_iteration`](reads::ReadIterator::prepare_iteration)).
-    /// Submit it to the caller's [`IoExecutor`].
-    /// `options` sets the iterator's first move, and `name` labels its read perf
-    /// metrics. The caller chooses the executor; it need not be the database's.
-    /// Sealing `gate` lets admitted iterations finish. Cancelling it requests
-    /// early termination, including while the visitor waits for output capacity.
-    ///
-    /// # Errors
-    /// Fails with [`AdmissionClosed`] if `gate` is sealed. The iterator is
-    /// created under a lease, so it's never created once the gate is sealed.
-    /// Submission can separately return [`AdmissionClosed`] if the pool or gate
-    /// closes before it accepts the operation. After acceptance, it returns
-    /// [`reads::IterationError::Cancelled`] for gate cancellation,
-    /// [`reads::IterationError::RocksDb`] for a read error, or
-    /// [`reads::IterationError::Visitor`] for a visitor error. The executor can
-    /// also return [`IoTaskError`](restate_core::io::IoTaskError) if accepted work
-    /// ends without a result. Successful operations distinguish exhaustion from
-    /// a requested stop via [`reads::IterationOutcome`].
-    ///
-    /// # Panics
-    /// In debug builds, panics if `gate` isn't inside `scope`.
-    #[allow(clippy::type_complexity)]
-    pub fn prepare_iteration<'g, C, V>(
-        scope: &Scope<C>,
-        gate: &'g Arc<Gate>,
-        options: IterationOptions,
-        cf: C::Cf,
-        name: &'static str,
-        mut read_options: rocksdb::ReadOptions,
-        visitor: V,
-    ) -> Result<
-        StorageOp<Cooperative<OwnedReadIterator<Scope<C>>>, ReadPerf<Iteration<V>>, Gated<'g>>,
-        AdmissionClosed,
-    >
-    where
-        C: ColumnFamilies,
-        V: IteratorVisitor,
-    {
-        debug_assert!(
-            gate.is_inside(scope.gate()),
-            "the gate isn't inside the scope"
-        );
-        // Covers creating the iterator. The operation takes its own lease when
-        // it is submitted, before moving to the caller's executor.
-        let _admission = gate.try_acquire().ok_or(AdmissionClosed)?;
-        // The iteration runs on the storage pool, where blocking IO is fine.
-        read_options.set_read_tier(rocksdb::ReadTier::All);
-        Ok(scope
-            .owned_iterator(cf, read_options)
-            .prepare_iteration(gate, Some(options.initial_action), visitor)
-            .with_read_perf(name))
     }
 
     /// The shared I/O pools this database was created with. Handy for submitting

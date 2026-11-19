@@ -11,7 +11,7 @@
 use std::pin::pin;
 use std::time::Duration;
 
-use super::storage_test_environment;
+use super::{low_pri_executor, storage_test_environment};
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::StreamExt;
@@ -399,6 +399,7 @@ async fn journal_entry_content_blob() {
     drop(txn);
 
     // Budgeted reads return hydrated entries, the lease covers the blob
+    let executor = low_pri_executor(&rocksdb);
     let mut budget = LocalMemoryPool::unlimited();
     let (entry, lease) = rocksdb
         .get_journal_v2_entry_budgeted(MOCK_INVOCATION_ID_1, 0, &mut budget)
@@ -416,7 +417,12 @@ async fn journal_entry_content_blob() {
     ] {
         let snapshot = rocksdb.snapshot().unwrap();
         let entries: Vec<_> = snapshot
-            .get_journal_v2_budgeted(invocation_id, expected.len() as u32, budget.claim().await)
+            .get_journal_v2_budgeted(
+                invocation_id,
+                expected.len() as u32,
+                budget.claim().await,
+                &executor,
+            )
             .unwrap()
             .map(|item| item.unwrap())
             .collect()

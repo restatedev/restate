@@ -11,7 +11,7 @@
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::task::{Context, Wake};
+use std::task::{Context, Wake, Waker};
 
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -27,8 +27,9 @@ use restate_types::Scope;
 use restate_types::identifiers::ServiceId;
 use restate_util_string::RestateString;
 
-use super::{assert_stream_eq, storage_test_environment};
+use super::{assert_stream_eq, low_pri_executor, storage_test_environment};
 use crate::PartitionStore;
+use crate::budgeted_reads::MAX_INLINE_ROWS;
 
 fn populate_data<T: WriteStateTable>(table: &mut T) {
     table
@@ -132,11 +133,12 @@ async fn verify_prefix_scan_after_delete<T: ReadStateTable>(table: &T) {
 }
 
 async fn verify_budgeted_prefix_scan_after_delete(store: &mut PartitionStore) {
+    let executor = low_pri_executor(store);
     let service_id = &ServiceId::with_partition_key(1337, "svc-1", "key-1");
     let snapshot = store.snapshot().unwrap();
     let mut budget = LendableMemoryPool::new(LocalMemoryPool::unlimited());
     let stream = snapshot
-        .get_all_user_states_budgeted(service_id, budget.claim().await)
+        .get_all_user_states_budgeted(service_id, budget.claim().await, &executor)
         .unwrap();
     let got: Vec<_> = stream
         .map(|entry| {
@@ -323,6 +325,122 @@ async fn budgeted_point_reads_wait_wake_and_cancel() {
     assert_eq!(budget.in_flight(), 4);
     drop(second_held);
     assert_eq!(budget.in_flight(), 0);
+}
+
+/// Scans the states of `service_id`, releasing each row's budget once it's read.
+async fn budgeted_scan_keys(
+    store: &mut PartitionStore,
+    service_id: &ServiceId,
+    budget: LocalMemoryPool,
+) -> Vec<Bytes> {
+    let executor = low_pri_executor(store);
+    let snapshot = store.snapshot().unwrap();
+    let mut budget = LendableMemoryPool::new(budget);
+    let keys = snapshot
+        .get_all_user_states_budgeted(service_id, budget.claim().await, &executor)
+        .unwrap()
+        .map(|entry| entry.unwrap().0)
+        .collect()
+        .await;
+    // The scan gave the budget back, with nothing reserved.
+    assert_eq!(budget.claim().await.in_flight(), 0);
+    keys
+}
+
+#[restate_core::test]
+async fn budgeted_scans_continue_on_a_storage_worker() {
+    let mut store = storage_test_environment().await;
+    let executor = low_pri_executor(&store);
+    let service_id = ServiceId::with_partition_key(1337, "svc-1", "key-1");
+    // More rows than a scan reads on its caller's task.
+    let keys: Vec<_> = (0..2 * MAX_INLINE_ROWS + 1)
+        .map(|i| Bytes::from(format!("k{i:05}")))
+        .collect();
+    let mut txn = store.transaction();
+    for key in &keys {
+        txn.put_user_state(&service_id, key, b"value").unwrap();
+    }
+    // A neighbour, which the scans must not reach.
+    let neighbour = ServiceId::with_partition_key(1337, "svc-1", "key-2");
+    txn.put_user_state(&neighbour, &keys[0], b"value").unwrap();
+    txn.commit().await.unwrap();
+    drop(txn);
+    // What a row costs: the size of its stored key and value. The rows are all
+    // the same size.
+    let row_cost = {
+        let snapshot = store.snapshot().unwrap();
+        let mut budget = LendableMemoryPool::new(LocalMemoryPool::unlimited());
+        let mut stream = Box::pin(
+            snapshot
+                .get_all_user_states_budgeted(&service_id, budget.claim().await, &executor)
+                .unwrap(),
+        );
+        stream.next().await.unwrap().unwrap().2.size()
+    };
+
+    // The storage worker takes over after the rows read inline, at the first
+    // row that has to wait for budget, and at the first row that isn't in
+    // memory. Either way, every row arrives once, in order.
+    let unlimited = LocalMemoryPool::unlimited();
+    assert_eq!(
+        budgeted_scan_keys(&mut store, &service_id, unlimited).await,
+        keys
+    );
+    let (_pool, three_rows) = bounded_budget(3 * row_cost, 3 * row_cost);
+    assert_eq!(
+        budgeted_scan_keys(&mut store, &service_id, three_rows).await,
+        keys
+    );
+    store.partition_db().flush_memtables(true).await.unwrap();
+    let unlimited = LocalMemoryPool::unlimited();
+    assert_eq!(
+        budgeted_scan_keys(&mut store, &service_id, unlimited).await,
+        keys
+    );
+
+    // Dropping the stream while the storage worker waits for budget cancels
+    // the scan, and the budget comes back.
+    let snapshot = store.snapshot().unwrap();
+    let (_pool, mut budget) = bounded_budget(row_cost, row_cost);
+    let held = budget.try_reserve(row_cost).unwrap();
+    let mut budget = LendableMemoryPool::new(budget);
+    let mut cx = Context::from_waker(Waker::noop());
+    let mut stream = Box::pin(
+        snapshot
+            .get_all_user_states_budgeted(&service_id, budget.claim().await, &executor)
+            .unwrap(),
+    );
+    assert!(stream.as_mut().poll_next(&mut cx).is_pending());
+    drop(stream);
+    assert_eq!(budget.claim().await.in_flight(), row_cost);
+
+    // Once the budget is free, the storage worker goes on.
+    let mut stream = Box::pin(
+        snapshot
+            .get_all_user_states_budgeted(&service_id, budget.claim().await, &executor)
+            .unwrap(),
+    );
+    assert!(stream.as_mut().poll_next(&mut cx).is_pending());
+    drop(held);
+    let (key, _value, lease) = stream.next().await.unwrap().unwrap();
+    assert_eq!(key, keys[0]);
+    drop((stream, lease));
+    assert_eq!(budget.claim().await.in_flight(), 0);
+
+    // A row that can never fit fails the scan.
+    let (_pool, too_small) = bounded_budget(row_cost - 1, row_cost - 1);
+    let mut budget = LendableMemoryPool::new(too_small);
+    let mut stream = Box::pin(
+        snapshot
+            .get_all_user_states_budgeted(&service_id, budget.claim().await, &executor)
+            .unwrap(),
+    );
+    let failed = stream.next().await;
+    assert!(
+        matches!(failed, Some(Err(BudgetedReadError::OutOfMemory { .. }))),
+        "{failed:?}"
+    );
+    assert!(stream.next().await.is_none());
 }
 
 #[restate_core::test]

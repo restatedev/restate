@@ -8,17 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
+
 use bytes::{Bytes, BytesMut};
-use futures::stream;
 use rocksdb::{DBPinnableSlice, ReadOptions};
 
-use restate_memory::{ClaimedMemoryPool, LocalMemoryLease, PinnableMemoryStream, WithPinHandle};
-use restate_rocksdb::RocksDbPerfStreamExt;
+use restate_core::io::Gate;
+use restate_memory::{ClaimedMemoryPool, LocalMemoryLease};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::sharding::KeyRange;
 
-use crate::budgeted_reads::{BudgetedScan, Row};
+use crate::budgeted_reads::BudgetedScan;
 use crate::features::StorageFeatures;
 use crate::keys::{EncodeTableKeyPrefix, KeyKind};
 use crate::partition_store::{StorageRead, assert_partition_key_or_err};
@@ -34,6 +35,9 @@ use crate::{
 /// Unlike a [`PartitionStoreTransaction`](crate::PartitionStoreTransaction), it doesn't see
 /// writes made after it was taken, including uncommitted ones.
 pub struct PartitionStoreSnapshot<'a> {
+    // The gate of the session the snapshot was taken in, which its scans count
+    // in.
+    gate: &'a Arc<Gate>,
     snapshot: PartitionReadSnapshot,
     // Point lookups. Each lookup chooses the column family of its key kind.
     reader: PartitionSnapshotReader<'static>,
@@ -44,12 +48,14 @@ pub struct PartitionStoreSnapshot<'a> {
 
 impl<'a> PartitionStoreSnapshot<'a> {
     pub(crate) fn new(
+        gate: &'a Arc<Gate>,
         snapshot: PartitionReadSnapshot,
         key_buffer: &'a mut BytesMut,
         storage_features: StorageFeatures,
         key_range: KeyRange,
     ) -> Self {
         Self {
+            gate,
             reader: snapshot.owned_reader(),
             snapshot,
             key_buffer,
@@ -66,45 +72,36 @@ impl<'a> PartitionStoreSnapshot<'a> {
         assert_partition_key_or_err(self.key_range, partition_key)
     }
 
-    /// Streams the rows of `scan`. Each row's `cost` is reserved from `budget`
-    /// before `decode` gets the row with its lease. `decode` builds the row to
-    /// stream and decides whether the scan goes on.
+    /// Prepares a scan of `scan` that streams the rows `decode` builds.
+    /// Nothing is read until the returned scan is run, which says where its
+    /// rows are read.
     ///
-    /// A row is read when the stream is polled for it. `budget` is
-    /// [lent](ClaimedMemoryPool::lend) to the stream until it's dropped.
+    /// Each row's `cost` is reserved from `budget` before `decode` gets the row
+    /// with its lease. `decode` builds the row to stream and decides whether
+    /// the scan goes on.
     ///
-    /// `name` labels the scan's RocksDB perf metrics, which are reported once,
-    /// when the stream ends.
-    pub(crate) fn budgeted_scan<T, C, D>(
-        &self,
+    /// `name` labels the scan's RocksDB perf metrics.
+    pub(crate) fn prepare_budgeted_scan<'s, T, C, D>(
+        &'s self,
         name: &'static str,
         scan: PhysicalScan<Bytes>,
-        budget: ClaimedMemoryPool<'_>,
+        budget: ClaimedMemoryPool<'s>,
         cost: C,
         decode: D,
-    ) -> Result<impl PinnableMemoryStream<Item = Row<T>> + Send + 'static + use<T, C, D>>
+    ) -> BudgetedScan<'s, C, D>
     where
-        T: Send + 'static,
         C: Fn(&[u8], &[u8]) -> usize + Send + 'static,
         D: FnMut(&[u8], &[u8], LocalMemoryLease) -> TableScanIterationDecision<T> + Send + 'static,
     {
-        // Not positioned yet: the stream seeks when it's first polled, so that the
-        // seek is measured together with the rows.
-        let iterator = self
-            .snapshot
-            .owned_unpositioned_scan(&scan, ReadOptions::default());
-        let (budget, pins) = budget.lend();
-        let rows = BudgetedScan::new(iterator, scan.into_start(), budget, cost, decode);
-        let rows = stream::try_unfold(rows, |mut rows| async move {
-            Ok(rows.next().await?.map(|row| (row, rows)))
-        });
-        Ok(WithPinHandle::new(rows.with_read_perf(name), pins))
-    }
-
-    /// A reader for point lookups that holds its own clone of the snapshot, so it can
-    /// be kept by a scan that outlives this borrow.
-    pub(crate) fn owned_reader(&self) -> PartitionSnapshotReader<'static> {
-        self.snapshot.owned_reader()
+        BudgetedScan {
+            gate: self.gate,
+            snapshot: &self.snapshot,
+            name,
+            scan,
+            budget,
+            cost,
+            decode,
+        }
     }
 }
 
