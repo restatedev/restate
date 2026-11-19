@@ -13,9 +13,9 @@
 //! RocksDB keeps its perf counters in a thread-local context, so a measurement
 //! only sees what happens on the current thread while it is active. Work is
 //! measured in *sections* that never cross an `.await`: a sync guard is one
-//! section, and a [`RocksDbPerf`] future opens one section per poll. Each section
-//! adds what changed in the counters to its [`Collector`], which reports the
-//! totals once at the end.
+//! section, and a [`RocksDbPerf`] future or stream opens one section per poll.
+//! Each section adds what changed in the counters to its [`Collector`], which
+//! reports the totals once at the end.
 //!
 //! Sections nest: only the outermost one on a thread turns perf stats on and off
 //! and resets the counters. An inner section diffs against a snapshot instead, so
@@ -27,6 +27,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
+use futures::Stream;
 use metrics::{counter, histogram};
 use pin_project_lite::pin_project;
 use rocksdb::perf::PerfStatsLevel as RocksLevel;
@@ -222,13 +223,14 @@ impl Drop for SyncGuard {
 }
 
 pin_project! {
-    /// A future that measures the RocksDB work it does, one section per poll.
-    /// Work done by other tasks on the same thread between polls isn't counted.
+    /// A future or stream that measures the RocksDB work it does, one section
+    /// per poll. Work done by other tasks on the same thread between polls isn't
+    /// counted.
     ///
-    /// Metrics are reported when the future completes. A future dropped before
-    /// completing reports nothing.
+    /// Metrics are reported once, when the future completes or the stream ends.
+    /// One that is dropped before that reports nothing.
     ///
-    /// Unlike the sync guards, this is `Send` if the wrapped future is: no
+    /// Unlike the sync guards, this is `Send` if what it wraps is: no
     /// thread-local state is held between polls.
     pub struct RocksDbPerf<F> {
         #[pin]
@@ -255,16 +257,6 @@ impl<F: Future> Future for RocksDbPerf<F> {
             return this.inner.poll(cx);
         };
 
-        // Closes the section even if the inner future panics.
-        struct Exit<'a>(&'a mut Collector, Option<Section>);
-        impl Drop for Exit<'_> {
-            fn drop(&mut self) {
-                if let Some(section) = self.1.take() {
-                    self.0.exit(section);
-                }
-            }
-        }
-
         let section = collector.enter();
         let poll = {
             let _exit = Exit(collector, Some(section));
@@ -276,6 +268,40 @@ impl<F: Future> Future for RocksDbPerf<F> {
             collector.report();
         }
         poll
+    }
+}
+
+impl<S: Stream> Stream for RocksDbPerf<S> {
+    type Item = S::Item;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<S::Item>> {
+        let this = self.project();
+        let Some(collector) = this.collector.as_mut() else {
+            return this.inner.poll_next(cx);
+        };
+
+        let section = collector.enter();
+        let poll = {
+            let _exit = Exit(collector, Some(section));
+            this.inner.poll_next(cx)
+        };
+        if matches!(poll, Poll::Ready(None))
+            && let Some(collector) = this.collector.take()
+        {
+            collector.report();
+        }
+        poll
+    }
+}
+
+/// Closes a section when dropped, so also when what is polled panics.
+struct Exit<'a>(&'a mut Collector, Option<Section>);
+
+impl Drop for Exit<'_> {
+    fn drop(&mut self) {
+        if let Some(section) = self.1.take() {
+            self.0.exit(section);
+        }
     }
 }
 
@@ -295,6 +321,16 @@ pub trait RocksDbPerfExt: Future + Sized {
 }
 
 impl<F: Future> RocksDbPerfExt for F {}
+
+/// Measures the RocksDB work done by a stream as a whole. See [`RocksDbPerf`].
+pub trait RocksDbPerfStreamExt: Stream + Sized {
+    /// Reads, like `RocksDbReadPerfGuard`.
+    fn with_read_perf(self, name: &'static str) -> RocksDbPerf<Self> {
+        RocksDbPerf::new(self, &super::read_perf::READ_SPEC, name)
+    }
+}
+
+impl<S: Stream> RocksDbPerfStreamExt for S {}
 
 fn convert_perf_level(input: PerfStatsLevel) -> RocksLevel {
     match input {

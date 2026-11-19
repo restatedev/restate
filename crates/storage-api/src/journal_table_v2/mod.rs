@@ -15,7 +15,7 @@ use std::ops::RangeInclusive;
 use bytes::Bytes;
 use futures::Stream;
 
-use restate_memory::{LocalMemoryLease, LocalMemoryPool};
+use restate_memory::LocalMemoryLease;
 use restate_types::blob::{BlobId, RelatedBlob};
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::journal_v2::raw::{
@@ -28,8 +28,8 @@ use restate_types::sharding::KeyRange;
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_util_bytecount::ByteCount;
 
+use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
-use crate::{BudgetedReadError, Result};
 
 /// A hydrated journal entry and the lease covering it.
 pub type BudgetedJournalItem = (EntryIndex, StoredRawEntry, LocalMemoryLease);
@@ -263,40 +263,6 @@ pub trait ReadJournalTable {
         invocation_id: InvocationId,
         completion_id: CompletionId,
     ) -> impl Future<Output = Result<bool>> + Send;
-
-    /// Budget-gated point read of a single journal entry.
-    ///
-    /// Fetches raw bytes from the store, peeks the serialized size, acquires a
-    /// [`LocalMemoryLease`] from `budget`, and only then decodes the entry.
-    ///
-    /// If the content is stored in a blob, it's read too, under the same lease. The returned
-    /// entry is hydrated.
-    fn get_journal_entry_budgeted(
-        &mut self,
-        invocation_id: InvocationId,
-        journal_index: u32,
-        budget: &mut LocalMemoryPool,
-    ) -> impl Future<
-        Output = std::result::Result<Option<(StoredRawEntry, LocalMemoryLease)>, BudgetedReadError>,
-    > + Send;
-
-    /// Budget-gated journal stream.
-    ///
-    /// Each entry's raw byte size is peeked from the underlying store **before**
-    /// deserialization. A [`LocalMemoryLease`] is acquired from `budget` for that
-    /// size, and only then is the entry decoded. This prevents memory allocation
-    /// when the budget is exhausted.
-    ///
-    /// Like [`Self::get_journal_entry_budgeted`], each entry is hydrated, its content read under
-    /// the entry's lease.
-    fn get_journal_budgeted<'a>(
-        &'a self,
-        invocation_id: InvocationId,
-        journal_length: EntryIndex,
-        budget: &'a mut LocalMemoryPool,
-    ) -> Result<
-        impl Stream<Item = std::result::Result<BudgetedJournalItem, BudgetedReadError>> + Send + 'a,
-    >;
 }
 
 #[derive(Debug, Clone)]

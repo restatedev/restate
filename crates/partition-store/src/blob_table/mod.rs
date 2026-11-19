@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use bilrost::Message;
 use bytes::{Bytes, BytesMut};
-use rocksdb::{BoundColumnFamily, DBRawIteratorWithThreadMode};
+use rocksdb::BoundColumnFamily;
 
 use restate_rocksdb::{RocksDb, RocksDbReadPerfGuard};
 use restate_storage_api::blob_table::{
@@ -26,8 +26,8 @@ use crate::TableKind;
 use crate::keys::{FixedLengthTableKey, KeyKind, define_table_key};
 use crate::read_snapshot::PartitionSnapshotReader;
 use crate::{
-    DB, PartitionDb, PartitionStore, PartitionStoreTransaction, ReadSnapshot, StorageAccess,
-    StorageIterator, StorageRead,
+    PartitionDb, PartitionStore, PartitionStoreTransaction, ReadSnapshot, StorageAccess,
+    StorageRead,
 };
 
 mod header;
@@ -69,17 +69,13 @@ fn get_blob<S: StorageAccess, D: BlobDecoder>(
 /// `.await` points. Blob payloads never change once written, but a blob can be released after the
 /// referencing entry was read. Read from the live database ([`Self::Db`]) only blobs whose
 /// references can't be released concurrently (e.g. journals of in-flight invocations); otherwise
-/// read from the same snapshot as the referencing entry ([`Self::Snapshot`]). A transaction reads
-/// through its write batch ([`Self::Batch`]), so it sees the blobs it wrote.
+/// read from the same snapshot as the referencing entry ([`Self::Snapshot`]).
 pub(crate) enum BlobReader<'a> {
     Db {
         rocksdb: &'a Arc<RocksDb>,
         cf: &'a Arc<BoundColumnFamily<'a>>,
     },
     Snapshot(&'a PartitionSnapshotReader<'a>),
-    /// An iterator over a transaction's write batch and the database, seeked to each blob. A
-    /// reference to the transaction can't be held across `.await` points, but its iterators can.
-    Batch(DBRawIteratorWithThreadMode<'a, DB>),
 }
 
 impl<'a> BlobReader<'a> {
@@ -114,15 +110,6 @@ impl<'a> BlobReader<'a> {
                     .get_pinned(KeyKind::Blob, &key)
                     .map_err(|error| StorageError::Generic(error.into()))?;
                 Ok(f(live_value_payload(value.as_deref())?))
-            }
-            Self::Batch(iterator) => {
-                iterator.seek(key);
-                // A seek lands on the first key at or after `key`, which may be another blob's
-                let value = match StorageIterator::item(iterator)? {
-                    Some((found, value)) if found == key => Some(value),
-                    _ => None,
-                };
-                Ok(f(live_value_payload(value)?))
             }
         }
     }

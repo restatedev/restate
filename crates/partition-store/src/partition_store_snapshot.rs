@@ -9,18 +9,24 @@
 // by the Apache License, Version 2.0.
 
 use bytes::{Bytes, BytesMut};
+use futures::stream;
 use rocksdb::{DBPinnableSlice, ReadOptions};
 
+use restate_memory::{ClaimedMemoryPool, LocalMemoryLease, PinnableMemoryStream, WithPinHandle};
+use restate_rocksdb::RocksDbPerfStreamExt;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::sharding::KeyRange;
 
-use crate::blob_table::BlobReader;
+use crate::budgeted_reads::{BudgetedScan, Row};
 use crate::features::StorageFeatures;
 use crate::keys::{EncodeTableKeyPrefix, KeyKind};
 use crate::partition_store::{StorageRead, assert_partition_key_or_err};
 use crate::scan::{PhysicalScan, TableScan};
-use crate::{PartitionReadSnapshot, PartitionSnapshotReader, PartitionSnapshotScan};
+use crate::{
+    PartitionReadSnapshot, PartitionSnapshotReader, PartitionSnapshotScan,
+    TableScanIterationDecision,
+};
 
 /// Read-only access to the tables of a partition as they were when the snapshot was taken,
 /// created with [`PartitionStore::snapshot`](crate::PartitionStore::snapshot).
@@ -59,6 +65,47 @@ impl<'a> PartitionStoreSnapshot<'a> {
     pub(crate) fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) -> Result<()> {
         assert_partition_key_or_err(self.key_range, partition_key)
     }
+
+    /// Streams the rows of `scan`. Each row's `cost` is reserved from `budget`
+    /// before `decode` gets the row with its lease. `decode` builds the row to
+    /// stream and decides whether the scan goes on.
+    ///
+    /// A row is read when the stream is polled for it. `budget` is
+    /// [lent](ClaimedMemoryPool::lend) to the stream until it's dropped.
+    ///
+    /// `name` labels the scan's RocksDB perf metrics, which are reported once,
+    /// when the stream ends.
+    pub(crate) fn budgeted_scan<T, C, D>(
+        &self,
+        name: &'static str,
+        scan: PhysicalScan<Bytes>,
+        budget: ClaimedMemoryPool<'_>,
+        cost: C,
+        decode: D,
+    ) -> Result<impl PinnableMemoryStream<Item = Row<T>> + Send + 'static + use<T, C, D>>
+    where
+        T: Send + 'static,
+        C: Fn(&[u8], &[u8]) -> usize + Send + 'static,
+        D: FnMut(&[u8], &[u8], LocalMemoryLease) -> TableScanIterationDecision<T> + Send + 'static,
+    {
+        // Not positioned yet: the stream seeks when it's first polled, so that the
+        // seek is measured together with the rows.
+        let iterator = self
+            .snapshot
+            .owned_unpositioned_scan(&scan, ReadOptions::default());
+        let (budget, pins) = budget.lend();
+        let rows = BudgetedScan::new(iterator, scan.into_start(), budget, cost, decode);
+        let rows = stream::try_unfold(rows, |mut rows| async move {
+            Ok(rows.next().await?.map(|row| (row, rows)))
+        });
+        Ok(WithPinHandle::new(rows.with_read_perf(name), pins))
+    }
+
+    /// A reader for point lookups that holds its own clone of the snapshot, so it can
+    /// be kept by a scan that outlives this borrow.
+    pub(crate) fn owned_reader(&self) -> PartitionSnapshotReader<'static> {
+        self.snapshot.owned_reader()
+    }
 }
 
 impl StorageRead for PartitionStoreSnapshot<'_> {
@@ -92,10 +139,5 @@ impl StorageRead for PartitionStoreSnapshot<'_> {
         self.key_buffer.clear();
         self.key_buffer.reserve(min_size);
         self.key_buffer
-    }
-
-    #[inline]
-    fn blob_reader(&self) -> BlobReader<'_> {
-        BlobReader::Snapshot(&self.reader)
     }
 }
