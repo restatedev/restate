@@ -546,6 +546,12 @@ impl Configuration {
             .validate_upload_sizes()
             .map_err(InvalidConfigurationError::InvalidSnapshotUploadSizes)?;
 
+        if self.worker.storage.experimental_rocksdb_enable_blob_files
+            && !self.worker.use_multi_db_layout
+        {
+            return Err(InvalidConfigurationError::BlobFilesRequireMultiDbLayout);
+        }
+
         self.validate_advertised_addresses()
     }
 
@@ -722,6 +728,10 @@ pub enum InvalidConfigurationError {
     },
     #[error("invalid [worker.snapshots] setting: {0}")]
     InvalidSnapshotUploadSizes(String),
+    #[error(
+        "experimental-rocksdb-enable-blob-files requires worker.use-multi-db-layout to be enabled"
+    )]
+    BlobFilesRequireMultiDbLayout,
     #[error("invalid {key}: {reason}")]
     AdvertisedAddressList { key: &'static str, reason: String },
 }
@@ -996,6 +1006,22 @@ mod tests {
             parse(Some("1h")),
             Some(std::time::Duration::from_secs(3600))
         );
+    }
+
+    #[test]
+    fn validate_blob_files_require_multi_db_layout() {
+        let mut config = Configuration::default();
+        config.common.set_node_name("validate-blob-files");
+        assert!(config.validate().is_ok());
+
+        config.worker.storage.experimental_rocksdb_enable_blob_files = true;
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            InvalidConfigurationError::BlobFilesRequireMultiDbLayout
+        ));
+
+        config.worker.use_multi_db_layout = true;
+        assert!(config.validate().is_ok());
     }
 
     #[test]

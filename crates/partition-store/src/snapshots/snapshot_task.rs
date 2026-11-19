@@ -24,8 +24,7 @@ use restate_types::nodes_config::ClusterFingerprint;
 
 use super::{
     CommitFenceRequest, LeaseError, LocalPartitionSnapshot, PartitionSnapshotMetadata,
-    PartitionSnapshotStatus, SnapshotError, SnapshotErrorKind, SnapshotFormatVersion,
-    SnapshotRepository,
+    PartitionSnapshotStatus, SnapshotError, SnapshotErrorKind, SnapshotRepository,
 };
 use crate::PartitionStoreManager;
 
@@ -149,7 +148,7 @@ impl SnapshotPartitionTask {
         created_at: MillisSinceEpoch,
     ) -> PartitionSnapshotMetadata {
         PartitionSnapshotMetadata {
-            version: SnapshotFormatVersion::V1,
+            version: snapshot.version,
             cluster_name: self.cluster_name.clone(),
             cluster_fingerprint: self.cluster_fingerprint,
             node_name: self.node_name.clone(),
@@ -167,6 +166,7 @@ impl SnapshotPartitionTask {
             partition_store_byte_offset: snapshot.partition_store_byte_offset,
             files: snapshot.files.clone(),
             file_keys: std::collections::BTreeMap::new(),
+            whole_db_files: snapshot.whole_db_files.clone(),
         }
     }
 }

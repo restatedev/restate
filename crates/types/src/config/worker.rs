@@ -1104,9 +1104,44 @@ pub struct StorageOptions {
         skip_serializing_if = "serde_helpers::is_default_vqueue_meta_full_write_probability"
     )]
     pub vqueue_meta_full_write_probability: f64,
+
+    /// # Enable RocksDB blob files for partition stores
+    ///
+    /// [Experimental]
+    /// Stores values at or above `experimental-rocksdb-blob-min-size` in dedicated blob files
+    /// instead of inline in the partition's SST files. Requires `worker.use-multi-db-layout`,
+    /// because a partition with blob files can only be snapshotted and restored as a whole
+    /// database.
+    ///
+    /// Since v1.8.2
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub experimental_rocksdb_enable_blob_files: bool,
+
+    /// # Minimum value size for partition-store blob files
+    ///
+    /// Values at or above this threshold are stored in blob files when
+    /// `experimental-rocksdb-enable-blob-files` is on. Smaller values stay inline in SST files.
+    ///
+    /// Only takes effect when `experimental-rocksdb-enable-blob-files` is true.
+    ///
+    /// [default] is 512 KiB
+    ///
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub experimental_rocksdb_blob_min_size: Option<NonZeroByteCount>,
 }
 
 impl StorageOptions {
+    /// Minimum value size for partition-store blob files. Defaults to 512 KiB.
+    pub fn experimental_rocksdb_blob_min_size(&self) -> NonZeroByteCount {
+        self.experimental_rocksdb_blob_min_size
+            .unwrap_or(NonZeroByteCount::new(
+                NonZeroUsize::new(512 * 1024).unwrap(),
+            ))
+    }
+
     pub fn apply_common(&mut self, common: &CommonOptions) {
         self.rocksdb.apply_common(&common.rocksdb);
         if self.rocksdb_memory_budget.is_none() {
@@ -1204,6 +1239,8 @@ impl Default for StorageOptions {
             rocksdb_max_successive_merges: DEFAULT_MAX_SUCCESSIVE_MERGES,
             vqueue_meta_full_write_probability:
                 serde_helpers::default_vqueue_meta_full_write_probability(),
+            experimental_rocksdb_enable_blob_files: false,
+            experimental_rocksdb_blob_min_size: None,
         }
     }
 }

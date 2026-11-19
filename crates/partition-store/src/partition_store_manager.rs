@@ -8,21 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use ahash::HashMap;
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
-use tokio::sync::{Mutex as AsyncMutex, mpsc, watch};
+use tokio::sync::{Mutex as AsyncMutex, OwnedRwLockWriteGuard, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{Level, debug, error, field, info, instrument, warn};
 
 use restate_core::io::IdleTracker;
+use restate_core::{TaskCenter, TaskKind};
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_memory::ByteCount;
 use restate_rocksdb::{
-    CfPrefixPattern, DbRef, DbSpecBuilder, RocksDb, RocksDbManager, RocksError, SinglePoolExecutor,
+    CfPrefixPattern, DbRef, DbSpec, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
+    SinglePoolExecutor,
 };
 use restate_storage_api::fsm_table::ReadFsmTable;
 use restate_types::config::Configuration;
@@ -40,7 +42,7 @@ use crate::partition_db::{
 };
 use crate::snapshots::{
     CommitFenceRequest, GetSnapshotError, LocalPartitionSnapshot, PartitionSnapshotStatus,
-    RestoreSnapshot, Snapshots,
+    RestoreSnapshot, SnapshotFormatVersion, Snapshots,
 };
 use crate::{BuildError, OpenError, PartitionStore, SnapshotErrorKind};
 
@@ -102,28 +104,6 @@ impl SharedState {
             })
             .collect()
     }
-
-    /// Gets the partition cell or creates a default (closed) one if it doesn't exist.
-    ///
-    /// Note that this doesn't _create_ the column family. If the column family is closed,
-    /// the returned cell status will be `CfMissing`.
-    pub async fn get_or_open(
-        &self,
-        partition: &Partition,
-        database: &PartitionStoreDb,
-    ) -> Arc<PartitionCell> {
-        let cell = self.get_or_default(partition);
-        let mut state_guard = cell.inner.write().await;
-        if !state_guard.is_unknown() {
-            drop(state_guard);
-            return cell;
-        }
-
-        cell.open_cf(&mut state_guard, database).await;
-
-        drop(state_guard);
-        cell
-    }
 }
 
 struct CachedDb {
@@ -133,14 +113,14 @@ struct CachedDb {
 }
 
 /// Restores a downloaded snapshot by importing it into the partition's database.
-struct ImportSnapshot<'a, 'g> {
+struct ImportSnapshot<'a> {
     cell: &'a PartitionCell,
-    state: &'a mut tokio::sync::RwLockWriteGuard<'g, State>,
+    state: &'a mut State,
     database: PartitionStoreDb,
     target_lsn: Option<Lsn>,
 }
 
-impl RestoreSnapshot for ImportSnapshot<'_, '_> {
+impl RestoreSnapshot for ImportSnapshot<'_> {
     type Output = PartitionDb;
 
     fn restore<'a>(
@@ -148,6 +128,11 @@ impl RestoreSnapshot for ImportSnapshot<'_, '_> {
         snapshot: LocalPartitionSnapshot,
     ) -> futures::future::BoxFuture<'a, Result<PartitionDb, GetSnapshotError>> {
         Box::pin(async move {
+            if snapshot.version == SnapshotFormatVersion::V3 {
+                return Err(GetSnapshotError::Defective(anyhow::anyhow!(
+                    "whole-database checkpoint snapshots (V3) cannot be restored by importing a column family"
+                )));
+            }
             let snapshot_lsn = snapshot.min_applied_lsn;
             match self.target_lsn {
                 None => info!("Found partition snapshot, restoring it"),
@@ -167,6 +152,18 @@ impl RestoreSnapshot for ImportSnapshot<'_, '_> {
                 .map_err(GetSnapshotError::from_import)
         })
     }
+}
+
+enum StagingVerifyError {
+    /// The snapshot's data is unusable; its staging directory can be removed.
+    Defective(anyhow::Error),
+    /// The staging database could not be closed; leave its directory for recovery.
+    CloseFailed(anyhow::Error),
+}
+
+enum WholeDbRestoreOutcome {
+    Restored(PartitionStore),
+    NotNeeded(OwnedRwLockWriteGuard<State>, Option<PartitionStoreDb>),
 }
 
 pub struct PartitionStoreManager {
@@ -198,6 +195,48 @@ impl PartitionStoreManager {
         });
 
         Ok(psm)
+    }
+
+    fn db_spec(
+        &self,
+        db_name: &restate_rocksdb::DbName,
+        path: PathBuf,
+        notifications: &Arc<DurableLsnSenders>,
+    ) -> DbSpec {
+        let configurator = RocksConfigurator::<AllDataCf>::new(
+            self.memory_controller.memory_budget.clone(),
+            notifications,
+            self.use_multi_db_layout,
+        );
+        DbSpecBuilder::new(
+            db_name.clone(),
+            DatabaseKind::PartitionStore,
+            path,
+            configurator.clone(),
+        )
+        .add_cf_pattern(CfPrefixPattern::new(PARTITION_CF_PREFIX), configurator)
+        // This is added as an experiment. We might make this configurable to let users decide
+        // on the trade-off between shutdown time and startup catchup time.
+        .add_to_flush_on_shutdown(CfPrefixPattern::ANY)
+        .build()
+        .expect("valid spec")
+    }
+
+    /// Opens a partition database at an arbitrary path, outside the manager's cache. Used to
+    /// verify a downloaded checkpoint before it is renamed into place.
+    async fn open_rocksdb_at(
+        &self,
+        db_name: &restate_rocksdb::DbName,
+        path: PathBuf,
+    ) -> Result<PartitionStoreDb, RocksError> {
+        let notifications = Arc::new(DurableLsnSenders::default());
+        let db_spec = self.db_spec(db_name, path, &notifications);
+        let (_, opening) = RocksDbManager::get().open_db(db_spec)?;
+        let rocksdb = opening.await?;
+        Ok(PartitionStoreDb {
+            rocksdb,
+            notifications,
+        })
     }
 
     async fn open_rocksdb(&self, partition: &Partition) -> Result<PartitionStoreDb, RocksError> {
@@ -233,24 +272,8 @@ impl PartitionStoreManager {
 
         // We need to create/open this database.
         let notifications = Arc::new(DurableLsnSenders::default());
-        let configurator = RocksConfigurator::<AllDataCf>::new(
-            self.memory_controller.memory_budget.clone(),
-            &notifications,
-            self.use_multi_db_layout,
-        );
-
-        let db_spec = DbSpecBuilder::new(
-            db_name.clone(),
-            DatabaseKind::PartitionStore,
-            Configuration::pinned().worker.storage.data_dir(&db_name),
-            configurator.clone(),
-        )
-        .add_cf_pattern(CfPrefixPattern::new(PARTITION_CF_PREFIX), configurator)
-        // This is added as an experiment. We might make this configurable to let users decide
-        // on the trade-off between shutdown time and startup catchup time.
-        .add_to_flush_on_shutdown(CfPrefixPattern::ANY)
-        .build()
-        .expect("valid spec");
+        let path = Configuration::pinned().worker.storage.data_dir(&db_name);
+        let db_spec = self.db_spec(&db_name, path, &notifications);
 
         let (tracked, opening) = RocksDbManager::get().open_db(db_spec)?;
         // Cache the open's DbRef and durability listeners before awaiting. If this
@@ -280,6 +303,428 @@ impl PartitionStoreManager {
             rocksdb,
             notifications,
         })
+    }
+
+    /// Downloads and verifies the newest usable whole-database checkpoint (V3) into a staging
+    /// directory. Returns `None` when the newest candidate is an older format, which the import
+    /// path handles. A verified staging database is left closed and fsynced for the caller to
+    /// install.
+    async fn prepare_whole_db_snapshot(
+        &self,
+        partition: &Partition,
+        target_lsn: Option<Lsn>,
+        cancellation: &CancellationToken,
+        cell: &PartitionCell,
+    ) -> Result<Option<PathBuf>, OpenError> {
+        if !self.use_multi_db_layout || !self.snapshots.is_repository_configured() {
+            return Ok(None);
+        }
+        let db_name = restate_rocksdb::DbName::from(partition.db_name(self.use_multi_db_layout));
+
+        let candidates = self
+            .snapshots
+            .get_snapshot_candidates(partition.partition_id)
+            .await
+            .map_err(OpenError::Snapshot)?;
+        let candidates: Vec<_> = candidates
+            .into_iter()
+            .filter(|c| target_lsn.is_none_or(|min_lsn| c.min_applied_lsn >= min_lsn))
+            .collect();
+
+        let data_dir = Configuration::pinned().worker.storage.data_dir(&db_name);
+        let mut saw_whole_db = false;
+        let mut last_error: Option<anyhow::Error> = None;
+        for snapshot_ref in &candidates {
+            let metadata = match self
+                .snapshots
+                .get_snapshot_metadata(partition.partition_id, snapshot_ref)
+                .await
+            {
+                Ok(metadata) => metadata,
+                Err(GetSnapshotError::Unavailable(err)) => return Err(OpenError::Snapshot(err)),
+                Err(err @ GetSnapshotError::Defective(_)) => {
+                    warn!(
+                        snapshot_id = %snapshot_ref.snapshot_id,
+                        %err,
+                        "Snapshot metadata is unusable, trying the next older one"
+                    );
+                    last_error = Some(err.into());
+                    continue;
+                }
+            };
+
+            if metadata.version != SnapshotFormatVersion::V3 {
+                return Ok(None);
+            }
+            saw_whole_db = true;
+
+            if let Some(min_lsn) = target_lsn
+                && metadata.min_applied_lsn < min_lsn
+            {
+                last_error = Some(anyhow::anyhow!(
+                    "snapshot {} has min_applied_lsn {} below required target {}",
+                    snapshot_ref.snapshot_id,
+                    metadata.min_applied_lsn,
+                    min_lsn,
+                ));
+                continue;
+            }
+            if metadata.key_range.start() > partition.key_range.start()
+                || metadata.key_range.end() < partition.key_range.end()
+            {
+                last_error = Some(anyhow::anyhow!(
+                    "snapshot {} does not cover the partition's key range",
+                    snapshot_ref.snapshot_id
+                ));
+                continue;
+            }
+
+            let staging_dir = restoring_dir(&data_dir)?;
+            let mut metadata = metadata;
+            match self
+                .snapshots
+                .download_whole_db_snapshot(
+                    partition.partition_id,
+                    snapshot_ref,
+                    &mut metadata,
+                    &staging_dir,
+                    cancellation,
+                )
+                .await
+            {
+                Ok(()) => {}
+                Err(GetSnapshotError::Unavailable(err)) => {
+                    remove_dir_all_strict(&staging_dir)
+                        .await
+                        .map_err(|cleanup| OpenError::Snapshot(anyhow::Error::new(cleanup)))?;
+                    if cancellation.is_cancelled() {
+                        return Err(OpenError::Cancelled);
+                    }
+                    return Err(OpenError::Snapshot(err));
+                }
+                Err(err @ GetSnapshotError::Defective(_)) => {
+                    remove_dir_all_strict(&staging_dir)
+                        .await
+                        .map_err(|cleanup| OpenError::Snapshot(anyhow::Error::new(cleanup)))?;
+                    warn!(
+                        snapshot_id = %snapshot_ref.snapshot_id,
+                        %err,
+                        "Snapshot is unusable, trying the next older one"
+                    );
+                    last_error = Some(err.into());
+                    continue;
+                }
+            }
+
+            match self
+                .verify_staging_database(
+                    partition,
+                    &db_name,
+                    &staging_dir,
+                    cell,
+                    target_lsn,
+                    metadata.min_applied_lsn,
+                )
+                .await
+            {
+                Ok(()) => return Ok(Some(staging_dir)),
+                Err(StagingVerifyError::Defective(err)) => {
+                    remove_dir_all_strict(&staging_dir)
+                        .await
+                        .map_err(|cleanup| OpenError::Snapshot(anyhow::Error::new(cleanup)))?;
+                    warn!(
+                        snapshot_id = %snapshot_ref.snapshot_id,
+                        %err,
+                        "Downloaded snapshot failed verification, trying the next older one"
+                    );
+                    last_error = Some(err);
+                }
+                Err(StagingVerifyError::CloseFailed(err)) => {
+                    // References to the staging database may remain; leave its directory for
+                    // recovery on a later open, under the partition lock.
+                    return Err(OpenError::Snapshot(err));
+                }
+            }
+        }
+
+        if saw_whole_db {
+            Err(OpenError::Snapshot(last_error.unwrap_or_else(|| {
+                anyhow::anyhow!("no whole-database snapshot could be restored")
+            })))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Opens a downloaded checkpoint in place, checks its applied LSN, scans its checksums, and
+    /// closes it again. The staging directory is never left open.
+    async fn verify_staging_database(
+        &self,
+        partition: &Partition,
+        db_name: &restate_rocksdb::DbName,
+        staging_dir: &Path,
+        cell: &PartitionCell,
+        target_lsn: Option<Lsn>,
+        metadata_min_applied_lsn: Lsn,
+    ) -> Result<(), StagingVerifyError> {
+        let database = self
+            .open_rocksdb_at(db_name, staging_dir.to_path_buf())
+            .await
+            .map_err(|err| StagingVerifyError::Defective(err.into()))?;
+        let verified = async {
+            let Some(mut partition_db) = PartitionDb::new(
+                Arc::new(partition.clone()),
+                watch::Sender::new(None),
+                database.clone(),
+            ) else {
+                return Err(anyhow::anyhow!(
+                    "restored snapshot has no partition column family"
+                ));
+            };
+
+            let applied_lsn = partition_db.get_applied_lsn().await?;
+            if applied_lsn.unwrap_or(Lsn::INVALID) < metadata_min_applied_lsn {
+                return Err(anyhow::anyhow!(
+                    "restored snapshot applied LSN {} is below its metadata LSN {}",
+                    applied_lsn.unwrap_or(Lsn::INVALID),
+                    metadata_min_applied_lsn
+                ));
+            }
+            if let Some(min_lsn) = target_lsn
+                && applied_lsn.unwrap_or(Lsn::INVALID) < min_lsn
+            {
+                return Err(anyhow::anyhow!(
+                    "restored snapshot applied LSN {} is below required target {}",
+                    applied_lsn.unwrap_or(Lsn::INVALID),
+                    min_lsn
+                ));
+            }
+
+            cell.verify_restored_database(Arc::clone(&database.rocksdb))
+                .await?;
+            Ok(())
+        }
+        .await;
+
+        let rocksdb = Arc::clone(&database.rocksdb);
+        drop(database);
+        let closed = rocksdb
+            .close()
+            .await
+            .map_err(|_| anyhow::anyhow!("could not close the verified staging database"));
+        match (verified, closed) {
+            (Ok(()), Ok(())) => fsync_dir(staging_dir)
+                .await
+                .map_err(|err| StagingVerifyError::Defective(anyhow::Error::new(err))),
+            // A close failure may leave references to the staging database; keep its directory
+            // for recovery, whatever verification found.
+            (_, Err(err)) => Err(StagingVerifyError::CloseFailed(err)),
+            (Err(err), Ok(())) => Err(StagingVerifyError::Defective(err)),
+        }
+    }
+
+    /// Installs a verified staging database, optionally replacing an existing database directory.
+    /// Returns the directory that now holds the previous database, if any.
+    async fn install_staging_database(
+        &self,
+        data_dir: &Path,
+        staging_dir: &Path,
+        old_dir: Option<&Path>,
+    ) -> Result<Option<PathBuf>, OpenError> {
+        let Some(parent) = data_dir.parent() else {
+            return Err(OpenError::Snapshot(anyhow::anyhow!(
+                "database path has no parent"
+            )));
+        };
+
+        let replaced = if let Some(old_dir) = old_dir {
+            let replaced = replaced_dir(old_dir)?;
+            if let Err(err) = tokio::fs::rename(old_dir, &replaced).await {
+                remove_dir_all_strict(staging_dir)
+                    .await
+                    .map_err(|cleanup| OpenError::Snapshot(anyhow::Error::new(cleanup)))?;
+                return Err(OpenError::Snapshot(anyhow::anyhow!(
+                    "failed to move the old database aside: {err}"
+                )));
+            }
+            Some(replaced)
+        } else {
+            None
+        };
+
+        if let Err(err) = tokio::fs::rename(staging_dir, data_dir).await {
+            remove_dir_all_strict(staging_dir)
+                .await
+                .map_err(|cleanup| OpenError::Snapshot(anyhow::Error::new(cleanup)))?;
+            if let Some(replaced) = &replaced {
+                let _ = tokio::fs::rename(replaced, data_dir).await;
+            }
+            return Err(OpenError::Snapshot(anyhow::anyhow!(
+                "failed to install the restored database: {err}"
+            )));
+        }
+        if let Err(err) = fsync_dir(parent).await {
+            remove_dir_all_strict(data_dir)
+                .await
+                .map_err(|cleanup| OpenError::Snapshot(anyhow::Error::new(cleanup)))?;
+            return Err(OpenError::Snapshot(anyhow::Error::new(err)));
+        }
+        Ok(replaced)
+    }
+
+    /// Recovers from an interrupted directory swap: restores a `.replaced-` directory when the
+    /// final directory is missing, then removes leftover staging and replaced directories.
+    ///
+    /// Runs synchronously under the partition's lock, before the first await of an open, so
+    /// cancellation cannot leave the recovery half done.
+    fn recover_restore_dirs(&self, data_dir: &Path) -> Result<(), OpenError> {
+        let Some(parent) = data_dir.parent() else {
+            return Ok(());
+        };
+        let Some(name) = data_dir.file_name() else {
+            return Ok(());
+        };
+        let name = name.to_string_lossy();
+        let restoring_prefix = format!("{name}.restoring-");
+        let replaced_prefix = format!("{name}.replaced-");
+
+        let entries = match std::fs::read_dir(parent) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(OpenError::Snapshot(anyhow::Error::new(err))),
+        };
+        let mut restoring = Vec::new();
+        let mut replaced = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|err| OpenError::Snapshot(anyhow::Error::new(err)))?;
+            let entry_name = entry.file_name().to_string_lossy().into_owned();
+            if entry_name.starts_with(&restoring_prefix) {
+                restoring.push(entry.path());
+            } else if entry_name.starts_with(&replaced_prefix) {
+                replaced.push(entry.path());
+            }
+        }
+
+        if !data_dir.exists() {
+            match replaced.len() {
+                0 => {}
+                1 => {
+                    std::fs::rename(&replaced[0], data_dir).map_err(|err| {
+                        OpenError::Snapshot(anyhow::anyhow!(
+                            "failed to recover replaced database directory: {err}"
+                        ))
+                    })?;
+                    fsync_dir_sync(parent)
+                        .map_err(|err| OpenError::Snapshot(anyhow::Error::new(err)))?;
+                    replaced.clear();
+                }
+                _ => {
+                    return Err(OpenError::Snapshot(anyhow::anyhow!(
+                        "multiple replaced database directories and no final database: {}",
+                        data_dir.display()
+                    )));
+                }
+            }
+        }
+
+        for path in restoring.into_iter().chain(replaced) {
+            if RocksDbManager::get().get_db_ref(&path).is_some() {
+                warn!(
+                    path = %path.display(),
+                    "Skipping restore directory cleanup: the database is still tracked"
+                );
+                continue;
+            }
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(OpenError::Snapshot(anyhow::Error::new(err))),
+            }
+        }
+        Ok(())
+    }
+
+    /// Reads the applied LSN from a database that has a partition column family but no
+    /// initialized `PartitionDb`.
+    async fn read_existing_applied_lsn(
+        &self,
+        partition: &Partition,
+        database: &PartitionStoreDb,
+    ) -> Result<Option<Lsn>, OpenError> {
+        let Some(mut db) = PartitionDb::new(
+            Arc::new(partition.clone()),
+            watch::Sender::new(None),
+            database.clone(),
+        ) else {
+            return Ok(None);
+        };
+        Ok(db.get_applied_lsn().await?)
+    }
+
+    /// The whole verified restore, owning the partition lock and any staging database it opens.
+    /// The caller only awaits the task, so dropping the open future cannot release the lock while
+    /// native staging or swap work is still running.
+    async fn run_whole_db_restore(
+        self: Arc<Self>,
+        partition: Partition,
+        cell: Arc<PartitionCell>,
+        mut state_guard: OwnedRwLockWriteGuard<State>,
+        mut database: Option<PartitionStoreDb>,
+        target_lsn: Option<Lsn>,
+        cancellation: CancellationToken,
+    ) -> Result<WholeDbRestoreOutcome, OpenError> {
+        let db_name = restate_rocksdb::DbName::from(partition.db_name(self.use_multi_db_layout));
+        let data_dir = Configuration::pinned().worker.storage.data_dir(&db_name);
+        let Some(staging) = self
+            .prepare_whole_db_snapshot(&partition, target_lsn, &cancellation, &cell)
+            .await?
+        else {
+            return Ok(WholeDbRestoreOutcome::NotNeeded(state_guard, database));
+        };
+
+        let replaces_existing = data_dir.exists();
+        if replaces_existing {
+            let old_database = match database.take() {
+                Some(database) => database,
+                None => self.open_rocksdb(&partition).await?,
+            };
+            cell.release_database_for_swap(&mut state_guard).await;
+            let old_rocksdb = Arc::clone(&old_database.rocksdb);
+            drop(old_database);
+            if old_rocksdb.close().await.is_err() {
+                remove_dir_all_strict(&staging)
+                    .await
+                    .map_err(|cleanup| OpenError::Snapshot(anyhow::Error::new(cleanup)))?;
+                return Err(OpenError::Snapshot(anyhow::anyhow!(
+                    "could not close the lagging database before fast-forwarding; keeping it untouched"
+                )));
+            }
+        }
+
+        let replaced = if replaces_existing {
+            self.install_staging_database(&data_dir, &staging, Some(&data_dir))
+                .await?
+        } else {
+            self.install_staging_database(&data_dir, &staging, None)
+                .await?;
+            None
+        };
+
+        let database = self.open_rocksdb(&partition).await?;
+        if state_guard.is_unknown() {
+            cell.open_cf(&mut state_guard, &database).await;
+        }
+        let Some(db) = state_guard.get_or_reopen().await? else {
+            return Err(OpenError::Snapshot(anyhow::anyhow!(
+                "restored database has no partition column family"
+            )));
+        };
+        if let Some(replaced) = replaced {
+            remove_dir_all_strict(&replaced)
+                .await
+                .map_err(|cleanup| OpenError::Snapshot(anyhow::Error::new(cleanup)))?;
+        }
+        Ok(WholeDbRestoreOutcome::Restored(PartitionStore::from(db)))
     }
 
     pub fn is_repository_configured(&self) -> bool {
@@ -354,7 +799,7 @@ impl PartitionStoreManager {
     /// If `target_lsn` is `None`, then the store will be opened from the local database
     /// regardless of whether there is a snapshot available or not.
     pub async fn open(
-        &self,
+        self: &Arc<Self>,
         partition: &Partition,
         target_lsn: Option<Lsn>,
     ) -> Result<PartitionStore, OpenError> {
@@ -366,31 +811,118 @@ impl PartitionStoreManager {
     /// [`OpenError::Cancelled`] once `cancellation` fires.
     #[instrument(level = "error", skip_all, fields(partition_id = %partition.partition_id, cf_name = %partition.cf_name()))]
     pub async fn open_cancellable(
-        &self,
+        self: &Arc<Self>,
         partition: &Partition,
         target_lsn: Option<Lsn>,
         cancellation: &CancellationToken,
     ) -> Result<PartitionStore, OpenError> {
-        let database = self.open_rocksdb(partition).await?;
+        // Serialize every restore, swap and startup recovery under the partition's lock. The
+        // cell is created here and never removed from the shared map while a database is open.
+        let cell = self.state.get_or_default(partition);
+        let mut state_guard = cell.inner.clone().write_owned().await;
+
+        let db_name = restate_rocksdb::DbName::from(partition.db_name(self.use_multi_db_layout));
+        let data_dir = Configuration::pinned().worker.storage.data_dir(&db_name);
+        self.recover_restore_dirs(&data_dir)?;
+        let whole_db_restore_enabled = self.use_multi_db_layout
+            && self.snapshots.is_repository_configured()
+            && Configuration::pinned()
+                .worker
+                .storage
+                .experimental_rocksdb_enable_blob_files;
+
+        // A fresh partition can be restored straight into the final directory, but only after
+        // the staging database has been fully verified. The spawned task owns the partition lock
+        // and every staging handle, so dropping this future cannot release the lock early.
+        if !data_dir.exists() && whole_db_restore_enabled {
+            let task = TaskCenter::spawn_unmanaged(
+                TaskKind::Disposable,
+                format!("partition-{}-restore", partition.partition_id),
+                Self::run_whole_db_restore(
+                    Arc::clone(self),
+                    partition.clone(),
+                    Arc::clone(&cell),
+                    state_guard,
+                    None,
+                    target_lsn,
+                    cancellation.clone(),
+                ),
+            )
+            .map_err(|err| OpenError::Snapshot(anyhow::Error::new(err)))?;
+            match task
+                .await
+                .map_err(|err| OpenError::Snapshot(anyhow::Error::new(err)))?
+            {
+                Ok(WholeDbRestoreOutcome::Restored(store)) => return Ok(store),
+                Ok(WholeDbRestoreOutcome::NotNeeded(guard, database)) => {
+                    state_guard = guard;
+                    debug_assert!(database.is_none());
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        let mut database = self.open_rocksdb(partition).await?;
+        if state_guard.is_unknown() {
+            cell.open_cf(&mut state_guard, &database).await;
+        }
 
         // If we already have the partition locally and we don't have a fast-forward target, or the
         // store already meets the target LSN requirement, then we simply return it.
-        let cell = self.state.get_or_open(partition, &database).await;
-
-        let mut state_guard = cell.inner.write().await;
-
+        let mut needs_restore = false;
         if let Some(db) = state_guard.get_or_reopen().await? {
-            // we have a database, but perhaps it doesn't meet the min_applied_lsn requirement?
             let mut partition_store = PartitionStore::from(db);
             match target_lsn {
                 None => return Ok(partition_store),
                 Some(min_applied_lsn) => {
                     let my_applied_lsn = partition_store.get_applied_lsn().await?;
                     if my_applied_lsn.unwrap_or(Lsn::INVALID) >= min_applied_lsn {
-                        // We have an initialized partition store, and no fast-forward target - go on and open it.
                         return Ok(partition_store);
                     }
+                    needs_restore = true;
                 }
+            }
+        } else if data_dir.exists() {
+            let partition_cf_missing = database
+                .rocksdb
+                .inner()
+                .cf_handle(partition.cf_name().as_ref())
+                .is_none();
+            if partition_cf_missing && whole_db_restore_enabled {
+                // Local-store deletion drops the CF but keeps the directory. Restore a V3
+                // checkpoint through the same verified staging swap.
+                needs_restore = true;
+            } else if let Some(min_applied_lsn) = target_lsn {
+                let applied_lsn = self.read_existing_applied_lsn(partition, &database).await?;
+                needs_restore = applied_lsn.unwrap_or(Lsn::INVALID) < min_applied_lsn;
+            }
+        }
+
+        if needs_restore && whole_db_restore_enabled {
+            let task = TaskCenter::spawn_unmanaged(
+                TaskKind::Disposable,
+                format!("partition-{}-restore", partition.partition_id),
+                Self::run_whole_db_restore(
+                    Arc::clone(self),
+                    partition.clone(),
+                    Arc::clone(&cell),
+                    state_guard,
+                    Some(database),
+                    target_lsn,
+                    cancellation.clone(),
+                ),
+            )
+            .map_err(|err| OpenError::Snapshot(anyhow::Error::new(err)))?;
+            match task
+                .await
+                .map_err(|err| OpenError::Snapshot(anyhow::Error::new(err)))?
+            {
+                Ok(WholeDbRestoreOutcome::Restored(store)) => return Ok(store),
+                Ok(WholeDbRestoreOutcome::NotNeeded(guard, returned_database)) => {
+                    state_guard = guard;
+                    database = returned_database.expect("the existing database is returned");
+                }
+                Err(err) => return Err(err),
             }
         }
 
@@ -566,9 +1098,9 @@ impl PartitionStoreManager {
         partition: &Partition,
     ) -> Result<Option<DroppedPartitionStore>, RocksError> {
         let dropped = async {
-            let database = self.open_rocksdb(partition).await?;
             let cell = self.state.get_or_default(partition);
             let mut state_guard = cell.inner.write().await;
+            let database = self.open_rocksdb(partition).await?;
             cell.drop_partition_store(&mut state_guard, &database).await
         }
         .log_slow_after(
@@ -599,6 +1131,8 @@ impl PartitionStoreManager {
         &self,
         partition: &Partition,
     ) -> Result<Option<DroppedPartitionStore>, RocksError> {
+        let cell = self.state.get_or_default(partition);
+        let _state_guard = cell.inner.write().await;
         let database = self.open_rocksdb(partition).await?;
         // Measure through a handle of our own, so that the partition stays as it is.
         let Some(db) = PartitionDb::new(
@@ -625,11 +1159,21 @@ impl PartitionStoreManager {
         partition: &Partition,
         snapshot: LocalPartitionSnapshot,
     ) -> Result<PartitionStore, restate_rocksdb::RocksError> {
-        let database = self.open_rocksdb(partition).await?;
+        if snapshot.version == SnapshotFormatVersion::V3 {
+            return Err(RocksError::UnsupportedSnapshotFormat(
+                "whole-database checkpoint snapshots (V3) cannot be restored by importing a column family",
+            ));
+        }
         let cell = self.state.get_or_default(partition);
         let mut state_guard = cell.inner.write().await;
+        let database = self.open_rocksdb(partition).await?;
         let db = cell.import_cf(&mut state_guard, snapshot, database).await?;
         Ok(PartitionStore::from(db))
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn forget_cached_database(&self, db_name: &restate_rocksdb::DbName) {
+        self.db_cache.lock().await.remove(db_name);
     }
 
     #[cfg(test)]
@@ -648,6 +1192,39 @@ impl PartitionStoreManager {
                 .expect("rocksdb cannot be closed if others are still holding references to it");
         }
     }
+}
+
+fn replaced_dir(data_dir: &Path) -> Result<PathBuf, OpenError> {
+    let name = data_dir
+        .file_name()
+        .ok_or_else(|| OpenError::Snapshot(anyhow::anyhow!("database path has no name")))?
+        .to_string_lossy();
+    Ok(data_dir.with_file_name(format!("{name}.replaced-{:016x}", rand::random::<u64>())))
+}
+
+fn restoring_dir(data_dir: &Path) -> Result<PathBuf, OpenError> {
+    let name = data_dir
+        .file_name()
+        .ok_or_else(|| OpenError::Snapshot(anyhow::anyhow!("database path has no name")))?
+        .to_string_lossy();
+    Ok(data_dir.with_file_name(format!("{name}.restoring-{:016x}", rand::random::<u64>())))
+}
+
+async fn remove_dir_all_strict(path: &Path) -> std::io::Result<()> {
+    match tokio::fs::remove_dir_all(path).await {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+async fn fsync_dir(path: &Path) -> std::io::Result<()> {
+    let dir = tokio::fs::File::open(path).await?;
+    dir.sync_all().await
+}
+
+fn fsync_dir_sync(path: &Path) -> std::io::Result<()> {
+    std::fs::File::open(path)?.sync_all()
 }
 
 #[cfg(test)]

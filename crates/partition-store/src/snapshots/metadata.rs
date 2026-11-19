@@ -33,6 +33,20 @@ pub enum SnapshotFormatVersion {
     /// `file_keys`. Servers that only know V1 reject it up front instead of failing to find the
     /// files during restore.
     V2,
+    /// Whole-database checkpoint: the snapshot holds every file of the partition's own RocksDB,
+    /// including blob files and the database-level files (`MANIFEST-*`, `CURRENT`, `OPTIONS-*`).
+    /// Restoring opens the checkpoint as a database instead of importing a column family, so
+    /// servers that only know V1 or V2 reject it up front.
+    V3,
+}
+
+/// A file of a whole-database checkpoint that is not an SST listed in
+/// [`PartitionSnapshotMetadata::files`], such as a blob file or a database-level file.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SnapshotDataFile {
+    /// File name relative to the checkpoint directory, e.g. `000123.blob` or `MANIFEST-000005`.
+    pub name: String,
+    pub size: usize,
 }
 
 /// What a server needs in order to use a snapshot's data, as of the moment it was exported.
@@ -138,12 +152,40 @@ pub struct PartitionSnapshotMetadata {
     /// per-file lookup misses as the legacy case for forward compatibility.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub file_keys: BTreeMap<String, String>,
+
+    /// The blob and database-level files of a whole-database checkpoint snapshot (V3). SST
+    /// files are listed in `files` as for other formats.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub whole_db_files: Vec<SnapshotDataFile>,
 }
 
 impl PartitionSnapshotMetadata {
     /// Total size of the snapshot's data files.
     pub fn data_size_in_bytes(&self) -> ByteCount {
-        ByteCount::from(self.files.iter().map(|file| file.size as u64).sum::<u64>())
+        ByteCount::from(
+            self.files
+                .iter()
+                .map(|file| file.size as u64)
+                .chain(self.whole_db_files.iter().map(|file| file.size as u64))
+                .sum::<u64>(),
+        )
+    }
+
+    /// Rejects file names that could escape the snapshot or database directories. Every local
+    /// file is a single normal path component, and every repository key is a relative path
+    /// without `.` or `..` components.
+    pub fn validate_file_paths(&self) -> anyhow::Result<()> {
+        for file in &self.files {
+            validate_local_file_name(file.name.trim_start_matches('/'))?;
+        }
+        for file in &self.whole_db_files {
+            validate_local_file_name(&file.name)?;
+        }
+        for (name, key) in &self.file_keys {
+            validate_local_file_name(name.trim_start_matches('/'))?;
+            validate_relative_file_key(key)?;
+        }
+        Ok(())
     }
 
     pub fn validate(
@@ -210,6 +252,8 @@ struct PartitionSnapshotMetadataShadow {
     pub files: Vec<LiveFile>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub file_keys: BTreeMap<String, String>,
+    #[serde(default)]
+    pub whole_db_files: Vec<SnapshotDataFile>,
 }
 
 impl From<PartitionSnapshotMetadataShadow> for PartitionSnapshotMetadata {
@@ -238,8 +282,36 @@ impl From<PartitionSnapshotMetadataShadow> for PartitionSnapshotMetadata {
             partition_store_byte_offset: value.partition_store_byte_offset,
             files: value.files,
             file_keys: value.file_keys,
+            whole_db_files: value.whole_db_files,
         }
     }
+}
+
+fn validate_local_file_name(name: &str) -> anyhow::Result<()> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+        || Path::new(name).is_absolute()
+    {
+        anyhow::bail!("invalid snapshot file name '{name}'");
+    }
+    Ok(())
+}
+
+fn validate_relative_file_key(key: &str) -> anyhow::Result<()> {
+    if key.is_empty()
+        || key.starts_with('/')
+        || key.contains('\\')
+        || Path::new(key).is_absolute()
+        || key
+            .split('/')
+            .any(|component| component.is_empty() || component == "." || component == "..")
+    {
+        anyhow::bail!("invalid snapshot file key '{key}'");
+    }
+    Ok(())
 }
 
 /// Owns a snapshot's local on-disk directory and removes it when dropped.
@@ -313,6 +385,7 @@ pub struct LocalPartitionSnapshot {
     /// The snapshot's local directory. Owned by the snapshot and removed on drop unless
     /// explicitly relinquished via [`SnapshotDir::into_path`].
     pub base_dir: SnapshotDir,
+    pub version: SnapshotFormatVersion,
     pub log_id: LogId,
     pub min_applied_lsn: Lsn,
     pub db_comparator_name: String,
@@ -326,6 +399,8 @@ pub struct LocalPartitionSnapshot {
     pub log_byte_offset: Option<u64>,
     /// The partition store byte offset at `min_applied_lsn`, as in [`PartitionSnapshotMetadata`].
     pub partition_store_byte_offset: Option<u64>,
+    /// Blob and database-level files of a whole-database checkpoint (V3).
+    pub whole_db_files: Vec<SnapshotDataFile>,
 }
 /// RocksDB SST file that is part of a snapshot. Serialization wrapper around [LiveFile].
 #[serde_as]

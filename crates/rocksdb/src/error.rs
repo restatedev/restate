@@ -51,6 +51,9 @@ pub enum RocksError {
     #[error("export column family returned an empty set of SST files")]
     #[code(unknown)]
     SnapshotEmpty,
+    #[error("unsupported snapshot format: {0}")]
+    #[code(unknown)]
+    UnsupportedSnapshotFormat(&'static str),
     #[error(transparent)]
     #[code(unknown)]
     Other(#[from] rocksdb::Error),

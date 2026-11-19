@@ -33,8 +33,8 @@ use restate_types::{GenerationalNodeId, SemanticRestateVersion};
 
 use super::{LatestSnapshot, PartitionSnapshotStatus, SnapshotReference, SnapshotRepository};
 use crate::snapshots::{
-    PartitionSnapshotMetadata, SnapshotCompatibility, SnapshotDir, SnapshotFormatVersion,
-    SnapshotLeaseGuard,
+    PartitionSnapshotMetadata, SnapshotCompatibility, SnapshotDataFile, SnapshotDir,
+    SnapshotFormatVersion, SnapshotLeaseGuard,
 };
 
 /// `metadata.json` as v1.8.1 writes it.
@@ -234,6 +234,34 @@ mod legacy {
 }
 
 #[test]
+fn rejects_path_traversal_in_snapshot_file_names() -> anyhow::Result<()> {
+    let mut metadata: PartitionSnapshotMetadata = serde_json::from_str(V1_8_1_METADATA)?;
+    assert!(metadata.validate_file_paths().is_ok());
+
+    metadata.whole_db_files.push(SnapshotDataFile {
+        name: "../outside".to_owned(),
+        size: 1,
+    });
+    let err = metadata.validate_file_paths().unwrap_err().to_string();
+    assert!(err.contains("invalid snapshot file name"), "{err}");
+    metadata.whole_db_files.clear();
+
+    metadata
+        .file_keys
+        .insert("000042.sst".to_owned(), "../outside".to_owned());
+    let err = metadata.validate_file_paths().unwrap_err().to_string();
+    assert!(err.contains("invalid snapshot file key"), "{err}");
+    metadata.file_keys.clear();
+
+    metadata
+        .file_keys
+        .insert("../000042.sst".to_owned(), "ssts/abc.sst".to_owned());
+    let err = metadata.validate_file_paths().unwrap_err().to_string();
+    assert!(err.contains("invalid snapshot file name"), "{err}");
+    Ok(())
+}
+
+#[test]
 fn old_manifests_read_as_unknown() -> anyhow::Result<()> {
     let metadata: PartitionSnapshotMetadata = serde_json::from_str(V1_8_1_METADATA)?;
     assert_eq!(metadata.node_id, None);
@@ -286,6 +314,18 @@ fn old_manifests_read_as_unknown() -> anyhow::Result<()> {
     assert_eq!(metadata.node_id, None);
     assert_eq!(metadata.compatibility, None);
     assert!(has_no_byte_offsets(&metadata));
+
+    // A whole-database checkpoint is rejected up front by old servers, like V2.
+    let mut v3: serde_json::Value = serde_json::from_str(V1_8_1_METADATA)?;
+    v3["version"] = "V3".into();
+    v3["whole_db_files"] = serde_json::json!([{ "name": "000001.blob", "size": 10 }]);
+    let v3_metadata: PartitionSnapshotMetadata = serde_json::from_value(v3.clone())?;
+    assert_eq!(v3_metadata.version, SnapshotFormatVersion::V3);
+    assert_eq!(v3_metadata.whole_db_files.len(), 1);
+    let err = serde_json::from_value::<legacy::PartitionSnapshotMetadata>(v3)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unknown variant `V3`"), "{err}");
     Ok(())
 }
 
@@ -575,6 +615,7 @@ async fn snapshot(
         byte_offsets_base_lsn: Some(Lsn::new(10)),
         log_byte_offset: Some(lsn.as_u64() * 100),
         partition_store_byte_offset: Some(u64::MAX),
+        whole_db_files: Vec::new(),
         files: vec![rocksdb::LiveFile {
             column_family_name: "data-0".to_owned(),
             name: "/data.sst".to_owned(),

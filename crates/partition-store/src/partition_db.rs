@@ -51,6 +51,10 @@ use crate::scan::PhysicalScan;
 use crate::snapshots::{LocalPartitionSnapshot, SnapshotDir};
 use crate::{PartitionReadSnapshot, TableKind};
 
+// Blob GC settings, mirroring the log-server's blob configuration.
+const BLOB_GC_AGE_CUTOFF: f64 = 0.25;
+const BLOB_GC_FORCE_THRESHOLD: f64 = 0.5;
+
 /// A physical database and the notification registry installed in its listener.
 /// Keep these together when reusing a database from the manager's weak cache.
 #[derive(Clone)]
@@ -531,29 +535,25 @@ impl PartitionCell {
         });
     }
 
-    fn open_local_cf(&self, guard: &mut tokio::sync::RwLockWriteGuard<'_, State>, db: PartitionDb) {
+    fn open_local_cf(&self, guard: &mut State, db: PartitionDb) {
         debug_assert!(
             guard.db().is_none(),
             "retire the previous admission lifetime first"
         );
         db.register_durable_lsn();
-        **guard = State::Open { db };
+        *guard = State::Open { db };
     }
 
-    async fn set_cf_missing(&self, guard: &mut tokio::sync::RwLockWriteGuard<'_, State>) {
+    async fn set_cf_missing(&self, guard: &mut State) {
         guard.close().await;
         if let Some(db) = guard.db() {
             db.unregister_durable_lsn();
         }
         // Release the notification lock before dropping any storage resources.
-        **guard = State::CfMissing;
+        *guard = State::CfMissing;
     }
 
-    pub async fn open_cf(
-        &self,
-        guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
-        database: &PartitionStoreDb,
-    ) {
+    pub async fn open_cf(&self, guard: &mut State, database: &PartitionStoreDb) {
         debug_assert!(guard.is_unknown());
         match PartitionDb::new(
             self.meta.clone(),
@@ -573,7 +573,7 @@ impl PartitionCell {
     #[instrument(level = "error", skip_all, fields(partition_id = %self.meta.partition_id, cf_name = %self.meta.cf_name()))]
     pub async fn provision(
         &self,
-        guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
+        guard: &mut State,
         database: PartitionStoreDb,
     ) -> Result<PartitionDb, RocksError> {
         self.drop_cf(guard).await?;
@@ -600,7 +600,7 @@ impl PartitionCell {
     #[instrument(level = "error", skip_all, fields(partition_id = %self.meta.partition_id, cf_name = %self.meta.cf_name(), path = %snapshot.base_dir.path().display()))]
     pub async fn import_cf(
         &self,
-        guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
+        guard: &mut State,
         snapshot: LocalPartitionSnapshot,
         database: PartitionStoreDb,
     ) -> Result<PartitionDb, RocksError> {
@@ -656,7 +656,8 @@ impl PartitionCell {
         // data block to compute the file's bounds, so corruption in the middle of a file would go
         // unnoticed until the partition reads it. Verify every block now, before the partition goes
         // live; a snapshot that fails verification is dropped and treated like a failed import.
-        if let Err(error) = Self::verify_cf_checksums(rocksdb, &self.executor, self.cf_name()).await
+        if let Err(error) =
+            Self::verify_cf_checksums(rocksdb, &self.executor, self.cf_name(), false).await
         {
             error!(
                 cf_name = %self.cf_name(),
@@ -669,6 +670,22 @@ impl PartitionCell {
         Ok(guard.db().expect("adopted column family").clone())
     }
 
+    /// Verifies a database restored from a whole-database checkpoint, including the blob files
+    /// whose values are read. The database may be at a staging path.
+    pub(crate) async fn verify_restored_database(
+        &self,
+        rocksdb: Arc<RocksDb>,
+    ) -> Result<(), RocksError> {
+        Self::verify_cf_checksums(rocksdb, &self.executor, self.cf_name(), true).await
+    }
+
+    /// Releases the in-memory database handle, leaving the cell `Unknown` so a replaced database
+    /// can be opened. The caller closes the database separately after this returns.
+    pub(crate) async fn release_database_for_swap(&self, guard: &mut State) {
+        guard.close().await;
+        *guard = State::Unknown;
+    }
+
     /// Verifies the block checksums of `cf_name` by scanning it on `executor`, the pool the import
     /// runs on: the scan is blocking I/O and must not run on an async worker. It reads only this
     /// partition's column family, unlike [`rocksdb::DB::verify_checksum`], which reads every column
@@ -677,12 +694,13 @@ impl PartitionCell {
         rocksdb: Arc<RocksDb>,
         executor: &impl IoExecutor,
         cf_name: CfName,
+        read_values: bool,
     ) -> Result<(), RocksError> {
         let task = rocksdb.prepare(
             StorageTaskKind::VerifyColumnFamily,
             move |rocksdb| -> Result<(), RocksError> {
                 let started = std::time::Instant::now();
-                Self::verify_cf_blocks(rocksdb.inner(), &cf_name)?;
+                Self::verify_cf_blocks(rocksdb.inner(), &cf_name, read_values)?;
                 debug!(
                     cf_name = %cf_name,
                     elapsed = ?started.elapsed(),
@@ -702,7 +720,11 @@ impl PartitionCell {
     /// checksum. [Checksums] are verified on read, so the first corrupt block fails the scan.
     ///
     /// [Checksums]: rocksdb::ReadOptions::set_verify_checksums
-    fn verify_cf_blocks(rocksdb: &RocksAccess, cf_name: &CfName) -> Result<(), RocksError> {
+    fn verify_cf_blocks(
+        rocksdb: &RocksAccess,
+        cf_name: &CfName,
+        read_values: bool,
+    ) -> Result<(), RocksError> {
         let cf = rocksdb
             .cf_handle(cf_name.as_ref())
             .ok_or_else(|| RocksError::UnknownColumnFamily(cf_name.clone().into()))?;
@@ -713,6 +735,11 @@ impl PartitionCell {
         let mut iterator = rocksdb.as_raw_db().raw_iterator_cf_opt(&cf, opts);
         iterator.seek_to_first();
         while iterator.valid() {
+            if read_values {
+                // Reading the value makes RocksDB verify the blob file's checksum too. Without
+                // this, an iterator only reads keys from the SST files.
+                let _ = iterator.value();
+            }
             iterator.next();
         }
         iterator.status()?;
@@ -740,17 +767,17 @@ impl PartitionCell {
 
     fn start_open(
         &self,
-        guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
+        guard: &mut State,
         database: PartitionStoreDb,
         kind: StorageTaskKind,
         op: impl FnOnce(&RocksAccess) -> Result<(), RocksError> + Send + 'static,
     ) {
-        debug_assert!(matches!(**guard, State::CfMissing));
+        debug_assert!(matches!(*guard, State::CfMissing));
         let meta = self.meta.clone();
         let partition_id = meta.partition_id;
         let archived_lsn = self.archived_lsn.clone();
         let (completion, result) = watch::channel(None);
-        **guard = State::Opening { result };
+        *guard = State::Opening { result };
         let worker_completion = completion.clone();
         let PartitionStoreDb {
             rocksdb,
@@ -838,7 +865,7 @@ impl PartitionCell {
     /// Returns whether there was one.
     async fn drop_stale_cf(
         &self,
-        guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
+        guard: &mut State,
         rocksdb: &Arc<RocksDb>,
     ) -> Result<bool, RocksError> {
         if rocksdb.inner().cf_handle(self.cf_name().as_ref()).is_none() {
@@ -851,7 +878,7 @@ impl PartitionCell {
 
     fn start_retirement(
         &self,
-        guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
+        guard: &mut State,
         rocksdb: Arc<RocksDb>,
         released: impl Future<Output = ()> + Send + 'static,
     ) {
@@ -860,7 +887,7 @@ impl PartitionCell {
         // Switch the cell to `Retiring` before dropping its PartitionDb. If the caller
         // is cancelled from here on, the cell stays `Retiring` instead of becoming
         // `Unknown`, so nothing reopens the partition while it's being deleted.
-        **guard = State::Retiring { result };
+        *guard = State::Retiring { result };
         // This task waits until nothing uses the column family, deletes it, and
         // publishes the result. It runs on its own, so cancelled callers don't stop
         // it. If the runtime shuts down first, the result channel closes without a
@@ -894,10 +921,7 @@ impl PartitionCell {
     /// The partition stops accepting work right away. Waiting for work it already
     /// accepted, and for its last handle to be dropped, happens in the retirement
     /// task, so the deletion goes ahead even if this caller is cancelled.
-    pub async fn drop_cf(
-        &self,
-        guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
-    ) -> Result<(), RocksError> {
+    pub async fn drop_cf(&self, guard: &mut State) -> Result<(), RocksError> {
         guard.finish_abandoned_open().await?;
         self.start_drop_cf(guard);
         guard.finish_retirement().await?;
@@ -907,7 +931,7 @@ impl PartitionCell {
 
     /// The part of [`Self::drop_cf`] that doesn't wait: the partition stops accepting work, and
     /// its column family is deleted in the background once nothing uses it anymore.
-    fn start_drop_cf(&self, guard: &mut tokio::sync::RwLockWriteGuard<'_, State>) {
+    fn start_drop_cf(&self, guard: &mut State) {
         if let Some(db) = guard.db() {
             db.gate().seal();
             db.unregister_durable_lsn();
@@ -930,7 +954,7 @@ impl PartitionCell {
     /// or a leftover one while the cell is `CfMissing` (see [`Self::provision`]).
     pub async fn drop_partition_store(
         &self,
-        guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
+        guard: &mut State,
         database: &PartitionStoreDb,
     ) -> Result<Option<DroppedPartitionStore>, RocksError> {
         if guard.is_unknown() {
@@ -941,14 +965,14 @@ impl PartitionCell {
         // Retry a deletion that failed. It had already waited for the partition's
         // work and handles before trying, so only the deletion itself runs again.
         let failed = matches!(
-            &**guard,
+            &*guard,
             State::Retiring { result } if result.borrow().as_ref().is_some_and(Result::is_err)
         );
         if failed {
             info!("Retrying the deletion of the partition's column family");
             self.start_retirement(guard, database.rocksdb.clone(), std::future::ready(()));
         }
-        let existed = guard.db().is_some() || matches!(**guard, State::Retiring { .. });
+        let existed = guard.db().is_some() || matches!(*guard, State::Retiring { .. });
         // Stop accepting work right away, then measure what is about to be deleted. The
         // deletion waits for the measurement, since `db` keeps the column families alive.
         let db = guard.db().cloned();
@@ -1386,6 +1410,19 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
             rocksdb::DBCompressionType::Zstd,
         );
         cf_options.set_compression_per_level(&levels);
+
+        if config.experimental_rocksdb_enable_blob_files {
+            cf_options.set_enable_blob_files(true);
+            cf_options.set_min_blob_size(config.experimental_rocksdb_blob_min_size().as_u64());
+            cf_options.set_blob_compression_type(rocksdb::DBCompressionType::Zstd);
+            // Relocate live blobs during compaction to reclaim space after deletes.
+            cf_options.set_enable_blob_gc(true);
+            cf_options.set_blob_gc_age_cutoff(BLOB_GC_AGE_CUTOFF);
+            cf_options.set_blob_gc_force_threshold(BLOB_GC_FORCE_THRESHOLD);
+            cf_options.set_blob_compaction_readahead_size(
+                config.rocksdb.rocksdb_compaction_readahead_size().get() as u64,
+            );
+        }
 
         // Always collect applied LSN table properties in partition store CFs
         cf_options.add_table_properties_collector_factory(AppliedLsnCollectorFactory);
