@@ -149,6 +149,11 @@ mod sweep_patterns {
     pub static SHARED_SST: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"^ssts/[0-9a-f]{32}\.sst$").unwrap());
 
+    /// Blob files from whole-database checkpoint snapshots: `ssts/{fingerprint}.blob`, with the
+    /// same fingerprint format as shared SSTs.
+    pub static SHARED_BLOB: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^ssts/[0-9a-f]{32}\.blob$").unwrap());
+
     /// Snapshot prefix: `lsn_{20-digit}-snap_1{base62}`
     pub static SNAPSHOT_PREFIX: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"lsn_\d{20}-snap_1[A-Za-z0-9]+").unwrap());
@@ -161,12 +166,20 @@ mod sweep_patterns {
     pub static SNAPSHOT_SST: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"^lsn_\d{20}-snap_1[A-Za-z0-9]+/\d+\.sst$").unwrap());
 
-    pub fn is_shared_sst(relative_path: &str) -> bool {
-        SHARED_SST.is_match(relative_path)
+    /// Database-level files of a whole-database checkpoint snapshot: `MANIFEST-*`, `CURRENT` and
+    /// `OPTIONS-*` next to its `metadata.json`.
+    pub static SNAPSHOT_DB_FILE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^lsn_\d{20}-snap_1[A-Za-z0-9]+/(MANIFEST-\d+|CURRENT|OPTIONS-\d+)$").unwrap()
+    });
+
+    pub fn is_shared_file(relative_path: &str) -> bool {
+        SHARED_SST.is_match(relative_path) || SHARED_BLOB.is_match(relative_path)
     }
 
     pub fn is_snapshot_file(relative_path: &str) -> bool {
-        SNAPSHOT_METADATA.is_match(relative_path) || SNAPSHOT_SST.is_match(relative_path)
+        SNAPSHOT_METADATA.is_match(relative_path)
+            || SNAPSHOT_SST.is_match(relative_path)
+            || SNAPSHOT_DB_FILE.is_match(relative_path)
     }
 
     pub fn extract_snapshot_prefix(path: &str) -> Option<&str> {
@@ -792,6 +805,9 @@ impl SnapshotRepository {
     /// If snapshot type is incremental, we will skip existing SST objects in the store based on
     /// their fingerprint. Returns a LiveFile SST name to object key mapping, if SSTs are uploaded
     /// to a path different from their original name (i.e. when part of incremental snapshots).
+    ///
+    /// Whole-database checkpoints (V3) upload their SSTs and blob files to the shared `ssts/`
+    /// prefix under a fingerprint and keep their database-level files under the snapshot prefix.
     async fn upload_snapshot_with_dedup(
         &self,
         snapshot: &PartitionSnapshotMetadata,
@@ -814,66 +830,60 @@ impl SnapshotRepository {
 
             // `creates_shared` marks a shared SST that did not exist before this upload. Only those
             // may be deleted if the snapshot is not published: any other shared key may be in use.
-            let (repository_key, relative_key, must_upload, creates_shared) = match self
-                .snapshot_type
-            {
-                SnapshotType::Full => {
-                    let key = self.snapshot_file_path(snapshot, filename);
-                    (key, None, true, false)
-                }
-                SnapshotType::Incremental => {
-                    // shared SSTs live in the shared ../ssts/ prefix
-                    // key format: {fingerprint}.sst - the same SST file maps to the same key
-                    let fingerprint = sst_fingerprint(&local_path).await?;
-                    let sst_name = format!("{fingerprint}.sst");
-                    let sst_key = self
-                        .partition_snapshots_prefix(snapshot.partition_id)
-                        .join("ssts")
-                        .join(sst_name.as_str());
+            let (repository_key, relative_key, must_upload, creates_shared) =
+                match (snapshot.version, self.snapshot_type) {
+                    (SnapshotFormatVersion::V3, _) | (_, SnapshotType::Incremental) => {
+                        let fingerprint = sst_fingerprint(&local_path).await?;
+                        let sst_name = format!("{fingerprint}.sst");
+                        let sst_key = self
+                            .partition_snapshots_prefix(snapshot.partition_id)
+                            .join("ssts")
+                            .join(sst_name.as_str());
 
-                    // Fingerprint dedup: if an object already exists at this key, it was uploaded
-                    // from this same SST file, so we skip the upload. We still verify the stored
-                    // object's size matches, which catches truncated/partial uploads from a prior
-                    // crashed put.
-                    let head = self.object_store.head(&sst_key).await;
-                    let creates_shared = matches!(head, Err(object_store::Error::NotFound { .. }));
-                    let must_upload = match head {
-                        Ok(meta) if meta.size as usize != file.size => {
-                            warn!(
-                                sst = %filename,
-                                fingerprint = %fingerprint,
-                                expected_size = file.size,
-                                actual_size = meta.size,
-                                "Existing object at fingerprint key has unexpected size; \
-                                re-uploading to overwrite the corrupt object"
-                            );
-                            true
-                        }
-                        Ok(_) => {
-                            debug!(
-                                sst = %filename,
-                                fingerprint = %fingerprint,
-                                size = file.size,
-                                "SST already exists in repository (same fingerprint), skipping"
-                            );
-                            files_skipped += 1;
-                            false
-                        }
-                        Err(object_store::Error::NotFound { .. }) => true,
-                        Err(e) => {
-                            warn!(
-                                sst = %filename,
-                                error = %e,
-                                "Failed to check if SST exists, uploading to be safe"
-                            );
-                            true
-                        }
-                    };
+                        let head = self.object_store.head(&sst_key).await;
+                        let creates_shared =
+                            matches!(head, Err(object_store::Error::NotFound { .. }));
+                        let must_upload = match head {
+                            Ok(meta) if meta.size as usize != file.size => {
+                                warn!(
+                                    sst = %filename,
+                                    fingerprint = %fingerprint,
+                                    expected_size = file.size,
+                                    actual_size = meta.size,
+                                    "Existing object at fingerprint key has unexpected size; \
+                                    re-uploading to overwrite the corrupt object"
+                                );
+                                true
+                            }
+                            Ok(_) => {
+                                debug!(
+                                    sst = %filename,
+                                    fingerprint = %fingerprint,
+                                    size = file.size,
+                                    "SST already exists in repository (same fingerprint), skipping"
+                                );
+                                files_skipped += 1;
+                                false
+                            }
+                            Err(object_store::Error::NotFound { .. }) => true,
+                            Err(e) => {
+                                warn!(
+                                    sst = %filename,
+                                    error = %e,
+                                    "Failed to check if SST exists, uploading to be safe"
+                                );
+                                true
+                            }
+                        };
 
-                    let relative_key = format!("ssts/{sst_name}");
-                    (sst_key, Some(relative_key), must_upload, creates_shared)
-                }
-            };
+                        let relative_key = format!("ssts/{sst_name}");
+                        (sst_key, Some(relative_key), must_upload, creates_shared)
+                    }
+                    (_, SnapshotType::Full) => {
+                        let key = self.snapshot_file_path(snapshot, filename);
+                        (key, None, true, false)
+                    }
+                };
 
             if must_upload {
                 put_snapshot_object(
@@ -906,7 +916,93 @@ impl SnapshotRepository {
             }
         }
 
-        if matches!(self.snapshot_type, SnapshotType::Incremental) {
+        if snapshot.version == SnapshotFormatVersion::V3 {
+            for file in &snapshot.whole_db_files {
+                let filename = strip_leading_slash(&file.name);
+                let local_path = local_snapshot_path.join(filename);
+                total_size += file.size;
+
+                if filename.ends_with(".blob") {
+                    let fingerprint = sst_fingerprint(&local_path).await?;
+                    let blob_name = format!("{fingerprint}.blob");
+                    let blob_key = self
+                        .partition_snapshots_prefix(snapshot.partition_id)
+                        .join("ssts")
+                        .join(blob_name.as_str());
+                    let head = self.object_store.head(&blob_key).await;
+                    let creates_shared = matches!(head, Err(object_store::Error::NotFound { .. }));
+                    let must_upload = match head {
+                        Ok(meta) if meta.size as usize != file.size => {
+                            warn!(
+                                file = %filename,
+                                fingerprint = %fingerprint,
+                                expected_size = file.size,
+                                actual_size = meta.size,
+                                "Existing object at fingerprint key has unexpected size; \
+                                re-uploading to overwrite the corrupt object"
+                            );
+                            true
+                        }
+                        Ok(_) => {
+                            debug!(
+                                file = %filename,
+                                fingerprint = %fingerprint,
+                                size = file.size,
+                                "Blob file already exists in repository (same fingerprint), skipping"
+                            );
+                            files_skipped += 1;
+                            false
+                        }
+                        Err(object_store::Error::NotFound { .. }) => true,
+                        Err(e) => {
+                            warn!(
+                                file = %filename,
+                                error = %e,
+                                "Failed to check if blob file exists, uploading to be safe"
+                            );
+                            true
+                        }
+                    };
+                    if must_upload {
+                        put_snapshot_object(
+                            &local_path,
+                            &blob_key,
+                            &self.object_store,
+                            buf,
+                            self.upload_part_size,
+                            self.upload_single_put_threshold,
+                        )
+                        .await?;
+                        files_uploaded += 1;
+                        uploaded_size += file.size;
+                        if creates_shared {
+                            progress.created_shared_ssts.push(blob_key);
+                        }
+                    }
+                    file_keys.insert(file.name.clone(), format!("ssts/{blob_name}"));
+                } else {
+                    // Database-level files (MANIFEST-*, CURRENT, OPTIONS-*) belong to this
+                    // snapshot alone and live under its prefix.
+                    let repository_key = self.snapshot_file_path(snapshot, filename);
+                    put_snapshot_object(
+                        &local_path,
+                        &repository_key,
+                        &self.object_store,
+                        buf,
+                        self.upload_part_size,
+                        self.upload_single_put_threshold,
+                    )
+                    .await?;
+                    files_uploaded += 1;
+                    uploaded_size += file.size;
+                    progress.own_objects.push(repository_key);
+                }
+            }
+        }
+
+        if snapshot.version == SnapshotFormatVersion::V3
+            || matches!(self.snapshot_type, SnapshotType::Incremental)
+        {
             use crate::metric_definitions::SNAPSHOT_UPLOAD_BYTES_DEDUPLICATED;
 
             let bytes_saved = total_size - uploaded_size;
@@ -926,7 +1022,7 @@ impl SnapshotRepository {
                 bytes_uploaded = %ByteCount::from(uploaded_size),
                 bytes_saved = %ByteCount::from(bytes_saved),
                 dedup_rate = format!("{dedup_rate:.1}%"),
-                "Snapshot SST upload completed"
+                "Snapshot file upload completed"
             );
         }
 
@@ -1094,10 +1190,12 @@ impl SnapshotRepository {
         use restate_types::config::SnapshotType;
 
         let mut snapshot = snapshot.clone();
-        snapshot.version = match self.snapshot_type {
-            SnapshotType::Full => SnapshotFormatVersion::V1,
-            SnapshotType::Incremental => SnapshotFormatVersion::V2,
-        };
+        if snapshot.version != SnapshotFormatVersion::V3 {
+            snapshot.version = match self.snapshot_type {
+                SnapshotType::Full => SnapshotFormatVersion::V1,
+                SnapshotType::Incremental => SnapshotFormatVersion::V2,
+            };
+        }
         snapshot.file_keys = file_keys;
         snapshot
     }
@@ -1468,7 +1566,13 @@ impl SnapshotRepository {
                     }
                 };
                 match serde_json::from_slice::<PartitionSnapshotMetadata>(&bytes) {
-                    Ok(m) => m,
+                    Ok(metadata) => {
+                        if let Err(err) = metadata.validate_file_paths() {
+                            warn!(%err, "Invalid snapshot metadata during cleanup");
+                            return;
+                        }
+                        metadata
+                    }
                     Err(err) => {
                         warn!(%err, "Failed to parse snapshot metadata during cleanup");
                         return;
@@ -1486,17 +1590,23 @@ impl SnapshotRepository {
         };
 
         let mut unreferenced = Vec::new();
-        for file in &metadata.files {
-            let filename = strip_leading_slash(&file.name);
+        let files = metadata.files.iter().map(|file| file.name.as_str()).chain(
+            metadata
+                .whole_db_files
+                .iter()
+                .map(|file| file.name.as_str()),
+        );
+        for file_name in files {
+            let filename = strip_leading_slash(file_name);
             let path = self.resolve_file_path(
                 partition_id,
-                metadata.file_keys.get(&file.name).map(|s| s.as_str()),
+                metadata.file_keys.get(file_name).map(|s| s.as_str()),
                 &snapshot_ref.path,
                 filename,
             );
 
             if referenced_sst_keys.contains(&path) {
-                debug!(%path, "Skipping deletion of SST file still referenced by retained snapshots");
+                debug!(%path, "Skipping deletion of file still referenced by retained snapshots");
                 continue;
             }
 
@@ -1598,28 +1708,9 @@ impl SnapshotRepository {
     ) -> Result<LocalPartitionSnapshot, GetSnapshotError> {
         let _inflight = InflightGuard::new(metrics::gauge!(SNAPSHOT_DOWNLOAD_INFLIGHT));
 
-        let snapshot_metadata_path = self
-            .prefix
-            .clone()
-            .join(partition_id.to_string())
-            .join(snapshot_ref.path.as_str())
-            .join("metadata.json");
-
-        let snapshot_metadata = self
-            .object_store
-            .get(&snapshot_metadata_path)
-            .await
-            .map_err(|err| {
-                GetSnapshotError::from_object_store(
-                    err,
-                    format!("failed to fetch snapshot metadata '{snapshot_metadata_path}'"),
-                )
-            })?
-            .bytes()
-            .await
-            .map_err(GetSnapshotError::unavailable)?;
-        let mut snapshot_metadata =
-            parse_snapshot_metadata(&snapshot_metadata).map_err(GetSnapshotError::Defective)?;
+        let mut snapshot_metadata = self
+            .get_snapshot_metadata(partition_id, snapshot_ref)
+            .await?;
 
         if !self.staging_dir.exists() {
             std::fs::create_dir_all(&self.staging_dir).map_err(GetSnapshotError::unavailable)?;
@@ -1634,24 +1725,79 @@ impl SnapshotRepository {
         .map_err(GetSnapshotError::unavailable)?;
         debug!(path = %snapshot_dir.path().display(), "Downloading snapshot");
 
-        let directory = snapshot_dir.path().to_string_lossy().to_string();
+        self.download_snapshot_files(
+            partition_id,
+            snapshot_ref,
+            &mut snapshot_metadata,
+            snapshot_dir.path(),
+            cancellation,
+        )
+        .await?;
+
+        info!(
+            snapshot_id = %snapshot_metadata.snapshot_id,
+            path = %snapshot_dir.path().display(),
+            "Downloaded partition snapshot",
+        );
+        // Transfer ownership of the staging directory from the `TempDir` (which auto-cleans on
+        // an early return mid-download) to the snapshot's `SnapshotDir`, which removes it on drop
+        // whether the subsequent import succeeds or fails (see #4838).
+        Ok(LocalPartitionSnapshot {
+            base_dir: SnapshotDir::new(snapshot_dir.keep()),
+            version: snapshot_metadata.version,
+            log_id: snapshot_metadata.log_id,
+            min_applied_lsn: snapshot_metadata.min_applied_lsn,
+            db_comparator_name: snapshot_metadata.db_comparator_name,
+            files: snapshot_metadata.files,
+            whole_db_files: snapshot_metadata.whole_db_files,
+            key_range: snapshot_metadata.key_range,
+            compatibility: snapshot_metadata.compatibility,
+            byte_offsets_base_lsn: snapshot_metadata.byte_offsets_base_lsn,
+            log_byte_offset: snapshot_metadata.log_byte_offset,
+            partition_store_byte_offset: snapshot_metadata.partition_store_byte_offset,
+        })
+    }
+
+    /// Downloads the files of `snapshot_metadata` into `snapshot_dir`, which must exist.
+    async fn download_snapshot_files(
+        &self,
+        partition_id: PartitionId,
+        snapshot_ref: &SnapshotReference,
+        snapshot_metadata: &mut PartitionSnapshotMetadata,
+        snapshot_dir: &Path,
+        cancellation: &CancellationToken,
+    ) -> Result<(), GetSnapshotError> {
+        let directory = snapshot_dir.to_string_lossy().to_string();
         let concurrency_limiter = Arc::new(Semaphore::new(DOWNLOAD_CONCURRENCY_LIMIT));
         let mut downloads = JoinSet::new();
-        let mut task_handles = HashMap::with_capacity(snapshot_metadata.files.len());
+        let mut task_handles = HashMap::with_capacity(
+            snapshot_metadata.files.len() + snapshot_metadata.whole_db_files.len(),
+        );
 
-        for file in &mut snapshot_metadata.files {
-            let filename = strip_leading_slash(&file.name);
-            let expected_size = file.size;
+        let pending_files: Vec<(String, usize)> = snapshot_metadata
+            .files
+            .iter()
+            .map(|file| (file.name.clone(), file.size))
+            .chain(
+                snapshot_metadata
+                    .whole_db_files
+                    .iter()
+                    .map(|file| (file.name.clone(), file.size)),
+            )
+            .collect();
+
+        for (file_name, expected_size) in pending_files {
+            let filename = strip_leading_slash(&file_name);
             let key = self.resolve_file_path(
                 partition_id,
                 snapshot_metadata
                     .file_keys
-                    .get(&file.name)
+                    .get(&file_name)
                     .map(String::as_str),
                 &snapshot_ref.path,
                 filename,
             );
-            let local_path = snapshot_dir.path().join(filename);
+            let local_path = snapshot_dir.join(filename);
             let concurrency_limiter = Arc::clone(&concurrency_limiter);
             let object_store = Arc::clone(&self.object_store);
             let snapshot_id = snapshot_metadata.snapshot_id;
@@ -1670,6 +1816,9 @@ impl SnapshotRepository {
                         .inspect_ok(|chunk| downloaded_bytes.increment(chunk.len() as u64)),
                 );
 
+                if let Some(parent) = local_path.parent() {
+                    tokio::fs::create_dir_all(parent).await.map_err(GetSnapshotError::unavailable)?;
+                }
                 let mut snapshot_file =
                     tokio::fs::File::create_new(&local_path).await.map_err(|e| {
                         GetSnapshotError::Unavailable(anyhow!("Failed to create local partition {partition_id} snapshot file {local_path:?}: {e}"))
@@ -1678,6 +1827,10 @@ impl SnapshotRepository {
                     .await
                     .map_err(|e| GetSnapshotError::Unavailable(anyhow!("Failed to download snapshot object {:?}: {}", key, e)))?;
                 snapshot_file.shutdown().await.map_err(GetSnapshotError::unavailable)?;
+                snapshot_file
+                    .sync_all()
+                    .await
+                    .map_err(GetSnapshotError::unavailable)?;
 
                 if size != expected_size as u64 {
                     return Err(GetSnapshotError::Defective(anyhow!("Downloaded partition {partition_id} snapshot {snapshot_id} component file {:?} has unexpected size: expected: {}, actual: {}", snapshot_filename, expected_size, size)));
@@ -1691,7 +1844,9 @@ impl SnapshotRepository {
                 Ok(())
             }.instrument(Span::current())).map_err(GetSnapshotError::unavailable)?;
             task_handles.insert(handle.id(), filename.to_string());
-            // patch the directory path to reflect the actual location on the restoring node
+        }
+        // patch the directory path to reflect the actual location on the restoring node
+        for file in &mut snapshot_metadata.files {
             file.directory.clone_from(&directory);
         }
 
@@ -1725,27 +1880,67 @@ impl SnapshotRepository {
                 Some(Ok(Ok(_))) => {}
             }
         }
+        Ok(())
+    }
 
-        info!(
-            snapshot_id = %snapshot_metadata.snapshot_id,
-            path = %snapshot_dir.path().display(),
-            "Downloaded partition snapshot",
-        );
-        // Transfer ownership of the staging directory from the `TempDir` (which auto-cleans on
-        // an early return mid-download) to the snapshot's `SnapshotDir`, which removes it on drop
-        // whether the subsequent import succeeds or fails (see #4838).
-        Ok(LocalPartitionSnapshot {
-            base_dir: SnapshotDir::new(snapshot_dir.keep()),
-            log_id: snapshot_metadata.log_id,
-            min_applied_lsn: snapshot_metadata.min_applied_lsn,
-            db_comparator_name: snapshot_metadata.db_comparator_name,
-            files: snapshot_metadata.files,
-            key_range: snapshot_metadata.key_range,
-            compatibility: snapshot_metadata.compatibility,
-            byte_offsets_base_lsn: snapshot_metadata.byte_offsets_base_lsn,
-            log_byte_offset: snapshot_metadata.log_byte_offset,
-            partition_store_byte_offset: snapshot_metadata.partition_store_byte_offset,
-        })
+    /// Fetches the metadata of `snapshot_ref` without downloading its data files.
+    pub(crate) async fn get_snapshot_metadata(
+        &self,
+        partition_id: PartitionId,
+        snapshot_ref: &SnapshotReference,
+    ) -> Result<PartitionSnapshotMetadata, GetSnapshotError> {
+        let snapshot_metadata_path = self
+            .prefix
+            .clone()
+            .join(partition_id.to_string())
+            .join(snapshot_ref.path.as_str())
+            .join("metadata.json");
+
+        let snapshot_metadata = self
+            .object_store
+            .get(&snapshot_metadata_path)
+            .await
+            .map_err(|err| {
+                GetSnapshotError::from_object_store(
+                    err,
+                    format!("failed to fetch snapshot metadata '{snapshot_metadata_path}'"),
+                )
+            })?
+            .bytes()
+            .await
+            .map_err(GetSnapshotError::unavailable)?;
+        parse_snapshot_metadata(&snapshot_metadata).map_err(GetSnapshotError::Defective)
+    }
+
+    /// Downloads a whole-database checkpoint's files into `destination`, which must not exist
+    /// yet, and fsyncs them. The caller renames it into place only after this returns.
+    pub(crate) async fn download_whole_db_snapshot(
+        &self,
+        partition_id: PartitionId,
+        snapshot_ref: &SnapshotReference,
+        snapshot_metadata: &mut PartitionSnapshotMetadata,
+        destination: &Path,
+        cancellation: &CancellationToken,
+    ) -> Result<(), GetSnapshotError> {
+        tokio::fs::create_dir_all(destination)
+            .await
+            .map_err(GetSnapshotError::unavailable)?;
+        self.download_snapshot_files(
+            partition_id,
+            snapshot_ref,
+            snapshot_metadata,
+            destination,
+            cancellation,
+        )
+        .await?;
+        let directory = tokio::fs::File::open(destination)
+            .await
+            .map_err(GetSnapshotError::unavailable)?;
+        directory
+            .sync_all()
+            .await
+            .map_err(GetSnapshotError::unavailable)?;
+        Ok(())
     }
 
     /// Retrieve the latest snapshot metadata from the snapshot repository
@@ -1885,7 +2080,7 @@ impl SnapshotRepository {
                 u64::try_from(meta.last_modified.timestamp_millis()).unwrap_or_default(),
             );
 
-            if sweep_patterns::is_shared_sst(object_path) {
+            if sweep_patterns::is_shared_file(object_path) {
                 scan.shared_sst_files.insert(meta.location, last_modified);
             } else if sweep_patterns::is_snapshot_file(object_path)
                 && let Some(dir_name) =
@@ -1960,19 +2155,33 @@ impl SnapshotRepository {
                     "Failed to parse metadata for retained snapshot {}",
                     retained_ref.path
                 ))?;
+            retained_metadata.validate_file_paths().context(format!(
+                "Invalid metadata for retained snapshot {}",
+                retained_ref.path
+            ))?;
 
-            for file in &retained_metadata.files {
-                let filename = strip_leading_slash(&file.name);
-                let sst_key = self.resolve_file_path(
+            let files = retained_metadata
+                .files
+                .iter()
+                .map(|file| file.name.as_str())
+                .chain(
+                    retained_metadata
+                        .whole_db_files
+                        .iter()
+                        .map(|file| file.name.as_str()),
+                );
+            for file_name in files {
+                let filename = strip_leading_slash(file_name);
+                let key = self.resolve_file_path(
                     partition_id,
                     retained_metadata
                         .file_keys
-                        .get(&file.name)
+                        .get(file_name)
                         .map(|s| s.as_str()),
                     &retained_ref.path,
                     filename,
                 );
-                referenced_sst_keys.insert(sst_key);
+                referenced_sst_keys.insert(key);
             }
         }
 
@@ -2264,6 +2473,7 @@ impl GetSnapshotError {
 /// Parses and validates a snapshot's `metadata.json`. Any error means the snapshot is unusable.
 fn parse_snapshot_metadata(bytes: &[u8]) -> anyhow::Result<PartitionSnapshotMetadata> {
     let snapshot_metadata: PartitionSnapshotMetadata = serde_json::from_slice(bytes)?;
+    snapshot_metadata.validate_file_paths()?;
     Metadata::with_current(|m| {
         let nodes_config = m.nodes_config_ref();
         snapshot_metadata.validate(
@@ -3130,6 +3340,7 @@ mod tests {
             byte_offsets_base_lsn: None,
             log_byte_offset: None,
             partition_store_byte_offset: None,
+            whole_db_files: Vec::new(),
             files: vec![rocksdb::LiveFile {
                 column_family_name: "data-0".to_owned(),
                 name: file_name,
@@ -3868,19 +4079,36 @@ mod tests {
         use super::sweep_patterns::*;
 
         // Exactly 32 lowercase hex chars (an SST fingerprint) is required.
-        assert!(is_shared_sst("ssts/0123456789abcdef0123456789abcdef.sst"));
-        assert!(is_shared_sst("ssts/fedcba9876543210fedcba9876543210.sst"));
+        assert!(is_shared_file("ssts/0123456789abcdef0123456789abcdef.sst"));
+        assert!(is_shared_file("ssts/fedcba9876543210fedcba9876543210.sst"));
 
-        assert!(!is_shared_sst("ssts/ignored.sst"));
-        assert!(!is_shared_sst("ssts/abc123def456789012345678901234.sst")); // 30 chars
-        assert!(!is_shared_sst(
+        assert!(!is_shared_file("ssts/ignored.sst"));
+        assert!(!is_shared_file("ssts/abc123def456789012345678901234.sst")); // 30 chars
+        assert!(!is_shared_file(
             "ssts/0123456789abcdef0123456789abcdef00.sst"
         )); // 34 chars
-        assert!(!is_shared_sst("ssts/0123456789ABCDEF0123456789ABCDEF.sst")); // uppercase not allowed
-        assert!(!is_shared_sst("ssts/file with spaces.sst"));
+        assert!(!is_shared_file("ssts/0123456789ABCDEF0123456789ABCDEF.sst")); // uppercase not allowed
+        assert!(!is_shared_file("ssts/file with spaces.sst"));
+
+        // Blob files use the same fingerprint format and are swept too.
+        assert!(is_shared_file("ssts/0123456789abcdef0123456789abcdef.blob"));
+        assert!(!is_shared_file("ssts/ignored.blob"));
 
         assert!(is_snapshot_file(
             "lsn_00000000000000001234-snap_1abc123DEF456ghi789/metadata.json"
+        ));
+        // Whole-database checkpoint files live in the snapshot prefix.
+        assert!(is_snapshot_file(
+            "lsn_00000000000000001234-snap_1abc123DEF456ghi789/MANIFEST-000005"
+        ));
+        assert!(is_snapshot_file(
+            "lsn_00000000000000001234-snap_1abc123DEF456ghi789/CURRENT"
+        ));
+        assert!(is_snapshot_file(
+            "lsn_00000000000000001234-snap_1abc123DEF456ghi789/OPTIONS-000007"
+        ));
+        assert!(!is_snapshot_file(
+            "lsn_00000000000000001234-snap_1abc123DEF456ghi789/000001.blob"
         ));
         assert!(is_snapshot_file(
             "lsn_00000000000000001234-snap_1abc123DEF456ghi789/123456.sst"
@@ -4132,6 +4360,7 @@ mod tests {
     fn mock_local_snapshot(base_dir: super::SnapshotDir) -> super::LocalPartitionSnapshot {
         super::LocalPartitionSnapshot {
             base_dir,
+            version: SnapshotFormatVersion::V1,
             log_id: LogId::MIN,
             min_applied_lsn: Lsn::new(1),
             db_comparator_name: "leveldb.BytewiseComparator".to_owned(),
@@ -4141,6 +4370,7 @@ mod tests {
             byte_offsets_base_lsn: None,
             log_byte_offset: None,
             partition_store_byte_offset: None,
+            whole_db_files: Vec::new(),
         }
     }
 

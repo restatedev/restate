@@ -51,6 +51,7 @@ pub enum StorageTaskKind {
     VerifyColumnFamily,
     DropColumnFamily,
     ExportColumnFamily,
+    CreateCheckpoint,
     FlushWal,
     FlushMemtables,
     Compaction,

@@ -249,6 +249,16 @@ impl RocksAccess {
         Ok(metadata)
     }
 
+    /// Creates a consistent whole-database checkpoint in `path`, which RocksDB
+    /// creates. Unlike [`Self::export_cf`], this includes blob files and the
+    /// database-level files (`MANIFEST-*`, `CURRENT`, `OPTIONS-*`) needed to open
+    /// the checkpoint as a database. It forces a flush of the memtables.
+    pub fn create_checkpoint(&self, path: PathBuf) -> Result<(), RocksError> {
+        let checkpoint = Checkpoint::new(self.as_raw_db())?;
+        checkpoint.create_checkpoint(path.as_path())?;
+        Ok(())
+    }
+
     pub fn open_cf(&self, name: CfName) -> Result<(), RocksError> {
         let options = prepare_cf_options(&name, &self.db_spec, &self.db_env)?;
         debug!("Creating column family {}/{name}", self.name());

@@ -8,8 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroU8;
+use std::num::{NonZeroU8, NonZeroUsize};
 use std::sync::Arc;
+use std::task::{Context, Waker};
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
@@ -28,6 +29,7 @@ use restate_types::partitions::features::PersistedFeatures;
 use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{GenerationalNodeId, SemanticRestateVersion};
+use restate_util_bytecount::NonZeroByteCount;
 
 use crate::fsm_table::{put_fsm_position, put_storage_features_json};
 use crate::migrations::MigrationError;
@@ -78,6 +80,7 @@ pub(crate) async fn run_tests(
         partition_store_byte_offset: snapshot.partition_store_byte_offset,
         files: snapshot.files.clone(),
         file_keys: std::collections::BTreeMap::new(),
+        whole_db_files: snapshot.whole_db_files.clone(),
     };
     assert!(snapshot.compatibility.is_some());
     assert_eq!(
@@ -111,6 +114,7 @@ pub(crate) async fn run_tests(
 
     let snapshot = LocalPartitionSnapshot {
         base_dir: SnapshotDir::new(snapshots_dir.path().into()),
+        version: snapshot_meta.version,
         log_id: LogId::from(partition_id),
         min_applied_lsn: snapshot_meta.min_applied_lsn,
         db_comparator_name: snapshot_meta.db_comparator_name.clone(),
@@ -120,6 +124,7 @@ pub(crate) async fn run_tests(
         byte_offsets_base_lsn: snapshot_meta.byte_offsets_base_lsn,
         log_byte_offset: snapshot_meta.log_byte_offset,
         partition_store_byte_offset: snapshot_meta.partition_store_byte_offset,
+        whole_db_files: snapshot_meta.whole_db_files.clone(),
     };
 
     let mut new_partition_store = manager
@@ -320,10 +325,10 @@ async fn restore_falls_back_to_older_snapshot_when_import_is_rejected() -> anyho
     let _env = TestCoreEnv::create_with_single_node(1, 1).await;
     RocksDbManager::init();
 
-    let repository_dir = tempdir()?;
+    let repository_dir = tempdir()?.keep();
     let mut config = Configuration::pinned().clone();
     config.worker.snapshots.destination = Some(
-        Url::from_file_path(repository_dir.path())
+        Url::from_file_path(&repository_dir)
             .expect("the tempdir is an absolute path")
             .to_string(),
     );
@@ -527,13 +532,621 @@ async fn restore_falls_back_to_older_snapshot_when_import_is_rejected() -> anyho
     Ok(())
 }
 
+/// A large value with a deterministic, incompressible payload.
+fn blob_value(seed: u64) -> Vec<u8> {
+    let mut state = 0x9e37_79b9_7f4a_7c15 ^ seed;
+    (0..2048)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state as u8
+        })
+        .collect()
+}
+
+/// A whole-database checkpoint (V3) with blob files uploads its SSTs and blobs to the shared
+/// `ssts/` prefix and restores by opening the downloaded database, without an import.
+#[restate_core::test]
+async fn blob_files_snapshot_and_restore_whole_db() -> anyhow::Result<()> {
+    let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+    let config = blob_snapshot_config()?;
+    RocksDbManager::init();
+    Configuration::set(config.clone());
+    let manager = PartitionStoreManager::create(true).await?;
+
+    let partition = Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1));
+    let partition_id = partition.partition_id;
+    let mut store = manager.open(&partition, None).await?;
+    let values: Vec<_> = (0..4)
+        .map(|i| (format!("big-{i}"), blob_value(i)))
+        .collect();
+    let mut txn = store.transaction();
+    txn.put_applied_lsn(Lsn::new(100))?;
+    for (key, value) in &values {
+        txn.put_kv_raw(key.clone(), value.clone())?;
+    }
+    txn.commit().await?;
+    drop(txn);
+
+    let repository = SnapshotRepository::new_from_config_with_stub_leases(
+        &config.worker.snapshots,
+        tempdir()?.keep(),
+    )
+    .await?
+    .expect("a snapshot destination is configured");
+
+    let snapshot_id = SnapshotId::new();
+    let snapshots_dir = tempdir()?;
+    let snapshot = store
+        .create_local_snapshot(
+            manager.test_capture_guard(partition_id).await,
+            snapshots_dir.path(),
+            None,
+            snapshot_id,
+        )
+        .await?;
+    assert_eq!(snapshot.version, SnapshotFormatVersion::V3);
+    assert!(
+        snapshot
+            .whole_db_files
+            .iter()
+            .any(|file| file.name.ends_with(".blob")),
+        "the checkpoint has blob files"
+    );
+    let metadata = snapshot_metadata(&snapshot, partition_id, snapshot_id);
+    repository
+        .put(
+            &metadata,
+            snapshot.base_dir,
+            Arc::new(SnapshotLeaseGuard::noop()),
+        )
+        .await?;
+
+    // The manifest records the checkpoint's files, and the blobs are shared objects.
+    let stored = repository
+        .get_snapshot_metadata(
+            partition_id,
+            &repository.get_snapshot_candidates(partition_id).await?[0],
+        )
+        .await?;
+    assert_eq!(stored.version, SnapshotFormatVersion::V3);
+    assert!(stored.files.iter().any(|file| file.name.ends_with(".sst")));
+    let blob = stored
+        .whole_db_files
+        .iter()
+        .find(|file| file.name.ends_with(".blob"))
+        .expect("a blob file");
+    assert!(
+        stored
+            .file_keys
+            .get(&blob.name)
+            .is_some_and(|key| key.starts_with("ssts/") && key.ends_with(".blob"))
+    );
+    assert!(
+        stored
+            .whole_db_files
+            .iter()
+            .any(|file| file.name == "CURRENT")
+    );
+
+    drop(store);
+    wipe_local_database(&manager, &partition).await?;
+
+    let mut restored = manager.open(&partition, None).await?;
+    assert_eq!(restored.get_applied_lsn().await?, Some(Lsn::new(100)));
+    for (key, value) in &values {
+        assert_eq!(
+            restored.get_kv_raw(key.clone(), |_, value| Ok(value.map(<[u8]>::to_vec)))?,
+            Some(value.clone()),
+            "restored value of {key}"
+        );
+    }
+    Ok(())
+}
+
+/// A corrupt blob file in the newest snapshot fails verification during restore, which falls
+/// back to the next older retained snapshot.
+#[restate_core::test]
+async fn blob_files_restore_falls_back_when_blob_is_corrupt() -> anyhow::Result<()> {
+    let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+    let config = blob_snapshot_config()?;
+    RocksDbManager::init();
+    Configuration::set(config.clone());
+    let manager = PartitionStoreManager::create(true).await?;
+
+    let partition = Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1));
+    let partition_id = partition.partition_id;
+    let mut store = manager.open(&partition, None).await?;
+    let repository = SnapshotRepository::new_from_config_with_stub_leases(
+        &config.worker.snapshots,
+        tempdir()?.keep(),
+    )
+    .await?
+    .expect("a snapshot destination is configured");
+
+    let older_value = blob_value(0);
+    let newer_value = blob_value(1);
+    let put = |txn: &mut crate::PartitionStoreTransaction<'_>, lsn, key: &str, value: &Vec<u8>| {
+        txn.put_applied_lsn(lsn)?;
+        txn.put_kv_raw(key.to_owned(), value.clone())
+    };
+    let mut txn = store.transaction();
+    put(&mut txn, Lsn::new(100), "older", &older_value)?;
+    txn.commit().await?;
+    drop(txn);
+
+    let snapshots_dir = tempdir()?;
+    let older = store
+        .create_local_snapshot(
+            manager.test_capture_guard(partition_id).await,
+            snapshots_dir.path(),
+            None,
+            SnapshotId::new(),
+        )
+        .await?;
+    let older_lsn = older.min_applied_lsn;
+    repository
+        .put(
+            &snapshot_metadata(&older, partition_id, SnapshotId::new()),
+            older.base_dir,
+            Arc::new(SnapshotLeaseGuard::noop()),
+        )
+        .await?;
+
+    let mut txn = store.transaction();
+    put(&mut txn, Lsn::new(200), "newer", &newer_value)?;
+    txn.commit().await?;
+    drop(txn);
+
+    let newest = store
+        .create_local_snapshot(
+            manager.test_capture_guard(partition_id).await,
+            snapshots_dir.path(),
+            None,
+            SnapshotId::new(),
+        )
+        .await?;
+    let newest_meta = snapshot_metadata(&newest, partition_id, SnapshotId::new());
+    // Copy the checkpoint before corrupting it: its files are hard links to the store's files.
+    let copy = tempdir()?;
+    let names = newest
+        .whole_db_files
+        .iter()
+        .map(|file| file.name.clone())
+        .chain(
+            newest
+                .files
+                .iter()
+                .map(|file| file.name.trim_start_matches('/').to_owned()),
+        );
+    for name in names {
+        std::fs::copy(newest.base_dir.path().join(&name), copy.path().join(&name))?;
+    }
+    let blob_name = newest
+        .whole_db_files
+        .iter()
+        .find(|file| file.name.ends_with(".blob"))
+        .expect("the newest checkpoint has a blob file")
+        .name
+        .clone();
+    let blob_path = copy.path().join(&blob_name);
+    let mut bytes = std::fs::read(&blob_path)?;
+    let middle = bytes.len() / 2;
+    bytes[middle] ^= 0xff;
+    std::fs::write(&blob_path, bytes)?;
+    repository
+        .put(
+            &newest_meta,
+            SnapshotDir::new(copy.path().to_path_buf()),
+            Arc::new(SnapshotLeaseGuard::noop()),
+        )
+        .await?;
+
+    drop(store);
+    wipe_local_database(&manager, &partition).await?;
+
+    let mut restored = manager.open(&partition, None).await?;
+    assert_eq!(restored.get_applied_lsn().await?, Some(older_lsn));
+    assert_eq!(
+        restored.get_kv_raw("older".to_owned(), |_, value| Ok(value.map(<[u8]>::to_vec)))?,
+        Some(older_value)
+    );
+    assert_eq!(
+        restored.get_kv_raw("newer".to_owned(), |_, value| Ok(value.map(<[u8]>::to_vec)))?,
+        None,
+        "restored the older snapshot"
+    );
+    Ok(())
+}
+
+/// A restore interrupted after downloading into staging leaves that directory behind. The next
+/// open removes it and restores normally from the repository.
+#[restate_core::test]
+async fn blob_files_restore_ignores_leftover_staging_dir() -> anyhow::Result<()> {
+    let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+    let config = blob_snapshot_config()?;
+    RocksDbManager::init();
+    Configuration::set(config.clone());
+    let manager = PartitionStoreManager::create(true).await?;
+
+    let partition = Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1));
+    let partition_id = partition.partition_id;
+    let mut store = manager.open(&partition, None).await?;
+    let value = blob_value(7);
+    let mut txn = store.transaction();
+    txn.put_applied_lsn(Lsn::new(100))?;
+    txn.put_kv_raw("large".to_owned(), value.clone())?;
+    txn.commit().await?;
+    drop(txn);
+
+    let repository = SnapshotRepository::new_from_config_with_stub_leases(
+        &config.worker.snapshots,
+        tempdir()?.keep(),
+    )
+    .await?
+    .expect("a snapshot destination is configured");
+    let snapshot_id = SnapshotId::new();
+    let snapshots_dir = tempdir()?;
+    let snapshot = store
+        .create_local_snapshot(
+            manager.test_capture_guard(partition_id).await,
+            snapshots_dir.path(),
+            None,
+            snapshot_id,
+        )
+        .await?;
+    repository
+        .put(
+            &snapshot_metadata(&snapshot, partition_id, snapshot_id),
+            snapshot.base_dir,
+            Arc::new(SnapshotLeaseGuard::noop()),
+        )
+        .await?;
+
+    drop(store);
+    wipe_local_database(&manager, &partition).await?;
+
+    let db_name = restate_rocksdb::DbName::from(partition.db_name(true));
+    let data_dir = Configuration::pinned().worker.storage.data_dir(&db_name);
+    let staging = data_dir.with_file_name(format!(
+        "{}.restoring-0123456789abcdef",
+        data_dir
+            .file_name()
+            .expect("db directory name")
+            .to_string_lossy()
+    ));
+    tokio::fs::create_dir_all(&staging).await?;
+    tokio::fs::write(staging.join("CURRENT"), b"partial").await?;
+
+    let mut restored = manager.open(&partition, None).await?;
+    assert!(
+        !staging.exists(),
+        "the leftover staging directory is removed"
+    );
+    assert_eq!(restored.get_applied_lsn().await?, Some(Lsn::new(100)));
+    assert_eq!(
+        restored.get_kv_raw("large".to_owned(), |_, value| Ok(value.map(<[u8]>::to_vec)))?,
+        Some(value)
+    );
+    Ok(())
+}
+
+/// A lagging replica fast-forwards to a whole-database checkpoint by dropping its local database
+/// and restoring through the same restore-by-open path.
+#[restate_core::test]
+async fn blob_files_fast_forward_existing_database() -> anyhow::Result<()> {
+    let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+    let config = blob_snapshot_config()?;
+    RocksDbManager::init();
+    Configuration::set(config.clone());
+    let manager = PartitionStoreManager::create(true).await?;
+
+    let partition = Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1));
+    let partition_id = partition.partition_id;
+    let mut store = manager.open(&partition, None).await?;
+    let value = blob_value(11);
+    let mut txn = store.transaction();
+    txn.put_applied_lsn(Lsn::new(300))?;
+    txn.put_kv_raw("fast-forwarded".to_owned(), value.clone())?;
+    txn.commit().await?;
+    drop(txn);
+
+    let repository = SnapshotRepository::new_from_config_with_stub_leases(
+        &config.worker.snapshots,
+        tempdir()?.keep(),
+    )
+    .await?
+    .expect("a snapshot destination is configured");
+    let snapshot_id = SnapshotId::new();
+    let snapshots_dir = tempdir()?;
+    let snapshot = store
+        .create_local_snapshot(
+            manager.test_capture_guard(partition_id).await,
+            snapshots_dir.path(),
+            None,
+            snapshot_id,
+        )
+        .await?;
+    assert_eq!(snapshot.version, SnapshotFormatVersion::V3);
+    repository
+        .put(
+            &snapshot_metadata(&snapshot, partition_id, snapshot_id),
+            snapshot.base_dir,
+            Arc::new(SnapshotLeaseGuard::noop()),
+        )
+        .await?;
+
+    // Make the local replica lag behind the repository, as a follower that missed a trim gap
+    // would.
+    let mut txn = store.transaction();
+    txn.put_applied_lsn(Lsn::new(100))?;
+    txn.commit().await?;
+    drop(txn);
+    drop(store);
+
+    let mut restored = manager.open(&partition, Some(Lsn::new(300))).await?;
+    assert_eq!(restored.get_applied_lsn().await?, Some(Lsn::new(300)));
+    assert_eq!(
+        restored.get_kv_raw("fast-forwarded".to_owned(), |_, value| Ok(
+            value.map(<[u8]>::to_vec)
+        ))?,
+        Some(value)
+    );
+    Ok(())
+}
+
+/// A corrupt V3 snapshot fails verification before the old database is touched.
+#[restate_core::test]
+async fn blob_files_corrupt_fast_forward_keeps_old_database() -> anyhow::Result<()> {
+    let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+    let config = blob_snapshot_config()?;
+    RocksDbManager::init();
+    Configuration::set(config.clone());
+    let manager = PartitionStoreManager::create(true).await?;
+
+    let partition = Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1));
+    let partition_id = partition.partition_id;
+    let mut store = manager.open(&partition, None).await?;
+    let local_value = blob_value(21);
+    let remote_value = blob_value(22);
+    let mut txn = store.transaction();
+    txn.put_applied_lsn(Lsn::new(100))?;
+    txn.put_kv_raw("local".to_owned(), local_value.clone())?;
+    txn.commit().await?;
+    drop(txn);
+    let mut txn = store.transaction();
+    txn.put_applied_lsn(Lsn::new(300))?;
+    txn.put_kv_raw("remote".to_owned(), remote_value)?;
+    txn.commit().await?;
+    drop(txn);
+
+    let repository = SnapshotRepository::new_from_config_with_stub_leases(
+        &config.worker.snapshots,
+        tempdir()?.keep(),
+    )
+    .await?
+    .expect("a snapshot destination is configured");
+    let snapshot_id = SnapshotId::new();
+    let snapshots_dir = tempdir()?;
+    let snapshot = store
+        .create_local_snapshot(
+            manager.test_capture_guard(partition_id).await,
+            snapshots_dir.path(),
+            None,
+            snapshot_id,
+        )
+        .await?;
+    let metadata = snapshot_metadata(&snapshot, partition_id, snapshot_id);
+    let copy = tempdir()?;
+    for name in snapshot
+        .whole_db_files
+        .iter()
+        .map(|file| file.name.clone())
+        .chain(
+            snapshot
+                .files
+                .iter()
+                .map(|file| file.name.trim_start_matches('/').to_owned()),
+        )
+    {
+        std::fs::copy(
+            snapshot.base_dir.path().join(&name),
+            copy.path().join(&name),
+        )?;
+    }
+    let blob_name = snapshot
+        .whole_db_files
+        .iter()
+        .find(|file| file.name.ends_with(".blob"))
+        .expect("the checkpoint has a blob file")
+        .name
+        .clone();
+    let blob_path = copy.path().join(blob_name);
+    let mut bytes = std::fs::read(&blob_path)?;
+    let middle = bytes.len() / 2;
+    bytes[middle] ^= 0xff;
+    std::fs::write(&blob_path, bytes)?;
+    repository
+        .put(
+            &metadata,
+            SnapshotDir::new(copy.path().to_path_buf()),
+            Arc::new(SnapshotLeaseGuard::noop()),
+        )
+        .await?;
+
+    // Rewind so the local database lags the snapshot's LSN.
+    let mut txn = store.transaction();
+    txn.put_applied_lsn(Lsn::new(100))?;
+    txn.commit().await?;
+    drop(txn);
+    drop(store);
+
+    assert!(
+        manager.open(&partition, Some(Lsn::new(300))).await.is_err(),
+        "the corrupt snapshot must not fast-forward"
+    );
+
+    let mut unchanged = manager.open(&partition, None).await?;
+    assert_eq!(unchanged.get_applied_lsn().await?, Some(Lsn::new(100)));
+    assert_eq!(
+        unchanged.get_kv_raw("local".to_owned(), |_, value| Ok(value.map(<[u8]>::to_vec)))?,
+        Some(local_value),
+        "the old database is still readable"
+    );
+    Ok(())
+}
+
+/// A crash between moving the old directory aside and installing the new one is recovered by
+/// putting the replaced directory back.
+#[restate_core::test]
+async fn blob_files_recovers_replaced_directory() -> anyhow::Result<()> {
+    let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+    let config = blob_snapshot_config()?;
+    RocksDbManager::init();
+    Configuration::set(config.clone());
+    let manager = PartitionStoreManager::create(true).await?;
+
+    let partition = Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1));
+    let mut store = manager.open(&partition, None).await?;
+    let value = blob_value(31);
+    let mut txn = store.transaction();
+    txn.put_applied_lsn(Lsn::new(100))?;
+    txn.put_kv_raw("recovered".to_owned(), value.clone())?;
+    txn.commit().await?;
+    drop(txn);
+    drop(store);
+    manager.close_partition_store(partition.partition_id).await;
+
+    let db_name = restate_rocksdb::DbName::from(partition.db_name(true));
+    let data_dir = Configuration::pinned().worker.storage.data_dir(&db_name);
+    manager.forget_cached_database(&db_name).await;
+    let replaced = data_dir.with_file_name(format!(
+        "{}.replaced-0123456789abcdef",
+        data_dir
+            .file_name()
+            .expect("db directory name")
+            .to_string_lossy()
+    ));
+    tokio::fs::rename(&data_dir, &replaced).await?;
+
+    let mut recovered = manager.open(&partition, None).await?;
+    assert!(!replaced.exists(), "the replaced directory is consumed");
+    assert_eq!(recovered.get_applied_lsn().await?, Some(Lsn::new(100)));
+    assert_eq!(
+        recovered.get_kv_raw("recovered".to_owned(), |_, value| Ok(
+            value.map(<[u8]>::to_vec)
+        ))?,
+        Some(value)
+    );
+    Ok(())
+}
+
+/// Dropping the open future mid-restore leaves the spawned restore owning the partition lock;
+/// the next open waits for it and succeeds.
+#[restate_core::test]
+async fn blob_files_dropped_open_does_not_abandon_restore() -> anyhow::Result<()> {
+    let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+    let config = blob_snapshot_config()?;
+    RocksDbManager::init();
+    Configuration::set(config.clone());
+    let manager = PartitionStoreManager::create(true).await?;
+
+    let partition = Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1));
+    let partition_id = partition.partition_id;
+    let mut store = manager.open(&partition, None).await?;
+    let value = blob_value(41);
+    let mut txn = store.transaction();
+    txn.put_applied_lsn(Lsn::new(100))?;
+    txn.put_kv_raw("survives".to_owned(), value.clone())?;
+    txn.commit().await?;
+    drop(txn);
+
+    let repository = SnapshotRepository::new_from_config_with_stub_leases(
+        &config.worker.snapshots,
+        tempdir()?.keep(),
+    )
+    .await?
+    .expect("a snapshot destination is configured");
+    let snapshot_id = SnapshotId::new();
+    let snapshots_dir = tempdir()?;
+    let snapshot = store
+        .create_local_snapshot(
+            manager.test_capture_guard(partition_id).await,
+            snapshots_dir.path(),
+            None,
+            snapshot_id,
+        )
+        .await?;
+    repository
+        .put(
+            &snapshot_metadata(&snapshot, partition_id, snapshot_id),
+            snapshot.base_dir,
+            Arc::new(SnapshotLeaseGuard::noop()),
+        )
+        .await?;
+
+    drop(store);
+    manager.close_partition_store(partition.partition_id).await;
+    let db_name = restate_rocksdb::DbName::from(partition.db_name(true));
+    let data_dir = Configuration::pinned().worker.storage.data_dir(&db_name);
+    manager.forget_cached_database(&db_name).await;
+    tokio::fs::remove_dir_all(&data_dir).await?;
+
+    let mut opening = Box::pin(manager.open(&partition, None));
+    assert!(
+        opening
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending(),
+        "the restore is still running"
+    );
+    drop(opening);
+
+    let mut restored = manager.open(&partition, None).await?;
+    assert_eq!(restored.get_applied_lsn().await?, Some(Lsn::new(100)));
+    assert_eq!(
+        restored.get_kv_raw("survives".to_owned(), |_, value| Ok(
+            value.map(<[u8]>::to_vec)
+        ))?,
+        Some(value)
+    );
+    Ok(())
+}
+
+fn blob_snapshot_config() -> anyhow::Result<Configuration> {
+    let repository_dir = tempdir()?.keep();
+    let mut config = Configuration::pinned().clone();
+    config.worker.storage.experimental_rocksdb_enable_blob_files = true;
+    config.worker.storage.experimental_rocksdb_blob_min_size =
+        Some(NonZeroByteCount::new(NonZeroUsize::new(64).unwrap()));
+    config.worker.use_multi_db_layout = true;
+    config.worker.snapshots.destination = Some(
+        Url::from_file_path(&repository_dir)
+            .expect("the tempdir is an absolute path")
+            .to_string(),
+    );
+    config.worker.snapshots.num_retained = NonZeroU8::new(3).unwrap();
+    Ok(config)
+}
+
+/// Mirrors local-store deletion in production: drops the partition's column family but keeps
+/// the database directory.
+async fn wipe_local_database(
+    manager: &Arc<PartitionStoreManager>,
+    partition: &Partition,
+) -> anyhow::Result<()> {
+    manager.drop_partition_store(partition).await?;
+    Ok(())
+}
+
 fn snapshot_metadata(
     snapshot: &LocalPartitionSnapshot,
     partition_id: PartitionId,
     snapshot_id: SnapshotId,
 ) -> PartitionSnapshotMetadata {
     PartitionSnapshotMetadata {
-        version: SnapshotFormatVersion::V1,
+        version: snapshot.version,
         cluster_name: Metadata::with_current(|m| m.nodes_config_ref().cluster_name().to_string()),
         cluster_fingerprint: Metadata::with_current(|m| m.nodes_config_ref().cluster_fingerprint()),
         partition_id,
@@ -551,5 +1164,6 @@ fn snapshot_metadata(
         log_byte_offset: snapshot.log_byte_offset,
         partition_store_byte_offset: snapshot.partition_store_byte_offset,
         files: snapshot.files.clone(),
+        whole_db_files: snapshot.whole_db_files.clone(),
     }
 }

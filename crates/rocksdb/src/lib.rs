@@ -293,6 +293,17 @@ impl RocksDb {
         &self.db
     }
 
+    /// Whether any column family of this database has live blob files.
+    pub fn has_blob_files(&self) -> bool {
+        self.db.cfs().iter().any(|cf| {
+            self.db
+                .get_property_int_cf(cf, "rocksdb.num-blob-files")
+                .ok()
+                .flatten()
+                .is_some_and(|n| n > 0)
+        })
+    }
+
     pub fn cfs(&self) -> Vec<CfName> {
         self.db.cfs()
     }
@@ -830,6 +841,28 @@ impl RocksDb {
                     .export_cf_by_handle(handles.get(cf), export_dir)
             },
         )
+    }
+
+    /// Prepares creating a whole-database checkpoint in `path`, which RocksDB creates,
+    /// to submit to an executor of your choice. The checkpoint includes blob files and
+    /// the database-level files, and flushes the memtables.
+    ///
+    /// The operation counts in `gate`, which must be inside this database.
+    pub fn prepare_create_checkpoint<'a>(
+        self: &'a Arc<Self>,
+        gate: &'a Arc<Gate>,
+        path: PathBuf,
+        keep_alive: Box<dyn FnOnce() + Send + 'static>,
+    ) -> StorageOp<
+        'a,
+        &'a Arc<Self>,
+        impl FnOnce(&Arc<Self>) -> Result<(), RocksError> + Send + 'static + use<>,
+    > {
+        self.prepare_in(gate, StorageTaskKind::CreateCheckpoint, move |db| {
+            // Hold `keep_alive` until the checkpoint finishes, even if the caller stops waiting.
+            let _keep_alive = keep_alive;
+            db.run_in_span(|native| native.create_checkpoint(path))
+        })
     }
 
     /// Prepares flushing the write-ahead log, to submit to a pool of your choice

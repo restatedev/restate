@@ -67,7 +67,10 @@ use crate::migrations::MigrationError;
 use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
-use crate::snapshots::{CaptureGuard, LocalPartitionSnapshot, SnapshotCompatibility, export_dir};
+use crate::snapshots::{
+    CaptureGuard, LocalPartitionSnapshot, SnapshotCompatibility, SnapshotDataFile, SnapshotDir,
+    SnapshotFormatVersion, export_dir,
+};
 use crate::{configure_prefix_iterator_opts, configure_range_iterator_opts};
 
 pub type DB = rocksdb::DB;
@@ -621,40 +624,100 @@ impl PartitionStore {
             .await
             .map_err(|e| StorageError::SnapshotExport(e.into()))?
             .filter(FsmPosition::has_byte_offsets);
-        // The export holds the capture until RocksDB is done, even if we stop waiting.
-        //
-        // It runs on the lifecycle pool, next to creating and importing partition stores, rather
-        // than on the regular storage I/O pools:
-        // - The processor's commits are held back until it's done, so it shouldn't wait behind
-        //   regular storage I/O.
-        // - It keeps its thread while RocksDB flushes the partition. On the high-priority pool,
-        //   concurrent exports could take the threads that every partition's commits use when
-        //   they can't write inline.
-        // Nothing on the lifecycle pool waits for an export, so they can't deadlock: closing a
-        // database only reaches the pool once its last user is gone, and opening or deleting a
-        // partition first needs the partition's lock, which the export holds.
-        let export = self
-            .db
-            .prepare_export_cf(export_dir(snapshot_base_path, snapshot_id), move || capture);
-        let (base_dir, export_files) = async {
-            let export = RocksDbManager::get().lifecycle_executor().spawn(export)?;
-            anyhow::Ok(export.await??)
+
+        let use_whole_db_checkpoint = {
+            let config = Configuration::pinned();
+            config.worker.storage.experimental_rocksdb_enable_blob_files
+                && config.worker.use_multi_db_layout
+        };
+        // Blob files stay in the database after the option is turned off, and a column-family
+        // export would silently leave them out. Refuse rather than publish an incomplete snapshot.
+        if !use_whole_db_checkpoint && self.db.rocksdb().has_blob_files() {
+            return Err(StorageError::SnapshotExport(anyhow::anyhow!(
+                "partition database contains blob files; snapshots require \
+                 experimental-rocksdb-enable-blob-files to stay enabled"
+            )));
         }
-        .await
-        .map_err(StorageError::SnapshotExport)?;
+
+        let (base_dir, files, whole_db_files, version, db_comparator_name) =
+            if use_whole_db_checkpoint {
+                // Blob files belong to the whole database and cannot be exported per column
+                // family, so capture the partition's own database instead.
+                let path = export_dir(snapshot_base_path, snapshot_id);
+                let checkpoint = self.db.rocksdb().prepare_create_checkpoint(
+                    self.db.rocksdb().gate(),
+                    path.clone(),
+                    Box::new(move || drop(capture)),
+                );
+                let (base_dir, entries) = async {
+                    let checkpoint = RocksDbManager::get()
+                        .lifecycle_executor()
+                        .spawn(checkpoint)?;
+                    checkpoint.await??;
+                    let entries = list_checkpoint_files(&path).await?;
+                    anyhow::Ok((SnapshotDir::new(path), entries))
+                }
+                .await
+                .map_err(StorageError::SnapshotExport)?;
+
+                let (files, whole_db_files) = split_checkpoint_files(&base_dir, entries, self);
+                (
+                    base_dir,
+                    files,
+                    whole_db_files,
+                    SnapshotFormatVersion::V3,
+                    // V3 restores by opening the checkpoint, never by importing its files, so
+                    // the comparator name is informational only.
+                    "leveldb.BytewiseComparator".to_owned(),
+                )
+            } else {
+                // The export holds the capture until RocksDB is done, even if we stop waiting.
+                //
+                // It runs on the lifecycle pool, next to creating and importing partition stores, rather
+                // than on the regular storage I/O pools:
+                // - The processor's commits are held back until it's done, so it shouldn't wait behind
+                //   regular storage I/O.
+                // - It keeps its thread while RocksDB flushes the partition. On the high-priority pool,
+                //   concurrent exports could take the threads that every partition's commits use when
+                //   they can't write inline.
+                // Nothing on the lifecycle pool waits for an export, so they can't deadlock: closing a
+                // database only reaches the pool once its last user is gone, and opening or deleting a
+                // partition first needs the partition's lock, which the export holds.
+                let export = self
+                    .db
+                    .prepare_export_cf(export_dir(snapshot_base_path, snapshot_id), move || {
+                        capture
+                    });
+                let (base_dir, export_files) = async {
+                    let export = RocksDbManager::get().lifecycle_executor().spawn(export)?;
+                    anyhow::Ok(export.await??)
+                }
+                .await
+                .map_err(StorageError::SnapshotExport)?;
+
+                (
+                    base_dir,
+                    export_files.get_files(),
+                    Vec::new(),
+                    SnapshotFormatVersion::V1,
+                    export_files.get_db_comparator_name(),
+                )
+            };
 
         trace!(
             cf_name = %self.db.partition().cf_name(),
             %applied_lsn,
             ?compatibility,
-            "Exported column family snapshot to {:?}",
+            "Exported partition store snapshot to {:?}",
             base_dir.path()
         );
 
         Ok(LocalPartitionSnapshot {
             base_dir,
-            files: export_files.get_files(),
-            db_comparator_name: export_files.get_db_comparator_name(),
+            version,
+            files,
+            whole_db_files,
+            db_comparator_name,
             log_id: self.db.partition().log_id(),
             min_applied_lsn: applied_lsn,
             key_range: self.db.partition().key_range,
@@ -664,7 +727,67 @@ impl PartitionStore {
             partition_store_byte_offset: position.map(|p| p.partition_store_byte_offset),
         })
     }
+}
 
+/// Lists every file of a checkpoint directory, as paths relative to it and their sizes.
+async fn list_checkpoint_files(root: &Path) -> std::io::Result<Vec<(String, u64)>> {
+    let mut files = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let mut entries = tokio::fs::read_dir(&dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let file_type = entry.file_type().await?;
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if file_type.is_file() {
+                let relative = entry
+                    .path()
+                    .strip_prefix(root)
+                    .expect("entry is inside the checkpoint")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                files.push((relative, entry.metadata().await?.len()));
+            }
+        }
+    }
+    Ok(files)
+}
+
+/// Splits checkpoint files into the SST list of a [`LocalPartitionSnapshot`] and the blob and
+/// database-level files.
+fn split_checkpoint_files(
+    base_dir: &SnapshotDir,
+    entries: Vec<(String, u64)>,
+    store: &PartitionStore,
+) -> (Vec<rocksdb::LiveFile>, Vec<SnapshotDataFile>) {
+    let mut files = Vec::new();
+    let mut whole_db_files = Vec::new();
+    for (name, size) in entries {
+        if name.ends_with(".sst") {
+            files.push(rocksdb::LiveFile {
+                column_family_name: store.db.partition().cf_name().to_string(),
+                name: format!("/{name}"),
+                directory: base_dir.path().to_string_lossy().into_owned(),
+                size: size as usize,
+                level: 0,
+                start_key: None,
+                end_key: None,
+                smallest_seqno: 0,
+                largest_seqno: 0,
+                num_entries: 0,
+                num_deletions: 0,
+            });
+        } else {
+            whole_db_files.push(SnapshotDataFile {
+                name,
+                size: size as usize,
+            });
+        }
+    }
+    (files, whole_db_files)
+}
+
+impl PartitionStore {
     /// Reads what a server needs in order to use this partition's data from the persisted values
     /// that [`Self::verify_and_run_migrations`] checks. `None` if they can't be read.
     fn read_snapshot_compatibility(&self) -> Option<SnapshotCompatibility> {

@@ -175,6 +175,52 @@ impl Snapshots {
             .await
     }
 
+    /// Returns the partition's retained snapshot references, newest first, or an empty list if
+    /// no repository is configured or it holds no snapshot for the partition.
+    pub(crate) async fn get_snapshot_candidates(
+        &self,
+        partition_id: PartitionId,
+    ) -> anyhow::Result<Vec<SnapshotReference>> {
+        let Some(repository) = &self.repository else {
+            return Ok(Vec::new());
+        };
+        repository.get_snapshot_candidates(partition_id).await
+    }
+
+    /// Fetches a snapshot's metadata without downloading its data files.
+    pub(crate) async fn get_snapshot_metadata(
+        &self,
+        partition_id: PartitionId,
+        snapshot_ref: &SnapshotReference,
+    ) -> Result<PartitionSnapshotMetadata, GetSnapshotError> {
+        let repository = self.repository.as_ref().expect("repository is configured");
+        repository
+            .get_snapshot_metadata(partition_id, snapshot_ref)
+            .await
+    }
+
+    /// Downloads a whole-database checkpoint's files into `destination`, which must not exist
+    /// yet.
+    pub(crate) async fn download_whole_db_snapshot(
+        &self,
+        partition_id: PartitionId,
+        snapshot_ref: &SnapshotReference,
+        metadata: &mut PartitionSnapshotMetadata,
+        destination: &Path,
+        cancellation: &CancellationToken,
+    ) -> Result<(), GetSnapshotError> {
+        let repository = self.repository.as_ref().expect("repository is configured");
+        repository
+            .download_whole_db_snapshot(
+                partition_id,
+                snapshot_ref,
+                metadata,
+                destination,
+                cancellation,
+            )
+            .await
+    }
+
     /// Downloads the newest usable retained snapshot of the partition, without restoring it. See
     /// `download_and_restore` for how unusable snapshots are skipped.
     pub async fn download_snapshot(
