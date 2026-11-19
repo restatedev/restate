@@ -10,12 +10,14 @@
 
 use std::num::NonZeroUsize;
 use std::ops::ControlFlow;
+use std::sync::Arc;
 
 use bilrost::Message;
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use futures::FutureExt;
+use rocksdb::{BoundColumnFamily, DBRawIteratorWithThreadMode};
 
-use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
+use restate_rocksdb::{Priority, RocksDb, RocksDbReadPerfGuard};
 use restate_storage_api::blob_table::{
     Blob, BlobDecoder, BlobEncode, BlobEntry, Header, ReadBlobTable, ScanBlobTable,
     ScanBlobTableRange, WriteBlobTable,
@@ -30,8 +32,12 @@ use restate_types::vqueues::Seq;
 use crate::TableKind;
 use crate::error::break_on_err;
 use crate::keys::{DecodeTableKey, FixedLengthTableKey, KeyKind, define_table_key};
+use crate::read_snapshot::PartitionSnapshotReader;
 use crate::scan::TableScan;
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
+use crate::{
+    DB, PartitionDb, PartitionStore, PartitionStoreTransaction, ReadSnapshot, StorageAccess,
+    StorageIterator, StorageRead,
+};
 
 mod header;
 pub use header::*;
@@ -139,6 +145,116 @@ impl ScanBlobTable for PartitionStore {
     }
 }
 
+/// Point reads of blob payloads that, unlike a [`PartitionStoreTransaction`], can be held across
+/// `.await` points. Blob payloads never change once written, but a blob can be released after the
+/// referencing entry was read. Read from the live database ([`Self::Db`]) only blobs whose
+/// references can't be released concurrently (e.g. journals of in-flight invocations); otherwise
+/// read from the same snapshot as the referencing entry ([`Self::Snapshot`]). A transaction reads
+/// through its write batch ([`Self::Batch`]), so it sees the blobs it wrote.
+pub(crate) enum BlobReader<'a> {
+    Db {
+        rocksdb: &'a Arc<RocksDb>,
+        cf: &'a Arc<BoundColumnFamily<'a>>,
+    },
+    Snapshot(&'a PartitionSnapshotReader<'a>),
+    /// An iterator over a transaction's write batch and the database, seeked to each blob. A
+    /// reference to the transaction can't be held across `.await` points, but its iterators can.
+    Batch(DBRawIteratorWithThreadMode<'a, DB>),
+}
+
+impl<'a> BlobReader<'a> {
+    pub(crate) fn new(rocksdb: &'a Arc<RocksDb>, cf: &'a Arc<BoundColumnFamily<'a>>) -> Self {
+        Self::Db { rocksdb, cf }
+    }
+
+    /// Copies the payload of a blob. `None` if the blob doesn't exist or is marked for deletion.
+    pub(crate) fn get_payload(&mut self, blob_id: BlobId) -> Result<Option<Bytes>> {
+        self.map_payload(blob_id, |payload| payload.map(Bytes::copy_from_slice))
+    }
+
+    /// Like [`Self::get_payload`], but lends the payload to `f` instead of copying it.
+    pub(crate) fn map_payload<R>(
+        &mut self,
+        blob_id: BlobId,
+        f: impl FnOnce(Option<&[u8]>) -> R,
+    ) -> Result<R> {
+        let _x = RocksDbReadPerfGuard::new("get-blob");
+        let key = BlobKey { blob_id }.to_bytes();
+        match self {
+            Self::Db { rocksdb, cf } => {
+                let value = rocksdb
+                    .inner()
+                    .as_raw_db()
+                    .get_pinned_cf(*cf, key)
+                    .map_err(|error| StorageError::Generic(error.into()))?;
+                Ok(f(live_value_payload(value.as_deref())?))
+            }
+            Self::Snapshot(reader) => {
+                let value = reader
+                    .get_pinned(KeyKind::Blob, &key)
+                    .map_err(|error| StorageError::Generic(error.into()))?;
+                Ok(f(live_value_payload(value.as_deref())?))
+            }
+            Self::Batch(iterator) => {
+                iterator.seek(key);
+                // A seek lands on the first key at or after `key`, which may be another blob's
+                let value = match StorageIterator::item(iterator)? {
+                    Some((found, value)) if found == key => Some(value),
+                    _ => None,
+                };
+                Ok(f(live_value_payload(value)?))
+            }
+        }
+    }
+}
+
+impl<'a> From<&'a PartitionDb> for BlobReader<'a> {
+    fn from(db: &'a PartitionDb) -> Self {
+        Self::new(db.rocksdb(), db.cf_handle_for_key_kind(KeyKind::Blob))
+    }
+}
+
+impl ReadSnapshot {
+    /// Lends the payload of a blob to `f`, reading it from the admitted snapshot on the caller's
+    /// thread. The payload is `None` if the blob doesn't exist or is marked for deletion.
+    pub fn map_blob_payload_blocking<R>(
+        &self,
+        blob_id: BlobId,
+        f: impl FnOnce(Option<&[u8]>) -> R,
+    ) -> Result<R> {
+        self.check_active()?;
+        let reader = self.storage_snapshot().reader();
+        BlobReader::Snapshot(&reader).map_payload(blob_id, f)
+    }
+}
+
+/// Copies the payload of a blob. `None` if the blob doesn't exist or is marked for deletion.
+/// Unlike [`BlobReader`], a transaction sees the blobs it wrote.
+pub(crate) fn get_blob_payload<S: StorageRead>(
+    storage: &S,
+    blob_id: BlobId,
+) -> Result<Option<Bytes>> {
+    let _x = RocksDbReadPerfGuard::new("get-blob");
+    let value = storage.get(KeyKind::Blob, BlobKey { blob_id }.to_bytes())?;
+    Ok(value
+        .as_deref()
+        .map(live_payload)
+        .transpose()?
+        .flatten()
+        .map(Bytes::copy_from_slice))
+}
+
+/// The payload of an encoded blob, if there is one and it isn't marked for deletion.
+fn live_value_payload(value: Option<&[u8]>) -> Result<Option<&[u8]>> {
+    Ok(value.map(live_payload).transpose()?.flatten())
+}
+
+/// The payload of an encoded blob, unless it's marked for deletion.
+fn live_payload(value: &[u8]) -> Result<Option<&[u8]>> {
+    let (header, payload) = BlobHeader::decode(value)?;
+    Ok((header.ref_count() > 0).then_some(payload))
+}
+
 impl ReadBlobTable for PartitionStore {
     async fn get_blob<D: BlobDecoder>(&mut self, blob_id: BlobId) -> Result<Option<D::Type>> {
         get_blob::<_, D>(self, blob_id)
@@ -152,16 +268,19 @@ impl ReadBlobTable for PartitionStoreTransaction<'_> {
 }
 
 impl WriteBlobTable for PartitionStoreTransaction<'_> {
-    fn put_blob<B: BlobEncode>(&mut self, blob_id: BlobId, blob: Blob<B>) -> Result<()> {
+    fn put_blob<B: BlobEncode>(&mut self, blob_id: BlobId, blob: Blob<B>) -> Result<u64> {
         let key = BlobKey { blob_id };
 
         let mut buf = BytesMut::new();
 
         BlobHeader::new(blob.kind(), blob.ref_count()).encode(&mut buf);
+        let header_len = buf.len();
 
         blob.inner().encode_blob(&mut buf)?;
+        let payload_len = (buf.len() - header_len) as u64;
 
-        self.put_kv_raw(key, &buf)
+        self.put_kv_raw(key, &buf)?;
+        Ok(payload_len)
     }
 
     fn decrement_ref_count(&mut self, blob_id: BlobId, count: u16) {
@@ -195,16 +314,16 @@ mod tests {
     #[test]
     fn blob_header_roundtrip() {
         let ref_count = 300;
-        let header = BlobHeader::new(BlobKind::Output, ref_count);
+        let header = BlobHeader::new(BlobKind::Journal, ref_count);
         let mut value = Vec::new();
         header.encode(&mut value);
         assert_eq!(header.encoded_len(), value.len());
         let v = BlobHeader::VERSION;
-        assert_eq!(value, [v, 0, 3, BlobKind::Output as u8, 1, 44]);
+        assert_eq!(value, [v, 0, 3, BlobKind::Journal as u8, 1, 44]);
         value.extend_from_slice(b"payload");
 
         let (header, payload) = BlobHeader::decode(&value).unwrap();
-        assert_eq!(header.kind(), BlobKind::Output);
+        assert_eq!(header.kind(), BlobKind::Journal);
         assert_eq!(header.ref_count(), ref_count);
         assert_eq!(payload, b"payload");
 

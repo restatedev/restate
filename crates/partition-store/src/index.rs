@@ -37,10 +37,10 @@
 //! - **Scope** ([`SecondaryIndex::Scope`]): where one partition's keys of the
 //!   index live: the partition plus the index ID.
 //!
-//! This module is the machinery; the index definitions come in a commit of their
-//! own. Writes keep an index up to date (`maintenance`); reads go through the
-//! physical table every declaration generates, like any other ordered key
-//! ([`crate::table`]).
+//! This module is the machinery; definitions live with their source table, such
+//! as the entry indexes in `crate::vqueue_table`. Writes keep an index up to date
+//! (`maintenance`); reads go through the physical table every declaration
+//! generates, like any other ordered key ([`crate::table`]).
 
 use bytes::BufMut;
 use zerocopy::IntoBytes;
@@ -74,6 +74,13 @@ pub trait SecondaryIndex {
 pub trait RegisteredIndex: SecondaryIndex<Scope = crate::keys::header::IndexScope> {
     /// The name of its registry definition, including the version.
     const DEFINITION: &'static str;
+    /// The Restate version that introduced the definition. A node of an older
+    /// version can neither maintain nor read its indexes, so a query coordinator
+    /// must choose one only where every node serving its partitions runs at least
+    /// this version. The V2 planner checks this before it reads an index in place
+    /// of its primary.
+    /// Code, not stored data: it is never persisted.
+    const INTRODUCED: restate_types::SemanticRestateVersion;
 }
 
 /// A complete secondary key, including its required primary-key suffix.
@@ -99,7 +106,7 @@ pub fn ready_index_scope<I: RegisteredIndex>(
     crate::keys::header::IndexScope {
         partition: store.partition_id(),
         index: store
-            .maintained_indexes()
+            .published_registry()
             .ready_index(I::DEFINITION, crate::registry::IndexKind::Secondary)
             .unwrap(),
     }

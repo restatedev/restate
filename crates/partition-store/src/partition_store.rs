@@ -42,7 +42,7 @@ use restate_storage_api::fsm_table::{FsmPosition, ReadFsmTable};
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use restate_storage_api::{Storage, StorageError, Transaction};
 use restate_types::SemanticRestateVersion;
-use restate_types::config::{Configuration, StorageOptions};
+use restate_types::config::{Configuration, WorkerOptions};
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId, WithPartitionKey};
 use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::partitions::Partition;
@@ -54,6 +54,7 @@ use restate_types::storage::StorageEncode;
 use restate_util_string::ReString;
 
 use crate::PartitionStoreSnapshot;
+use crate::blob_table::BlobReader;
 use crate::features::{LoadedStorageFeatures, StorageFeatures};
 use crate::fsm_table::delete_applied_lsn;
 use crate::fsm_table::get_partition_seal;
@@ -64,14 +65,13 @@ use crate::fsm_table::put_storage_version;
 use crate::fsm_table::seal_partition;
 use crate::fsm_table::{
     PartitionStateMachineKey, get_locally_durable_lsn, get_min_restate_version_from_partition_db,
-    get_registry_from_partition_db, get_state_machine_features_from_partition_db,
-    get_storage_features_from_partition_db, get_storage_version_from_partition_db,
-    is_jc_orphan_cleanup_done, put_jc_orphan_cleanup_done,
+    get_state_machine_features_from_partition_db, get_storage_features_from_partition_db,
+    get_storage_version_from_partition_db, is_jc_orphan_cleanup_done, put_jc_orphan_cleanup_done,
 };
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, FixedLengthTableKey, KeyKind};
 use crate::migrations::MigrationError;
 use crate::partition_db::PartitionDb;
-use crate::registry::MaintainedIndexes;
+use crate::registry::PublishedRegistry;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
 use crate::snapshots::{CaptureGuard, LocalPartitionSnapshot, SnapshotCompatibility, export_dir};
@@ -198,6 +198,8 @@ pub enum TableKind {
     Blob,
     SecondaryIndex,
     Stats,
+    /// The registry, its walks and its migration jobs.
+    Registry,
 }
 
 impl TableKind {
@@ -235,6 +237,7 @@ impl TableKind {
             Self::Blob => &[KeyKind::Blob],
             Self::SecondaryIndex => &[KeyKind::SecondaryIndex],
             Self::Stats => &[KeyKind::Stats],
+            Self::Registry => &[KeyKind::Registry],
         }
     }
 
@@ -330,56 +333,50 @@ impl PartitionStore {
         })
     }
 
-    /// The indexes maintained on entry writes. Opening the partition reconciles
-    /// the registry and installs this set before the processor writes. A store
-    /// used without that (tools and tests) loads it from disk on first use. An
-    /// unreadable registry or walks record is a bug there, and panics: writing
-    /// with an empty set instead would skip the Ready indexes and clear the
-    /// entries' tokens, corrupting the indexes silently, and an open would have
-    /// failed on it.
-    pub(crate) fn maintained_indexes(&self) -> Arc<MaintainedIndexes> {
-        if let Some(maintained_indexes) = self.db.maintained_indexes() {
-            return maintained_indexes;
+    /// The published registry, with the indexes maintained on entry writes.
+    /// Opening the partition reconciles the registry and installs it before the
+    /// processor writes. A store used without that (tools and tests) loads its
+    /// records from disk on first use, with the configured retention for the
+    /// jobs that finish. Unreadable registry or walk records are a bug there,
+    /// and panic: writing with no indexes instead would skip the Ready indexes
+    /// and clear the entries' tokens, corrupting the indexes silently, and an open
+    /// would have failed on them.
+    pub(crate) fn published_registry(&self) -> Arc<PublishedRegistry> {
+        if let Some(published_registry) = self.db.published_registry() {
+            return published_registry;
         }
-        let registry = get_registry_from_partition_db(self.partition_db())
-            .unwrap_or_else(|err| {
+        let (records, _) =
+            crate::registry::records::load(self.partition_db()).unwrap_or_else(|err| {
                 panic!(
-                    "the index registry of partition {} is unreadable: {err}",
-                    self.partition_id()
-                )
-            })
-            .unwrap_or_default();
-        let walks = crate::fsm_table::get_walks_from_partition_db(self.partition_db())
-            .unwrap_or_else(|err| {
-                panic!(
-                    "the walks of partition {} are unreadable: {err}",
-                    self.partition_id()
-                )
-            })
-            .unwrap_or_default();
-        let (jobs, _) =
-            crate::registry::load_job_records(self.partition_db()).unwrap_or_else(|err| {
-                panic!(
-                    "the job records of partition {} are unreadable: {err}",
+                    "the registry records of partition {} are unreadable: {err}",
                     self.partition_id()
                 )
             });
-        let maintained_indexes = Arc::new(
-            MaintainedIndexes::new(&registry, &walks, crate::registry::DEFINITIONS)
-                .with_jobs(jobs, crate::job::DEFAULT_HISTORY_LIMIT),
+        let retention = Configuration::pinned()
+            .worker
+            .storage
+            .finished_migration_jobs_retention
+            .to_std();
+        let published_registry = Arc::new(
+            PublishedRegistry::new(
+                &records.registry.unwrap_or_default(),
+                &records.walks,
+                crate::registry::INDEX_DEFINITIONS,
+            )
+            .with_jobs(records.jobs, retention),
         );
         self.db
-            .install_maintained_indexes(Arc::clone(&maintained_indexes));
-        maintained_indexes
+            .install_published_registry(Arc::clone(&published_registry));
+        published_registry
     }
 
-    /// Installs the maintained indexes for every handle of this partition, as opening does
-    /// after reconciling the registry. Tests install indexes of test definitions.
+    /// Publishes `published_registry` to every handle of this partition, as opening
+    /// does after reconciling the registry. Tests publish indexes of test definitions.
     #[cfg(test)]
     #[allow(dead_code)] // Consumed when the registry is reconciled at open.
-    pub(crate) fn set_maintained_indexes(&mut self, maintained_indexes: MaintainedIndexes) {
+    pub(crate) fn set_published_registry(&mut self, published_registry: PublishedRegistry) {
         self.db
-            .install_maintained_indexes(Arc::new(maintained_indexes));
+            .install_published_registry(Arc::new(published_registry));
     }
 
     /// Overwrites the memoized storage features after their finalization batch commits.
@@ -421,7 +418,7 @@ impl PartitionStore {
     }
 
     /// Admits a read: captures a [`crate::ReadSnapshot`] of the store as it is
-    /// now, with its storage features and index registry, and returns the future
+    /// now, with its storage features and registry, and returns the future
     /// that resolves once the snapshot's last holder (a clone, a cursor or a
     /// storage job) has released it. The processor calls this in its loop, after
     /// its readiness checks; `cancel` is the token that ends the read.
@@ -716,8 +713,8 @@ impl PartitionStore {
         // If PartitionStore.storage_features() was never called before,
         // this will fetch the value and cache it.
         let storage_features = self.storage_features();
-        let maintained_indexes = self.maintained_indexes();
-        let settings = TransactionSettings::from(&Configuration::pinned().worker.storage);
+        let published_registry = self.published_registry();
+        let settings = TransactionSettings::new(&Configuration::pinned().worker, storage_features);
 
         PartitionStoreTransaction {
             write_batch_with_index: Some(rocksdb::WriteBatchWithIndex::new(0, true)),
@@ -728,7 +725,7 @@ impl PartitionStore {
             value_buffer: &mut self.value_buffer,
             meta: self.db.partition(),
             storage_features,
-            maintained_indexes,
+            published_registry,
             settings,
             commit_fence: None,
             write_batch_size_histogram: None,
@@ -977,7 +974,7 @@ impl PartitionStore {
         // indexes, start their walks, fence the store, and install the indexes
         // maintained on writes.
         self.reconcile_registry(
-            crate::registry::DEFINITIONS,
+            crate::registry::INDEX_DEFINITIONS,
             &crate::registry::Requests::from_config(crate::registry::FAMILIES, config),
             crate::registry::FenceState {
                 features: &mut storage_features,
@@ -1066,6 +1063,11 @@ impl StorageRead for PartitionStore {
         self.key_buffer.reserve(min_size);
         &mut self.key_buffer
     }
+
+    #[inline]
+    fn blob_reader(&self) -> BlobReader<'_> {
+        self.partition_db().into()
+    }
 }
 
 impl StorageAccess for PartitionStore {
@@ -1141,14 +1143,20 @@ impl ScanMode {
 pub(crate) struct TransactionSettings {
     /// Probability that a vqueue metadata update is written as a full value instead of a merge.
     pub vqueue_meta_full_write_probability: f64,
+    /// Journal entries with a larger content store it in a blob, if set.
+    pub inline_entry_threshold: Option<usize>,
 }
 
-impl From<&StorageOptions> for TransactionSettings {
-    fn from(opts: &StorageOptions) -> Self {
+impl TransactionSettings {
+    pub fn new(opts: &WorkerOptions, storage_features: StorageFeatures) -> Self {
         Self {
             vqueue_meta_full_write_probability: opts
+                .storage
                 .vqueue_meta_full_write_probability
                 .clamp(0.0, 1.0),
+            inline_entry_threshold: storage_features
+                .is_journal_entry_blobs
+                .then(|| opts.inline_journal_entry_threshold.as_usize()),
         }
     }
 }
@@ -1162,7 +1170,7 @@ pub struct PartitionStoreTransaction<'a> {
     key_buffer: &'a mut BytesMut,
     value_buffer: &'a mut BytesMut,
     storage_features: StorageFeatures,
-    maintained_indexes: Arc<MaintainedIndexes>,
+    published_registry: Arc<PublishedRegistry>,
     settings: TransactionSettings,
     /// Resolves once the [`CommitFence`] holding back commits is dropped.
     commit_fence: Option<oneshot::Receiver<()>>,
@@ -1382,13 +1390,14 @@ impl<'a> PartitionStoreTransaction<'a> {
         self.storage_features
     }
 
-    pub(crate) fn maintained_indexes(&self) -> Arc<MaintainedIndexes> {
-        Arc::clone(&self.maintained_indexes)
+    pub(crate) fn published_registry(&self) -> Arc<PublishedRegistry> {
+        Arc::clone(&self.published_registry)
     }
 
-    /// Replaces the indexes maintained on writes, once a commit changed them.
-    pub(crate) fn set_maintained_indexes(&mut self, maintained_indexes: Arc<MaintainedIndexes>) {
-        self.maintained_indexes = maintained_indexes;
+    /// Replaces the published registry, and with it the indexes maintained on
+    /// writes, once a commit changed it.
+    pub(crate) fn set_published_registry(&mut self, published_registry: Arc<PublishedRegistry>) {
+        self.published_registry = published_registry;
     }
 
     /// Whether a [`CommitFence`] currently holds back commits. Neither takes nor lifts a
@@ -1423,6 +1432,41 @@ impl<'a> PartitionStoreTransaction<'a> {
             .expect("transaction valid")
             .rollback_to_save_point()
             .map_err(|err| StorageError::Generic(err.into()))
+    }
+
+    /// Whether `key` exists, as an online migration looks it up
+    /// ([`crate::migrations::online`]), and the bytes of key and value read, for
+    /// [`Migrated::read_bytes`]. Reads through this transaction, so it sees the
+    /// writes staged here, and doesn't fill the block cache, so that background
+    /// work doesn't evict what commands read.
+    ///
+    /// ```ignore
+    /// let (exists, read_bytes) = tx.lookup_for_migration(JournalKey { .. })?;
+    /// ```
+    ///
+    /// [`Migrated::read_bytes`]: crate::migrations::online::Migrated::read_bytes
+    #[cfg_attr(not(test), expect(dead_code, reason = "ONLINE_MIGRATIONS is empty"))]
+    pub(crate) fn lookup_for_migration<K: EncodeTableKey>(
+        &mut self,
+        key: K,
+    ) -> Result<(bool, usize)> {
+        self.key_buffer.clear();
+        key.serialize_to(self.key_buffer);
+        let mut options = ReadOptions::default();
+        options.fill_cache(false);
+        let value = self
+            .write_batch_with_index
+            .as_ref()
+            .expect("transaction valid")
+            .get_pinned_from_batch_and_db_cf(
+                self.rocksdb.inner().as_raw_db(),
+                self.cf_for_key_kind(K::KEY_KIND),
+                &*self.key_buffer,
+                &options,
+            )
+            .map_err(|error| StorageError::Generic(error.into()))?;
+        let read = self.key_buffer.len() + value.as_ref().map_or(0, |value| value.len());
+        Ok((value.is_some(), read))
     }
 
     /// Whether no write is buffered.
@@ -1561,6 +1605,25 @@ impl Transaction for PartitionStoreTransaction<'_> {
     }
 }
 
+impl PartitionStoreTransaction<'_> {
+    /// An iterator over this transaction's write batch on top of the database.
+    fn batch_iterator(
+        &self,
+        cf: &Arc<BoundColumnFamily<'_>>,
+        opts: ReadOptions,
+    ) -> DBRawIteratorWithThreadMode<'_, DB> {
+        let base = self
+            .rocksdb
+            .inner()
+            .as_raw_db()
+            .raw_iterator_cf_opt(cf, opts);
+        self.write_batch_with_index
+            .as_ref()
+            .expect("transaction valid")
+            .iterator_with_base_cf(base, cf)
+    }
+}
+
 impl StorageRead for PartitionStoreTransaction<'_> {
     type Iterator<'b>
         = DBRawIteratorWithThreadMode<'b, DB>
@@ -1585,16 +1648,7 @@ impl StorageRead for PartitionStoreTransaction<'_> {
             }
         };
 
-        let base = self
-            .rocksdb
-            .inner()
-            .as_raw_db()
-            .raw_iterator_cf_opt(cf, opts);
-        let mut iterator = self
-            .write_batch_with_index
-            .as_ref()
-            .expect("transaction valid")
-            .iterator_with_base_cf(base, cf);
+        let mut iterator = self.batch_iterator(cf, opts);
         iterator.seek(start);
         Ok(iterator)
     }
@@ -1624,6 +1678,16 @@ impl StorageRead for PartitionStoreTransaction<'_> {
         self.key_buffer.clear();
         self.key_buffer.reserve(min_size);
         self.key_buffer
+    }
+
+    /// Reads through the write batch, so it sees the blobs written by this transaction.
+    #[inline]
+    fn blob_reader(&self) -> BlobReader<'_> {
+        // Seeks look for exact keys, so the iterator needs no bounds. A blob key is longer than
+        // the prefix extractor, so each seek checks the prefix filters.
+        let mut opts = ReadOptions::default();
+        opts.set_total_order_seek(false);
+        BlobReader::Batch(self.batch_iterator(self.cf_for_key_kind(KeyKind::Blob), opts))
     }
 }
 
@@ -1840,6 +1904,9 @@ pub(crate) trait StorageRead {
     /// Reads the value of `key`, whose kind is `key_kind`, without copying it.
     fn get<K: AsRef<[u8]>>(&self, key_kind: KeyKind, key: K)
     -> Result<Option<DBPinnableSlice<'_>>>;
+
+    /// Point reads of blob payloads, see [`BlobReader`].
+    fn blob_reader(&self) -> BlobReader<'_>;
 
     fn cleared_key_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut;
 

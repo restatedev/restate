@@ -171,18 +171,24 @@ impl SourceRegistry {
                 let store = stores.get_partition_store(partition).await.ok_or_else(|| {
                     anyhow::anyhow!("partition {partition} doesn't exist on this node")
                 })?;
+                // No processor admits an offline read: it is admitted once its
+                // store is found.
+                let admitted = tokio::time::Instant::now();
+                let mut timing = restate_worker_api::CaptureTiming::admitted_at(admitted);
+                let storage = if capture.storage {
+                    let read = store
+                        .query_read(tokio_util::sync::CancellationToken::new())?
+                        .0;
+                    timing.snapshot = Some(restate_worker_api::CaptureSpan::since(admitted));
+                    Some(read)
+                } else {
+                    None
+                };
                 Ok(restate_worker_api::CapturedPartitionRead {
                     partition,
-                    storage: if capture.storage {
-                        Some(
-                            store
-                                .query_read(tokio_util::sync::CancellationToken::new())?
-                                .0,
-                        )
-                    } else {
-                        None
-                    },
+                    storage,
                     live: restate_worker_api::CapturedPartitionState::empty(capture),
+                    timing,
                 })
             }
             PartitionReads::Unavailable => {
@@ -204,6 +210,11 @@ impl SourceRegistry {
             metadata,
             cluster_state,
         }
+    }
+
+    /// The cluster metadata the planner reads, such as the nodes' versions.
+    pub(crate) fn metadata(&self) -> &Metadata {
+        &self.metadata
     }
 
     /// Offline execution uses the same prepared sources without cluster routing.
@@ -304,6 +315,13 @@ impl SourceRegistry {
                 .iter()
                 .all(|index| scanner.supports_index(index.declared().identity())),
             "declared indexes must be readable by the source's scanner"
+        );
+        assert!(
+            T::INDEXES.iter().all(|index| {
+                restate_types::SemanticRestateVersion::current()
+                    .release_is_equal_or_newer_than(&index.declared().introduced())
+            }),
+            "a declared index can't be newer than this binary"
         );
         self.register_partition_scanner::<T>(scanner);
     }

@@ -371,6 +371,8 @@ macro_rules! define_ordered_key_decoder {
 ///
 /// `field => non_null` binds a nullable logical column to a field that stores no
 /// NULLs: `IS NULL` matches nothing and NULL drops out of IN lists and ranges.
+/// `field => present` binds a column that is never NULL to a nullable field: the
+/// predicate matches the field's present values only.
 /// Encoding, validation and nullability belong to the field's
 /// [`FieldPredicateCodec`](crate::keys::selection::codec::FieldPredicateCodec);
 /// bounds and evaluation to [`KeySelection`](crate::keys::selection::KeySelection).
@@ -439,6 +441,11 @@ macro_rules! define_key_selection {
     };
     (@prepare [non_null] [$codec:ty] $predicate:ident, $literals:ident) => {
         crate::keys::selection::codec::prepare_non_null::<$codec>($predicate, $literals)
+    };
+    (@prepare [present] [$codec:ty] $predicate:ident, $literals:ident) => {
+        crate::keys::selection::codec::prepare_present::<
+            <$codec as crate::keys::selection::codec::NullableFieldCodec>::Present,
+        >($predicate, $literals)
     };
 }
 

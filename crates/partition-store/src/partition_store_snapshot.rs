@@ -15,6 +15,7 @@ use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::sharding::KeyRange;
 
+use crate::blob_table::BlobReader;
 use crate::features::StorageFeatures;
 use crate::keys::{EncodeTableKeyPrefix, KeyKind};
 use crate::partition_store::{StorageRead, assert_partition_key_or_err};
@@ -91,5 +92,10 @@ impl StorageRead for PartitionStoreSnapshot<'_> {
         self.key_buffer.clear();
         self.key_buffer.reserve(min_size);
         self.key_buffer
+    }
+
+    #[inline]
+    fn blob_reader(&self) -> BlobReader<'_> {
+        BlobReader::Snapshot(&self.reader)
     }
 }

@@ -68,15 +68,18 @@ async fn invocation_view_combines_storage_and_live_admission_on_remote_leaders()
                     .get_partition_store(request.partition)
                     .await
                     .unwrap();
+                let mut timing =
+                    restate_worker_api::CaptureTiming::admitted_at(tokio::time::Instant::now());
+                let snapshot = store
+                    .query_read(tokio_util::sync::CancellationToken::new())
+                    .unwrap()
+                    .0;
+                timing.snapshot = Some(restate_worker_api::CaptureSpan::since(timing.admitted));
                 let read = CapturedPartitionRead {
                     partition: request.partition,
-                    storage: Some(
-                        store
-                            .query_read(tokio_util::sync::CancellationToken::new())
-                            .unwrap()
-                            .0,
-                    ),
+                    storage: Some(snapshot),
                     live: CapturedPartitionState::default(),
+                    timing,
                 };
                 let _ = request.response.send(Ok(read));
             }
@@ -116,6 +119,39 @@ async fn invocation_view_combines_storage_and_live_admission_on_remote_leaders()
     )
     .await;
     assert_eq!(admissions.lock().len(), fixture.partitions.0.len());
+
+    // Under EXPLAIN ANALYZE, each owner times each of its captures once, its
+    // invoker read included, with a lane per partition.
+    admissions.lock().clear();
+    let (_, text) = super::analyze::run(
+        session.as_ref(),
+        "EXPLAIN ANALYZE SELECT status, COUNT(*) FROM sys_invocation GROUP BY status",
+    )
+    .await;
+    let mut captured = 0;
+    for line in text
+        .lines()
+        .filter(|line| line.contains("NetworkCoalesceExec"))
+    {
+        let metric = |name| super::analyze::metric(line, name);
+        let Some(captures) = metric("captures") else {
+            continue;
+        };
+        captured += captures.parse::<usize>().unwrap();
+        for step in [
+            "capture_queued_max",
+            "snapshot_create_max",
+            "invoker_capture_max",
+        ] {
+            assert!(metric(step).is_some(), "{step} in {text}");
+        }
+        // A capture's way to its processor and back can't take no time.
+        for step in ["capture_max", "capture_queued_max"] {
+            assert_ne!(metric(step).as_deref(), Some("0ns"), "{step} in {text}");
+        }
+    }
+    assert_eq!(captured, fixture.partitions.0.len(), "{text}");
+    assert_eq!(admissions.lock().len(), captured, "{text}");
     let (partition, metadata) = &fixture.partitions.0[0];
     let id = InvocationId::from_parts(metadata.key_range.start(), InvocationUuid::from_u128(1));
     admissions.lock().clear();

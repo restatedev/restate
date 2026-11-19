@@ -16,20 +16,24 @@ use std::sync::Arc;
 use datafusion::catalog::TableProvider;
 
 use restate_partition_store::journal_scan::{JournalTable, JournalV2Table};
+use restate_partition_store::lookup::LookupBinding;
 use restate_storage_api::Result;
 use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_api::journal_table_v2::StoredEntry;
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_query_api::schema::RecordProgress;
 use restate_storage_query_api::selection::Selection;
-use restate_storage_query_api::tables::journal::{Journal, JournalColumn, JournalView};
+use restate_storage_query_api::selection::domain::Domain;
+use restate_storage_query_api::tables::journal::{
+    Journal, JournalColumn, JournalDomains, JournalView, named_journal_entries,
+};
 use restate_storage_query_api::{PreparedRead, RowSink, SchemaBinding, Table};
 use restate_types::identifiers::{InvocationId, InvocationUuid, JournalEntryId, PartitionKey};
 use restate_util_string::ReString;
 
 use crate::QuerySource;
 use crate::context::SelectPartitions;
-use crate::schema_scan::SchemaScanner;
+use crate::schema_scan::LookupScanner;
 use crate::sharding::PartitionSource;
 use crate::source_registry::SourceRegistry;
 use crate::table_providers::PartitionedTableProvider;
@@ -63,9 +67,15 @@ impl QuerySource for JournalV2Source {
 }
 impl PartitionSource for JournalV1Source {
     const ORDERING: &'static [JournalColumn] = &[JournalColumn::PartitionKey];
+    /// A finite set of invocation IDs and indexes is looked up instead of read.
+    const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> =
+        Some(crate::access::select_lookup::<JournalV1Binding>);
 }
 impl PartitionSource for JournalV2Source {
     const ORDERING: &'static [JournalColumn] = &[JournalColumn::PartitionKey];
+    /// A finite set of invocation IDs and indexes is looked up instead of read.
+    const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> =
+        Some(crate::access::select_lookup::<JournalV2Binding>);
 }
 
 impl SysJournalTable {
@@ -80,10 +90,10 @@ impl SysJournalTable {
     }
 
     pub(crate) fn register_scanners(sources: &SourceRegistry) {
-        sources.register_declared_scanner::<JournalV1Source>(Arc::new(SchemaScanner::<
+        sources.register_declared_scanner::<JournalV1Source>(Arc::new(LookupScanner::<
             JournalV1Binding,
         >::new()));
-        sources.register_declared_scanner::<JournalV2Source>(Arc::new(SchemaScanner::<
+        sources.register_declared_scanner::<JournalV2Source>(Arc::new(LookupScanner::<
             JournalV2Binding,
         >::new()));
     }
@@ -131,6 +141,14 @@ macro_rules! journal_binding {
                 }
             }
         }
+
+        /// Every combination of finitely many invocation IDs and indexes, up to
+        /// `MAX_LOOKUP_ENTRIES`, is looked up instead of read.
+        impl LookupBinding for $binding {
+            fn lookup_ids(domains: &JournalDomains) -> Domain<(InvocationId, u32)> {
+                named_journal_entries(domains)
+            }
+        }
     };
 }
 
@@ -143,6 +161,7 @@ journal_binding!(
 journal_binding!(
     JournalV2Binding,
     JournalV2Table,
-    |value: &mut &[u8]| StoredEntry::decode(value).map(|entry| entry.0),
+    |value: &mut &[u8]| StoredEntry::decode(value)
+        .map(|entry| entry.0.try_into_inline().map_err(Box::new)),
     row::write_v2
 );

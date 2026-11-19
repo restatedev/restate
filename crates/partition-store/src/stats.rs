@@ -60,6 +60,13 @@ use self::aggregated::Aggregate;
 pub trait Stat {
     /// The name of the registry definition whose indexes hold this statistic.
     const DEFINITION: &'static str;
+    /// The Restate version that introduced the definition. A node of an older
+    /// version can neither maintain nor read its indexes, so a query coordinator
+    /// must choose one only where every node serving its partitions runs at least
+    /// this version. The V2 planner checks this before it reads an index in place
+    /// of its primary.
+    /// Code, not stored data: it is never persisted.
+    const INTRODUCED: restate_types::SemanticRestateVersion;
     const STAT_KIND: StatKind;
 
     type OwnedKey: DecodeStatKey<Self>;

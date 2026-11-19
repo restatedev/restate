@@ -44,6 +44,11 @@ the same pace merge at about the same time.
 - Make sure nodes have enough free disk space before enabling universal compaction: with the
   default settings, plan for peaks of up to about three times the live data, compared to about
   1.1 times with leveled compaction.
+- Universal compaction compresses the oldest sorted run with the bottommost value of
+  `rocksdb-compression` (Zstd by default) and the newer runs with Lz4 by default: its L0 value for
+  the runs in L0 and its value for the levels in between for the others. Lz4 runs take more space,
+  so full merges come sooner. `rocksdb-compression = "lz4,zstd,zstd"` keeps the runs outside L0
+  smaller, at a higher CPU cost per compaction.
 
 ### Migration Guidance
 

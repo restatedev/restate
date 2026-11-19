@@ -187,11 +187,10 @@ async fn restored_snapshots_keep_ready_registered_instances() {
     use restate_types::identifiers::{BaseEntryId, WithPartitionKey};
     use restate_types::vqueues::{EntryTargetExt, VQueueId};
 
-    use crate::fsm_table::{fsm_variable, get_registry_from_partition_db};
+    use crate::fsm_table::fsm_variable;
+    use crate::registry::records::get_registry;
 
     assert_eq!(fsm_variable::FSM_POSITION, 13);
-    assert_eq!(fsm_variable::INDEX_REGISTRY, 14);
-    assert_eq!(fsm_variable::WALKS, 15);
     RocksDbManager::init();
     let manager = PartitionStoreManager::create(true).await.unwrap();
     let partition = Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1));
@@ -213,9 +212,7 @@ async fn restored_snapshots_keep_ready_registered_instances() {
         .await
         .unwrap();
     crate::walk::engine::run_all(&mut store, 3).await.unwrap();
-    let registry = get_registry_from_partition_db(store.partition_db())
-        .unwrap()
-        .unwrap();
+    let registry = get_registry(store.partition_db()).unwrap().unwrap();
     assert_eq!(registered_totals(&store), 147);
     assert_eq!(store.get_fsm_position().await.unwrap(), Some(POSITION));
 
@@ -263,9 +260,7 @@ async fn restored_snapshots_keep_ready_registered_instances() {
         .await
         .unwrap();
     assert_eq!(
-        get_registry_from_partition_db(store.partition_db())
-            .unwrap()
-            .unwrap(),
+        get_registry(store.partition_db()).unwrap().unwrap(),
         registry,
         "the_source_replicas_instances_and_ids"
     );
@@ -273,7 +268,7 @@ async fn restored_snapshots_keep_ready_registered_instances() {
         store
             .get_storage_features_names()
             .iter()
-            .any(|name| name.as_str() == "index-registry")
+            .any(|name| name.as_str() == "registry")
     );
     assert_eq!(registered_totals(&store), 147);
     assert_eq!(store.get_fsm_position().await.unwrap(), Some(POSITION));

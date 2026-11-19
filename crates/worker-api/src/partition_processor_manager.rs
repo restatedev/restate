@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use futures::TryStreamExt;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::Instant;
 
 use restate_core::ShutdownError;
 use restate_limiter::rule_book::RuleBookObserver;
@@ -23,7 +24,9 @@ use restate_types::{cluster::cluster_state::PartitionProcessorStatus, identifier
 
 pub use restate_types::net::distributed_query::PartitionReadError;
 
-use crate::{CapturedPartitionRead, PartitionCaptureRequirements, PartitionQueryAccess};
+use crate::{
+    CaptureSpan, CapturedPartitionRead, PartitionCaptureRequirements, PartitionQueryAccess,
+};
 
 #[derive(Debug)]
 pub enum ProcessorsManagerCommand {
@@ -113,6 +116,7 @@ impl ProcessorsManagerHandle {
             // a stall, and the rows are read here instead, after admission. Ideally
             // the invoker would publish its status through shared access, for
             // example behind a lock, that admission reads directly.
+            let start = Instant::now();
             let scan = self
                 .query_access
                 .scan_invoker_status(partition, KeyRange::FULL)
@@ -130,6 +134,7 @@ impl ProcessorsManagerHandle {
             }
             .map_err(|_| PartitionReadError::LiveCaptureUnavailable(partition))?;
             read.live.invoker = Some(rows.into());
+            read.timing.invoker = Some(CaptureSpan::since(start));
         }
         Ok(read)
     }

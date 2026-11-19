@@ -24,6 +24,7 @@ use restate_storage_api::vqueue_table::{
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
 use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, VQueueId};
 use restate_types::{PlainNodeId, Scope, ServiceName};
+use restate_util_string::ReString;
 use restate_worker_api::invoker::InvocationStatusReport;
 use restate_worker_api::invoker::status_handle::InvocationStatusReportInner;
 use restate_worker_api::{
@@ -97,13 +98,84 @@ fn capture_live(
     }
 }
 
-type Captures = Arc<Mutex<Vec<PartitionCaptureRequirements>>>;
+/// A query execution: its session and query timestamp.
+type Execution = (ReString, UniqueTimestamp);
+
+/// Each admission's capture requirements, with the execution that requested it
+/// and the partition it admitted.
+///
+/// A query that stops early, at a LIMIT, can return while some of its admissions
+/// are still on their way to an owner. They are recorded whenever they arrive,
+/// possibly while the next query runs, so a test of such queries counts only its
+/// current execution's admissions ([`take_admissions`]).
+type Captures = Arc<Mutex<Vec<(Execution, PartitionId, PartitionCaptureRequirements)>>>;
+
+/// The capture requirements of every admission recorded so far.
+fn requirements(captures: &Captures) -> Vec<PartitionCaptureRequirements> {
+    captures
+        .lock()
+        .iter()
+        .map(|(_, _, capture)| *capture)
+        .collect()
+}
+
+/// Takes every recorded admission: the capture requirements of `execution`'s, and
+/// the executions the others came from.
+fn take_admissions(
+    captures: &Captures,
+    execution: &Execution,
+) -> (Vec<PartitionCaptureRequirements>, Vec<Execution>) {
+    let (current, others): (Vec<_>, Vec<_>) = std::mem::take(&mut *captures.lock())
+        .into_iter()
+        .partition(|(admitted, _, _)| admitted == execution);
+    (
+        current.into_iter().map(|(_, _, capture)| capture).collect(),
+        others
+            .into_iter()
+            .map(|(admitted, _, _)| admitted)
+            .collect(),
+    )
+}
+
+/// Records one admission late, as if it had reached its owner after its query
+/// returned: the first admission, at any owner, of a query whose SQL starts with
+/// `prefix`. The read itself proceeds at once, so the query never waits for the
+/// gate; only the record waits, until [`Self::release`] gets a permit.
+struct AdmissionGate {
+    prefix: &'static str,
+    /// The delayed admission's capture. Set, under its lock, by the admission
+    /// that claims the gate, so that only the first one is delayed and the
+    /// capture is there as soon as the claim is.
+    delayed: Mutex<Option<PartitionCaptureRequirements>>,
+    /// The delayed record is added on a permit.
+    release: tokio::sync::Semaphore,
+    /// A permit once the delayed record is added.
+    recorded: tokio::sync::Semaphore,
+}
+
+impl AdmissionGate {
+    fn new(prefix: &'static str) -> Self {
+        Self {
+            prefix,
+            delayed: Mutex::default(),
+            release: tokio::sync::Semaphore::new(0),
+            recorded: tokio::sync::Semaphore::new(0),
+        }
+    }
+}
 
 /// Storage and live state for every partition, with each admission's capture
 /// requirements recorded.
 async fn cross_schema_fixture() -> (MultiFixture<impl NetworkSender>, Captures) {
+    cross_schema_fixture_with(None).await
+}
+
+/// [`cross_schema_fixture`], delaying the admission `gate` selects.
+async fn cross_schema_fixture_with(
+    gate: Option<Arc<AdmissionGate>>,
+) -> (MultiFixture<impl NetworkSender>, Captures) {
     let manager = Arc::new(OnceLock::<Arc<PartitionStoreManager>>::new());
-    let captures = Arc::new(Mutex::new(Vec::<PartitionCaptureRequirements>::new()));
+    let captures: Captures = Arc::default();
     let fixture = setup_with_scanners({
         let manager = Arc::clone(&manager);
         let captures = Arc::clone(&captures);
@@ -125,13 +197,43 @@ async fn cross_schema_fixture() -> (MultiFixture<impl NetworkSender>, Captures) 
             );
             let manager = Arc::clone(&manager);
             let captures = Arc::clone(&captures);
+            let gate = gate.clone();
             tokio::spawn(async move {
                 while let Some(command) = receiver.recv().await {
                     let ProcessorsManagerCommand::ReadPartition(request) = command else {
                         panic!("expected capture")
                     };
                     assert_eq!(node, owner(request.partition));
-                    captures.lock().push(request.capture);
+                    let execution = (
+                        request.metadata.session_id.clone(),
+                        request.metadata.query_ts,
+                    );
+                    let delayed = gate.as_ref().filter(|gate| {
+                        request.metadata.redacted_sql.starts_with(gate.prefix) && {
+                            let mut delayed = gate.delayed.lock();
+                            let first = delayed.is_none();
+                            if first {
+                                *delayed = Some(request.capture);
+                            }
+                            first
+                        }
+                    });
+                    match delayed {
+                        Some(gate) => {
+                            let (gate, captures) = (Arc::clone(gate), Arc::clone(&captures));
+                            let (partition, capture) = (request.partition, request.capture);
+                            tokio::spawn(async move {
+                                gate.release.acquire().await.unwrap().forget();
+                                captures.lock().push((execution, partition, capture));
+                                gate.recorded.add_permits(1);
+                            });
+                        }
+                        None => {
+                            captures
+                                .lock()
+                                .push((execution, request.partition, request.capture))
+                        }
+                    }
                     let store = manager
                         .get()
                         .unwrap()
@@ -148,6 +250,9 @@ async fn cross_schema_fixture() -> (MultiFixture<impl NetworkSender>, Captures) 
                                 .0
                         }),
                         live: capture_live(range.start(), &scope_in(range), request.capture),
+                        timing: restate_worker_api::CaptureTiming::admitted_at(
+                            tokio::time::Instant::now(),
+                        ),
                     };
                     let _ = request.response.send(Ok(read));
                 }
@@ -289,7 +394,7 @@ async fn sharding_columns_colocate_cross_schema_joins_with_shared_admission() {
             &[&[expected]],
         )
         .await;
-        let captures = captures.lock();
+        let captures = requirements(&captures);
         assert_eq!(
             captures.len(),
             partitions,
@@ -325,7 +430,7 @@ async fn sharding_columns_colocate_cross_schema_joins_with_shared_admission() {
     captures.lock().clear();
     assert_sql(session.as_ref(), "index_join_results", &sql, &[&["1"]]).await;
     assert_eq!(
-        *captures.lock(),
+        requirements(&captures),
         [storage_and(PartitionCaptureRequirements {
             scheduler: true,
             ..Default::default()
@@ -366,7 +471,7 @@ async fn sharding_columns_colocate_cross_schema_joins_with_shared_admission() {
         captures.lock().clear();
         assert_sql(session.as_ref(), "global_join_results", sql, &[&[expected]]).await;
         assert_eq!(
-            captures.lock().len(),
+            requirements(&captures).len(),
             2 * partitions,
             "separate_admissions: {sql}"
         );
@@ -494,7 +599,8 @@ async fn join_inputs_keep_their_sources_and_require_consistent_topologies() {
         captures.lock().clear();
         let actual =
             count_with_selectors(&fixture, selectors(), &format!("{query} ON s.id = l.id")).await;
-        let observed = std::mem::take(&mut *captures.lock());
+        let observed = requirements(&captures);
+        captures.lock().clear();
         let control = count_with_selectors(
             &fixture,
             selectors(),
@@ -618,7 +724,17 @@ impl Scan for FlakyNodeRows {
 
 /// Sorted rows, with columns joined by `|`, and sorted warned nodes.
 async fn rows_and_warnings(session: &dyn QuerySession, sql: &str) -> (Vec<String>, Vec<String>) {
+    let (rows, warned, _) = rows_of_execution(session, sql).await;
+    (rows, warned)
+}
+
+/// [`rows_and_warnings`], with the execution that produced them.
+async fn rows_of_execution(
+    session: &dyn QuerySession,
+    sql: &str,
+) -> (Vec<String>, Vec<String>, Execution) {
     let result = session.execute(sql, QueryOptions {}).await.unwrap();
+    let execution = (result.metadata.session_id.clone(), result.metadata.query_ts);
     let diagnostics = result.diagnostics;
     let batches = result.stream.try_collect::<Vec<_>>().await.unwrap();
     let mut rows: Vec<_> = batches
@@ -641,7 +757,7 @@ async fn rows_and_warnings(session: &dyn QuerySession, sql: &str) -> (Vec<String
         .map(|warning| warning.node_id.to_string())
         .collect();
     warned.sort();
-    (rows, warned)
+    (rows, warned, execution)
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
@@ -798,7 +914,11 @@ type LimitCase<'a> = (
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
 async fn limits_keep_joins_shard_local_when_any_preserved_rows_suffice() {
-    let (fixture, captures) = cross_schema_fixture().await;
+    // One admission of the RIGHT JOIN is recorded late, during the next case, as
+    // a query that stops early can leave admissions in flight. Each case counts
+    // only its own execution's admissions.
+    let gate = Arc::new(AdmissionGate::new("SELECT l.id, s.id"));
+    let (fixture, captures) = cross_schema_fixture_with(Some(Arc::clone(&gate))).await;
     // One lane per owner group and production-sized batches, so a lane hands over
     // a partition's rows without waiting and stopping early is observable.
     let env = environment(1, 8192).with_distributed_execution(fixture.network.clone());
@@ -833,10 +953,31 @@ async fn limits_keep_joins_shard_local_when_any_preserved_rows_suffice() {
         // So does any bound on the other side.
         ("SELECT s.id, l.id FROM sys_invocation_status s LEFT JOIN (SELECT id FROM sys_invocation_state LIMIT 1) l ON s.id = l.id LIMIT 3".to_owned(), 3, None, None),
     ];
+    let delayed_into = format!("{view} LIMIT 3");
+    let mut delayed_from = None;
     for (sql, expected, valid, admissions) in cases {
         captures.lock().clear();
-        let actual = rows(&sql).await;
-        let observed = std::mem::take(&mut *captures.lock());
+        if sql == delayed_into {
+            // The RIGHT JOIN's delayed admission is recorded now, during this case.
+            gate.release.add_permits(1);
+            gate.recorded.acquire().await.unwrap().forget();
+        }
+        let (actual, _, execution) = rows_of_execution(session.as_ref(), &sql).await;
+        let (mut observed, others) = take_admissions(&captures, &execution);
+        if sql == delayed_into {
+            // Recorded during this case, the late admission still counts as the
+            // RIGHT JOIN's, not this query's.
+            let delayed_from = delayed_from.as_ref().unwrap();
+            assert!(others.contains(delayed_from), "{sql}: {others:?}");
+        }
+        if sql.starts_with(gate.prefix) {
+            // Its first admission is recorded later, during the next case.
+            let delayed = *gate.delayed.lock();
+            observed.extend(Some(
+                delayed.expect("the RIGHT JOIN's first admission is delayed"),
+            ));
+            delayed_from = Some(execution);
+        }
         assert_eq!(actual.len(), expected, "{sql}: {actual:?}");
         if let Some(valid) = valid {
             assert!(
@@ -856,5 +997,223 @@ async fn limits_keep_joins_shard_local_when_any_preserved_rows_suffice() {
             }
             None => assert_eq!(combined, 0, "{sql}: {observed:?}"),
         }
+    }
+}
+
+/// Operators below the partition reads, as a shard-local JOIN places them,
+/// run as a fresh copy for every partition. Each partition holds a different
+/// population: partition `p` adds `p + 1` invocations that join nothing, and
+/// on even partitions one of its two joined invocations targets a service the
+/// query's filter rejects. Under EXPLAIN ANALYZE, with one lane per owner,
+/// which runs each partition's copy in turn, and with a lane per partition,
+/// each owner's stage shows exactly its own partitions' counts, every copy
+/// merged once: its scan read
+/// every status, its filter kept the qualifying ones, and its join output the
+/// joined ones. Each stage is the one task its owner installed for this query,
+/// every task completes, and no metric shows as missing, partial, ambiguous or
+/// truncated.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
+async fn operators_below_the_partition_reads_report_every_copy() {
+    let (mut fixture, captures) = cross_schema_fixture().await;
+    // Per owner: statuses scanned, kept by the filter, joined.
+    let mut expected: HashMap<GenerationalNodeId, [usize; 3]> = HashMap::new();
+    for store in fixture.stores.iter_mut() {
+        let partition = store.partition_id();
+        let p = u64::from(u16::from(partition));
+        let start = store.partition_key_range().start();
+        let rejected = p % 2 == 0;
+        let mut tx = store.transaction();
+        if rejected {
+            let mut dropped = InFlightInvocationMetadata::mock();
+            dropped.invocation_target =
+                restate_types::invocation::InvocationTarget::service("Drop", "h");
+            tx.put_invocation_status(
+                &InvocationId::from_parts(start, InvocationUuid::from_u128(0)),
+                &InvocationStatus::Invoked(dropped),
+            )
+            .unwrap();
+        }
+        for n in 0..=p {
+            tx.put_invocation_status(
+                &InvocationId::from_parts(
+                    start + 10 + n,
+                    InvocationUuid::from_u128(100 + u128::from(n)),
+                ),
+                &InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
+            )
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+        // The fixture's four statuses, two of them joined, and these.
+        let scanned = 4 + p as usize + 1;
+        let counts = expected.entry(owner(partition)).or_default();
+        counts[0] += scanned;
+        counts[1] += scanned - usize::from(rejected);
+        counts[2] += 2 - usize::from(rejected);
+    }
+    assert_eq!(expected.len(), 3);
+    // One lane per owner, which runs a fresh copy for each of its partitions
+    // in turn; then a lane per partition.
+    for target_partitions in [1, 4] {
+        let env =
+            environment(target_partitions, 1).with_distributed_execution(fixture.network.clone());
+        env.register_tables(UserTables::new(
+            fixture.partitions.clone(),
+            fixture.scanners.clone(),
+        ))
+        .await
+        .unwrap();
+        let engine = DataFusionQueryEngine::from_env(env, None);
+        let session = engine.create_session(SessionOptions::default()).unwrap();
+        let text = async |sql: &str| {
+            let result = session.execute(sql, QueryOptions {}).await.unwrap();
+            let metadata = result.metadata;
+            let lines = result
+                .stream
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap()
+                .iter()
+                .flat_map(|batch| {
+                    let column = batch.num_columns() - 1;
+                    (0..batch.num_rows())
+                        .map(move |row| array_value_to_string(batch.column(column), row).unwrap())
+                })
+                .collect::<Vec<_>>();
+            (metadata, lines)
+        };
+        let join = "FROM sys_invocation_status s JOIN sys_invocation_state l ON s.id = l.id \
+        WHERE upper(s.target_service_name) <> 'DROP'";
+        let sql = format!("EXPLAIN ANALYZE SELECT s.id {join}");
+        let (metadata, lines) = text(&sql).await;
+        let plan = lines.join("\n");
+        eprintln!("target_partitions={target_partitions}\n{sql}\n{plan}");
+        let metric = |line: &str, name: &str| -> usize {
+            let start = line
+                .find(&format!("{name}="))
+                .unwrap_or_else(|| panic!("{name}: {line}"));
+            line[start + name.len() + 1..]
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+                .parse()
+                .unwrap()
+        };
+        let stages: Vec<Vec<&str>> = plan.lines().fold(Vec::new(), |mut stages, line| {
+            if line.contains("NetworkCoalesceExec") {
+                stages.push(vec![line]);
+            } else if let Some(stage) = stages.last_mut() {
+                stage.push(line);
+            }
+            stages
+        });
+        assert_eq!(stages.len(), 3, "{plan}");
+        // This execution admitted every partition exactly once, each at its
+        // owner.
+        let execution = (metadata.session_id.clone(), metadata.query_ts);
+        let mut admitted: Vec<PartitionId> = std::mem::take(&mut *captures.lock())
+            .into_iter()
+            .filter(|(admitting, _, _)| *admitting == execution)
+            .map(|(_, partition, _)| partition)
+            .collect();
+        admitted.sort();
+        let all: Vec<PartitionId> = fixture
+            .stores
+            .iter()
+            .map(|store| store.partition_id())
+            .collect();
+        assert_eq!(admitted, all, "{plan}");
+        // The tasks this execution installed, by their full IDs: three, one
+        // per owner, of one runtime query.
+        let tasks: Vec<(
+            GenerationalNodeId,
+            restate_types::net::distributed_query::QueryTaskId,
+        )> = fixture
+            .tasks
+            .lock()
+            .iter()
+            .filter(|task| {
+                task.id.session_id == metadata.session_id && task.id.query_ts == metadata.query_ts
+            })
+            .map(|task| (task.owner, task.id.clone()))
+            .collect();
+        assert_eq!(tasks.len(), 3, "{tasks:#?}");
+        assert!(
+            tasks
+                .iter()
+                .all(|(_, id)| id.runtime_query_id == tasks[0].1.runtime_query_id && id.task == 0),
+            "{tasks:#?}"
+        );
+        let installed: HashMap<GenerationalNodeId, u64> =
+            tasks.iter().map(|(owner, id)| (*owner, id.stage)).collect();
+        assert_eq!(installed.len(), 3, "{tasks:#?}");
+        let mut owners = std::collections::HashSet::new();
+        for stage in &stages {
+            let find = |prefix: &str| {
+                stage
+                    .iter()
+                    .position(|line| line.trim_start().starts_with(prefix))
+                    .unwrap_or_else(|| panic!("{prefix}: {plan}"))
+            };
+            let reads = find("PartitionReadExec");
+            let hash_join = find("HashJoinExec");
+            let filter = find("FilterExec: upper(target_service_name");
+            let scan = stage
+                .iter()
+                .rposition(|line| line.contains("TableScanExec: table=sys_invocation_status"))
+                .unwrap();
+            // Below the partition reads, on this stage's owner.
+            assert!(
+                reads < hash_join && hash_join < filter && filter < scan,
+                "{plan}"
+            );
+            let owner = *expected
+                .keys()
+                .find(|owner| stage[scan].contains(&format!("owner={owner},")))
+                .unwrap_or_else(|| panic!("{plan}"));
+            assert!(owners.insert(owner), "{plan}");
+            let number = stage[0]
+                .split("[Stage ")
+                .nth(1)
+                .and_then(|rest| rest.split(']').next())
+                .and_then(|number| number.parse::<u64>().ok())
+                .unwrap_or_else(|| panic!("{plan}"));
+            assert_eq!(installed[&owner], number, "{plan}");
+            let [scanned, kept, joined] = expected[&owner];
+            assert_eq!(
+                (
+                    metric(stage[scan], "output_rows"),
+                    metric(stage[filter], "output_rows"),
+                    metric(stage[hash_join], "output_rows"),
+                    metric(stage[reads], "output_rows"),
+                ),
+                (scanned, kept, joined, joined),
+                "{owner}: {plan}"
+            );
+            assert!(stage[0].contains("tasks_completed=1"), "{plan}");
+            if target_partitions == 1 {
+                assert!(stage[reads].contains("parallelism=1,"), "{plan}");
+            }
+        }
+        for marker in [
+            "metrics_missing",
+            "metrics_partial",
+            "metrics_ambiguous",
+            "metrics_truncated",
+        ] {
+            assert!(!plan.contains(marker), "{marker}: {plan}");
+        }
+        // The same totals, counted by the queries themselves.
+        let count = async |sql: String| text(&sql).await.1[0].parse::<usize>().unwrap();
+        let total = |at: usize| expected.values().map(|counts| counts[at]).sum::<usize>();
+        assert_eq!(
+        count(
+            "SELECT COUNT(*) FROM sys_invocation_status WHERE upper(target_service_name) <> 'DROP'"
+                .to_owned()
+        )
+        .await,
+        total(1)
+    );
+        assert_eq!(count(format!("SELECT COUNT(*) {join}")).await, total(2));
     }
 }

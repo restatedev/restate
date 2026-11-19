@@ -1253,8 +1253,8 @@ experimental! {
     /// status gauges are explicitly reset. Statistics-table visibility is controlled
     /// separately on the query coordinator.
     ///
-    /// Enabling this option registers the statistics in the partition's index
-    /// registry and raises the partition's minimum Restate version to v1.8.2.
+    /// Enabling this option registers the statistics in the partition's registry
+    /// and raises the partition's minimum Restate version to v1.8.2.
     /// That stays, also after the option is removed or the gauges are reset: a
     /// node that has ever run with it cannot be rolled back to an older version.
     ///
@@ -1270,7 +1270,7 @@ experimental! {
     ///
     /// To build these statistics, first enable
     /// `experimental-enable-track-status-gauges` on workers, and wait until the
-    /// statistics are Ready on every partition (see `restate.cluster.indexes`);
+    /// statistics are Ready on every partition (see `restate.cluster.registry`);
     /// this option doesn't start that or wait for it. A query fails if a partition
     /// it reads has missing or incomplete statistics, instead of returning a
     /// partial total. Enable this only once all nodes are upgraded: an older node
@@ -1296,6 +1296,40 @@ experimental! {
     ///
     /// Since v1.8.2
     status_gauges_reset,
+
+    /// # Entry indexes
+    ///
+    /// Maintains secondary indexes over VQueue entries, such as entries by service
+    /// and handler, newest created first. Each partition indexes the entries
+    /// written from then on and backfills the entries that existed before in the
+    /// background. Queries don't read these indexes yet.
+    ///
+    /// Maintenance persists across restarts even if this flag is removed, unless
+    /// the entry indexes are explicitly reset.
+    ///
+    /// Enabling this option registers the indexes in the partition's registry and
+    /// raises the partition's minimum Restate version to v1.8.2.
+    /// That stays, also after the option is removed or the indexes are reset: a
+    /// node that has ever run with it cannot be rolled back to an older version.
+    ///
+    /// Since v1.8.2
+    track_entry_indexes,
+
+    /// # Reset entry indexes
+    ///
+    /// Deletes the local entry indexes and stops maintaining them when each
+    /// partition starts. While enabled, this takes precedence over
+    /// `experimental-enable-track-entry-indexes`, and queries read as they do
+    /// without the indexes.
+    ///
+    /// To rebuild them, turn this option off, turn
+    /// `experimental-enable-track-entry-indexes` on, and restart the nodes: the
+    /// indexes are registered again and backfilled in the background. VQueue entry
+    /// data is preserved. A reset does not lift the partition's minimum Restate
+    /// version of v1.8.2 that enabling the indexes set.
+    ///
+    /// Since v1.8.2
+    entry_indexes_reset,
 
     /// # Index query tables in V2
     ///
@@ -1323,6 +1357,20 @@ experimental! {
     ///
     /// Since v1.8.2
     protocol_v8,
+
+    /// # Write large journal entries into the blob table
+    ///
+    /// Journal entries larger than `worker.inline-journal-entry-threshold` are stored in the
+    /// blob table instead of the journal.
+    ///
+    /// It only affects local storage, so nodes can enable it independently. However, partition
+    /// snapshots taken where it's enabled can only be restored by v1.8.2 or newer, so only enable
+    /// it once all nodes run v1.8.2 or newer. Once a partition store has enabled it, it stays
+    /// enabled even if this option is turned off, including on stores restored from its
+    /// snapshots, and you **cannot** roll back to a Restate-server version older than v1.8.2.
+    ///
+    /// Since v1.8.2
+    write_blob_table,
 }
 
 impl Experimental {

@@ -609,7 +609,7 @@ async fn loglet_workers_serve_the_shared_scanner_rows() {
 async fn migration_tables_serve_the_default_engine_rows() {
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
-    use restate_storage_query_api::tables::{indexes::Indexes, migration_jobs::MigrationJobs};
+    use restate_storage_query_api::tables::{migration_jobs::MigrationJobs, registry::Registry};
     use restate_types::identifiers::PartitionId;
     use restate_types::partition_table::Partition;
     use restate_types::sharding::KeyRange;
@@ -619,8 +619,8 @@ async fn migration_tables_serve_the_default_engine_rows() {
     // Both engines decode the same batches, so the shared declarations must
     // match the default engine's schemas exactly.
     assert_eq!(
-        v1::migration_records::IndexesBuilder::schema(),
-        Indexes::arrow_schema()
+        v1::migration_records::RegistryBuilder::schema(),
+        Registry::arrow_schema()
     );
     assert_eq!(
         v1::migration_records::MigrationJobsBuilder::schema(),
@@ -646,14 +646,14 @@ async fn migration_tables_serve_the_default_engine_rows() {
     }
     // The rows the default engine's scanners produce on this node, unsorted.
     let io = crate::mocks::query_io();
-    let (indexes, jobs) = v1::migration_records::create_local_scanners(
+    let (registry, jobs) = v1::migration_records::create_local_scanners(
         Arc::clone(&manager),
         core.metadata.clone(),
         io.clone(),
     );
     let mut legacy = Vec::new();
     for (scanner, schema) in [
-        (indexes, Indexes::arrow_schema()),
+        (registry, Registry::arrow_schema()),
         (jobs, MigrationJobs::arrow_schema()),
     ] {
         let batches: Vec<_> = scanner
@@ -693,7 +693,7 @@ async fn migration_tables_serve_the_default_engine_rows() {
         })
         .unwrap();
     for (sql, expected) in [
-        ("SELECT * FROM cluster.indexes", &legacy[0]),
+        ("SELECT * FROM cluster.registry", &legacy[0]),
         ("SELECT * FROM cluster.migration_jobs", &legacy[1]),
     ] {
         let mut actual = rows(session.as_ref(), sql).await;
@@ -704,7 +704,7 @@ async fn migration_tables_serve_the_default_engine_rows() {
     // Index sizes are estimated when the query selects them; completed jobs
     // aren't blocked.
     for sql in [
-        "SELECT COUNT(*) FROM cluster.indexes
+        "SELECT COUNT(*) FROM cluster.registry
          WHERE status = 'ready' AND approx_size_bytes IS NOT NULL",
         "SELECT COUNT(*) FROM cluster.migration_jobs
          WHERE status = 'completed' AND blocked_by IS NULL",

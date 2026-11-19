@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -75,6 +76,17 @@ impl RawEntry {
             RawEntry::Command(command) => command.serialized_length(),
             RawEntry::Notification(notification) => notification.serialized_length(),
         }
+    }
+
+    /// Replaces the serialized content, keeping the metadata.
+    pub fn with_serialized_content(mut self, content: impl Into<Bytes>) -> Self {
+        match &mut self {
+            RawEntry::Command(command) => command.serialized_content = content.into(),
+            RawEntry::Notification(notification) => {
+                notification.serialized_content = content.into()
+            }
+        }
+        self
     }
 }
 
@@ -152,7 +164,8 @@ pub struct CallOrSendMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RawCommandSpecificMetadata {
-    CallOrSend(Box<CallOrSendMetadata>),
+    /// Shared so cloning the entry doesn't copy the metadata.
+    CallOrSend(Arc<CallOrSendMetadata>),
     None,
 }
 

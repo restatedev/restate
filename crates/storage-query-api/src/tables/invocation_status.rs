@@ -32,6 +32,7 @@ define_schema! {
                 domains.target_service_key.try_map_values(Clone::clone),
             )
         },
+        primary_key: id,
         columns {
             /// Internal column that is used for partitioning the services invocations. Can be ignored.
             partition_key: PartitionKey => DataType::UInt64,

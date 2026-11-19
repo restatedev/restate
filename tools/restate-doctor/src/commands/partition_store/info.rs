@@ -471,6 +471,7 @@ fn key_kind_abbrev(kind: restate_partition_store::keys::KeyKind) -> &'static str
         #[allow(deprecated)]
         KeyKind::LegacyStats => "LegacyStats",
         KeyKind::SecondaryIndex => "Index",
+        KeyKind::Registry => "Registry",
     }
 }
 

@@ -139,11 +139,12 @@ fn scan<K: OrderedKeySchema>(
                     actual.push(*row);
                     position += 1;
                 }
-                KeyMatch::Seek(target) => {
-                    assert!(target.as_ref() > key.as_slice());
-                    assert!(cursor.scan().contains_key(&target));
+                KeyMatch::Seek => {
+                    let target = cursor.seek_target();
+                    assert!(target > key.as_slice());
+                    assert!(cursor.scan().contains_key(target));
                     seeks += 1;
-                    position = rows.partition_point(|(_, key)| key.as_slice() < target.as_ref());
+                    position = rows.partition_point(|(_, key)| key.as_slice() < target);
                 }
                 KeyMatch::Done => break,
                 KeyMatch::Skip => panic!("fixed_header_uses_ordered_seeks"),

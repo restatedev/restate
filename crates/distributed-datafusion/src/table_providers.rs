@@ -19,6 +19,7 @@ use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{DataFusionError, Statistics};
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::execution::context::TaskContext;
+use datafusion::execution::memory_pool::{MemoryConsumer, MemoryPool, MemoryReservation};
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -32,6 +33,7 @@ use datafusion::physical_plan::{
 };
 use futures::stream::{Stream, StreamExt};
 
+use restate_partition_store::ordered_runs::RetainedMemory;
 use restate_partition_store::{QueryIoExecutor, ReadSnapshot};
 pub use restate_storage_query_api::Scan;
 use restate_storage_query_api::schema::sharding::{Sharding, Unsharded};
@@ -91,6 +93,41 @@ pub trait PreparedPartitionRead: Send + Sync + Debug + 'static {
         batch_size: usize,
         metrics: ReadMetrics,
     ) -> anyhow::Result<SendableRecordBatchStream>;
+
+    /// [`Self::execute`] for an access that declares an order: also resolves,
+    /// before the first row, to whether the rows come in that order on this
+    /// partition's snapshot. The engine sorts them if not, and waits for the
+    /// answer before it consumes any row: the answer must not wait for the rows.
+    /// A read that wraps another must forward this, or the other's report is lost.
+    fn execute_in_order(
+        &self,
+        context: PartitionReadContext,
+        batch_size: usize,
+        metrics: ReadMetrics,
+    ) -> anyhow::Result<(SendableRecordBatchStream, InOrder)> {
+        Ok((
+            self.execute(context, batch_size, metrics)?,
+            Box::pin(std::future::ready(true)),
+        ))
+    }
+}
+
+/// Whether a read's rows come in its declared order, known before its first row.
+pub(crate) type InOrder = futures::future::BoxFuture<'static, bool>;
+
+/// A read's charge on the query's memory pool, released when dropped.
+struct PoolMemory(MemoryReservation);
+
+impl RetainedMemory for PoolMemory {
+    fn grow(&mut self, bytes: usize) -> restate_storage_api::Result<()> {
+        self.0
+            .try_grow(bytes)
+            .map_err(|error| restate_storage_api::StorageError::Generic(error.into()))
+    }
+
+    fn shrink(&mut self, bytes: usize) {
+        self.0.shrink(bytes)
+    }
 }
 
 /// Metrics of one execution of a prepared read, recorded on its access leaf.
@@ -126,6 +163,9 @@ pub struct PartitionReadContext {
     /// The query-owned IO pool, shared with V1, that storage reads run on.
     #[debug(skip)]
     query_io: Option<QueryIoExecutor>,
+    /// The query's memory pool, for reads that charge what they hold.
+    #[debug(skip)]
+    memory_pool: Option<Arc<dyn MemoryPool>>,
 }
 
 impl PartitionReadContext {
@@ -139,6 +179,7 @@ impl PartitionReadContext {
             snapshot: None,
             captured: Default::default(),
             query_io: None,
+            memory_pool: None,
         }
     }
 
@@ -148,6 +189,7 @@ impl PartitionReadContext {
             snapshot: Some(read),
             captured: Default::default(),
             query_io: None,
+            memory_pool: None,
         }
     }
 
@@ -155,6 +197,22 @@ impl PartitionReadContext {
     pub fn with_query_io(mut self, executor: QueryIoExecutor) -> Self {
         self.query_io = Some(executor);
         self
+    }
+
+    /// Charges what this context's reads hold to the query's `pool`.
+    pub(crate) fn with_memory_pool(mut self, pool: Arc<dyn MemoryPool>) -> Self {
+        self.memory_pool = Some(pool);
+        self
+    }
+
+    /// A charge for what one read holds, on the query's memory pool. A read
+    /// outside a query plan, as in tests that call a reader directly, charges
+    /// nothing.
+    pub(crate) fn retained_memory(&self, read: &str) -> Box<dyn RetainedMemory> {
+        match &self.memory_pool {
+            Some(pool) => Box::new(PoolMemory(MemoryConsumer::new(read).register(pool))),
+            None => Box::new(()),
+        }
     }
 
     /// The storage snapshot and the IO pool to read it on.
@@ -182,6 +240,7 @@ impl PartitionReadContext {
             snapshot: read.storage,
             captured: read.live,
             query_io: None,
+            memory_pool: None,
         }
     }
 }

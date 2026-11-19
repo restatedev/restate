@@ -187,11 +187,15 @@ mod tests {
         );
 
         // At this point the journal table v2 should be filled, and journal table v1 empty
-        let notification = test_env
+        let entry = test_env
             .storage
             .get_journal_entry(invocation_id, 1)
             .await
             .unwrap()
+            .unwrap();
+        let notification = test_env
+            .storage
+            .hydrate_journal_entry(entry)
             .unwrap()
             .inner
             .try_as_notification()

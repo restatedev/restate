@@ -43,6 +43,7 @@ use restate_storage_query_api::tables::vqueue_entry_status::{
 use restate_types::identifiers::{BaseEntryId, PartitionKey};
 use restate_types::sharding::KeyRange;
 
+use crate::invocation_status_table::EntryIndexExecution;
 use crate::keys::codecs::EntryIdCodec;
 use crate::keys::header::{KeySchema, PartitionKeyHeader};
 use crate::keys::selection::codec::FieldPredicateCodec;
@@ -53,6 +54,7 @@ use crate::scan::{PhysicalScan, TableScan};
 use crate::table::{MultiGetCursor, MultiGetTable, PhysicalTable, TableCursor};
 use crate::{ReadSnapshot, Result};
 
+use super::indexed_read::{ActiveRead, EntryIndex, FinishedRead, IndexedCursor};
 use super::stage_reads::{StageReadCounters, StageReads, StagesCursor};
 use super::{ENTRY_STATUS_MULTI_GET_BATCH_SIZE, EntryStatusKey};
 
@@ -164,6 +166,26 @@ pub enum EntryStatusScan {
     /// Statuses referenced by the scheduler's stage tables, navigated by the
     /// prepared stage reads. See [`StageReads`].
     Stages(Arc<StageReads>),
+    /// Finished entries through their index, newest finished first (or oldest
+    /// first, as the [`FinishedRead`] says), or the
+    /// `fallback` iteration if the index can't stand in for it on the snapshot.
+    /// `execution` is charged for the index read and learns which path it took.
+    /// See [`FinishedRead`].
+    Finished {
+        read: Arc<FinishedRead>,
+        fallback: Arc<KeySelection<EntryStatusKey>>,
+        execution: Arc<EntryIndexExecution>,
+    },
+    /// Active entries, in Inbox, Running, Suspended or Paused, through their
+    /// index, newest created first (or oldest first, as the [`ActiveRead`]
+    /// says), or the `fallback` iteration if the index
+    /// can't stand in for it on the snapshot. `execution` is charged for the
+    /// index read and learns which path it took. See [`ActiveRead`].
+    Active {
+        read: Arc<ActiveRead>,
+        fallback: Arc<KeySelection<EntryStatusKey>>,
+        execution: Arc<EntryIndexExecution>,
+    },
 }
 
 impl From<ScanEntryIdFilter> for EntryStatusScan {
@@ -194,6 +216,8 @@ enum Mode {
     Navigate(Box<TableCursor<EntryStatusKeys>>),
     Keys(MultiGetCursor<EntryStatusKeys>),
     Stages(Box<StagesCursor>),
+    /// An entry index read: [`IndexedCursor`].
+    Indexed(Box<dyn IndexSteps>),
 }
 
 impl ReadSnapshot {
@@ -216,6 +240,22 @@ impl ReadSnapshot {
                     mode: Mode::Stages(Box::new(StagesCursor::new(self.clone(), reads))),
                     first: true,
                 });
+            }
+            EntryStatusScan::Finished {
+                read,
+                fallback,
+                execution,
+            } => {
+                let cursor = IndexedCursor::finished(self, &read, &execution)?;
+                return self.indexed_or(cursor, fallback);
+            }
+            EntryStatusScan::Active {
+                read,
+                fallback,
+                execution,
+            } => {
+                let cursor = IndexedCursor::active(self, &read, &execution)?;
+                return self.indexed_or(cursor, fallback);
             }
         };
         let scan = match filter {
@@ -241,6 +281,39 @@ impl ReadSnapshot {
             None => Mode::Empty,
         };
         Ok(EntryStatusCursor { mode, first: true })
+    }
+}
+
+impl ReadSnapshot {
+    /// Reads through `cursor`, or `fallback` if the index read scans instead.
+    fn indexed_or<I: EntryIndex>(
+        &self,
+        cursor: Option<IndexedCursor<I>>,
+        fallback: Arc<KeySelection<EntryStatusKey>>,
+    ) -> Result<EntryStatusCursor> {
+        let mode = match cursor {
+            Some(cursor) => Mode::Indexed(Box::new(cursor)),
+            None => Mode::Navigate(Box::new(
+                <Self as CursorScan<EntryStatusKeys>>::scan_cursor(self, fallback)?,
+            )),
+        };
+        Ok(EntryStatusCursor { mode, first: true })
+    }
+}
+
+/// The steps of an entry index read, whichever its index.
+pub(super) trait IndexSteps: Send {
+    fn advance(&mut self) -> Result<CursorStep>;
+    fn current(&self) -> Result<(BaseEntryId, &[u8])>;
+}
+
+impl<I: EntryIndex> IndexSteps for IndexedCursor<I> {
+    fn advance(&mut self) -> Result<CursorStep> {
+        IndexedCursor::advance(self)
+    }
+
+    fn current(&self) -> Result<(BaseEntryId, &[u8])> {
+        IndexedCursor::current(self)
     }
 }
 
@@ -282,6 +355,7 @@ impl ReadCursor<EntryStatusRecords> for EntryStatusCursor {
             Mode::Navigate(cursor) => cursor.advance()?,
             Mode::Keys(cursor) => cursor.advance()?,
             Mode::Stages(cursor) => cursor.advance()?,
+            Mode::Indexed(cursor) => cursor.advance()?,
         };
         self.first = false;
         // Stage reads keep their counters after exhaustion.
@@ -305,6 +379,7 @@ impl ReadCursor<EntryStatusRecords> for EntryStatusCursor {
             }
             Mode::Keys(cursor) => cursor.current()?,
             Mode::Stages(cursor) => cursor.current()?,
+            Mode::Indexed(cursor) => cursor.current()?,
             Mode::Empty => return Err(StorageError::DataIntegrityError),
         };
         let header = RawStatusHeaderRef::decode_stored(&mut value)?;

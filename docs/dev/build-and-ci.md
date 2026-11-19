@@ -133,7 +133,7 @@ Triggered on: PRs, pushes to `main`, `release/*`, and `hotfix/*` branches, and a
 | Job | Runner | Purpose |
 |-----|--------|---------|
 | `workspace-hack-check` | warp-ubuntu-latest-x64-4x | Verifies `cargo-hakari` workspace-hack is up to date |
-| `build-and-test` | warp-ubuntu-latest-x64-16x | Runs `just verify` (lint + test + doctest) |
+| `build-and-test` | warp-ubuntu-latest-x64-16x | Runs `just verify` (lint + test + doctest) and checks that `cli/src/commands/sql_tables.rs` is up to date |
 | `docker` | warp-ubuntu-latest-x64-16x | Builds Docker image, uploads as tarball artifact |
 | `docker-pr-cache` | warp-ubuntu-latest-x64-16x | Main pushes only. Builds the `release-lite` dependency layer (the `builder` stage) that PR `docker` builds restore from the cache |
 
@@ -148,7 +148,7 @@ Triggered on: PRs, pushes to `main`, `release/*`, and `hotfix/*` branches, and a
 | `sdk-rust` | SDK-Rust integration tests |
 | `e2e` | End-to-end tests from `restatedev/e2e` |
 
-Experimental feature tests (`e2e-vqueues`, `e2e-experimental-kafka-ingestion`, etc.) run with `continue-on-error: true` and don't block merges.
+Experimental feature tests (currently `e2e-bilrost-schema`) run with `continue-on-error: true` and don't block merges.
 
 A new push to a PR cancels that PR's CI run that is still in progress.
 
@@ -184,13 +184,16 @@ Integration tests need a Docker image of the Restate server built from the PR/co
 
 **How it works:**
 
-1. The `docker` job builds the image and saves it as an OCI tarball artifact named `restate.tar`
-2. **For SDK tests**: The workflow calls the SDK repo's `integration.yaml` with `restateCommit: ${{ github.sha }}`. The SDK workflow uses `actions/download-artifact` to fetch the tarball from the *calling* workflow
-3. **For e2e tests**: The e2e job downloads the artifact directly, loads it, and re-tags it to a known name
+1. The `docker` job builds the image and saves it as an OCI tarball artifact named `restate.tar`. It also saves the same file to the WarpBuild cache under a per-run key (`docker-image-restate.tar-<run_id>`), returned as the `tarballCacheKey` output
+2. **Image transfer**: Test jobs restore `restate.tar` from the WarpBuild cache, which is much faster than the artifact download (artifact downloads use a single connection and took from seconds to over 6 minutes). They fall back to the artifact if the cache has no entry, e.g. if saving failed. The artifact is also what Jepsen and manual SDK integration runs fetch by PR or commit
+3. **For SDK tests**: The workflow calls the SDK repo's `integration.yaml` with `restateCommit: ${{ github.sha }}` and `restateImageCacheKey`. The SDK workflow restores the tarball from the WarpBuild cache, or falls back to `actions/download-artifact` to fetch it from the *calling* workflow. A reusable workflow runs with the caller's repository and ref, so it finds the cache entry the `docker` job saved
+4. **For e2e tests**: The e2e job restores (or downloads) the tarball directly, loads it, and re-tags it to a known name
 
 **Fragility points:**
 
 - **Cross-workflow artifact access**: SDK integration workflows download artifacts from the restate workflow using `actions/download-artifact`. This relies on GitHub's artifact sharing between `workflow_call` caller and callee, which can be brittle across GitHub Actions updates
+- **WarpBuild cache path**: The cache version includes the cached `path`, so every restore must use `path: restate.tar`, exactly as the save in `docker.yml`. Entries expire 7 days after last use
+- **SDK workflow inputs**: Passing an input that a called workflow doesn't define fails the run, so an SDK repo must accept `restateImageCacheKey` before ci.yml passes it
 - **Artifact naming**: The artifact must be named exactly `restate.tar` - both the upload in `docker.yml` and downloads in SDK workflows must agree
 - **Artifact retention**: Artifacts are retained for 1 day (`retention-days: 1`). Long-running or queued jobs may fail if artifacts expire
 - **Image tagging**: e2e tests re-tag the image to `localhost/restatedev/restate-commit-download:latest`. If this tag format changes, e2e tests break
@@ -206,6 +209,7 @@ A **reusable workflow** called by this repo and many others in the restatedev or
 
 **Inputs:**
 - `uploadImageAsTarball`: Save image as artifact for downstream jobs
+- `cacheImageTarball`: Also save that tarball to the WarpBuild cache; the key is the `tarballCacheKey` output
 - `platforms`: Target platforms (default: `linux/arm64,linux/amd64`)
 - `parca`: Split debug symbols and upload to Polar Signals
 - `buildIndividually`: Build binaries separately to avoid feature unification

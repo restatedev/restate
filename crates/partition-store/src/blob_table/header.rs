@@ -353,7 +353,7 @@ mod tests {
 
     fn blob_value(ref_count: u16) -> Vec<u8> {
         let mut value = Vec::new();
-        BlobHeader::new(BlobKind::Output, ref_count).encode(&mut value);
+        BlobHeader::new(BlobKind::Journal, ref_count).encode(&mut value);
         value.extend_from_slice(b"payload");
         value
     }
@@ -386,7 +386,7 @@ mod tests {
         );
 
         // merged update applied to a header
-        let mut header = BlobHeader::new(BlobKind::Output, 2);
+        let mut header = BlobHeader::new(BlobKind::Journal, 2);
         merge_all([inc(3), dec(1)]).apply(&mut header);
         assert_eq!(header.ref_count(), 4);
         inc(u16::MAX).apply(&mut header);
@@ -444,7 +444,7 @@ mod tests {
     fn full_merge_keeps_unknown_fields() {
         let extension = [0xDE, 0xAD, 0xBE, 0xEF];
         let mut value = vec![BlobHeader::VERSION, 0x80, 3 + extension.len() as u8];
-        value.push(BlobKind::Output as u8);
+        value.push(BlobKind::Journal as u8);
         value.extend_from_slice(&2u16.to_be_bytes());
         value.extend_from_slice(&extension);
         value.extend_from_slice(b"payload");
@@ -458,7 +458,7 @@ mod tests {
         // only ref_count changed; flags, unknown fields and payload are preserved
         let (header, payload) = BlobHeader::decode(&merged).unwrap();
         assert_eq!(header.ref_count(), 4);
-        assert_eq!(header.kind(), BlobKind::Output);
+        assert_eq!(header.kind(), BlobKind::Journal);
         assert_eq!(header.flags, BlobFlags(0x80));
         assert_eq!(header.extension, extension);
         assert_eq!(payload, b"payload");

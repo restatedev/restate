@@ -274,6 +274,23 @@ pub struct WorkerOptions {
         skip_serializing_if = "serde_helpers::is_vqueue_inbox_cache_initial_capacity_default"
     )]
     vqueue_inbox_cache_initial_capacity: u32,
+
+    /// # Inline journal entry threshold
+    ///
+    /// On partition stores that enabled `experimental-enable-write-blob-table`, journal entries
+    /// up to this size are stored inline. Larger ones are stored separately. Set to `0` to always
+    /// store them separately.
+    ///
+    /// Changes take effect after a restart.
+    ///
+    /// Default: 4 KiB
+    ///
+    /// Since v1.8.2
+    #[serde(
+        default = "serde_helpers::inline_journal_entry_threshold_default",
+        skip_serializing_if = "serde_helpers::is_inline_journal_entry_threshold_default"
+    )]
+    pub inline_journal_entry_threshold: ByteCount,
 }
 
 impl WorkerOptions {
@@ -363,6 +380,7 @@ impl Default for WorkerOptions {
             vqueue_inbox_cache_initial_capacity:
                 serde_helpers::vqueue_inbox_cache_initial_capacity_default(),
             self_proposer_congestion_control: SelfProposerCongestionControl::default(),
+            inline_journal_entry_threshold: serde_helpers::inline_journal_entry_threshold_default(),
         }
     }
 }
@@ -1208,22 +1226,22 @@ pub struct StorageOptions {
     )]
     pub background_migrations_max_slice_entries: NonZeroUsize,
 
-    /// # Migration job history limit
+    /// # Finished migration jobs retention
     ///
-    /// How many finished background migrations, such as index and statistic
-    /// builds, each partition replica keeps a record of, for inspection. When a
-    /// migration finishes beyond the limit, the record of the oldest finished one
-    /// is dropped. Unfinished migrations are always recorded. `0` keeps no
-    /// finished migrations.
+    /// How long each partition replica keeps the record of a finished background
+    /// migration, such as an index or statistic build, for inspection. A record
+    /// expires this long after its migration finished, with the retention
+    /// configured then, and is then no longer shown and later deleted. Unfinished
+    /// migrations are always recorded. `0` keeps no finished migrations.
     ///
     /// Takes effect when partitions open.
     ///
     /// Since v1.8.2
     #[serde(
-        default = "serde_helpers::default_migration_job_history_limit",
-        skip_serializing_if = "serde_helpers::is_default_migration_job_history_limit"
+        default = "serde_helpers::default_finished_migration_jobs_retention",
+        skip_serializing_if = "serde_helpers::is_default_finished_migration_jobs_retention"
     )]
-    pub migration_job_history_limit: u32,
+    pub finished_migration_jobs_retention: FriendlyDuration,
 }
 
 impl StorageOptions {
@@ -1335,7 +1353,8 @@ impl Default for StorageOptions {
             background_migrations_throttling: None,
             background_migrations_max_slice_entries:
                 serde_helpers::default_background_migrations_max_slice_entries(),
-            migration_job_history_limit: serde_helpers::default_migration_job_history_limit(),
+            finished_migration_jobs_retention:
+                serde_helpers::default_finished_migration_jobs_retention(),
         }
     }
 }
@@ -1643,6 +1662,15 @@ mod serde_helpers {
     use std::num::{NonZeroU32, NonZeroUsize};
 
     use restate_util_bytecount::ByteCount;
+    use restate_util_time::FriendlyDuration;
+
+    pub const fn inline_journal_entry_threshold_default() -> ByteCount {
+        ByteCount::<true>::new(4 * 1024)
+    }
+
+    pub fn is_inline_journal_entry_threshold_default(value: &ByteCount) -> bool {
+        *value == inline_journal_entry_threshold_default()
+    }
 
     pub const fn cleanup_max_in_flight_purges_default() -> NonZeroU32 {
         NonZeroU32::new(32).unwrap()
@@ -1702,12 +1730,12 @@ mod serde_helpers {
         *v == default_compact_on_deletions_min_sst_file_size()
     }
 
-    pub const fn default_migration_job_history_limit() -> u32 {
-        100
+    pub const fn default_finished_migration_jobs_retention() -> FriendlyDuration {
+        FriendlyDuration::from_secs(24 * 60 * 60)
     }
 
-    pub fn is_default_migration_job_history_limit(v: &u32) -> bool {
-        *v == default_migration_job_history_limit()
+    pub fn is_default_finished_migration_jobs_retention(v: &FriendlyDuration) -> bool {
+        *v == default_finished_migration_jobs_retention()
     }
 
     pub const fn default_background_migrations_max_slice_entries() -> NonZeroUsize {

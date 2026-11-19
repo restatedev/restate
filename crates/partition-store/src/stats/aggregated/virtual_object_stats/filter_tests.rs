@@ -215,7 +215,7 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
             match cursor.evaluate(&key).unwrap() {
                 KeyMatch::Match => raw.advance().unwrap(),
                 KeyMatch::Skip => panic!("fixed_header_uses_ordered_seeks"),
-                KeyMatch::Seek(target) => raw.seek_forward(target).unwrap(),
+                KeyMatch::Seek => raw.seek_forward(cursor.seek_target()).unwrap(),
                 KeyMatch::Done => break,
             }
         }

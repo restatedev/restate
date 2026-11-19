@@ -11,7 +11,8 @@
 mod aggregated_status_stats;
 #[cfg(test)]
 pub(crate) use aggregated_status_stats::legacy_status_gauge_key;
-mod index_registry;
+mod journal_entry_blobs;
+mod registry_fence;
 mod scoped_promise_migration;
 mod scoped_state_migration;
 mod state_promise_migration_combined;
@@ -101,13 +102,20 @@ storage_features! {
     /// Since v1.8.2
     pub TrackStatusGauges,
 
-    /// The store holds the index and statistics registry (`crate::registry`): the
-    /// tokens in entry-status headers and the keys of registered indexes. Persisted
-    /// together with the first registration, never automatically, and kept
-    /// afterwards, so that binaries without the registry cannot open the store.
+    /// The store holds the registry (`crate::registry`), the tokens in
+    /// entry-status headers and the keys of registered indexes. Persisted together
+    /// with the first registration, never automatically, and kept afterwards, so
+    /// that binaries without the registry cannot open the store.
     ///
     /// Since v1.8.2
-    pub IndexRegistry,
+    pub Registry,
+
+    /// Journal entries with a large content store it in the blob table. Enabled with the
+    /// experimental write blob table option, and kept afterwards so that binaries that can't
+    /// read these entries can't open the store.
+    ///
+    /// Since v1.8.2
+    pub JournalEntryBlobs,
 }
 
 trait StorageFeature: Sized + 'static {
@@ -230,11 +238,11 @@ impl LoadedStorageFeatures {
         batch: &mut WriteBatch,
         partition_id: restate_types::identifiers::PartitionId,
     ) -> Result<bool, StorageError> {
-        if !self.set_enabled::<IndexRegistryFeature>(Some(current_version)) {
+        if !self.set_enabled::<RegistryFeature>(Some(current_version)) {
             return Ok(false);
         }
         append_storage_features_to_wb(cf_handle, batch, partition_id, self.ledger())?;
-        let min = IndexRegistryFeature::min_required_version();
+        let min = RegistryFeature::min_required_version();
         if min.is_newer_than(current_min_restate_version) {
             append_min_restate_version_to_wb(cf_handle, batch, partition_id, min.clone())?;
             *current_min_restate_version = min.clone();
@@ -792,7 +800,7 @@ mod tests {
         let candidate = SemanticRestateVersion::parse("1.8.2-dev").unwrap();
         for feature in [
             KnownStorageFeature::TrackStatusGauges,
-            KnownStorageFeature::IndexRegistry,
+            KnownStorageFeature::Registry,
         ] {
             assert_eq!(feature.min_required_version(), &candidate);
         }
@@ -800,7 +808,7 @@ mod tests {
         let mut features =
             LoadedStorageFeatures::load(None, StorageVersion::None, &candidate).unwrap();
         features.set_enabled::<TrackStatusGaugesFeature>(Some(&candidate));
-        features.set_enabled::<IndexRegistryFeature>(Some(&candidate));
+        features.set_enabled::<RegistryFeature>(Some(&candidate));
         let persisted = features.ledger().clone();
         assert!(
             LoadedStorageFeatures::load(
@@ -817,10 +825,9 @@ mod tests {
 
         // Historical prototype stores keep their recorded floor and metadata.
         let mut encoded = serde_json::to_value(persisted).unwrap();
-        encoded["features"]["index-registry"]["min_required_version"] = "1.8.3-dev".into();
-        encoded["features"]["index-registry"]["enabled_by_version"] = "1.8.3-dev".into();
-        encoded["features"]["index-registry"]["future-metadata"] =
-            serde_json::json!({ "value": 1 });
+        encoded["features"]["registry"]["min_required_version"] = "1.8.3-dev".into();
+        encoded["features"]["registry"]["enabled_by_version"] = "1.8.3-dev".into();
+        encoded["features"]["registry"]["future-metadata"] = serde_json::json!({ "value": 1 });
         let higher: PersistedEnabledFeatures = serde_json::from_value(encoded).unwrap();
         for version in [&candidate, &SemanticRestateVersion::new(1, 8, 2)] {
             let error =
@@ -830,7 +837,7 @@ mod tests {
                 error.required_min_version,
                 SemanticRestateVersion::parse("1.8.3-dev").unwrap()
             );
-            assert_eq!(error.features, ["index-registry"]);
+            assert_eq!(error.features, ["registry"]);
         }
         let mut reloaded = LoadedStorageFeatures::load(
             Some(higher.clone()),
@@ -838,7 +845,7 @@ mod tests {
             &SemanticRestateVersion::new(1, 9, 0),
         )
         .unwrap();
-        assert!(!reloaded.set_enabled::<IndexRegistryFeature>(Some(&candidate)));
+        assert!(!reloaded.set_enabled::<RegistryFeature>(Some(&candidate)));
         assert_eq!(reloaded.ledger(), &higher);
     }
 }

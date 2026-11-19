@@ -16,6 +16,7 @@ use std::fmt::Display;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::journal_table::JournalEntry;
+use restate_storage_api::journal_table_v2::StoredUnhydratedRawEntry;
 use restate_storage_query_api::tables::journal::JournalRowWriter;
 use restate_types::identifiers::{
     InvocationId, JournalEntryId, WithInvocationId, WithPartitionKey,
@@ -117,8 +118,29 @@ pub(super) fn write_v1(row: &mut JournalRowWriter<'_>, id: JournalEntryId, entry
 }
 
 /// An entry of service protocol version 4 and later.
-pub(super) fn write_v2(row: &mut JournalRowWriter<'_>, id: JournalEntryId, entry: &StoredRawEntry) {
+/// `entry` is the stored entry, unless its content is in a blob. The content columns of the latter
+/// are left NULL: reading the blob isn't supported here.
+pub(super) fn write_v2(
+    row: &mut JournalRowWriter<'_>,
+    id: JournalEntryId,
+    entry: &Result<StoredRawEntry, Box<StoredUnhydratedRawEntry>>,
+) {
     write_identity(row, id, 2);
+    let entry = match entry {
+        Ok(entry) => entry,
+        // TODO: hydrate the entry, reading the blob only when a content column is requested,
+        // like the V1 engine does (`storage-query-datafusion/src/journal/row.rs`).
+        Err(entry) => {
+            if row.is_entry_type_defined() {
+                row.fmt_entry_type(entry.ty());
+            }
+            row.appended_at(entry.header().append_time.as_u64() as i64);
+            if row.is_raw_length_defined() {
+                row.raw_length(entry.content_len() as u64);
+            }
+            return;
+        }
+    };
     let invocation_id = id.invocation_id();
     if row.is_entry_type_defined() {
         row.fmt_entry_type(entry.ty());

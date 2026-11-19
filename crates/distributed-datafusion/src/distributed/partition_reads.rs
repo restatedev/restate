@@ -19,7 +19,7 @@ use std::sync::Arc;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Result, Statistics, exec_err, plan_err};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_expr::{EquivalenceProperties, PhysicalSortExpr};
 use datafusion::physical_plan::execution_plan::{
     Boundedness, EmissionType, SchedulingType, reset_plan_states,
 };
@@ -35,11 +35,14 @@ use datafusion::physical_plan::{
     execute_stream,
 };
 use futures::StreamExt;
+use tokio::time::Instant;
 
 use restate_types::GenerationalNodeId;
 use restate_types::identifiers::PartitionId;
 use restate_types::net::distributed_query::{QueryFailureKind, QueryTaskError};
 
+use crate::distributed::analyze::AnalyzeCollector;
+use crate::distributed::capture_metrics::CaptureSample;
 use crate::source_registry::PartitionLocation;
 use crate::table_providers::PartitionReadContext;
 
@@ -52,6 +55,8 @@ pub(super) struct PartitionReadExec {
     owner: Option<GenerationalNodeId>,
     parallelism: usize,
     fetch: Option<usize>,
+    /// The order of each lane's rows ([`Self::lane_ordering`]).
+    ordering: Vec<PhysicalSortExpr>,
     properties: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
 }
@@ -89,26 +94,53 @@ impl PartitionReadExec {
             return plan_err!("partition read has no storage partitions");
         }
         let parallelism = parallelism.max(1).min(partitions.len());
-        let properties = Arc::new(
-            PlanProperties::new(
-                // Template ordering is local to a storage partition, not across the
-                // partitions concatenated by a scheduling lane.
-                EquivalenceProperties::new(input.schema()),
-                Partitioning::UnknownPartitioning(parallelism),
-                EmissionType::Incremental,
-                Boundedness::Bounded,
-            )
-            .with_scheduling_type(SchedulingType::Cooperative),
-        );
+        let ordering = Self::lane_ordering(&input, parallelism, partitions.len());
         Ok(Self {
+            properties: Self::properties(&input, &ordering, parallelism),
             input,
             partitions: partitions.into_iter().collect(),
             owner: owner.flatten(),
             parallelism,
             fetch,
-            properties,
+            ordering,
             metrics: Default::default(),
         })
+    }
+
+    /// The order of each lane's rows: the template's own output order, when every
+    /// lane reads exactly one storage partition. The order holds within a storage
+    /// partition, not across the partitions a lane concatenates, so lanes that
+    /// concatenate keep none. The configured lanes still bound how many partitions
+    /// are read at once.
+    fn lane_ordering(
+        input: &Arc<dyn ExecutionPlan>,
+        lanes: usize,
+        partitions: usize,
+    ) -> Vec<PhysicalSortExpr> {
+        let properties = input.properties();
+        if lanes != partitions || properties.output_partitioning().partition_count() != 1 {
+            return Vec::new();
+        }
+        properties
+            .output_ordering()
+            .map(|ordering| ordering.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn properties(
+        input: &Arc<dyn ExecutionPlan>,
+        ordering: &[PhysicalSortExpr],
+        parallelism: usize,
+    ) -> Arc<PlanProperties> {
+        Arc::new(
+            PlanProperties::new(
+                EquivalenceProperties::new_with_orderings(input.schema(), [ordering.to_vec()]),
+                Partitioning::UnknownPartitioning(parallelism),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            )
+            .with_scheduling_type(SchedulingType::Cooperative),
+        )
     }
 
     pub(super) fn owner(&self) -> Option<GenerationalNodeId> {
@@ -130,7 +162,7 @@ impl PartitionReadExec {
         input: &Arc<dyn ExecutionPlan>,
         partition: PartitionId,
         context: &TaskContext,
-    ) -> Result<PartitionReadContext> {
+    ) -> Result<(PartitionReadContext, Option<CaptureSample>)> {
         let mut requirements = restate_worker_api::PartitionCaptureRequirements::default();
         let mut require_leader = false;
         let mut registry = None;
@@ -165,20 +197,27 @@ impl PartitionReadExec {
         if requirements.storage || requirements.needs_live_state() {
             let registry = registry.expect("participating storage source");
             let query_io = registry.query_io().map_err(external)?;
-            Ok(PartitionReadContext::from_capture(
-                registry
-                    .capture_partition(
-                        partition,
-                        require_leader,
-                        context.session_config().get_extension(),
-                        requirements,
-                    )
-                    .await
-                    .map_err(external)?,
-            )
-            .with_query_io(query_io))
+            let requested = Instant::now();
+            let read = registry
+                .capture_partition(
+                    partition,
+                    require_leader,
+                    context.session_config().get_extension(),
+                    requirements,
+                )
+                .await
+                .map_err(external)?;
+            let sample = CaptureSample {
+                requested,
+                timing: read.timing,
+                resumed: Instant::now(),
+            };
+            Ok((
+                PartitionReadContext::from_capture(read).with_query_io(query_io),
+                Some(sample),
+            ))
         } else {
-            Ok(PartitionReadContext::live(partition))
+            Ok((PartitionReadContext::live(partition), None))
         }
     }
 }
@@ -275,15 +314,8 @@ impl ExecutionPlan for PartitionReadExec {
         // planning inputs. Preserve the selected partition universe across these
         // native rewrites rather than rediscovering it through those wrappers.
         let mut plan = self.as_ref().clone();
-        plan.properties = Arc::new(
-            PlanProperties::new(
-                EquivalenceProperties::new(input.schema()),
-                Partitioning::UnknownPartitioning(self.parallelism),
-                EmissionType::Incremental,
-                Boundedness::Bounded,
-            )
-            .with_scheduling_type(SchedulingType::Cooperative),
-        );
+        plan.ordering = Self::lane_ordering(&input, self.parallelism, self.partitions.len());
+        plan.properties = Self::properties(&input, &plan.ordering, self.parallelism);
         plan.input = input;
         Ok(Arc::new(plan))
     }
@@ -361,6 +393,8 @@ impl ExecutionPlan for PartitionReadExec {
         let parallelism = self.parallelism;
         let fetch = self.fetch;
         let opened = MetricBuilder::new(&self.metrics).counter("partition_scopes", lane);
+        // Only a task asked for a report collects what its copies did.
+        let collector = context.session_config().get_extension::<AnalyzeCollector>();
         let mut output = RecordBatchReceiverStream::builder(self.schema(), 1);
         let tx = output.tx();
         output.spawn(async move {
@@ -370,8 +404,14 @@ impl ExecutionPlan for PartitionReadExec {
                     if remaining == 0 || tx.is_closed() {
                         break;
                     }
-                    let scope = Self::admit(&input, partitions[index], &context).await?;
+                    // Registered before any of its work: a failure or a cancellation
+                    // from here on leaves it unsettled, which the report says.
+                    let mut copy = collector.as_ref().map(|collector| collector.begin_copy());
+                    let (scope, sample) = Self::admit(&input, partitions[index], &context).await?;
                     opened.add(1);
+                    if let (Some(collector), Some(sample)) = (&collector, sample) {
+                        collector.captured(&sample);
+                    }
                     let closed = scope.snapshot.as_ref().map(|read| read.closed());
                     let cancel = scope
                         .snapshot
@@ -390,25 +430,37 @@ impl ExecutionPlan for PartitionReadExec {
                         context.window_functions().clone(),
                         context.runtime_env(),
                     ));
-                    let input = Arc::clone(&input);
+                    let executed = reset_plan_states(Arc::clone(&input))?;
+                    let template = Arc::clone(&input);
                     let tx = tx.clone();
                     let run = async move {
-                        let mut stream = execute_stream(reset_plan_states(input)?, scoped_context)?;
-                        while remaining > 0
-                            && let Some(batch) = stream.next().await
-                        {
+                        let mut stream = execute_stream(Arc::clone(&executed), scoped_context)?;
+                        let mut ended = false;
+                        while remaining > 0 {
+                            let Some(batch) = stream.next().await else {
+                                ended = true;
+                                break;
+                            };
                             let mut batch = batch?;
                             if batch.num_rows() > remaining {
                                 batch = batch.slice(0, remaining);
                             }
                             remaining -= batch.num_rows();
                             if tx.send(Ok(batch)).await.is_err() {
-                                return Ok(0);
+                                remaining = 0;
+                                break;
                             }
                         }
-                        Ok::<_, datafusion::common::DataFusionError>(remaining)
+                        drop(stream);
+                        // The copy can hold its scope open, so it must not outlive
+                        // its stream: only its metrics' handles are kept.
+                        if let Some(copy) = copy.as_mut() {
+                            copy.observe(&template, &executed, ended);
+                        }
+                        Ok::<_, datafusion::common::DataFusionError>((remaining, copy))
                     };
-                    remaining = if let Some(cancel) = cancel {
+                    let copy;
+                    (remaining, copy) = if let Some(cancel) = cancel {
                         // Poll cancellation independently of the consumer, including
                         // while blocked sending a full output buffer. Dropping the
                         // native subtree closes its storage batch channels.
@@ -425,6 +477,10 @@ impl ExecutionPlan for PartitionReadExec {
                     drop(_cancel_on_drop);
                     if let Some(closed) = closed {
                         closed.await;
+                    }
+                    // Its storage is released: merge what it did, and settle it.
+                    if let Some(copy) = copy {
+                        copy.finish();
                     }
                 }
                 Ok(())

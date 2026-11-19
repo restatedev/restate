@@ -30,14 +30,14 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{ExecutionPlanProperties, PhysicalExpr};
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::{NetworkBoundary, NetworkCoalesceExec, Stage};
-use futures::{FutureExt, StreamExt, TryStreamExt, stream};
+use futures::{StreamExt, TryStreamExt, stream};
 use tokio::time::Instant;
 
 use restate_core::network::NetworkSender;
 use restate_core::network::transport_connector::test_util::MockConnector;
 use restate_core::partitions::PartitionRouting;
 use restate_core::test_env::{TestCoreEnv, TestCoreEnvBuilder, create_mock_nodes_config};
-use restate_core::{Metadata, TaskCenter, TaskKind};
+use restate_core::{Metadata, TaskCenter};
 use restate_memory::ByteCount;
 use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::state_table::{ScopedStateBinding, StateBinding};
@@ -69,7 +69,7 @@ use crate::mocks::MockSchemas;
 use crate::node_fan_out::{AllNodeLocator, NodeFanOutTableProvider, RoleBasedNodeLocator};
 use crate::placement::{PartitionPlacement, StoragePlacementOptions};
 use crate::query_correctness::run_distributed_state_corpus;
-use crate::schema_scan::SchemaScanner;
+use crate::schema_scan::LookupScanner;
 use crate::source_registry::{
     PartitionLocation, PartitionLocator, SourceRegistry, create_partition_locator,
 };
@@ -82,6 +82,8 @@ use super::DistributedQueryServer;
 use super::tests::environment;
 use super::worker::TaskObservation;
 
+#[path = "analyze_tests.rs"]
+mod analyze;
 #[path = "index_access_tests.rs"]
 mod index_access;
 #[path = "invocation_tests.rs"]
@@ -222,15 +224,38 @@ impl PreparedPartitionRead for CheckedRead {
         batch_size: usize,
         metrics: crate::table_providers::ReadMetrics,
     ) -> anyhow::Result<SendableRecordBatchStream> {
-        assert!(
-            batch_size > 0 && self.limit.is_none_or(|limit| batch_size <= limit.max(1)),
-            "source_fetch_bounds_the_reader_batch_target"
-        );
+        self.check_batch_size(batch_size);
         let partition = context.partition_id();
         let stream = self.prepared.execute(context, batch_size, metrics)?;
         Ok(self
             .scanner
             .observe(partition, self.access.clone(), batch_size, stream))
+    }
+
+    fn execute_in_order(
+        &self,
+        context: crate::table_providers::PartitionReadContext,
+        batch_size: usize,
+        metrics: crate::table_providers::ReadMetrics,
+    ) -> anyhow::Result<(SendableRecordBatchStream, crate::table_providers::InOrder)> {
+        self.check_batch_size(batch_size);
+        let partition = context.partition_id();
+        let (stream, in_order) = self
+            .prepared
+            .execute_in_order(context, batch_size, metrics)?;
+        let stream = self
+            .scanner
+            .observe(partition, self.access.clone(), batch_size, stream);
+        Ok((stream, in_order))
+    }
+}
+
+impl CheckedRead {
+    fn check_batch_size(&self, batch_size: usize) {
+        assert!(
+            batch_size > 0 && self.limit.is_none_or(|limit| batch_size <= limit.max(1)),
+            "source_fetch_bounds_the_reader_batch_target"
+        );
     }
 }
 
@@ -319,6 +344,8 @@ struct MultiFixture<N> {
     stores: Vec<PartitionStore>,
     store_manager: Arc<PartitionStoreManager>,
     tasks: Arc<Mutex<Vec<TaskObservation>>>,
+    /// The sources of the remote workers, whose servers start on first connection.
+    _workers: Arc<OnceLock<HashMap<GenerationalNodeId, SourceRegistry>>>,
     reads: Arc<Mutex<Reads>>,
     node_reads: Arc<Mutex<Vec<GenerationalNodeId>>>,
     placements: PlacementCalls,
@@ -350,24 +377,25 @@ async fn setup_with_scanners(
     }
     let workers = Arc::new(OnceLock::<HashMap<GenerationalNodeId, SourceRegistry>>::new());
     let tasks = Arc::new(Mutex::new(vec![]));
+    // Queries keep the connector through their network, possibly past teardown
+    // (see `keep_network_past_teardown`), so it must not own storage: it only
+    // borrows the workers' sources and observations. The fixture owns them, and
+    // so does each server it starts.
     let (connector, _) = MockConnector::new({
-        let workers = Arc::clone(&workers);
-        let tasks = Arc::clone(&tasks);
+        let workers = Arc::downgrade(&workers);
+        let tasks = Arc::downgrade(&tasks);
         move |node, router: &mut restate_core::network::MessageRouterBuilder| {
+            // A node first reached once the test has returned serves nothing.
+            let (Some(workers), Some(tasks)) = (workers.upgrade(), tasks.upgrade()) else {
+                return;
+            };
             let mut server = DistributedQueryServer::new(
                 environment(1, 128),
                 workers.get().unwrap()[&node].clone(),
                 router,
             );
-            server.observations = Arc::clone(&tasks);
-            // Start the receiver before the connector can dispatch its first RPC.
-            let mut task = Box::pin(server.run());
-            assert!(task.as_mut().now_or_never().is_none());
-            // Like production, shutdown waits for the server to drain, releasing its
-            // storage owners before teardown checks run.
-            TaskCenter::current()
-                .spawn(TaskKind::SystemService, "multi-owner-query", task)
-                .unwrap();
+            server.observations = tasks;
+            crate::mocks::spawn_query_server("multi-owner-query", server);
         }
     });
     let mut nodes = create_mock_nodes_config(1, 1);
@@ -417,13 +445,13 @@ async fn setup_with_scanners(
         scanners.register_partition_scanner::<LegacyStateSource>(Arc::new(CheckedScanner {
             node,
             check_owner: true,
-            inner: Arc::new(SchemaScanner::<StateBinding>::new()),
+            inner: Arc::new(LookupScanner::<StateBinding>::new()),
             reads: Arc::clone(&reads),
         }));
         scanners.register_partition_scanner::<ScopedStateSource>(Arc::new(CheckedScanner {
             node,
             check_owner: true,
-            inner: Arc::new(SchemaScanner::<ScopedStateBinding>::new()),
+            inner: Arc::new(LookupScanner::<ScopedStateBinding>::new()),
             reads: Arc::clone(&reads),
         }));
         scanners.register_partition_scanner::<SysVqueueEntryStatusTable>(Arc::new(
@@ -447,14 +475,9 @@ async fn setup_with_scanners(
         &mut coordinator.router_builder,
     );
     server.observations = Arc::clone(&tasks);
-    let mut task = Box::pin(server.run());
-    assert!(task.as_mut().now_or_never().is_none());
-    // Like production, shutdown waits for the server to drain, releasing its
-    // storage owners before teardown checks run.
-    TaskCenter::current()
-        .spawn(TaskKind::SystemService, "local-query-worker", task)
-        .unwrap();
+    crate::mocks::spawn_query_server("local-query-worker", server);
     let coordinator = coordinator.build().await;
+    crate::mocks::keep_network_past_teardown(coordinator.networking.clone());
     let mut remote = HashMap::new();
     for id in 2..=3 {
         let worker = TestCoreEnv::create_with_single_node(id, 1).await;
@@ -477,6 +500,7 @@ async fn setup_with_scanners(
         stores,
         store_manager: manager,
         tasks,
+        _workers: workers,
         reads,
         node_reads,
         placements,
@@ -675,12 +699,13 @@ async fn multi_owner_coverage_and_scoped_selection() {
                 .all(|task| !task.plan.contains("table=state.legacy")),
             "non_null_scope_excludes_the_legacy_physical_source"
         );
+        // The query names complete state keys, so the scoped layout looks them up.
         assert_eq!(
             scoped_tasks
                 .iter()
                 .map(|task| task
                     .plan
-                    .matches("TableScanExec: table=state.scoped,")
+                    .matches("MultiGetExec: table=state.scoped,")
                     .count())
                 .sum::<usize>(),
             1,
@@ -1435,11 +1460,11 @@ async fn partial_aggregation_reduces_transfer_without_changing_storage_work() {
         let b = measure(&fixture, pushed.as_ref(), sql, &expected, true, false).await;
         assert_eq!(a.storage_rows, records.len());
         assert_eq!(a.storage_rows, b.storage_rows);
-        // Physical readers emit candidates. Moving native residual evaluation
-        // to owners reduces transported rows without changing storage work.
-        assert_eq!(a.transported_rows, 4096);
+        // Partition reads emit only the rows meeting the scan's predicate, so
+        // owners send the 2,048 matches with or without operator pushdown, and
+        // read the same.
+        assert_eq!(a.transported_rows, 2048);
         assert_eq!(b.transported_rows, 2048);
-        assert!(b.ipc < a.ipc && b.remote_ipc < a.remote_ipc);
         eprintln!("m2_filter parallelism={parallelism} control={a:?} pushed={b:?}");
     }
 }

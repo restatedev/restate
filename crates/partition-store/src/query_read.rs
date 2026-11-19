@@ -13,8 +13,8 @@
 //! # Concepts
 //!
 //! - **Read snapshot** ([`ReadSnapshot`]): what a read sees of a partition: a
-//!   RocksDB snapshot together with the storage features and the index registry
-//!   as they were when the processor admitted the read. A read therefore never
+//!   RocksDB snapshot together with the storage features and the registry as
+//!   they were when the processor admitted the read. A read therefore never
 //!   sees an index in a state newer than its data. Clones share all of it.
 //! - **Cancellation**: the processor's token or the read's child gate ends the
 //!   read; from then on data reads and cursor steps fail. Parent cancellation
@@ -44,6 +44,7 @@ use std::sync::{Arc, OnceLock};
 use bytes::Bytes;
 use rocksdb::ReadOptions;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
+use zerocopy::IntoBytes;
 
 use restate_core::io::{Cancelled, FutureTask, Gate, OwnedLease, TrackedTask};
 use restate_rocksdb::RocksDbPerfExt;
@@ -51,13 +52,16 @@ use restate_storage_api::StorageError;
 use restate_storage_api::scan::{RowConsumer, ScanOutcome};
 use restate_storage_query_api::scan::{CursorScan, Scan, Table, consume_cursor};
 use restate_types::identifiers::PartitionId;
+use restate_types::partitions::features::PersistedFeatures;
 use restate_types::sharding::KeyRange;
+use restate_types::storage::StorageCodec;
 
 use crate::features::StorageFeatures;
-use crate::fsm_table::{fsm_variable, migration_jobs_key, registry_key};
-use crate::job::{MigrationJobId, MigrationJobStatus, MigrationJobs};
+use crate::fsm_table::state_machine_features_key;
+use crate::job::{MigrationJob, MigrationJobId, MigrationJobStatus};
 use crate::keys::KeyKind;
-use crate::registry::{Index, IndexKind, IndexNotReady, IndexRegistry, IndexStatus};
+use crate::registry::records::RecordKey;
+use crate::registry::{Index, IndexKind, IndexNotReady, IndexStatus, Registry};
 use crate::scan::PhysicalScan;
 use crate::table::{IndexSource, ReadMetadata};
 use crate::{PartitionDb, PartitionReadSnapshot, PartitionSnapshotScan, Result};
@@ -69,7 +73,7 @@ pub use executor::QueryIoExecutor;
 pub use report::{IndexSizes, MigrationReport, ReplicaMigrations, UnreadableReplica};
 
 /// A read's view of one partition, admitted by its processor: the RocksDB
-/// snapshot plus the storage features and the index registry of that moment.
+/// snapshot plus the storage features and the registry of that moment.
 /// Clones share the snapshot, its admission, cancellation and completion. Direct
 /// reads block the caller; [`Self::scan`] runs on the shared query IO pool.
 #[derive(Clone)]
@@ -82,9 +86,7 @@ struct QuerySnapshot {
     snapshot: PartitionReadSnapshot,
     features: StorageFeatures,
     /// The registry as of `snapshot`, decoded on first use.
-    registry: OnceLock<std::result::Result<Option<IndexRegistry>, String>>,
-    /// The unfinished jobs as of `snapshot`, decoded on first use.
-    jobs: OnceLock<std::result::Result<MigrationJobs, String>>,
+    registry: OnceLock<std::result::Result<Option<Registry>, String>>,
     /// The processor's token for ending this read.
     cancel: CancellationToken,
     /// This read's child of the partition gate; `ReadSnapshot::cancel` cancels it.
@@ -133,7 +135,6 @@ impl ReadSnapshot {
                 snapshot,
                 features,
                 registry: OnceLock::new(),
-                jobs: OnceLock::new(),
                 cancel,
                 gate,
                 cancelled,
@@ -166,6 +167,25 @@ impl ReadSnapshot {
         self.inner.snapshot.partition().partition_id
     }
 
+    /// Whether this snapshot's partition has fully migrated to vqueues: every
+    /// invocation it stores then has its vqueue entry, so a read may find
+    /// invocations through the entries. Read through this snapshot, so it matches
+    /// the data the query reads. A partition that never stored its features has
+    /// not migrated; an unreadable value is an error.
+    pub fn fully_migrated_to_vqueues(&self) -> Result<bool> {
+        let key = state_machine_features_key(self.partition_id());
+        let reader = self.inner.snapshot.reader();
+        let Some(value) = reader
+            .get_pinned(KeyKind::Fsm, &key)
+            .map_err(|err| StorageError::Generic(err.into()))?
+        else {
+            return Ok(false);
+        };
+        let features: PersistedFeatures = StorageCodec::decode(&mut value.as_ref())
+            .map_err(|err| StorageError::Conversion(err.into()))?;
+        Ok(features.vqueues)
+    }
+
     /// The index ID of the Ready index of `definition` in this snapshot.
     ///
     /// The registry is read through this snapshot, so readiness and the ID match
@@ -184,13 +204,13 @@ impl ReadSnapshot {
             )
         };
         let registry = self.inner.registry.get_or_init(|| {
-            let key = registry_key(self.partition_id());
+            let key = RecordKey::registry(self.partition_id());
             self.inner
                 .snapshot
                 .reader()
-                .get_pinned(KeyKind::Fsm, &key)
+                .get_pinned(KeyKind::Registry, key.as_bytes())
                 .map_err(|err| err.to_string())?
-                .map(|value| IndexRegistry::decode(&value).map_err(|err| err.to_string()))
+                .map(|value| Registry::decode(&value).map_err(|err| err.to_string()))
                 .transpose()
         });
         let registry = registry
@@ -215,21 +235,23 @@ impl ReadSnapshot {
     /// How far the backfill of the Backfilling `index` is in this snapshot, from
     /// its build job's record.
     fn backfill_status(&self, index: &Index) -> String {
-        let jobs = self.inner.jobs.get_or_init(|| {
-            let key = migration_jobs_key(self.partition_id(), fsm_variable::MIGRATION_JOBS);
-            self.inner
-                .snapshot
-                .reader()
-                .get_pinned(KeyKind::Fsm, &key)
-                .map_err(|err| err.to_string())?
-                .map(|value| MigrationJobs::decode(&value).map_err(|err| err.to_string()))
-                .transpose()
-                .map(Option::unwrap_or_default)
-        });
-        let job = jobs
-            .as_ref()
-            .ok()
-            .and_then(|jobs| jobs.get(MigrationJobId::for_index(index.id)));
+        let id = MigrationJobId::for_entry(index.id);
+        let key = RecordKey::job(self.partition_id(), id);
+        let read = self
+            .inner
+            .snapshot
+            .reader()
+            .get_pinned(KeyKind::Registry, key.as_bytes())
+            .map_err(|err| err.to_string())
+            .and_then(|value| {
+                value
+                    .map(|value| {
+                        MigrationJob::decode(u64::from(id.as_u32()), &value)
+                            .map_err(|err| err.to_string())
+                    })
+                    .transpose()
+            });
+        let job = read.as_ref().ok().and_then(Option::as_ref);
         let Some(walk) = index.walk else {
             // Between passes, or not started yet.
             return match job {
@@ -244,8 +266,8 @@ impl ReadSnapshot {
                 _ => "its backfill has not started".to_owned(),
             };
         };
-        if let Err(err) = jobs {
-            return format!("backfill walk {walk}; unreadable job records: {err}");
+        if let Err(err) = &read {
+            return format!("backfill walk {walk}; unreadable job record: {err}");
         }
         let Some(job) = job else {
             return format!("backfill walk {walk}; its job record is missing");
@@ -290,7 +312,7 @@ impl ReadSnapshot {
         let iterator = self
             .inner
             .snapshot
-            .owned_scan(scan.clone(), ReadOptions::default());
+            .owned_scan(scan.by_ref(), ReadOptions::default());
         Ok(SnapshotCursor {
             iterator,
             scan,
@@ -385,6 +407,12 @@ impl SnapshotCursor {
         &self.snapshot
     }
 
+    /// The bounds the cursor stays within.
+    #[cfg(test)]
+    pub(crate) fn scan(&self) -> &PhysicalScan<Bytes> {
+        &self.scan
+    }
+
     /// Borrows the current bytes without advancing or copying them.
     pub fn peek(&self) -> Result<Option<(&[u8], &[u8])>> {
         self.snapshot.check_active()?;
@@ -400,16 +428,54 @@ impl SnapshotCursor {
     }
 
     /// Seeks forward within the cursor's original ownership/request bounds.
-    pub fn seek_forward(&mut self, target: Bytes) -> Result<()> {
+    pub fn seek_forward(&mut self, target: &[u8]) -> Result<()> {
         let Some((key, _)) = self.peek()? else {
             return Ok(());
         };
-        if target.as_ref() <= key || !self.scan.contains_key(&target) {
+        if target <= key || !self.scan.contains_key(target) {
             return Err(StorageError::Generic(anyhow::anyhow!(
                 "scan navigation must advance and remain within its bounds"
             )));
         }
-        self.iterator.seek(&target);
+        self.iterator.seek(target);
+        Ok(())
+    }
+
+    /// Moves to the first key at or after `target`, backwards as well as forwards,
+    /// and also after the cursor ran off its end. Returns `false`, without moving,
+    /// when `target` lies outside the cursor's bounds. Only a read that merges
+    /// several runs of one index revisits earlier keys
+    /// ([`crate::ordered_runs`]); scans move forward only ([`Self::seek_forward`]).
+    pub(crate) fn reposition(&mut self, target: &[u8]) -> Result<bool> {
+        self.snapshot.check_active()?;
+        if !self.scan.contains_key(target) {
+            return Ok(false);
+        }
+        self.iterator.seek(target);
+        Ok(true)
+    }
+
+    /// Moves to the last key at or before `target`, or to the cursor's last key
+    /// when `target` lies past its bounds. Returns `false`, without moving, when
+    /// `target` lies before them. A read that merges runs backwards
+    /// ([`crate::ordered_runs`]) navigates with this and [`Self::retreat`].
+    pub(crate) fn reposition_back(&mut self, target: &[u8]) -> Result<bool> {
+        self.snapshot.check_active()?;
+        if target < self.scan.start().as_ref() {
+            return Ok(false);
+        }
+        if self.scan.contains_key(target) {
+            self.iterator.seek_for_prev(target);
+        } else {
+            self.iterator.seek_to_last();
+        }
+        Ok(true)
+    }
+
+    /// Moves to the previous key.
+    pub(crate) fn retreat(&mut self) -> Result<()> {
+        self.snapshot.check_active()?;
+        self.iterator.prev();
         Ok(())
     }
 }

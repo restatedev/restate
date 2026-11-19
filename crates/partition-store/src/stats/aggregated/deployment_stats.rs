@@ -34,6 +34,7 @@ define_aggregated_stat!(
     /// the contribution even when the entry's stage/status is unchanged.
     table: DeploymentStats,
     definition: "deployment_stats/1",
+    introduced: (1, 8, 2),
     schema: DeploymentStatsSchema,
     value: StageStatusGauge,
     key: DeploymentStatsKey(

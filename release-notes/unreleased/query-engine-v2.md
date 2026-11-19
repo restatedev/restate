@@ -58,7 +58,7 @@ once with `v1` and once with `v2`, should return the same rows.
 - V2 doesn't serve every table yet. It has no `sys_inbox`, and in the
   operator-level `cluster` schema it serves only `nodes`, `partitions`,
   `partition_replica_set`, `partition_state`, `logs`, `logs_tail_segments`,
-  `loglet_workers`, `bifrost_read_streams`, `indexes` and `migration_jobs`.
+  `loglet_workers`, `bifrost_read_streams`, `registry` and `migration_jobs`.
   Query the others with `v1`.
 - Both engines serve `config`, each node's running configuration with
   secret-looking values redacted, to `restatectl sql` only. The admin `/query`

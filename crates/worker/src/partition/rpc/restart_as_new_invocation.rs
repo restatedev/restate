@@ -311,6 +311,14 @@ where
             .await
             {
                 Ok(Some(entry)) if matches!(entry.ty(), EntryType::Command(_)) => {
+                    let entry = match self.storage.hydrate_journal_entry(entry) {
+                        Ok(entry) => entry,
+                        Err(err) => {
+                            return Decision::Reply(Err(PartitionProcessorRpcError::Internal(
+                                err.to_string(),
+                            )));
+                        }
+                    };
                     // Check we got the notifications available in the journal
                     let cmd = match entry.decode::<ServiceProtocolV4Codec, journal_v2::Command>() {
                         Ok(cmd) => cmd,
@@ -414,7 +422,7 @@ mod tests {
         CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, JournalMetadata,
         PreFlightInvocationMetadata, ScheduledInvocation,
     };
-    use restate_storage_api::journal_table_v2::NotificationEntryIndex;
+    use restate_storage_api::journal_table_v2::{NotificationEntryIndex, StoredUnhydratedRawEntry};
     use restate_test_util::assert;
     use restate_test_util::rand;
     use restate_test_util::rand::bytestring;
@@ -422,7 +430,6 @@ mod tests {
     use restate_types::identifiers::{DeploymentId, EntryIndex};
     use restate_types::invocation::{Header, InvocationTarget};
     use restate_types::journal::raw::RawEntryCodec;
-    use restate_types::journal_v2::raw::RawCommand;
     use restate_types::journal_v2::{CompletionId, Entry, NotificationId, UnresolvedFuture};
     use restate_types::schema::deployment::Deployment;
     use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
@@ -504,10 +511,10 @@ mod tests {
             &mut self,
             invocation_id: InvocationId,
             index: u32,
-        ) -> impl Future<Output = restate_storage_api::Result<Option<StoredRawEntry>>> + Send
+        ) -> impl Future<Output = restate_storage_api::Result<Option<StoredUnhydratedRawEntry>>> + Send
         {
             assert_eq!(self.expected_invocation_id, invocation_id);
-            let res = self.entries.get(index as usize).cloned();
+            let res = self.entries.get(index as usize).cloned().map(Into::into);
             ready(Ok(res))
         }
 
@@ -516,7 +523,8 @@ mod tests {
             invocation_id: InvocationId,
             length: EntryIndex,
         ) -> restate_storage_api::Result<
-            impl Stream<Item = restate_storage_api::Result<(EntryIndex, StoredRawEntry)>> + Send,
+            impl Stream<Item = restate_storage_api::Result<(EntryIndex, StoredUnhydratedRawEntry)>>
+            + Send,
         > {
             assert_eq!(self.expected_invocation_id, invocation_id);
             Ok(stream::iter(
@@ -524,9 +532,18 @@ mod tests {
                     .clone()
                     .into_iter()
                     .enumerate()
-                    .map(|(idx, e)| Ok((idx as EntryIndex, e)))
+                    .map(|(idx, e)| Ok((idx as EntryIndex, e.into())))
                     .take(length as usize),
             ))
+        }
+
+        fn hydrate_journal_entry(
+            &self,
+            entry: StoredUnhydratedRawEntry,
+        ) -> restate_storage_api::Result<StoredRawEntry> {
+            // The mock hands out its `StoredRawEntry`s through `From`, which never puts the
+            // content in a blob.
+            Ok(entry.try_into_inline().expect("entries are inline"))
         }
 
         fn get_notifications_index(
@@ -544,9 +561,8 @@ mod tests {
             &mut self,
             _: InvocationId,
             _: CompletionId,
-        ) -> impl Future<
-            Output = restate_storage_api::Result<Option<(StoredRawEntryHeader, RawCommand)>>,
-        > + Send {
+        ) -> impl Future<Output = restate_storage_api::Result<Option<StoredUnhydratedRawEntry>>> + Send
+        {
             panic!("This should be unused");
             #[allow(unreachable_code)]
             std::future::ready(Ok(None))
@@ -599,7 +615,13 @@ mod tests {
                 |stream| {
                     stream.map(|result| {
                         result
-                            .map(|(index, entry)| (index, entry, budget.empty_lease()))
+                            .and_then(|(index, entry)| {
+                                Ok((
+                                    index,
+                                    self.hydrate_journal_entry(entry)?,
+                                    budget.empty_lease(),
+                                ))
+                            })
                             .map_err(BudgetedReadError::from)
                     })
                 },

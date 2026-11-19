@@ -9,8 +9,10 @@
 // by the Apache License, Version 2.0.
 
 mod entry;
+mod entry_index;
 mod inbox;
 mod inbox_reader;
+mod indexed_read;
 mod input;
 mod key_codec;
 mod meta_binding;
@@ -30,7 +32,15 @@ use std::ops::ControlFlow;
 use std::pin::Pin;
 
 pub use entry::{EntryStatusKey, EntryStatusKeyRef};
+pub(crate) use entry_index::{
+    ACTIVE_ENTRY_BY_STAGE, ENTRY_BY_SERVICE_CREATED, ENTRY_INDEXES, FINISHED_ENTRY_BY_OUTCOME,
+};
+pub use entry_index::{
+    ActiveEntryByStage, ActiveEntryByStageKey, EntryByServiceCreated, EntryByServiceCreatedKey,
+    FinishedEntryByOutcome, FinishedEntryByOutcomeKey,
+};
 pub use inbox::InboxKey;
+pub use indexed_read::{ActiveRead, FinishedRead};
 pub use input::InputPayloadKey;
 pub use meta_binding::{VQueueMetaBinding, VQueueMetaTable};
 pub use meta_cursor::{VQueueMetaCursor, VQueueMetaRecords};
@@ -470,7 +480,7 @@ impl PartitionStoreTransaction<'_> {
             );
         }
 
-        let active = self.maintained_indexes();
+        let active = self.published_registry();
         if let Some(after) = change.after() {
             // Every write adopts the entry into each maintained index.
             self.put_entry_status(key_buffer, context.qid, after, active.touched_by_on_write());
