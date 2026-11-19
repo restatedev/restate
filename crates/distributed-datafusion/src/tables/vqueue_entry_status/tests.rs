@@ -1577,4 +1577,113 @@ async fn the_stage_index_covers_both_tables() {
         sorted("SELECT * FROM sys_vqueues").await,
         sorted(&scanned("SELECT * FROM sys_vqueues")).await
     );
+
+    // A read that fetches statuses first rejects the records that fail the
+    // conditions their values answer; a condition on the deployment is checked
+    // on the fetched status only, and qualifies the rows after. Conditions on
+    // the key alone install no check: navigation applies them already.
+    for (sql, work) in [
+        (
+            format!(
+                "SELECT entry_id, deployment FROM sys_vqueues WHERE id = '{a}' AND status = 'new'"
+            ),
+            &[
+                "index_keys_visited=5",
+                "index_keys_rejected=3",
+                "primary_keys_fetched=2",
+            ][..],
+        ),
+        (
+            "SELECT entry_id FROM sys_vqueue_entry_status \
+             WHERE deployment = 'dp_new' AND stage = 'running'"
+                .to_owned(),
+            &["index_keys_visited=2", "primary_keys_fetched=2"],
+        ),
+        (
+            "SELECT entry_id FROM sys_vqueue_entry_status \
+             WHERE stage IN ('inbox', 'running') AND (status = 'new' OR deployment = 'dp_new')"
+                .to_owned(),
+            &["index_keys_visited=5", "primary_keys_fetched=5"],
+        ),
+    ] {
+        let expected = sorted(&scanned(&sql)).await;
+        assert!(!expected.is_empty(), "{sql}");
+        assert_eq!(sorted(&sql).await, expected, "{sql}");
+        let plan = analyze(&sql).await;
+        let rejects = work
+            .iter()
+            .any(|metric| metric.starts_with("index_keys_rejected"));
+        assert!(
+            work.iter().all(|metric| plan.contains(metric))
+                && plan.contains("index_keys_rejected=") == rejects,
+            "{sql}: {plan}"
+        );
+    }
+    assert_eq!(
+        rows("SELECT entry_id FROM sys_vqueue_entry_status WHERE deployment = 'dp_new' AND stage = 'running'")
+            .await,
+        [[pinned.clone()]]
+    );
+
+    // A condition that can fail installs no check, whatever the others say: a
+    // record a status condition would reject must still reach the division, as
+    // it does when every status is fetched. The physical order is fixed here:
+    // the division first.
+    let schema = VqueueEntryStatus::arrow_schema();
+    let df_schema = DFSchema::try_from(schema.as_ref().clone()).unwrap();
+    let physical = |expr| {
+        SessionContext::new()
+            .create_physical_expr(expr, &df_schema)
+            .unwrap()
+    };
+    let failed = || col("status").eq(lit(ScalarValue::LargeUtf8(Some("failed".to_owned()))));
+    let dividing = physical(
+        (col("num_attempts") / col("num_errors"))
+            .gt(lit(0u32))
+            .and(failed()),
+    );
+    let comparing = physical(col("num_attempts").gt(lit(0u32)).and(failed()));
+    // Conditions on the key alone: navigation applies them.
+    let keyed = physical(
+        col("stage")
+            .eq(lit(ScalarValue::LargeUtf8(Some("running".to_owned()))))
+            .and(col("has_lock").eq(lit(true))),
+    );
+    let prefilters = |predicate| {
+        super::read::covered_prefilter(Some(predicate), &schema)
+            .unwrap()
+            .is_some()
+    };
+    assert_eq!(
+        [
+            prefilters(&dividing),
+            prefilters(&comparing),
+            prefilters(&keyed)
+        ],
+        [false, true, false],
+        "only_safe_value_conditions_prefilter"
+    );
+    let outcome = async |sql: &str| {
+        let result = session
+            .execute(sql, Default::default())
+            .await
+            .map_err(|error| error.to_string())?;
+        let batches: Vec<RecordBatch> = result
+            .stream
+            .try_collect()
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>(batches.iter().map(RecordBatch::num_rows).sum::<usize>())
+    };
+    let sql = format!(
+        "SELECT entry_id, deployment FROM sys_vqueues \
+         WHERE id = '{a}' AND num_attempts / num_errors > 0 AND status = 'backing-off'"
+    );
+    let (read, scan) = (outcome(&sql).await, outcome(&scanned(&sql)).await);
+    assert!(
+        [&read, &scan].iter().all(|outcome| outcome
+            .as_ref()
+            .is_err_and(|error| error.contains("Divide by zero"))),
+        "{read:?} {scan:?}"
+    );
 }

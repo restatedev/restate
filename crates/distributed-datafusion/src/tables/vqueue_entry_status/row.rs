@@ -11,8 +11,9 @@
 use restate_clock::RoughTimestamp;
 use restate_storage_api::vqueue_table::stats::EntryStatistics;
 use restate_storage_api::vqueue_table::{EntryMetadataRef, RawStatusHeaderRef, Stage, Status};
+use restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatusRow;
 use restate_types::identifiers::BaseEntryId;
-use restate_types::vqueues::{Seq, VQueueIdRef};
+use restate_types::vqueues::{Seq, VQueueId, VQueueIdRef};
 
 use super::schema::SysVqueueEntryStatusBuilder;
 
@@ -30,6 +31,63 @@ pub(crate) struct EntryState<'a> {
     pub(crate) status: Status,
     pub(crate) metadata: &'a EntryMetadataRef<'a>,
     pub(crate) stats: &'a EntryStatistics,
+}
+
+/// The native row of an entry, for checking conditions on it, with the columns
+/// [`append_entry_row`] writes from the same parts, except the metadata, which
+/// is left empty: the row is for conditions on other columns.
+pub(crate) fn covered_row(
+    id: &BaseEntryId,
+    place: &EntryPlace<'_>,
+    state: &EntryState<'_>,
+) -> VqueueEntryStatusRow {
+    let stats = state.stats;
+    let latest = stats.latest_attempt_wait_stats;
+    let total = stats.total_wait_stats;
+    VqueueEntryStatusRow {
+        partition_key: id.partition_key(),
+        entry_id: *id,
+        vqueue_id: VQueueId::from_raw_bytes(&mut place.qid.as_raw_bytes()),
+        stage: place.stage,
+        status: state.status,
+        has_lock: place.has_lock,
+        next_at: place.next_run_at.as_unix_millis(),
+        sequence_number: place.seq.as_u64(),
+        entry_kind: id.kind(),
+        created_at: stats.created_at.to_unix_millis(),
+        transitioned_at: stats.transitioned_at.to_unix_millis(),
+        num_attempts: stats.num_attempts,
+        num_errors: stats.num_errors,
+        num_pauses: stats.num_paused,
+        num_suspensions: stats.num_suspensions,
+        num_yields: stats.num_yields,
+        first_attempt_at: stats.first_attempt_at.map(|at| at.to_unix_millis()),
+        latest_attempt_at: stats.latest_attempt_at.map(|at| at.to_unix_millis()),
+        first_runnable_at: stats.first_runnable_at,
+        deployment: None,
+        needed_memory: None,
+        retry_attempts: 0,
+        retry_count_since_last_stored_command: 0,
+        latest_attempt_blocked_on_invoker_concurrency: latest.blocked_on_invoker_concurrency_ms
+            as i64,
+        latest_attempt_blocked_on_throttling_rules: latest.blocked_on_throttling_rules_ms as i64,
+        latest_attempt_blocked_on_invoker_throttling: latest.blocked_on_invoker_throttling_ms
+            as i64,
+        latest_attempt_blocked_on_invoker_memory: latest.blocked_on_invoker_memory_ms as i64,
+        latest_attempt_blocked_on_concurrency_rules: latest.blocked_on_concurrency_rules_ms as i64,
+        latest_attempt_blocked_on_lock: latest.blocked_on_lock_ms as i64,
+        latest_attempt_blocked_on_deployment_concurrency: latest
+            .blocked_on_deployment_concurrency_ms
+            as i64,
+        total_blocked_on_invoker_concurrency: total.blocked_on_invoker_concurrency_ms as i64,
+        total_blocked_on_throttling_rules: total.blocked_on_throttling_rules_ms as i64,
+        total_blocked_on_invoker_throttling: total.blocked_on_invoker_throttling_ms as i64,
+        total_blocked_on_invoker_memory: total.blocked_on_invoker_memory_ms as i64,
+        total_blocked_on_concurrency_rules: total.blocked_on_concurrency_rules_ms as i64,
+        total_blocked_on_lock: total.blocked_on_lock_ms as i64,
+        total_blocked_on_deployment_concurrency: total.blocked_on_deployment_concurrency_ms as i64,
+        canonical_id: id.canonicalize(place.seq),
+    }
 }
 
 #[inline]
