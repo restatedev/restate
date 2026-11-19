@@ -549,7 +549,7 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 mod tests {
-    use bytes::BytesMut;
+    use bytes::{Bytes, BytesMut};
 
     use restate_storage_api::Transaction;
     use restate_types::identifiers::InvocationUuid;
@@ -558,7 +558,8 @@ mod tests {
     use crate::journal_table_v2::JournalCompletionIdToCommandIndexKey;
     use crate::keys::{EncodeTableKey, KeyKind};
     use crate::registry::MigrationState::{Complete, InProgress};
-    use crate::registry::records;
+    use crate::registry::{IndexKind, IndexStatus, Registry, records};
+    use crate::walk::WalkMember;
     use crate::walk::engine::{Slice, SliceBudget};
     use crate::{MigrationError, PartitionStore, StorageAccess};
 
@@ -922,6 +923,154 @@ mod tests {
         assert_eq!(store.entry::<Mark>().unwrap().state(), Some(Complete));
         store.knowing(&[]);
         assert!(store.open().await.is_err());
+    }
+
+    #[test]
+    fn walks_run_only_with_the_links_their_kind_expects() {
+        let walk = |kind: WalkKind, source: Source| Walk {
+            id: 1,
+            kind,
+            source: source as u32,
+            end: Bytes::new(),
+            cursor: None,
+            params: Bytes::new(),
+            members: Vec::new(),
+            on_unknown: OnUnknown::Discard as u32,
+        };
+        let backfill = walk(WalkKind::index_backfill(), Source::EntryStatus);
+        let marks = walk(MARK.walk_kind(), Mark::SOURCE);
+        let mut evidence = marks.clone();
+        evidence.members.push(WalkMember {
+            index: 64,
+            joined_at: None,
+            uncovered: 1,
+        });
+        let gone = WalkKind {
+            name: ReString::from_static("gone"),
+            version: 1,
+        };
+        let unknown = walk(gone, Mark::SOURCE);
+        // A registry whose `migrations` link walk 1, and an index too if `index`.
+        let linking = |migrations: &[&str], index: bool| {
+            let mut registry = Registry::default();
+            if index {
+                let id = registry.register("idx/1", IndexKind::Secondary).unwrap();
+                registry.link(id, 1).unwrap();
+            }
+            for name in migrations {
+                let (keep, by) = (MigrationOnUnknown::Keep, ReString::from_static("1.9.0"));
+                let id = registry.register_migration(name, keep, 0, by).unwrap();
+                registry.set_migration_walk(id, Some(1)).unwrap();
+            }
+            registry
+        };
+        let cases = [
+            ("an index backfill", &backfill, linking(&[], true), true),
+            (
+                "... a migration links",
+                &backfill,
+                linking(&["later/1"], true),
+                false,
+            ),
+            (
+                "a known migration's walk",
+                &marks,
+                linking(&[Mark::NAME], false),
+                true,
+            ),
+            (
+                "... nothing links: inconsistent",
+                &marks,
+                linking(&[], false),
+                true,
+            ),
+            (
+                "... another migration links",
+                &marks,
+                linking(&["later/1"], false),
+                false,
+            ),
+            (
+                "... a second one links",
+                &marks,
+                linking(&[Mark::NAME, "later/1"], false),
+                false,
+            ),
+            (
+                "... an index links",
+                &marks,
+                linking(&[Mark::NAME], true),
+                false,
+            ),
+            (
+                "... with member evidence",
+                &evidence,
+                linking(&[Mark::NAME], false),
+                false,
+            ),
+            (
+                "an unknown kind",
+                &unknown,
+                linking(&["gone/1"], false),
+                false,
+            ),
+        ];
+        for (case, walk, registry, known) in cases {
+            assert_eq!(walk.is_known(Some(&registry), &[MARK]), known, "{case}");
+        }
+    }
+
+    #[restate_core::test]
+    async fn walks_linked_as_a_later_release_may_follow_their_policy() {
+        let mut store = Harness::fenced(&[MARK]).await;
+        let rows = seed(store.store(), [1, 2, 3]).await;
+        store.open().await.unwrap();
+        store.slice::<Mark>(2).await.unwrap();
+        let walk = store.entry::<Mark>().unwrap().walk.unwrap();
+
+        // A later release runs a migration of its own and an index build on
+        // Mark's walk too. This binary can't run that walk.
+        let db = store.store().partition_db().clone();
+        let (records, _) = records::load(&db).unwrap();
+        let (mut registry, mut walks) = (records.registry.unwrap(), records.walks);
+        let by = ReString::from_static("1.9.0");
+        let keep = MigrationOnUnknown::Keep;
+        let later = registry.register_migration("later/1", keep, 1, by).unwrap();
+        registry.set_migration_walk(later, Some(walk)).unwrap();
+        let build = registry
+            .register("later_index/1", IndexKind::Secondary)
+            .unwrap();
+        registry.link(build, walk).unwrap();
+        let mut policy = |on_unknown: OnUnknown| {
+            let shared = walks.entries_mut().iter_mut().find(|w| w.id == walk);
+            shared.unwrap().on_unknown = on_unknown as u32;
+            records::testing::overwrite(&db, &registry, &walks);
+        };
+
+        // If the walk refuses, the open fails and changes nothing.
+        policy(OnUnknown::Refuse);
+        let before = records::get_registry(&db).unwrap();
+        assert!(matches!(
+            store.open().await,
+            Err(MigrationError::MigrationBarrier(reason))
+                if reason.contains(&format!("walk {walk}")) && reason.contains("can't run")
+        ));
+        assert_eq!(records::get_registry(&db).unwrap(), before);
+
+        // If it may be discarded, the open removes it. Mark restarts from the
+        // beginning with a walk of its own, the unknown migration waits
+        // unlinked, and the unknown build is retired.
+        policy(OnUnknown::Discard);
+        store.open().await.unwrap();
+        let reopened = records::get_registry(&db).unwrap().unwrap();
+        let restarted = reopened.migration(Mark::NAME).unwrap().walk;
+        assert!(restarted.is_some_and(|restarted| restarted != walk));
+        let waiting = reopened.get_migration(later).unwrap();
+        assert_eq!((waiting.state(), waiting.walk), (Some(InProgress), None));
+        assert_eq!(reopened.get(build).unwrap().state, IndexStatus::Dropped);
+        store.run::<Mark>(10).await.unwrap();
+        assert_eq!(marked(store.store(), &rows), [true; 3]);
+        assert_eq!(store.entry::<Mark>().unwrap().state(), Some(Complete));
     }
 
     #[restate_core::test]
