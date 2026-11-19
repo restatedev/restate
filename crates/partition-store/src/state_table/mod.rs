@@ -28,6 +28,7 @@ use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
 
+use restate_core::io::IoExecutor;
 use restate_memory::{
     ClaimedMemoryPool, LentMemoryPool, LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream,
     ReserveMemory, WithPinHandle,
@@ -41,7 +42,7 @@ use restate_types::{Scope, ServiceName};
 use restate_util_string::ReString;
 
 use crate::TableKind::State;
-use crate::budgeted_reads::budgeted_get;
+use crate::budgeted_reads::{MAX_INLINE_ROWS, budgeted_get};
 use crate::features::StorageFeatures;
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, OptionalScope, define_table_key};
 use crate::scan::PhysicalScan;
@@ -473,13 +474,14 @@ impl PartitionStoreSnapshot<'_> {
     /// A [`LocalMemoryLease`] is acquired from `budget` for that size, and only
     /// then is the entry decoded.
     ///
-    /// `budget` may be lent to a storage worker until the stream is done or
-    /// dropped: the stream keeps it borrowed, and claiming it again afterwards
-    /// waits for it to come back.
+    /// `budget` may be lent to a worker of `executor` until the stream is done
+    /// or dropped: the stream keeps it borrowed, and claiming it again
+    /// afterwards waits for it to come back.
     pub fn get_all_user_states_budgeted<'a>(
         &'a self,
         service_id: &ServiceId,
         budget: ClaimedMemoryPool<'a>,
+        executor: &(impl IoExecutor + Sync),
     ) -> Result<
         impl PinnableMemoryStream<
             Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>,
@@ -489,7 +491,7 @@ impl PartitionStoreSnapshot<'_> {
         self.assert_partition_key(service_id)?;
         let scan =
             get_all_user_states_for_service_physical_scan(self.storage_features(), service_id);
-        self.budgeted_scan(
+        self.prepare_budgeted_scan(
             "get-all-user-states-budgeted",
             scan,
             budget,
@@ -500,6 +502,7 @@ impl PartitionStoreSnapshot<'_> {
                 )
             },
         )
+        .run_cached_then_offload(MAX_INLINE_ROWS, executor)
     }
 }
 

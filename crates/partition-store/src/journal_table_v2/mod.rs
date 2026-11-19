@@ -23,6 +23,7 @@ use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use futures_util::stream;
 
+use restate_core::io::IoExecutor;
 use restate_memory::{ClaimedMemoryPool, LocalMemoryLease, LocalMemoryPool};
 use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
 use restate_storage_api::blob_table::{BlobBuilder, WriteBlobTable};
@@ -42,7 +43,7 @@ use restate_types::storage::StoredRawEntry;
 
 use crate::TableKind::Journal;
 use crate::blob_table::{BlobReader, get_blob_payload};
-use crate::budgeted_reads::budgeted_get;
+use crate::budgeted_reads::{MAX_INLINE_ROWS, budgeted_get};
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
 use crate::owned_iter::OwnedIterator;
 use crate::scan::PhysicalScan;
@@ -844,14 +845,15 @@ impl PartitionStoreSnapshot<'_> {
     /// then is the entry decoded. This prevents memory allocation when the
     /// budget is exhausted.
     ///
-    /// `budget` may be lent to a storage worker until the stream is done or
-    /// dropped: the stream keeps it borrowed, and claiming it again afterwards
-    /// waits for it to come back.
+    /// `budget` may be lent to a worker of `executor` until the stream is done
+    /// or dropped: the stream keeps it borrowed, and claiming it again
+    /// afterwards waits for it to come back.
     pub fn get_journal_v2_budgeted<'a>(
         &'a self,
         invocation_id: InvocationId,
         journal_length: EntryIndex,
         budget: ClaimedMemoryPool<'a>,
+        executor: &(impl IoExecutor + Sync),
     ) -> Result<
         impl Stream<Item = std::result::Result<BudgetedJournalItem, BudgetedReadError>> + Send + 'a,
     > {
@@ -860,18 +862,17 @@ impl PartitionStoreSnapshot<'_> {
             return Ok(stream::empty().left_stream());
         }
         let mut remaining = journal_length;
-        // The scan outlives this borrow of the snapshot, so it reads blobs with its own reader.
-        let reader = self.owned_reader();
-        let rows = self.budgeted_scan(
+        // The scan doesn't hydrate its entries: that reads their blobs, which a
+        // scan must not do on its caller's task.
+        let scan = self.prepare_budgeted_scan(
             "get-journal-v2-budgeted",
             journal_physical_scan(&invocation_id),
             budget,
+            // Reserved for the hydrated entry.
             |_key, value| budgeted_entry_cost(value),
             move |key, value, lease| {
-                let row = decode_journal_entry_v2(key, value).and_then(|(index, entry)| {
-                    let entry = hydrate_with_reader(&mut BlobReader::Snapshot(&reader), entry)?;
-                    Ok((index, entry, lease))
-                });
+                let row =
+                    decode_journal_entry_v2(key, value).map(|(index, entry)| (index, entry, lease));
                 remaining -= 1;
                 // Stop at the last entry rather than stepping past it.
                 if remaining == 0 {
@@ -880,7 +881,15 @@ impl PartitionStoreSnapshot<'_> {
                     TableScanIterationDecision::Emit(row)
                 }
             },
-        )?;
+        );
+        let rows = scan.run_cached_then_offload(MAX_INLINE_ROWS, executor)?;
+        let rows = rows.map(move |row| {
+            let (index, entry, lease) = row?;
+            // TODO: this reads the entry's blob on the stream's task, where it
+            // may wait for the disk. The next PR reads it from memory, or on a
+            // storage worker.
+            Ok((index, hydrate_journal_entry(self, entry)?, lease))
+        });
         Ok(rows.right_stream())
     }
 }

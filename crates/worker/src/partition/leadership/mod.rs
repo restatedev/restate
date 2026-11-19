@@ -695,7 +695,16 @@ where
                 InvokerService::from_options(
                     processor.partition_id(),
                     processor.key_range(),
-                    InvokerStorageReader::new(partition_store.clone()),
+                    InvokerStorageReader::new(
+                        partition_store.clone(),
+                        // Where the invoker's reads continue when they need the disk.
+                        partition_store
+                            .partition_db()
+                            .rocksdb()
+                            .executor()
+                            .low_pri()
+                            .clone(),
+                    ),
                     invoker_tx,
                     &config.worker.invoker.service_client,
                     schema,

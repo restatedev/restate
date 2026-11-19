@@ -20,6 +20,7 @@ use restate_memory::{
     OutOfMemoryKind, PinnableMapErr, PinnableMemoryStream,
 };
 use restate_partition_store::{PartitionStore, PartitionStoreSnapshot};
+use restate_rocksdb::SinglePoolExecutor;
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_storage_api::{
     BudgetedReadError, StorageError, journal_table as journal_table_v1, journal_table_v2,
@@ -64,12 +65,19 @@ impl From<BudgetedReadError> for InvokerStorageReaderError {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct InvokerStorageReader(PartitionStore);
+#[derive(Clone)]
+pub(crate) struct InvokerStorageReader {
+    storage: PartitionStore,
+    // Reads what isn't in memory, so that the invoker's tasks don't wait for
+    // the disk.
+    executor: SinglePoolExecutor,
+}
 
 impl InvokerStorageReader {
-    pub(crate) fn new(storage: PartitionStore) -> Self {
-        InvokerStorageReader(storage)
+    /// Reads from `storage`. Its scans and point reads read what isn't in
+    /// memory on the workers of `executor`.
+    pub(crate) fn new(storage: PartitionStore, executor: SinglePoolExecutor) -> Self {
+        InvokerStorageReader { storage, executor }
     }
 }
 
@@ -80,10 +88,13 @@ impl InvocationReader for InvokerStorageReader {
     fn transaction(&mut self) -> Result<Self::Transaction<'_>, Self::Error> {
         // A snapshot gives consistent reads in the presence of concurrent writes.
         let snapshot = self
-            .0
+            .storage
             .snapshot()
             .map_err(|_| InvokerStorageReaderError::Storage(StorageError::OperationalError))?;
-        Ok(InvokerStorageReaderTransaction { snapshot })
+        Ok(InvokerStorageReaderTransaction {
+            snapshot,
+            executor: &self.executor,
+        })
     }
 
     async fn read_journal_entry_budgeted(
@@ -95,13 +106,13 @@ impl InvocationReader for InvokerStorageReader {
     ) -> Result<Option<(JournalEntry, LocalMemoryLease)>, InvokerStorageReaderError> {
         if journal_kind == JournalKind::V2 {
             let result = self
-                .0
+                .storage
                 .get_journal_v2_entry_budgeted(*invocation_id, entry_index, budget)
                 .await?;
             Ok(result.map(|(entry, lease)| (JournalEntry::JournalV2(entry), lease)))
         } else {
             let result = self
-                .0
+                .storage
                 .get_journal_v1_entry_budgeted(invocation_id, entry_index, budget)
                 .await?;
             Ok(result.map(|(je, lease)| {
@@ -125,7 +136,7 @@ impl InvocationReader for InvokerStorageReader {
         budget: &mut LocalMemoryPool,
     ) -> Result<Option<(Bytes, LocalMemoryLease)>, InvokerStorageReaderError> {
         Ok(self
-            .0
+            .storage
             .get_user_state_budgeted(service_id, key, budget)
             .await?)
     }
@@ -133,6 +144,7 @@ impl InvocationReader for InvokerStorageReader {
 
 pub(crate) struct InvokerStorageReaderTransaction<'a> {
     snapshot: PartitionStoreSnapshot<'a>,
+    executor: &'a SinglePoolExecutor,
 }
 
 impl InvocationReaderTransaction for InvokerStorageReaderTransaction<'_> {
@@ -199,17 +211,23 @@ impl InvocationReaderTransaction for InvokerStorageReaderTransaction<'_> {
         budget: ClaimedMemoryPool<'a>,
     ) -> Result<Self::LocalMemoryPooledJournalStream<'a>, Self::Error> {
         if journal_kind == JournalKind::V2 {
-            let stream = self
-                .snapshot
-                .get_journal_v2_budgeted(*invocation_id, length, budget)?;
+            let stream = self.snapshot.get_journal_v2_budgeted(
+                *invocation_id,
+                length,
+                budget,
+                self.executor,
+            )?;
             Ok(Box::pin(stream.map(|result| {
                 let (_, entry, lease) = result?;
                 Ok((JournalEntry::JournalV2(entry), lease))
             })))
         } else {
-            let stream = self
-                .snapshot
-                .get_journal_v1_budgeted(invocation_id, length, budget)?;
+            let stream = self.snapshot.get_journal_v1_budgeted(
+                invocation_id,
+                length,
+                budget,
+                self.executor,
+            )?;
             Ok(Box::pin(stream.map(|result| {
                 result
                     .map(|(_, journal_entry, lease)| {
@@ -237,9 +255,11 @@ impl InvocationReaderTransaction for InvokerStorageReaderTransaction<'_> {
         let (stream, partial) = match eager_state_config {
             // Preload the full state.
             StatePreloadPolicy::All => {
-                let stream = self
-                    .snapshot
-                    .get_all_user_states_budgeted(service_id, budget)?;
+                let stream = self.snapshot.get_all_user_states_budgeted(
+                    service_id,
+                    budget,
+                    self.executor,
+                )?;
                 let stream = PinnableMapErr::new(stream, InvokerStorageReaderError::from);
                 (Either::Left(stream), false)
             }

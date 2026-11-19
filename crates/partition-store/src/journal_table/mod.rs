@@ -12,6 +12,7 @@ use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use futures_util::stream;
 
+use restate_core::io::IoExecutor;
 use restate_memory::{ClaimedMemoryPool, LocalMemoryLease, LocalMemoryPool};
 use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
 use restate_storage_api::journal_table::{
@@ -24,7 +25,7 @@ use restate_types::identifiers::{
 };
 
 use crate::TableKind::Journal;
-use crate::budgeted_reads::budgeted_get;
+use crate::budgeted_reads::{MAX_INLINE_ROWS, budgeted_get};
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
 use crate::scan::PhysicalScan;
 use crate::{
@@ -321,14 +322,15 @@ impl PartitionStoreSnapshot<'_> {
     /// then is the entry decoded. This prevents memory allocation when the
     /// budget is exhausted.
     ///
-    /// `budget` may be lent to a storage worker until the stream is done or
-    /// dropped: the stream keeps it borrowed, and claiming it again afterwards
-    /// waits for it to come back.
+    /// `budget` may be lent to a worker of `executor` until the stream is done
+    /// or dropped: the stream keeps it borrowed, and claiming it again
+    /// afterwards waits for it to come back.
     pub fn get_journal_v1_budgeted<'a>(
         &'a self,
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
         budget: ClaimedMemoryPool<'a>,
+        executor: &(impl IoExecutor + Sync),
     ) -> Result<
         impl Stream<
             Item = std::result::Result<
@@ -343,7 +345,7 @@ impl PartitionStoreSnapshot<'_> {
             return Ok(stream::empty().left_stream());
         }
         let mut remaining = journal_length;
-        let rows = self.budgeted_scan(
+        let scan = self.prepare_budgeted_scan(
             "get-journal-budgeted",
             journal_physical_scan(invocation_id),
             budget,
@@ -359,7 +361,8 @@ impl PartitionStoreSnapshot<'_> {
                     TableScanIterationDecision::Emit(row)
                 }
             },
-        )?;
+        );
+        let rows = scan.run_cached_then_offload(MAX_INLINE_ROWS, executor)?;
         Ok(rows.right_stream())
     }
 }
