@@ -52,7 +52,7 @@ pub use stage_index::{
     PausedIndexBinding, PausedIndexTable, RunningIndexBinding, RunningIndexTable,
     SuspendedIndexBinding, SuspendedIndexTable,
 };
-pub use stage_reads::{StageReadCounters, StageReads};
+pub use stage_reads::{StagePrefilter, StageReadCounters, StageReads};
 pub use stage_rows::{
     StageRowCounters, StageRowRecords, StageRowRef, StageRowScan, StageRowsCursor,
 };

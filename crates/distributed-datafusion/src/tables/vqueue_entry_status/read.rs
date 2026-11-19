@@ -14,10 +14,12 @@ use std::sync::Arc;
 
 use bilrost::{Message, OwnedMessage};
 use datafusion::arrow::compute::SortOptions;
-use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::logical_expr::Operator;
+use datafusion::physical_expr::conjunction_opt;
 use datafusion::physical_expr::expressions::{BinaryExpr, Column, InListExpr, Literal};
+use datafusion::physical_expr::utils::{collect_columns, split_conjunction};
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::metrics::Count;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
@@ -32,8 +34,8 @@ use restate_partition_store::keys::selection::KeySelection;
 use restate_partition_store::vqueue_table::{
     ActiveEntryByStage as StoredActiveIndex, ActiveRead, EntryStatusCursor, EntryStatusKey,
     EntryStatusKeys, EntryStatusRecords, EntryStatusScan,
-    FinishedEntryByOutcome as StoredFinishedIndex, FinishedRead, StageReads, StageRowRecords,
-    StageRowScan, StageRowsCursor,
+    FinishedEntryByOutcome as StoredFinishedIndex, FinishedRead, StagePrefilter, StageReads,
+    StageRowRecords, StageRowScan, StageRowsCursor,
 };
 use restate_storage_api::vqueue_table::Stage;
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
@@ -59,12 +61,15 @@ use crate::access::{
     CompleteIndex, IndexOrder, PrimaryKeys, PrimaryRead, PrimarySelection, covers,
 };
 use crate::batches::{BatchSink, Batches, scan_rows_into};
+use crate::distributed::emission::emission_filter;
 use crate::schema_scan::compile_selection;
 use crate::table_providers::{
     InOrder, PartitionReadContext, PreparedPartitionRead, ReadMetrics, ScanPartition,
 };
 
-use super::row::{EntryPlace, EntryState, append_entry_row, append_vqueue_entry_status_row};
+use super::row::{
+    EntryPlace, EntryState, append_entry_row, append_vqueue_entry_status_row, covered_row,
+};
 
 /// Complete physical locators, independently of the SQL string representation.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, bilrost::Message)]
@@ -140,6 +145,75 @@ const STAGE_KEY_COLUMNS: &[VqueueEntryStatusColumn] = &[
     VqueueEntryStatusColumn::EntryKind,
     VqueueEntryStatusColumn::CanonicalId,
 ];
+
+/// The query's conditions on columns a stage record holds exactly
+/// ([`STAGE_COVERS`]), as a check of the record before its status is fetched:
+/// only the conjuncts that read no other column are checked, which every row
+/// the query keeps passes. `None` without such conditions, or if any part of
+/// the predicate, over `schema`, could fail: a rejected record must still reach
+/// a failing condition, as it does when every status is fetched (see
+/// [`emission`](crate::distributed::emission)). `None` too if none of them
+/// reads the record's value: navigation applies most conditions on the key
+/// (queue, stage, lock, run time, sequence, IDs), so such a check would decode
+/// every value to reject little more. One navigation doesn't apply, such as on
+/// the entry kind, is then left to the fetched statuses.
+pub(super) fn covered_prefilter(
+    predicate: Option<&Arc<dyn PhysicalExpr>>,
+    schema: &Schema,
+) -> anyhow::Result<Option<StagePrefilter>> {
+    let Some(predicate) =
+        predicate.filter(|predicate| emission_filter(predicate, schema).is_some())
+    else {
+        return Ok(None);
+    };
+    let names = |columns: &[VqueueEntryStatusColumn]| -> Vec<&str> {
+        columns
+            .iter()
+            .filter_map(|&column| VqueueEntryStatus::sql_name(column))
+            .collect()
+    };
+    let (covered, keys) = (names(STAGE_COVERS), names(STAGE_KEY_COLUMNS));
+    let conjuncts: Vec<_> = split_conjunction(predicate)
+        .into_iter()
+        .filter(|conjunct| {
+            collect_columns(conjunct)
+                .iter()
+                .all(|column| covered.contains(&column.name()))
+        })
+        .cloned()
+        .collect();
+    let reads_values = conjuncts.iter().any(|conjunct| {
+        collect_columns(conjunct)
+            .iter()
+            .any(|column| !keys.contains(&column.name()))
+    });
+    let Some(conjuncts) = conjunction_opt(conjuncts).filter(|_| reads_values) else {
+        return Ok(None);
+    };
+    let selection = compile_selection::<VqueueEntryStatus>(Some(&conjuncts))?;
+    if matches!(selection, Selection::All) {
+        return Ok(None);
+    }
+    Ok(Some(Arc::new(move |id, row| {
+        // Prefiltered reads always decode the value.
+        let Some(value) = &row.value else {
+            return true;
+        };
+        let place = EntryPlace {
+            qid: &row.qid,
+            stage: row.stage,
+            has_lock: row.has_lock,
+            next_run_at: row.run_at,
+            seq: row.seq,
+        };
+        let state = EntryState {
+            status: value.status,
+            metadata: &value.metadata,
+            stats: &value.stats,
+        };
+        covered_row(id, &place, &state).matches(&selection)
+    })))
+}
 
 /// The scheduler's stage tables, read as `_idx_entry_by_queue` for a finite set
 /// of queues. They hold exactly one key per current entry status, maintained
@@ -522,7 +596,7 @@ impl ScanPartition for EntryStatusScanner {
                 // from the shipped predicate, and the predicate stays residual.
                 let selection = index_restriction::<EntryByQueue>(predicate.as_slice())?
                     .map_or(Selection::Empty, |domains| domains.to_selection());
-                let reads = Arc::new(StageReads::prepare(&selection)?);
+                let reads = StageReads::prepare(&selection)?;
                 if covers::<StageIndex>(&projection) {
                     // The stage records alone, values only for columns beyond
                     // their keys.
@@ -531,9 +605,18 @@ impl ScanPartition for EntryStatusScanner {
                             VqueueEntryStatus::sql_name(column) == Some(field.name())
                         })
                     });
-                    EntryStatusAccess::Covered(StageRowScan { reads, values })
+                    EntryStatusAccess::Covered(StageRowScan {
+                        reads: Arc::new(reads),
+                        values,
+                    })
                 } else {
-                    EntryStatusAccess::Stages(reads)
+                    // Fetched, after a check of the conditions the records
+                    // answer themselves.
+                    let reads = match covered_prefilter(predicate.as_ref(), &projection)? {
+                        Some(prefilter) => reads.with_prefilter(prefilter),
+                        None => reads,
+                    };
+                    EntryStatusAccess::Stages(Arc::new(reads))
                 }
             }
             PrimaryRead::MultiGet(keys) => EntryStatusAccess::MultiGet(decode_keys(&keys)?.into()),
@@ -640,8 +723,13 @@ impl EntryStatusRead {
         chosen: Option<tokio::sync::oneshot::Sender<EntryIndexPath>>,
     ) -> anyhow::Result<SendableRecordBatchStream> {
         anyhow::ensure!(batch_size > 0, "batch size must be positive");
-        let index_metrics = matches!(self.access, EntryStatusAccess::Stages(_))
-            .then(|| IndexMetrics::new(&metrics));
+        let index_metrics = match &self.access {
+            EntryStatusAccess::Stages(reads) if reads.prefiltered() => {
+                Some(IndexMetrics::new(&metrics).with_rejections(&metrics))
+            }
+            EntryStatusAccess::Stages(_) => Some(IndexMetrics::new(&metrics)),
+            _ => None,
+        };
         let stage_metrics = matches!(self.access, EntryStatusAccess::Covered(_))
             .then(|| StageRowMetrics::new(&metrics));
         // What an entry index read did: its path and why, the runs it merged,
@@ -833,6 +921,9 @@ pub(crate) struct IndexMetrics {
     primary_missing: Count,
     /// References whose primary record names another tuple or incarnation.
     primary_mismatched: Count,
+    /// Index keys a prefilter rejected before their primary records were
+    /// fetched, for reads with one.
+    rejected: Option<Count>,
 }
 
 impl IndexMetrics {
@@ -843,6 +934,15 @@ impl IndexMetrics {
             primary_fetched: metrics.counter("primary_keys_fetched"),
             primary_missing: metrics.counter("primary_missing"),
             primary_mismatched: metrics.counter("primary_mismatched"),
+            rejected: None,
+        }
+    }
+
+    /// Also counts the keys a prefilter rejects.
+    fn with_rejections(self, metrics: &ReadMetrics) -> Self {
+        Self {
+            rejected: Some(metrics.counter("index_keys_rejected")),
+            ..self
         }
     }
 }
@@ -862,6 +962,9 @@ impl Drop for CountedCursor {
             metrics.primary_fetched.add(counters.fetched as usize);
             metrics.primary_missing.add(counters.missing as usize);
             metrics.primary_mismatched.add(counters.mismatched as usize);
+            if let Some(rejected) = &metrics.rejected {
+                rejected.add(counters.rejected as usize);
+            }
         }
     }
 }
