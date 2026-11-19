@@ -31,7 +31,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, instrument};
 
-use restate_memory::{LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
+use restate_memory::{LendableMemoryPool, LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
 use restate_service_client::{ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::LimitKey;
 use restate_types::deployment::PinnedDeployment;
@@ -384,14 +384,18 @@ where
         ),
         skip_all,
     )]
-    pub async fn run<IR>(mut self, mut invocation_reader: IR, mut budget: LocalMemoryPool)
+    pub async fn run<IR>(mut self, mut invocation_reader: IR, budget: LocalMemoryPool)
     where
         IR: InvocationReader + Clone,
     {
         let start = Instant::now();
+        let mut budget = LendableMemoryPool::new(budget);
         let terminal_state = self
             .select_protocol_version_and_run(&mut invocation_reader, &mut budget)
             .await;
+        // A read that was cut short may still be finishing on a storage worker
+        // with the budget lent to it.
+        let mut budget = budget.into_inner().await;
 
         // Failed and ShouldYield return the budget to the invoker main loop.
         // Failed: the budget is stashed on the ISM for retry reuse.
@@ -433,7 +437,7 @@ where
     async fn select_protocol_version_and_run<IR>(
         &mut self,
         invocation_reader: &mut IR,
-        invocation_budget: &mut LocalMemoryPool,
+        invocation_budget: &mut LendableMemoryPool,
     ) -> TerminalLoopState<()>
     where
         IR: InvocationReader + Clone,

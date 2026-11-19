@@ -54,7 +54,6 @@ use restate_types::storage::StorageEncode;
 use restate_util_string::ReString;
 
 use crate::PartitionStoreSnapshot;
-use crate::blob_table::BlobReader;
 use crate::features::{LoadedStorageFeatures, StorageFeatures};
 use crate::fsm_table::delete_applied_lsn;
 use crate::fsm_table::get_partition_seal;
@@ -1063,11 +1062,6 @@ impl StorageRead for PartitionStore {
         self.key_buffer.reserve(min_size);
         &mut self.key_buffer
     }
-
-    #[inline]
-    fn blob_reader(&self) -> BlobReader<'_> {
-        self.partition_db().into()
-    }
 }
 
 impl StorageAccess for PartitionStore {
@@ -1679,16 +1673,6 @@ impl StorageRead for PartitionStoreTransaction<'_> {
         self.key_buffer.reserve(min_size);
         self.key_buffer
     }
-
-    /// Reads through the write batch, so it sees the blobs written by this transaction.
-    #[inline]
-    fn blob_reader(&self) -> BlobReader<'_> {
-        // Seeks look for exact keys, so the iterator needs no bounds. A blob key is longer than
-        // the prefix extractor, so each seek checks the prefix filters.
-        let mut opts = ReadOptions::default();
-        opts.set_total_order_seek(false);
-        BlobReader::Batch(self.batch_iterator(self.cf_for_key_kind(KeyKind::Blob), opts))
-    }
 }
 
 impl StorageAccess for PartitionStoreTransaction<'_> {
@@ -1803,6 +1787,9 @@ pub(crate) trait StorageIterator {
     #[allow(clippy::type_complexity)]
     fn item(&self) -> Result<Option<(&[u8], &[u8])>>;
 
+    /// Moves to the first entry at or after `key`.
+    fn seek(&mut self, key: &[u8]);
+
     /// Moves to the next entry.
     fn next(&mut self);
 }
@@ -1820,6 +1807,11 @@ impl<D: rocksdb::DBAccess> StorageIterator for DBRawIteratorWithThreadMode<'_, D
     }
 
     #[inline]
+    fn seek(&mut self, key: &[u8]) {
+        DBRawIteratorWithThreadMode::seek(self, key)
+    }
+
+    #[inline]
     fn next(&mut self) {
         DBRawIteratorWithThreadMode::next(self)
     }
@@ -1829,6 +1821,11 @@ impl<H> StorageIterator for ReadIterator<'_, H> {
     #[inline]
     fn item(&self) -> Result<Option<(&[u8], &[u8])>> {
         ReadIterator::item(self).map_err(|err| StorageError::Generic(err.into()))
+    }
+
+    #[inline]
+    fn seek(&mut self, key: &[u8]) {
+        ReadIterator::seek(self, key)
     }
 
     #[inline]
@@ -1904,9 +1901,6 @@ pub(crate) trait StorageRead {
     /// Reads the value of `key`, whose kind is `key_kind`, without copying it.
     fn get<K: AsRef<[u8]>>(&self, key_kind: KeyKind, key: K)
     -> Result<Option<DBPinnableSlice<'_>>>;
-
-    /// Point reads of blob payloads, see [`BlobReader`].
-    fn blob_reader(&self) -> BlobReader<'_>;
 
     fn cleared_key_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut;
 

@@ -19,10 +19,11 @@
 use std::collections::HashMap;
 
 use anyhow::anyhow;
-use futures::Stream;
+use bytes::Bytes;
+use futures::{Stream, StreamExt};
 use futures_util::stream;
 
-use restate_memory::{LocalMemoryLease, LocalMemoryPool};
+use restate_memory::{ClaimedMemoryPool, LocalMemoryLease, LocalMemoryPool};
 use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
 use restate_storage_api::blob_table::{BlobBuilder, WriteBlobTable};
 use restate_storage_api::journal_table_v2::{
@@ -41,11 +42,13 @@ use restate_types::storage::StoredRawEntry;
 
 use crate::TableKind::Journal;
 use crate::blob_table::{BlobReader, get_blob_payload};
+use crate::budgeted_reads::budgeted_get;
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
 use crate::owned_iter::OwnedIterator;
+use crate::scan::PhysicalScan;
 use crate::{
     PartitionStore, PartitionStoreSnapshot, PartitionStoreTransaction, StorageAccess,
-    StorageIterator, StorageRead, TableScan, break_on_err,
+    StorageIterator, StorageRead, TableScan, TableScanIterationDecision, break_on_err,
 };
 
 define_table_key!(
@@ -251,88 +254,18 @@ fn hydrate_journal_entry<S: StorageRead>(
     Ok(entry.hydrate_with(content))
 }
 
-/// Budget-gated point read with a unified reserve-read-adjust loop (V2 journal).
-///
-/// See the V1 counterpart in `journal_table/mod.rs` for the full design
-/// rationale. The only difference is the decode step: V2 entries go through
-/// `StoredEntry::decode` and are unwrapped to `StoredRawEntry`.
-async fn get_journal_entry_budgeted<S: StorageRead>(
-    storage: &mut S,
-    invocation_id: &InvocationId,
-    journal_index: u32,
-    budget: &mut LocalMemoryPool,
-) -> std::result::Result<Option<(StoredRawEntry, LocalMemoryLease)>, BudgetedReadError> {
-    let key = write_journal_entry_key(invocation_id, journal_index);
-
-    // Serialize key once — reused for all reads.
-    let buf = {
-        let key_buf = storage.cleared_key_buffer_mut(key.serialized_length());
-        key.serialize_to(key_buf);
-        key_buf.split()
-    };
-
-    let mut lease = budget.empty_lease();
-
-    let entry = loop {
-        // Read raw value from RocksDB.
-        // RocksDbPerfGuard is !Send and must not live across .await.
-        let deficit = {
-            let _x = RocksDbReadPerfGuard::new("get-journal-entry-budgeted");
-            let Some(pinned) = storage.get(KeyKind::JournalV2, &buf)? else {
-                return Ok(None);
-            };
-
-            let raw_size = pinned.as_ref().len();
-            if raw_size <= lease.size() {
-                // Lease already covers (or exceeds) the value — shrink and decode.
-                lease.shrink(lease.size() - raw_size);
-                let mut slice = pinned.as_ref();
-                let entry = StoredEntry::decode(&mut slice)
-                    .map_err(|e| BudgetedReadError::Storage(StorageError::Generic(e.into())))?;
-                break entry.0;
-            }
-
-            // Need more budget. Try synchronous top-up first.
-            let deficit = raw_size - lease.size();
-            if let Some(extra) = budget.try_reserve(deficit) {
-                lease.merge(extra);
-                let mut slice = pinned.as_ref();
-                let entry = StoredEntry::decode(&mut slice)
-                    .map_err(|e| BudgetedReadError::Storage(StorageError::Generic(e.into())))?;
-                break entry.0;
-            }
-
-            deficit
-        };
-
-        // Pinned slice dropped — safe to .await now.
-        let extra = budget.reserve(deficit, lease.size()).await?;
-        lease.merge(extra);
-    };
-
-    reserve_content_blob(&entry, &mut lease, budget).await?;
-    let entry = hydrate_journal_entry(&*storage, entry)?;
-    Ok(Some((entry, lease)))
-}
-
-/// Grows `lease` to cover the content of the entry, if it's stored in a blob. The blob is read by
-/// the caller, without holding the storage across `.await` points.
-async fn reserve_content_blob(
-    entry: &StoredUnhydratedRawEntry,
-    lease: &mut LocalMemoryLease,
-    budget: &mut LocalMemoryPool,
-) -> std::result::Result<(), BudgetedReadError> {
-    let Some(content_blob) = entry.content_blob() else {
-        return Ok(());
-    };
-    // A size that doesn't fit in memory fails the reservation below with `OutOfMemory`
-    let size = usize::try_from(content_blob.size).unwrap_or(usize::MAX);
-    let extra = match budget.try_reserve(size) {
-        Some(extra) => extra,
-        None => budget.reserve(size, lease.size()).await?,
-    };
-    lease.merge(extra);
-    Ok(())
+/// What a budgeted read reserves for a journal entry: its stored value and, if its content is
+/// stored in a blob, that content too. Reserving both up front lets the read hydrate the entry
+/// under one lease, without waiting for budget in between.
+fn budgeted_entry_cost(mut value: &[u8]) -> usize {
+    let stored = value.len();
+    // A value that doesn't decode here fails when the entry is decoded.
+    let content = StoredEntryLite::decode(&mut value)
+        .ok()
+        .and_then(|entry| entry.content_blob)
+        // A size that doesn't fit in memory fails the reservation with `OutOfMemory`.
+        .map_or(0, |blob| usize::try_from(blob.size).unwrap_or(usize::MAX));
+    stored.saturating_add(content)
 }
 
 fn get_journal<'a, S: StorageRead>(
@@ -348,6 +281,13 @@ fn get_journal<'a, S: StorageRead>(
     let iter = storage.iterator_from(TableScan::Prefix(key))?;
 
     Ok(JournalEntryIter::new(iter, journal_length))
+}
+
+fn journal_physical_scan(invocation_id: &InvocationId) -> PhysicalScan<Bytes> {
+    let key = JournalKey::builder()
+        .partition_key(invocation_id.partition_key())
+        .invocation_uuid(invocation_id.invocation_uuid());
+    TableScan::Prefix(key).into()
 }
 
 fn delete_journal<S: StorageAccess + WriteBlobTable>(
@@ -691,29 +631,6 @@ impl ReadJournalTable for PartitionStore {
     ) -> Result<bool> {
         has_completion(self, invocation_id, completion_id)
     }
-
-    async fn get_journal_entry_budgeted(
-        &mut self,
-        invocation_id: InvocationId,
-        journal_index: u32,
-        budget: &mut LocalMemoryPool,
-    ) -> std::result::Result<Option<(StoredRawEntry, LocalMemoryLease)>, BudgetedReadError> {
-        self.assert_partition_key(&invocation_id)?;
-        get_journal_entry_budgeted(self, &invocation_id, journal_index, budget).await
-    }
-
-    fn get_journal_budgeted<'a>(
-        &'a self,
-        invocation_id: InvocationId,
-        journal_length: EntryIndex,
-        budget: &'a mut LocalMemoryPool,
-    ) -> Result<
-        impl Stream<Item = std::result::Result<BudgetedJournalItem, BudgetedReadError>> + Send + 'a,
-    > {
-        self.assert_partition_key(&invocation_id)?;
-        let iter = get_journal(self, &invocation_id, journal_length)?;
-        Ok(budgeted_journal_v2_stream(self.blob_reader(), iter, budget))
-    }
 }
 
 impl ScanJournalTable for PartitionStore {
@@ -826,29 +743,6 @@ impl ReadJournalTable for PartitionStoreTransaction<'_> {
     ) -> Result<bool> {
         has_completion(self, invocation_id, completion_id)
     }
-
-    async fn get_journal_entry_budgeted(
-        &mut self,
-        invocation_id: InvocationId,
-        journal_index: u32,
-        budget: &mut LocalMemoryPool,
-    ) -> std::result::Result<Option<(StoredRawEntry, LocalMemoryLease)>, BudgetedReadError> {
-        self.assert_partition_key(&invocation_id)?;
-        get_journal_entry_budgeted(self, &invocation_id, journal_index, budget).await
-    }
-
-    fn get_journal_budgeted<'a>(
-        &'a self,
-        invocation_id: InvocationId,
-        journal_length: EntryIndex,
-        budget: &'a mut LocalMemoryPool,
-    ) -> Result<
-        impl Stream<Item = std::result::Result<BudgetedJournalItem, BudgetedReadError>> + Send + 'a,
-    > {
-        self.assert_partition_key(&invocation_id)?;
-        let iter = get_journal(self, &invocation_id, journal_length)?;
-        Ok(budgeted_journal_v2_stream(self.blob_reader(), iter, budget))
-    }
 }
 
 impl ReadJournalTable for PartitionStoreSnapshot<'_> {
@@ -901,88 +795,94 @@ impl ReadJournalTable for PartitionStoreSnapshot<'_> {
     ) -> Result<bool> {
         has_completion(self, invocation_id, completion_id)
     }
+}
 
-    async fn get_journal_entry_budgeted(
+impl PartitionStore {
+    /// Budget-gated point read of a single journal entry.
+    ///
+    /// Fetches raw bytes from the store, peeks the serialized size, acquires a
+    /// [`LocalMemoryLease`] from `budget`, and only then decodes the entry.
+    pub async fn get_journal_v2_entry_budgeted(
         &mut self,
         invocation_id: InvocationId,
         journal_index: u32,
         budget: &mut LocalMemoryPool,
     ) -> std::result::Result<Option<(StoredRawEntry, LocalMemoryLease)>, BudgetedReadError> {
         self.assert_partition_key(&invocation_id)?;
-        get_journal_entry_budgeted(self, &invocation_id, journal_index, budget).await
+        let key = write_journal_entry_key(&invocation_id, journal_index);
+        let key = {
+            let key_buf = self.cleared_key_buffer_mut(key.serialized_length());
+            key.serialize_to(key_buf);
+            key_buf.split()
+        };
+        let storage: &Self = self;
+        budgeted_get(
+            storage,
+            "get-journal-entry-budgeted",
+            KeyKind::JournalV2,
+            &key,
+            budget,
+            budgeted_entry_cost,
+            |mut value, lease| {
+                let entry =
+                    StoredEntry::decode(&mut value).map_err(|e| StorageError::Generic(e.into()))?;
+                Ok((
+                    hydrate_with_reader(&mut BlobReader::from(storage.partition_db()), entry.0)?,
+                    lease,
+                ))
+            },
+        )
+        .await
     }
+}
 
-    fn get_journal_budgeted<'a>(
+impl PartitionStoreSnapshot<'_> {
+    /// Budget-gated journal stream.
+    ///
+    /// Each entry's raw byte size is peeked **before** deserialization. A
+    /// [`LocalMemoryLease`] is acquired from `budget` for that size, and only
+    /// then is the entry decoded. This prevents memory allocation when the
+    /// budget is exhausted.
+    ///
+    /// `budget` may be lent to a storage worker until the stream is done or
+    /// dropped: the stream keeps it borrowed, and claiming it again afterwards
+    /// waits for it to come back.
+    pub fn get_journal_v2_budgeted<'a>(
         &'a self,
         invocation_id: InvocationId,
         journal_length: EntryIndex,
-        budget: &'a mut LocalMemoryPool,
+        budget: ClaimedMemoryPool<'a>,
     ) -> Result<
         impl Stream<Item = std::result::Result<BudgetedJournalItem, BudgetedReadError>> + Send + 'a,
     > {
         self.assert_partition_key(&invocation_id)?;
-        let iter = get_journal(self, &invocation_id, journal_length)?;
-        Ok(budgeted_journal_v2_stream(self.blob_reader(), iter, budget))
+        if journal_length == 0 {
+            return Ok(stream::empty().left_stream());
+        }
+        let mut remaining = journal_length;
+        // The scan outlives this borrow of the snapshot, so it reads blobs with its own reader.
+        let reader = self.owned_reader();
+        let rows = self.budgeted_scan(
+            "get-journal-v2-budgeted",
+            journal_physical_scan(&invocation_id),
+            budget,
+            |_key, value| budgeted_entry_cost(value),
+            move |key, value, lease| {
+                let row = decode_journal_entry_v2(key, value).and_then(|(index, entry)| {
+                    let entry = hydrate_with_reader(&mut BlobReader::Snapshot(&reader), entry)?;
+                    Ok((index, entry, lease))
+                });
+                remaining -= 1;
+                // Stop at the last entry rather than stepping past it.
+                if remaining == 0 {
+                    TableScanIterationDecision::BreakWith(row)
+                } else {
+                    TableScanIterationDecision::Emit(row)
+                }
+            },
+        )?;
+        Ok(rows.right_stream())
     }
-}
-
-/// Wraps a [`JournalEntryIter`] into an async [`Stream`] that acquires a memory
-/// lease from `budget` **before** decoding each entry.
-///
-/// See the V1 counterpart in `journal_table/mod.rs` for the full design
-/// rationale — identical fast/slow path with `try_reserve` + `reserve`.
-fn budgeted_journal_v2_stream<'a, I: StorageIterator + Send + 'a>(
-    blob_reader: BlobReader<'a>,
-    iter: JournalEntryIter<I>,
-    budget: &'a mut LocalMemoryPool,
-) -> impl Stream<Item = std::result::Result<BudgetedJournalItem, BudgetedReadError>> + Send + 'a {
-    futures::stream::unfold(
-        (iter, budget, blob_reader),
-        |(mut iter, budget, mut blob_reader)| async move {
-            let mut lease = budget.empty_lease();
-            let decoded = loop {
-                let deficit = {
-                    let (k, v) = match iter.peek_item() {
-                        Some(Ok(item)) => item,
-                        Some(Err(e)) => return Some((Err(e.into()), (iter, budget, blob_reader))),
-                        None => return None,
-                    };
-
-                    let raw_size = v.len();
-                    if raw_size <= lease.size() {
-                        lease.shrink(lease.size() - raw_size);
-                        break decode_journal_entry_v2(k, v);
-                    }
-
-                    let deficit = raw_size - lease.size();
-                    if let Some(extra) = budget.try_reserve(deficit) {
-                        lease.merge(extra);
-                        break decode_journal_entry_v2(k, v);
-                    }
-
-                    deficit
-                };
-
-                let extra = match budget.reserve(deficit, lease.size()).await {
-                    Ok(l) => l,
-                    Err(e) => return Some((Err(e.into()), (iter, budget, blob_reader))),
-                };
-                lease.merge(extra);
-            };
-
-            let (idx, entry) = match decoded {
-                Ok(decoded) => decoded,
-                Err(e) => return Some((Err(e.into()), (iter, budget, blob_reader))),
-            };
-            iter.advance();
-            let item = match reserve_content_blob(&entry, &mut lease, budget).await {
-                Ok(()) => hydrate_with_reader(&mut blob_reader, entry).map_err(Into::into),
-                Err(err) => Err(err),
-            }
-            .map(|entry| (idx, entry, lease));
-            Some((item, (iter, budget, blob_reader)))
-        },
-    )
 }
 
 /// Like [`hydrate_journal_entry`], reading the blob with `blob_reader`.

@@ -15,15 +15,20 @@
 //! - [`MemoryLease`]: RAII guard for memory leases that can be passed through channels
 
 mod controller;
+mod lendable_pool;
 pub mod local_pool;
 mod metric_definitions;
 mod pinned_memory_stream;
 mod pool;
 
 pub use controller::MemoryController;
+pub use lendable_pool::{ClaimedMemoryPool, LendableMemoryPool, LentMemoryPool, PinHandle};
 pub use local_pool::{
     AvailabilityNotified, LocalMemoryLease, LocalMemoryPool, OutOfMemory, OutOfMemoryKind,
+    ReserveMemory,
 };
-pub use pinned_memory_stream::{IgnorePinnableMemoryStream, PinnableMapErr, PinnableMemoryStream};
+pub use pinned_memory_stream::{
+    IgnorePinnableMemoryStream, PinnableMapErr, PinnableMemoryStream, WithPinHandle,
+};
 pub use pool::{MemoryLease, MemoryPool, PollMemoryPool};
 pub use restate_util_bytecount::{ByteCount, NonZeroByteCount};

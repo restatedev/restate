@@ -15,7 +15,7 @@ use super::storage_test_environment;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::StreamExt;
-use restate_memory::LocalMemoryPool;
+use restate_memory::{LendableMemoryPool, LocalMemoryPool};
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::Transaction;
 use restate_storage_api::blob_table::{RawParts, ReadBlobTable};
@@ -395,41 +395,36 @@ async fn journal_entry_content_blob() {
     // The copy shares the blob
     txn.copy_journal_entry(&copy_id, 0, stored, &[]).unwrap();
 
-    // Budgeted scans of the transaction see the blobs it wrote, and their updated ref counts
-    let mut budget = LocalMemoryPool::unlimited();
-    let entries: Vec<_> = txn
-        .get_journal_budgeted(MOCK_INVOCATION_ID_1, 2, &mut budget)
-        .unwrap()
-        .map(|item| item.unwrap().1)
-        .collect()
-        .await;
-    assert_eq!(entries, [large.clone(), small.clone()]);
-    let entries: Vec<_> = txn
-        .get_journal_budgeted(copy_id, 1, &mut budget)
-        .unwrap()
-        .map(|item| item.unwrap().1)
-        .collect()
-        .await;
-    assert_eq!(entries, std::slice::from_ref(&large));
     txn.commit().await.unwrap();
     drop(txn);
 
     // Budgeted reads return hydrated entries, the lease covers the blob
+    let mut budget = LocalMemoryPool::unlimited();
     let (entry, lease) = rocksdb
-        .get_journal_entry_budgeted(MOCK_INVOCATION_ID_1, 0, &mut budget)
+        .get_journal_v2_entry_budgeted(MOCK_INVOCATION_ID_1, 0, &mut budget)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(entry, large);
     assert!(lease.size() > threshold);
     drop(lease);
-    let entries: Vec<_> = rocksdb
-        .get_journal_budgeted(MOCK_INVOCATION_ID_1, 2, &mut budget)
-        .unwrap()
-        .map(|item| item.unwrap().1)
-        .collect()
-        .await;
-    assert_eq!(entries, [large.clone(), small]);
+    let mut budget = LendableMemoryPool::new(budget);
+    for (invocation_id, expected) in [
+        (MOCK_INVOCATION_ID_1, vec![large.clone(), small]),
+        // The copy shares the blob
+        (copy_id, vec![large.clone()]),
+    ] {
+        let snapshot = rocksdb.snapshot().unwrap();
+        let entries: Vec<_> = snapshot
+            .get_journal_v2_budgeted(invocation_id, expected.len() as u32, budget.claim().await)
+            .unwrap()
+            .map(|item| item.unwrap())
+            .collect()
+            .await;
+        assert!(entries[0].2.size() > threshold);
+        let entries: Vec<_> = entries.into_iter().map(|(_, entry, _)| entry).collect();
+        assert_eq!(entries, expected);
+    }
     assert_eq!(
         rocksdb
             .get_blob::<RawParts>(blob_id)
