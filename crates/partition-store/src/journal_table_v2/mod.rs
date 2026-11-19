@@ -42,7 +42,7 @@ use restate_types::storage::StoredRawEntry;
 
 use crate::TableKind::Journal;
 use crate::blob_table::{BlobReader, get_blob_payload};
-use crate::budgeted_reads::budgeted_get;
+use crate::budgeted_reads::{MAX_INLINE_ROWS, budgeted_get};
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
 use crate::owned_iter::OwnedIterator;
 use crate::scan::PhysicalScan;
@@ -862,7 +862,7 @@ impl PartitionStoreSnapshot<'_> {
         let mut remaining = journal_length;
         // The scan outlives this borrow of the snapshot, so it reads blobs with its own reader.
         let reader = self.owned_reader();
-        let rows = self.budgeted_scan(
+        let scan = self.prepare_budgeted_scan(
             "get-journal-v2-budgeted",
             journal_physical_scan(&invocation_id),
             budget,
@@ -880,7 +880,8 @@ impl PartitionStoreSnapshot<'_> {
                     TableScanIterationDecision::Emit(row)
                 }
             },
-        )?;
+        );
+        let rows = scan.run_cached_then_offload(MAX_INLINE_ROWS, self.executor().low_pri())?;
         Ok(rows.right_stream())
     }
 }

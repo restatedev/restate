@@ -105,7 +105,7 @@ impl Admission for Cancelled {
 /// | `&C`, for a shared handle `C` | [`RocksDb::prepare`](crate::RocksDb::prepare) (the database), [`StorageOp::with_context`] | a clone of `C` | `&C` |
 /// | a [`ReadIterator`](crate::reads::ReadIterator) | [`ReadIterator::prepare`](crate::reads::ReadIterator::prepare) | the same iterator, made owned, at the same position | `&mut ReadIterator<'_, _>` |
 /// | `()` | operations that need nothing, such as deleting a column family | nothing | nothing |
-/// | [`Cooperative<C>`] | [`StorageOp::with_context_cancellable_async`], [`ReadIterator::prepare_iteration`](crate::reads::ReadIterator::prepare_iteration) | [`Cancellable<C::Owned>`] | the owned context and a required [`Cancelled`] observer |
+/// | [`Cooperative<C>`] | [`StorageOp::with_context_cancellable_async`], [`ReadSnapshot::prepare_iteration`](crate::reads::ReadSnapshot::prepare_iteration) | [`Cancellable<C::Owned>`] | the owned context and a required [`Cancelled`] observer |
 ///
 /// A shared handle is a type such as `Arc<RocksDb>`, a `Scope`, or a
 /// `ReadSnapshot`: its clones are cheap and point to the same thing. See
@@ -258,11 +258,29 @@ pub struct Gated<'a>(&'a Arc<Gate>);
 /// ```
 pub struct Ungated;
 
+/// How far an operation got on the calling thread, when it only runs there
+/// for as long as that doesn't block. See
+/// [`call_cached`](StorageOp::call_cached).
+#[must_use = "submit the rest of the operation, or explicitly drop it"]
+pub enum Inline<T, Op> {
+    /// The operation finished on the calling thread, with this result.
+    Done(T),
+    /// Going on would block the calling thread. This is the rest of the
+    /// operation, to submit to an executor.
+    WouldBlock(Op),
+}
+
 /// An operation on the database that has been prepared but hasn't run yet,
 /// for example with [`RocksDb::prepare`](crate::RocksDb::prepare).
 ///
 /// Run it on the current thread with [`StorageOp::call`], or submit it to an
-/// executor, which runs it on a background thread:
+/// executor, which runs it on a background thread. An iteration from
+/// [`ReadSnapshot::prepare_iteration`](crate::reads::ReadSnapshot::prepare_iteration)
+/// can also do both: [`call_cached`](StorageOp::call_cached) runs it on the
+/// current thread while its rows are in memory, and hands back the rest to
+/// submit.
+///
+/// For example:
 ///
 /// ```no_run
 /// use std::sync::Arc;
@@ -472,6 +490,11 @@ impl<'a, C, F> StorageOp<C, F, Gated<'a>> {
             gate: Gated(gate),
             kind,
         }
+    }
+
+    // Takes the operation apart again, into what `from_parts` got.
+    pub(crate) fn into_parts(self) -> (C, &'a Arc<Gate>, StorageTaskKind, F) {
+        (self.context, self.gate.0, self.kind, self.op)
     }
 }
 

@@ -10,11 +10,16 @@
 
 use std::sync::Arc;
 
-use restate_core::io::Gate;
+use bytes::{Bytes, BytesMut};
+use rocksdb::{ErrorKind, ReadOptions, ReadTier};
 
-use super::{OwnedReadIterator, ReadIterator, ReadSource};
+use restate_core::io::{AdmissionClosed, Gate};
+
+use super::{ColumnFamilies, ReadIterator, ReadSnapshot, ReadSource, TOKEN};
 use crate::background::{OpFn, yield_now};
-use crate::{Cancellable, Cooperative, Gated, IterAction, RocksError, StorageOp, StorageTaskKind};
+use crate::{
+    Cancellable, Cooperative, Gated, Inline, IterAction, RocksError, StorageOp, StorageTaskKind,
+};
 
 /// How many items an iteration reads in one slice: it then lets the thread's
 /// other tasks run.
@@ -51,6 +56,17 @@ where
     }
 }
 
+/// A visitor that can also take rows on its caller's thread, where it must not
+/// wait. Needed to start an iteration with
+/// [`call_cached`](crate::StorageOp::call_cached).
+pub trait InlineVisitor: IteratorVisitor {
+    /// Like [`IteratorVisitor::visit`], if it can process the row without
+    /// waiting. Otherwise returns `None` and leaves the row alone: the
+    /// iteration then goes on on a storage worker, where
+    /// [`visit`](IteratorVisitor::visit) gets that row.
+    fn try_visit(&mut self, key: &[u8], value: &[u8]) -> Option<Result<IterAction, Self::Error>>;
+}
+
 /// A successful iteration, including why it ended.
 #[derive(Debug)]
 pub enum IterationOutcome<V> {
@@ -82,28 +98,37 @@ pub enum IterationError<E> {
     Visitor(#[source] E),
 }
 
-/// How [`RocksDb::prepare_iteration`](crate::RocksDb::prepare_iteration) runs
-/// an iteration.
-#[derive(Clone)]
-pub struct IterationOptions {
-    /// The iterator's first move.
-    pub initial_action: IterAction,
-}
-
-impl<'a, H> ReadIterator<'a, H>
-where
-    H: ReadSource + Send + Sync + 'static,
-{
-    /// Prepares running the iterator as one async operation, handing each item
-    /// to `visitor`, which returns how to move the iterator next. Submit it to an
-    /// executor, for example with [`IoExecutor::spawn`](restate_core::io::IoExecutor::spawn).
+impl<C: ColumnFamilies> ReadSnapshot<C> {
+    /// Prepares an iteration over the column family `cf` as one async
+    /// operation. It starts with the move `start` and hands each row to
+    /// `visitor`, which returns how to move next. It is counted in `gate`,
+    /// which must be inside the snapshot's database.
     ///
-    /// Storage and visitor errors fail the operation directly. The iterator
-    /// starts with `initial_action`.
+    /// The iteration creates its own iterator when it runs, with the options
+    /// that `options` returns. So it can run in two parts:
     ///
-    /// The visitor can wait, for example for room in a channel. The worker runs
-    /// other tasks meanwhile, so a waiting iteration doesn't hold it. Every so
-    /// many items, the iteration also lets the worker's other tasks run.
+    /// - Submitting it to an executor, for example with
+    ///   [`IoExecutor::spawn`](restate_core::io::IoExecutor::spawn), runs it on
+    ///   a storage worker, where a read may wait for the disk. Only then is the
+    ///   snapshot cloned.
+    /// - [`call_cached`](StorageOp::call_cached) first runs it on the calling
+    ///   thread, borrowing the snapshot, for as long as its rows are in memory
+    ///   and its visitor takes them without waiting (see [`InlineVisitor`]). It
+    ///   hands back the rest of the iteration, to submit.
+    ///
+    /// ```ignore
+    /// let iteration = snapshot
+    ///     .prepare_iteration(gate, cf, ReadOptions::default, IterAction::SeekToFirst, visitor);
+    /// let outcome = match iteration.call_cached(128)? {
+    ///     Inline::Done(outcome) => outcome?,
+    ///     Inline::WouldBlock(rest) => executor.spawn_cancellable(rest)?.await??,
+    /// };
+    /// ```
+    ///
+    /// On a worker, the visitor can wait, for example for room in a channel.
+    /// The worker runs other tasks meanwhile, so a waiting iteration doesn't
+    /// hold it. Every so many rows, the iteration also lets the worker's other
+    /// tasks run.
     ///
     /// The operation returns [`IterationOutcome::Exhausted`] when no rows remain,
     /// or [`IterationOutcome::Stopped`] for [`IterAction::Stop`]. Both contain the
@@ -111,11 +136,11 @@ where
     ///
     /// # Errors
     /// Preparing this operation does not acquire admission. Submission can fail
-    /// with [`AdmissionClosed`](restate_core::io::AdmissionClosed) before the
-    /// executor accepts it. After acceptance, [`IterationError::RocksDb`]
-    /// reports a read failure, and [`IterationError::Visitor`] preserves the
-    /// visitor's error. [`IterationError::Cancelled`] reports a gate owner's
-    /// request to stop after admission. The executor's separate
+    /// with [`AdmissionClosed`] before the executor accepts it. After
+    /// acceptance, [`IterationError::RocksDb`] reports a read failure, and
+    /// [`IterationError::Visitor`] preserves the visitor's error.
+    /// [`IterationError::Cancelled`] reports a gate owner's request to stop
+    /// after admission. The executor's separate
     /// [`IoTaskError`](restate_core::io::IoTaskError) means accepted work ended
     /// without delivering its result, for example after a panic. Dropping a
     /// cancellable result requests worker cleanup without waiting for it.
@@ -127,43 +152,66 @@ where
     /// not elapsed time: native calls and synchronous visitor work cannot be
     /// interrupted.
     ///
-    /// ```ignore
-    /// let iteration = iterator
-    ///     .prepare_iteration(gate, Some(IterAction::SeekToFirst), visitor)
-    ///     .with_read_perf("scan");
-    /// executor.spawn_cancellable(iteration)?.await?;
-    /// ```
-    ///
     /// # Panics
-    /// In debug builds, panics if `gate` is outside the iterator's database.
-    pub fn prepare_iteration<'g, V: IteratorVisitor>(
-        self,
+    /// In debug builds, panics if `gate` is outside the snapshot's database.
+    pub fn prepare_iteration<'g, O, V>(
+        &self,
         gate: &'g Arc<Gate>,
-        initial_action: Option<IterAction>,
+        cf: C::Cf,
+        options: O,
+        start: IterAction,
         visitor: V,
-    ) -> StorageOp<Cooperative<Self>, Iteration<V>, Gated<'g>> {
-        self.debug_assert_inside(gate);
-        StorageOp::from_parts(
-            Cooperative(self),
-            gate,
-            StorageTaskKind::BackgroundIterator,
-            Iteration {
-                visitor,
-                initial_action,
-            },
-        )
+    ) -> StorageOp<Cooperative<&Self>, Iteration<C::Cf, O, V>, Gated<'g>>
+    where
+        O: Fn() -> ReadOptions + Send + 'static,
+        V: IteratorVisitor,
+    {
+        prepare(self, gate, cf, options, start, visitor)
     }
 }
 
-/// The work of an operation from [`ReadIterator::prepare_iteration`].
-pub struct Iteration<V> {
+// Prepares an iteration over `source`'s column family `cf`, for the
+// `prepare_iteration` of a snapshot and of a scope.
+pub(super) fn prepare<'c, 'g, H: ReadSource, O, V>(
+    source: &'c H,
+    gate: &'g Arc<Gate>,
+    cf: H::CfKey,
+    options: O,
+    start: IterAction,
     visitor: V,
-    initial_action: Option<IterAction>,
+) -> StorageOp<Cooperative<&'c H>, Iteration<H::CfKey, O, V>, Gated<'g>> {
+    source.handles(TOKEN).database().debug_assert_inside(gate);
+    StorageOp::from_parts(
+        Cooperative(source),
+        gate,
+        StorageTaskKind::BackgroundIterator,
+        Iteration {
+            cf,
+            options,
+            visitor,
+            seek: start,
+            then: None,
+        },
+    )
 }
 
-impl<'a, H, V> OpFn<Cooperative<ReadIterator<'a, H>>> for Iteration<V>
+/// The work of an operation from [`ReadSnapshot::prepare_iteration`] or
+/// [`ScopedReads::prepare_iteration`](super::ScopedReads::prepare_iteration).
+pub struct Iteration<Cf, O, V> {
+    cf: Cf,
+    options: O,
+    visitor: V,
+    // Where the iteration goes on: `seek`, followed by `then`, leads to the
+    // next row to visit.
+    seek: IterAction,
+    then: Option<IterAction>,
+}
+
+impl<H, O, V> OpFn<Cooperative<&H>> for Iteration<H::CfKey, O, V>
 where
     H: ReadSource + Send + Sync + 'static,
+    H::CfKey: Send + 'static,
+    O: Fn() -> ReadOptions + Send + 'static,
     V: IteratorVisitor,
 {
     type Output = Result<IterationOutcome<V>, IterationError<V::Error>>;
@@ -171,36 +219,171 @@ where
     async fn run_async(
         mut self,
         Cancellable {
-            context: mut iterator,
+            context: source,
             cancelled,
-        }: Cancellable<OwnedReadIterator<H>>,
+        }: Cancellable<H>,
     ) -> Self::Output {
-        // Cancellation is checked whenever this future is polled, so it is
-        // observed at each slice yield and while a visitor is suspended, without
-        // a check per row.
-        let completion = tokio::select! {
-            biased;
-            _ = cancelled.cancelled() => return Err(IterationError::Cancelled),
-            completion = run(&mut iterator, &mut self.visitor, self.initial_action) => completion?,
+        let completion = {
+            let mut options = (self.options)();
+            // A storage worker may wait for the disk.
+            options.set_read_tier(ReadTier::All);
+            let mut iterator = ReadIterator::new(&source, self.cf, options);
+            let position = [Some(self.seek), self.then].into_iter().flatten();
+            // Cancellation is checked whenever this future is polled, so it is
+            // observed at each slice yield and while a visitor is suspended,
+            // without a check per row.
+            tokio::select! {
+                biased;
+                _ = cancelled.cancelled() => return Err(IterationError::Cancelled),
+                completion = run(&mut iterator, &mut self.visitor, position) => completion?,
+            }
         };
         Ok(completion.map(|()| self.visitor))
     }
 }
 
-/// Reads until the iterator is exhausted or the visitor stops it.
+// Only for a snapshot: the two parts read with different iterators, which see
+// the same data only through a snapshot.
+impl<'c, 'g, C, O, V> StorageOp<Cooperative<&'c ReadSnapshot<C>>, Iteration<C::Cf, O, V>, Gated<'g>>
+where
+    C: ColumnFamilies,
+    O: Fn() -> ReadOptions + Send + 'static,
+    V: InlineVisitor,
+{
+    /// Runs the iteration now, on the current thread, for as long as that
+    /// doesn't block: its rows are read from the memtables and the block cache
+    /// only, and handed to [`InlineVisitor::try_visit`]. Fails with
+    /// [`AdmissionClosed`] if the gate is sealed. Like [`StorageOp::call`], it
+    /// borrows the iteration's snapshot, and records no task metrics or tracing
+    /// span.
+    ///
+    /// Returns [`Inline::WouldBlock`] with the rest of the iteration at the
+    /// first row that isn't in memory or that the visitor can't take without
+    /// waiting, and after `max_rows` visits while rows remain. Submit the rest
+    /// to an executor: it goes on at that row. Otherwise returns
+    /// [`Inline::Done`] with what the submitted iteration would have returned.
+    ///
+    /// Cancelling the gate doesn't stop this part of the iteration, which
+    /// `max_rows` bounds instead.
+    #[allow(clippy::type_complexity)]
+    pub fn call_cached(
+        self,
+        max_rows: usize,
+    ) -> Result<Inline<Result<IterationOutcome<V>, IterationError<V::Error>>, Self>, AdmissionClosed>
+    {
+        let (Cooperative(snapshot), gate, kind, mut iteration) = self.into_parts();
+        let lease = gate.try_acquire().ok_or(AdmissionClosed)?;
+        let ran = {
+            let mut options = (iteration.options)();
+            options.set_read_tier(ReadTier::BlockCache);
+            let mut iterator = ReadIterator::new(snapshot, iteration.cf, options);
+            iteration.run_cached(&mut iterator, max_rows)
+        };
+        let inline = match ran {
+            Ok(Some(completion)) => Inline::Done(Ok(completion.map(|()| iteration.visitor))),
+            Ok(None) => Inline::WouldBlock(StorageOp::from_parts(
+                Cooperative(snapshot),
+                gate,
+                kind,
+                iteration,
+            )),
+            Err(err) => {
+                // Like the iterator, the visitor is gone before the lease.
+                drop(iteration);
+                Inline::Done(Err(err))
+            }
+        };
+        drop(lease);
+        Ok(inline)
+    }
+}
+
+impl<Cf, O, V: InlineVisitor> Iteration<Cf, O, V> {
+    // Runs the iteration with `iterator`, which reads from memory only and
+    // isn't positioned yet. Returns `None` once going on would block, or after
+    // `max_rows` visits while rows remain: `seek` and `then` then lead to the
+    // next row to visit.
+    fn run_cached<H: ReadSource>(
+        &mut self,
+        iterator: &mut ReadIterator<'_, H>,
+        max_rows: usize,
+    ) -> Result<Option<IterationOutcome<()>>, IterationError<V::Error>> {
+        for action in [Some(&self.seek), self.then.as_ref()].into_iter().flatten() {
+            if !apply(iterator, action.clone()) {
+                return Ok(Some(IterationOutcome::Stopped(())));
+            }
+        }
+        // The last row visited, and the relative move made from it. Set while
+        // `seek` and `then` don't lead to the iterator's position yet.
+        let mut last_key = BytesMut::new();
+        let mut moved = None;
+        let mut rows = 0;
+        loop {
+            let (key, value) = match iterator.item() {
+                Ok(Some(row)) => row,
+                Ok(None) => return Ok(Some(IterationOutcome::Exhausted(()))),
+                // The last move needs the disk: the worker repeats it.
+                Err(RocksError::Other(err)) if err.kind() == ErrorKind::Incomplete => {
+                    if let Some(moved) = moved {
+                        self.seek = IterAction::Seek(last_key.freeze());
+                        self.then = Some(moved);
+                    }
+                    return Ok(None);
+                }
+                Err(err) => return Err(err.into()),
+            };
+            if rows == max_rows {
+                self.go_on_at(key);
+                return Ok(None);
+            }
+            let Some(action) = self.visitor.try_visit(key, value) else {
+                self.go_on_at(key);
+                return Ok(None);
+            };
+            match action.map_err(IterationError::Visitor)? {
+                IterAction::Stop => return Ok(Some(IterationOutcome::Stopped(()))),
+                action @ (IterAction::Next | IterAction::Prev) => {
+                    last_key.clear();
+                    last_key.extend_from_slice(key);
+                    apply(iterator, action.clone());
+                    moved = Some(action);
+                }
+                // An absolute move leads to the next row by itself.
+                action @ (IterAction::Seek(_)
+                | IterAction::SeekToFirst
+                | IterAction::SeekToLast) => {
+                    apply(iterator, action.clone());
+                    self.seek = action;
+                    self.then = None;
+                    moved = None;
+                }
+            }
+            rows += 1;
+        }
+    }
+
+    // The iteration goes on at the row with this key, which hasn't been visited.
+    fn go_on_at(&mut self, key: &[u8]) {
+        self.seek = IterAction::Seek(Bytes::copy_from_slice(key));
+        self.then = None;
+    }
+}
+
+/// Moves the iterator as `position` says, then reads until the iterator is
+/// exhausted or the visitor stops it.
 async fn run<H, V>(
-    iterator: &mut OwnedReadIterator<H>,
+    iterator: &mut ReadIterator<'_, H>,
     visitor: &mut V,
-    initial_action: Option<IterAction>,
+    position: impl IntoIterator<Item = IterAction>,
 ) -> Result<IterationOutcome<()>, IterationError<V::Error>>
 where
     H: ReadSource,
     V: IteratorVisitor,
 {
-    if let Some(action) = initial_action
-        && !apply(iterator, action)
-    {
-        return Ok(IterationOutcome::Stopped(()));
+    for action in position {
+        if !apply(iterator, action) {
+            return Ok(IterationOutcome::Stopped(()));
+        }
     }
     let mut steps = 0;
     while let Some((key, value)) = iterator.item()? {
@@ -223,7 +406,7 @@ where
 }
 
 /// Moves `iterator` as `action` says. Returns `false` for [`IterAction::Stop`].
-fn apply<H>(iterator: &mut OwnedReadIterator<H>, action: IterAction) -> bool {
+fn apply<H>(iterator: &mut ReadIterator<'_, H>, action: IterAction) -> bool {
     match action {
         IterAction::Seek(b) => iterator.seek(b.as_ref()),
         IterAction::Prev => iterator.prev(),
