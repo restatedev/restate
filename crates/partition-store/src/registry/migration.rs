@@ -140,7 +140,7 @@ pub struct MigrationTimeline {
 /// (README rule 8).
 #[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
 pub struct Migration {
-    /// The versioned name, such as `"jc_orphan_cleanup/1"`.
+    /// The versioned name, such as `"my_cleanup/1"`.
     #[bilrost(1)]
     pub definition: ReString,
     #[bilrost(2)]

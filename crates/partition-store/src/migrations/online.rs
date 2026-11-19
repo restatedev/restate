@@ -17,8 +17,10 @@
 //! walks its source table in small slices between the partition processor's
 //! commands, paces and retries the slices, records the work on a job in
 //! `restate.cluster.migration_jobs`, and marks the migration `complete` in
-//! `restate.cluster.registry` once the walk is through. The journal
-//! completion-index cleanup, `jc_orphan_cleanup/1`, is the worked example.
+//! `restate.cluster.registry` once the walk is through. The test migrations at
+//! the bottom of this module, `Mark` and its variants, are the worked example:
+//! each is the size of a migration's file, and their tests are the ones §7 asks
+//! for.
 //!
 //! # 1. Is an online migration the right kind?
 //!
@@ -37,12 +39,12 @@
 //!
 //! # 2. Name and version
 //!
-//! [`OnlineMigration::NAME`] is `"name/N"`, such as `"jc_orphan_cleanup/1"`. A
+//! [`OnlineMigration::NAME`] is `"name/N"`, such as `"my_cleanup/1"`. A
 //! store registers each name once, ever, and keeps its entry forever. So a name
 //! is never renamed or reused: a migration whose rows, change, source or policy
-//! (§6) differ in any way is a new version, `"jc_orphan_cleanup/2"`, which runs
+//! (§6) differ in any way is a new version, `"my_cleanup/2"`, which runs
 //! once more on every store. The name's halves also name the kind of its walks
-//! (`jc_orphan_cleanup` version 1); a malformed name fails compilation.
+//! (`my_cleanup` version 1); a malformed name fails compilation.
 //!
 //! # 3. Why it is safe, and what you must make true
 //!
@@ -58,7 +60,7 @@
 //!                     cursor = C   end = E   never visited
 //! ```
 //!
-//! Four things are yours to make true:
+//! Five things are yours to make true:
 //!
 //! - **Foreground writes need no migration.** Rows written behind the cursor
 //!   (`B` rewritten after the walk passed it) or beyond the end (`F`, `G`) are
@@ -88,6 +90,14 @@
 //!     `C` on replica 2 only, acts on it there, and the replicas diverge. A
 //!     leftover is safe to delete only while no command can reach it: if a
 //!     command can bring it back into use, that command must delete it first.
+//! - **Don't change rows the processor keeps in memory.** The partition
+//!   processor caches some rows between commands, such as vqueue metadata, and
+//!   updates them on the assumption that its copy matches the store. A walk
+//!   that deletes or rewrites such a row leaves the cache describing a row that
+//!   is gone: the vqueue cache would merge its next update onto a deleted key.
+//!   Change such rows in a startup migration, which runs before the processor
+//!   starts, as the cleanup of obsolete vqueue metadata
+//!   (`VqueueMetadataCleanupV1`) does.
 //! - **Decide from what the transaction reads now.** The row you get was read
 //!   in this slice, and lookups through `tx`
 //!   ([`PartitionStoreTransaction::lookup_for_migration`]) see the committed
@@ -199,7 +209,7 @@
 //! large slice, on two stores with the same rows; foreground writes between
 //! slices, behind the cursor and beyond the end; a failed slice
 //! (`fail_next_slice`) commits nothing and its retry does the work; and an
-//! empty source. The worked example's tests show each.
+//! empty source. The tests at the bottom of this module show each.
 //!
 //! # 8. Release note
 //!
@@ -225,7 +235,7 @@ pub(crate) const ONLINE_MIGRATIONS: &[&MigrationDefinition] = &[];
 /// module documentation for how to write one.
 #[cfg_attr(not(test), expect(dead_code, reason = "ONLINE_MIGRATIONS is empty"))]
 pub(crate) trait OnlineMigration: Default + 'static {
-    /// The versioned name, `"name/N"`, such as `"jc_orphan_cleanup/1"`. Never
+    /// The versioned name, `"name/N"`, such as `"my_cleanup/1"`. Never
     /// renamed or reused: a changed migration is a new version.
     const NAME: &'static str;
     /// The table it walks, row by row in key order.
@@ -293,8 +303,7 @@ impl MigrationDefinition {
         }
     }
 
-    /// The kind of its walks: `jc_orphan_cleanup` version 1 for
-    /// `"jc_orphan_cleanup/1"`.
+    /// The kind of its walks: `my_cleanup` version 1 for `"my_cleanup/1"`.
     pub(crate) fn walk_kind(&self) -> WalkKind {
         WalkKind {
             name: ReString::from_static(self.walk.0),

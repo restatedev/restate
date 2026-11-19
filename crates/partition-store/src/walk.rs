@@ -199,8 +199,7 @@ impl OnUnknown {
 
 /// The kind of a walk: its name and the version of its semantics. An index
 /// backfill is `index_backfill` version 1; a migration's walks are of the kind
-/// its versioned name spells, `jc_orphan_cleanup` version 1 for
-/// `"jc_orphan_cleanup/1"`.
+/// its versioned name spells, `my_cleanup` version 1 for `"my_cleanup/1"`.
 ///
 /// **Compatibility.** A walk of a kind this binary doesn't know still decodes; its
 /// [`OnUnknown`] policy decides what an open does. Changing a kind's semantics
