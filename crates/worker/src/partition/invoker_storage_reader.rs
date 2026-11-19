@@ -218,9 +218,8 @@ impl InvocationReaderTransaction for InvokerStorageReaderTransaction<'_> {
                 budget,
             )?;
             Ok(Box::pin(stream.map(|result| {
-                result
-                    .map(|(_, entry, lease)| (JournalEntry::JournalV2(entry), lease))
-                    .map_err(InvokerStorageReaderError::from)
+                let (_, entry, lease) = result?;
+                Ok((JournalEntry::JournalV2(entry), lease))
             })))
         } else {
             let stream = journal_table_v1::ReadJournalTable::get_journal_budgeted(

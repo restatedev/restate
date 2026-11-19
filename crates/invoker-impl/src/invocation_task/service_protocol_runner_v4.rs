@@ -11,6 +11,7 @@
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
@@ -1228,7 +1229,7 @@ where
                 self.handle_new_command(
                     mh,
                     RawCommand::new(CommandType::OneWayCall, raw).with_command_specific_metadata(
-                        RawCommandSpecificMetadata::CallOrSend(Box::new(CallOrSendMetadata {
+                        RawCommandSpecificMetadata::CallOrSend(Arc::new(CallOrSendMetadata {
                             invocation_id: request.invocation_id,
                             invocation_target: request.invocation_target,
                             span_context: request.span_context,
@@ -1277,7 +1278,7 @@ where
                 self.handle_new_command(
                     mh,
                     RawCommand::new(CommandType::Call, raw).with_command_specific_metadata(
-                        RawCommandSpecificMetadata::CallOrSend(Box::new(CallOrSendMetadata {
+                        RawCommandSpecificMetadata::CallOrSend(Arc::new(CallOrSendMetadata {
                             invocation_id: request.invocation_id,
                             invocation_target: request.invocation_target,
                             span_context: request.span_context,

@@ -14,12 +14,13 @@ use std::str::FromStr;
 use serde_with::{DisplayFromStr, serde_as};
 
 use restate_clock::UniqueTimestamp;
+use restate_clock::time::MillisSinceEpoch;
 use restate_sharding::{PartitionKey, WithPartitionKey};
 
 use crate::base62_util::base62_max_length_for_type;
 use crate::errors::IdDecodeError;
 use crate::id_util::{IdDecoder, IdEncoder, IdResourceType};
-use crate::identifiers::{InvocationId, ResourceId};
+use crate::identifiers::{EntryIndex, InvocationId, ResourceId};
 use crate::vqueues::Seq;
 
 #[derive(
@@ -40,7 +41,8 @@ use crate::vqueues::Seq;
 #[repr(u8)]
 pub enum BlobKind {
     Generic = 0,
-    Output = 1,
+    /// The content of a journal entry.
+    Journal = 1,
     State = 2,
 }
 
@@ -72,14 +74,17 @@ impl BlobId {
         }
     }
 
-    pub fn generate_output_blob_id(
-        timestamp: UniqueTimestamp,
-        sequence: impl Into<Seq>,
+    /// The id of the blob holding the content of the journal entry at `journal_index`. Journal
+    /// entries are written once, so the id is unique.
+    pub fn generate_journal_entry_blob_id(
+        append_time: MillisSinceEpoch,
+        journal_index: EntryIndex,
         invocation: &InvocationId,
     ) -> Self {
         Self::new(
-            timestamp,
-            sequence,
+            // The index and invocation keep the id unique if the time is out of range
+            UniqueTimestamp::try_from_unix_millis(append_time).unwrap_or(UniqueTimestamp::MIN),
+            u64::from(journal_index),
             invocation.partition_key(),
             invocation.invocation_uuid().to_bytes(),
         )
@@ -220,8 +225,6 @@ impl FromStr for BlobId {
 
 #[cfg(test)]
 mod tests {
-    use restate_clock::time::MillisSinceEpoch;
-
     use super::*;
 
     #[test]

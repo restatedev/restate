@@ -77,14 +77,14 @@ where
         // * Sleep completions: we don't use it, it's there for defensive purpose.
         // * GetInvocationOutput completions: we have an ad-hoc command for this already, but we don't produce it yet. We can start producing it when removing service protocol <= 3
 
-        let command = ctx
+        let command_type = ctx
             .storage
             .get_command_by_completion_id(invocation_id, caller_completion_id)
             .await?
-            .map(|(_, cmd)| cmd);
+            .and_then(|entry| entry.command_type());
 
-        if let Some(cmd) = command {
-            let entry: journal_v2::Entry = match cmd.command_type() {
+        if let Some(command_type) = command_type {
+            let entry: journal_v2::Entry = match command_type {
                 CommandType::GetPromise => GetPromiseCompletion {
                     completion_id: caller_completion_id,
                     result: match result {

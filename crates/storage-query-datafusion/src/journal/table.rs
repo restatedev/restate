@@ -12,6 +12,7 @@ use std::fmt::Debug;
 use std::ops::Bound;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use datafusion::catalog::TableProvider;
 
 use restate_partition_store::journal_scan::{JournalTable, JournalV2Table};
@@ -100,19 +101,23 @@ impl ScanLocalPartition for JournalScanner {
             ScanOutcome::Exhausted(rows) => rows,
             stopped => return Ok(stopped),
         };
+        let blobs = snapshot.clone();
         rows.read::<JournalV2Table>(
             snapshot,
             executor,
             "df-journal-v2",
             Arc::clone(JournalV2Table::prepare(&selection)?.request()),
-            |builder, (key, mut value)| {
+            move |builder, (key, mut value)| {
                 let (partition_key, uuid, index) = key.decode_all()?.split();
                 let id = JournalEntryId::from_parts(
                     InvocationId::from_parts(partition_key, uuid),
                     index,
                 );
-                append_journal_row_v2(builder, id, StoredEntry::decode(&mut value)?.0);
-                Ok(())
+                append_journal_row_v2(builder, id, StoredEntry::decode(&mut value)?.0, |blob| {
+                    blobs.map_blob_payload_blocking(blob, |payload| {
+                        payload.map(Bytes::copy_from_slice)
+                    })
+                })
             },
         )
         .await

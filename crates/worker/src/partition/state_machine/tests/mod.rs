@@ -217,7 +217,7 @@ impl TestEnv {
         invocation_id: InvocationId,
         journal_length: EntryIndex,
     ) -> Vec<journal_v2::Entry> {
-        restate_storage_api::journal_table_v2::ReadJournalTable::get_journal(
+        let entries = restate_storage_api::journal_table_v2::ReadJournalTable::get_journal(
             self.storage(),
             invocation_id,
             journal_length,
@@ -225,13 +225,21 @@ impl TestEnv {
         .expect("storage to be working")
         .try_collect::<Vec<_>>()
         .await
-        .unwrap_or_else(|_| panic!("can read journal {invocation_id} of length {journal_length}"))
-        .into_iter()
-        .map(|(i, e)| {
-            e.decode::<ServiceProtocolV4Codec, _>()
-                .unwrap_or_else(|_| panic!("entry index {i} can be decoded"))
-        })
-        .collect()
+        .unwrap_or_else(|_| panic!("can read journal {invocation_id} of length {journal_length}"));
+
+        let mut decoded = Vec::with_capacity(entries.len());
+        for (i, e) in entries {
+            let e = restate_storage_api::journal_table_v2::ReadJournalTable::hydrate_journal_entry(
+                &self.storage,
+                e,
+            )
+            .unwrap_or_else(|_| panic!("entry index {i} can be hydrated"));
+            decoded.push(
+                e.decode::<ServiceProtocolV4Codec, _>()
+                    .unwrap_or_else(|_| panic!("entry index {i} can be decoded")),
+            );
+        }
+        decoded
     }
 
     pub async fn read_journal_entry<E: TryFromEntry>(
@@ -239,14 +247,19 @@ impl TestEnv {
         invocation_id: InvocationId,
         idx: EntryIndex,
     ) -> E {
-        restate_storage_api::journal_table_v2::ReadJournalTable::get_journal_entry(
+        let entry = restate_storage_api::journal_table_v2::ReadJournalTable::get_journal_entry(
             self.storage(),
             invocation_id,
             idx,
         )
         .await
         .expect("storage to be working")
-        .expect("Entry to be present")
+        .expect("Entry to be present");
+        restate_storage_api::journal_table_v2::ReadJournalTable::hydrate_journal_entry(
+            &self.storage,
+            entry,
+        )
+        .expect("Entry to be hydrated")
         .decode::<ServiceProtocolV4Codec, E>()
         .expect("Entry to be of the specified type")
     }

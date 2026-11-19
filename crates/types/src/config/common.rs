@@ -1357,6 +1357,20 @@ experimental! {
     ///
     /// Since v1.8.2
     protocol_v8,
+
+    /// # Write large journal entries into the blob table
+    ///
+    /// Journal entries larger than `worker.inline-journal-entry-threshold` are stored in the
+    /// blob table instead of the journal.
+    ///
+    /// It only affects local storage, so nodes can enable it independently. However, partition
+    /// snapshots taken where it's enabled can only be restored by v1.8.2 or newer, so only enable
+    /// it once all nodes run v1.8.2 or newer. Once a partition store has enabled it, it stays
+    /// enabled even if this option is turned off, including on stores restored from its
+    /// snapshots, and you **cannot** roll back to a Restate-server version older than v1.8.2.
+    ///
+    /// Since v1.8.2
+    write_blob_table,
 }
 
 impl Experimental {

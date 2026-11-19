@@ -24,21 +24,23 @@ use futures_util::stream;
 
 use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
-use restate_storage_api::blob_table::WriteBlobTable;
+use restate_storage_api::blob_table::{BlobBuilder, WriteBlobTable};
 use restate_storage_api::journal_table_v2::{
-    JournalEntryIndex, NotificationEntryIndex, ReadJournalTable, ScanJournalTable,
-    ScanJournalTableRange, StoredEntry, StoredEntryLite, WriteJournalTable,
+    BudgetedJournalItem, JournalEntryIndex, NotificationEntryIndex, ReadJournalTable,
+    ScanJournalTable, ScanJournalTableRange, StoredEntry, StoredEntryLite,
+    StoredUnhydratedRawEntry, WriteJournalTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{BudgetedReadError, Result, StorageError};
+use restate_types::blob::{BlobId, BlobKind, RelatedBlob};
 use restate_types::identifiers::{
     EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
 };
-use restate_types::journal_v2::raw::{RawCommand, RawEntry};
-use restate_types::journal_v2::{CompletionId, EntryMetadata, NotificationId};
-use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
+use restate_types::journal_v2::{CompletionId, EntryMetadata, EntryType, NotificationId};
+use restate_types::storage::StoredRawEntry;
 
 use crate::TableKind::Journal;
+use crate::blob_table::{BlobReader, get_blob_payload};
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
 use crate::owned_iter::OwnedIterator;
 use crate::{
@@ -114,7 +116,7 @@ impl<I: StorageIterator> JournalEntryIter<I> {
 }
 
 /// Decodes a V2 journal key/value pair from raw byte slices.
-fn decode_journal_entry_v2(k: &[u8], v: &[u8]) -> Result<(EntryIndex, StoredRawEntry)> {
+fn decode_journal_entry_v2(k: &[u8], v: &[u8]) -> Result<(EntryIndex, StoredUnhydratedRawEntry)> {
     let mut k = k;
     let mut v = v;
     let index = JournalKey::deserialize_from(&mut k)?.journal_index;
@@ -123,7 +125,7 @@ fn decode_journal_entry_v2(k: &[u8], v: &[u8]) -> Result<(EntryIndex, StoredRawE
 }
 
 impl<I: StorageIterator> Iterator for JournalEntryIter<I> {
-    type Item = Result<(EntryIndex, StoredRawEntry)>;
+    type Item = Result<(EntryIndex, StoredUnhydratedRawEntry)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let (k, v) = match self.peek_item()? {
@@ -144,26 +146,69 @@ fn write_journal_entry_key(invocation_id: &InvocationId, journal_index: u32) -> 
     }
 }
 
-fn put_journal_entry<S: StorageAccess>(
+/// Writes the entry, storing its content in a blob if it's larger than `inline_entry_threshold`.
+///
+/// See [`WriteJournalTable::put_journal_entry`]: an entry must be written only once, as the blob id
+/// is derived from it.
+fn put_journal_entry<S: StorageAccess + WriteBlobTable>(
     storage: &mut S,
     invocation_id: &InvocationId,
     journal_index: u32,
     journal_entry: &StoredRawEntry,
     related_completion_ids: &[CompletionId],
+    inline_entry_threshold: Option<usize>,
+) -> Result<Option<BlobId>> {
+    let entry = match inline_entry_threshold {
+        Some(threshold) if journal_entry.inner.serialized_length() > threshold => {
+            StoredUnhydratedRawEntry::store_content(journal_entry.clone(), |content| {
+                let id = BlobId::generate_journal_entry_blob_id(
+                    journal_entry.header.append_time,
+                    journal_index,
+                    invocation_id,
+                );
+                let size = storage.put_blob(
+                    id,
+                    BlobBuilder::new(BlobKind::Journal).build(content.as_ref()),
+                )?;
+                Ok::<_, StorageError>(RelatedBlob { id, size })
+            })?
+        }
+        _ => journal_entry.clone().into(),
+    };
+    let blob_id = entry.content_blob().map(|blob| blob.id);
+    put_stored_entry(
+        storage,
+        invocation_id,
+        journal_index,
+        entry,
+        related_completion_ids,
+    )?;
+    Ok(blob_id)
+}
+
+/// Writes the entry as it is, along with its indexes.
+fn put_stored_entry<S: StorageAccess>(
+    storage: &mut S,
+    invocation_id: &InvocationId,
+    journal_index: u32,
+    entry: StoredUnhydratedRawEntry,
+    related_completion_ids: &[CompletionId],
 ) -> Result<()> {
-    if let RawEntry::Notification(notification) = &journal_entry.inner {
+    if let (Some(notification_id), Some(result_variant)) =
+        (entry.notification_id(), entry.notification_result_variant())
+    {
         storage.put_kv_proto(
             JournalNotificationIdToNotificationIndexKey {
                 partition_key: invocation_id.partition_key(),
                 invocation_uuid: invocation_id.invocation_uuid(),
-                notification_id: notification.id(),
+                notification_id,
             },
             &NotificationEntryIndex {
                 entry_index: journal_index,
-                result_variant: notification.result_variant(),
+                result_variant,
             },
         )?;
-    } else if let RawEntry::Command(_) = &journal_entry.inner {
+    } else {
         for completion_id in related_completion_ids {
             storage.put_kv_proto(
                 JournalCompletionIdToCommandIndexKey {
@@ -178,7 +223,7 @@ fn put_journal_entry<S: StorageAccess>(
 
     storage.put_kv_proto_owned(
         write_journal_entry_key(invocation_id, journal_index),
-        StoredEntry(journal_entry.clone()),
+        StoredEntry(entry),
     )
 }
 
@@ -186,10 +231,24 @@ fn get_journal_entry<S: StorageRead>(
     storage: &mut S,
     invocation_id: &InvocationId,
     journal_index: u32,
-) -> Result<Option<StoredRawEntry>> {
+) -> Result<Option<StoredUnhydratedRawEntry>> {
     let key = write_journal_entry_key(invocation_id, journal_index);
     let opt: Option<StoredEntry> = storage.get_value_proto(key)?;
     Ok(opt.map(|e| e.0))
+}
+
+fn hydrate_journal_entry<S: StorageRead>(
+    storage: &S,
+    entry: StoredUnhydratedRawEntry,
+) -> Result<StoredRawEntry> {
+    let entry = match entry.try_into_inline() {
+        Ok(entry) => return Ok(entry),
+        Err(entry) => entry,
+    };
+    let blob = entry.content_blob().expect("the content is in a blob");
+    // The blob outlives the journal entries referencing it
+    let content = get_blob_payload(storage, blob.id)?.ok_or(StorageError::DataIntegrityError)?;
+    Ok(entry.hydrate_with(content))
 }
 
 /// Budget-gated point read with a unified reserve-read-adjust loop (V2 journal).
@@ -214,7 +273,7 @@ async fn get_journal_entry_budgeted<S: StorageRead>(
 
     let mut lease = budget.empty_lease();
 
-    loop {
+    let entry = loop {
         // Read raw value from RocksDB.
         // RocksDbPerfGuard is !Send and must not live across .await.
         let deficit = {
@@ -230,7 +289,7 @@ async fn get_journal_entry_budgeted<S: StorageRead>(
                 let mut slice = pinned.as_ref();
                 let entry = StoredEntry::decode(&mut slice)
                     .map_err(|e| BudgetedReadError::Storage(StorageError::Generic(e.into())))?;
-                return Ok(Some((entry.0, lease)));
+                break entry.0;
             }
 
             // Need more budget. Try synchronous top-up first.
@@ -240,7 +299,7 @@ async fn get_journal_entry_budgeted<S: StorageRead>(
                 let mut slice = pinned.as_ref();
                 let entry = StoredEntry::decode(&mut slice)
                     .map_err(|e| BudgetedReadError::Storage(StorageError::Generic(e.into())))?;
-                return Ok(Some((entry.0, lease)));
+                break entry.0;
             }
 
             deficit
@@ -249,7 +308,31 @@ async fn get_journal_entry_budgeted<S: StorageRead>(
         // Pinned slice dropped — safe to .await now.
         let extra = budget.reserve(deficit, lease.size()).await?;
         lease.merge(extra);
-    }
+    };
+
+    reserve_content_blob(&entry, &mut lease, budget).await?;
+    let entry = hydrate_journal_entry(&*storage, entry)?;
+    Ok(Some((entry, lease)))
+}
+
+/// Grows `lease` to cover the content of the entry, if it's stored in a blob. The blob is read by
+/// the caller, without holding the storage across `.await` points.
+async fn reserve_content_blob(
+    entry: &StoredUnhydratedRawEntry,
+    lease: &mut LocalMemoryLease,
+    budget: &mut LocalMemoryPool,
+) -> std::result::Result<(), BudgetedReadError> {
+    let Some(content_blob) = entry.content_blob() else {
+        return Ok(());
+    };
+    // A size that doesn't fit in memory fails the reservation below with `OutOfMemory`
+    let size = usize::try_from(content_blob.size).unwrap_or(usize::MAX);
+    let extra = match budget.try_reserve(size) {
+        Some(extra) => extra,
+        None => budget.reserve(size, lease.size()).await?,
+    };
+    lease.merge(extra);
+    Ok(())
 }
 
 fn get_journal<'a, S: StorageRead>(
@@ -274,16 +357,16 @@ fn delete_journal<S: StorageAccess + WriteBlobTable>(
 ) -> Result<()> {
     let _x = RocksDbReadPerfGuard::new("delete-journal");
 
-    // Collect the blobs referenced by the entries before deleting them. Only the related blob is
+    // Collect the blobs referenced by the entries before deleting them. Only the content blob is
     // decoded, the entry content is skipped.
-    let mut related_blob_ids = Vec::new();
+    let mut content_blob_ids = Vec::new();
     {
         let mut iter = get_journal(storage, invocation_id, journal_length)?;
         while let Some(item) = iter.peek_item() {
             let (_, mut value) = item?;
-            related_blob_ids.extend(
+            content_blob_ids.extend(
                 StoredEntryLite::decode(&mut value)?
-                    .related_blob
+                    .content_blob
                     .map(|blob| blob.id),
             );
             iter.advance();
@@ -297,7 +380,7 @@ fn delete_journal<S: StorageAccess + WriteBlobTable>(
         storage.delete_key(k)?;
     }
 
-    for blob_id in related_blob_ids {
+    for blob_id in content_blob_ids {
         storage.decrement_ref_count(blob_id, 1);
     }
 
@@ -507,7 +590,7 @@ fn get_command_by_completion_id<S: StorageRead>(
     storage: &mut S,
     invocation_id: InvocationId,
     completion_id: CompletionId,
-) -> Result<Option<(StoredRawEntryHeader, RawCommand)>> {
+) -> Result<Option<StoredUnhydratedRawEntry>> {
     let _x = RocksDbReadPerfGuard::new("get-command-by-completion-id");
 
     // Access the index
@@ -531,13 +614,13 @@ fn get_command_by_completion_id<S: StorageRead>(
 
     let entry = opt.unwrap().0;
     let entry_ty = entry.ty();
-    let command = entry.inner.try_as_command().ok_or_else(|| {
-        StorageError::Conversion(anyhow!(
+    if !matches!(entry_ty, EntryType::Command(_)) {
+        return Err(StorageError::Conversion(anyhow!(
             "Entry is expected to be a command, but is {entry_ty}"
-        ))
-    })?;
+        )));
+    }
 
-    Ok(Some((entry.header, command)))
+    Ok(Some(entry))
 }
 
 fn has_completion<S: StorageRead>(
@@ -563,7 +646,7 @@ impl ReadJournalTable for PartitionStore {
         &mut self,
         invocation_id: InvocationId,
         journal_index: u32,
-    ) -> Result<Option<StoredRawEntry>> {
+    ) -> Result<Option<StoredUnhydratedRawEntry>> {
         self.assert_partition_key(&invocation_id)?;
         let _x = RocksDbReadPerfGuard::new("get-journal-entry");
         get_journal_entry(self, &invocation_id, journal_index)
@@ -573,13 +656,17 @@ impl ReadJournalTable for PartitionStore {
         &self,
         invocation_id: InvocationId,
         journal_length: EntryIndex,
-    ) -> Result<impl Stream<Item = Result<(EntryIndex, StoredRawEntry)>> + Send> {
+    ) -> Result<impl Stream<Item = Result<(EntryIndex, StoredUnhydratedRawEntry)>> + Send> {
         self.assert_partition_key(&invocation_id)?;
         Ok(stream::iter(get_journal(
             self,
             &invocation_id,
             journal_length,
         )?))
+    }
+
+    fn hydrate_journal_entry(&self, entry: StoredUnhydratedRawEntry) -> Result<StoredRawEntry> {
+        hydrate_journal_entry(self, entry)
     }
 
     async fn get_notifications_index(
@@ -593,7 +680,7 @@ impl ReadJournalTable for PartitionStore {
         &mut self,
         invocation_id: InvocationId,
         notification_id: CompletionId,
-    ) -> Result<Option<(StoredRawEntryHeader, RawCommand)>> {
+    ) -> Result<Option<StoredUnhydratedRawEntry>> {
         get_command_by_completion_id(self, invocation_id, notification_id)
     }
 
@@ -621,24 +708,21 @@ impl ReadJournalTable for PartitionStore {
         journal_length: EntryIndex,
         budget: &'a mut LocalMemoryPool,
     ) -> Result<
-        impl Stream<
-            Item = std::result::Result<
-                (EntryIndex, StoredRawEntry, LocalMemoryLease),
-                BudgetedReadError,
-            >,
-        > + Send
-        + 'a,
+        impl Stream<Item = std::result::Result<BudgetedJournalItem, BudgetedReadError>> + Send + 'a,
     > {
         self.assert_partition_key(&invocation_id)?;
         let iter = get_journal(self, &invocation_id, journal_length)?;
-        Ok(budgeted_journal_v2_stream(iter, budget))
+        Ok(budgeted_journal_v2_stream(self.blob_reader(), iter, budget))
     }
 }
 
 impl ScanJournalTable for PartitionStore {
     fn for_each_journal<
         F: FnMut(
-                (restate_types::identifiers::JournalEntryId, StoredRawEntry),
+                (
+                    restate_types::identifiers::JournalEntryId,
+                    StoredUnhydratedRawEntry,
+                ),
             ) -> std::ops::ControlFlow<()>
             + Send
             + Sync
@@ -697,7 +781,7 @@ impl ReadJournalTable for PartitionStoreTransaction<'_> {
         &mut self,
         invocation_id: InvocationId,
         journal_index: u32,
-    ) -> Result<Option<StoredRawEntry>> {
+    ) -> Result<Option<StoredUnhydratedRawEntry>> {
         self.assert_partition_key(&invocation_id)?;
         let _x = RocksDbReadPerfGuard::new("get-journal-entry");
         get_journal_entry(self, &invocation_id, journal_index)
@@ -707,13 +791,17 @@ impl ReadJournalTable for PartitionStoreTransaction<'_> {
         &self,
         invocation_id: InvocationId,
         journal_length: EntryIndex,
-    ) -> Result<impl Stream<Item = Result<(EntryIndex, StoredRawEntry)>> + Send> {
+    ) -> Result<impl Stream<Item = Result<(EntryIndex, StoredUnhydratedRawEntry)>> + Send> {
         self.assert_partition_key(&invocation_id)?;
         Ok(stream::iter(get_journal(
             self,
             &invocation_id,
             journal_length,
         )?))
+    }
+
+    fn hydrate_journal_entry(&self, entry: StoredUnhydratedRawEntry) -> Result<StoredRawEntry> {
+        hydrate_journal_entry(self, entry)
     }
 
     async fn get_notifications_index(
@@ -727,7 +815,7 @@ impl ReadJournalTable for PartitionStoreTransaction<'_> {
         &mut self,
         invocation_id: InvocationId,
         notification_id: CompletionId,
-    ) -> Result<Option<(StoredRawEntryHeader, RawCommand)>> {
+    ) -> Result<Option<StoredUnhydratedRawEntry>> {
         get_command_by_completion_id(self, invocation_id, notification_id)
     }
 
@@ -755,17 +843,11 @@ impl ReadJournalTable for PartitionStoreTransaction<'_> {
         journal_length: EntryIndex,
         budget: &'a mut LocalMemoryPool,
     ) -> Result<
-        impl Stream<
-            Item = std::result::Result<
-                (EntryIndex, StoredRawEntry, LocalMemoryLease),
-                BudgetedReadError,
-            >,
-        > + Send
-        + 'a,
+        impl Stream<Item = std::result::Result<BudgetedJournalItem, BudgetedReadError>> + Send + 'a,
     > {
         self.assert_partition_key(&invocation_id)?;
         let iter = get_journal(self, &invocation_id, journal_length)?;
-        Ok(budgeted_journal_v2_stream(iter, budget))
+        Ok(budgeted_journal_v2_stream(self.blob_reader(), iter, budget))
     }
 }
 
@@ -774,7 +856,7 @@ impl ReadJournalTable for PartitionStoreSnapshot<'_> {
         &mut self,
         invocation_id: InvocationId,
         journal_index: u32,
-    ) -> Result<Option<StoredRawEntry>> {
+    ) -> Result<Option<StoredUnhydratedRawEntry>> {
         self.assert_partition_key(&invocation_id)?;
         let _x = RocksDbReadPerfGuard::new("get-journal-entry");
         get_journal_entry(self, &invocation_id, journal_index)
@@ -784,13 +866,17 @@ impl ReadJournalTable for PartitionStoreSnapshot<'_> {
         &self,
         invocation_id: InvocationId,
         journal_length: EntryIndex,
-    ) -> Result<impl Stream<Item = Result<(EntryIndex, StoredRawEntry)>> + Send> {
+    ) -> Result<impl Stream<Item = Result<(EntryIndex, StoredUnhydratedRawEntry)>> + Send> {
         self.assert_partition_key(&invocation_id)?;
         Ok(stream::iter(get_journal(
             self,
             &invocation_id,
             journal_length,
         )?))
+    }
+
+    fn hydrate_journal_entry(&self, entry: StoredUnhydratedRawEntry) -> Result<StoredRawEntry> {
+        hydrate_journal_entry(self, entry)
     }
 
     async fn get_notifications_index(
@@ -804,7 +890,7 @@ impl ReadJournalTable for PartitionStoreSnapshot<'_> {
         &mut self,
         invocation_id: InvocationId,
         notification_id: CompletionId,
-    ) -> Result<Option<(StoredRawEntryHeader, RawCommand)>> {
+    ) -> Result<Option<StoredUnhydratedRawEntry>> {
         get_command_by_completion_id(self, invocation_id, notification_id)
     }
 
@@ -832,17 +918,11 @@ impl ReadJournalTable for PartitionStoreSnapshot<'_> {
         journal_length: EntryIndex,
         budget: &'a mut LocalMemoryPool,
     ) -> Result<
-        impl Stream<
-            Item = std::result::Result<
-                (EntryIndex, StoredRawEntry, LocalMemoryLease),
-                BudgetedReadError,
-            >,
-        > + Send
-        + 'a,
+        impl Stream<Item = std::result::Result<BudgetedJournalItem, BudgetedReadError>> + Send + 'a,
     > {
         self.assert_partition_key(&invocation_id)?;
         let iter = get_journal(self, &invocation_id, journal_length)?;
-        Ok(budgeted_journal_v2_stream(iter, budget))
+        Ok(budgeted_journal_v2_stream(self.blob_reader(), iter, budget))
     }
 }
 
@@ -852,56 +932,73 @@ impl ReadJournalTable for PartitionStoreSnapshot<'_> {
 /// See the V1 counterpart in `journal_table/mod.rs` for the full design
 /// rationale — identical fast/slow path with `try_reserve` + `reserve`.
 fn budgeted_journal_v2_stream<'a, I: StorageIterator + Send + 'a>(
+    blob_reader: BlobReader<'a>,
     iter: JournalEntryIter<I>,
     budget: &'a mut LocalMemoryPool,
-) -> impl Stream<
-    Item = std::result::Result<(EntryIndex, StoredRawEntry, LocalMemoryLease), BudgetedReadError>,
-> + Send
-+ 'a {
-    futures::stream::unfold((iter, budget), |(mut iter, budget)| async move {
-        let mut lease = budget.empty_lease();
-        loop {
-            let deficit = {
-                let (k, v) = match iter.peek_item() {
-                    Some(Ok(item)) => item,
-                    Some(Err(e)) => return Some((Err(e.into()), (iter, budget))),
-                    None => return None,
+) -> impl Stream<Item = std::result::Result<BudgetedJournalItem, BudgetedReadError>> + Send + 'a {
+    futures::stream::unfold(
+        (iter, budget, blob_reader),
+        |(mut iter, budget, mut blob_reader)| async move {
+            let mut lease = budget.empty_lease();
+            let decoded = loop {
+                let deficit = {
+                    let (k, v) = match iter.peek_item() {
+                        Some(Ok(item)) => item,
+                        Some(Err(e)) => return Some((Err(e.into()), (iter, budget, blob_reader))),
+                        None => return None,
+                    };
+
+                    let raw_size = v.len();
+                    if raw_size <= lease.size() {
+                        lease.shrink(lease.size() - raw_size);
+                        break decode_journal_entry_v2(k, v);
+                    }
+
+                    let deficit = raw_size - lease.size();
+                    if let Some(extra) = budget.try_reserve(deficit) {
+                        lease.merge(extra);
+                        break decode_journal_entry_v2(k, v);
+                    }
+
+                    deficit
                 };
 
-                let raw_size = v.len();
-                if raw_size <= lease.size() {
-                    lease.shrink(lease.size() - raw_size);
-                    match decode_journal_entry_v2(k, v) {
-                        Ok((idx, entry)) => {
-                            iter.advance();
-                            return Some((Ok((idx, entry, lease)), (iter, budget)));
-                        }
-                        Err(e) => return Some((Err(e.into()), (iter, budget))),
-                    }
-                }
-
-                let deficit = raw_size - lease.size();
-                if let Some(extra) = budget.try_reserve(deficit) {
-                    lease.merge(extra);
-                    match decode_journal_entry_v2(k, v) {
-                        Ok((idx, entry)) => {
-                            iter.advance();
-                            return Some((Ok((idx, entry, lease)), (iter, budget)));
-                        }
-                        Err(e) => return Some((Err(e.into()), (iter, budget))),
-                    }
-                }
-
-                deficit
+                let extra = match budget.reserve(deficit, lease.size()).await {
+                    Ok(l) => l,
+                    Err(e) => return Some((Err(e.into()), (iter, budget, blob_reader))),
+                };
+                lease.merge(extra);
             };
 
-            let extra = match budget.reserve(deficit, lease.size()).await {
-                Ok(l) => l,
-                Err(e) => return Some((Err(e.into()), (iter, budget))),
+            let (idx, entry) = match decoded {
+                Ok(decoded) => decoded,
+                Err(e) => return Some((Err(e.into()), (iter, budget, blob_reader))),
             };
-            lease.merge(extra);
-        }
-    })
+            iter.advance();
+            let item = match reserve_content_blob(&entry, &mut lease, budget).await {
+                Ok(()) => hydrate_with_reader(&mut blob_reader, entry).map_err(Into::into),
+                Err(err) => Err(err),
+            }
+            .map(|entry| (idx, entry, lease));
+            Some((item, (iter, budget, blob_reader)))
+        },
+    )
+}
+
+/// Like [`hydrate_journal_entry`], reading the blob with `blob_reader`.
+fn hydrate_with_reader(
+    blob_reader: &mut BlobReader<'_>,
+    entry: StoredUnhydratedRawEntry,
+) -> Result<StoredRawEntry> {
+    let entry = match entry.try_into_inline() {
+        Ok(entry) => return Ok(entry),
+        Err(entry) => entry,
+    };
+    let blob = entry.content_blob().expect("the content is in a blob");
+    let content = blob_reader
+        .get_payload(blob.id)?
+        .ok_or(StorageError::DataIntegrityError)?;
+    Ok(entry.hydrate_with(content))
 }
 
 impl WriteJournalTable for PartitionStoreTransaction<'_> {
@@ -911,9 +1008,34 @@ impl WriteJournalTable for PartitionStoreTransaction<'_> {
         index: u32,
         entry: &StoredRawEntry,
         related_completion_ids: &[CompletionId],
+    ) -> Result<Option<BlobId>> {
+        self.assert_partition_key(invocation_id)?;
+        let inline_entry_threshold = self.settings().inline_entry_threshold;
+        put_journal_entry(
+            self,
+            invocation_id,
+            index,
+            entry,
+            related_completion_ids,
+            inline_entry_threshold,
+        )
+    }
+
+    fn copy_journal_entry(
+        &mut self,
+        invocation_id: &InvocationId,
+        index: u32,
+        entry: StoredUnhydratedRawEntry,
+        related_completion_ids: &[CompletionId],
     ) -> Result<()> {
         self.assert_partition_key(invocation_id)?;
-        put_journal_entry(self, invocation_id, index, entry, related_completion_ids)
+        let content_blob = entry.content_blob();
+        put_stored_entry(self, invocation_id, index, entry, related_completion_ids)?;
+        // Released when this journal is deleted
+        if let Some(blob) = content_blob {
+            self.increment_ref_count(blob.id, 1);
+        }
+        Ok(())
     }
 
     fn delete_journal(
