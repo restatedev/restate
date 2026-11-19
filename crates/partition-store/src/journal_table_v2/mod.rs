@@ -42,9 +42,10 @@ use restate_types::journal_v2::{CompletionId, EntryMetadata, EntryType, Notifica
 use restate_types::storage::StoredRawEntry;
 
 use crate::TableKind::Journal;
-use crate::blob_table::{BlobReader, get_blob_payload};
+use crate::blob_table::{get_blob_payload, get_blob_payload_cached_or_offload};
 use crate::budgeted_reads::{MAX_INLINE_ROWS, budgeted_get};
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
+use crate::offloaded_reads::OffloadedRead;
 use crate::owned_iter::OwnedIterator;
 use crate::scan::PhysicalScan;
 use crate::{
@@ -808,6 +809,7 @@ impl PartitionStore {
         invocation_id: InvocationId,
         journal_index: u32,
         budget: &mut LocalMemoryPool,
+        executor: &(impl IoExecutor + Sync),
     ) -> std::result::Result<Option<(StoredRawEntry, LocalMemoryLease)>, BudgetedReadError> {
         self.assert_partition_key(&invocation_id)?;
         let key = write_journal_entry_key(&invocation_id, journal_index);
@@ -817,27 +819,53 @@ impl PartitionStore {
             key_buf.split()
         };
         let storage: &Self = self;
-        budgeted_get(
+        let entry = budgeted_get(
             storage,
             "get-journal-entry-budgeted",
             KeyKind::JournalV2,
             &key,
             budget,
+            executor,
+            // Reserved for the hydrated entry.
             budgeted_entry_cost,
             |mut value, lease| {
                 let entry =
                     StoredEntry::decode(&mut value).map_err(|e| StorageError::Generic(e.into()))?;
-                Ok((
-                    hydrate_with_reader(&mut BlobReader::from(storage.partition_db()), entry.0)?,
-                    lease,
-                ))
+                Ok((entry.0, lease))
             },
         )
-        .await
+        .await?;
+        let Some((entry, lease)) = entry else {
+            return Ok(None);
+        };
+        let entry = hydrate_cached_or_offload(storage, entry, executor).await?;
+        Ok(Some((entry, lease)))
     }
 }
 
 impl PartitionStoreSnapshot<'_> {
+    /// Whether the invocation's journal has an entry at `journal_index`, without
+    /// decoding it. If that isn't in memory, a worker of `executor` reads it,
+    /// so that the calling task doesn't wait for the disk.
+    pub async fn has_journal_v2_entry_cached_or_offload(
+        &mut self,
+        invocation_id: InvocationId,
+        journal_index: u32,
+        executor: &(impl IoExecutor + Sync),
+    ) -> Result<bool> {
+        self.assert_partition_key(&invocation_id)?;
+        let key = write_journal_entry_key(&invocation_id, journal_index);
+        let key = {
+            let key_buf = self.cleared_key_buffer_mut(key.serialized_length());
+            key.serialize_to(key_buf);
+            key_buf.split()
+        };
+        let entry = self
+            .get_cached_or_offload("has-journal-entry", KeyKind::JournalV2, &key, executor)?
+            .await?;
+        Ok(entry.is_some())
+    }
+
     /// Budget-gated journal stream.
     ///
     /// Each entry's raw byte size is peeked **before** deserialization. A
@@ -853,7 +881,7 @@ impl PartitionStoreSnapshot<'_> {
         invocation_id: InvocationId,
         journal_length: EntryIndex,
         budget: ClaimedMemoryPool<'a>,
-        executor: &(impl IoExecutor + Sync),
+        executor: &'a (impl IoExecutor + Sync),
     ) -> Result<
         impl Stream<Item = std::result::Result<BudgetedJournalItem, BudgetedReadError>> + Send + 'a,
     > {
@@ -883,29 +911,31 @@ impl PartitionStoreSnapshot<'_> {
             },
         );
         let rows = scan.run_cached_then_offload(MAX_INLINE_ROWS, executor)?;
-        let rows = rows.map(move |row| {
+        // An entry's blob is read from memory, or by a storage worker.
+        let rows = rows.then(move |row| async move {
             let (index, entry, lease) = row?;
-            // TODO: this reads the entry's blob on the stream's task, where it
-            // may wait for the disk. The next PR reads it from memory, or on a
-            // storage worker.
-            Ok((index, hydrate_journal_entry(self, entry)?, lease))
+            let entry = hydrate_cached_or_offload(self, entry, executor).await?;
+            Ok((index, entry, lease))
         });
         Ok(rows.right_stream())
     }
 }
 
-/// Like [`hydrate_journal_entry`], reading the blob with `blob_reader`.
-fn hydrate_with_reader(
-    blob_reader: &mut BlobReader<'_>,
+/// Like [`hydrate_journal_entry`], but if the entry's blob isn't in memory, a worker of
+/// `executor` reads it, so that the calling task doesn't wait for the disk.
+async fn hydrate_cached_or_offload<S: OffloadedRead>(
+    storage: &S,
     entry: StoredUnhydratedRawEntry,
+    executor: &(impl IoExecutor + Sync),
 ) -> Result<StoredRawEntry> {
     let entry = match entry.try_into_inline() {
         Ok(entry) => return Ok(entry),
         Err(entry) => entry,
     };
     let blob = entry.content_blob().expect("the content is in a blob");
-    let content = blob_reader
-        .get_payload(blob.id)?
+    // The blob outlives the journal entries referencing it
+    let content = get_blob_payload_cached_or_offload(storage, blob.id, executor)
+        .await?
         .ok_or(StorageError::DataIntegrityError)?;
     Ok(entry.hydrate_with(content))
 }

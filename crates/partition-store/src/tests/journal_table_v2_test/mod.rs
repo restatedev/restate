@@ -402,7 +402,7 @@ async fn journal_entry_content_blob() {
     let executor = low_pri_executor(&rocksdb);
     let mut budget = LocalMemoryPool::unlimited();
     let (entry, lease) = rocksdb
-        .get_journal_v2_entry_budgeted(MOCK_INVOCATION_ID_1, 0, &mut budget)
+        .get_journal_v2_entry_budgeted(MOCK_INVOCATION_ID_1, 0, &mut budget, &executor)
         .await
         .unwrap()
         .unwrap();

@@ -33,6 +33,7 @@ pub mod lookup;
 mod memory;
 mod metric_definitions;
 pub mod migrations;
+mod offloaded_reads;
 pub mod ordered_runs;
 pub mod outbox_table;
 mod owned_iter;

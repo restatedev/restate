@@ -257,6 +257,7 @@
 //! }
 //! ```
 
+mod get;
 mod iteration;
 mod iterator;
 mod reader;
@@ -272,11 +273,12 @@ use restate_util_lifecycle::{Scope, ScopePayload};
 
 use crate::{CfHandles, RawRocksDb};
 
+pub use self::get::{Get, Lookup};
 pub use self::iteration::{
     InlineVisitor, Iteration, IterationError, IterationOutcome, IteratorVisitor,
 };
 pub use self::iterator::{OwnedReadIterator, ReadIterator};
-pub use self::reader::{OwnedPinnedBatch, OwnedReader, PinnedBatch, Reader};
+pub use self::reader::{OwnedPinnedBatch, OwnedPinnedValue, OwnedReader, PinnedBatch, Reader};
 pub use self::scoped::ScopedReads;
 pub use self::snapshot::ReadSnapshot;
 

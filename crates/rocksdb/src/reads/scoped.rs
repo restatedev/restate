@@ -16,8 +16,8 @@ use restate_core::io::Gate;
 use restate_util_lifecycle::Scope;
 
 use super::{
-    ColumnFamilies, Iteration, IteratorVisitor, OwnedReadIterator, OwnedReader, ReadIterator,
-    ReadSource, Reader, iteration,
+    ColumnFamilies, Get, Iteration, IteratorVisitor, Lookup, OwnedReadIterator, OwnedReader,
+    ReadIterator, ReadSource, Reader, get, iteration,
 };
 use crate::{Cooperative, Gated, IterAction, StorageOp};
 
@@ -74,6 +74,16 @@ pub trait ScopedReads:
     /// calling [`ReadIterator::into_owned`] on a borrowed iterator.
     fn owned_iterator(&self, cf: Self::Cf, options: ReadOptions) -> OwnedReadIterator<Self>;
 
+    /// Prepares a lookup of `key` in the column family `cf`, counted in `gate`.
+    /// See [`ReadSnapshot::prepare_get`](super::ReadSnapshot::prepare_get),
+    /// which it is like, except that it sees the latest data when it runs.
+    fn prepare_get<'a, 'g>(
+        &'a self,
+        gate: &'g Arc<Gate>,
+        cf: Self::Cf,
+        key: &'a [u8],
+    ) -> StorageOp<Lookup<'a, Self>, Get<Self::Cf>, Gated<'g>>;
+
     /// Prepares an iteration over one column family as one async operation, to
     /// submit to an executor. See
     /// [`ReadSnapshot::prepare_iteration`](super::ReadSnapshot::prepare_iteration),
@@ -113,6 +123,15 @@ impl<C: ColumnFamilies> ScopedReads for Scope<C> {
 
     fn owned_iterator(&self, cf: C::Cf, options: ReadOptions) -> OwnedReadIterator<Self> {
         self.iterator(cf, options).into_owned()
+    }
+
+    fn prepare_get<'a, 'g>(
+        &'a self,
+        gate: &'g Arc<Gate>,
+        cf: C::Cf,
+        key: &'a [u8],
+    ) -> StorageOp<Lookup<'a, Self>, Get<C::Cf>, Gated<'g>> {
+        get::prepare(self, gate, cf, key)
     }
 
     fn prepare_iteration<'g, O, V>(

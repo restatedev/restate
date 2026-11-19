@@ -45,6 +45,7 @@ use crate::TableKind::State;
 use crate::budgeted_reads::{MAX_INLINE_ROWS, budgeted_get};
 use crate::features::StorageFeatures;
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, OptionalScope, define_table_key};
+use crate::offloaded_reads::OffloadedRead;
 use crate::scan::PhysicalScan;
 use crate::{
     PartitionStore, PartitionStoreSnapshot, PartitionStoreTransaction, StorageAccess,
@@ -546,21 +547,23 @@ impl PartitionStore {
         service_id: &ServiceId,
         state_key: &ByteString,
         budget: &mut LocalMemoryPool,
+        executor: &(impl IoExecutor + Sync),
     ) -> std::result::Result<Option<(Bytes, LocalMemoryLease)>, BudgetedReadError> {
         self.assert_partition_key(service_id)?;
         let features = self.storage_features();
-        get_user_state_budgeted(self, features, service_id, state_key, budget).await
+        get_user_state_budgeted(self, features, service_id, state_key, budget, executor).await
     }
 }
 
 /// Budget-gated point read of a state key: reserves the size of the key and
 /// the value before copying the value out.
-async fn get_user_state_budgeted<S: StorageRead, B: ReserveMemory>(
+async fn get_user_state_budgeted<S: OffloadedRead, B: ReserveMemory>(
     storage: &S,
     storage_features: StorageFeatures,
     service_id: &ServiceId,
     state_key: &ByteString,
     budget: &mut B,
+    executor: &(impl IoExecutor + Sync),
 ) -> std::result::Result<Option<(Bytes, LocalMemoryLease)>, BudgetedReadError> {
     let key = encode_user_state_key(storage_features, service_id, state_key.as_bytes());
     budgeted_get(
@@ -569,6 +572,7 @@ async fn get_user_state_budgeted<S: StorageRead, B: ReserveMemory>(
         user_state_key_kind(storage_features, service_id),
         &key,
         budget,
+        executor,
         |value| state_key.len() + value.len(),
         |value, lease| Ok((Bytes::copy_from_slice(value), lease)),
     )
@@ -584,12 +588,14 @@ impl PartitionStoreSnapshot<'_> {
     /// a budget error otherwise. The stream ends after an error.
     ///
     /// `budget` is lent to the stream until it's dropped. The stream owns its
-    /// service ID and keys.
+    /// service ID and keys. A key that isn't in memory is read by a worker of
+    /// `executor`.
     pub fn get_user_states_budgeted<'a>(
         &'a self,
         service_id: &ServiceId,
         keys: &[ByteString],
         budget: ClaimedMemoryPool<'a>,
+        executor: &'a (impl IoExecutor + Sync),
     ) -> Result<
         impl PinnableMemoryStream<
             Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>,
@@ -605,6 +611,7 @@ impl PartitionStoreSnapshot<'_> {
             service_id: service_id.clone(),
             keys: keys.into_iter(),
             budget,
+            executor,
         };
         let rows = stream::try_unfold(reads, |mut reads| async move {
             Ok(reads.next().await?.map(|row| (row, reads)))
@@ -614,14 +621,15 @@ impl PartitionStoreSnapshot<'_> {
 }
 
 /// The point reads behind [`PartitionStoreSnapshot::get_user_states_budgeted`].
-struct UserStateReads<'a, 'b> {
+struct UserStateReads<'a, 'b, E> {
     snapshot: &'a PartitionStoreSnapshot<'b>,
     service_id: ServiceId,
     keys: std::vec::IntoIter<ByteString>,
     budget: LentMemoryPool,
+    executor: &'a E,
 }
 
-impl UserStateReads<'_, '_> {
+impl<E: IoExecutor + Sync> UserStateReads<'_, '_, E> {
     /// Reads the next key that has a value.
     async fn next(
         &mut self,
@@ -634,6 +642,7 @@ impl UserStateReads<'_, '_> {
                 &self.service_id,
                 &state_key,
                 &mut self.budget,
+                self.executor,
             )
             .await?;
             if let Some((value, lease)) = row {

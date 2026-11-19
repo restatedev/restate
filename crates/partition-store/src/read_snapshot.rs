@@ -14,7 +14,9 @@ use bytes::Bytes;
 use rocksdb::ReadOptions;
 
 use restate_core::io::{AdmissionClosed, Gate};
-use restate_rocksdb::reads::{InlineVisitor, Iteration, ReadIterator, ReadSnapshot, Reader};
+use restate_rocksdb::reads::{
+    Get, InlineVisitor, Iteration, Lookup, OwnedPinnedValue, ReadIterator, ReadSnapshot, Reader,
+};
 use restate_rocksdb::{Cooperative, Gated, IterAction, StorageOp};
 use restate_types::partitions::Partition;
 
@@ -63,6 +65,10 @@ pub struct PartitionReadSnapshot {
 /// `PartitionSnapshotReader<'static>`, holds its own clone of the snapshot, so
 /// it can be kept across pauses and moved between threads.
 pub type PartitionSnapshotReader<'a> = Reader<'a, ReadSnapshot<PhysicalPartition>>;
+
+/// The value of a key, read through a [`PartitionReadSnapshot`] without
+/// copying it. It holds its own clone of the snapshot.
+pub(crate) type PartitionSnapshotValue = OwnedPinnedValue<ReadSnapshot<PhysicalPartition>>;
 
 /// A scan of a [`PartitionReadSnapshot`]. A borrowed one, from
 /// [`PartitionReadSnapshot::scan`], can't outlive the snapshot. An owned one,
@@ -117,6 +123,17 @@ impl PartitionReadSnapshot {
         options: ReadOptions,
     ) -> PartitionSnapshotScan<'static> {
         self.scan(scan, options).into_owned()
+    }
+
+    /// Prepares a lookup of `key`, whose kind is `key_kind`, counted in `gate`.
+    /// Nothing is read yet. See [`ReadSnapshot::prepare_get`].
+    pub(crate) fn prepare_get<'a, 'g>(
+        &'a self,
+        gate: &'g Arc<Gate>,
+        key_kind: KeyKind,
+        key: &'a [u8],
+    ) -> StorageOp<Lookup<'a, ReadSnapshot<PhysicalPartition>>, Get<KeyKind>, Gated<'g>> {
+        self.inner.prepare_get(gate, key_kind, key)
     }
 
     /// Like [`Self::scan`], but the iterator isn't positioned yet: seeking is

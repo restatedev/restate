@@ -293,6 +293,7 @@ impl PartitionStore {
         invocation_id: &InvocationId,
         journal_index: u32,
         budget: &mut LocalMemoryPool,
+        executor: &(impl IoExecutor + Sync),
     ) -> std::result::Result<Option<(JournalEntry, LocalMemoryLease)>, BudgetedReadError> {
         self.assert_partition_key(invocation_id)?;
         let key = write_journal_entry_key(invocation_id, journal_index);
@@ -307,6 +308,7 @@ impl PartitionStore {
             KeyKind::Journal,
             &key,
             budget,
+            executor,
             |value| value.len(),
             |mut value, lease| Ok((JournalEntry::decode(&mut value)?, lease)),
         )

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use bytes::{Bytes, BytesMut};
 use rocksdb::{DBPinnableSlice, ReadOptions};
 
-use restate_core::io::Gate;
+use restate_core::io::{Gate, IoExecutor};
 use restate_memory::{ClaimedMemoryPool, LocalMemoryLease};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::WithPartitionKey;
@@ -22,7 +22,9 @@ use restate_types::sharding::KeyRange;
 use crate::budgeted_reads::BudgetedScan;
 use crate::features::StorageFeatures;
 use crate::keys::{EncodeTableKeyPrefix, KeyKind};
+use crate::offloaded_reads::{OffloadedRead, call_cached_or_offload};
 use crate::partition_store::{StorageRead, assert_partition_key_or_err};
+use crate::read_snapshot::PartitionSnapshotValue;
 use crate::scan::{PhysicalScan, TableScan};
 use crate::{
     PartitionReadSnapshot, PartitionSnapshotReader, PartitionSnapshotScan,
@@ -35,8 +37,8 @@ use crate::{
 /// Unlike a [`PartitionStoreTransaction`](crate::PartitionStoreTransaction), it doesn't see
 /// writes made after it was taken, including uncommitted ones.
 pub struct PartitionStoreSnapshot<'a> {
-    // The gate of the session the snapshot was taken in, which its scans count
-    // in.
+    // The gate of the session the snapshot was taken in, which its scans and
+    // offloaded point reads count in.
     gate: &'a Arc<Gate>,
     snapshot: PartitionReadSnapshot,
     // Point lookups. Each lookup chooses the column family of its key kind.
@@ -136,5 +138,20 @@ impl StorageRead for PartitionStoreSnapshot<'_> {
         self.key_buffer.clear();
         self.key_buffer.reserve(min_size);
         self.key_buffer
+    }
+}
+
+impl OffloadedRead for PartitionStoreSnapshot<'_> {
+    type Value = PartitionSnapshotValue;
+
+    fn get_cached_or_offload<'a>(
+        &'a self,
+        name: &'static str,
+        key_kind: KeyKind,
+        key: &'a [u8],
+        executor: &(impl IoExecutor + Sync),
+    ) -> Result<impl Future<Output = Result<Option<Self::Value>>> + Send + 'static> {
+        let read = self.snapshot.prepare_get(self.gate, key_kind, key);
+        call_cached_or_offload(read, name, executor)
     }
 }
