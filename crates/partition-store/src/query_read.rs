@@ -61,7 +61,7 @@ use crate::fsm_table::state_machine_features_key;
 use crate::job::{MigrationJob, MigrationJobId, MigrationJobStatus};
 use crate::keys::KeyKind;
 use crate::registry::records::RecordKey;
-use crate::registry::{Index, IndexKind, IndexNotReady, IndexStatus, Registry};
+use crate::registry::{Index, IndexKind, IndexNotComplete, IndexStatus, Registry};
 use crate::scan::PhysicalScan;
 use crate::table::{IndexSource, ReadMetadata};
 use crate::{PartitionDb, PartitionReadSnapshot, PartitionSnapshotScan, Result};
@@ -186,16 +186,16 @@ impl ReadSnapshot {
         Ok(features.vqueues)
     }
 
-    /// The index ID of the Ready index of `definition` in this snapshot.
+    /// The index ID of the Complete index of `definition` in this snapshot.
     ///
-    /// The registry is read through this snapshot, so readiness and the ID match
-    /// the data the query reads. Anything but a Ready index of that kind (not
+    /// The registry is read through this snapshot, so the index's status and ID
+    /// match the data the query reads. Anything but a Complete index of that kind (not
     /// registered, Backfilling, Dropped, or an unreadable registry) fails with
-    /// [`IndexNotReady`]: an incomplete index is never read as complete.
-    pub fn ready_index(&self, definition: &str, kind: IndexKind) -> Result<u32> {
-        let not_ready = |reason: String| {
+    /// [`IndexNotComplete`]: an incomplete index is never read as complete.
+    pub fn complete_index(&self, definition: &str, kind: IndexKind) -> Result<u32> {
+        let not_complete = |reason: String| {
             StorageError::Generic(
-                IndexNotReady {
+                IndexNotComplete {
                     definition: definition.into(),
                     partition: self.partition_id(),
                     reason,
@@ -215,15 +215,15 @@ impl ReadSnapshot {
         });
         let registry = registry
             .as_ref()
-            .map_err(|err| not_ready(format!("unreadable registry: {err}")))?
+            .map_err(|err| not_complete(format!("unreadable registry: {err}")))?
             .as_ref()
-            .ok_or_else(|| not_ready("nothing is registered".to_owned()))?;
+            .ok_or_else(|| not_complete("nothing is registered".to_owned()))?;
         let index = registry
             .maintained(definition)
             .filter(|index| index.kind == kind)
-            .ok_or_else(|| not_ready("no maintained index".to_owned()))?;
-        if index.state != IndexStatus::Ready {
-            return Err(not_ready(format!(
+            .ok_or_else(|| not_complete("no maintained index".to_owned()))?;
+        if index.state != IndexStatus::Complete {
+            return Err(not_complete(format!(
                 "index {} is still being completed: {}",
                 index.id,
                 self.backfill_status(index)

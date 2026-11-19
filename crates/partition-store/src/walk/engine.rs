@@ -29,7 +29,7 @@
 //! makes the work and the progress visible together. Only after it does the
 //! engine publish the committed records (the [`PublishedRegistry`]) to the
 //! transaction and the partition, so the next slice resumes after the new
-//! cursor, the next write sees indexes the slice made Ready, and a failed commit
+//! cursor, the next write sees indexes the slice made Complete, and a failed commit
 //! never publishes.
 //! Recording a failure commits and publishes the same way. Starting a walk does
 //! not go through the engine: the open stages it in its registration batch and
@@ -47,7 +47,7 @@
 //! source    A   B   C   D   E            end = E, cursor = B, budget: two keys
 //! slice 1   read C, D  ─▶ stage work(C), work(D) ─▶ commit {work, walk: cursor = D, its jobs}
 //!                                                    ─▶ publish
-//! slice 2   read E, none after ─▶ stage work(E), finish ─▶ commit {work, registry: Ready,
+//! slice 2   read E, none after ─▶ stage work(E), finish ─▶ commit {work, registry: Complete,
 //!                                                          walk deleted, its jobs finished}
 //! ```
 //!

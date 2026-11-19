@@ -60,7 +60,7 @@ use super::{
     AggregatedStatsMut, DeploymentStats as DeploymentStatsTable, DeploymentStatsBinding,
     DeploymentStatsKey, ServiceStats as ServiceStatsTable, ServiceStatsBinding, ServiceStatsKey,
     StageStatus, VirtualObjectStats as VirtualObjectStatsTable, VirtualObjectStatsBinding,
-    VirtualObjectStatsKey, complete_gauges, ready_index_scope,
+    VirtualObjectStatsKey, complete_gauges, complete_index_scope,
 };
 
 /// Runs each SQL case and compares its rows and its row count with the expected
@@ -152,8 +152,8 @@ async fn deployment_and_object_schemas_expand_buckets_before_sql_residuals() {
         <DeploymentStats as LogicalSchema>::RowBuilder::new(DeploymentStats::arrow_schema());
     let mut objects =
         <VirtualObjectStats as LogicalSchema>::RowBuilder::new(VirtualObjectStats::arrow_schema());
-    let deployment_id = ready_index_scope::<DeploymentStatsTable>(&store).index;
-    let object_id = ready_index_scope::<VirtualObjectStatsTable>(&store).index;
+    let deployment_id = complete_index_scope::<DeploymentStatsTable>(&store).index;
+    let object_id = complete_index_scope::<VirtualObjectStatsTable>(&store).index;
     let mut transaction = store.transaction();
     #[rustfmt::skip]
     let fixtures = [
@@ -299,7 +299,7 @@ async fn seed(store: &mut PartitionStore) -> Vec<ServiceStatsRow> {
             &[(Stage::Paused, Status::Started, 2)],
         ),
     ];
-    let partition = ready_index_scope::<ServiceStatsTable>(store);
+    let partition = complete_index_scope::<ServiceStatsTable>(store);
     let mut transaction = store.transaction();
     let mut rows = Vec::new();
     for &(service, handler, kind, buckets) in fixtures {
@@ -411,7 +411,7 @@ async fn service_stats_candidates_and_residual_agree_with_sql_truth() {
 
     let foreign = Arc::new(KeySelection::all().restrict_scope(IndexScope {
         partition: PartitionId::from(u16::from(store.partition_id()) + 1),
-        ..ready_index_scope::<ServiceStatsTable>(&store)
+        ..complete_index_scope::<ServiceStatsTable>(&store)
     }));
     let ScanOutcome::Exhausted(records) = snapshot
         .scan::<ServiceStatsTable, _>(&executor, "stat-owner", foreign, Records::default())
@@ -570,7 +570,7 @@ async fn service_stats_candidates_and_residual_agree_with_sql_truth() {
     // sees all six rows, and a query on a new snapshot fails.
     let mut key = Vec::new();
     ServiceStatsTable::encode_key(
-        ready_index_scope::<ServiceStatsTable>(&store),
+        complete_index_scope::<ServiceStatsTable>(&store),
         ServiceStatsKey::borrowed("gamma", Some(""), EntryKind::Invocation),
         &mut key,
     );

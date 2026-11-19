@@ -964,9 +964,10 @@ mod tests {
     #[test]
     fn task_failures_carry_their_origin_kind_and_own_message() {
         let origin = GenerationalNodeId::new(2, 1);
-        let not_ready = "'service_stats/1' is not ready on partition 12: no maintained index";
-        let storage =
-            DataFusionError::External(Box::new(StorageError::Generic(anyhow::anyhow!(not_ready))));
+        let not_complete = "'service_stats/1' is not complete on partition 12: no maintained index";
+        let storage = DataFusionError::External(Box::new(StorageError::Generic(anyhow::anyhow!(
+            not_complete
+        ))));
         let failure = task_error(&storage, origin);
         assert_eq!(
             (failure.origin, failure.kind),
@@ -975,7 +976,7 @@ mod tests {
         // The coordinator reports it once, naming the node and the kind.
         assert_eq!(
             DataFusionError::External(Box::new(failure)).to_string(),
-            format!("External error: N2:1: storage: generic storage error: {not_ready}")
+            format!("External error: N2:1: storage: generic storage error: {not_complete}")
         );
         // A DataFusion internal error is a bug, without DataFusion's prefixes.
         let bug = task_error(

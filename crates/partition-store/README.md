@@ -51,7 +51,7 @@ a new ID; IDs are never reused.
 **Keeping an index up to date.** Two mechanisms do this.
 - **Writes.** Whenever the processor changes a row of the source table, it also
   updates every **maintained** index over that table, the ones being built or
-  Ready: remove what the row's old state
+  Complete: remove what the row's old state
   contributed, add what the new state contributes. If the index doesn't contain
   the old state yet, because the index is newer than the row, the write only
   adds. We call that *adopting* the row.
@@ -64,7 +64,7 @@ a new ID; IDs are never reused.
 
 **Status.** An index is `Backfilling` until a walk finds it complete: writes keep
 it up to date, but it is incomplete, so queries must not read it. It becomes
-`Ready` once a full pass of a walk finds every row covered; queries may read it.
+`Complete` once a full pass of a walk finds every row covered; queries may read it.
 A definition that can't fill rows from the row alone (a *passive* one) relies on
 writes and deletions to cover them: between passes it stays `Backfilling`
 without a walk, and its job waits for the next pass. It is `Dropped` when its
@@ -75,7 +75,7 @@ state, the source row keeps a small list, `touched_by`: the IDs of the indexes
 still being built that already contain this row. (The list names the index's
 *build job*, which for now has the same ID as the index.) Writes and walks are
 the only ways a row gets a token, and the token is the only proof that an index
-being built contains the row. A row carries a token until that index is Ready or
+being built contains the row. A row carries a token until that index is Complete or
 dropped; the next write then drops it. Each source table stores its tokens in
 its own rows; for the example, that is the `entry_status` header.
 
@@ -97,8 +97,8 @@ changes.
 running a one-time migration. Each index and each migration in progress has a
 job with the same ID, recorded next to the registry (`src/job.rs`): its
 status, when it started and finished, and what its slices did, and when a
-waiting job may start its next pass. The registry decides whether an index is
-Ready or a migration Complete, and the walk holds where its work resumes and
+waiting job may start its next pass. The registry decides whether an index or a
+migration is Complete, and the walk holds where its work resumes and
 the evidence for completing it; a job record can be rebuilt from the registry.
 Finished jobs are kept for `worker.storage.finished-migration-jobs-retention`,
 24 hours by default, then hidden and removed by compaction.
@@ -116,7 +116,7 @@ are their foundation.
 2. **Index IDs are never reused**, so a stale token or a not-yet-deleted key can
    never be mistaken for a new build.
 3. **One decision per index per row change.** The index contains the row's old
-   state if the index is Ready or the row holds the index's token. Then remove
+   state if the index is Complete or the row holds the index's token. Then remove
    old and add new; otherwise only add. Never apply a change twice; never skip an
    index that is being maintained.
 4. **Read the stored row in the same transaction before changing it.** A row
@@ -127,18 +127,18 @@ are their foundation.
    together with the row's old state for this reason; it does not prove the row
    is current.
 5. **A slice commits its index writes, the tokens it adds to the rows it
-   filled, its cursor and, at the end, `Ready` together.** A crash loses them
+   filled, its cursor and, at the end, `Complete` together.** A crash loses them
    together, which is why the store needs no write-ahead log for this. The same
    holds for a write: the row change, its index effects and its token change are
    one commit. A fill keeps the tokens the row already holds.
-6. **Only a full pass with no gap makes an index Ready.** A walk's indexes join
+6. **Only a full pass with no gap makes an index Complete.** A walk's indexes join
    it when it starts, at the beginning of its source, and every definition today
    can fill a row, so each row the walk passes holds the token or gets it before
    the cursor moves on. An index that joins a walk late, or a definition that
-   can't fill, needs its own full pass before it is Ready.
-7. **Queries read only Ready indexes, resolved in their own snapshot.** A read
-   finds the Ready index of a definition in the registry as it was when the read
-   was admitted, or fails with `IndexNotReady`.
+   can't fill, needs its own full pass before it is Complete.
+7. **Queries read only Complete indexes, resolved in their own snapshot.** A read
+   finds the Complete index of a definition in the registry as it was when the read
+   was admitted, or fails with `IndexNotComplete`.
 8. **Persisted formats are append-only.** Bilrost tags and enum numbers never
    change meaning. The registry, walks and jobs are stored under `rg` keys
    (`src/registry/records.rs`); their key layout and record kinds are

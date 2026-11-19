@@ -10,7 +10,7 @@
 
 //! The index backfill job (`index_backfill/1`): makes Backfilling indexes
 //! reflect the entries that existed before they were registered, with a walk of
-//! the entry statuses (see [`crate::walk`]), then makes them Ready.
+//! the entry statuses (see [`crate::walk`]), then makes them Complete.
 //!
 //! **Filling.** An entry reflected by an index lists the index's ID, its token
 //! (see [`super::active`]). Entries written since an index was registered already
@@ -25,7 +25,7 @@
 //!
 //! **Completion.** Once no entry remains up to the walk's end, the same commit
 //! settles each member, unlinks it and removes the walk. A member that joined at
-//! the start of the source and found no gap becomes Ready. That is sound because
+//! the start of the source and found no gap becomes Complete. That is sound because
 //! the walk was a full pass for it with no gap: each entry it passed either listed
 //! the member's token already or was filled before the cursor moved past it. A
 //! slice that fails to fill an entry commits nothing, and entries written behind
@@ -36,13 +36,13 @@
 //! it counts them and rewrites both with token 70. A command then moves `B` to
 //! another stage: `B` lists 70, so the write moves its count. The next slice finds
 //! `C` written since (it lists 70) and skips it, fills `D` and `E`, and makes 70
-//! Ready: every entry was counted once.
+//! Complete: every entry was counted once.
 //!
 //! **Passive members.** A member whose definition can't fill
 //! ([`IndexDefinition::can_fill`]) leaves an entry without its token alone, and
 //! the walk counts the entry as uncovered for it, in the slice's commit. At the
 //! walk's end each member settles on its own: one that was a member from the
-//! pass's start and found no gap is made Ready; any other stays Backfilling,
+//! pass's start and found no gap is made Complete; any other stays Backfilling,
 //! unlinked, and its job waits for another pass (see [`crate::job`]).
 //!
 //! **Records.** Each member has a build job with the member's ID (see
@@ -166,7 +166,7 @@ impl WalkJob for IndexBackfill {
     ) -> Result<(), StorageError> {
         for (id, settlement) in settled {
             match settlement {
-                Settlement::Certified => set_ready(registry, *id, at)?,
+                Settlement::Certified => set_complete(registry, *id, at)?,
                 Settlement::Unfinished => registry
                     .unlink(*id)
                     .map_err(|err| StorageError::Conversion(err.into()))?,
@@ -176,13 +176,13 @@ impl WalkJob for IndexBackfill {
     }
 }
 
-/// Makes the Backfilling index `id` Ready at `at`.
-fn set_ready(registry: &mut Registry, id: u32, at: u64) -> Result<(), StorageError> {
+/// Makes the Backfilling index `id` Complete at `at`.
+fn set_complete(registry: &mut Registry, id: u32, at: u64) -> Result<(), StorageError> {
     registry
-        .set_ready(id)
+        .set_complete(id)
         .map_err(|err| StorageError::Conversion(err.into()))?;
     if let Some(timeline) = registry.timeline_mut(id) {
-        timeline.ready_at = Some(at);
+        timeline.completed_at = Some(at);
     }
     Ok(())
 }
@@ -212,7 +212,7 @@ pub(crate) fn register_job(
 /// now, linked to them and to their build jobs, which must exist (see
 /// [`register_job`]). A job keeps what earlier passes recorded; one that waited
 /// runs again. A partition without entries has nothing to walk: the indexes
-/// become Ready at once and their jobs finish, completed. For a new
+/// become Complete at once and their jobs finish, completed. For a new
 /// registration that takes no pass; for a job that waited, it is a full pass
 /// that found nothing. The change is staged on `registry` (which issues the
 /// walk's ID), `walks` and `jobs`; the caller commits them.
@@ -254,7 +254,7 @@ pub(crate) fn start(
                 }
             }
             None => {
-                set_ready(registry, *id, at)?;
+                set_complete(registry, *id, at)?;
                 if job.status == MigrationJobStatus::Pending {
                     job.started_at = Some(at);
                 } else {

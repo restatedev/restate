@@ -33,7 +33,7 @@
 //! 5. **Settle the job records** (see [`crate::job`]) with the registry, which
 //!    decides. Registering and dropping record their times on the indexes'
 //!    timelines and jobs. Records that disagree follow the registry: a job whose
-//!    index is Ready or dropped, or whose migration is Complete, is finished at
+//!    index is Complete or dropped, or whose migration is Complete, is finished at
 //!    an unknown time, and a Backfilling index or a migration in progress
 //!    without a job gets one with unknown times. A job that
 //!    finishes gets its final record, which expires after the configured
@@ -43,7 +43,7 @@
 //!    over the entries that exist now (see [`super::backfill`]): new
 //!    registrations, indexes whose definition can fill now, and passive ones
 //!    whose wait is over. A partition without entries has nothing to walk: those
-//!    indexes become Ready instead.
+//!    indexes become Complete instead.
 //! 7. **Fence:** once an index was ever registered, the `registry` storage
 //!    feature is in the store's ledger, so older binaries cannot open it.
 //!
@@ -647,7 +647,7 @@ fn drop_and_record(
 /// The records lag them when they couldn't be read, or when another binary
 /// changed builds or migrations without writing records this one reads.
 ///
-/// - An unfinished job whose index is Ready or whose migration is Complete is
+/// - An unfinished job whose index is Complete or whose migration is Complete is
 ///   finished, completed, at an unknown time; one whose entry is dropped or gone
 ///   is finished, cancelled. A migration in a state this binary doesn't know
 ///   leaves its job alone.
@@ -742,7 +742,7 @@ fn settle_jobs(registry: &Registry, walks: &Walks, jobs: &mut MigrationJobRecord
 enum Progress {
     /// A Backfilling index or a migration in progress, with its walk if any.
     Running(Option<u64>),
-    /// A Ready index or a Complete migration.
+    /// A Complete index or a Complete migration.
     Done,
     /// A dropped index, or no entry at all.
     Gone,
@@ -755,7 +755,7 @@ impl Progress {
         if let Some(index) = registry.get(id) {
             return match index.state {
                 IndexStatus::Backfilling => Self::Running(index.walk),
-                IndexStatus::Ready => Self::Done,
+                IndexStatus::Complete => Self::Done,
                 _ => Self::Gone,
             };
         }
@@ -1426,13 +1426,13 @@ mod backfill_tests {
             .unwrap();
     }
 
-    /// Why `definition` is not Ready in a new snapshot of `store`.
+    /// Why `definition` is not Complete in a new snapshot of `store`.
     fn reason(store: &PartitionStore, definition: &IndexDefinition) -> String {
         store
             .query_read(CancellationToken::new())
             .unwrap()
             .0
-            .ready_index(definition.name, definition.kind)
+            .complete_index(definition.name, definition.kind)
             .unwrap_err()
             .to_string()
     }
@@ -1482,7 +1482,7 @@ mod backfill_tests {
         seed(&mut store).await;
 
         // Registering starts a walk over the entries; running it in slices of
-        // three makes the index Ready.
+        // three makes the index Complete.
         reconcile(&mut store, maintain(&COUNT)).await;
         let index = registry(&store).maintained("count/1").unwrap().clone();
         assert_eq!(
@@ -1492,11 +1492,11 @@ mod backfill_tests {
         assert!(reason(&store, &COUNT).contains("backfill walk 1 has examined 0 entries"));
         run_walks(&mut store).await;
         let index = registry(&store).maintained("count/1").unwrap().clone();
-        assert_eq!((index.state, index.walk), (IndexStatus::Ready, None));
+        assert_eq!((index.state, index.walk), (IndexStatus::Complete, None));
         assert_eq!(count(&store, index.id), SEEDED, "every_entry_once");
         assert!(
             store.published_registry().touched_by_on_write().is_empty(),
-            "ready_indexes_are_not_listed"
+            "complete_indexes_are_not_listed"
         );
         assert!(walks(&store).entries().is_empty());
 
@@ -1534,7 +1534,7 @@ mod backfill_tests {
         let index = registry_after(&store, "resumed/1");
         assert_eq!(
             (index.state, count(&store, resumed.id)),
-            (IndexStatus::Ready, SEEDED),
+            (IndexStatus::Complete, SEEDED),
             "resumed_walks_finish_without_double_counting"
         );
     }
@@ -1607,7 +1607,7 @@ mod backfill_tests {
                 let index = registry_after(store, definition.name);
                 assert_eq!(
                     (index.state, index.walk, count(store, id)),
-                    (IndexStatus::Ready, None, SEEDED),
+                    (IndexStatus::Complete, None, SEEDED),
                     "{} reflects every entry once",
                     definition.name
                 );
@@ -1651,7 +1651,7 @@ mod backfill_tests {
         assert_eq!(count(&store, index.id), SEEDED - 2);
         assert_eq!(
             registry(&store).get(index.id).unwrap().state,
-            IndexStatus::Ready
+            IndexStatus::Complete
         );
     }
 
@@ -1669,7 +1669,7 @@ mod backfill_tests {
         let version = ReString::from(SemanticRestateVersion::current().to_string());
         let day = Requests::default().retention.as_millis() as u64;
 
-        // An empty partition has nothing to walk: the index is Ready at once, and
+        // An empty partition has nothing to walk: the index is Complete at once, and
         // its job finishes at once, completed without a pass, expiring a
         // retention later.
         let mut empty = manager
@@ -1689,7 +1689,7 @@ mod backfill_tests {
                 job.created_at,
                 job.started_at,
                 job.finished_at,
-                index.timeline.ready_at
+                index.timeline.completed_at
             ),
             (registered_at, registered_at, registered_at, registered_at)
         );
@@ -1757,7 +1757,7 @@ mod backfill_tests {
         }
 
         // The finishing slice writes the registry, which stamps the indexes
-        // Ready, deletes its walk, and finishes every member's job, completed
+        // Complete, deletes its walk, and finishes every member's job, completed
         // after one pass, with its expiry; none stays unfinished.
         let mut tx = store.transaction();
         tx.put_invocation_status(&invocation, &status).unwrap();
@@ -1796,7 +1796,7 @@ mod backfill_tests {
             assert!(job.finished_at.is_some());
             assert_eq!(job.expires_at, job.finished_at.map(|at| at + day));
             assert_eq!(
-                registry(&store).get(id).unwrap().timeline.ready_at,
+                registry(&store).get(id).unwrap().timeline.completed_at,
                 job.finished_at
             );
         }
@@ -1931,7 +1931,7 @@ mod backfill_tests {
         // open, here at once: a retention of 0 keeps no finished job.
         let mut registry_now = registry(&store);
         let mut walks_now = walks(&store);
-        registry_now.set_ready(count).unwrap();
+        registry_now.set_complete(count).unwrap();
         registry_now.drop_index(adopted).unwrap();
         walks_now.remove(walk).unwrap();
         write_state(&store, &registry_now, &walks_now);
@@ -1986,13 +1986,13 @@ mod backfill_tests {
 
         // A release adds PASSIVE's fill mid-pass: the rest of the pass fills it,
         // but its gap stays for this pass. At the end each member settles on its
-        // own: COUNT is Ready, PASSIVE waits, maintained and unlinked.
+        // own: COUNT is Complete, PASSIVE waits, maintained and unlinked.
         let filling: &[&'static IndexDefinition] = &[&COUNT, &PASSIVE_FILLING];
         try_reconcile(&mut store, filling, Requests::default())
             .await
             .unwrap();
         run_walks(&mut store).await;
-        assert_eq!(index(&store, active).state, IndexStatus::Ready);
+        assert_eq!(index(&store, active).state, IndexStatus::Complete);
         let unlinked = index(&store, passive);
         assert_eq!(
             (unlinked.state, unlinked.walk),
@@ -2010,7 +2010,7 @@ mod backfill_tests {
         );
         assert!(waiting.next_eligible_at.is_some());
         assert_eq!(self::count(&store, passive), SEEDED - 10);
-        // Queries learn why it isn't Ready: it waits, not "not started".
+        // Queries learn why it isn't Complete: it waits, not "not started".
         assert!(
             reason(&store, &PASSIVE_FILLING).contains(
                 "it waits for its next pass; the last full pass found 10 entries it couldn't cover"
@@ -2123,10 +2123,10 @@ mod backfill_tests {
         run_walks(&mut store).await;
 
         // Both saw only a suffix, with or without gaps: no full pass, nothing
-        // observed, eligible again at once. COUNT, there from the start, is Ready.
+        // observed, eligible again at once. COUNT, there from the start, is Complete.
         assert_eq!(
             registry(&store).get(active).unwrap().state,
-            IndexStatus::Ready
+            IndexStatus::Complete
         );
         for id in [adopted, passive] {
             let job = committed_job(&store, id);
@@ -2167,7 +2167,7 @@ mod backfill_tests {
         RocksDbManager::init();
         let manager = PartitionStoreManager::create(true).await.unwrap();
 
-        // A partition without entries has nothing to walk: its index is Ready
+        // A partition without entries has nothing to walk: its index is Complete
         // at once, and no walk starts.
         let mut empty = manager
             .open(&Partition::new(PartitionId::from(2), KeyRange::FULL), None)
@@ -2175,7 +2175,7 @@ mod backfill_tests {
             .unwrap();
         reconcile(&mut empty, maintain(&COUNT)).await;
         let index = registry(&empty).maintained(COUNT.name).unwrap().clone();
-        assert_eq!((index.state, index.walk), (IndexStatus::Ready, None));
+        assert_eq!((index.state, index.walk), (IndexStatus::Complete, None));
         assert!(walks(&empty).entries().is_empty());
 
         // COUNT's walk filled ten entries and RESUMED's twenty, each started at
@@ -2246,7 +2246,7 @@ mod backfill_tests {
         run_walks(&mut store).await;
         for definition in [&COUNT, &RESUMED, &ADOPTED] {
             let index = registry_after(&store, definition.name);
-            assert_eq!(index.state, IndexStatus::Ready);
+            assert_eq!(index.state, IndexStatus::Complete);
             assert_eq!(count(&store, index.id), SEEDED - 2, "{}", definition.name);
         }
         assert!(self::walks(&store).entries().is_empty());
@@ -2307,7 +2307,10 @@ mod backfill_tests {
         drop(tx);
         run_walks(&mut store).await;
         assert_eq!(count(&store, id), SEEDED);
-        assert_eq!(registry(&store).get(id).unwrap().state, IndexStatus::Ready);
+        assert_eq!(
+            registry(&store).get(id).unwrap().state,
+            IndexStatus::Complete
+        );
         assert!(self::walks(&store).entries().is_empty());
     }
 
@@ -2521,7 +2524,7 @@ mod backfill_tests {
             registry(&store)
                 .indexes()
                 .iter()
-                .all(|index| (index.state == IndexStatus::Ready) != (index.id == passive))
+                .all(|index| (index.state == IndexStatus::Complete) != (index.id == passive))
         );
         assert_eq!(index_rows(&store), index_rows(&reference));
         // The finishing slice finished every active member's job and left the
@@ -2606,14 +2609,14 @@ mod backfill_tests {
         let after = registry(&store);
         assert_eq!(
             (after.get(count_id).unwrap().state, count(&store, count_id)),
-            (IndexStatus::Ready, SEEDED)
+            (IndexStatus::Complete, SEEDED)
         );
         assert_eq!(
             (
                 after.get(resumed_id).unwrap().state,
                 count(&store, resumed_id)
             ),
-            (IndexStatus::Ready, SEEDED)
+            (IndexStatus::Complete, SEEDED)
         );
         assert!(self::walks(&store).entries().is_empty());
     }
@@ -2929,15 +2932,15 @@ mod backfill_tests {
         };
 
         // The walks take turns. The failing one waits out its backoff while the
-        // other finishes: ADOPTED is Ready and PASSIVE waits with gaps, while
+        // other finishes: ADOPTED is Complete and PASSIVE waits with gaps, while
         // COUNT keeps failing.
         for _ in 0..1_000 {
-            if state(&tx, adopted) == IndexStatus::Ready {
+            if state(&tx, adopted) == IndexStatus::Complete {
                 break;
             }
             drive(&mut driver, &mut tx, 1).await;
         }
-        assert_eq!(state(&tx, adopted), IndexStatus::Ready);
+        assert_eq!(state(&tx, adopted), IndexStatus::Complete);
         assert!(published_job(&tx, count).failures > 0);
         assert_eq!(state(&tx, count), IndexStatus::Backfilling);
         assert_eq!(
@@ -2961,7 +2964,7 @@ mod backfill_tests {
             }
         }
         drive(&mut driver, &mut tx, 10_000).await;
-        assert_eq!(driver.due(), None, "idle once everything is Ready");
+        assert_eq!(driver.due(), None, "idle once everything is Complete");
         drop(tx);
         for id in [count, passive] {
             assert_eq!(
@@ -2969,7 +2972,7 @@ mod backfill_tests {
                     registry(&store).get(id).unwrap().state,
                     self::count(&store, id)
                 ),
-                (IndexStatus::Ready, kept),
+                (IndexStatus::Complete, kept),
                 "{id}"
             );
         }
@@ -3422,7 +3425,7 @@ mod backfill_tests {
                 .walk
         };
 
-        // The near walk ends: RESUMED is Ready and the late joiner ADOPTED waits,
+        // The near walk ends: RESUMED is Complete and the late joiner ADOPTED waits,
         // eligible at once. Starting its pass fails once.
         manager
             .faults(&partition)
@@ -3466,7 +3469,7 @@ mod backfill_tests {
                     registry(&store).get(id).unwrap().state,
                     self::count(&store, id)
                 ),
-                (IndexStatus::Ready, SEEDED),
+                (IndexStatus::Complete, SEEDED),
                 "{id}"
             );
         }
@@ -3585,13 +3588,13 @@ mod backfill_tests {
             registry(&store)
                 .indexes()
                 .iter()
-                .all(|index| index.state == IndexStatus::Ready)
+                .all(|index| index.state == IndexStatus::Complete)
         );
         assert_eq!(index_rows(&store), index_rows(&reference));
         let snapshot = store.query_read(CancellationToken::new()).unwrap().0;
         for definition in all {
             snapshot
-                .ready_index(definition.name, definition.kind)
+                .complete_index(definition.name, definition.kind)
                 .unwrap();
         }
     }
@@ -3706,7 +3709,10 @@ mod backfill_tests {
         assert_eq!(db.driver_state().get(), None);
         drop(tx);
         assert_eq!(count(&store, id), SEEDED);
-        assert_eq!(registry(&store).get(id).unwrap().state, IndexStatus::Ready);
+        assert_eq!(
+            registry(&store).get(id).unwrap().state,
+            IndexStatus::Complete
+        );
     }
 
     #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3802,7 +3808,7 @@ mod backfill_tests {
         fn scope(metadata: &ReadMetadata<'_>) -> crate::Result<IndexScope> {
             Ok(IndexScope {
                 partition: metadata.partition.partition_id,
-                index: metadata.ready_index(COUNT.name, COUNT.kind)?,
+                index: metadata.complete_index(COUNT.name, COUNT.kind)?,
             })
         }
 
@@ -3837,17 +3843,17 @@ mod backfill_tests {
         Ok(total)
     }
 
-    fn not_ready<T: std::fmt::Debug>(result: crate::Result<T>) -> bool {
+    fn not_complete<T: std::fmt::Debug>(result: crate::Result<T>) -> bool {
         match result {
-            Err(StorageError::Generic(err)) => {
-                err.downcast_ref::<super::super::IndexNotReady>().is_some()
-            }
-            other => panic!("expected IndexNotReady, got {other:?}"),
+            Err(StorageError::Generic(err)) => err
+                .downcast_ref::<super::super::IndexNotComplete>()
+                .is_some(),
+            other => panic!("expected IndexNotComplete, got {other:?}"),
         }
     }
 
     #[restate_core::test]
-    async fn queries_admit_only_ready_indexes_of_their_snapshot() {
+    async fn queries_admit_only_complete_indexes_of_their_snapshot() {
         RocksDbManager::init();
         let manager = PartitionStoreManager::create(true).await.unwrap();
         let mut store = manager
@@ -3859,37 +3865,42 @@ mod backfill_tests {
             |store: &PartitionStore| store.query_read(CancellationToken::new()).unwrap().0;
 
         let unregistered = snapshot(&store);
-        assert!(not_ready(
-            unregistered.ready_index("count/1", IndexKind::Aggregate)
+        assert!(not_complete(
+            unregistered.complete_index("count/1", IndexKind::Aggregate)
         ));
-        assert!(not_ready(snapshot_count(&unregistered)), "table_reads_fail");
+        assert!(
+            not_complete(snapshot_count(&unregistered)),
+            "table_reads_fail"
+        );
         reconcile(&mut store, maintain(&COUNT)).await;
         let backfilling = snapshot(&store);
         assert!(
-            not_ready(backfilling.ready_index("count/1", IndexKind::Aggregate)),
-            "backfilling_indexes_are_not_ready"
+            not_complete(backfilling.complete_index("count/1", IndexKind::Aggregate)),
+            "backfilling_indexes_are_not_complete"
         );
-        assert!(not_ready(snapshot_count(&backfilling)));
+        assert!(not_complete(snapshot_count(&backfilling)));
 
         run_walks(&mut store).await;
         let id = registry(&store).maintained("count/1").unwrap().id;
         assert!(
-            not_ready(backfilling.ready_index("count/1", IndexKind::Aggregate)),
-            "readiness_is_that_of_the_snapshot"
+            not_complete(backfilling.complete_index("count/1", IndexKind::Aggregate)),
+            "completion_is_that_of_the_snapshot"
         );
-        assert!(not_ready(snapshot_count(&backfilling)));
-        let ready = snapshot(&store);
+        assert!(not_complete(snapshot_count(&backfilling)));
+        let complete = snapshot(&store);
         assert_eq!(
-            ready.ready_index("count/1", IndexKind::Aggregate).unwrap(),
+            complete
+                .complete_index("count/1", IndexKind::Aggregate)
+                .unwrap(),
             id
         );
-        assert_eq!(snapshot_count(&ready).unwrap(), SEEDED);
+        assert_eq!(snapshot_count(&complete).unwrap(), SEEDED);
         assert!(
-            not_ready(ready.ready_index("count/1", IndexKind::Secondary)),
+            not_complete(complete.complete_index("count/1", IndexKind::Secondary)),
             "kinds_must_match"
         );
-        assert!(not_ready(
-            ready.ready_index("absent/1", IndexKind::Aggregate)
+        assert!(not_complete(
+            complete.complete_index("absent/1", IndexKind::Aggregate)
         ));
 
         reconcile(
@@ -3901,17 +3912,19 @@ mod backfill_tests {
         )
         .await;
         assert!(
-            not_ready(snapshot(&store).ready_index("count/1", IndexKind::Aggregate)),
-            "dropped_indexes_are_not_ready"
+            not_complete(snapshot(&store).complete_index("count/1", IndexKind::Aggregate)),
+            "dropped_indexes_are_not_complete"
         );
-        assert!(not_ready(snapshot_count(&snapshot(&store))));
+        assert!(not_complete(snapshot_count(&snapshot(&store))));
         assert_eq!(
-            ready.ready_index("count/1", IndexKind::Aggregate).unwrap(),
+            complete
+                .complete_index("count/1", IndexKind::Aggregate)
+                .unwrap(),
             id,
             "an_admitted_snapshot_keeps_its_view"
         );
         assert_eq!(
-            snapshot_count(&ready).unwrap(),
+            snapshot_count(&complete).unwrap(),
             SEEDED,
             "and_reads_its_data"
         );
@@ -4072,7 +4085,7 @@ mod open_tests {
         reconcile(&mut store, maintain()).await.unwrap();
         engine::run_all(&mut store, 3).await.unwrap();
         let completed = get_registry(&db).unwrap().unwrap();
-        assert_eq!(completed.get(id).unwrap().state, IndexStatus::Ready);
+        assert_eq!(completed.get(id).unwrap().state, IndexStatus::Complete);
 
         // An attempt that wrote registry state but did not flush it: a retry on
         // the same physical store, with nothing left to change, still flushes.

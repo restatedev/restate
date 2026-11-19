@@ -42,8 +42,8 @@ define_schema! {
             /// The entry's ID in this replica; for an index, the prefix of its keys.
             id: u32 => DataType::UInt32,
             /// For an index, `backfilling` (maintained but incomplete: queries
-            /// don't read it), `ready` or `dropped`; for a migration, `in_progress`
-            /// or `complete`.
+            /// don't read it), `complete` (queries read it) or `dropped`; for a
+            /// migration, `in_progress` or `complete`.
             status: ReString => DataType::Utf8,
             /// The job, while the index is backfilling or the migration in
             /// progress; see `migration_jobs`.
@@ -52,11 +52,8 @@ define_schema! {
             registered_at: Option<MillisSinceEpoch> => TimestampMillisecond,
             /// The Restate version that registered it; NULL if unknown.
             registered_by_version: Option<ReString> => DataType::Utf8,
-            /// When the index became Ready; NULL until then, if unknown, and for
-            /// a migration.
-            ready_at: Option<MillisSinceEpoch> => TimestampMillisecond,
-            /// When the migration completed; NULL until then, if unknown, and for
-            /// an index.
+            /// When the index or the migration completed; NULL until then, or if
+            /// unknown.
             completed_at: Option<MillisSinceEpoch> => TimestampMillisecond,
             /// When it was dropped; NULL unless dropped, or if unknown.
             dropped_at: Option<MillisSinceEpoch> => TimestampMillisecond,

@@ -173,7 +173,7 @@ impl Fixture {
     }
 }
 
-async fn ready(store: &mut PartitionStore) {
+async fn complete(store: &mut PartitionStore) {
     let mut config = Configuration::pinned().as_ref().clone();
     config.common.experimental.set_track_status_gauges(true);
     store
@@ -317,7 +317,7 @@ async fn statistics_have_shared_shapes_and_sum_before_count_filters_and_limits()
     Configuration::set(config);
     let mut fixture = Fixture::new(true).await;
     for (i, store) in fixture.stores.iter_mut().enumerate() {
-        ready(store).await;
+        complete(store).await;
         populate(store, i == 1).await;
     }
     let session = fixture.session();
@@ -406,7 +406,7 @@ async fn statistics_have_shared_shapes_and_sum_before_count_filters_and_limits()
     let scope = IndexScope {
         partition: store.partition_id(),
         index: snapshot
-            .ready_index(StoredServiceStats::DEFINITION, IndexKind::Aggregate)
+            .complete_index(StoredServiceStats::DEFINITION, IndexKind::Aggregate)
             .unwrap(),
     };
     drop(snapshot);
@@ -527,7 +527,7 @@ async fn exposure_is_session_scoped_and_remote_failures_never_become_partial_tot
             .is_err()
     );
 
-    ready(&mut fixture.stores[0]).await;
+    complete(&mut fixture.stores[0]).await;
     populate(&mut fixture.stores[0], false).await;
     // The local partition is healthy, but its remote partner has no gauges.
     for table in ["sys_service_stats", "sys_deployment_stats"] {
@@ -537,9 +537,9 @@ async fn exposure_is_session_scoped_and_remote_failures_never_become_partial_tot
         )
         .await
         .unwrap_err();
-        assert!(error.to_string().contains("not ready"), "{error}");
+        assert!(error.to_string().contains("not complete"), "{error}");
     }
-    ready(&mut fixture.stores[1]).await;
+    complete(&mut fixture.stores[1]).await;
     populate(&mut fixture.stores[1], true).await;
     // An old worker without this scanner fails the query rather than contributing zero.
     assert!(
@@ -572,7 +572,7 @@ async fn exposure_is_session_scoped_and_remote_failures_never_become_partial_tot
     let scope = IndexScope {
         partition: store.partition_id(),
         index: snapshot
-            .ready_index(StoredServiceStats::DEFINITION, IndexKind::Aggregate)
+            .complete_index(StoredServiceStats::DEFINITION, IndexKind::Aggregate)
             .unwrap(),
     };
     drop(snapshot);

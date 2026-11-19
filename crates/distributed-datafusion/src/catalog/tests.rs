@@ -705,7 +705,7 @@ async fn migration_tables_serve_the_default_engine_rows() {
     // aren't blocked.
     for sql in [
         "SELECT COUNT(*) FROM cluster.registry
-         WHERE status = 'ready' AND approx_size_bytes IS NOT NULL",
+         WHERE status = 'complete' AND approx_size_bytes IS NOT NULL",
         "SELECT COUNT(*) FROM cluster.migration_jobs
          WHERE status = 'completed' AND blocked_by IS NULL",
     ] {

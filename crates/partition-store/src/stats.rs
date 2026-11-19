@@ -16,7 +16,7 @@
 //! statistic's payload. The header identifies the physical partition and the
 //! registry's index ID of the index; it does not contain a service's
 //! partition key. Ordered payloads use the same schema-selected field codecs as
-//! other ordered keys. Reads resolve the Ready index of the statistic's
+//! other ordered keys. Reads resolve the Complete index of the statistic's
 //! definition, and fail when there is none.
 //!
 //! A write never reads a counter: it hands RocksDB a signed delta, a **merge

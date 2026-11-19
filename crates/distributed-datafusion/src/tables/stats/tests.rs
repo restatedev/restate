@@ -93,7 +93,7 @@ async fn stats_tables_aggregate_filter_and_follow_lifecycle_across_stores() {
         ),
     ]);
     let mut config = Configuration::default();
-    // Tracked from the start, over empty partitions, the gauges are Ready at once.
+    // Tracked from the start, over empty partitions, the gauges are Complete at once.
     config.common.experimental.set_track_status_gauges(true);
     config.common.experimental.set_query_stats_tables(true);
     Configuration::set(config.clone());

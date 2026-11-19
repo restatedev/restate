@@ -303,7 +303,7 @@ async fn stage_index_access_matches_scans_across_windows_and_owners() {
 /// with the same rows. Each partition takes its own path, shown by
 /// invocations the index lacks:
 /// - most read the index;
-/// - one hasn't fully migrated to vqueues, and one has no Ready index: they
+/// - one hasn't fully migrated to vqueues, and one has no Complete index: they
 ///   scan, filter, and keep the newest rows the query needs; the first holds
 ///   73 page matches, more than the page and its OFFSET reach;
 /// - one holds a service with more handlers than one read merges: it scans
@@ -329,9 +329,9 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
     use crate::tables::invocation_status::SysInvocationStatusTable;
 
     const INDEX: &str = "_idx_entry_by_service_created";
-    /// Not migrated, and no Ready index: these partitions scan.
+    /// Not migrated, and no Complete index: these partitions scan.
     const UNMIGRATED: usize = 5;
-    const UNREADY: usize = 6;
+    const INCOMPLETE: usize = 6;
     /// Holds the service with more handlers than one read merges.
     const MANY: usize = 3;
 
@@ -362,7 +362,7 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
     };
     let partitions = fixture.stores.len() as u64;
     for (partition, store) in fixture.stores.iter_mut().enumerate() {
-        let config = if partition == UNREADY {
+        let config = if partition == INCOMPLETE {
             &reset
         } else {
             &tracking
@@ -611,7 +611,10 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
             rows.sort();
             assert_eq!(
                 rows,
-                [[format!("probe{UNMIGRATED}")], [format!("probe{UNREADY}")]],
+                [
+                    [format!("probe{UNMIGRATED}")],
+                    [format!("probe{INCOMPLETE}")]
+                ],
                 "parallelism {parallelism}: {probes}"
             );
         }
@@ -756,7 +759,7 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
                 3,
                 "{plan}"
             );
-            assert!(plan.contains("entry_index_scans_not_ready=1"), "{plan}");
+            assert!(plan.contains("entry_index_scans_not_complete=1"), "{plan}");
             assert!(
                 !plan.contains("entry_index_reads=0,"),
                 "every owner reads the index somewhere: {plan}"

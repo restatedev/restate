@@ -31,7 +31,7 @@
 //!   registrations; a migration never sets the fence itself. A store without it
 //!   gets no entry, no walk and no job, so no new version floor.
 //! - **Completion.** The slice that exhausts the walk sets `Complete` in the
-//!   registry it commits and publishes, like an index becoming Ready; its job
+//!   registry it commits and publishes, like an index becoming Complete; its job
 //!   finishes `Completed`. Expiring job records never restart a migration.
 //! - **Unknown definitions**, a newer release's migrations, follow the entry's
 //!   [`MigrationOnUnknown`]: `Keep` leaves the entry as it is, unlinked from its

@@ -46,7 +46,7 @@ use crate::fsm_table::{
 };
 use crate::keys::KeyKind;
 use crate::registry::records::get_registry;
-use crate::registry::{IndexNotReady, IndexStatus, Registry};
+use crate::registry::{IndexNotComplete, IndexStatus, Registry};
 use crate::stats::aggregated::{
     DeploymentStatsBinding, ServiceStatsBinding, StageStatusCounts, VirtualObjectStatsBinding,
 };
@@ -251,12 +251,12 @@ fn ids(store: &PartitionStore) -> Vec<(u32, IndexStatus)> {
     .to_vec()
 }
 
-fn is_not_ready(err: &StorageError) -> bool {
-    matches!(err, StorageError::Generic(err) if err.downcast_ref::<IndexNotReady>().is_some())
+fn is_not_complete(err: &StorageError) -> bool {
+    matches!(err, StorageError::Generic(err) if err.downcast_ref::<IndexNotComplete>().is_some())
 }
 
 /// The totals of the three statistics tables, as a snapshot read sees them.
-/// `None` when they fail because the gauges are not Ready.
+/// `None` when they fail because the gauges are not Complete.
 async fn totals(store: &PartitionStore) -> Option<[u64; 3]> {
     let (snapshot, _) = store.query_read(CancellationToken::new()).unwrap();
     macro_rules! total {
@@ -278,7 +278,7 @@ async fn totals(store: &PartitionStore) -> Option<[u64; 3]> {
             match scanned {
                 Ok(()) => count,
                 Err(err) => {
-                    assert!(is_not_ready(&err), "{err:?}");
+                    assert!(is_not_complete(&err), "{err:?}");
                     return None;
                 }
             }
@@ -322,13 +322,13 @@ async fn backfilled_gauges_match_live_maintenance_and_rebuild_after_reset() {
     seed(&mut reference).await;
     assert!(read_all(&store).is_empty());
     assert!(!read_all(&reference).is_empty());
-    assert_eq!(totals(&store).await, None, "absent_gauges_are_not_ready");
+    assert_eq!(totals(&store).await, None, "absent_gauges_are_not_complete");
     // Registered before any entry existed, the reference's gauges had nothing
-    // to backfill and were Ready at once.
+    // to backfill and were Complete at once.
     assert_eq!(
         totals(&reference).await,
         Some([147, 96, 75]),
-        "gauges_of_an_empty_partition_are_ready_at_once"
+        "gauges_of_an_empty_partition_are_complete_at_once"
     );
 
     config.common.experimental.set_track_status_gauges(true);
@@ -337,7 +337,7 @@ async fn backfilled_gauges_match_live_maintenance_and_rebuild_after_reset() {
         assert!(
             ids(store)
                 .iter()
-                .all(|(_, state)| *state == IndexStatus::Ready)
+                .all(|(_, state)| *state == IndexStatus::Complete)
         );
     }
     let expected = read_all(&reference);
@@ -370,7 +370,7 @@ async fn backfilled_gauges_match_live_maintenance_and_rebuild_after_reset() {
     assert_eq!(read_all(&store), read_all(&reference));
     assert_eq!(totals(&store).await, Some([146, 96, 75]));
 
-    // Reopening keeps the Ready gauges.
+    // Reopening keeps the Complete gauges.
     let completed = ids(&store);
     store.partition_db().flush_memtables(true).await.unwrap();
     drop(store);
@@ -384,7 +384,7 @@ async fn backfilled_gauges_match_live_maintenance_and_rebuild_after_reset() {
     config.common.experimental.set_status_gauges_reset(true);
     open(&mut store, &config).await;
     assert!(keys(&store, KeyKind::Stats).is_empty());
-    assert_eq!(totals(&store).await, None, "reset_gauges_are_not_ready");
+    assert_eq!(totals(&store).await, None, "reset_gauges_are_not_complete");
 
     // Turned off again, the gauges are rebuilt under fresh IDs, which differ
     // from the reference replica's without changing what queries read.

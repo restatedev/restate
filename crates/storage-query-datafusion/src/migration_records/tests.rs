@@ -48,7 +48,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         .await;
     RocksDbManager::init();
     let manager = PartitionStoreManager::create(true).await.unwrap();
-    // Two replicas open with the status gauges: three statistics each, Ready at
+    // Two replicas open with the status gauges: three statistics each, Complete at
     // once over empty partitions, their jobs completed without a pass.
     let mut config = Configuration::default();
     config.common.experimental.set_track_status_gauges(true);
@@ -116,7 +116,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         count(
             "SELECT count(*) FROM registry
              WHERE plain_node_id = 'N1' AND gen_node_id = 'N1:1'
-               AND kind = 'aggregate' AND status = 'ready' AND job_id IS NULL
+               AND kind = 'aggregate' AND status = 'complete' AND job_id IS NULL
                AND registered_at IS NOT NULL AND registered_by_version IS NOT NULL
                AND approx_size_bytes IS NOT NULL"
         )

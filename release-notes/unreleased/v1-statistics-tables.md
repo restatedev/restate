@@ -23,8 +23,8 @@ You can query statistics without switching to the V2 engine.
 
 - The statistics must exist first: enable
   `experimental-enable-track-status-gauges` on workers and wait until they're
-  Ready on every partition (see `restate.cluster.registry`). Enabling the tables
-  doesn't start that, or wait for it.
+  complete on every partition (status `complete` in `restate.cluster.registry`).
+  Enabling the tables doesn't start that, or wait for it.
 - A query fails if any partition it reads has missing or incomplete
   statistics, instead of returning a partial total.
 - Enable the tables only after upgrading all nodes. An older node can't serve

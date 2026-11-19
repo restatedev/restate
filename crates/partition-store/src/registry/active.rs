@@ -12,7 +12,7 @@
 //!
 //! **Coverage.** An index reflects an entry when its keys or counts match that
 //! entry's contribution, including an empty contribution outside its membership.
-//! A Ready index reflects every entry. A Backfilling index reflects exactly the
+//! A Complete index reflects every entry. A Backfilling index reflects exactly the
 //! entries that list its build job's token (the job has the index's ID): the
 //! token is the only proof. A walk's cursor only records the walk's progress;
 //! no write consults it.
@@ -23,9 +23,9 @@
 //! token for every Backfilling index, so the list it stores is always the same:
 //! the Backfilling indexes' IDs.
 //!
-//! For example, with index 64 Ready and 70 Backfilling, an entry stored with no
+//! For example, with index 64 Complete and 70 Backfilling, an entry stored with no
 //! list is reflected by 64 only. Updating it removes its old key from 64, adds
-//! its new keys to both, and stores the list `[70]`. Once 70 is Ready too, its
+//! its new keys to both, and stores the list `[70]`. Once 70 is Complete too, its
 //! next write stores no list at all.
 //!
 //! Inserts have no before-image. A backfill establishes coverage the same way: it
@@ -103,7 +103,7 @@ pub(crate) const INDEX_DEFINITIONS: &[&IndexDefinition] = &[
 
 struct Active {
     id: u32,
-    ready: bool,
+    complete: bool,
     definition: &'static IndexDefinition,
     /// The walk backfilling this Backfilling index, once started.
     walk: Option<u64>,
@@ -111,7 +111,7 @@ struct Active {
 
 /// The committed registry, walks and unfinished jobs, published to every
 /// transaction and handle after each commit that changes them, together with
-/// the indexes writes maintain, the Backfilling and Ready indexes of known
+/// the indexes writes maintain, the Backfilling and Complete indexes of known
 /// definitions, and the migrations this binary knows, whose walks it runs.
 /// Finished jobs are never published: they stay on disk only.
 #[derive(Default)]
@@ -119,7 +119,7 @@ pub(crate) struct PublishedRegistry {
     /// The indexes writes maintain, sorted by ID.
     entries: Vec<Active>,
     /// The list every written entry stores: the Backfilling IDs as sorted
-    /// big-endian `u32`s. Empty when every index is Ready.
+    /// big-endian `u32`s. Empty when every index is Complete.
     maintaining: Vec<u8>,
     /// The committed registry and walks, from which `entries` is derived. The
     /// registry is shared with the successors of commits that don't change it.
@@ -138,7 +138,7 @@ impl std::fmt::Debug for PublishedRegistry {
             .entries(
                 self.entries
                     .iter()
-                    .map(|entry| (entry.id, entry.definition.name, entry.ready)),
+                    .map(|entry| (entry.id, entry.definition.name, entry.complete)),
             )
             .finish()
     }
@@ -204,7 +204,7 @@ impl PublishedRegistry {
                     })
                     .map(|definition| Active {
                         id: index.id,
-                        ready: index.state == super::IndexStatus::Ready,
+                        complete: index.state == super::IndexStatus::Complete,
                         definition,
                         walk: index.walk,
                     })
@@ -213,7 +213,7 @@ impl PublishedRegistry {
         entries.sort_unstable_by_key(|entry| entry.id);
         let maintaining = entries
             .iter()
-            .filter(|entry| !entry.ready)
+            .filter(|entry| !entry.complete)
             .flat_map(|entry| entry.id.to_be_bytes())
             .collect();
         Self {
@@ -277,14 +277,14 @@ impl PublishedRegistry {
         Some((definition, entry.id))
     }
 
-    /// The index ID of the Ready index of `definition`, or why there is none.
-    pub(crate) fn ready_index(&self, definition: &str, kind: IndexKind) -> Result<u32, String> {
+    /// The index ID of the Complete index of `definition`, or why there is none.
+    pub(crate) fn complete_index(&self, definition: &str, kind: IndexKind) -> Result<u32, String> {
         let entry = self
             .entries
             .iter()
             .find(|entry| entry.definition.name == definition && entry.definition.kind == kind)
             .ok_or_else(|| "no maintained index".to_owned())?;
-        if !entry.ready {
+        if !entry.complete {
             return Err(format!("index {} is still being completed", entry.id));
         }
         Ok(entry.id)
@@ -309,7 +309,7 @@ impl PublishedRegistry {
         for entry in &self.entries {
             let before = change
                 .before()
-                .filter(|_| entry.ready || touched_by.contains(entry.id));
+                .filter(|_| entry.complete || touched_by.contains(entry.id));
             (entry.definition.apply)(storage, entry.id, context, before, change.after());
         }
     }

@@ -8,12 +8,11 @@ replica, the one-time data migrations it runs in the background, and the
 background jobs doing that work:
 
 - `restate.cluster.registry`: one row per index or statistic on each replica,
-  with its definition, its status (`backfilling`, `ready` or `dropped`), when it
-  was registered, became ready or was dropped, why it was dropped, and an
-  estimate of the storage it takes, including writes not yet flushed
-  (`approx_size_bytes`). One-time migrations are listed too, with kind
-  `migration`, status `in_progress` or `complete`, and when they completed
-  (`completed_at`).
+  with its definition, its status (`backfilling`, `complete` or `dropped`), when
+  it was registered, completed (`completed_at`) or was dropped, why it was
+  dropped, and an estimate of the storage it takes, including writes not yet
+  flushed (`approx_size_bytes`). One-time migrations are listed too, with kind
+  `migration`, status `in_progress` or `complete`, and when they completed.
 - `restate.cluster.migration_jobs`: one row per background job on each
   replica, building an index (`index_backfill`) or running a one-time
   migration (`migration`), with its status (`pending`, `running`, `waiting`,

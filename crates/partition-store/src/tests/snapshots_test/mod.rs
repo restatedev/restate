@@ -176,11 +176,11 @@ fn registered_totals(store: &PartitionStore) -> u64 {
 }
 
 /// A replica restored from a snapshot of backfilled gauges opens with
-/// the same Ready indexes, under the source replica's IDs, and keeps maintaining
+/// the same Complete indexes, under the source replica's IDs, and keeps maintaining
 /// them, even with the options removed. The registry and walks also preserve the
 /// existing byte-offset position through the backfill and the restore.
 #[restate_core::test]
-async fn restored_snapshots_keep_ready_registered_instances() {
+async fn restored_snapshots_keep_complete_registered_instances() {
     use restate_storage_api::vqueue_table::{
         EntryContext, ReadVQueueTable, StoredEntryRef, WriteVQueueTable,
     };

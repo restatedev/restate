@@ -28,7 +28,7 @@ use super::{Stat, StatKind};
 pub const HEADER_LENGTH: usize = AggregateKeyPrefix::SERIALIZED_LENGTH + 1;
 
 /// Typed ownership metadata for the keys of statistic `S`. A read resolves the
-/// Ready index of `S`'s definition and fails with `IndexNotReady` when there is none.
+/// Complete index of `S`'s definition and fails with `IndexNotComplete` when there is none.
 pub struct AggregateKeyHeader<S>(PhantomData<fn() -> S>);
 
 impl<S: Stat + 'static> KeyHeader for AggregateKeyHeader<S> {
@@ -40,7 +40,7 @@ impl<S: Stat + 'static> KeyHeader for AggregateKeyHeader<S> {
     fn scope(metadata: &ReadMetadata<'_>) -> crate::Result<IndexScope> {
         Ok(IndexScope {
             partition: metadata.partition.partition_id,
-            index: metadata.ready_index(S::DEFINITION, IndexKind::Aggregate)?,
+            index: metadata.complete_index(S::DEFINITION, IndexKind::Aggregate)?,
         })
     }
 

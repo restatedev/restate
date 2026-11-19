@@ -559,7 +559,7 @@ impl EntryStatusRead {
             let memory = context.retained_memory("entry index read");
             let reads = metrics.counter("entry_index_reads");
             let scans = metrics.counter("entry_index_scans");
-            let not_ready = metrics.counter("entry_index_scans_not_ready");
+            let not_complete = metrics.counter("entry_index_scans_not_complete");
             let too_many_runs = metrics.counter("entry_index_scans_too_many_runs");
             let runs = metrics.counter("entry_index_runs");
             let examined = metrics.counter("entry_index_keys_examined");
@@ -577,8 +577,8 @@ impl EntryStatusRead {
                             EntryIndexPath::Scan(reason) => {
                                 scans.add(1);
                                 match reason {
-                                    ScanReason::NotReady | ScanReason::NotMigrated => {
-                                        not_ready.add(1)
+                                    ScanReason::NotComplete | ScanReason::NotMigrated => {
+                                        not_complete.add(1)
                                     }
                                     ScanReason::TooManyRuns => too_many_runs.add(1),
                                 }

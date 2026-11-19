@@ -123,10 +123,10 @@ async fn keys_order_entries_and_change_only_on_create_and_delete() {
         .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
         .await
         .unwrap();
-    // An empty partition has nothing to backfill: the index is Ready at once.
+    // An empty partition has nothing to backfill: the index is Complete at once.
     open(&mut store, &tracking()).await;
     let (id, status) = index(&store).unwrap();
-    assert_eq!(status, IndexStatus::Ready);
+    assert_eq!(status, IndexStatus::Complete);
 
     let qid = VQueueId::custom(7, "q");
     let call = EntryTargetRef::Service {
@@ -255,7 +255,7 @@ async fn keys_order_entries_and_change_only_on_create_and_delete() {
 /// Backfilling existing entries gives the same keys as maintaining the indexes
 /// from the start: invocations through their invocation status, state
 /// mutations through their input. A reset deletes the keys; tracking again
-/// rebuilds them under new IDs. On a store whose first index is already Ready,
+/// rebuilds them under new IDs. On a store whose first index is already Complete,
 /// the two later ones get their own full pass, and the first stays as it was.
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
@@ -283,7 +283,7 @@ async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     let mut config = tracking();
     open(&mut store, &config).await;
     let (built, status) = index(&store).unwrap();
-    assert_eq!(status, IndexStatus::Ready);
+    assert_eq!(status, IndexStatus::Complete);
     // 48 invocations and a state mutation on each of three partition keys, each
     // in either the finished or the active index, and the two unusual entries:
     // the Finished one in the finished index, the one in an unknown stage in
@@ -305,11 +305,11 @@ async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     config.common.experimental.set_entry_indexes_reset(false);
     open(&mut store, &config).await;
     let (rebuilt, status) = index(&store).unwrap();
-    assert_eq!(status, IndexStatus::Ready);
+    assert_eq!(status, IndexStatus::Complete);
     assert!(rebuilt > built);
     assert_eq!(payloads(&store), payloads(&reference));
 
-    // A store of the previous release: only the first index, Ready.
+    // A store of the previous release: only the first index, Complete.
     let mut late = manager
         .open(&Partition::new(PartitionId::from(3), KeyRange::FULL), None)
         .await
@@ -320,18 +320,18 @@ async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     maintain_only(&mut late, &[&ENTRY_BY_SERVICE_CREATED]).await;
     engine::run_all(&mut late, 3).await.unwrap();
     let (first, status) = index(&late).unwrap();
-    assert_eq!(status, IndexStatus::Ready);
+    assert_eq!(status, IndexStatus::Complete);
     let before = payloads(&late);
     assert_eq!(before[0], payloads(&reference)[0]);
     assert!(before[1].1.is_empty() && before[2].1.is_empty());
     // This release adds the other two: they backfill on their own, and the
     // first keeps its ID and keys.
     open(&mut late, &tracking()).await;
-    assert_eq!(index(&late), Some((first, IndexStatus::Ready)));
+    assert_eq!(index(&late), Some((first, IndexStatus::Complete)));
     for definition in [&FINISHED_ENTRY_BY_OUTCOME, &ACTIVE_ENTRY_BY_STAGE] {
         let id = maintained(&late, definition);
         let registry = get_registry(late.partition_db()).unwrap().unwrap();
-        assert_eq!(registry.get(id).unwrap().state, IndexStatus::Ready);
+        assert_eq!(registry.get(id).unwrap().state, IndexStatus::Complete);
     }
     assert_eq!(payloads(&late), payloads(&reference));
 }

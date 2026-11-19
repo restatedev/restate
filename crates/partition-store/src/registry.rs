@@ -14,7 +14,7 @@
 //!
 //! | Entry | Life | Run by | Defined in |
 //! |---|---|---|---|
-//! | [`Index`] | Backfilling ─▶ Ready ─▶ Dropped | its build job, on a walk | an index definition, below |
+//! | [`Index`] | Backfilling ─▶ Complete ─▶ Dropped | its build job, on a walk | an index definition, below |
 //! | [`Migration`] | InProgress ─▶ Complete, and back for `Rerun` | its job, on a walk | an `OnlineMigration` (`migrations::online`) |
 //!
 //! This page describes indexes; [`migration`] describes migrations.
@@ -125,11 +125,11 @@ pub enum IndexKind {
     Aggregate,
 }
 
-/// Where an index is in its life. Writes maintain a `Backfilling` or `Ready`
-/// index; queries read only a `Ready` one.
+/// Where an index is in its life. Writes maintain a `Backfilling` or `Complete`
+/// index; queries read only a `Complete` one.
 ///
 /// ```text
-/// register ──▶ Backfilling ──(walk reflects every entry)──▶ Ready
+/// register ──▶ Backfilling ──(walk reflects every entry)──▶ Complete
 ///                  │                                          │
 ///                  └──────────── drop ───────────────────────┘──▶ Dropped
 /// ```
@@ -147,7 +147,7 @@ pub enum IndexStatus {
     Backfilling,
     /// Maintained, and every entry is reflected: queries may use it.
     #[bilrost(2)]
-    Ready,
+    Complete,
     /// Neither maintained nor readable; its keys were deleted. The ID stays
     /// reserved, so a stale token in an entry never matches a new index.
     #[bilrost(3)]
@@ -192,7 +192,7 @@ pub struct IndexTimeline {
     #[bilrost(2)]
     pub registered_by: Option<ReString>,
     #[bilrost(3)]
-    pub ready_at: Option<u64>,
+    pub completed_at: Option<u64>,
     #[bilrost(4)]
     pub dropped_at: Option<u64>,
     /// Why it was dropped: a [`DropReason`] number, 0 when not dropped.
@@ -206,8 +206,8 @@ impl std::fmt::Display for IndexTimeline {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "registered={:?} registered_by={:?} ready={:?} dropped={:?}",
-            self.registered_at, self.registered_by, self.ready_at, self.dropped_at
+            "registered={:?} registered_by={:?} completed={:?} dropped={:?}",
+            self.registered_at, self.registered_by, self.completed_at, self.dropped_at
         )?;
         match (self.drop_reason, DropReason::from_number(self.drop_reason)) {
             (0, _) => Ok(()),
@@ -245,18 +245,18 @@ pub struct Index {
 }
 
 impl Index {
-    /// Maintained on writes: Backfilling or Ready.
+    /// Maintained on writes: Backfilling or Complete.
     pub fn is_maintained(&self) -> bool {
-        matches!(self.state, IndexStatus::Backfilling | IndexStatus::Ready)
+        matches!(self.state, IndexStatus::Backfilling | IndexStatus::Complete)
     }
 }
 
-/// A query needs an index that is not Ready in the partition snapshot it reads:
+/// A query needs an index that is not Complete in the partition snapshot it reads:
 /// not registered, still being backfilled, dropped, or the registry is unreadable.
 /// Reading it anyway could miss entries, so the read fails instead.
 #[derive(Debug, thiserror::Error)]
-#[error("'{definition}' is not ready on partition {partition}: {reason}")]
-pub struct IndexNotReady {
+#[error("'{definition}' is not complete on partition {partition}: {reason}")]
+pub struct IndexNotComplete {
     pub definition: ReString,
     pub partition: restate_types::identifiers::PartitionId,
     pub reason: String,
@@ -452,7 +452,7 @@ impl Registry {
         Ok(id)
     }
 
-    /// The maintained (Backfilling or Ready) index of `definition`, if any.
+    /// The maintained (Backfilling or Complete) index of `definition`, if any.
     pub fn maintained(&self, definition: &str) -> Option<&Index> {
         self.indexes
             .iter()
@@ -506,20 +506,20 @@ impl Registry {
         Ok(())
     }
 
-    /// Completes a Backfilling index: unlinks its walk and makes it Ready.
-    pub fn set_ready(&mut self, id: u32) -> Result<(), RegistryError> {
-        use IndexStatus::{Backfilling, Ready};
-        let entry = self.transition(id, &[Backfilling], Ready)?;
+    /// Completes a Backfilling index: unlinks its walk and makes it Complete.
+    pub fn set_complete(&mut self, id: u32) -> Result<(), RegistryError> {
+        use IndexStatus::{Backfilling, Complete};
+        let entry = self.transition(id, &[Backfilling], Complete)?;
         entry.walk = None;
-        entry.state = Ready;
+        entry.state = Complete;
         Ok(())
     }
 
     /// Stops maintaining a maintained index, keeping its ID reserved. The caller
     /// deletes its keys in the same batch that persists this change.
     pub fn drop_index(&mut self, id: u32) -> Result<(), RegistryError> {
-        use IndexStatus::{Backfilling, Dropped, Ready};
-        let entry = self.transition(id, &[Backfilling, Ready], Dropped)?;
+        use IndexStatus::{Backfilling, Complete, Dropped};
+        let entry = self.transition(id, &[Backfilling, Complete], Dropped)?;
         entry.walk = None;
         entry.state = Dropped;
         Ok(())
@@ -630,8 +630,8 @@ mod tests {
             Some(7),
             "links_persist"
         );
-        registry.set_ready(64).unwrap();
-        assert_eq!(registry.get(64).unwrap().state, IndexStatus::Ready);
+        registry.set_complete(64).unwrap();
+        assert_eq!(registry.get(64).unwrap().state, IndexStatus::Complete);
         assert_eq!(registry.get(64).unwrap().walk, None);
 
         // Round trips preserve the counter: reopening consumes no IDs.
@@ -698,19 +698,19 @@ mod tests {
         let mut registry = Registry::default();
         let id = registry.register("a/1", IndexKind::Secondary).unwrap();
         let missing = Err(RegistryError::UnknownId(99));
-        assert_eq!(registry.set_ready(99), missing);
+        assert_eq!(registry.set_complete(99), missing);
         assert_eq!(registry.drop_index(99), missing);
         assert_eq!(registry.link(99, 1), missing);
-        registry.set_ready(id).unwrap();
-        let ready_again = Err(RegistryError::InvalidTransition {
+        registry.set_complete(id).unwrap();
+        let complete_again = Err(RegistryError::InvalidTransition {
             id,
-            from: IndexStatus::Ready,
-            to: IndexStatus::Ready,
+            from: IndexStatus::Complete,
+            to: IndexStatus::Complete,
         });
-        assert_eq!(registry.set_ready(id), ready_again);
+        assert_eq!(registry.set_complete(id), complete_again);
         assert!(
             registry.link(id, 1).is_err(),
-            "ready_indexes_are_not_backfilled"
+            "complete_indexes_are_not_backfilled"
         );
         registry.drop_index(id).unwrap();
         assert!(
@@ -770,8 +770,8 @@ mod tests {
             ("two maintained indexes", |r| {
                 r.indexes[1].definition = "a/1".into()
             }),
-            ("walk on a Ready index", |r| {
-                r.indexes[0].state = IndexStatus::Ready;
+            ("walk on a Complete index", |r| {
+                r.indexes[0].state = IndexStatus::Complete;
                 r.indexes[0].walk = Some(1);
             }),
             ("migration ID of an index", |r| r.migrations[0].id = 64),

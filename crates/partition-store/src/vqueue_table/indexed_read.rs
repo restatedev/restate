@@ -29,7 +29,7 @@
 //! (succeeded, "Utils", "call"): t8 t5   ─┘
 //! ```
 //!
-//! The index finds every Finished entry once it is Ready on the query's own
+//! The index finds every Finished entry once it is Complete on the query's own
 //! snapshot; otherwise, or if finding the runs takes more than one read allows,
 //! the read scans the entry statuses instead, before it returns anything. It
 //! reports which it did ([`EntryIndexPath`]), so that a caller relying on the
@@ -169,12 +169,12 @@ impl ActiveRead {
 }
 
 /// Why a read of `I` on `snapshot` can't go through it, if it can't: the index
-/// isn't Ready on it.
+/// isn't Complete on it.
 fn unusable<I: EntryIndex>(snapshot: &ReadSnapshot) -> Result<Option<ScanReason>> {
     Ok(snapshot
-        .ready_index(I::DEFINITION, IndexKind::Secondary)
+        .complete_index(I::DEFINITION, IndexKind::Secondary)
         .is_err()
-        .then_some(ScanReason::NotReady))
+        .then_some(ScanReason::NotComplete))
 }
 
 /// An index key's reference to an entry status, with what the status must
@@ -812,7 +812,7 @@ mod tests {
     /// The read returns Finished entries newest finished first, narrowed by
     /// status, and only those whose current status is still their key's: a
     /// stale, missing or reincarnated reference is skipped and counted, a
-    /// malformed status fails the read. Without a Ready index, it scans.
+    /// malformed status fails the read. Without a Complete index, it scans.
     ///
     /// However it ends, at its end, on an error or a refused charge, or dropped
     /// part-way, it releases every charge and its snapshot, and tells its work
@@ -1047,7 +1047,7 @@ mod tests {
         run(&store, Selection::All, Charge::default(), Stop::End)
             .failed_and_released("cannot decode");
 
-        // Not Ready: a partition that doesn't maintain the index scans.
+        // Not Complete: a partition that doesn't maintain the index scans.
         let mut plain = manager
             .open(&Partition::new(PartitionId::from(1), KeyRange::FULL), None)
             .await
@@ -1081,7 +1081,7 @@ mod tests {
         tx.commit().await.unwrap();
         drop(tx);
         let (rows, path, _) = read(&plain, Selection::All).unwrap();
-        assert_eq!(path, Some(EntryIndexPath::Scan(ScanReason::NotReady)));
+        assert_eq!(path, Some(EntryIndexPath::Scan(ScanReason::NotComplete)));
         assert_eq!(rows.len(), 1);
     }
 
@@ -1091,7 +1091,7 @@ mod tests {
     /// leaves the key alone keeps it. A reference whose status no longer says
     /// its key's stage, creation time or incarnation, or that is gone, is
     /// skipped and counted; a malformed status fails the read and releases
-    /// everything. Without a Ready index, it scans.
+    /// everything. Without a Complete index, it scans.
     #[restate_core::test]
     async fn active_reads_follow_each_entry_across_stages() {
         RocksDbManager::init();
@@ -1287,7 +1287,7 @@ mod tests {
         active(&store, Selection::All, Charge::default(), Stop::End)
             .failed_and_released("cannot decode");
 
-        // Not Ready: a partition that doesn't maintain the index scans.
+        // Not Complete: a partition that doesn't maintain the index scans.
         let plain = manager
             .open(&Partition::new(PartitionId::from(1), KeyRange::FULL), None)
             .await
@@ -1295,7 +1295,7 @@ mod tests {
         let scanned = active(&plain, Selection::All, Charge::default(), Stop::End);
         assert_eq!(
             (scanned.path, scanned.held, scanned.closed),
-            (Some(EntryIndexPath::Scan(ScanReason::NotReady)), 0, true)
+            (Some(EntryIndexPath::Scan(ScanReason::NotComplete)), 0, true)
         );
     }
 }

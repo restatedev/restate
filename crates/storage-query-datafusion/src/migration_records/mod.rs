@@ -303,7 +303,7 @@ fn append_entry(
     row.id(index.id);
     row.status(match index.state {
         IndexStatus::Backfilling => "backfilling",
-        IndexStatus::Ready => "ready",
+        IndexStatus::Complete => "complete",
         IndexStatus::Dropped => "dropped",
         IndexStatus::Unknown => "unknown",
     });
@@ -317,8 +317,8 @@ fn append_entry(
     if let Some(by) = &timeline.registered_by {
         row.registered_by_version(by);
     }
-    if let Some(at) = timeline.ready_at {
-        row.ready_at(millis(at));
+    if let Some(at) = timeline.completed_at {
+        row.completed_at(millis(at));
     }
     if let Some(at) = timeline.dropped_at {
         row.dropped_at(millis(at));

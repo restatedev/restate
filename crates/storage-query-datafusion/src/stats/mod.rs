@@ -21,7 +21,7 @@
 //! entries' routing `partition_key`. Entries of one object can be routed by
 //! different keys, for example in custom queues, and their rows stay separate.
 //!
-//! A scan reads only statistics that are Ready in its read snapshot. If a
+//! A scan reads only statistics that are Complete in its read snapshot. If a
 //! partition can't provide them, the query fails rather than return a partial
 //! total.
 

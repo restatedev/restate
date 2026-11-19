@@ -75,7 +75,7 @@ fn target(case: u8) -> EntryTargetRef<'static> {
     }
 }
 
-/// The scopes of the three Ready entry indexes.
+/// The scopes of the three Complete entry indexes.
 #[derive(Clone, Copy)]
 struct Scopes {
     /// By service and handler.
@@ -106,7 +106,7 @@ async fn tracking_store() -> (PartitionStore, Scopes) {
     let scope = |definition| IndexScope {
         partition: store.partition_id(),
         index: snapshot
-            .ready_index(definition, IndexKind::Secondary)
+            .complete_index(definition, IndexKind::Secondary)
             .unwrap(),
     };
     let scopes = Scopes {

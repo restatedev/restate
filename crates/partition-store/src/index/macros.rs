@@ -32,7 +32,7 @@
 /// `PrimaryKey`, and a read checks that it belongs to the partition it runs on.
 ///
 /// The index is **registered** under `definition:`: each replica's registry
-/// issues the index ID of its build, and a read resolves the Ready one.
+/// issues the index ID of its build, and a read resolves the Complete one.
 ///
 /// The declaration generates, through `define_ordered_key!`:
 /// - `EntryByStageServiceKey`, its borrowing `…KeyRef` and `…KeyView`, the prefix
@@ -107,7 +107,7 @@ macro_rules! define_secondary_index {
             ) -> crate::Result<crate::keys::header::IndexScope> {
                 Ok(crate::keys::header::IndexScope {
                     partition: metadata.partition.partition_id,
-                    index: metadata.ready_index(
+                    index: metadata.complete_index(
                         $definition,
                         crate::registry::IndexKind::Secondary,
                     )?,
