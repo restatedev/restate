@@ -393,7 +393,7 @@ impl PartitionStore {
         // This binary's writes may undo the Complete migrations it doesn't know;
         // those whose entry says so run again once a binary that knows them
         // opens the store.
-        let rerun = super::migration::rerun_unknown(&mut registry, requests.migrations);
+        let rerun = super::migration::rerun_unknown(&mut registry, requests.migrations, &stamp);
         if !rerun.is_empty() {
             warn!(
                 migrations = ?rerun,
@@ -2840,6 +2840,7 @@ mod backfill_tests {
             jobs: active.jobs().clone(),
             index_sizes: Default::default(),
             driver: db.driver_state().get(),
+            unknown_migrations: active.unknown_migrations(active.registry()),
         };
         let job = active.jobs().get(MigrationJobId::for_entry(id))?;
         replica.blocked_by(job, now)

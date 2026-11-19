@@ -291,6 +291,9 @@ fn append_entry(
             if let Some(at) = timeline.completed_at {
                 row.completed_at(millis(at));
             }
+            if let Some(at) = timeline.reset_at {
+                row.reset_at(millis(at));
+            }
             return;
         }
     };

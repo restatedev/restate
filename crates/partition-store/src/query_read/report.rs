@@ -69,6 +69,9 @@ pub struct ReplicaMigrations {
     /// The scheduling constraints the replica's walk driver last observed, read
     /// next to the snapshot; `None` without a running driver.
     pub driver: Option<DriverState>,
+    /// The IDs of the migrations in `registry` that this binary doesn't know, a
+    /// later release's: their jobs can't progress on this replica.
+    pub unknown_migrations: Vec<u32>,
 }
 
 impl ReplicaMigrations {
@@ -102,11 +105,15 @@ impl ReplicaMigrations {
         pass_started_at.checked_add(u64::try_from(elapsed * span / done).ok()?)
     }
 
-    /// Why `job` isn't progressing at `now`, according to the constraints the
-    /// replica's walk driver last observed: `None` when it reported none that
-    /// applies, which doesn't prove progress (the driver may be resting between
-    /// slices, or not running). In this order:
+    /// Why `job` isn't progressing at `now`: because this binary doesn't know
+    /// its migration, or because of the constraints the replica's walk driver
+    /// last observed. `None` when neither applies, which doesn't prove progress
+    /// (the driver may be resting between slices, or not running). In this
+    /// order:
     ///
+    /// - `unknown-migration`, for the job of a migration this binary doesn't
+    ///   know, a later release's, whether or not a driver runs: only a binary
+    ///   that knows it can run it;
     /// - `background-migrations-disabled`, for every unfinished job;
     /// - `snapshot-export`, for a job with a walk, or one waiting for a pass it
     ///   may start now;
@@ -122,6 +129,9 @@ impl ReplicaMigrations {
         use MigrationJobStatus::*;
         if !matches!(job.status, Pending | Running | Waiting) {
             return None;
+        }
+        if self.unknown_migrations.contains(&job.id().as_u32()) {
+            return Some("unknown-migration");
         }
         let driver = self.driver.as_ref()?;
         if driver.disabled {
@@ -221,6 +231,10 @@ impl PartitionStoreManager {
                 match read_replica(&snapshot, partition.id(), partition.key_range, now) {
                     Ok(mut replica) => {
                         replica.driver = db.driver_state().get();
+                        if let Some(published) = db.published_registry() {
+                            replica.unknown_migrations =
+                                published.unknown_migrations(&replica.registry);
+                        }
                         // While the snapshot keeps the replica admitted.
                         if sizes == IndexSizes::Estimate {
                             replica.index_sizes = index_sizes(&db, &replica.registry);
@@ -262,6 +276,7 @@ fn read_replica(
         jobs: read.jobs,
         index_sizes: HashMap::new(),
         driver: None,
+        unknown_migrations: Vec::new(),
     })
 }
 

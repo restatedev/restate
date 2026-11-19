@@ -58,6 +58,11 @@ define_table!(
         /// unknown.
         completed_at: TimestampMillisecond,
 
+        /// When a release that doesn't know the migration last set it back to in
+        /// progress, so that a release that knows it runs it again; NULL if that
+        /// never happened, and for an index.
+        reset_at: TimestampMillisecond,
+
         /// When it was dropped; NULL unless dropped, or if unknown.
         dropped_at: TimestampMillisecond,
 

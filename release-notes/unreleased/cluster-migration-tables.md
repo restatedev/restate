@@ -12,7 +12,9 @@ background jobs doing that work:
   it was registered, completed (`completed_at`) or was dropped, why it was
   dropped, and an estimate of the storage it takes, including writes not yet
   flushed (`approx_size_bytes`). One-time migrations are listed too, with kind
-  `migration`, status `in_progress` or `complete`, and when they completed.
+  `migration`, status `in_progress` or `complete`, when they completed, and
+  when a rollback last set them back to in progress so that they run again
+  (`reset_at`).
 - `restate.cluster.migration_jobs`: one row per background job on each
   replica, building an index (`index_backfill`) or running a one-time
   migration (`migration`), with its status (`pending`, `running`, `waiting`,
@@ -20,6 +22,8 @@ background jobs doing that work:
   pass ends (`eta`), the rows it examined and changed, its work time, and its
   failures with the last error.
   `blocked_by` gives the reason the replica last saw for it not to progress:
+  `unknown-migration` (the node runs a release that doesn't know the
+  migration, for example after a rollback; a release that knows it runs it),
   `background-migrations-disabled`, `snapshot-export`, `failure-backoff` or
   `throttled`. A snapshot export shows from the moment the replica next checks
   for one, and NULL only means no reason is known, not that the job is
