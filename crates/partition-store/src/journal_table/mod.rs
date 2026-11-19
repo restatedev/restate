@@ -24,7 +24,7 @@ use restate_types::identifiers::{
 };
 
 use crate::TableKind::Journal;
-use crate::budgeted_reads::budgeted_get;
+use crate::budgeted_reads::{MAX_INLINE_ROWS, budgeted_get};
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
 use crate::scan::PhysicalScan;
 use crate::{
@@ -343,7 +343,7 @@ impl PartitionStoreSnapshot<'_> {
             return Ok(stream::empty().left_stream());
         }
         let mut remaining = journal_length;
-        let rows = self.budgeted_scan(
+        let scan = self.prepare_budgeted_scan(
             "get-journal-budgeted",
             journal_physical_scan(invocation_id),
             budget,
@@ -359,7 +359,8 @@ impl PartitionStoreSnapshot<'_> {
                     TableScanIterationDecision::Emit(row)
                 }
             },
-        )?;
+        );
+        let rows = scan.run_cached_then_offload(MAX_INLINE_ROWS, self.executor().low_pri())?;
         Ok(rows.right_stream())
     }
 }

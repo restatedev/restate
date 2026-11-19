@@ -16,17 +16,18 @@ use std::time::Instant;
 
 use futures::FutureExt;
 use futures::executor::{LocalPool, LocalSpawner};
+use futures::future::{self, Either};
 use futures::task::{LocalFutureObj, LocalSpawn};
 use metrics::{Gauge, gauge, histogram};
 use tracing::Instrument;
 
 use restate_core::io::{
-    AdmissionClosed, Cancelled, FutureTask, Gate, IoExecutor, IoOp, IoTask, Lease, TrackedTask,
+    AdmissionClosed, Cancelled, FutureTask, Gate, IoExecutor, IoOp, IoTask, IoTaskError, Lease,
+    TrackedTask,
 };
 
-use crate::RocksDbPerfExt;
 use crate::metric_definitions::{STORAGE_BG_TASK_RUN_DURATION, STORAGE_BG_TASK_WAIT_DURATION};
-use crate::{EXECUTOR, OP_TYPE, STORAGE_BG_TASK_IN_FLIGHT};
+use crate::{EXECUTOR, OP_TYPE, RocksDbPerfExt, RocksDbReadPerfGuard, STORAGE_BG_TASK_IN_FLIGHT};
 
 /// Which of [`GlobalExecutor`]'s pools runs a piece of work. `High` is for
 /// latency-sensitive work.
@@ -105,7 +106,7 @@ impl Admission for Cancelled {
 /// | `&C`, for a shared handle `C` | [`RocksDb::prepare`](crate::RocksDb::prepare) (the database), [`StorageOp::with_context`] | a clone of `C` | `&C` |
 /// | a [`ReadIterator`](crate::reads::ReadIterator) | [`ReadIterator::prepare`](crate::reads::ReadIterator::prepare) | the same iterator, made owned, at the same position | `&mut ReadIterator<'_, _>` |
 /// | `()` | operations that need nothing, such as deleting a column family | nothing | nothing |
-/// | [`Cooperative<C>`] | [`StorageOp::with_context_cancellable_async`], [`ReadIterator::prepare_iteration`](crate::reads::ReadIterator::prepare_iteration) | [`Cancellable<C::Owned>`] | the owned context and a required [`Cancelled`] observer |
+/// | [`Cooperative<C>`] | [`StorageOp::with_context_cancellable_async`], [`ReadSnapshot::prepare_iteration`](crate::reads::ReadSnapshot::prepare_iteration) | [`Cancellable<C::Owned>`] | the owned context and a required [`Cancelled`] observer |
 ///
 /// A shared handle is a type such as `Arc<RocksDb>`, a `Scope`, or a
 /// `ReadSnapshot`: its clones are cheap and point to the same thing. See
@@ -179,6 +180,23 @@ pub trait OpFn<C: OpContext>: Send + 'static {
 pub trait SyncOpFn<C: OpContext>: OpFn<C> {
     /// Runs the work with the borrowed context, on the calling thread.
     fn run(self, context: C) -> Self::Output;
+}
+
+/// The work of a [`StorageOp`] that can start on the calling thread, with
+/// [`StorageOp::call_cached`], for as long as that doesn't block.
+///
+/// On the calling thread, the work must read from memory only, which is the
+/// memtables and the block cache
+/// ([`ReadTier::BlockCache`](rocksdb::ReadTier::BlockCache)), and must not
+/// wait. Where it can't go on like that, it hands itself back, to go on from
+/// there on a storage worker ([`OpFn::run_async`]).
+///
+/// An iteration of a snapshot implements it, see
+/// [`ReadSnapshot::prepare_iteration`](crate::reads::ReadSnapshot::prepare_iteration).
+pub trait CachedOpFn<C: OpContext>: OpFn<C> + Sized {
+    /// Runs the work with the borrowed context, on the calling thread, until
+    /// it's done or going on would block.
+    fn run_cached(self, context: &C) -> Inline<Self::Output, Self>;
 }
 
 impl<C: Clone + Send + Sync + 'static> OpContext for &C {
@@ -258,11 +276,29 @@ pub struct Gated<'a>(&'a Arc<Gate>);
 /// ```
 pub struct Ungated;
 
+/// How far an operation got on the calling thread, when it only runs there
+/// for as long as that doesn't block. See
+/// [`call_cached`](StorageOp::call_cached).
+#[must_use = "submit the rest of the operation, or explicitly drop it"]
+pub enum Inline<T, Rest> {
+    /// The operation finished on the calling thread, with this result.
+    Done(T),
+    /// Going on would block the calling thread. This is the rest of the
+    /// operation, to submit to an executor.
+    WouldBlock(Rest),
+}
+
 /// An operation on the database that has been prepared but hasn't run yet,
 /// for example with [`RocksDb::prepare`](crate::RocksDb::prepare).
 ///
 /// Run it on the current thread with [`StorageOp::call`], or submit it to an
-/// executor, which runs it on a background thread:
+/// executor, which runs it on a background thread. Some operations can also do
+/// both, such as an iteration from
+/// [`ReadSnapshot::prepare_iteration`](crate::reads::ReadSnapshot::prepare_iteration):
+/// [`call_cached`](StorageOp::call_cached) runs one on the current thread while
+/// what it reads is in memory, and hands back the rest to submit.
+///
+/// For example:
 ///
 /// ```no_run
 /// use std::sync::Arc;
@@ -472,6 +508,11 @@ impl<'a, C, F> StorageOp<C, F, Gated<'a>> {
             gate: Gated(gate),
             kind,
         }
+    }
+
+    // Takes the operation apart again, into what `from_parts` got.
+    pub(crate) fn into_parts(self) -> (C, &'a Arc<Gate>, StorageTaskKind, F) {
+        (self.context, self.gate.0, self.kind, self.op)
     }
 }
 
@@ -789,6 +830,18 @@ impl<C: OpContext, F: OpFn<C>> OpFn<C> for ReadPerf<F> {
     }
 }
 
+impl<C: OpContext, F: CachedOpFn<C>> CachedOpFn<C> for ReadPerf<F> {
+    // The part on the calling thread is one measurement, and the rest another.
+    fn run_cached(self, context: &C) -> Inline<F::Output, Self> {
+        let Self { op, name } = self;
+        let _x = RocksDbReadPerfGuard::new(name);
+        match op.run_cached(context) {
+            Inline::Done(output) => Inline::Done(output),
+            Inline::WouldBlock(op) => Inline::WouldBlock(Self { op, name }),
+        }
+    }
+}
+
 impl<C, F> IoOp for StorageOp<C, F, Gated<'_>>
 where
     C: OpContext,
@@ -850,6 +903,76 @@ impl<C: OpContext<Admission = ()>, F: SyncOpFn<C>> StorageOp<C, F, Gated<'_>> {
         let output = self.op.run(self.context);
         drop(lease);
         Ok(output)
+    }
+}
+
+impl<'a, C: OpContext, F: CachedOpFn<C>> StorageOp<C, F, Gated<'a>> {
+    /// Runs the operation now, on the current thread, for as long as that
+    /// doesn't block: its work reads from memory only and doesn't wait (see
+    /// [`CachedOpFn`]). Fails with [`AdmissionClosed`] if the gate is sealed.
+    /// Like [`Self::call`], it borrows the operation's context, and records no
+    /// task metrics or tracing span.
+    ///
+    /// Returns [`Inline::Done`] with the result once the work is done, which is
+    /// what the submitted operation would have returned. Returns
+    /// [`Inline::WouldBlock`] with the rest of the operation where going on
+    /// would block. Submit the rest to an executor: it goes on from there.
+    ///
+    /// The rest is admitted again when it's submitted, so it is refused if the
+    /// gate was sealed in the meantime.
+    ///
+    /// Cancelling the gate doesn't stop this part of the operation.
+    pub fn call_cached(self) -> Result<Inline<F::Output, Self>, AdmissionClosed> {
+        let Self {
+            context,
+            op,
+            gate,
+            kind,
+        } = self;
+        let lease = gate.0.try_acquire().ok_or(AdmissionClosed)?;
+        // `run_cached` consumes the work, so what it doesn't return is dropped
+        // before the lease is released. So is the context of finished work.
+        let inline = match op.run_cached(&context) {
+            Inline::Done(output) => {
+                drop(context);
+                Inline::Done(output)
+            }
+            Inline::WouldBlock(op) => Inline::WouldBlock(Self {
+                context,
+                op,
+                gate,
+                kind,
+            }),
+        };
+        drop(lease);
+        Ok(inline)
+    }
+
+    /// Like [`Self::call_cached`], but submits the rest of the operation, if
+    /// any, to `executor`, so that it goes on on a storage worker.
+    ///
+    /// The first part has run by the time this returns: it isn't left to the
+    /// returned future, which doesn't borrow the operation's context. That
+    /// future resolves to the result, at once if the operation finished on the
+    /// current thread. Dropping it cancels the rest, see
+    /// [`IoExecutor::spawn_cancellable`].
+    ///
+    /// Fails with [`AdmissionClosed`] if the gate is sealed, or if `executor`
+    /// doesn't accept the rest.
+    pub fn call_cached_or_spawn(
+        self,
+        executor: &impl IoExecutor,
+    ) -> Result<
+        impl Future<Output = Result<F::Output, IoTaskError>> + Send + 'static,
+        AdmissionClosed,
+    >
+    where
+        F::Output: Send + 'static,
+    {
+        Ok(match self.call_cached()? {
+            Inline::Done(output) => Either::Left(future::ready(Ok(output))),
+            Inline::WouldBlock(rest) => Either::Right(executor.spawn_cancellable(rest)?),
+        })
     }
 }
 
