@@ -436,8 +436,9 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
 mod tests {
     use super::*;
 
-    use std::num::{NonZeroU8, NonZeroU16};
+    use std::num::{NonZeroU8, NonZeroU16, NonZeroUsize};
 
+    use futures::StreamExt;
     use googletest::prelude::*;
     use test_log::test;
 
@@ -452,6 +453,7 @@ mod tests {
     use restate_types::net::listener::AddressBook;
     use restate_types::replication::{NodeSet, ReplicationProperty};
     use restate_types::{GenerationalNodeId, PlainNodeId};
+    use restate_util_bytecount::NonZeroByteCount;
 
     use crate::loglet::{AppendError, Loglet};
 
@@ -658,6 +660,51 @@ mod tests {
         let record_cache = RecordCache::new(0);
         run_in_test_env(config, params, record_cache, |env| {
             crate::loglet::loglet_tests::single_loglet_readstream_with_trims(env.loglet)
+        })
+        .await
+    }
+
+    /// Records smaller than a read batch, between a read batch and the read-ahead memory, and
+    /// larger than both are all read, in order.
+    #[test(restate_core::test(start_paused = true))]
+    async fn single_node_readstream_with_small_readahead_memory() -> Result<()> {
+        let loglet_id = LogletId::new_unchecked(122);
+        let params = ReplicatedLogletParams {
+            loglet_id,
+            sequencer: GenerationalNodeId::new(1, 1),
+            replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
+            nodeset: NodeSet::from_single(PlainNodeId::new(1)),
+        };
+        let mut config = Configuration::default();
+        config.bifrost.replicated_loglet.readahead_bytes =
+            NonZeroByteCount::new(NonZeroUsize::new(2048).unwrap());
+        config.bifrost.replicated_loglet.read_batch_size =
+            NonZeroByteCount::new(NonZeroUsize::new(512).unwrap());
+        // read every record from the log server
+        let record_cache = RecordCache::new(0);
+        run_in_test_env(config, params, record_cache, |env| async move {
+            let bodies: Vec<String> = (1..=40).map(|i| "x".repeat(100 * i)).collect();
+            for body in &bodies {
+                let batch: Arc<[Record]> = vec![(body.as_str(), Keys::None).into()].into();
+                env.loglet.enqueue_batch(batch).await?.await?;
+            }
+
+            let mut stream = env
+                .loglet
+                .clone()
+                .create_read_stream(
+                    KeyFilter::Any,
+                    LogletOffset::OLDEST,
+                    Some(LogletOffset::new(40)),
+                )
+                .await?;
+            for (offset, body) in (1..).zip(&bodies) {
+                let entry = stream.next().await.expect("record")?;
+                assert_that!(entry.sequence_number(), eq(LogletOffset::new(offset)));
+                assert_that!(entry.decode_unchecked::<String>(), eq(body.as_str()));
+            }
+            assert!(stream.next().await.is_none());
+            Ok(())
         })
         .await
     }

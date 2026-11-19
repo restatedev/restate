@@ -17,13 +17,14 @@ use tokio_stream::wrappers::ReceiverStream;
 use restate_core::TaskHandle;
 use restate_types::logs::LogletOffset;
 
+use super::read_stream_task::ReadAheadEntry;
 use crate::LogEntry;
 use crate::loglet::{LogletReadStream, OperationError};
 
 pub(crate) struct ReplicatedLogletReadStream {
     // the next record this stream will attempt to return when polled
     pub(super) read_pointer: LogletOffset,
-    pub(super) rx_stream: ReceiverStream<Result<LogEntry<LogletOffset>, OperationError>>,
+    pub(super) rx_stream: ReceiverStream<Result<ReadAheadEntry, OperationError>>,
     pub(super) reader_task: TaskHandle<Result<(), OperationError>>,
     pub(super) terminated: bool,
 }
@@ -38,7 +39,7 @@ impl Drop for ReplicatedLogletReadStream {
 impl ReplicatedLogletReadStream {
     pub fn new(
         from_offset: LogletOffset,
-        rx_stream: mpsc::Receiver<Result<LogEntry<LogletOffset>, OperationError>>,
+        rx_stream: mpsc::Receiver<Result<ReadAheadEntry, OperationError>>,
         reader_task: TaskHandle<Result<(), OperationError>>,
     ) -> Self {
         Self {
@@ -73,7 +74,8 @@ impl Stream for ReplicatedLogletReadStream {
         } else {
             match ready!(self.rx_stream.poll_next_unpin(cx)) {
                 Some(maybe_record) => match maybe_record {
-                    Ok(record) => {
+                    // The consumer takes the record, so its read-ahead memory is returned.
+                    Ok((record, _memory)) => {
                         self.read_pointer = record.next_sequence_number();
                         Poll::Ready(Some(Ok(record)))
                     }
