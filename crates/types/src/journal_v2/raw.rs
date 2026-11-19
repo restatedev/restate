@@ -77,17 +77,6 @@ impl RawEntry {
             RawEntry::Notification(notification) => notification.serialized_length(),
         }
     }
-
-    /// Replaces the serialized content, keeping the metadata.
-    pub fn with_serialized_content(mut self, content: impl Into<Bytes>) -> Self {
-        match &mut self {
-            RawEntry::Command(command) => command.serialized_content = content.into(),
-            RawEntry::Notification(notification) => {
-                notification.serialized_content = content.into()
-            }
-        }
-        self
-    }
 }
 
 // -- Raw command
