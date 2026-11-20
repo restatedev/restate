@@ -11,17 +11,22 @@
 //! Invocations found through the entry index, newest created first or,
 //! backwards ([`ReadDirection::Backward`]), oldest first.
 //!
-//! The entry index `entry_by_service_created/1` holds one key per vqueue entry,
-//! sorted by service, handler and creation time, newest first. A query that
-//! names a service, and perhaps a handler, reads the matching runs merged into
-//! creation order and fetches the invocation of each entry, instead of reading
-//! every invocation status of the partition:
+//! The entry index `entry_by_created/1` holds one key per vqueue entry, sorted
+//! by creation hour, newest first, then service and creation time, newest
+//! first; the handler is in the key's value. A query reads one hour at a time:
+//! the hour's runs, one per service it names (or every service with an
+//! invocation in that hour), merged into creation order, and fetches the
+//! invocation of each entry, instead of reading every invocation status of the
+//! partition. The query's conditions on the handler are checked on each key's
+//! value, so an entry of another handler is never fetched; every condition,
+//! the handler's included, is checked again on the fetched status. For a query
+//! on `target_handler_name = 'run'`:
 //!
 //! ```text
-//! entry index runs                     invocation statuses, 25 per multi-get
-//! (Promises, "promise"): t9 t7 t4   ─┐
-//!                                    ├─▶  t9 t8 t7 t5 t4 …, each checked
-//! (Promises, "resolve"): t8 t5      ─┘
+//! entry index runs: time, handler     invocation statuses, 25 per multi-get
+//! hour h9: (h9, A): t9 run, t7 run  ─┐
+//!          (h9, B): t8 run, t6 get  ─┴─▶  t9 t8 t7, each checked; t6 not fetched
+//! hour h8: (h8, A): t5 run, t4 run  ─┬─▶  t5 t4 …
 //! ```
 //!
 //! The index finds every invocation only once the partition has fully migrated
@@ -47,42 +52,51 @@
 //! instead of returning a wrong row.
 
 use std::num::NonZeroUsize;
+use std::ops::{Bound, RangeBounds};
 use std::sync::{Arc, Mutex};
 
 use restate_rocksdb::reads::{OwnedPinnedBatch, ReadSnapshot as RocksReadSnapshot};
 use restate_storage_api::StorageError;
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use restate_storage_query_api::scan::{CursorStep, ReadDirection};
-use restate_storage_query_api::selection::Selection;
-use restate_storage_query_api::tables::index::EntryByServiceCreated as EntryIndex;
+use restate_storage_query_api::selection::{Selection, ValuePredicate};
+use restate_storage_query_api::tables::index::{
+    EntryByServiceCreated as EntryIndex, EntryByServiceCreatedClause as EntryIndexClause,
+    EntryByServiceCreatedColumn as EntryIndexColumn,
+};
 use restate_types::identifiers::InvocationId;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::Seq;
+use restate_util_string::ReString;
 
-use crate::index::RegisteredIndex;
+use crate::index::{IndexValueRef, RegisteredIndex};
 use crate::keys::selection::{KeySelection, PrepareKeySelection};
 use crate::keys::{EncodeTableKey, KeyKind};
 use crate::ordered_runs::{OrderedRuns, OrderedRunsDiscovery, OrderedRunsLimits, RetainedMemory};
 use crate::partition_db::PhysicalPartition;
 use crate::registry::IndexKind;
-use crate::vqueue_table::{EntryByServiceCreated, EntryByServiceCreatedKey};
+use crate::vqueue_table::{CreatedEntryValueRef, EntryByCreated, EntryByCreatedKey};
 use crate::{ReadSnapshot, Result};
 
 use super::{
     INVOCATION_STATUS_MULTI_GET_BATCH_SIZE, InvocationStatusKey, create_invocation_status_key,
 };
 
-/// A run is the entries of one service and handler.
+/// A run is the entries of one creation hour and service
+/// (`entry_by_created/1`).
 const RUN_FIELDS: usize = 2;
 
-/// Not measured. A service has few handlers, so a query naming a few services
-/// stays well within `max_runs`.
+/// Not measured. The read merges one hour's runs at a time, one per service
+/// with an invocation created in that hour. If the first hour it reads has more
+/// than `max_runs`, it scans instead, before returning anything; a later hour
+/// merges all of its runs, however many services were active in it.
 const LIMITS: OrderedRunsLimits = OrderedRunsLimits {
     max_runs: 256,
     max_discovery_keys: 4096,
     buffer: NonZeroUsize::new(8).unwrap(),
     step_budget: NonZeroUsize::new(256).unwrap(),
-    bucket_fields: 0,
+    // Runs of an hour and a service, merged one hour at a time.
+    bucket_fields: 1,
 };
 
 /// Statuses fetched per multi-get, and the window that holds their invocations.
@@ -206,14 +220,16 @@ impl Drop for Held {
 /// may admit more entries than the query matches: the caller keeps its
 /// predicate.
 pub struct EntryIndexRead {
-    index: Arc<KeySelection<EntryByServiceCreatedKey>>,
+    index: Arc<KeySelection<EntryByCreatedKey>>,
+    handlers: Arc<HandlerConditions>,
     direction: ReadDirection,
 }
 
 impl EntryIndexRead {
     pub fn prepare(selection: &Selection<EntryIndex>, direction: ReadDirection) -> Result<Self> {
         Ok(Self {
-            index: Arc::new(EntryByServiceCreatedKey::prepare_candidates(selection)?),
+            index: Arc::new(EntryByCreatedKey::prepare_candidates(selection)?),
+            handlers: Arc::new(HandlerConditions::of(selection)),
             direction,
         })
     }
@@ -226,7 +242,7 @@ impl EntryIndexRead {
         Ok(if !snapshot.fully_migrated_to_vqueues()? {
             Some(ScanReason::NotMigrated)
         } else if snapshot
-            .complete_index(EntryByServiceCreated::DEFINITION, IndexKind::Secondary)
+            .complete_index(EntryByCreated::DEFINITION, IndexKind::Secondary)
             .is_err()
         {
             Some(ScanReason::NotComplete)
@@ -236,13 +252,78 @@ impl EntryIndexRead {
     }
 }
 
+/// The selection's conditions on the handler, which the index keeps in each
+/// key's value: an entry that fails one is skipped before its status is
+/// fetched. The caller's predicate still checks the fetched status.
+struct HandlerConditions(Box<[ValuePredicate<ReString>]>);
+
+impl HandlerConditions {
+    fn of(selection: &Selection<EntryIndex>) -> Self {
+        let Selection::Predicates(predicates) = selection else {
+            return Self(Box::default());
+        };
+        Self(
+            predicates
+                .for_column(EntryIndexColumn::TargetHandlerName)
+                .iter()
+                .filter_map(|clause| match clause {
+                    EntryIndexClause::TargetHandlerName(predicate) => Some(predicate.clone()),
+                    _ => None,
+                })
+                .collect(),
+        )
+    }
+
+    /// Whether the invocation entry whose key holds `value` meets every
+    /// condition. An invocation's entry always holds its handler.
+    fn admit(&self, value: &[u8]) -> Result<bool> {
+        if self.0.is_empty() {
+            return Ok(true);
+        }
+        let handler = CreatedEntryValueRef::decode(value)?
+            .handler
+            .ok_or(StorageError::DataIntegrityError)?;
+        Ok(self.0.iter().all(|predicate| match predicate {
+            ValuePredicate::Equal(expected) => expected.as_str() == handler,
+            ValuePredicate::In(values) => values.iter().any(|value| value.as_str() == handler),
+            ValuePredicate::Range { lower, upper } => RangeBounds::<str>::contains(
+                &(
+                    lower.as_ref().map(ReString::as_str),
+                    upper.as_ref().map(ReString::as_str),
+                ),
+                handler,
+            ),
+        }))
+    }
+
+    fn retained_bytes(&self) -> usize {
+        let string = |value: &ReString| value.len();
+        let heap = |predicate: &ValuePredicate<ReString>| match predicate {
+            ValuePredicate::Equal(value) => string(value),
+            ValuePredicate::In(values) => {
+                values.capacity() * std::mem::size_of::<ReString>()
+                    + values.iter().map(string).sum::<usize>()
+            }
+            ValuePredicate::Range { lower, upper } => [lower, upper]
+                .into_iter()
+                .map(|bound| match bound {
+                    Bound::Included(value) | Bound::Excluded(value) => string(value),
+                    Bound::Unbounded => 0,
+                })
+                .sum(),
+        };
+        std::mem::size_of_val(&*self.0) + self.0.iter().map(heap).sum::<usize>()
+    }
+}
+
 /// Merges the index runs one step at a time, collecting invocations into a
 /// window, then fetches the window's statuses with one multi-get and hands them
 /// out in index order.
 pub(super) struct EntryIndexCursor {
     /// `None` once the read failed: it holds nothing then.
-    runs: Option<OrderedRuns<EntryByServiceCreated>>,
+    runs: Option<OrderedRuns<EntryByCreated>>,
     runs_done: bool,
+    handlers: Arc<HandlerConditions>,
     /// The window's invocations in index order, with their entries' creation
     /// records and times.
     window: Vec<(InvocationId, Seq, MillisSinceEpoch)>,
@@ -278,7 +359,7 @@ impl Drop for EntryIndexCursor {
 /// How opening went: the runs to merge and what the read holds, or the scan's
 /// reason and the index keys examined before it was chosen.
 enum Opened {
-    Index(OrderedRuns<EntryByServiceCreated>, Held),
+    Index(OrderedRuns<EntryByCreated>, Held),
     Scan(ScanReason, u64),
 }
 
@@ -319,7 +400,13 @@ impl EntryIndexCursor {
             }
         };
         let cursor = match opened {
-            Opened::Index(runs, held) => Ok(Self::new(snapshot, runs, held, fetched)),
+            Opened::Index(runs, held) => Ok(Self::new(
+                snapshot,
+                runs,
+                Arc::clone(&read.handlers),
+                held,
+                fetched,
+            )),
             Opened::Scan(reason, examined) => {
                 // What discovery examined before it gave up is work done too.
                 if examined > 0 {
@@ -346,18 +433,19 @@ impl EntryIndexCursor {
         if let Some(reason) = EntryIndexRead::unusable(snapshot)? {
             return Ok(Opened::Scan(reason, 0));
         }
-        // The caller's selection, and the window with its keys, before the window
-        // is allocated.
+        // The caller's selection, its handler conditions included, and the
+        // window with its keys, before the window is allocated.
         let mut held = Held {
             memory: memory.clone(),
             bytes: 0,
         };
         held.grow(
             read.index.retained_bytes()
+                + read.handlers.retained_bytes()
                 + WINDOW * std::mem::size_of::<(InvocationId, Seq, MillisSinceEpoch)>()
                 + WINDOW * KEY_LEN,
         )?;
-        let discovery = snapshot.ordered_runs_counted::<EntryByServiceCreated>(
+        let discovery = snapshot.ordered_runs_counted::<EntryByCreated>(
             Arc::clone(&read.index),
             RUN_FIELDS,
             read.direction,
@@ -375,13 +463,15 @@ impl EntryIndexCursor {
 
     fn new(
         snapshot: &ReadSnapshot,
-        runs: OrderedRuns<EntryByServiceCreated>,
+        runs: OrderedRuns<EntryByCreated>,
+        handlers: Arc<HandlerConditions>,
         held: Held,
         fetched: Box<dyn Fn(usize, u64) + Send>,
     ) -> Self {
         Self {
             runs: Some(runs),
             runs_done: false,
+            handlers,
             window: Vec::with_capacity(WINDOW),
             next: None,
             key_buf: Vec::with_capacity(WINDOW * KEY_LEN),
@@ -476,8 +566,11 @@ impl EntryIndexCursor {
             CursorStep::Done => self.runs_done = true,
             CursorStep::Skipped => {}
             CursorStep::Record => {
-                let key = runs.current()?.0.decode_all()?;
-                if let Some(id) = key.canonical_id.to_base_entry_id().to_invocation_id() {
+                let (key, value) = runs.current()?;
+                let key = key.decode_all()?;
+                if let Some(id) = key.canonical_id.to_base_entry_id().to_invocation_id()
+                    && self.handlers.admit(value)?
+                {
                     let created_at = key.created_at.0.to_unix_millis();
                     self.window.push((id, key.canonical_id.seq(), created_at));
                 }
