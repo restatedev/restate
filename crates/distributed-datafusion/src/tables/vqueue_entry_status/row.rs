@@ -14,7 +14,7 @@ use restate_storage_api::vqueue_table::stats::EntryStatistics;
 use restate_storage_api::vqueue_table::{EntryMetadataRef, RawStatusHeaderRef, Stage, Status};
 use restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatusRow;
 use restate_types::identifiers::BaseEntryId;
-use restate_types::vqueues::{Seq, VQueueId, VQueueIdRef};
+use restate_types::vqueues::{EffectiveStatus, Seq, VQueueId, VQueueIdRef};
 
 use super::schema::SysVqueueEntryStatusBuilder;
 
@@ -50,7 +50,7 @@ pub(crate) fn covered_row(
         entry_id: *id,
         vqueue_id: VQueueId::from_raw_bytes(&mut place.qid.as_raw_bytes()),
         stage: place.stage,
-        status: state.status,
+        status: EffectiveStatus::new(place.stage, state.status),
         has_lock: place.has_lock,
         next_at: place.next_run_at.as_unix_millis(),
         sequence_number: place.seq.as_u64(),
@@ -117,7 +117,7 @@ pub(crate) fn append_status_key_row(builder: &mut SysVqueueEntryStatusBuilder, k
         row.stage(key.stage.as_str());
     }
     if row.is_status_defined() {
-        row.status(key.status.as_str());
+        row.status(EffectiveStatus::new(key.stage, key.status).as_str());
     }
     if row.is_created_at_defined()
         && let Some(at) = key.created_at
@@ -206,7 +206,7 @@ pub(crate) fn append_entry_row(
     };
 
     if row.is_status_defined() {
-        row.status(status.as_str());
+        row.status(EffectiveStatus::new(place.stage, *status).as_str());
     }
 
     if row.is_created_at_defined() {

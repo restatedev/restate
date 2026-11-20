@@ -10,6 +10,7 @@
 
 use restate_storage_api::vqueue_table::RawStatusHeaderRef;
 use restate_types::identifiers::BaseEntryId;
+use restate_types::vqueues::EffectiveStatus;
 
 use super::schema::SysVqueueEntryStatusBuilder;
 
@@ -41,7 +42,7 @@ pub(crate) fn append_vqueue_entry_status_row(
         row.fmt_stage(header.stage);
     }
     if row.is_status_defined() {
-        row.fmt_status(header.status);
+        row.status(EffectiveStatus::new(header.stage, header.status).as_str());
     }
     if row.is_has_lock_defined() {
         row.has_lock(header.has_lock);

@@ -11,10 +11,10 @@
 use datafusion::arrow::datatypes::DataType;
 use strum::VariantArray;
 
-use restate_storage_api::vqueue_table::{Stage, Status};
+use restate_storage_api::vqueue_table::Stage;
 use restate_types::identifiers::{BaseEntryId, CanonicalEntryId, PartitionKey};
 use restate_types::time::MillisSinceEpoch;
-use restate_types::vqueues::{EntryKind, VQueueId};
+use restate_types::vqueues::{EffectiveStatus, EntryKind, VQueueId};
 use restate_util_string::ReString;
 
 use crate::{ShardingScheme, define_schema};
@@ -50,10 +50,17 @@ define_schema! {
             #[values(Stage::VARIANTS.iter().copied())]
             #[starts_with]
             stage: Stage => DataType::LargeUtf8,
-            /// The entry processing status. Examples are `new`, `scheduled`, `started`,
-            /// `backing-off`, `yielded`, `killed`, `cancelled`, `failed`, and `succeeded`.
-            #[values(Status::VARIANTS.iter().copied())]
-            status: Status => DataType::LargeUtf8,
+            /// What the entry is doing now, its effective status, which also tells
+            /// its stage. In the inbox: `new`, `scheduled`, `backing-off`, `ready`
+            /// or `yielded`; then `running`, `suspended` or `paused`; once
+            /// finished, its outcome: `succeeded`, `failed`, `killed` or
+            /// `cancelled`; `unknown` if the stored stage and status are ones this
+            /// version doesn't know.
+            ///
+            /// Until v1.8.2, this showed the stored status, which can be
+            /// `started` and doesn't tell the stage.
+            #[values(EffectiveStatus::ALL.iter().copied())]
+            status: EffectiveStatus => DataType::LargeUtf8,
             /// Whether this entry currently holds a lock.
             has_lock: bool => DataType::Boolean,
             /// The next timestamp at which this entry is scheduled for the next transition.
