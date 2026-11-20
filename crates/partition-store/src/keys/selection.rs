@@ -613,6 +613,13 @@ impl<K> KeySelection<K> {
             + self.scope.as_ref().map_or(0, |scope| scope.0.bound_bytes())
     }
 
+    /// [`Self::retained_bytes`], plus the selection's own fields and the two
+    /// reference counts of the `Arc` it is shared behind: everything a
+    /// prepared, shared selection holds.
+    pub fn shared_retained_bytes(&self) -> usize {
+        size_of::<Self>() + 2 * size_of::<usize>() + self.retained_bytes()
+    }
+
     /// A selection that matches no key; its scan is `None`.
     pub fn empty() -> Self {
         Self {

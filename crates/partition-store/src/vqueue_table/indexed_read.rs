@@ -300,7 +300,7 @@ enum Opening<'a, I: EntryIndex> {
 impl<I: EntryIndex> Opening<'_, I> {
     fn retained_bytes(&self) -> usize {
         match self {
-            Self::Runs(selection) => selection.retained_bytes(),
+            Self::Runs(selection) => selection.shared_retained_bytes(),
             Self::Lanes(lanes) => lanes.retained_bytes(),
         }
     }
@@ -1161,7 +1161,7 @@ mod tests {
         let fixed = FinishedRead::prepare(&Selection::All, ReadDirection::Forward)
             .unwrap()
             .index
-            .retained_bytes()
+            .shared_retained_bytes()
             + WINDOW * std::mem::size_of::<Reference>()
             + WINDOW * KEY_LEN;
         let refused = run(

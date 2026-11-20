@@ -85,14 +85,15 @@ impl<K> StatusLanes<K> {
         Ok(Self { probe, lanes })
     }
 
-    /// The bytes its selections hold.
+    /// The bytes it holds: the shared probe and lane selections, each with its
+    /// own fields and `Arc`, and the lanes' vector.
     pub(crate) fn retained_bytes(&self) -> usize {
-        self.probe.retained_bytes()
+        self.probe.shared_retained_bytes()
             + self.lanes.capacity() * size_of::<(Stage, Status, Arc<()>)>()
             + self
                 .lanes
                 .iter()
-                .map(|(.., lane)| lane.retained_bytes())
+                .map(|(.., lane)| lane.shared_retained_bytes())
                 .sum::<usize>()
     }
 }
@@ -285,5 +286,45 @@ where
             .iter()
             .map(|lane| lane.runs.retained_bytes())
             .sum()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use restate_storage_query_api::selection::{Selection, ValuePredicate};
+    use restate_storage_query_api::tables::index::EntryByStatusCreatedClause;
+
+    use crate::vqueue_table::EntryByStatusCreatedKey;
+
+    use super::*;
+
+    /// Prepared lanes charge each selection twice over: what it holds on the
+    /// heap, and the selection itself behind its `Arc`. The failure read
+    /// prepares nine candidate lanes and a probe before any lane opens, so
+    /// lanes that turn out empty are charged too. The backing is counted here
+    /// independently of the nested storage: one selection object and two
+    /// reference counts per prepared selection.
+    #[test]
+    fn prepared_lanes_charge_every_selection_and_its_backing() {
+        let selection = Selection::All.and(EntryByStatusCreatedClause::CompletionResult(
+            ValuePredicate::Equal(Some("failure".into())),
+        ));
+        let prepared = StatusLanes::new(
+            EntryByStatusCreatedKey::lanes(&selection),
+            |stages, statuses| EntryByStatusCreatedKey::prepare_lanes(&selection, stages, statuses),
+        )
+        .unwrap();
+        assert_eq!(prepared.lanes.len(), 9);
+        let nested = prepared.probe.retained_bytes()
+            + prepared.lanes.capacity() * size_of::<(Stage, Status, Arc<()>)>()
+            + prepared
+                .lanes
+                .iter()
+                .map(|(.., lane)| lane.retained_bytes())
+                .sum::<usize>();
+        let backing = (1 + prepared.lanes.len())
+            * (size_of::<KeySelection<EntryByStatusCreatedKey>>() + 2 * size_of::<usize>());
+        assert!(backing > 0);
+        assert_eq!(prepared.retained_bytes(), nested + backing);
     }
 }
