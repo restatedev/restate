@@ -138,6 +138,10 @@ impl CompleteIndex for EntryIndex {
     }
 
     const NEEDS_ORDERED_DEMAND: bool = true;
+    /// A LIMIT without an ORDER BY, such as the UI's
+    /// `WHERE target_service_name IN ('Doss') LIMIT 250`, reads the newest
+    /// matches and stops.
+    const SERVES_UNORDERED_LIMITS: bool = true;
 }
 
 /// The entry index `entry_by_status_created/1`, read for the invocations of
@@ -186,6 +190,7 @@ impl CompleteIndex for StatusIndex {
     }
 
     const NEEDS_ORDERED_DEMAND: bool = true;
+    const SERVES_UNORDERED_LIMITS: bool = true;
 }
 
 impl SysInvocationStatusTable {

@@ -102,6 +102,12 @@ pub trait CompleteIndex: 'static {
     /// so nothing is promised about errors another plan, such as a scan,
     /// might meet there.
     const NEEDS_ORDERED_DEMAND: bool = false;
+
+    /// Whether the index also pays off for a query that wants any first rows in
+    /// no order, a LIMIT without an ORDER BY, under at least one condition: the
+    /// read stops once it has found them. Consulted only with
+    /// [`Self::NEEDS_ORDERED_DEMAND`].
+    const SERVES_UNORDERED_LIMITS: bool = false;
 }
 
 type PrimaryOf<B> = <<B as CompleteIndex>::Index as IndexSchema>::Primary;
@@ -255,7 +261,12 @@ fn select<B: CompleteIndex>(
     if !B::NEEDS_ORDERED_DEMAND {
         return Ok(true);
     }
-    Ok(demand.is_some_and(|demand| orders::<B>(demand).is_some()))
+    Ok(demand.is_some_and(|demand| {
+        // A condition, whether the source or a filter above applies it.
+        let conditioned = !filters.is_empty() || !demand.residual.is_empty();
+        let unordered = demand.ordering.is_empty();
+        (!unordered || (B::SERVES_UNORDERED_LIMITS && conditioned)) && orders::<B>(demand).is_some()
+    }))
 }
 
 /// Whether `projection`, a scan's columns, its conditions' included, lies in
@@ -276,6 +287,10 @@ pub(crate) fn covers<B: CompleteIndex>(projection: &Schema) -> bool {
 fn orders<B: CompleteIndex>(demand: &Demand) -> Option<ReadDirection> {
     if B::ORDERING.is_empty() {
         return None;
+    }
+    // Any order will do: read forward.
+    if demand.ordering.is_empty() {
+        return Some(ReadDirection::Forward);
     }
     let mut columns = Vec::with_capacity(demand.ordering.len());
     for sort in demand.ordering.iter() {
@@ -335,8 +350,8 @@ fn ordering<B: CompleteIndex>(demand: Option<&Demand>) -> Vec<SortedColumn> {
                 .expect("an ordered column has a SQL name")
                 .to_owned(),
             descending: order.options.descending != backward,
-            nulls_first: match asked {
-                Some((asked, _)) if order.never_null => asked[at].options.nulls_first,
+            nulls_first: match asked.and_then(|(asked, _)| asked.get(at)) {
+                Some(asked) if order.never_null => asked.options.nulls_first,
                 _ => order.options.nulls_first != backward,
             },
         })
