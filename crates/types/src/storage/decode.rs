@@ -87,10 +87,18 @@ pub fn decode_bilrost<T: bilrost::OwnedMessage, B: Buf>(buf: B) -> Result<T, Sto
 pub fn decode_bilrost_zstd<T: bilrost::OwnedMessage, B: Buf>(
     buf: B,
 ) -> Result<T, StorageDecodeError> {
+    decode_bilrost_zstd_with_len(buf).map(|(value, _)| value)
+}
+
+/// Like [`decode_bilrost_zstd`], but also returns the size of the uncompressed payload in bytes.
+pub fn decode_bilrost_zstd_with_len<T: bilrost::OwnedMessage, B: Buf>(
+    buf: B,
+) -> Result<(T, usize), StorageDecodeError> {
     // bilrost can only decode from a bytes::Buf, so we need to uncompress the entire buffer
     // first before decoding the payload.
     let uncompressed = zstd::decode_all(buf.reader())
         .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
+    let len = uncompressed.len();
 
-    decode_bilrost(Bytes::from(uncompressed))
+    decode_bilrost(Bytes::from(uncompressed)).map(|value| (value, len))
 }

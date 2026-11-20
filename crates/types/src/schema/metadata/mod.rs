@@ -108,6 +108,15 @@ pub struct Schema {
     unindexed: SchemaUnindexed,
     /// Derived from `unindexed.deployments`, never persisted.
     active_service_revisions: HashMap<String, ActiveServiceRevision>,
+    /// Uncompressed size in bytes of the encoded value this schema was decoded from, never
+    /// persisted. Cleared whenever the schema is modified in memory.
+    ///
+    /// Only feeds the `restate.schema.size.bytes` metric, which tracks the cost of every node
+    /// decoding the whole schema as a single metadata value. Recorded at decode time because
+    /// recomputing it with `encoded_len()` costs about half a decode.
+    ///
+    /// TODO: Remove this field and the metric once the schema moves out of the metadata store.
+    uncompressed_size: Option<usize>,
 }
 
 impl Default for SchemaUnindexed {
@@ -146,6 +155,7 @@ impl From<SchemaUnindexed> for Schema {
                 unindexed.deployments.values(),
             ),
             unindexed,
+            uncompressed_size: None,
         }
     }
 }
@@ -163,6 +173,18 @@ impl Schema {
     /// to force update of the schema from v1.
     pub fn touch(&mut self) {
         self.unindexed.version = self.unindexed.version.next();
+        self.uncompressed_size = None;
+    }
+
+    /// Uncompressed size in bytes of the encoded schema this was decoded from. The cost of
+    /// decoding a schema grows with it. `None` if the schema was created or modified in memory.
+    pub fn uncompressed_size(&self) -> Option<usize> {
+        self.uncompressed_size
+    }
+
+    pub(crate) fn with_uncompressed_size(mut self, uncompressed_size: usize) -> Self {
+        self.uncompressed_size = Some(uncompressed_size);
+        self
     }
 
     #[cfg(any(test, feature = "test-util"))]
@@ -229,35 +251,42 @@ mod storage {
         }
     }
 
+    /// Decodes a [`SchemaUnindexed`] and returns the uncompressed size of its encoding in bytes.
+    fn decode_with_size<B: bytes::Buf>(
+        buf: B,
+        kind: StorageCodecKind,
+    ) -> Result<(SchemaUnindexed, usize), StorageDecodeError> {
+        let (schema, uncompressed) = match kind {
+            StorageCodecKind::FlexbuffersSerde => {
+                let uncompressed = buf.remaining();
+                (
+                    storage::decode::decode_serde::<SchemaUnindexed, _>(buf, kind)?,
+                    uncompressed,
+                )
+            }
+            StorageCodecKind::ZstdBilrostDefault => {
+                let (mut schema, uncompressed) =
+                    storage::decode::decode_bilrost_zstd_with_len::<SchemaUnindexed, _>(buf)?;
+                // TODO(v1.10): Remove this assignment together with `bilrost_encoded`.
+                schema.bilrost_encoded = true;
+                (schema, uncompressed)
+            }
+            _ => return Err(StorageDecodeError::UnsupportedCodecKind(kind)),
+        };
+
+        schema
+            .verify()
+            .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
+
+        Ok((schema, uncompressed))
+    }
+
     impl StorageDecode for SchemaUnindexed {
         fn decode<B: bytes::Buf>(buf: B, kind: StorageCodecKind) -> Result<Self, StorageDecodeError>
         where
             Self: Sized,
         {
-            match kind {
-                StorageCodecKind::FlexbuffersSerde => {
-                    let schema = storage::decode::decode_serde::<SchemaUnindexed, _>(buf, kind)?;
-
-                    schema
-                        .verify()
-                        .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
-
-                    Ok(schema)
-                }
-                StorageCodecKind::ZstdBilrostDefault => {
-                    let mut schema =
-                        storage::decode::decode_bilrost_zstd::<SchemaUnindexed, _>(buf)?;
-
-                    // TODO(v1.10): Remove this assignment together with `bilrost_encoded`.
-                    schema.bilrost_encoded = true;
-                    schema
-                        .verify()
-                        .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
-
-                    Ok(schema)
-                }
-                _ => Err(StorageDecodeError::UnsupportedCodecKind(kind)),
-            }
+            decode_with_size(buf, kind).map(|(schema, _)| schema)
         }
     }
 
@@ -276,7 +305,8 @@ mod storage {
         where
             Self: Sized,
         {
-            SchemaUnindexed::decode(buf, kind).map(Into::into)
+            decode_with_size(buf, kind)
+                .map(|(schema, size)| Schema::from(schema).with_uncompressed_size(size))
         }
     }
 }
