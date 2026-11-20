@@ -44,6 +44,7 @@ use crate::{
     strum::EnumString,
     strum::IntoStaticStr,
     strum::Display,
+    strum::VariantArray,
 )]
 #[strum(ascii_case_insensitive)]
 #[repr(u16)]
@@ -117,6 +118,26 @@ impl PartitionFeatureChange {
             Self::EnablePreflightSignalRecording => &RESTATE_VERSION_1_8_1,
             Self::EnableByteOffsets => &RESTATE_VERSION_1_8_2,
             Self::EnableVqLifecycleRefined => &RESTATE_VERSION_1_8_2,
+        }
+    }
+
+    /// Whether a barrier may carry this change as soon as every replica is held to its
+    /// [`Self::min_required_version`]: by the changes applied before, or by the barrier that
+    /// carries it. Such a change only alters what replicas record from then on: it costs no
+    /// rollback and needs no opt-in. It must ship in the release its minimum version names, so
+    /// that every server held to that version knows it.
+    pub fn rides_along(self) -> bool {
+        match self {
+            Self::EnableVqLifecycleRefined => true,
+            // Each needs its own decision: a migration, or an effect beyond what is recorded.
+            Self::EnableJournalV2
+            | Self::EnableVqueues
+            | Self::EnableUniqueRandomSeeds
+            | Self::EnableVqueuesSkipCompleted
+            | Self::EnablePreflightInvocationTerminationRetention
+            | Self::EnableInconsistentStateMutationCleanup
+            | Self::EnablePreflightSignalRecording
+            | Self::EnableByteOffsets => false,
         }
     }
 

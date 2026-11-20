@@ -24,7 +24,9 @@ next change.
 
 ### Enabling it
 
-Leaders running v1.9.0 or newer turn it on by themselves once every worker node in the cluster runs
+A partition turns it on by itself as soon as it no longer limits rollbacks: when it already
+requires v1.8.2, for example because it turned byte offsets on, or when it turns on another feature
+that does. Leaders running v1.9.0 or newer also turn it on once every worker node in the cluster runs
 v1.9.0 or newer. To turn it on earlier, upgrade all nodes to v1.8.2 or newer, then enable:
 
 ```toml
