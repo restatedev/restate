@@ -15,6 +15,9 @@ on:
       - release/*
       # Keep CI on existing maintenance branches during the naming transition.
       - release-*
+      # Custom build branch: CI must run on push, because the SDK integration
+      # workflows only pick up the in-progress image for non-dispatch events.
+      - service-protocol-v8-stats
 
 jobs:
   workspace-hack-check:
