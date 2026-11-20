@@ -361,8 +361,6 @@ impl ReadStreamTask {
             let mut mutable_effective_nodeset = effective_nodeset.shuffle_for_reads(my_node);
 
             'attempt_from_servers: loop {
-                // Top up the batch's read-ahead memory to a full read batch. This waits until the
-                // consumer has taken enough of the records read ahead so far.
                 let batch_bytes = configuration
                     .live_load()
                     .bifrost
@@ -370,10 +368,7 @@ impl ReadStreamTask {
                     .read_batch_size
                     .as_usize()
                     .min(self.readahead_memory.capacity().as_usize());
-                let missing = batch_bytes.saturating_sub(batch_memory.size().as_usize());
-                if missing > 0 {
-                    batch_memory.merge(self.readahead_memory.reserve(missing).await);
-                }
+                top_up(&mut batch_memory, batch_bytes).await;
 
                 // Read from _somewhere_ until we reach the tail, target, the available permits or
                 // the batch's read-ahead memory.
@@ -395,6 +390,10 @@ impl ReadStreamTask {
                         }
                     }
                 }
+
+                // Records shipped from cache used part of the batch's memory. Top it up again so
+                // the log-server request asks for a full batch, not for what the cache left over.
+                top_up(&mut batch_memory, batch_bytes).await;
 
                 let to_offset = self.calculate_read_ahead_to_offset(permits.len());
                 // If we (my node) are in the nodeset, we'll be the first to try
@@ -686,6 +685,16 @@ impl ReadStreamTask {
                 Ok(ServerReadResult::Skip)
             }
         }
+    }
+}
+
+/// Tops `batch_memory` up to `batch_bytes`. Waits until the consumer has taken enough of the
+/// records read ahead so far.
+async fn top_up(batch_memory: &mut MemoryLease, batch_bytes: usize) {
+    let missing = batch_bytes.saturating_sub(batch_memory.size().as_usize());
+    if missing > 0 {
+        let more = batch_memory.budget().reserve(missing).await;
+        batch_memory.merge(more);
     }
 }
 

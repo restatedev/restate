@@ -33,11 +33,13 @@ number of round trips a follower needs to replay the log.
 
 ### Migration Guidance
 
-No action is needed. To tune or restore the previous read-ahead behavior:
+No action is needed. To restore the previous record and request limits:
 
 ```toml
 [bifrost.replicated-loglet]
 readahead-records = 20
-readahead-bytes = "1 MiB"
 read-batch-size = "32 KiB"
 ```
+
+Read-ahead memory was not limited before; `readahead-bytes` now caps it. If your records are
+large and replicas should keep more of them read ahead, raise `readahead-bytes`.
