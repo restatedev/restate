@@ -856,6 +856,74 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
         let explained = plan(sql, false).await;
         assert!(!explained.contains(INDEX), "{sql}: {explained}");
     }
+    // Entries of some stages and statuses by creation time, as the UI's
+    // invocation list asks, read the status index: one lane per stage and
+    // status, merged into creation order. By transition time, a running page
+    // reads the transition index; finished pages keep their own index above.
+    // Creation times are distinct here, as are running entries' transition
+    // times, so the rows equal the scan's in order.
+    let by_created = "SELECT entry_id, status, created_at FROM sys_vqueue_entry_status \
+        WHERE stage = 'finished' AND status IN ('succeeded', 'failed', 'cancelled', 'killed') \
+        ORDER BY created_at DESC NULLS LAST LIMIT 9";
+    let running = "SELECT entry_id, status, transitioned_at FROM sys_vqueue_entry_status \
+        WHERE stage = 'running' ORDER BY transitioned_at DESC NULLS LAST LIMIT 5";
+    for (sql, index) in [
+        (by_created, "_idx_entry_status_by_status_created"),
+        (running, "_idx_entry_status_by_status_transitioned"),
+    ] {
+        let explained = plan(sql, false).await;
+        assert!(
+            explained.contains(&format!("index={index}")),
+            "{sql}: {explained}"
+        );
+        assert_eq!(rows(sql).await, scanned(sql).await, "{sql}");
+    }
+    // The UI's own query, through the `sys_vqueues` view.
+    let ui = include_str!("../../ui_queries/vqueues_finished_newest.sql");
+    let explained = plan(ui, false).await;
+    assert!(
+        explained.contains("index=_idx_entry_status_by_status_created"),
+        "{explained}"
+    );
+    let ui_scanned = ui.replacen(
+        "FROM sys_vqueues v",
+        "FROM (SELECT * FROM sys_vqueues LIMIT 1000000) AS v",
+        1,
+    );
+    assert_eq!(rows(ui).await, rows(&ui_scanned).await);
+    // A LIMIT without an ORDER BY whose stages and statuses leave fewer lanes
+    // than all reads those lanes too, as the UI's failed entries of a
+    // deployment, byte for byte: the Failed lane, the deployment checked on
+    // each fetched status; and Finished entries alone. Any matches will do: a
+    // page holds the LIMIT's count of distinct matches.
+    let failed = include_str!("../../ui_queries/vqueues_failed_by_deployment.sql");
+    let undeployed = "SELECT entry_id FROM sys_vqueue_entry_status \
+        WHERE stage = 'finished' AND status = 'failed' AND deployment IS NULL LIMIT 3";
+    let finished = "SELECT entry_id FROM sys_vqueue_entry_status WHERE stage = 'finished' LIMIT 3";
+    for sql in [failed, undeployed, finished] {
+        let explained = plan(sql, false).await;
+        assert!(
+            explained.contains("index=_idx_entry_status_by_status_created"),
+            "{sql}: {explained}"
+        );
+    }
+    assert_eq!(
+        rows(failed).await,
+        rows(&failed.replacen(
+            "FROM sys_vqueues v",
+            "FROM (SELECT * FROM sys_vqueues LIMIT 1000000) AS v",
+            1,
+        ))
+        .await
+    );
+    let page = rows(undeployed).await;
+    let all: HashSet<_> = scanned(&undeployed.replace(" LIMIT 3", ""))
+        .await
+        .into_iter()
+        .collect();
+    assert_eq!(page.len(), 3.min(all.len()));
+    assert!(page.len() > 1 && page.iter().all(|row| all.contains(row)));
+    assert_eq!(page.iter().collect::<HashSet<_>>().len(), page.len());
     // The read went through the index, merging its runs, and fetched only
     // Finished statuses.
     let analyzed = plan(&indexed[0], true).await;
@@ -1141,17 +1209,19 @@ async fn active_entries_read_through_their_index_match_the_scan() {
         assert!(!explained.contains(INDEX), "{sql}: {explained}");
     }
     // A few queues read the stage tables first; without the order, a few
-    // active stages read them too.
-    for sql in [
-        format!("{select} WHERE vqueue_id = '{queue}' AND stage = 'inbox' {newest} LIMIT 5"),
-        format!("{select} WHERE stage IN ('inbox', 'paused') LIMIT 5"),
-    ] {
-        let explained = plan(&sql, false).await;
-        assert!(
-            explained.contains(STAGES) && !explained.contains(INDEX),
-            "{sql}: {explained}"
-        );
-    }
+    // active stages read the status index's lanes.
+    let sql = format!("{select} WHERE vqueue_id = '{queue}' AND stage = 'inbox' {newest} LIMIT 5");
+    let explained = plan(&sql, false).await;
+    assert!(
+        explained.contains(STAGES) && !explained.contains(INDEX),
+        "{sql}: {explained}"
+    );
+    let sql = format!("{select} WHERE stage IN ('inbox', 'paused') LIMIT 5");
+    let explained = plan(&sql, false).await;
+    assert!(
+        explained.contains("index=_idx_entry_status_by_status_created"),
+        "{sql}: {explained}"
+    );
     // The read went through the index and skipped nothing.
     let analyzed = plan(&indexed[0], true).await;
     assert!(
