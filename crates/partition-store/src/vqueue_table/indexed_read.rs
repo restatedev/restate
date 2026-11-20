@@ -14,9 +14,10 @@
 //! - `finished_entry_by_outcome/1` holds one key per entry whose stored stage
 //!   is Finished, sorted by stored status, service and handler, then by the
 //!   time the entry entered Finished, newest first ([`FinishedRead`]);
-//! - `active_entry_by_stage/1` holds one key per entry whose stored stage is
-//!   Inbox, Running, Suspended or Paused, sorted by stage, service and handler,
-//!   then by creation time, newest first ([`ActiveRead`]).
+//! - `entry_by_status_created/1` and `entry_by_status_transitioned/1` hold one
+//!   key per entry in a known stage, by stage and status, a **lane** each,
+//!   then by the hour and time of creation or of the last transition
+//!   ([`LanesRead`]).
 //!
 //! A query on those entries, perhaps of a few statuses or stages, ordered by
 //! that time, merges the matching runs into one order and fetches each entry's
@@ -59,7 +60,7 @@ use restate_storage_api::vqueue_table::{RawStatusHeaderRef, Stage, Status};
 use restate_storage_query_api::scan::{CursorStep, ReadDirection};
 use restate_storage_query_api::selection::Selection;
 use restate_storage_query_api::tables::index::{
-    ActiveEntryByStage as ActiveIndex, EntryStatusByStatusCreated as StatusCreatedIndex,
+    EntryStatusByStatusCreated as StatusCreatedIndex,
     EntryStatusByStatusTransitioned as StatusTransitionedIndex,
     FinishedEntryByOutcome as FinishedIndex,
 };
@@ -80,10 +81,9 @@ use crate::{ReadSnapshot, Result};
 
 use super::read_cursor::EntryKeyRow;
 use super::{
-    ActiveEntryByStage, ActiveEntryByStageKey, ENTRY_STATUS_MULTI_GET_BATCH_SIZE,
-    EntryByStatusCreated, EntryByStatusCreatedKey, EntryByStatusTransitioned,
-    EntryByStatusTransitionedKey, EntryStatusKey, FinishedEntryByOutcome,
-    FinishedEntryByOutcomeKey,
+    ENTRY_STATUS_MULTI_GET_BATCH_SIZE, EntryByStatusCreated, EntryByStatusCreatedKey,
+    EntryByStatusTransitioned, EntryByStatusTransitionedKey, EntryStatusKey,
+    FinishedEntryByOutcome, FinishedEntryByOutcomeKey,
 };
 
 /// An entry index whose keys each name one entry status, read newest first or
@@ -113,22 +113,6 @@ impl EntryIndex for FinishedEntryByOutcome {
 
     fn time(header: &RawStatusHeaderRef<'_>) -> UniqueTimestamp {
         header.stats.transitioned_at
-    }
-}
-
-impl EntryIndex for ActiveEntryByStage {
-    fn reference(key: KeyDecoder<'_, ActiveEntryByStageKey>) -> Result<Reference> {
-        let key = key.decode_all()?;
-        Ok(Reference {
-            id: key.canonical_id,
-            stage: key.stage,
-            status: None,
-            at: key.created_at.0,
-        })
-    }
-
-    fn time(header: &RawStatusHeaderRef<'_>) -> UniqueTimestamp {
-        header.stats.created_at
     }
 }
 
@@ -192,24 +176,6 @@ impl FinishedRead {
     pub fn prepare(selection: &Selection<FinishedIndex>, direction: ReadDirection) -> Result<Self> {
         Ok(Self {
             index: Arc::new(FinishedEntryByOutcomeKey::prepare_candidates(selection)?),
-            direction,
-        })
-    }
-}
-
-/// A read of active entries, those in Inbox, Running, Suspended or Paused,
-/// through `active_entry_by_stage/1`, newest created first, restricted by the
-/// index's columns. The restriction may admit more entries than the query
-/// matches: the caller keeps its predicate.
-pub struct ActiveRead {
-    index: Arc<KeySelection<ActiveEntryByStageKey>>,
-    direction: ReadDirection,
-}
-
-impl ActiveRead {
-    pub fn prepare(selection: &Selection<ActiveIndex>, direction: ReadDirection) -> Result<Self> {
-        Ok(Self {
-            index: Arc::new(ActiveEntryByStageKey::prepare_candidates(selection)?),
             direction,
         })
     }
@@ -382,24 +348,6 @@ impl IndexedCursor<FinishedEntryByOutcome> {
     pub(super) fn finished(
         snapshot: &ReadSnapshot,
         read: &FinishedRead,
-        execution: &EntryIndexExecution,
-        window: NonZeroUsize,
-    ) -> Result<Option<Self>> {
-        Self::open(
-            snapshot,
-            Opening::Runs(&read.index),
-            read.direction,
-            execution,
-            window,
-            false,
-        )
-    }
-}
-
-impl IndexedCursor<ActiveEntryByStage> {
-    pub(super) fn active(
-        snapshot: &ReadSnapshot,
-        read: &ActiveRead,
         execution: &EntryIndexExecution,
         window: NonZeroUsize,
     ) -> Result<Option<Self>> {
@@ -828,15 +776,14 @@ mod tests {
     use restate_storage_api::Transaction;
     use restate_storage_api::vqueue_table::stats::EntryStatistics;
     use restate_storage_api::vqueue_table::{
-        EntryContext, EntryKey, EntryMetadata, EntryStateRef, RawStatusHeader, ReadVQueueTable,
-        StoredEntryRef, WriteVQueueTable,
+        EntryContext, EntryKey, EntryMetadata, EntryStateRef, RawStatusHeader, StoredEntryRef,
+        WriteVQueueTable,
     };
     use restate_storage_query_api::scan::CursorScan;
     use restate_storage_query_api::scan::ReadCursor;
     use restate_storage_query_api::selection::ValuePredicate;
     use restate_storage_query_api::tables::index::{
-        ActiveEntryByStageClause, EntryStatusByStatusTransitionedClause,
-        FinishedEntryByOutcomeClause,
+        EntryStatusByStatusTransitionedClause, FinishedEntryByOutcomeClause,
     };
     use restate_types::config::Configuration;
     use restate_types::identifiers::PartitionId;
@@ -948,36 +895,6 @@ mod tests {
             store,
             |execution| EntryStatusScan::Finished {
                 read: Arc::new(FinishedRead::prepare(&selection, direction).unwrap()),
-                fallback: scan_all(),
-                execution,
-            },
-            charge,
-            stop,
-        )
-    }
-
-    /// An active-entry read of `selection`: [`run_scan`].
-    fn active(
-        store: &PartitionStore,
-        selection: Selection<ActiveIndex>,
-        charge: Charge,
-        stop: Stop,
-    ) -> Run {
-        active_in(store, selection, ReadDirection::Forward, charge, stop)
-    }
-
-    /// [`active`] in `direction`.
-    fn active_in(
-        store: &PartitionStore,
-        selection: Selection<ActiveIndex>,
-        direction: ReadDirection,
-        charge: Charge,
-        stop: Stop,
-    ) -> Run {
-        run_scan(
-            store,
-            |execution| EntryStatusScan::Active {
-                read: Arc::new(ActiveRead::prepare(&selection, direction).unwrap()),
                 fallback: scan_all(),
                 execution,
             },
@@ -1402,226 +1319,6 @@ mod tests {
         assert_eq!(rows.len(), 1);
     }
 
-    /// Active entries come newest created first, the full timestamp breaking
-    /// ties within a millisecond, narrowed by stage. Each entry follows its
-    /// stage as it moves, and leaves when it finishes; a status change that
-    /// leaves the key alone keeps it. A reference whose status no longer says
-    /// its key's stage, creation time or incarnation, or that is gone, is
-    /// skipped and counted; a malformed status fails the read and releases
-    /// everything. Without a Complete index, it scans.
-    #[restate_core::test]
-    async fn active_reads_follow_each_entry_across_stages() {
-        RocksDbManager::init();
-        let manager = PartitionStoreManager::create(true).await.unwrap();
-        let mut store = manager
-            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
-            .await
-            .unwrap();
-        let mut config = Configuration::default();
-        config.common.experimental.set_track_entry_indexes(true);
-        store
-            .verify_and_run_migrations(CancellationToken::new(), &config)
-            .await
-            .unwrap();
-
-        const BASE: u64 = 1_744_010_000_000;
-        let qid = VQueueId::custom(7, "q");
-        let services = ["A", "B"];
-        let target = |n: u64| EntryTargetRef::Service {
-            scope: None,
-            service: services[(n % 2) as usize],
-            handler: "h",
-        };
-        // Pairs share a millisecond, apart by their logical clock.
-        let entries: Vec<_> = (0..10u64)
-            .map(|n| {
-                let (stage, status) = match n % 5 {
-                    0 => (Stage::Inbox, Status::New),
-                    1 => (Stage::Running, Status::Started),
-                    2 => (Stage::Suspended, Status::Yielded),
-                    3 => (Stage::Paused, Status::BackingOff),
-                    _ => (Stage::Finished, Status::Succeeded),
-                };
-                let created = UniqueTimestamp::from_parts_unchecked(BASE + n / 2, n % 2);
-                let entry = EntryId::new(EntryKind::Invocation, [n as u8 + 1; 16]);
-                let key = EntryKey::new(false, created.to_unix_millis(), n + 1, entry);
-                let stats = EntryStatistics::new(created, key.run_at());
-                (
-                    stage,
-                    status,
-                    key,
-                    stats,
-                    entry.to_base_id(qid.partition_key()),
-                )
-            })
-            .collect();
-        let mut tx = store.transaction();
-        for (n, (stage, status, key, stats, _)) in entries.iter().enumerate() {
-            tx.create_vqueue_entry_status(
-                &EntryContext {
-                    qid: &qid,
-                    target: &target(n as u64),
-                },
-                EntryStateRef {
-                    stage: *stage,
-                    status: *status,
-                    entry_key: key,
-                    metadata: &EntryMetadata::default(),
-                    stats,
-                },
-            );
-        }
-        tx.commit().await.unwrap();
-        drop(tx);
-        // What an active read returns: each row's ID, stage and creation time.
-        let shown = |run: &Run| {
-            run.rows
-                .iter()
-                .zip(&run.created)
-                .map(|(row, (stage, created))| (row.0, *stage, *created))
-                .collect::<Vec<_>>()
-        };
-        let expected = |entries: &[(Stage, Status, EntryKey, EntryStatistics, BaseEntryId)],
-                        keep: &dyn Fn(Stage) -> bool| {
-            let mut rows: Vec<_> = entries
-                .iter()
-                .filter(|entry| entry.0 != Stage::Finished && keep(entry.0))
-                .map(|entry| (entry.4, entry.0, entry.3.created_at))
-                .collect();
-            rows.sort_by_key(|row| std::cmp::Reverse(row.2));
-            rows
-        };
-
-        // Every active entry, over (stage, service) runs, released at its end.
-        let all = active(&store, Selection::All, Charge::default(), Stop::End);
-        assert_eq!(shown(&all), expected(&entries, &|_| true));
-        assert_eq!(
-            (all.path, all.skipped, all.ended.clone()),
-            (Some(EntryIndexPath::Index { runs: 8 }), 0, Some(Ok(())))
-        );
-        assert_eq!((all.held_at_end, all.closed_at_end), (0, true));
-        assert_eq!((all.held, all.closed), (0, true));
-        // Backwards, oldest created first: the exact reverse, ties included,
-        // as the logical clock orders entries created in one millisecond.
-        let oldest = active_in(
-            &store,
-            Selection::All,
-            ReadDirection::Backward,
-            Charge::default(),
-            Stop::End,
-        );
-        let mut reversed = expected(&entries, &|_| true);
-        reversed.reverse();
-        assert_eq!(shown(&oldest), reversed);
-        assert_eq!(
-            (oldest.path, oldest.held_at_end, oldest.closed_at_end),
-            (Some(EntryIndexPath::Index { runs: 8 }), 0, true)
-        );
-        // A stage set narrows the runs.
-        let some = Selection::All.and(ActiveEntryByStageClause::Stage(ValuePredicate::In(vec![
-            Stage::Inbox,
-            Stage::Paused,
-        ])));
-        let narrowed = active(&store, some, Charge::default(), Stop::End);
-        assert_eq!(
-            shown(&narrowed),
-            expected(&entries, &|stage| matches!(
-                stage,
-                Stage::Inbox | Stage::Paused
-            ))
-        );
-        assert_eq!(narrowed.path, Some(EntryIndexPath::Index { runs: 4 }));
-
-        // Maintained moves: Inbox → Running, Running → Finished, and a status
-        // change in Suspended, which leaves the key alone.
-        let mut moved = entries.clone();
-        moved[0].0 = Stage::Running;
-        moved[1].0 = Stage::Finished;
-        moved[2].1 = Status::BackingOff;
-        let mut tx = store.transaction();
-        for n in 0..3 {
-            let header = tx
-                .get_vqueue_entry_status(&entries[n].4)
-                .await
-                .unwrap()
-                .unwrap();
-            let (stage, status, key, stats, _) = &moved[n];
-            tx.update_vqueue_entry_status(
-                &EntryContext {
-                    qid: &qid,
-                    target: &target(n as u64),
-                },
-                StoredEntryRef::from_header(&header),
-                EntryStateRef {
-                    stage: *stage,
-                    status: *status,
-                    entry_key: key,
-                    metadata: &EntryMetadata::default(),
-                    stats,
-                },
-            );
-        }
-        tx.commit().await.unwrap();
-        drop(tx);
-        let after = active(&store, Selection::All, Charge::default(), Stop::End);
-        assert_eq!(shown(&after), expected(&moved, &|_| true));
-        assert_eq!(after.skipped, 0);
-
-        // Edits without their index keys: another stage, gone, another
-        // incarnation, another creation time. Each is skipped and counted.
-        let stale = [3, 5, 6, 7].map(|n| moved[n].4);
-        let relabelled = rewrite(&stored(&store, &stale[0]), &|header| {
-            header.stage = Stage::Inbox
-        });
-        let reincarnated = rewrite(&stored(&store, &stale[2]), &|header| {
-            header.seq = Seq::new(999)
-        });
-        let recreated = rewrite(&stored(&store, &stale[3]), &|header| {
-            header.stats.created_at = UniqueTimestamp::from_parts_unchecked(BASE, 9)
-        });
-        let mut tx = store.transaction();
-        tx.raw_put_cf(KeyKind::VQueueEntryStatus, key_of(&stale[0]), relabelled);
-        tx.raw_delete_cf(KeyKind::VQueueEntryStatus, key_of(&stale[1]));
-        tx.raw_put_cf(KeyKind::VQueueEntryStatus, key_of(&stale[2]), reincarnated);
-        tx.raw_put_cf(KeyKind::VQueueEntryStatus, key_of(&stale[3]), recreated);
-        tx.commit().await.unwrap();
-        drop(tx);
-        let edited = active(&store, Selection::All, Charge::default(), Stop::End);
-        let mut left = expected(&moved, &|_| true);
-        left.retain(|row| !stale.contains(&row.0));
-        assert_eq!((shown(&edited), edited.skipped), (left, 4));
-
-        // A malformed status fails the step that reaches it, which releases
-        // everything at once.
-        let mut tx = store.transaction();
-        tx.raw_put_cf(
-            KeyKind::VQueueEntryStatus,
-            key_of(&moved[8].4),
-            b"\xff\xff\xff",
-        );
-        tx.commit().await.unwrap();
-        drop(tx);
-        active(&store, Selection::All, Charge::default(), Stop::End)
-            .failed_and_released("cannot decode");
-
-        // Not Complete: a partition that doesn't maintain the index scans.
-        let plain = manager
-            .open(&Partition::new(PartitionId::from(1), KeyRange::FULL), None)
-            .await
-            .unwrap();
-        let scanned = active(&plain, Selection::All, Charge::default(), Stop::End);
-        assert_eq!(
-            (scanned.path, scanned.held, scanned.closed),
-            (Some(EntryIndexPath::Scan(ScanReason::NotComplete)), 0, true)
-        );
-    }
-
-    /// A keys-only read hands out each entry of the selection's lanes and
-    /// hours as its key holds it, in the index's order, invocations and state
-    /// mutations alike, each in its current incarnation, fetching no status.
-    /// Done or dropped part-way, it holds nothing and has reported the keys it
-    /// examined. Without a Complete index, it scans the statuses instead, with
-    /// both times.
     #[restate_core::test]
     async fn keys_only_reads_fetch_no_status() {
         use restate_storage_api::vqueue_table::ReadVQueueTable;

@@ -30,7 +30,6 @@ use restate_partition_store::invocation_status_table::{
 };
 use restate_partition_store::keys::selection::KeySelection;
 use restate_partition_store::vqueue_table::{
-    ActiveEntryByStage as StoredActiveIndex, ActiveRead,
     EntryByStatusCreated as StoredStatusCreated, EntryByStatusCreatedKey,
     EntryByStatusTransitioned as StoredStatusTransitioned, EntryByStatusTransitionedKey,
     EntryKeyRecords, EntryKeyScan, EntryStatusCursor, EntryStatusKey, EntryStatusKeys,
@@ -45,8 +44,8 @@ use restate_storage_query_api::schema::index::index_restriction;
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
 use restate_storage_query_api::tables::index::{
-    ActiveEntryByStage, ActiveEntryByStageDomains, EntryByQueue, EntryByQueueDomains,
-    EntryStatusByStatusCreated, EntryStatusByStatusCreatedDomains, EntryStatusByStatusTransitioned,
+    EntryByQueue, EntryByQueueDomains, EntryStatusByStatusCreated,
+    EntryStatusByStatusCreatedDomains, EntryStatusByStatusTransitioned,
     EntryStatusByStatusTransitionedDomains, FinishedEntryByOutcome, FinishedEntryByOutcomeDomains,
 };
 use restate_storage_query_api::tables::vqueue_entry_status::{
@@ -241,7 +240,7 @@ impl CompleteIndex for QueueIndex {
 }
 
 /// The stage tables again, for a finite set of stages, when no other index fits
-/// ([`ActiveIndex`] reads active stages in creation order). A read that fetches
+/// ([`StatusCreatedIndex`] reads stages in creation order). A read that fetches
 /// statuses avoids `finished`, which retains most entries and would be fetched
 /// by random lookups; a covered read fetches none, so it reads any stages. A
 /// query without a stage or queue restriction scans the statuses, as before:
@@ -323,58 +322,6 @@ impl CompleteIndex for FinishedIndex {
     const NEEDS_ORDERED_DEMAND: bool = true;
 }
 
-/// Active entries, those in Inbox, Running, Suspended or Paused, through
-/// `active_entry_by_stage/1`, newest created first, or oldest created first,
-/// for a query that asks for exactly that order under a LIMIT:
-///
-/// ```sql
-/// SELECT … FROM sys_vqueue_entry_status
-/// WHERE stage IN ('inbox', 'paused') [AND status = 'backing-off']
-/// ORDER BY created_at DESC [NULLS FIRST | NULLS LAST]
-/// LIMIT 50
-/// ```
-///
-/// The index holds only active entries, so every alternative of the query must
-/// fix the stage to some of those stages ([`Self::admits`]); a status condition
-/// is checked on each row and proves nothing. Ascending, the index is read
-/// backwards. Another order reads as before. Other conditions are checked on
-/// each candidate ([`CompleteIndex::NEEDS_ORDERED_DEMAND`]).
-pub(crate) struct ActiveIndex;
-
-impl CompleteIndex for ActiveIndex {
-    type Index = ActiveEntryByStage;
-    const INTRODUCED: SemanticRestateVersion = <StoredActiveIndex as RegisteredIndex>::INTRODUCED;
-
-    /// The read merges its runs by creation time, newest first. The index
-    /// keeps the full timestamp, whose millisecond is the entry's `created_at`:
-    /// the read checks that for every row.
-    ///
-    /// `created_at` is never NULL: every entry has a creation time, and the row
-    /// writer always sets it (`row.rs`).
-    const ORDERING: &'static [IndexOrder<VqueueEntryStatusColumn>] = &[IndexOrder {
-        column: VqueueEntryStatusColumn::CreatedAt,
-        options: SortOptions {
-            descending: true,
-            nulls_first: false,
-        },
-        never_null: true,
-    }];
-
-    /// Where the index isn't maintained, every partition would scan and sort
-    /// instead, so the planner then scans.
-    fn useful(_: &ActiveEntryByStageDomains) -> bool {
-        tracked()
-    }
-
-    /// Every alternative fixes the stage to stages the index holds, as the
-    /// partition store defines them.
-    fn admits(alternatives: &[VqueueEntryStatusDomains]) -> bool {
-        stages_held(alternatives, StoredActiveIndex::holds)
-    }
-
-    const NEEDS_ORDERED_DEMAND: bool = true;
-}
-
 /// Entries of some stages and statuses, newest created first, through
 /// `entry_by_status_created/1`, as the UI's invocation list asks:
 ///
@@ -392,8 +339,20 @@ pub(crate) struct StatusCreatedIndex;
 impl CompleteIndex for StatusCreatedIndex {
     type Index = EntryStatusByStatusCreated;
     const INTRODUCED: SemanticRestateVersion = <StoredStatusCreated as RegisteredIndex>::INTRODUCED;
-    /// As [`ActiveIndex::ORDERING`]: the lanes merge by creation time.
-    const ORDERING: &'static [IndexOrder<VqueueEntryStatusColumn>] = ActiveIndex::ORDERING;
+    /// The lanes merge by creation time, newest first. The index keeps the
+    /// full timestamp, whose millisecond is the entry's `created_at`: the read
+    /// checks that for every row.
+    ///
+    /// `created_at` is never NULL: every entry has a creation time, and the row
+    /// writer always sets it (`row.rs`).
+    const ORDERING: &'static [IndexOrder<VqueueEntryStatusColumn>] = &[IndexOrder {
+        column: VqueueEntryStatusColumn::CreatedAt,
+        options: SortOptions {
+            descending: true,
+            nulls_first: false,
+        },
+        never_null: true,
+    }];
 
     /// Only where the index is maintained, and only if the stage and status
     /// leave fewer lanes than all of them.
@@ -584,7 +543,6 @@ impl ScanPartition for EntryStatusScanner {
     fn supports_index(&self, index: &str) -> bool {
         index == EntryByQueue::NAME
             || index == FinishedEntryByOutcome::NAME
-            || index == ActiveEntryByStage::NAME
             || index == EntryStatusByStatusCreated::NAME
             || index == EntryStatusByStatusTransitioned::NAME
     }
@@ -618,18 +576,6 @@ impl ScanPartition for EntryStatusScanner {
                     read: Arc::new(FinishedRead::prepare(
                         &selection,
                         index.direction::<FinishedIndex>()?,
-                    )?),
-                    fallback: scan()?,
-                }
-            }
-            PrimaryRead::Index(index) if index.name() == ActiveEntryByStage::NAME => {
-                // As for finished entries.
-                let selection = index_restriction::<ActiveEntryByStage>(predicate.as_slice())?
-                    .map_or(Selection::Empty, |domains| domains.to_selection());
-                EntryStatusAccess::Active {
-                    read: Arc::new(ActiveRead::prepare(
-                        &selection,
-                        index.direction::<ActiveIndex>()?,
                     )?),
                     fallback: scan()?,
                 }
@@ -734,13 +680,6 @@ enum EntryStatusAccess {
         #[debug(skip)]
         fallback: Arc<KeySelection<EntryStatusKey>>,
     },
-    /// Active entries through their index, or the fallback scan.
-    Active {
-        #[debug(skip)]
-        read: Arc<ActiveRead>,
-        #[debug(skip)]
-        fallback: Arc<KeySelection<EntryStatusKey>>,
-    },
     /// Entries of some stages and statuses through `entry_by_status_created/1`,
     /// or the fallback scan.
     StatusCreated {
@@ -802,7 +741,6 @@ impl EntryStatusAccess {
         matches!(
             self,
             Self::Finished { .. }
-                | Self::Active { .. }
                 | Self::StatusCreated { .. }
                 | Self::StatusTransitioned { .. }
                 | Self::Keys(_)
@@ -1036,18 +974,6 @@ impl EntryStatusRead {
                         );
                     };
                     EntryStatusScan::Finished {
-                        read,
-                        fallback,
-                        execution,
-                    }
-                }
-                EntryStatusAccess::Active { read, fallback } => {
-                    let Some(execution) = ordered else {
-                        return datafusion::common::internal_err!(
-                            "an entry index read has no execution"
-                        );
-                    };
-                    EntryStatusScan::Active {
                         read,
                         fallback,
                         execution,

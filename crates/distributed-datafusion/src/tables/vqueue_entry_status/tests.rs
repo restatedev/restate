@@ -1075,14 +1075,14 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
     );
 }
 
-/// Active entries newest created first, through `active_entry_by_stage/1` when
-/// every alternative fixes the stage to some of Inbox, Running, Suspended and
-/// Paused: the same rows as the current-status scan, ties included, with the
-/// read's path and work shown. A query that doesn't prove its rows active, or
-/// wants another order, reads as before; so does one on a few queues, which
-/// reads the stage tables first, and one without the order.
+/// Active entries newest created first, through the lanes of
+/// `entry_by_status_created/1` when every alternative fixes the stage to known
+/// stages: the same rows as the current-status scan, ties included, with the
+/// read's path and work shown. A query that doesn't prove its stages, or wants
+/// another order, reads another way; so does one on a few queues, which reads
+/// the stage tables first, and one without the order.
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn active_entries_read_through_their_index_match_the_scan() {
+async fn active_entries_read_through_the_status_index_match_the_scan() {
     use restate_types::vqueues::HandlerRef;
 
     RocksDbManager::init();
@@ -1183,7 +1183,7 @@ async fn active_entries_read_through_their_index_match_the_scan() {
         .await
     };
     let queue = rows("SELECT vqueue_id FROM sys_vqueue_entry_status LIMIT 1").await[0][0].clone();
-    const INDEX: &str = "_idx_active_entry_by_stage";
+    const INDEX: &str = "_idx_entry_status_by_status_created";
     const STAGES: &str = "_idx_entry_by_queue";
     let select = "SELECT entry_id, status, created_at FROM sys_vqueue_entry_status";
     let newest = "ORDER BY created_at DESC NULLS LAST";
@@ -1219,14 +1219,15 @@ async fn active_entries_read_through_their_index_match_the_scan() {
             "{select} WHERE (stage = 'inbox' AND status = 'new') OR stage = 'suspended' \
              {newest} LIMIT 6"
         ),
+        // The index holds Finished entries too.
+        format!("{select} WHERE stage IN ('inbox', 'finished') {newest} LIMIT 5"),
     ];
     let scans = [
         // Status alone doesn't prove the stage.
         format!("{select} WHERE status = 'new' {newest} LIMIT 5"),
         format!("{select} WHERE stage = 'inbox' OR status = 'new' {newest} LIMIT 5"),
-        format!("{select} WHERE stage IN ('inbox', 'finished') {newest} LIMIT 5"),
-        format!("{select} WHERE stage = 'finished' {newest} LIMIT 5"),
         format!("{select} WHERE stage = 'unknown' {newest} LIMIT 5"),
+        // The transition index's order.
         format!("{select} WHERE stage = 'inbox' ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"),
     ];
     // Tie-aware: the creation times in order, and every row a qualifying one.
@@ -1298,27 +1299,28 @@ async fn active_entries_read_through_their_index_match_the_scan() {
         "{analyzed}"
     );
 
-    // More runs than one read merges: the partition scans and sorts instead,
-    // before returning anything, and says why and what discovery examined.
+    // More runs than one read merges in its first hour, 260 services in one
+    // lane: the partition scans and sorts instead, before returning anything,
+    // and says why and what discovery examined.
     let mut tx = store.transaction();
-    for handler in 0..260u64 {
-        let created = UniqueTimestamp::from_parts_unchecked(BASE + 1_000 + handler, 0);
+    for service in 0..260u64 {
+        let created = UniqueTimestamp::from_parts_unchecked(BASE + 1_000 + service, 0);
         let mut remainder = [0; 16];
-        remainder[..3].copy_from_slice(&[200, handler as u8, (handler >> 8) as u8]);
+        remainder[..3].copy_from_slice(&[200, service as u8, (service >> 8) as u8]);
         let key = EntryKey::new(
             false,
             created.to_unix_millis(),
-            1_000 + handler,
+            1_000 + service,
             EntryId::new(EntryKind::Invocation, remainder),
         );
-        let name = format!("h{handler}");
+        let name = format!("s{service}");
         tx.create_vqueue_entry_status(
             &EntryContext {
                 qid: &qid,
                 target: &EntryTargetRef::Service {
                     scope: None,
-                    service: "Many",
-                    handler: &name,
+                    service: &name,
+                    handler: "h",
                 },
             },
             EntryStateRef {

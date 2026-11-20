@@ -770,7 +770,8 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
     // The newest finished entries, through `finished_entry_by_outcome/1` on
     // every owner, except the partition whose index was reset, which scans
     // and sorts: the same rows as a scan, each owner's read shown. Then the
-    // newest active entries, through `active_entry_by_stage/1`, the same way.
+    // newest active entries, through `entry_by_status_created/1`'s lanes, the
+    // same way.
     // Neither ordered column is ever NULL, so each query reads the same with
     // NULLs placed last, first, or by default (first, for DESC): in the same
     // plan, but for the spelling.
@@ -786,7 +787,7 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
     let unspelled = |plan: String| plan.replace(" NULLS FIRST", "").replace(" NULLS LAST", "");
     for (sql, index) in [
         (finished, "_idx_finished_entry_by_outcome"),
-        (active, "_idx_active_entry_by_stage"),
+        (active, "_idx_entry_status_by_status_created"),
     ] {
         let explained = async |sql: &str| {
             let plan = crate::mocks::rows(session.as_ref(), &format!("EXPLAIN {sql}"))
