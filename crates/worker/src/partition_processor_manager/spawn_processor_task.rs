@@ -21,7 +21,7 @@ use restate_partition_store::{MigrationError, PartitionStoreManager};
 use restate_platform::prelude::ReString;
 use restate_types::cluster::cluster_state::PartitionProcessorStatus;
 use restate_types::logs::Lsn;
-use restate_types::partitions::Partition;
+use restate_types::partitions::{Partition, REQUIRED_PARTITION_FEATURES};
 use restate_wal_protocol::v2::{Envelope, Raw};
 
 use crate::PartitionProcessorBuilder;
@@ -159,7 +159,7 @@ where
                     // replacement processor cannot race the abandoned open. Snapshot downloads
                     // observe the cancellation token and stop early.
                     let partition_store = partition_store_manager
-                        .open_cancellable(&partition, fast_forward_lsn, &cancellation)
+                        .open_cancellable(&partition, fast_forward_lsn, REQUIRED_PARTITION_FEATURES, &cancellation)
                         .await;
 
                     if cancellation.is_cancelled() {

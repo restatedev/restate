@@ -32,6 +32,7 @@ use tracing::{debug, error, info, instrument, warn};
 use restate_types::config::{Configuration, SnapshotsOptions};
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::Lsn;
+use restate_types::partitions::PartitionFeatureChange;
 
 /// Asks a partition processor to hold back its commits during a snapshot export. It replies with
 /// the fence, or `None` if another export already holds its commits back.
@@ -173,6 +174,7 @@ impl Snapshots {
         &self,
         partition_id: PartitionId,
         target_lsn: Option<Lsn>,
+        required_features: &[PartitionFeatureChange],
         cancellation: &CancellationToken,
     ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
         use crate::metric_definitions::{SNAPSHOT_DOWNLOAD_DURATION, SNAPSHOT_DOWNLOAD_FAILED};
@@ -183,8 +185,14 @@ impl Snapshots {
         };
 
         let start = std::time::Instant::now();
-        let result =
-            Self::download_snapshot_inner(repository, partition_id, target_lsn, cancellation).await;
+        let result = Self::download_snapshot_inner(
+            repository,
+            partition_id,
+            target_lsn,
+            required_features,
+            cancellation,
+        )
+        .await;
         metrics::histogram!(SNAPSHOT_DOWNLOAD_DURATION).record(start.elapsed().as_secs_f64());
         if result.is_err() && !cancellation.is_cancelled() {
             metrics::counter!(SNAPSHOT_DOWNLOAD_FAILED).increment(1);
@@ -196,6 +204,7 @@ impl Snapshots {
         repository: &SnapshotRepository,
         partition_id: PartitionId,
         target_lsn: Option<Lsn>,
+        required_features: &[PartitionFeatureChange],
         cancellation: &CancellationToken,
     ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
         use crate::metric_definitions::SNAPSHOT_DOWNLOAD_FALLBACK;
@@ -205,29 +214,44 @@ impl Snapshots {
         let retained = repository.get_snapshot_candidates(partition_id).await?;
 
         // When a target LSN is required, only snapshots at or above it can satisfy a fast-forward.
-        let candidates: Vec<&SnapshotReference> = retained
+        let reaching_lsn: Vec<&SnapshotReference> = retained
             .iter()
             .filter(|c| target_lsn.is_none_or(|min_lsn| c.min_applied_lsn >= min_lsn))
+            .collect();
+        // When features are required, only snapshots known to have them qualify.
+        let candidates: Vec<&SnapshotReference> = reaching_lsn
+            .iter()
+            .copied()
+            .filter(|c| {
+                required_features.is_empty()
+                    || c.compatibility
+                        .as_ref()
+                        .is_some_and(|c| c.has_partition_features(required_features))
+            })
             .collect();
         let candidate_count = candidates.len();
 
         if candidate_count == 0 {
             // No usable snapshot. With a target LSN this is a failure (the caller cannot
             // fast-forward); without one it simply means a fresh partition store is provisioned.
-            match target_lsn {
-                Some(min_lsn) => match retained.first() {
-                    Some(newest) => warn!(
-                        target_lsn = %min_lsn,
-                        newest_retained_lsn = %newest.min_applied_lsn,
-                        retained_count = retained.len(),
-                        "No retained snapshot reaches the required LSN; the log was trimmed past all available snapshots"
-                    ),
-                    None => warn!(
-                        target_lsn = %min_lsn,
-                        "A snapshot is required but none is present in the repository for this partition"
-                    ),
-                },
-                None => debug!("No snapshot present in the repository for this partition"),
+            match (target_lsn, retained.first()) {
+                // Only the feature filter can have left these out.
+                _ if !reaching_lsn.is_empty() => warn!(
+                    ?required_features,
+                    snapshot_count = reaching_lsn.len(),
+                    "No retained snapshot has the required partition features"
+                ),
+                (Some(min_lsn), Some(newest)) => warn!(
+                    target_lsn = %min_lsn,
+                    newest_retained_lsn = %newest.min_applied_lsn,
+                    retained_count = retained.len(),
+                    "No retained snapshot reaches the required LSN; the log was trimmed past all available snapshots"
+                ),
+                (Some(min_lsn), None) => warn!(
+                    target_lsn = %min_lsn,
+                    "A snapshot is required but none is present in the repository for this partition"
+                ),
+                (None, _) => debug!("No snapshot present in the repository for this partition"),
             }
             return Ok(None);
         }

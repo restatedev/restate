@@ -28,7 +28,7 @@ use restate_storage_api::fsm_table::ReadFsmTable;
 use restate_types::config::{Configuration, RocksDbCompaction};
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::{Lsn, SequenceNumber};
-use restate_types::partitions::Partition;
+use restate_types::partitions::{Partition, PartitionFeatureChange};
 use restate_types::protobuf::common::DatabaseKind;
 
 use crate::SnapshotError;
@@ -342,54 +342,97 @@ impl PartitionStoreManager {
         partition: &Partition,
         target_lsn: Option<Lsn>,
     ) -> Result<PartitionStore, OpenError> {
-        self.open_cancellable(partition, target_lsn, &CancellationToken::new())
+        self.open_cancellable(partition, target_lsn, &[], &CancellationToken::new())
             .await
     }
 
     /// Like [`Self::open`], but aborts an in-progress snapshot download and returns
     /// [`OpenError::Cancelled`] once `cancellation` fires.
+    ///
+    /// If the local store lacks one of `required_features`, it is replaced by the newest snapshot
+    /// that has them. If no snapshot has them, the local store is opened as it is. Without a
+    /// local store to fall back to, the newest snapshot is restored whether it has them or not.
+    /// The caller decides what to do with a store that lacks them.
     #[instrument(level = "error", skip_all, fields(partition_id = %partition.partition_id, cf_name = %partition.cf_name()))]
     pub async fn open_cancellable(
         &self,
         partition: &Partition,
         target_lsn: Option<Lsn>,
+        required_features: &[PartitionFeatureChange],
         cancellation: &CancellationToken,
     ) -> Result<PartitionStore, OpenError> {
         let database = self.open_rocksdb(partition).await?;
 
-        // If we already have the partition locally and we don't have a fast-forward target, or the
-        // store already meets the target LSN requirement, then we simply return it.
+        // If we already have the partition locally and it meets the fast-forward target and has the
+        // required features, then we simply return it.
         let cell = self.state.get_or_open(partition, &database).await;
 
         let mut state_guard = cell.inner.write().await;
 
+        // A local store that meets the target LSN but lacks required features. It is used if no
+        // snapshot has the features either.
+        let mut local_store = None;
         if let Some(db) = state_guard.get_or_reopen().await? {
-            // we have a database, but perhaps it doesn't meet the min_applied_lsn requirement?
             let mut partition_store = PartitionStore::from(db);
-            match target_lsn {
-                None => return Ok(partition_store),
+            let meets_target_lsn = match target_lsn {
+                None => true,
                 Some(min_applied_lsn) => {
                     let my_applied_lsn = partition_store.get_applied_lsn().await?;
-                    if my_applied_lsn.unwrap_or(Lsn::INVALID) >= min_applied_lsn {
-                        // We have an initialized partition store, and no fast-forward target - go on and open it.
-                        return Ok(partition_store);
-                    }
+                    my_applied_lsn.unwrap_or(Lsn::INVALID) >= min_applied_lsn
                 }
+            };
+            if meets_target_lsn {
+                if required_features.is_empty() {
+                    return Ok(partition_store);
+                }
+                let enabled = partition_store.get_state_machine_features().await?;
+                if required_features.iter().all(|f| enabled.is_enabled(*f)) {
+                    return Ok(partition_store);
+                }
+                info!(
+                    ?required_features,
+                    "Local partition store lacks required partition features, looking for a snapshot that has them"
+                );
+                local_store = Some(partition_store);
             }
         }
 
         // **
         // We either don't have an existing local partition store initialized - or we have a
-        // target-lsn target higher than our local state (probably due to seeing a log trim-gap).
+        // target-lsn target higher than our local state (probably due to seeing a log trim-gap),
+        // or our local state lacks required features.
         // **
 
-        // Attempt to get a suitable snapshot from the repository:
+        // Attempt to get a suitable snapshot from the repository. Only a snapshot that has the
+        // required features is worth replacing a usable local store with. Without one, any
+        // snapshot that meets the target LSN is better than no store.
+        let snapshot_features = if local_store.is_some() {
+            required_features
+        } else {
+            &[]
+        };
         let snapshot_result = self
             .snapshots
-            .download_snapshot(partition.partition_id, target_lsn, cancellation)
+            .download_snapshot(
+                partition.partition_id,
+                target_lsn,
+                snapshot_features,
+                cancellation,
+            )
             .await;
         if snapshot_result.is_err() && cancellation.is_cancelled() {
             return Err(OpenError::Cancelled);
+        }
+
+        // Open the local store as it is: if it hasn't applied a version barrier yet, the next one
+        // in its log may still enable the features. Otherwise the processor refuses to start
+        // with it and reports the missing features.
+        if let (Ok(None), Some(local_store)) = (&snapshot_result, local_store) {
+            warn!(
+                ?required_features,
+                "No snapshot has the required partition features, opening the local partition store"
+            );
+            return Ok(local_store);
         }
 
         match (snapshot_result, target_lsn) {
