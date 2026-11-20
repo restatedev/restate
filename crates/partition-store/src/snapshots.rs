@@ -12,12 +12,13 @@ mod leases;
 mod metadata;
 mod repository;
 mod snapshot_task;
-mod sst_fingerprint;
+pub(crate) mod sst_fingerprint;
 
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures::future::BoxFuture;
 
@@ -73,10 +74,44 @@ impl CaptureGuard {
     }
 }
 
+/// How a snapshot export captures the partition store.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SnapshotExportMode {
+    /// Existing behaviour: flush the memtables and use the snapshot format that the configuration
+    /// selects.
+    Flush,
+    /// Whole-database checkpoint without flushing. Used by the `new-files` trigger.
+    NewFiles,
+    /// Flush once, then take a whole-database checkpoint and publish it regardless of churn.
+    NewFilesBackstop,
+}
+
+impl SnapshotExportMode {
+    pub fn is_new_files(self) -> bool {
+        matches!(self, Self::NewFiles | Self::NewFilesBackstop)
+    }
+
+    /// Whether the snapshot path itself flushes the partition's memtables.
+    pub fn flushes(self) -> bool {
+        !matches!(self, Self::NewFiles)
+    }
+}
+
+/// The result of a snapshot export. The `new-files` trigger can decide not to publish a
+/// checkpoint at all.
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
+pub enum ExportedSnapshot {
+    Snapshot(LocalPartitionSnapshot),
+    Skipped,
+}
+
 #[derive(Clone)]
 pub struct Snapshots {
     repository: Option<SnapshotRepository>,
     concurrency_limit: Arc<Semaphore>,
+    /// Number of flushes the snapshot path requested. Test hook for the no-flush trigger.
+    flush_count: Arc<AtomicU64>,
 }
 
 impl Snapshots {
@@ -94,7 +129,13 @@ impl Snapshots {
         Ok(Self {
             repository,
             concurrency_limit,
+            flush_count: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    /// Number of flushes requested by snapshot exports on this manager.
+    pub fn snapshot_triggered_flushes(&self) -> u64 {
+        self.flush_count.load(Ordering::Relaxed)
     }
 
     pub fn is_repository_configured(&self) -> bool {
@@ -114,7 +155,9 @@ impl Snapshots {
     /// `cell` keeps the partition from being closed or reopened. `commit_fence_tx` reaches the
     /// processor of an open partition, which holds back its commits; it's `None` for a closed
     /// partition.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn create_local_snapshot(
+        &self,
         mut partition_store: PartitionStore,
         permit: OwnedSemaphorePermit,
         cell: OwnedRwLockReadGuard<State>,
@@ -122,20 +165,32 @@ impl Snapshots {
         min_target_lsn: Option<Lsn>,
         snapshot_id: SnapshotId,
         snapshot_base_path: &Path,
-    ) -> Result<LocalPartitionSnapshot, SnapshotError> {
+        mode: SnapshotExportMode,
+    ) -> Result<Option<LocalPartitionSnapshot>, SnapshotError> {
         let partition_id = partition_store.partition_id();
         let error = |kind| SnapshotError { partition_id, kind };
 
+        let flush_before_fence = match mode {
+            SnapshotExportMode::Flush => commit_fence_tx.is_some(),
+            SnapshotExportMode::NewFiles => false,
+            SnapshotExportMode::NewFilesBackstop => true,
+        };
+        if mode == SnapshotExportMode::NewFilesBackstop {
+            metrics::counter!(crate::metric_definitions::SNAPSHOT_BACKSTOP_FLUSHES).increment(1);
+        }
         let fence = match commit_fence_tx {
             Some(commit_fence_tx) => {
                 // NOTE: Possibly unnecessary optimization:
                 // The export flushes the partition while its commits are held back. Flushing
                 // first leaves the export only what was written since.
-                partition_store
-                    .partition_db()
-                    .flush_memtables(true)
-                    .await
-                    .map_err(|err| error(SnapshotErrorKind::Export(err.into())))?;
+                if flush_before_fence {
+                    self.flush_count.fetch_add(1, Ordering::Relaxed);
+                    partition_store
+                        .partition_db()
+                        .flush_memtables(true)
+                        .await
+                        .map_err(|err| error(SnapshotErrorKind::Export(err.into())))?;
+                }
                 let (reply_tx, reply_rx) = oneshot::channel();
                 commit_fence_tx
                     .send(reply_tx)
@@ -147,15 +202,26 @@ impl Snapshots {
                     .ok_or_else(|| error(SnapshotErrorKind::SnapshotInProgress))?;
                 Some(fence)
             }
-            None => None,
+            None => {
+                if flush_before_fence {
+                    self.flush_count.fetch_add(1, Ordering::Relaxed);
+                    partition_store
+                        .partition_db()
+                        .flush_memtables(true)
+                        .await
+                        .map_err(|err| error(SnapshotErrorKind::Export(err.into())))?;
+                }
+                None
+            }
         };
 
         partition_store
-            .create_local_snapshot(
+            .create_local_snapshot_with_mode(
                 CaptureGuard::new(permit, cell, fence),
                 snapshot_base_path,
                 min_target_lsn,
                 snapshot_id,
+                mode,
             )
             .await
             .map_err(|err| error(SnapshotErrorKind::Export(err.into())))
@@ -185,6 +251,24 @@ impl Snapshots {
             return Ok(Vec::new());
         };
         repository.get_snapshot_candidates(partition_id).await
+    }
+
+    /// Fetches the metadata of the partition's latest published snapshot, if any.
+    pub(crate) async fn get_latest_snapshot_metadata(
+        &self,
+        partition_id: PartitionId,
+    ) -> anyhow::Result<Option<PartitionSnapshotMetadata>> {
+        let Some(repository) = &self.repository else {
+            return Ok(None);
+        };
+        let candidates = repository.get_snapshot_candidates(partition_id).await?;
+        let Some(latest) = candidates.first() else {
+            return Ok(None);
+        };
+        match repository.get_snapshot_metadata(partition_id, latest).await {
+            Ok(metadata) => Ok(Some(metadata)),
+            Err(GetSnapshotError::Defective(err) | GetSnapshotError::Unavailable(err)) => Err(err),
+        }
     }
 
     /// Fetches a snapshot's metadata without downloading its data files.

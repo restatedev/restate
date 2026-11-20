@@ -23,15 +23,25 @@ use restate_types::logs::Lsn;
 use restate_types::nodes_config::ClusterFingerprint;
 
 use super::{
-    CommitFenceRequest, LeaseError, LocalPartitionSnapshot, PartitionSnapshotMetadata,
-    PartitionSnapshotStatus, SnapshotError, SnapshotErrorKind, SnapshotRepository,
+    CommitFenceRequest, ExportedSnapshot, LeaseError, LocalPartitionSnapshot,
+    PartitionSnapshotMetadata, PartitionSnapshotStatus, SnapshotError, SnapshotErrorKind,
+    SnapshotExportMode, SnapshotRepository,
 };
 use crate::PartitionStoreManager;
+
+/// The result of a snapshot task.
+#[derive(Debug)]
+pub enum SnapshotOutcome {
+    Published(PartitionSnapshotStatus),
+    /// A `new-files` round whose churn was below the threshold, or which had nothing flushed.
+    Skipped,
+}
 
 /// Creates a partition store snapshot along with Restate snapshot metadata.
 pub struct SnapshotPartitionTask {
     pub snapshot_id: SnapshotId,
     pub partition_id: PartitionId,
+    pub mode: SnapshotExportMode,
     /// Reaches the partition's running processor, which holds back its commits during the
     /// export. `None` if no processor runs.
     pub commit_fence_tx: Option<mpsc::Sender<CommitFenceRequest>>,
@@ -52,7 +62,7 @@ impl SnapshotPartitionTask {
         skip_all,
         fields(partition_id = %self.partition_id, snapshot_id = %self.snapshot_id)
     )]
-    pub async fn run(self) -> Result<(PartitionId, PartitionSnapshotStatus), SnapshotError> {
+    pub async fn run(self) -> Result<(PartitionId, SnapshotOutcome), SnapshotError> {
         debug!("Requesting partition snapshot");
         let partition_id = self.partition_id;
         if let Some(result) = cancellation_token()
@@ -60,12 +70,14 @@ impl SnapshotPartitionTask {
             .await
         {
             result
-                .inspect(|status| {
-                    info!(
-                        latest_snapshot_lsn = %status.latest_snapshot_lsn,
-                        archived_lsn = %status.archived_lsn,
-                        "Got partition snapshot"
-                    );
+                .inspect(|outcome| {
+                    if let SnapshotOutcome::Published(status) = outcome {
+                        info!(
+                            latest_snapshot_lsn = %status.latest_snapshot_lsn,
+                            archived_lsn = %status.archived_lsn,
+                            "Got partition snapshot"
+                        );
+                    }
                 })
                 .inspect_err(|err| {
                     if matches!(err.kind, SnapshotErrorKind::SnapshotInProgress) {
@@ -74,7 +86,7 @@ impl SnapshotPartitionTask {
                         warn!("Create snapshot failed: {}", err);
                     }
                 })
-                .map(|status| (partition_id, status))
+                .map(|outcome| (partition_id, outcome))
         } else {
             Err(SnapshotError {
                 partition_id,
@@ -83,7 +95,7 @@ impl SnapshotPartitionTask {
         }
     }
 
-    async fn create_snapshot_inner(&self) -> Result<PartitionSnapshotStatus, SnapshotError> {
+    async fn create_snapshot_inner(&self) -> Result<SnapshotOutcome, SnapshotError> {
         // Acquire lease BEFORE export to avoid dedup/delete races with cleanup while uploading SSTs.
         // Also eliminates the possibility of concurrent snapshots for the same partition at close LSNs.
         let lease_guard = self
@@ -113,7 +125,7 @@ impl SnapshotPartitionTask {
                 }
             })?;
 
-        let snapshot = self
+        let snapshot = match self
             .partition_store_manager
             .export_partition(
                 self.partition_id,
@@ -121,8 +133,13 @@ impl SnapshotPartitionTask {
                 self.min_target_lsn,
                 self.snapshot_id,
                 self.snapshot_base_path.as_path(),
+                self.mode,
             )
-            .await?;
+            .await?
+        {
+            ExportedSnapshot::Snapshot(snapshot) => snapshot,
+            ExportedSnapshot::Skipped => return Ok(SnapshotOutcome::Skipped),
+        };
 
         let metadata = self.metadata(&snapshot, WallClock::recent_ms());
 
@@ -139,7 +156,7 @@ impl SnapshotPartitionTask {
         self.partition_store_manager
             .note_archived_lsn(self.partition_id, status.archived_lsn);
 
-        Ok(status)
+        Ok(SnapshotOutcome::Published(status))
     }
 
     fn metadata(

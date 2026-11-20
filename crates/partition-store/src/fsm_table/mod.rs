@@ -184,6 +184,97 @@ pub fn read_applied_lsn_from_db(
     read_applied_lsn_from(db, cf, partition_id, rocksdb::ReadTier::All)
 }
 
+/// Whether a partition store that a tool opened with RocksDB directly has a seal marker.
+pub(crate) fn has_seal_marker_in_db(
+    db: &rocksdb::DB,
+    cf: &impl rocksdb::AsColumnFamilyRef,
+    partition_id: PartitionId,
+) -> Result<bool> {
+    let key = create_key(partition_id, fsm_variable::SEAL_MARKER);
+    db.get_cf(cf, key.to_bytes())
+        .map(|value| value.is_some())
+        .map_err(|err| StorageError::Generic(err.into()))
+}
+
+/// Reads the partition's persisted FSM position from a database that a tool opened directly.
+pub(crate) fn read_fsm_position_from_db(
+    db: &rocksdb::DB,
+    cf: &impl rocksdb::AsColumnFamilyRef,
+    partition_id: PartitionId,
+) -> Result<Option<FsmPosition>> {
+    get_storage_codec_from_raw_db(db, cf, partition_id, fsm_variable::FSM_POSITION)
+}
+
+/// The compatibility metadata persisted in a database that a tool opened directly.
+pub(crate) struct CheckpointCompatibility {
+    pub storage_features: Option<PersistedEnabledFeatures>,
+    pub min_restate_version: SemanticRestateVersion,
+    pub partition_features: PersistedFeatures,
+}
+
+pub(crate) fn read_checkpoint_compatibility_from_db(
+    db: &rocksdb::DB,
+    cf: &impl rocksdb::AsColumnFamilyRef,
+    partition_id: PartitionId,
+) -> Result<CheckpointCompatibility> {
+    let key = create_key(partition_id, fsm_variable::STORAGE_FEATURES);
+    let storage_features: Option<PersistedEnabledFeatures> = db
+        .get_cf(cf, key.to_bytes())
+        .map_err(|err| StorageError::Generic(err.into()))?
+        .map(|value| {
+            serde_json::from_slice(&value).map_err(|err| StorageError::Conversion(err.into()))
+        })
+        .transpose()?;
+    let min_restate_version =
+        get_proto_from_raw_db(db, cf, partition_id, fsm_variable::RESTATE_VERSION_BARRIER)?
+            .unwrap_or_default();
+    let partition_features =
+        get_storage_codec_from_raw_db(db, cf, partition_id, fsm_variable::STATE_MACHINE_FEATURES)?
+            .unwrap_or_default();
+    Ok(CheckpointCompatibility {
+        storage_features,
+        min_restate_version,
+        partition_features,
+    })
+}
+
+fn get_storage_codec_from_raw_db<V: StorageDecode>(
+    db: &rocksdb::DB,
+    cf: &impl rocksdb::AsColumnFamilyRef,
+    partition_id: PartitionId,
+    state_id: u64,
+) -> Result<Option<V>> {
+    let key = create_key(partition_id, state_id);
+    db.get_cf(cf, key.to_bytes())
+        .map_err(|err| StorageError::Generic(err.into()))?
+        .map(|value| {
+            let mut slice = value.as_ref();
+            StorageCodec::decode::<V, _>(&mut slice)
+        })
+        .transpose()
+        .map_err(|err| StorageError::Conversion(err.into()))
+}
+
+fn get_proto_from_raw_db<T: PartitionStoreProtobufValue>(
+    db: &rocksdb::DB,
+    cf: &impl rocksdb::AsColumnFamilyRef,
+    partition_id: PartitionId,
+    state_id: u64,
+) -> Result<Option<T>>
+where
+    <<T as PartitionStoreProtobufValue>::ProtobufType as TryInto<T>>::Error: Into<anyhow::Error>,
+{
+    get_storage_codec_from_raw_db::<ProtobufStorageWrapper<T::ProtobufType>>(
+        db,
+        cf,
+        partition_id,
+        state_id,
+    )?
+    .map(|wrapper| wrapper.0.try_into())
+    .transpose()
+    .map_err(|err| StorageError::Conversion(err.into()))
+}
+
 fn read_applied_lsn(db: &PartitionDb, read_tier: rocksdb::ReadTier) -> Result<Option<Lsn>> {
     read_applied_lsn_from(
         db.rocksdb().inner().as_raw_db(),

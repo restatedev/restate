@@ -252,10 +252,15 @@ impl RocksAccess {
     /// Creates a consistent whole-database checkpoint in `path`, which RocksDB
     /// creates. Unlike [`Self::export_cf`], this includes blob files and the
     /// database-level files (`MANIFEST-*`, `CURRENT`, `OPTIONS-*`) needed to open
-    /// the checkpoint as a database. It forces a flush of the memtables.
-    pub fn create_checkpoint(&self, path: PathBuf) -> Result<(), RocksError> {
+    /// the checkpoint as a database. `log_size_for_flush` follows RocksDB's
+    /// checkpoint API: `0` forces a flush, a very large value does not.
+    pub fn create_checkpoint(
+        &self,
+        path: PathBuf,
+        log_size_for_flush: u64,
+    ) -> Result<(), RocksError> {
         let checkpoint = Checkpoint::new(self.as_raw_db())?;
-        checkpoint.create_checkpoint(path.as_path())?;
+        checkpoint.create_checkpoint_with_log_size(path.as_path(), log_size_for_flush)?;
         Ok(())
     }
 

@@ -10,7 +10,7 @@
 
 use std::ops::ControlFlow;
 use std::ops::RangeBounds;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Once, OnceLock};
 use std::time::Duration;
 
@@ -69,7 +69,7 @@ use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
 use crate::snapshots::{
     CaptureGuard, LocalPartitionSnapshot, SnapshotCompatibility, SnapshotDataFile, SnapshotDir,
-    SnapshotFormatVersion, export_dir,
+    SnapshotExportMode, SnapshotFormatVersion, export_dir,
 };
 use crate::{configure_prefix_iterator_opts, configure_range_iterator_opts};
 
@@ -592,6 +592,7 @@ impl PartitionStore {
     /// *NB:* Creating a snapshot causes an implicit flush of the column family!
     ///
     /// See [rocksdb::checkpoint::Checkpoint::export_column_family] for additional implementation details.
+    #[cfg(test)]
     pub(crate) async fn create_local_snapshot(
         &mut self,
         capture: CaptureGuard,
@@ -599,27 +600,51 @@ impl PartitionStore {
         min_target_lsn: Option<Lsn>,
         snapshot_id: SnapshotId,
     ) -> Result<LocalPartitionSnapshot> {
-        let applied_lsn = self
+        self.create_local_snapshot_with_mode(
+            capture,
+            snapshot_base_path,
+            min_target_lsn,
+            snapshot_id,
+            SnapshotExportMode::Flush,
+        )
+        .await?
+        .ok_or_else(|| StorageError::SnapshotExport(anyhow::anyhow!("snapshot was skipped")))
+    }
+
+    /// Like [`Self::create_local_snapshot`], with an explicit export mode. Returns `None` when a
+    /// `new-files` checkpoint has no persisted applied LSN yet, which means the partition has
+    /// never flushed.
+    pub(crate) async fn create_local_snapshot_with_mode(
+        &mut self,
+        capture: CaptureGuard,
+        snapshot_base_path: &Path,
+        min_target_lsn: Option<Lsn>,
+        snapshot_id: SnapshotId,
+        mode: SnapshotExportMode,
+    ) -> Result<Option<LocalPartitionSnapshot>> {
+        let live_applied_lsn = self
             .get_applied_lsn()
             .await
-            .map_err(|e| StorageError::SnapshotExport(e.into()))?
-            .ok_or(StorageError::DataIntegrityError)?; // if PartitionStore::get_applied_lsn returns None
+            .map_err(|e| StorageError::SnapshotExport(e.into()))?;
 
-        if let Some(min_target_lsn) = min_target_lsn
-            && applied_lsn < min_target_lsn
-        {
-            return Err(StorageError::PreconditionFailed(anyhow!(
-                "Applied LSN below the target LSN: {applied_lsn} < {min_target_lsn}",
-            )));
-        };
+        if !mode.is_new_files() {
+            let applied_lsn = live_applied_lsn.ok_or(StorageError::DataIntegrityError)?;
+            if let Some(min_target_lsn) = min_target_lsn
+                && applied_lsn < min_target_lsn
+            {
+                return Err(StorageError::PreconditionFailed(anyhow!(
+                    "Applied LSN below the target LSN: {applied_lsn} < {min_target_lsn}",
+                )));
+            };
+        }
 
         // RocksDB will create the snapshot directory but the parent must exist first:
         tokio::fs::create_dir_all(snapshot_base_path)
             .await
             .map_err(|e| StorageError::SnapshotExport(e.into()))?;
 
-        let compatibility = self.read_snapshot_compatibility();
-        let position = self
+        let mut compatibility = self.read_snapshot_compatibility();
+        let mut position = self
             .get_fsm_position()
             .await
             .map_err(|e| StorageError::SnapshotExport(e.into()))?
@@ -638,15 +663,27 @@ impl PartitionStore {
                  experimental-rocksdb-enable-blob-files to stay enabled"
             )));
         }
+        if mode.is_new_files() && !use_whole_db_checkpoint {
+            return Err(StorageError::SnapshotExport(anyhow::anyhow!(
+                "the new-files snapshot trigger requires a whole-database checkpoint"
+            )));
+        }
+        if mode.is_new_files() && self.db.cf_handles().all().len() > 1 {
+            return Err(StorageError::SnapshotExport(anyhow::anyhow!(
+                "the new-files snapshot trigger does not support partitions with more than one column family"
+            )));
+        }
 
         let (base_dir, files, whole_db_files, version, db_comparator_name) =
             if use_whole_db_checkpoint {
                 // Blob files belong to the whole database and cannot be exported per column
                 // family, so capture the partition's own database instead.
                 let path = export_dir(snapshot_base_path, snapshot_id);
+                let log_size_for_flush = if mode.is_new_files() { u64::MAX } else { 0 };
                 let checkpoint = self.db.rocksdb().prepare_create_checkpoint(
                     self.db.rocksdb().gate(),
                     path.clone(),
+                    log_size_for_flush,
                     Box::new(move || drop(capture)),
                 );
                 let (base_dir, entries) = async {
@@ -660,6 +697,25 @@ impl PartitionStore {
                 .await
                 .map_err(StorageError::SnapshotExport)?;
 
+                // The checkpoint may include WAL files when it is created without flushing. Normal
+                // partition writes don't use the WAL, and the seal is flushed when it is written,
+                // so the checkpoint never needs them. Delete them before the read-only open so it
+                // sees exactly the state that is uploaded, never a seal that only exists in the WAL.
+                let entries = if mode.is_new_files() {
+                    let mut kept = Vec::with_capacity(entries.len());
+                    for (name, size) in entries {
+                        if name.ends_with(".log") {
+                            tokio::fs::remove_file(base_dir.path().join(&name))
+                                .await
+                                .map_err(|err| StorageError::SnapshotExport(err.into()))?;
+                        } else {
+                            kept.push((name, size));
+                        }
+                    }
+                    kept
+                } else {
+                    entries
+                };
                 let (files, whole_db_files) = split_checkpoint_files(&base_dir, entries, self);
                 (
                     base_dir,
@@ -704,29 +760,168 @@ impl PartitionStore {
                 )
             };
 
+        let min_applied_lsn = if mode.is_new_files() {
+            let partition_id = self.partition_id();
+            let checkpoint_state = read_checkpoint_state(
+                base_dir.path().to_path_buf(),
+                partition_id,
+                self.db.partition().cf_name().to_string(),
+            )
+            .await?;
+            // A checkpoint without an applied-LSN key has never flushed. There is nothing to
+            // publish; dropping `base_dir` removes it.
+            let Some(checkpoint_applied_lsn) = checkpoint_state.applied_lsn else {
+                trace!(
+                    %partition_id,
+                    "Checkpoint has no persisted applied LSN yet, skipping snapshot round"
+                );
+                return Ok(None);
+            };
+
+            let property_applied_lsn =
+                checkpoint_applied_lsn_property(&files, base_dir.path(), partition_id).await?;
+            if property_applied_lsn != Some(checkpoint_applied_lsn) {
+                return Err(StorageError::SnapshotExport(anyhow::anyhow!(
+                    "checkpoint applied LSN {} does not match the max p:{} table property {:?}",
+                    checkpoint_applied_lsn,
+                    partition_id,
+                    property_applied_lsn,
+                )));
+            }
+
+            let live_has_seal = self
+                .get_seal_marker()
+                .await
+                .map_err(|err| StorageError::SnapshotExport(err.into()))?
+                .is_some();
+            if live_has_seal && !checkpoint_state.has_seal {
+                return Err(StorageError::SnapshotExport(anyhow::anyhow!(
+                    "partition has a seal marker but its checkpoint does not; retrying on the next round"
+                )));
+            }
+
+            // Publish the checkpoint's metadata, not the live store's newer values.
+            compatibility = checkpoint_state.compatibility;
+            position = checkpoint_state.position;
+
+            checkpoint_applied_lsn
+        } else {
+            live_applied_lsn.expect("checked above for non new-files exports")
+        };
+
         trace!(
             cf_name = %self.db.partition().cf_name(),
-            %applied_lsn,
+            %min_applied_lsn,
             ?compatibility,
             "Exported partition store snapshot to {:?}",
             base_dir.path()
         );
 
-        Ok(LocalPartitionSnapshot {
+        Ok(Some(LocalPartitionSnapshot {
             base_dir,
             version,
             files,
             whole_db_files,
             db_comparator_name,
             log_id: self.db.partition().log_id(),
-            min_applied_lsn: applied_lsn,
+            min_applied_lsn,
             key_range: self.db.partition().key_range,
             compatibility,
             byte_offsets_base_lsn: position.map(|p| p.byte_offsets_base_lsn),
             log_byte_offset: position.map(|p| p.log_byte_offset),
             partition_store_byte_offset: position.map(|p| p.partition_store_byte_offset),
-        })
+        }))
     }
+}
+
+struct CheckpointState {
+    applied_lsn: Option<Lsn>,
+    has_seal: bool,
+    position: Option<FsmPosition>,
+    compatibility: Option<SnapshotCompatibility>,
+}
+
+async fn read_checkpoint_state(
+    path: PathBuf,
+    partition_id: PartitionId,
+    cf_name: String,
+) -> Result<CheckpointState> {
+    tokio::task::spawn_blocking(move || {
+        let options = rocksdb::Options::default();
+        let cfs = rocksdb::DB::list_cf(&options, &path)?;
+        let db = rocksdb::DB::open_cf_for_read_only(&options, &path, &cfs, false)?;
+        let cf = db
+            .cf_handle(&cf_name)
+            .ok_or_else(|| anyhow::anyhow!("checkpoint has no column family '{cf_name}'"))?;
+        let applied_lsn = crate::fsm_table::read_applied_lsn_from_db(&db, &cf, partition_id)?;
+        let has_seal = crate::fsm_table::has_seal_marker_in_db(&db, &cf, partition_id)?;
+        // Metadata that cannot be read from the checkpoint is published as absent rather than
+        // taken from the live store, which may be ahead of the checkpoint.
+        let position = crate::fsm_table::read_fsm_position_from_db(&db, &cf, partition_id)
+            .ok()
+            .flatten();
+        let compatibility =
+            crate::fsm_table::read_checkpoint_compatibility_from_db(&db, &cf, partition_id)
+                .ok()
+                .map(|metadata| SnapshotCompatibility {
+                    min_restate_version: match metadata
+                        .storage_features
+                        .as_ref()
+                        .and_then(|features| features.get_required_min_version())
+                    {
+                        Some(required) => required.max(metadata.min_restate_version),
+                        None => metadata.min_restate_version,
+                    },
+                    storage_features: metadata
+                        .storage_features
+                        .map(|features| features.names().cloned().collect())
+                        .unwrap_or_default(),
+                    partition_features: metadata
+                        .partition_features
+                        .enabled_names()
+                        .map(ReString::from_static)
+                        .collect(),
+                });
+        anyhow::Ok(CheckpointState {
+            applied_lsn,
+            has_seal,
+            position,
+            compatibility,
+        })
+    })
+    .await
+    .map_err(|err| StorageError::SnapshotExport(anyhow::Error::new(err)))?
+    .map_err(StorageError::SnapshotExport)
+}
+
+async fn checkpoint_applied_lsn_property(
+    files: &[rocksdb::LiveFile],
+    base_dir: &Path,
+    partition_id: PartitionId,
+) -> Result<Option<Lsn>> {
+    let key = format!("p:{partition_id}");
+    let mut max = None;
+    for file in files {
+        let path = base_dir.join(file.name.trim_start_matches('/'));
+        let Some(value) =
+            crate::snapshots::sst_fingerprint::read_user_property(&path, key.as_bytes())
+                .await
+                .map_err(|err| StorageError::SnapshotExport(err.into()))?
+        else {
+            continue;
+        };
+        let value = std::str::from_utf8(&value)
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .ok_or_else(|| {
+                StorageError::SnapshotExport(anyhow::anyhow!(
+                    "invalid {key} table property in {}",
+                    path.display()
+                ))
+            })?;
+        max = Some(max.map_or_else(|| Lsn::new(value), |max: Lsn| max.max(Lsn::new(value))));
+    }
+    Ok(max)
 }
 
 /// Lists every file of a checkpoint directory, as paths relative to it and their sizes.
@@ -824,7 +1019,14 @@ impl PartitionStore {
     }
 
     pub async fn seal(&mut self, seal: &PartitionSeal) -> Result<()> {
-        seal_partition(self, seal).await
+        seal_partition(self, seal).await?;
+        // The seal is written through the WAL because it cannot be reconstructed from Bifrost.
+        // Flush it right away so that a later checkpoint, which hard links flushed SSTs only,
+        // contains it.
+        self.db
+            .flush_memtables(true)
+            .await
+            .map_err(|err| StorageError::Generic(err.into()))
     }
 
     /// Returns `true` if the one-time cleanup of orphaned `jc` index entries has not yet been
@@ -1858,17 +2060,24 @@ mod tests {
         let db = partition_store.partition_db().rocksdb().clone();
         let sequence_number = db.inner().as_raw_db().latest_sequence_number();
 
-        partition_store
-            .seal(&PartitionSeal::AheadOfLog {
-                partition_applied_lsn: Lsn::from(2),
-                log_tail_lsn: Lsn::from(1),
-            })
-            .await?;
+        let seal = PartitionSeal::AheadOfLog {
+            partition_applied_lsn: Lsn::from(2),
+            log_tail_lsn: Lsn::from(1),
+        };
+        // Seal through the same WAL write path that `PartitionStore::seal` uses, before its
+        // immediate flush removes the WAL entry.
+        crate::fsm_table::seal_partition(&mut partition_store, &seal).await?;
 
         let mut updates = db.inner().as_raw_db().get_updates_since(sequence_number)?;
         let (_, batch) = updates.next().transpose()?.expect("seal WAL entry");
         assert_eq!(batch.len(), 1);
         assert!(updates.next().is_none());
+        drop(updates);
+
+        // `PartitionStore::seal` flushes right after the write, so the seal is durable even when
+        // a later checkpoint only hard links flushed SSTs.
+        partition_store.partition_db().flush_memtables(true).await?;
+        assert!(partition_store.get_seal_marker().await?.is_some());
 
         Ok(())
     }

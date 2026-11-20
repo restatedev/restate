@@ -844,14 +844,17 @@ impl RocksDb {
     }
 
     /// Prepares creating a whole-database checkpoint in `path`, which RocksDB creates,
-    /// to submit to an executor of your choice. The checkpoint includes blob files and
-    /// the database-level files, and flushes the memtables.
+    /// to submit to an executor of your choice. The checkpoint includes blob files and the
+    /// database-level files. `log_size_for_flush` follows RocksDB's checkpoint API: `0` flushes
+    /// the memtables, while a very large value creates the checkpoint from what is already on
+    /// disk.
     ///
     /// The operation counts in `gate`, which must be inside this database.
     pub fn prepare_create_checkpoint<'a>(
         self: &'a Arc<Self>,
         gate: &'a Arc<Gate>,
         path: PathBuf,
+        log_size_for_flush: u64,
         keep_alive: Box<dyn FnOnce() + Send + 'static>,
     ) -> StorageOp<
         'a,
@@ -861,7 +864,7 @@ impl RocksDb {
         self.prepare_in(gate, StorageTaskKind::CreateCheckpoint, move |db| {
             // Hold `keep_alive` until the checkpoint finishes, even if the caller stops waiting.
             let _keep_alive = keep_alive;
-            db.run_in_span(|native| native.create_checkpoint(path))
+            db.run_in_span(|native| native.create_checkpoint(path, log_size_for_flush))
         })
     }
 

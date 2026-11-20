@@ -36,3 +36,28 @@ family.
 - **Tooling**: `restate-doctor` cannot yet inspect blob-enabled snapshots.
 - **Storage**: blob files may leave unreferenced data on disk until RocksDB garbage collection
   rewrites them. Snapshot pruning treats blob files like shared SST files.
+
+### Snapshot triggers from newly durable files
+
+Blob-enabled partitions can also snapshot less often and without the small flush that each
+snapshot used to cause. This is experimental:
+
+```toml
+[worker.snapshots]
+experimental-snapshot-trigger = "new-files"
+# Upload only once this much of the partition's data is not in the repository yet (default: 64 MiB).
+snapshot-min-new-bytes = "64 MiB"
+# Flush and snapshot a partition that has not persisted writes for this long (default: 6h).
+snapshot-max-unflushed-age = "6h"
+```
+
+With this trigger the node checkpoints each partition's database every five minutes (or the
+configured `snapshot-interval`) without flushing it, and uploads the checkpoint only when enough of
+its SST and blob files are new. In steady state this causes no snapshots and no extra flushes. A
+low-traffic partition that stays unflushed for longer than `snapshot-max-unflushed-age` is flushed
+and snapshotted once, so its state is captured even when no new files appear. Explicit snapshots
+requested with `restatectl` keep flushing and publishing as before. `snapshot-interval-num-records`
+is ignored by this trigger.
+
+This trigger requires `experimental-rocksdb-enable-blob-files` and
+`worker.use-multi-db-layout`; an invalid combination is rejected at startup.

@@ -552,6 +552,15 @@ impl Configuration {
             return Err(InvalidConfigurationError::BlobFilesRequireMultiDbLayout);
         }
 
+        if self.worker.snapshots.experimental_snapshot_trigger == SnapshotTrigger::NewFiles
+            && (!self.worker.storage.experimental_rocksdb_enable_blob_files
+                || !self.worker.use_multi_db_layout)
+        {
+            return Err(
+                InvalidConfigurationError::NewFilesTriggerRequiresBlobFilesAndMultiDbLayout,
+            );
+        }
+
         self.validate_advertised_addresses()
     }
 
@@ -732,6 +741,10 @@ pub enum InvalidConfigurationError {
         "experimental-rocksdb-enable-blob-files requires worker.use-multi-db-layout to be enabled"
     )]
     BlobFilesRequireMultiDbLayout,
+    #[error(
+        "experimental-snapshot-trigger = \"new-files\" requires experimental-rocksdb-enable-blob-files and worker.use-multi-db-layout to be enabled"
+    )]
+    NewFilesTriggerRequiresBlobFilesAndMultiDbLayout,
     #[error("invalid {key}: {reason}")]
     AdvertisedAddressList { key: &'static str, reason: String },
 }
@@ -1022,6 +1035,14 @@ mod tests {
 
         config.worker.use_multi_db_layout = true;
         assert!(config.validate().is_ok());
+
+        config.worker.snapshots.experimental_snapshot_trigger = SnapshotTrigger::NewFiles;
+        assert!(config.validate().is_ok());
+        config.worker.storage.experimental_rocksdb_enable_blob_files = false;
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            InvalidConfigurationError::NewFilesTriggerRequiresBlobFilesAndMultiDbLayout
+        ));
     }
 
     #[test]
