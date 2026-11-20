@@ -618,16 +618,22 @@ where
 
             // On by default from v1.9.0, including development and release-candidate builds, once
             // every worker runs it: until then, the cluster can still roll back to any v1.8.x.
-            let byte_offsets_by_default = SemanticRestateVersion::current()
+            let on_by_default_from_1_9 = SemanticRestateVersion::current()
                 .release_is_equal_or_newer_than(&RESTATE_VERSION_1_9_0)
                 && Metadata::with_current(|m| {
                     m.nodes_config_ref()
                         .all_workers_run_at_least(&RESTATE_VERSION_1_9_0)
                 });
-            if (byte_offsets_by_default || config.common.experimental.is_byte_offsets_enabled())
+            if (on_by_default_from_1_9 || config.common.experimental.is_byte_offsets_enabled())
                 && !processor.fsm().features().is_byte_offsets_enabled()
             {
                 feature_changes.push(PartitionFeatureChange::EnableByteOffsets);
+            }
+            if (on_by_default_from_1_9
+                || config.common.experimental.is_vq_lifecycle_refined_enabled())
+                && !processor.fsm().features().is_vq_lifecycle_refined_enabled()
+            {
+                feature_changes.push(PartitionFeatureChange::EnableVqLifecycleRefined);
             }
 
             if !feature_changes.is_empty() {
@@ -1319,6 +1325,7 @@ mod tests {
                 inconsistent_state_mutation_cleanup: true,
                 preflight_signal_recording: true,
                 byte_offsets: true,
+                vq_lifecycle_refined: true,
             },
         );
         let (leader_query_tx, _leader_query_rx) = restate_worker_api::channel();

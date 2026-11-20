@@ -353,7 +353,13 @@ async fn entry_index_follows_vqueue_operations() {
                 .await
                 .unwrap()
                 .unwrap()
-                .run_entry(at(2), &header, &target, WaitStats::default());
+                .run_entry(
+                    at(2),
+                    &header,
+                    &target,
+                    WaitStats::default(),
+                    Status::Started,
+                );
             tx.commit().await.unwrap();
             drop(tx);
             assert_eq!(index_keys(&store, scope), expected, "case {case}: ran");
