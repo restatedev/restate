@@ -917,6 +917,51 @@ async fn stage_and_status_keys_follow_each_entry() {
             by_transitioned(Stage::Running, Status::Started, 0, 1_100),
         ]
     );
+
+    // A lane's selection holds only its own stage and status, whatever the
+    // query selects, nothing included: read as one run per stage and status,
+    // each lane is one run of its own keys.
+    use crate::ordered_runs::{OrderedRunsDiscovery, OrderedRunsLimits};
+    use restate_storage_query_api::scan::{CursorStep, ReadDirection};
+
+    let (snapshot, _closed) = store.query_read(CancellationToken::new()).unwrap();
+    for (stage, status, expected) in [
+        (Stage::Running, Status::Started, 1),
+        (Stage::Finished, Status::Killed, 1),
+        (Stage::Suspended, Status::Started, 0),
+    ] {
+        let lane = EntryByStatusCreatedKey::prepare_lane(&Selection::All, stage, status).unwrap();
+        let OrderedRunsDiscovery::Ready(mut runs) = snapshot
+            .ordered_runs::<EntryByStatusCreated>(
+                std::sync::Arc::new(lane),
+                2,
+                ReadDirection::Forward,
+                OrderedRunsLimits {
+                    max_runs: 8,
+                    max_discovery_keys: 1_000,
+                    buffer: std::num::NonZeroUsize::new(4).unwrap(),
+                    step_budget: std::num::NonZeroUsize::new(64).unwrap(),
+                    bucket_fields: 0,
+                },
+                Box::new(()),
+            )
+            .unwrap()
+        else {
+            panic!("one lane is one run");
+        };
+        let mut read = Vec::new();
+        while runs.advance().unwrap() != CursorStep::Done {
+            if let Ok((key, _)) = runs.current() {
+                let key = key.decode_all().unwrap();
+                read.push((key.stage, key.status));
+            }
+        }
+        assert_eq!(
+            read,
+            vec![(stage, status); expected],
+            "{stage:?} {status:?}"
+        );
+    }
 }
 
 // `finished_entry_by_outcome/1` as it was accepted, before its key fields took
@@ -1061,4 +1106,97 @@ fn finished_keys_encode_as_before_their_fields_were_renamed() {
     }
     assert!(frozen.next().is_none());
     assert_eq!(compared, 10 * 2 * 3 * 2);
+}
+
+/// The status indexes' stages and statuses are listed in their codecs' byte
+/// order, every stage they hold and every status. An invocation query reads
+/// the lanes its entries can be in: completed ones are Finished in any stored
+/// status, failed ones in any but Succeeded, the others in any other stage.
+/// Conditions intersect, alternatives unite, ranges and unknown values don't
+/// widen past what they can match.
+#[test]
+fn invocation_conditions_select_the_lanes_their_entries_can_be_in() {
+    use restate_storage_query_api::tables::index::EntryByStatusCreatedClause::{
+        CompletionResult, Status as Public,
+    };
+    use restate_util_string::ReString;
+    use strum::VariantArray;
+
+    use crate::keys::FieldCodec;
+
+    let encoded = |encode: &dyn Fn(&mut Vec<u8>)| {
+        let mut bytes = Vec::new();
+        encode(&mut bytes);
+        bytes
+    };
+    let stages = KEYED_STAGES.map(|stage| encoded(&|b| StageRankCodec::encode_ref(&stage, b)));
+    assert!(stages.is_sorted_by(|a, b| a < b));
+    assert_eq!(
+        KEYED_STAGES.len(),
+        Stage::VARIANTS
+            .iter()
+            .filter(|stage| status_indexes_hold(**stage))
+            .count()
+    );
+    let statuses = KEYED_STATUSES.map(|status| encoded(&|b| StatusCodec::encode_ref(&status, b)));
+    assert!(statuses.is_sorted_by(|a, b| a < b));
+    assert_eq!(KEYED_STATUSES.len(), Status::VARIANTS.len());
+
+    let lanes = |selection: Selection<InvocationsByStatus>| {
+        EntryByStatusCreatedKey::lanes(&selection).collect::<Vec<_>>()
+    };
+    let public = |values: &[&str]| {
+        Public(ValuePredicate::In(
+            values.iter().copied().map(ReString::from).collect(),
+        ))
+    };
+    let result =
+        |value: Option<&str>| CompletionResult(ValuePredicate::Equal(value.map(ReString::from)));
+    let finished = |except: &[Status]| {
+        KEYED_STATUSES
+            .into_iter()
+            .filter(|status| !except.contains(status))
+            .map(|status| (Stage::Finished, status))
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(lanes(Selection::All).len(), 50);
+    assert!(lanes(Selection::Empty).is_empty());
+    assert_eq!(
+        lanes(Selection::All.and(public(&["completed"]))),
+        finished(&[])
+    );
+    let failed = finished(&[Status::Succeeded]);
+    assert_eq!(lanes(Selection::All.and(result(Some("failure")))), failed);
+    assert_eq!(
+        lanes(
+            Selection::All
+                .and(public(&["completed"]))
+                .and(result(Some("failure")))
+        ),
+        failed
+    );
+    let active = lanes(Selection::All.and(public(&["invoked", "suspended"])));
+    assert_eq!(active.len(), 40);
+    assert_eq!(active[0], (Stage::Inbox, Status::BackingOff));
+    assert!(active.iter().all(|(stage, _)| *stage != Stage::Finished));
+    assert_eq!(lanes(Selection::All.and(result(None))), active);
+    // Either: every lane of either.
+    assert_eq!(
+        lanes(Selection::All.and(public(&["completed", "paused"]))).len(),
+        50
+    );
+    // Contradictions and values no invocation has select nothing.
+    assert!(lanes(Selection::All.and(public(&["completed"])).and(result(None))).is_empty());
+    assert!(lanes(Selection::All.and(public(&["running"]))).is_empty());
+    assert!(lanes(Selection::All.and(result(Some("partial")))).is_empty());
+    // A range on the public status doesn't restrict it.
+    assert_eq!(
+        lanes(Selection::All.and(Public(ValuePredicate::Range {
+            lower: Bound::Included(ReString::from("a")),
+            upper: Bound::Unbounded,
+        })))
+        .len(),
+        50
+    );
 }
