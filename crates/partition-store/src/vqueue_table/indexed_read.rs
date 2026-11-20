@@ -42,6 +42,12 @@
 //! error, fails the read.
 //! Everything the read holds is charged to the caller's memory, and released
 //! as soon as it ends or fails.
+//!
+//! A status index's key holds everything some queries ask of an entry: its
+//! stage, status, the index's time and its incarnation. A keys-only read hands
+//! out the keys alone ([`EntryKeyRow`]), fetching no status, so its keys aren't
+//! checked against the statuses: a Complete index has exactly one key per
+//! entry of the stages it holds, maintained with the entry.
 
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
@@ -72,6 +78,7 @@ use crate::status_lanes::{Lanes, StatusLanes};
 use crate::table::PhysicalTable;
 use crate::{ReadSnapshot, Result};
 
+use super::read_cursor::EntryKeyRow;
 use super::{
     ActiveEntryByStage, ActiveEntryByStageKey, ENTRY_STATUS_MULTI_GET_BATCH_SIZE,
     EntryByStatusCreated, EntryByStatusCreatedKey, EntryByStatusTransitioned,
@@ -357,6 +364,8 @@ pub(super) struct IndexedCursor<I: EntryIndex> {
     /// Index keys examined that `fetched` has learned of.
     reported: u64,
     ended: Option<Ended>,
+    /// Whether the read hands out its keys alone, fetching no status.
+    keys_only: bool,
     /// Last: the runs and the fetched window are dropped before the snapshot.
     snapshot: Option<ReadSnapshot>,
 }
@@ -382,6 +391,7 @@ impl IndexedCursor<FinishedEntryByOutcome> {
             read.direction,
             execution,
             window,
+            false,
         )
     }
 }
@@ -399,16 +409,20 @@ impl IndexedCursor<ActiveEntryByStage> {
             read.direction,
             execution,
             window,
+            false,
         )
     }
 }
 
 impl IndexedCursor<EntryByStatusCreated> {
+    /// A read of the statuses the lanes' keys name or, `keys_only`, of the keys
+    /// alone ([`KeySteps`]).
     pub(super) fn status_created(
         snapshot: &ReadSnapshot,
         read: &StatusCreatedRead,
         execution: &EntryIndexExecution,
         window: NonZeroUsize,
+        keys_only: bool,
     ) -> Result<Option<Self>> {
         Self::open(
             snapshot,
@@ -416,16 +430,19 @@ impl IndexedCursor<EntryByStatusCreated> {
             read.direction,
             execution,
             window,
+            keys_only,
         )
     }
 }
 
 impl IndexedCursor<EntryByStatusTransitioned> {
+    /// As [`IndexedCursor::status_created`].
     pub(super) fn status_transitioned(
         snapshot: &ReadSnapshot,
         read: &StatusTransitionedRead,
         execution: &EntryIndexExecution,
         window: NonZeroUsize,
+        keys_only: bool,
     ) -> Result<Option<Self>> {
         Self::open(
             snapshot,
@@ -433,6 +450,7 @@ impl IndexedCursor<EntryByStatusTransitioned> {
             read.direction,
             execution,
             window,
+            keys_only,
         )
     }
 }
@@ -440,15 +458,21 @@ impl IndexedCursor<EntryByStatusTransitioned> {
 impl<I: EntryIndex> IndexedCursor<I> {
     /// The cursor, or `None` if the read scans instead. Nothing is held then.
     /// Either way, `execution` learns the path before this returns.
-    /// `window` bounds a window's references, at most [`WINDOW`].
+    /// `window` bounds a window's references, at most [`WINDOW`]; a keys-only
+    /// read holds one.
     fn open(
         snapshot: &ReadSnapshot,
         index: Opening<'_, I>,
         direction: ReadDirection,
         execution: &EntryIndexExecution,
         window: NonZeroUsize,
+        keys_only: bool,
     ) -> Result<Option<Self>> {
-        let window_size = window.get().min(WINDOW);
+        let window_size = if keys_only {
+            1
+        } else {
+            window.get().min(WINDOW)
+        };
         let Execution {
             memory,
             chosen,
@@ -490,6 +514,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
                 skipped,
                 reported: 0,
                 ended: None,
+                keys_only,
                 snapshot: Some(snapshot.clone()),
             }),
             Err((reason, examined)) => {
@@ -617,6 +642,25 @@ impl<I: EntryIndex> IndexedCursor<I> {
         };
         snapshot.check_active()?;
         self.current = None;
+        if self.keys_only {
+            // Each key is a row: there is no status to fetch.
+            if self.runs_done {
+                return Ok(CursorStep::Done);
+            }
+            return Ok(match runs.advance()? {
+                CursorStep::Done => {
+                    self.runs_done = true;
+                    CursorStep::Done
+                }
+                CursorStep::Skipped => CursorStep::Skipped,
+                CursorStep::Record => {
+                    self.window.clear();
+                    self.window.push(runs.reference()?);
+                    self.current = Some(0);
+                    CursorStep::Record
+                }
+            });
+        }
         if let Some(next) = self.next {
             if next < self.window.len() {
                 self.next = Some(next + 1);
@@ -707,6 +751,18 @@ impl<I: EntryIndex> IndexedCursor<I> {
             .map_err(|error| StorageError::Generic(error.into()))
     }
 
+    /// The key a keys-only read's step positioned on.
+    fn key(&self) -> Result<&Reference> {
+        self.snapshot
+            .as_ref()
+            .ok_or(StorageError::DataIntegrityError)?
+            .check_active()?;
+        let slot = self.current.ok_or(StorageError::DataIntegrityError)?;
+        self.window
+            .get(slot)
+            .ok_or(StorageError::DataIntegrityError)
+    }
+
     /// The entry status the step positioned on, with its base entry ID.
     pub(super) fn current(&self) -> Result<(BaseEntryId, &[u8])> {
         self.snapshot
@@ -716,6 +772,46 @@ impl<I: EntryIndex> IndexedCursor<I> {
         let slot = self.current.ok_or(StorageError::DataIntegrityError)?;
         let value = self.value(slot)?.ok_or(StorageError::DataIntegrityError)?;
         Ok((self.window[slot].id.to_base_entry_id(), value))
+    }
+}
+
+/// The steps of a keys-only read of a status index.
+pub(super) trait KeySteps: Send {
+    fn advance(&mut self) -> Result<CursorStep>;
+    fn current(&self) -> Result<EntryKeyRow>;
+}
+
+impl KeySteps for IndexedCursor<EntryByStatusCreated> {
+    fn advance(&mut self) -> Result<CursorStep> {
+        IndexedCursor::advance(self)
+    }
+
+    fn current(&self) -> Result<EntryKeyRow> {
+        let key = self.key()?;
+        Ok(EntryKeyRow {
+            id: key.id,
+            stage: key.stage,
+            status: key.status.ok_or(StorageError::DataIntegrityError)?,
+            created_at: Some(key.at),
+            transitioned_at: None,
+        })
+    }
+}
+
+impl KeySteps for IndexedCursor<EntryByStatusTransitioned> {
+    fn advance(&mut self) -> Result<CursorStep> {
+        IndexedCursor::advance(self)
+    }
+
+    fn current(&self) -> Result<EntryKeyRow> {
+        let key = self.key()?;
+        Ok(EntryKeyRow {
+            id: key.id,
+            stage: key.stage,
+            status: key.status.ok_or(StorageError::DataIntegrityError)?,
+            created_at: None,
+            transitioned_at: Some(key.at),
+        })
     }
 }
 
@@ -735,10 +831,12 @@ mod tests {
         EntryContext, EntryKey, EntryMetadata, EntryStateRef, RawStatusHeader, ReadVQueueTable,
         StoredEntryRef, WriteVQueueTable,
     };
+    use restate_storage_query_api::scan::CursorScan;
     use restate_storage_query_api::scan::ReadCursor;
     use restate_storage_query_api::selection::ValuePredicate;
     use restate_storage_query_api::tables::index::{
-        ActiveEntryByStageClause, FinishedEntryByOutcomeClause,
+        ActiveEntryByStageClause, EntryStatusByStatusTransitionedClause,
+        FinishedEntryByOutcomeClause,
     };
     use restate_types::config::Configuration;
     use restate_types::identifiers::PartitionId;
@@ -747,7 +845,7 @@ mod tests {
     use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, Seq, VQueueId};
 
     use crate::invocation_status_table::entry_index_read::counting::{Charge, Counting};
-    use crate::vqueue_table::{EntryStatusKeys, EntryStatusScan};
+    use crate::vqueue_table::{EntryKeyRecords, EntryKeyScan, EntryStatusKeys, EntryStatusScan};
     use crate::{PartitionStore, PartitionStoreManager};
 
     use super::*;
@@ -1516,5 +1614,283 @@ mod tests {
             (scanned.path, scanned.held, scanned.closed),
             (Some(EntryIndexPath::Scan(ScanReason::NotComplete)), 0, true)
         );
+    }
+
+    /// A keys-only read hands out each entry of the selection's lanes and
+    /// hours as its key holds it, in the index's order, invocations and state
+    /// mutations alike, each in its current incarnation, fetching no status.
+    /// Done or dropped part-way, it holds nothing and has reported the keys it
+    /// examined. Without a Complete index, it scans the statuses instead, with
+    /// both times.
+    #[restate_core::test]
+    async fn keys_only_reads_fetch_no_status() {
+        use restate_storage_api::vqueue_table::ReadVQueueTable;
+        use restate_storage_query_api::tables::index::EntryStatusByStatusCreatedClause;
+        use restate_types::vqueues::HandlerRef;
+
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        let mut tracked = manager
+            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+            .await
+            .unwrap();
+        let mut config = Configuration::default();
+        config.common.experimental.set_track_entry_indexes(true);
+        tracked
+            .verify_and_run_migrations(CancellationToken::new(), &config)
+            .await
+            .unwrap();
+        let mut plain = manager
+            .open(&Partition::new(PartitionId::from(1), KeyRange::FULL), None)
+            .await
+            .unwrap();
+
+        const BASE: u64 = 1_744_010_000_000;
+        const HOUR: u64 = 3_600_000;
+        let at = |ms| UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::new(ms));
+        let qid = VQueueId::custom(7, "q");
+        let kinds = [
+            (Stage::Finished, Status::Succeeded),
+            (Stage::Finished, Status::Killed),
+            (Stage::Running, Status::Started),
+        ];
+        // One entry an hour, each a stage and status in turn; every fourth a
+        // state mutation. (id, stage, status, created, transitioned, seq)
+        let mut entries: Vec<_> = (0..12u64)
+            .map(|n| {
+                let (stage, status) = kinds[(n % 3) as usize];
+                let kind = if n % 4 == 3 {
+                    EntryKind::StateMutation
+                } else {
+                    EntryKind::Invocation
+                };
+                let id = EntryId::new(kind, [n as u8 + 1; 16]);
+                (id, stage, status, at(BASE + n), at(BASE + n * HOUR + 7), 1)
+            })
+            .collect();
+        let context = |id: &EntryId| {
+            if id.kind() == EntryKind::StateMutation {
+                EntryTargetRef::VirtualObject {
+                    scope: None,
+                    service: "A",
+                    key: "k",
+                    handler: HandlerRef::StateMutation,
+                }
+            } else {
+                EntryTargetRef::Service {
+                    scope: None,
+                    service: "A",
+                    handler: "h",
+                }
+            }
+        };
+        type Entry = (
+            EntryId,
+            Stage,
+            Status,
+            UniqueTimestamp,
+            UniqueTimestamp,
+            u64,
+        );
+        let state = |&(id, _, _, created, transitioned, seq): &Entry| {
+            let key = EntryKey::new(false, created.to_unix_millis(), seq, id);
+            let mut stats = EntryStatistics::new(created, key.run_at());
+            stats.transitioned_at = transitioned;
+            (key, stats)
+        };
+        for store in [&mut tracked, &mut plain] {
+            let mut tx = store.transaction();
+            for entry in &entries {
+                let (key, stats) = state(entry);
+                tx.create_vqueue_entry_status(
+                    &EntryContext {
+                        qid: &qid,
+                        target: &context(&entry.0),
+                    },
+                    EntryStateRef {
+                        stage: entry.1,
+                        status: entry.2,
+                        entry_key: &key,
+                        metadata: &EntryMetadata::default(),
+                        stats: &stats,
+                    },
+                );
+            }
+            tx.commit().await.unwrap();
+        }
+        // A finished state mutation comes back as its second incarnation: its
+        // keys move with it.
+        let again = 7;
+        entries[again].5 = 2;
+        for store in [&mut tracked, &mut plain] {
+            let mut tx = store.transaction();
+            let base = entries[again].0.to_base_id(qid.partition_key());
+            let header = tx.get_vqueue_entry_status(&base).await.unwrap().unwrap();
+            let (key, stats) = state(&entries[again]);
+            tx.update_vqueue_entry_status(
+                &EntryContext {
+                    qid: &qid,
+                    target: &context(&entries[again].0),
+                },
+                StoredEntryRef::from_header(&header),
+                EntryStateRef {
+                    stage: entries[again].1,
+                    status: entries[again].2,
+                    entry_key: &key,
+                    metadata: &EntryMetadata::default(),
+                    stats: &stats,
+                },
+            );
+            tx.commit().await.unwrap();
+        }
+        assert_eq!(entries[again].0.kind(), EntryKind::StateMutation);
+        assert_eq!(entries[again].1, Stage::Finished);
+
+        // Finished entries: through the creation index, all of them, newest
+        // created first; through the transition index, those that transitioned
+        // in the last six hours, newest transitioned first.
+        let since = BASE + 6 * HOUR;
+        let finished = |stage: &Stage| *stage == Stage::Finished;
+        let by_created = Selection::All.and(EntryStatusByStatusCreatedClause::Stage(
+            ValuePredicate::Equal(Stage::Finished),
+        ));
+        let by_transitioned = Selection::All
+            .and(EntryStatusByStatusTransitionedClause::Stage(
+                ValuePredicate::Equal(Stage::Finished),
+            ))
+            .and(EntryStatusByStatusTransitionedClause::TransitionedAt(
+                ValuePredicate::Range {
+                    lower: std::ops::Bound::Included(MillisSinceEpoch::new(since)),
+                    upper: std::ops::Bound::Unbounded,
+                },
+            ));
+        let created = |execution| EntryKeyScan::StatusCreated {
+            read: Arc::new(
+                StatusCreatedRead::prepare(&by_created, ReadDirection::Forward).unwrap(),
+            ),
+            fallback: scan_all(),
+            execution,
+        };
+        let transitioned = |execution| EntryKeyScan::StatusTransitioned {
+            read: Arc::new(
+                StatusTransitionedRead::prepare(&by_transitioned, ReadDirection::Forward).unwrap(),
+            ),
+            fallback: scan_all(),
+            execution,
+        };
+        // The rows read, up to `stop`, the path, what was reported and what
+        // the read holds once dropped.
+        let read = |store: &PartitionStore,
+                    scan: &dyn Fn(Arc<EntryIndexExecution>) -> EntryKeyScan,
+                    stop: Option<usize>| {
+            let memory = Counting::default();
+            let (chosen, path) = std::sync::mpsc::channel();
+            let reported = Arc::new(Mutex::new((0, 0)));
+            let execution = EntryIndexExecution::new(
+                Box::new(memory.clone()),
+                move |taken| {
+                    let _ = chosen.send(taken);
+                },
+                {
+                    let reported = Arc::clone(&reported);
+                    move |statuses, keys| {
+                        let mut reported = reported.lock().unwrap();
+                        reported.0 += statuses;
+                        reported.1 += keys;
+                    }
+                },
+            );
+            let (snapshot, _closed) = store.query_read(CancellationToken::new()).unwrap();
+            let mut cursor = <ReadSnapshot as CursorScan<EntryKeyRecords>>::scan_cursor(
+                &snapshot,
+                Arc::new(scan(Arc::new(execution))),
+            )
+            .unwrap();
+            let mut rows = Vec::new();
+            while stop.is_none_or(|stop| rows.len() < stop) {
+                match cursor.advance().unwrap() {
+                    CursorStep::Record => rows.push(cursor.current().unwrap()),
+                    CursorStep::Skipped => {}
+                    CursorStep::Done => break,
+                }
+            }
+            drop(cursor);
+            let reported = *reported.lock().unwrap();
+            (rows, path.try_recv().ok(), reported, memory.now())
+        };
+        let row = |&(id, stage, status, created, transitioned, seq): &Entry, by_created: bool| {
+            EntryKeyRow {
+                id: id
+                    .to_base_id(qid.partition_key())
+                    .canonicalize(Seq::new(seq)),
+                stage,
+                status,
+                created_at: by_created.then_some(created),
+                transitioned_at: (!by_created).then_some(transitioned),
+            }
+        };
+
+        let (rows, path, (statuses, keys), held) = read(&tracked, &created, None);
+        let expected: Vec<_> = entries
+            .iter()
+            .rev()
+            .filter(|entry| finished(&entry.1))
+            .map(|entry| row(entry, true))
+            .collect();
+        assert_eq!(rows, expected);
+        assert!(
+            matches!(path, Some(EntryIndexPath::Index { .. })),
+            "{path:?}"
+        );
+        // Keys only, discovery's included: no status.
+        assert!(
+            statuses == 0 && keys > 0 && held == 0,
+            "{statuses} {keys} {held}"
+        );
+
+        let (rows, path, (statuses, keys), held) = read(&tracked, &transitioned, None);
+        let expected: Vec<_> = entries
+            .iter()
+            .rev()
+            .filter(|entry| finished(&entry.1) && entry.4.to_unix_millis().as_u64() >= since)
+            .map(|entry| row(entry, false))
+            .collect();
+        assert_eq!(rows, expected);
+        assert!(expected.contains(&row(&entries[again], false)));
+        assert!(
+            matches!(path, Some(EntryIndexPath::Index { runs: 2 })),
+            "{path:?}"
+        );
+        assert!(
+            statuses == 0 && keys > 0 && held == 0,
+            "{statuses} {keys} {held}"
+        );
+
+        // Dropped after its first row, as past a LIMIT.
+        let (rows, _, (statuses, keys), held) = read(&tracked, &transitioned, Some(1));
+        assert_eq!(rows, expected[..1]);
+        assert!(
+            statuses == 0 && keys > 0 && held == 0,
+            "{statuses} {keys} {held}"
+        );
+
+        let (rows, path, (statuses, _), held) = read(&plain, &transitioned, None);
+        assert_eq!(path, Some(EntryIndexPath::Scan(ScanReason::NotComplete)));
+        assert_eq!((rows.len(), statuses, held), (entries.len(), 0, 0));
+        assert!(rows.iter().all(|row| {
+            entries
+                .iter()
+                .any(|&(id, stage, status, created, transitioned, seq)| {
+                    *row == EntryKeyRow {
+                        id: id
+                            .to_base_id(qid.partition_key())
+                            .canonicalize(Seq::new(seq)),
+                        stage,
+                        status,
+                        created_at: Some(created),
+                        transitioned_at: Some(transitioned),
+                    }
+                })
+        }));
     }
 }

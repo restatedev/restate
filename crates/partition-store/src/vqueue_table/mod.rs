@@ -51,7 +51,10 @@ pub use input::InputPayloadKey;
 pub use meta_binding::{VQueueMetaBinding, VQueueMetaTable};
 pub use meta_cursor::{VQueueMetaCursor, VQueueMetaRecords};
 pub use metadata::*;
-pub use read_cursor::{EntryStatusCursor, EntryStatusKeys, EntryStatusRecords, EntryStatusScan};
+pub use read_cursor::{
+    EntryKeyCursor, EntryKeyRecords, EntryKeyRow, EntryKeyScan, EntryStatusCursor, EntryStatusKeys,
+    EntryStatusRecords, EntryStatusScan,
+};
 pub use stage_index::{
     FinishedIndexBinding, FinishedIndexTable, InboxIndexBinding, InboxIndexTable,
     PausedIndexBinding, PausedIndexTable, RunningIndexBinding, RunningIndexTable,

@@ -16,7 +16,9 @@ impl crate::sharding::PartitionSource for SysVqueueEntryStatusTable {
     const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> = Some(super::read::select_primary);
     // The first that fits: a few queues read the stage tables; finished
     // entries newest finished first, or active ones newest created first, read
-    // their index; a few active stages otherwise read the stage tables.
+    // their index; entries of some stages and statuses read a status index, in
+    // its order or, for a query its keys hold and bound in time, its keys
+    // alone; a few stages otherwise read the stage tables.
     const INDEXES: &'static [crate::access::IndexAccess<Self::Schema>] = &[
         crate::access::IndexAccess::of::<super::read::QueueIndex>(),
         crate::access::IndexAccess::of::<super::read::FinishedIndex>(),

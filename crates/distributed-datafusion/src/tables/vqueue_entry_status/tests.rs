@@ -687,54 +687,62 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
         (Stage::Running, Status::Started),
         (Stage::Inbox, Status::New),
     ];
-    let mut tx = store.transaction();
-    for n in 0..140u64 {
-        let (stage, status) = statuses[(n % 7) as usize];
-        let created = UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::new(BASE + n));
-        // Pairs share their transition time: ties for the LIMIT to split.
-        let transitioned = UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::new(
-            BASE + 10_000 + (n / 2) * 10,
-        ));
-        let kind = if n % 5 == 0 {
-            EntryKind::StateMutation
-        } else {
-            EntryKind::Invocation
-        };
-        let key = EntryKey::new(
-            false,
-            created.to_unix_millis(),
-            n + 1,
-            EntryId::new(kind, [n as u8; 16]),
-        );
-        let mut stats = EntryStatistics::new(created, key.run_at());
-        stats.transitioned_at = transitioned;
-        let service = ["Utils", "Promises", "Counter"][(n % 3) as usize];
-        let handler = if kind == EntryKind::StateMutation {
-            HandlerRef::StateMutation
-        } else {
-            HandlerRef::UserHandler(["call", "run"][(n % 2) as usize])
-        };
-        tx.create_vqueue_entry_status(
-            &EntryContext {
-                qid: &qid,
-                target: &EntryTargetRef::VirtualObject {
-                    scope: None,
-                    service,
-                    key: "k",
-                    handler,
+    // The same entries in a partition that doesn't maintain the indexes.
+    let mut unready = manager
+        .open(&Partition::new(PartitionId::from(1), KeyRange::FULL), None)
+        .await
+        .unwrap();
+    for store in [&mut store, &mut unready] {
+        let mut tx = store.transaction();
+        for n in 0..140u64 {
+            let (stage, status) = statuses[(n % 7) as usize];
+            let created =
+                UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::new(BASE + n));
+            // Pairs share their transition time: ties for the LIMIT to split.
+            let transitioned = UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::new(
+                BASE + 10_000 + (n / 2) * 10,
+            ));
+            let kind = if n % 5 == 0 {
+                EntryKind::StateMutation
+            } else {
+                EntryKind::Invocation
+            };
+            let key = EntryKey::new(
+                false,
+                created.to_unix_millis(),
+                n + 1,
+                EntryId::new(kind, [n as u8; 16]),
+            );
+            let mut stats = EntryStatistics::new(created, key.run_at());
+            stats.transitioned_at = transitioned;
+            let service = ["Utils", "Promises", "Counter"][(n % 3) as usize];
+            let handler = if kind == EntryKind::StateMutation {
+                HandlerRef::StateMutation
+            } else {
+                HandlerRef::UserHandler(["call", "run"][(n % 2) as usize])
+            };
+            tx.create_vqueue_entry_status(
+                &EntryContext {
+                    qid: &qid,
+                    target: &EntryTargetRef::VirtualObject {
+                        scope: None,
+                        service,
+                        key: "k",
+                        handler,
+                    },
                 },
-            },
-            EntryStateRef {
-                stage,
-                status,
-                entry_key: &key,
-                metadata: &EntryMetadata::default(),
-                stats: &stats,
-            },
-        );
+                EntryStateRef {
+                    stage,
+                    status,
+                    entry_key: &key,
+                    metadata: &EntryMetadata::default(),
+                    stats: &stats,
+                },
+            );
+        }
+        tx.commit().await.unwrap();
+        drop(tx);
     }
-    tx.commit().await.unwrap();
-    drop(tx);
 
     let session = crate::mocks::v2_session(
         &manager,
@@ -924,6 +932,91 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
     assert_eq!(page.len(), 3.min(all.len()));
     assert!(page.len() > 1 && page.iter().all(|row| all.contains(row)));
     assert_eq!(page.iter().collect::<HashSet<_>>().len(), page.len());
+    // Queries that need only a status index's key columns read its keys alone,
+    // fetching no status: the UI's page, in creation order, and a count of
+    // finished entries by status since a transition time, in no order. Without
+    // a time bound, such a count reads the stage tables as before; a column
+    // the keys don't hold, the queue, fetches the statuses.
+    let fetches_nothing = |analyzed: &str| {
+        analyzed.contains("entry_index_reads=1") && analyzed.contains("entry_index_statuses=0")
+    };
+    let analyzed = plan(ui, true).await;
+    assert!(fetches_nothing(&analyzed), "{analyzed}");
+    let count = format!(
+        "SELECT status, COUNT(1) AS count FROM sys_vqueues WHERE stage = 'finished' \
+         AND transitioned_at >= to_timestamp_millis({}) GROUP BY status ORDER BY status",
+        BASE + 10_300
+    );
+    let explained = plan(&count, false).await;
+    assert!(
+        explained.contains("index=_idx_entry_status_by_status_transitioned"),
+        "{explained}"
+    );
+    let counted = rows(&count).await;
+    assert!(counted.len() > 1, "{counted:?}");
+    let count_scanned = count.replacen(
+        "FROM sys_vqueues",
+        "FROM (SELECT * FROM sys_vqueues LIMIT 1000000) AS sys_vqueues",
+        1,
+    );
+    assert_eq!(counted, rows(&count_scanned).await);
+    let analyzed = plan(&count, true).await;
+    assert!(fetches_nothing(&analyzed), "{analyzed}");
+    // A column the keys don't hold only in a condition: the count fetches the
+    // statuses. (Neither do the stage tables hold it.)
+    let conditioned = count
+        .replace("FROM sys_vqueues", "FROM sys_vqueue_entry_status")
+        .replace("GROUP BY", "AND needed_memory IS NULL GROUP BY");
+    let explained = plan(&conditioned, false).await;
+    assert!(
+        !explained.contains("_idx_entry_status") && !explained.contains("_idx_entry_by_queue"),
+        "{explained}"
+    );
+    assert_eq!(rows(&conditioned).await, counted);
+    // Where the index isn't Complete, the count scans the entry statuses
+    // instead, with the same counts.
+    let unready = crate::mocks::v2_session(
+        &manager,
+        vec![(
+            PartitionId::from(1),
+            Partition::new(PartitionId::from(1), KeyRange::FULL),
+        )],
+        2,
+    )
+    .await;
+    let unready = async |sql: &str| crate::mocks::rows(unready.as_ref(), sql).await;
+    assert_eq!(unready(&count).await, counted);
+    let analyzed = unready(&format!("EXPLAIN ANALYZE {count}"))
+        .await
+        .concat()
+        .join("\n");
+    assert!(
+        analyzed.contains("index=_idx_entry_status_by_status_transitioned")
+            && analyzed.contains("entry_index_scans_not_complete=1"),
+        "{analyzed}"
+    );
+    // Without a time bound, or until a time only, which leaves most of the
+    // history, such a read keeps the stage tables: a count, and a page with a
+    // tie-breaker, which asks for no order the index has.
+    let unbounded =
+        "SELECT status, COUNT(1) FROM sys_vqueues WHERE stage = 'finished' GROUP BY status";
+    let until = format!(
+        "SELECT entry_id, created_at FROM sys_vqueue_entry_status WHERE stage = 'finished' \
+         AND created_at <= to_timestamp_millis({}) ORDER BY created_at, entry_id LIMIT 9",
+        BASE + 100
+    );
+    for sql in [unbounded, until.as_str()] {
+        let explained = plan(sql, false).await;
+        assert!(!explained.contains("_idx_entry_status"), "{explained}");
+    }
+    let fetched = by_created.replace("entry_id, status", "entry_id, vqueue_id, status");
+    assert_eq!(rows(&fetched).await, scanned(&fetched).await, "{fetched}");
+    let analyzed = plan(&fetched, true).await;
+    assert!(
+        analyzed.contains("index=_idx_entry_status_by_status_created")
+            && !analyzed.contains("entry_index_statuses=0"),
+        "{analyzed}"
+    );
     // The read went through the index, merging its runs, and fetched only
     // Finished statuses.
     let analyzed = plan(&indexed[0], true).await;
