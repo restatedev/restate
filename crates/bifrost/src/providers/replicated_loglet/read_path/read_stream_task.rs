@@ -18,6 +18,7 @@ use tracing::{info, trace};
 
 use restate_core::network::{NetworkSender, Networking, RpcError, Swimlane, TransportConnect};
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskHandle, TaskKind, my_node_id};
+use restate_memory::{MemoryLease, MemoryPool};
 use restate_types::config::{Configuration, ReplicatedLogletOptions};
 use restate_types::logs::{
     KeyFilter, LogletOffset, MatchKeyQuery, RecordCache, SequenceNumber, TailOffsetWatch,
@@ -39,6 +40,10 @@ use crate::providers::replicated_loglet::tasks::GetTrimPointTask;
 #[derive(Debug, thiserror::Error)]
 #[error("Impossible to read from nodeset {0:?}, all nodes are disabled")]
 struct ImpossibleNodeSetError(NodeSet);
+
+/// A record or gap read ahead for the consumer, with the read-ahead memory it holds until the
+/// consumer takes it.
+pub(crate) type ReadAheadEntry = (LogEntry<LogletOffset>, MemoryLease);
 
 struct Stats {
     cache_filtered: Counter,
@@ -72,7 +77,10 @@ pub struct ReadStreamTask {
     /// *Inclusive*
     /// This must be set if `move_beyond_global_tail` is true.
     read_to: Option<LogletOffset>,
-    tx: mpsc::Sender<Result<LogEntry<LogletOffset>, OperationError>>,
+    tx: mpsc::Sender<Result<ReadAheadEntry, OperationError>>,
+    /// Memory of the records in `tx` that the consumer has not taken yet, and of the batch being
+    /// read.
+    readahead_memory: MemoryPool,
     record_cache: RecordCache,
     stats: Stats,
     /// If set to true, we won't wait for the global tail to be updated before requesting the next
@@ -93,7 +101,7 @@ impl ReadStreamTask {
         move_beyond_global_tail: bool,
     ) -> Result<
         (
-            mpsc::Receiver<Result<LogEntry<LogletOffset>, OperationError>>,
+            mpsc::Receiver<Result<ReadAheadEntry, OperationError>>,
             TaskHandle<Result<(), OperationError>>,
         ),
         OperationError,
@@ -101,13 +109,15 @@ impl ReadStreamTask {
         if move_beyond_global_tail && read_to.is_none() {
             panic!("read_to must be set if move_beyond_global_tail=true");
         }
-        let (tx, rx) = mpsc::channel(
-            Configuration::pinned()
-                .bifrost
-                .replicated_loglet
-                .readahead_records
-                .get() as usize,
-        );
+        // Read ahead up to `readahead_records` records or `readahead_bytes` bytes, whichever
+        // limit is reached first.
+        let ((tx, rx), readahead_memory) = {
+            let options = &Configuration::pinned().bifrost.replicated_loglet;
+            (
+                mpsc::channel(options.readahead_records.get() as usize),
+                MemoryPool::with_capacity(options.readahead_bytes),
+            )
+        };
         // Reading from INVALID resets to OLDEST.
         let from_offset = from_offset.max(LogletOffset::OLDEST);
 
@@ -119,6 +129,7 @@ impl ReadStreamTask {
             global_tail_watch: known_global_tail,
             last_known_tail: LogletOffset::OLDEST,
             tx,
+            readahead_memory,
             record_cache,
             stats: Stats::default(),
             move_beyond_global_tail,
@@ -210,10 +221,9 @@ impl ReadStreamTask {
             // Note 1: In loglet implementations, it's safe to return records even if loglet is sealed
             // as long as we only return records before the global tail.
             //
-            // Note 2: We have capacity-management impedance mismatch. We size channels by the number of
-            // records, but we use number of bytes (memory) to limit our total memory consumption.
-            // This can be improved in the future by using a semaphore representing the memory
-            // budget and unbounded channel instead.
+            // Note 2: Read-ahead is limited twice: by the number of records (the channel size) and
+            // by their memory (`readahead_memory`). Each record shipped holds its memory until the
+            // consumer takes it.
             //
             //
             // The server we read from will return up to its local tail if we are reading beyond
@@ -281,6 +291,10 @@ impl ReadStreamTask {
                 .await
                 .map_err(OperationError::terminal)?;
 
+            // Read-ahead memory of this batch. Shipped records take their size out of it, and the
+            // consumer returns that memory when it takes them.
+            let mut batch_memory = self.readahead_memory.empty_lease();
+
             // check for trim point
             if trim_point.is_some_and(|trim_point| self.read_pointer <= trim_point) {
                 let trim_point = trim_point.unwrap();
@@ -292,7 +306,10 @@ impl ReadStreamTask {
                     self.read_pointer,
                     trim_point,
                 );
-                permit.send(Ok(LogEntry::new_trim_gap(self.read_pointer, trim_point)));
+                permit.send(Ok((
+                    LogEntry::new_trim_gap(self.read_pointer, trim_point),
+                    self.readahead_memory.empty_lease(),
+                )));
                 // fast-forward
                 self.read_pointer = trim_point.next();
                 continue 'main;
@@ -344,10 +361,20 @@ impl ReadStreamTask {
             let mut mutable_effective_nodeset = effective_nodeset.shuffle_for_reads(my_node);
 
             'attempt_from_servers: loop {
-                // Read from _somewhere_ until we reach the tail, target, or the available permits.
+                let batch_bytes = configuration
+                    .live_load()
+                    .bifrost
+                    .replicated_loglet
+                    .read_batch_size
+                    .as_usize()
+                    .min(self.readahead_memory.capacity().as_usize());
+                top_up(&mut batch_memory, batch_bytes).await;
+
+                // Read from _somewhere_ until we reach the tail, target, the available permits or
+                // the batch's read-ahead memory.
                 // Start by reading from record cache as much as we can
                 'attempt_from_cache: loop {
-                    match self.send_next_from_cache(&mut permits) {
+                    match self.send_next_from_cache(&mut permits, &mut batch_memory) {
                         // fast-forward
                         CacheReadResult::Sent => {
                             self.read_pointer = self.read_pointer.next();
@@ -363,6 +390,10 @@ impl ReadStreamTask {
                         }
                     }
                 }
+
+                // Records shipped from cache used part of the batch's memory. Top it up again so
+                // the log-server request asks for a full batch, not for what the cache left over.
+                top_up(&mut batch_memory, batch_bytes).await;
 
                 let to_offset = self.calculate_read_ahead_to_offset(permits.len());
                 // If we (my node) are in the nodeset, we'll be the first to try
@@ -385,6 +416,7 @@ impl ReadStreamTask {
                     .readahead_from_server(
                         server,
                         to_offset,
+                        batch_memory.size().as_usize(),
                         &networking,
                         &configuration.live_load().bifrost.replicated_loglet,
                     )
@@ -415,7 +447,10 @@ impl ReadStreamTask {
                                     server,
                                     gap.to
                                 );
-                                permit.send(Ok(LogEntry::new_trim_gap(self.read_pointer, gap.to)));
+                                permit.send(Ok((
+                                    LogEntry::new_trim_gap(self.read_pointer, gap.to),
+                                    self.readahead_memory.empty_lease(),
+                                )));
                                 // fast-forward
                                 self.read_pointer = gap.to.next();
                             }
@@ -440,9 +475,9 @@ impl ReadStreamTask {
                                     server,
                                     gap_to
                                 );
-                                permit.send(Ok(LogEntry::new_filtered_gap(
-                                    self.read_pointer,
-                                    gap_to,
+                                permit.send(Ok((
+                                    LogEntry::new_filtered_gap(self.read_pointer, gap_to),
+                                    self.readahead_memory.empty_lease(),
                                 )));
                                 self.read_pointer = gap_to.next();
                             }
@@ -458,7 +493,12 @@ impl ReadStreamTask {
                                 // read the same records that we shipped. If this assumption
                                 // changes in the future, we can cache at this point.
                                 self.stats.records_read.increment(1);
-                                permit.send(Ok(LogEntry::new_data(self.read_pointer, record)));
+                                let memory =
+                                    take_memory(&mut batch_memory, record.estimated_encode_size());
+                                permit.send(Ok((
+                                    LogEntry::new_data(self.read_pointer, record),
+                                    memory,
+                                )));
                                 self.read_pointer = self.read_pointer.next();
                             }
                         }
@@ -509,14 +549,14 @@ impl ReadStreamTask {
             .is_some_and(|read_to| self.read_pointer > read_to)
     }
 
-    /// Only consumes a permit iff a record is found in cache
-    ///
-    /// Panics if permits is empty
+    /// Only consumes a permit iff a record is found in cache. A data record takes its size out of
+    /// `batch_memory`.
     fn send_next_from_cache(
         &self,
-        permits: &mut mpsc::PermitIterator<Result<LogEntry<LogletOffset>, OperationError>>,
+        permits: &mut mpsc::PermitIterator<Result<ReadAheadEntry, OperationError>>,
+        batch_memory: &mut MemoryLease,
     ) -> CacheReadResult {
-        if !self.can_advance() || permits.len() == 0 {
+        if !self.can_advance() || permits.len() == 0 || batch_memory.is_empty() {
             return CacheReadResult::Stop;
         }
 
@@ -532,9 +572,9 @@ impl ReadStreamTask {
                     "Shipping a filtered gap from record cache at offset {}",
                     self.read_pointer,
                 );
-                permit.send(Ok(LogEntry::new_filtered_gap(
-                    self.read_pointer,
-                    self.read_pointer,
+                permit.send(Ok((
+                    LogEntry::new_filtered_gap(self.read_pointer, self.read_pointer),
+                    self.readahead_memory.empty_lease(),
                 )));
                 self.stats.cache_hits.increment(1);
                 self.stats.cache_filtered.increment(1);
@@ -554,7 +594,8 @@ impl ReadStreamTask {
                     .invalidate_record(self.my_params.loglet_id, self.read_pointer);
                 self.stats.cache_hits.increment(1);
                 self.stats.records_read.increment(1);
-                permit.send(Ok(LogEntry::new_data(self.read_pointer, record)));
+                let memory = take_memory(batch_memory, record.estimated_encode_size());
+                permit.send(Ok((LogEntry::new_data(self.read_pointer, record), memory)));
                 CacheReadResult::Sent
             }
         } else {
@@ -566,6 +607,7 @@ impl ReadStreamTask {
         &self,
         server: PlainNodeId,
         to_offset: LogletOffset,
+        limit_in_bytes: usize,
         networking: &Networking<T>,
         options: &ReplicatedLogletOptions,
     ) -> Result<ServerReadResult, OperationError> {
@@ -574,7 +616,7 @@ impl ReadStreamTask {
                 self.my_params.loglet_id,
                 self.global_tail_watch.latest_offset(),
             ),
-            total_limit_in_bytes: Some(options.read_batch_size.as_usize()),
+            total_limit_in_bytes: Some(limit_in_bytes),
             filter: self.filter.clone(),
             from_offset: self.read_pointer,
             to_offset,
@@ -644,6 +686,28 @@ impl ReadStreamTask {
             }
         }
     }
+}
+
+/// Tops `batch_memory` up to `batch_bytes`. Waits until the consumer has taken enough of the
+/// records read ahead so far.
+async fn top_up(batch_memory: &mut MemoryLease, batch_bytes: usize) {
+    let missing = batch_bytes.saturating_sub(batch_memory.size().as_usize());
+    if missing > 0 {
+        let more = batch_memory.budget().reserve(missing).await;
+        batch_memory.merge(more);
+    }
+}
+
+/// Takes `size` bytes out of `batch_memory` for one record. If the batch has less left, the record
+/// takes the rest from the pool, which then exceeds its capacity by at most this record until the
+/// consumer takes it.
+fn take_memory(batch_memory: &mut MemoryLease, size: usize) -> MemoryLease {
+    let mut memory = batch_memory.split(size.min(batch_memory.size().as_usize()));
+    let missing = size - memory.size().as_usize();
+    if missing > 0 {
+        memory.merge(batch_memory.budget().force_reserve(missing));
+    }
+    memory
 }
 
 enum CacheReadResult {

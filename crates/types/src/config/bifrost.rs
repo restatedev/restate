@@ -374,12 +374,28 @@ pub struct ReplicatedLogletOptions {
     /// The number of records bifrost will attempt to prefetch from replicated loglet's log-servers
     /// for every loglet reader (e.g. partition processor). Note that this mainly impacts readers
     /// that are not co-located with the loglet sequencer (i.e. partition processor followers).
+    ///
+    /// A reader also stops prefetching when its prefetched records reach `readahead-bytes`,
+    /// whichever limit is reached first.
     pub readahead_records: NonZeroU16,
+
+    /// # Read-ahead memory per reader
+    ///
+    /// The memory every loglet reader (e.g. partition processor) may use for records it has
+    /// prefetched and not handed to its consumer yet. A reader prefetches until it holds
+    /// `readahead-records` records or this many bytes, whichever limit is reached first.
+    ///
+    /// The limit can be exceeded by one record, so that a record larger than the limit can still
+    /// be read.
+    ///
+    /// Since v1.8.2
+    pub readahead_bytes: NonZeroByteCount,
 
     /// # Limits memory per remote batch read
     ///
     /// When reading from a log-server, the server stops reading if the next record will tip over the
-    /// total number of bytes allowed in this configuration option.
+    /// total number of bytes allowed in this configuration option. A reader also limits each read to
+    /// the free part of its read-ahead memory (`readahead-bytes`).
     ///
     /// Note the limit is not strict and the server will always allow at least a single record to be
     /// read even if that record exceeds the stated budget.
@@ -441,11 +457,14 @@ impl Default for ReplicatedLogletOptions {
             },
             sequencer_inactivity_timeout: NonZeroFriendlyDuration::from_secs_unchecked(15),
             read_batch_size: NonZeroByteCount::new(
-                NonZeroUsize::new(32 * 1024).expect("Non zero number"),
+                NonZeroUsize::new(128 * 1024).expect("Non zero number"),
             ),
             log_server_rpc_timeout: None,
             log_server_retry_policy: None,
-            readahead_records: NonZeroU16::new(20).unwrap(),
+            readahead_records: NonZeroU16::new(512).unwrap(),
+            readahead_bytes: NonZeroByteCount::new(
+                NonZeroUsize::new(1024 * 1024).expect("Non zero number"),
+            ),
             readahead_trigger_ratio: 0.5,
             default_nodeset_size: NodeSetSize::default(),
         }
