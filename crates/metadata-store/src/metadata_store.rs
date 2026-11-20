@@ -290,7 +290,7 @@ impl MetadataStoreClient {
 
     /// Gets the value and its current version for the given key. If key-value pair is not present,
     /// then return [`None`].
-    pub async fn get<T: Versioned + StorageDecode>(
+    pub async fn get<T: Versioned + StorageDecode + Send + 'static>(
         &self,
         key: ByteString,
     ) -> Result<Option<T>, ReadError> {
@@ -298,15 +298,20 @@ impl MetadataStoreClient {
         let result = {
             let value = self.inner.get(key).await?;
 
-            if let Some(mut versioned_value) = value {
-                let value = StorageCodec::decode::<T, _>(&mut versioned_value.value)
-                    .map_err(|err| ReadError::Codec(err.into()))?;
+            if let Some(VersionedValue { version, mut value }) = value {
+                // Large values like the schema take long enough to decode that they would stall
+                // the async runtime, so decode on the blocking thread pool.
+                let value = match tokio::task::spawn_blocking(move || {
+                    StorageCodec::decode::<T, _>(&mut value)
+                })
+                .await
+                {
+                    Ok(result) => result.map_err(|err| ReadError::Codec(err.into()))?,
+                    Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+                    Err(err) => return Err(ReadError::terminal(err)),
+                };
 
-                assert_eq!(
-                    versioned_value.version,
-                    value.version(),
-                    "versions must align"
-                );
+                assert_eq!(version, value.version(), "versions must align");
 
                 Ok(Some(value))
             } else {

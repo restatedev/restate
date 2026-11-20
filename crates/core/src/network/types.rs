@@ -149,6 +149,27 @@ impl<O: RpcResponse> ReplyRx<O> {
     }
 }
 
+impl<O: RpcResponse + Send + 'static> ReplyRx<O> {
+    /// Waits for the reply like awaiting [`ReplyRx`], but decodes it on the blocking thread pool.
+    /// Use it for replies that take long enough to decode to stall the async runtime.
+    pub async fn recv_decode_blocking(self) -> Result<O, RpcReplyError> {
+        match self.inner.await {
+            Ok(RawRpcReply::Success((protocol_version, payload))) => {
+                match tokio::task::spawn_blocking(move || O::decode(payload, protocol_version))
+                    .await
+                {
+                    Ok(reply) => Ok(reply),
+                    Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+                    // only happens when the runtime shuts down
+                    Err(_) => Err(RpcReplyError::ConnectionClosed(ConnectionClosed)),
+                }
+            }
+            Ok(RawRpcReply::Error(err)) => Err(err),
+            Err(_) => Err(RpcReplyError::ConnectionClosed(ConnectionClosed)),
+        }
+    }
+}
+
 impl<O: RpcResponse + Unpin> Future for ReplyRx<O> {
     type Output = Result<O, RpcReplyError>;
 

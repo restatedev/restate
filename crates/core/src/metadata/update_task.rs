@@ -335,7 +335,9 @@ where
     }
 
     fn update_internal(&mut self, new_value: Arc<T>) -> Result<Version, anyhow::Error> {
-        let current_value = self.item.load();
+        // Own a reference rather than holding a guard, so that a replaced value can be freed off
+        // the async runtime below.
+        let current_value = self.item.load_full();
         let mut maybe_new_version = new_value.version();
 
         // Schemas built in memory carry no size, so a node that wrote a new version reports it once
@@ -363,7 +365,9 @@ where
         } else {
             /* Do nothing, current is already newer */
             maybe_new_version = current_value.version();
+            drop_off_runtime(new_value);
         }
+        drop_off_runtime(current_value);
 
         if maybe_new_version >= self.last_version_attempted_from_peers {
             // we have successfully updated to a new version, we can clear the list of peers to
@@ -372,6 +376,14 @@ where
         }
 
         Ok(maybe_new_version)
+    }
+}
+
+/// Frees `value` on the blocking thread pool if this is the last reference to it. Freeing a large
+/// metadata value like the schema takes long enough to stall the async runtime.
+fn drop_off_runtime<T: Send + Sync + 'static>(value: Arc<T>) {
+    if let Some(value) = Arc::into_inner(value) {
+        tokio::task::spawn_blocking(move || drop(value));
     }
 }
 
@@ -448,7 +460,7 @@ async fn update_from_peer<T: GlobalMetadata + Extraction<Output = T>>(
         Ok(_) = version_watch.wait_for(|v| *v >= min_version) => {
             None
         }
-        Ok(update) = reply_rx => {
+        Ok(update) = reply_rx.recv_decode_blocking() => {
             debug!(
                 kind  = %update.container.kind(),
                 version = %update.container.version(),
