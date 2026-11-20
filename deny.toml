@@ -14,6 +14,7 @@ ignore = [
     { id = "RUSTSEC-2026-0542", reason = "humantime is unmaintained following chrono; all versions are affected, and migration needs a coordinated dependency update." },
     { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained; all versions are affected, and migration to jiff or time needs a coordinated dependency update." },
     { id = "RUSTSEC-2026-0555", reason = "chrono-tz is unmaintained; all versions are affected, and migration needs a coordinated dependency update." },
+    { id = "RUSTSEC-2026-0441", reason = "pin-utils is unmaintained (no fix exists) and only pulled in by the aws-smithy crates. main drops it by upgrading the AWS SDK, which is too broad for this branch." },
 ]
 
 
