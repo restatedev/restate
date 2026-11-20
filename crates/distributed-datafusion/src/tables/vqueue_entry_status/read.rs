@@ -30,10 +30,13 @@ use restate_partition_store::invocation_status_table::{
 };
 use restate_partition_store::keys::selection::KeySelection;
 use restate_partition_store::vqueue_table::{
-    ActiveEntryByStage as StoredActiveIndex, ActiveRead, EntryStatusCursor, EntryStatusKey,
-    EntryStatusKeys, EntryStatusRecords, EntryStatusScan,
+    ActiveEntryByStage as StoredActiveIndex, ActiveRead,
+    EntryByStatusCreated as StoredStatusCreated, EntryByStatusCreatedKey,
+    EntryByStatusTransitioned as StoredStatusTransitioned, EntryByStatusTransitionedKey,
+    EntryStatusCursor, EntryStatusKey, EntryStatusKeys, EntryStatusRecords, EntryStatusScan,
     FinishedEntryByOutcome as StoredFinishedIndex, FinishedRead, StagePrefilter, StageReads,
-    StageRowRecords, StageRowScan, StageRowsCursor,
+    StageRowRecords, StageRowScan, StageRowsCursor, StatusCreatedRead, StatusTransitionedRead,
+    status_indexes_hold,
 };
 use restate_storage_api::vqueue_table::Stage;
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
@@ -43,7 +46,8 @@ use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
 use restate_storage_query_api::tables::index::{
     ActiveEntryByStage, ActiveEntryByStageDomains, EntryByQueue, EntryByQueueDomains,
-    FinishedEntryByOutcome, FinishedEntryByOutcomeDomains,
+    EntryStatusByStatusCreated, EntryStatusByStatusCreatedDomains, EntryStatusByStatusTransitioned,
+    EntryStatusByStatusTransitionedDomains, FinishedEntryByOutcome, FinishedEntryByOutcomeDomains,
 };
 use restate_storage_query_api::tables::vqueue_entry_status::{
     VqueueEntryStatus, VqueueEntryStatusColumn, VqueueEntryStatusDomains,
@@ -307,24 +311,12 @@ impl CompleteIndex for FinishedIndex {
     /// Where the index isn't maintained, every partition would scan and sort
     /// instead, so the planner then scans.
     fn useful(_: &FinishedEntryByOutcomeDomains) -> bool {
-        Configuration::pinned()
-            .common
-            .experimental
-            .is_track_entry_indexes_enabled()
+        tracked()
     }
 
     /// Every alternative fixes the stage to `finished` and nothing else.
     fn admits(alternatives: &[VqueueEntryStatusDomains]) -> bool {
-        !alternatives.is_empty()
-            && alternatives
-                .iter()
-                .all(|alternative| match alternative.stage.to_predicate() {
-                    Some(ValuePredicate::Equal(stage)) => stage == Stage::Finished,
-                    Some(ValuePredicate::In(stages)) => {
-                        !stages.is_empty() && stages.iter().all(|stage| *stage == Stage::Finished)
-                    }
-                    _ => false,
-                })
+        stages_held(alternatives, |stage| stage == Stage::Finished)
     }
 
     const NEEDS_ORDERED_DEMAND: bool = true;
@@ -370,28 +362,100 @@ impl CompleteIndex for ActiveIndex {
     /// Where the index isn't maintained, every partition would scan and sort
     /// instead, so the planner then scans.
     fn useful(_: &ActiveEntryByStageDomains) -> bool {
-        Configuration::pinned()
-            .common
-            .experimental
-            .is_track_entry_indexes_enabled()
+        tracked()
     }
 
-    /// Every alternative fixes the stage to a non-empty set of the stages the
-    /// index holds, as the partition store defines them. A domain of points,
-    /// even one, is an `IN` set.
+    /// Every alternative fixes the stage to stages the index holds, as the
+    /// partition store defines them.
     fn admits(alternatives: &[VqueueEntryStatusDomains]) -> bool {
-        !alternatives.is_empty()
-            && alternatives.iter().all(|alternative| {
-                matches!(
-                    alternative.stage.to_predicate(),
-                    Some(ValuePredicate::In(stages))
-                        if !stages.is_empty()
-                            && stages.iter().all(|stage| StoredActiveIndex::holds(*stage))
-                )
-            })
+        stages_held(alternatives, StoredActiveIndex::holds)
     }
 
     const NEEDS_ORDERED_DEMAND: bool = true;
+}
+
+/// Entries of some stages and statuses, newest created first, through
+/// `entry_by_status_created/1`, as the UI's invocation list asks:
+///
+/// ```sql
+/// SELECT v.entry_id AS id FROM sys_vqueues v
+/// WHERE v.stage = 'finished' AND v.status IN ('succeeded', 'failed', 'cancelled', 'killed')
+/// ORDER BY v.created_at DESC NULLS LAST LIMIT 250
+/// ```
+///
+/// Each stage and status is a lane, read newest created first and merged with
+/// the others, so the read stops after the page's entries instead of reading
+/// every entry of the stage. Ascending, the index is read backwards.
+pub(crate) struct StatusCreatedIndex;
+
+impl CompleteIndex for StatusCreatedIndex {
+    type Index = EntryStatusByStatusCreated;
+    const INTRODUCED: SemanticRestateVersion = <StoredStatusCreated as RegisteredIndex>::INTRODUCED;
+    /// As [`ActiveIndex::ORDERING`]: the lanes merge by creation time.
+    const ORDERING: &'static [IndexOrder<VqueueEntryStatusColumn>] = ActiveIndex::ORDERING;
+
+    /// Only where the index is maintained, and only if the stage and status
+    /// leave fewer lanes than all of them.
+    fn useful(restriction: &EntryStatusByStatusCreatedDomains) -> bool {
+        tracked()
+            && EntryByStatusCreatedKey::entry_lanes(&restriction.to_selection()).count()
+                < EntryByStatusCreatedKey::entry_lanes(&Selection::All).count()
+    }
+
+    /// Every alternative fixes the stage to stages the index holds.
+    fn admits(alternatives: &[VqueueEntryStatusDomains]) -> bool {
+        stages_held(alternatives, status_indexes_hold)
+    }
+
+    const NEEDS_ORDERED_DEMAND: bool = true;
+}
+
+/// Entries of some stages and statuses, newest transitioned first, through
+/// `entry_by_status_transitioned/1`: as [`StatusCreatedIndex`], by the time
+/// each entry entered its stage, and for a window of those times, only the
+/// hours that may hold it.
+pub(crate) struct StatusTransitionedIndex;
+
+impl CompleteIndex for StatusTransitionedIndex {
+    type Index = EntryStatusByStatusTransitioned;
+    const INTRODUCED: SemanticRestateVersion =
+        <StoredStatusTransitioned as RegisteredIndex>::INTRODUCED;
+    /// As [`FinishedIndex::ORDERING`]: the lanes merge by transition time.
+    const ORDERING: &'static [IndexOrder<VqueueEntryStatusColumn>] = FinishedIndex::ORDERING;
+
+    /// As [`StatusCreatedIndex::useful`].
+    fn useful(restriction: &EntryStatusByStatusTransitionedDomains) -> bool {
+        tracked()
+            && EntryByStatusTransitionedKey::entry_lanes(&restriction.to_selection()).count()
+                < EntryByStatusTransitionedKey::entry_lanes(&Selection::All).count()
+    }
+
+    fn admits(alternatives: &[VqueueEntryStatusDomains]) -> bool {
+        stages_held(alternatives, status_indexes_hold)
+    }
+
+    const NEEDS_ORDERED_DEMAND: bool = true;
+}
+
+/// Whether the entry indexes are maintained.
+fn tracked() -> bool {
+    Configuration::pinned()
+        .common
+        .experimental
+        .is_track_entry_indexes_enabled()
+}
+
+/// Whether every alternative fixes the stage to a non-empty set of stages the
+/// index `holds`. A domain of points, even one, is an `IN` set.
+fn stages_held(alternatives: &[VqueueEntryStatusDomains], holds: fn(Stage) -> bool) -> bool {
+    !alternatives.is_empty()
+        && alternatives.iter().all(|alternative| {
+            matches!(
+                alternative.stage.to_predicate(),
+                Some(ValuePredicate::In(stages))
+                    if !stages.is_empty() && stages.iter().all(|stage| holds(*stage))
+            )
+        })
 }
 
 pub(crate) fn select_primary(
@@ -471,6 +535,8 @@ impl ScanPartition for EntryStatusScanner {
         index == EntryByQueue::NAME
             || index == FinishedEntryByOutcome::NAME
             || index == ActiveEntryByStage::NAME
+            || index == EntryStatusByStatusCreated::NAME
+            || index == EntryStatusByStatusTransitioned::NAME
     }
 
     fn prepare_read(
@@ -514,6 +580,32 @@ impl ScanPartition for EntryStatusScanner {
                     read: Arc::new(ActiveRead::prepare(
                         &selection,
                         index.direction::<ActiveIndex>()?,
+                    )?),
+                    fallback: scan()?,
+                }
+            }
+            PrimaryRead::Index(index) if index.name() == EntryStatusByStatusCreated::NAME => {
+                // As for finished entries.
+                let selection =
+                    index_restriction::<EntryStatusByStatusCreated>(predicate.as_slice())?
+                        .map_or(Selection::Empty, |domains| domains.to_selection());
+                EntryStatusAccess::StatusCreated {
+                    read: Arc::new(StatusCreatedRead::prepare(
+                        &selection,
+                        index.direction::<StatusCreatedIndex>()?,
+                    )?),
+                    fallback: scan()?,
+                }
+            }
+            PrimaryRead::Index(index) if index.name() == EntryStatusByStatusTransitioned::NAME => {
+                // As for finished entries.
+                let selection =
+                    index_restriction::<EntryStatusByStatusTransitioned>(predicate.as_slice())?
+                        .map_or(Selection::Empty, |domains| domains.to_selection());
+                EntryStatusAccess::StatusTransitioned {
+                    read: Arc::new(StatusTransitionedRead::prepare(
+                        &selection,
+                        index.direction::<StatusTransitionedIndex>()?,
                     )?),
                     fallback: scan()?,
                 }
@@ -591,12 +683,34 @@ enum EntryStatusAccess {
         #[debug(skip)]
         fallback: Arc<KeySelection<EntryStatusKey>>,
     },
+    /// Entries of some stages and statuses through `entry_by_status_created/1`,
+    /// or the fallback scan.
+    StatusCreated {
+        #[debug(skip)]
+        read: Arc<StatusCreatedRead>,
+        #[debug(skip)]
+        fallback: Arc<KeySelection<EntryStatusKey>>,
+    },
+    /// Entries of some stages and statuses through
+    /// `entry_by_status_transitioned/1`, or the fallback scan.
+    StatusTransitioned {
+        #[debug(skip)]
+        read: Arc<StatusTransitionedRead>,
+        #[debug(skip)]
+        fallback: Arc<KeySelection<EntryStatusKey>>,
+    },
 }
 
 impl EntryStatusAccess {
     /// An entry index read in index order, which a partition may scan instead.
     fn ordered(&self) -> bool {
-        matches!(self, Self::Finished { .. } | Self::Active { .. })
+        matches!(
+            self,
+            Self::Finished { .. }
+                | Self::Active { .. }
+                | Self::StatusCreated { .. }
+                | Self::StatusTransitioned { .. }
+        )
     }
 }
 
@@ -807,6 +921,30 @@ impl EntryStatusRead {
                         );
                     };
                     EntryStatusScan::Active {
+                        read,
+                        fallback,
+                        execution,
+                    }
+                }
+                EntryStatusAccess::StatusCreated { read, fallback } => {
+                    let Some(execution) = ordered else {
+                        return datafusion::common::internal_err!(
+                            "an entry index read has no execution"
+                        );
+                    };
+                    EntryStatusScan::StatusCreated {
+                        read,
+                        fallback,
+                        execution,
+                    }
+                }
+                EntryStatusAccess::StatusTransitioned { read, fallback } => {
+                    let Some(execution) = ordered else {
+                        return datafusion::common::internal_err!(
+                            "an entry index read has no execution"
+                        );
+                    };
+                    EntryStatusScan::StatusTransitioned {
                         read,
                         fallback,
                         execution,

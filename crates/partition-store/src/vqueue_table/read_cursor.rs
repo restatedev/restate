@@ -54,7 +54,9 @@ use crate::scan::{PhysicalScan, TableScan};
 use crate::table::{MultiGetCursor, MultiGetTable, PhysicalTable, TableCursor};
 use crate::{ReadSnapshot, Result};
 
-use super::indexed_read::{ActiveRead, EntryIndex, FinishedRead, IndexedCursor};
+use super::indexed_read::{
+    ActiveRead, EntryIndex, FinishedRead, IndexedCursor, StatusCreatedRead, StatusTransitionedRead,
+};
 use super::stage_reads::{StageReadCounters, StageReads, StagesCursor};
 use super::{ENTRY_STATUS_MULTI_GET_BATCH_SIZE, EntryStatusKey};
 
@@ -186,6 +188,23 @@ pub enum EntryStatusScan {
         fallback: Arc<KeySelection<EntryStatusKey>>,
         execution: Arc<EntryIndexExecution>,
     },
+    /// Entries of some stages and statuses through `entry_by_status_created/1`,
+    /// newest created first (or oldest first, as the [`StatusCreatedRead`]
+    /// says), or the `fallback` iteration if the index can't stand in for it
+    /// on the snapshot. `execution` is charged for the index read and learns
+    /// which path it took.
+    StatusCreated {
+        read: Arc<StatusCreatedRead>,
+        fallback: Arc<KeySelection<EntryStatusKey>>,
+        execution: Arc<EntryIndexExecution>,
+    },
+    /// As [`Self::StatusCreated`], through `entry_by_status_transitioned/1`,
+    /// newest transitioned first.
+    StatusTransitioned {
+        read: Arc<StatusTransitionedRead>,
+        fallback: Arc<KeySelection<EntryStatusKey>>,
+        execution: Arc<EntryIndexExecution>,
+    },
 }
 
 impl From<ScanEntryIdFilter> for EntryStatusScan {
@@ -271,6 +290,22 @@ impl ReadSnapshot {
                 execution,
             } => {
                 let cursor = IndexedCursor::active(self, &read, &execution, window)?;
+                return self.indexed_or(cursor, fallback);
+            }
+            EntryStatusScan::StatusCreated {
+                read,
+                fallback,
+                execution,
+            } => {
+                let cursor = IndexedCursor::status_created(self, &read, &execution, window)?;
+                return self.indexed_or(cursor, fallback);
+            }
+            EntryStatusScan::StatusTransitioned {
+                read,
+                fallback,
+                execution,
+            } => {
+                let cursor = IndexedCursor::status_transitioned(self, &read, &execution, window)?;
                 return self.indexed_or(cursor, fallback);
             }
         };

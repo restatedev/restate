@@ -21,6 +21,8 @@ impl crate::sharding::PartitionSource for SysVqueueEntryStatusTable {
         crate::access::IndexAccess::of::<super::read::QueueIndex>(),
         crate::access::IndexAccess::of::<super::read::FinishedIndex>(),
         crate::access::IndexAccess::of::<super::read::ActiveIndex>(),
+        crate::access::IndexAccess::of::<super::read::StatusCreatedIndex>(),
+        crate::access::IndexAccess::of::<super::read::StatusTransitionedIndex>(),
         crate::access::IndexAccess::of::<super::read::StageIndex>(),
     ];
     const ORDERING: &'static [restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatusColumn] = &[

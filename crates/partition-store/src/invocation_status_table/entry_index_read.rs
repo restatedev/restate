@@ -78,7 +78,6 @@ use std::sync::{Arc, Mutex};
 use restate_rocksdb::reads::{OwnedPinnedBatch, ReadSnapshot as RocksReadSnapshot};
 use restate_storage_api::StorageError;
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
-use restate_storage_api::vqueue_table::{Stage, Status};
 use restate_storage_query_api::SelectionSchema;
 use restate_storage_query_api::scan::{CursorStep, ReadDirection};
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
@@ -94,15 +93,12 @@ use restate_types::vqueues::{CanonicalEntryId, Seq};
 use restate_util_string::ReString;
 
 use crate::index::{IndexValueRef, RegisteredIndex};
-use crate::keys::codecs::{StageRankCodec, StatusCodec};
-use crate::keys::header::{KeyHeader, KeySchema};
-use crate::keys::selection::{KeySelection, OrderedKeySchema, PrepareKeySelection};
-use crate::keys::{EncodeTableKey, FieldCodec, KeyKind};
-use crate::ordered_runs::{
-    Opening, OrderedRuns, OrderedRunsDiscovery, OrderedRunsLimits, RetainedMemory,
-};
+use crate::keys::selection::{KeySelection, PrepareKeySelection};
+use crate::keys::{EncodeTableKey, KeyKind};
+use crate::ordered_runs::{OrderedRuns, OrderedRunsDiscovery, OrderedRunsLimits, RetainedMemory};
 use crate::partition_db::PhysicalPartition;
 use crate::registry::IndexKind;
+use crate::status_lanes::{Lanes, StatusLanes};
 use crate::vqueue_table::{
     EntryByCreated, EntryByCreatedKey, EntryByStatusCreated, EntryByStatusCreatedKey,
     EntryTargetValueRef,
@@ -128,19 +124,6 @@ const LIMITS: OrderedRunsLimits = OrderedRunsLimits {
     step_budget: NonZeroUsize::new(256).unwrap(),
     // Runs of an hour and a service, merged one hour at a time.
     bucket_fields: 1,
-};
-
-/// A lane's run is the entries of one creation hour and service in its stage
-/// and status (`entry_by_status_created/1`); the stage, status and hour are its
-/// bucket.
-const LANE_RUN_FIELDS: usize = 4;
-
-/// [`LIMITS`] for each lane. The lanes' first hours share `LIMITS`' runs, and
-/// their opening its discovery keys, the probe's included; a later hour of a
-/// lane merges all of its runs.
-const LANE_LIMITS: OrderedRunsLimits = OrderedRunsLimits {
-    bucket_fields: 3,
-    ..LIMITS
 };
 
 /// Statuses fetched per multi-get, and the window that holds their invocations.
@@ -273,12 +256,7 @@ enum IndexRead {
     /// `entry_by_created/1`.
     Created(Arc<KeySelection<EntryByCreatedKey>>),
     /// `entry_by_status_created/1`, a lane per stage and status.
-    Status {
-        /// Every lane at once, to find the ones with keys.
-        probe: Arc<KeySelection<EntryByStatusCreatedKey>>,
-        /// Each lane's stage, status and selection, in key order.
-        lanes: Vec<(Stage, Status, Arc<KeySelection<EntryByStatusCreatedKey>>)>,
-    },
+    Status(StatusLanes<EntryByStatusCreatedKey>),
 }
 
 impl EntryIndexRead {
@@ -304,29 +282,12 @@ impl EntryIndexRead {
         selection: &Selection<StatusIndex>,
         direction: ReadDirection,
     ) -> Result<Self> {
-        let pairs = EntryByStatusCreatedKey::lanes(selection).collect::<Vec<_>>();
-        let (mut stages, mut statuses) = (Vec::new(), Vec::new());
-        for (stage, status) in &pairs {
-            if !stages.contains(stage) {
-                stages.push(*stage);
-            }
-            if !statuses.contains(status) {
-                statuses.push(*status);
-            }
-        }
-        let probe = EntryByStatusCreatedKey::prepare_lanes(selection, &stages, &statuses)?;
-        let lanes = pairs
-            .into_iter()
-            .map(|(stage, status)| {
-                let lane = EntryByStatusCreatedKey::prepare_lanes(selection, &[stage], &[status])?;
-                Ok((stage, status, Arc::new(lane)))
-            })
-            .collect::<Result<_>>()?;
+        let lanes = StatusLanes::new(
+            EntryByStatusCreatedKey::lanes(selection),
+            |stages, statuses| EntryByStatusCreatedKey::prepare_lanes(selection, stages, statuses),
+        )?;
         Ok(Self {
-            index: IndexRead::Status {
-                probe: Arc::new(probe),
-                lanes,
-            },
+            index: IndexRead::Status(lanes),
             handlers: Arc::new(HandlerConditions::of(
                 selection,
                 StatusIndexColumn::TargetHandlerName,
@@ -346,7 +307,7 @@ impl EntryIndexRead {
     pub fn unusable(&self, snapshot: &ReadSnapshot) -> Result<Option<ScanReason>> {
         let definition = match self.index {
             IndexRead::Created(_) => EntryByCreated::DEFINITION,
-            IndexRead::Status { .. } => EntryByStatusCreated::DEFINITION,
+            IndexRead::Status(_) => EntryByStatusCreated::DEFINITION,
         };
         Ok(if !snapshot.fully_migrated_to_vqueues()? {
             Some(ScanReason::NotMigrated)
@@ -365,14 +326,7 @@ impl EntryIndexRead {
         self.handlers.retained_bytes()
             + match &self.index {
                 IndexRead::Created(selection) => selection.retained_bytes(),
-                IndexRead::Status { probe, lanes } => {
-                    probe.retained_bytes()
-                        + lanes.capacity() * std::mem::size_of::<(Stage, Status, Arc<()>)>()
-                        + lanes
-                            .iter()
-                            .map(|(.., lane)| lane.retained_bytes())
-                            .sum::<usize>()
-                }
+                IndexRead::Status(lanes) => lanes.retained_bytes(),
             }
     }
 }
@@ -448,7 +402,7 @@ impl HandlerConditions {
 /// The index read the cursor merges.
 enum Source {
     Created(OrderedRuns<EntryByCreated>),
-    Lanes(Lanes),
+    Lanes(Lanes<EntryByStatusCreated>),
 }
 
 impl Source {
@@ -488,7 +442,7 @@ impl Source {
     fn runs(&self) -> usize {
         match self {
             Self::Created(runs) => runs.runs(),
-            Self::Lanes(lanes) => lanes.lanes.iter().map(|lane| lane.runs.runs()).sum(),
+            Self::Lanes(lanes) => lanes.runs(),
         }
     }
 
@@ -496,98 +450,8 @@ impl Source {
     fn retained_bytes(&self) -> usize {
         match self {
             Self::Created(runs) => runs.retained_bytes(),
-            Self::Lanes(lanes) => lanes
-                .lanes
-                .iter()
-                .map(|lane| lane.runs.retained_bytes())
-                .sum(),
+            Self::Lanes(lanes) => lanes.retained_bytes(),
         }
-    }
-}
-
-/// The lanes of `entry_by_status_created/1` with keys, merged into creation
-/// order.
-struct Lanes {
-    lanes: Vec<Lane>,
-    /// The lanes to advance before the read hands out a key, the next last:
-    /// every lane at first, then the lane of each key handed out.
-    unprimed: Vec<usize>,
-    /// The lane of the key the last step produced.
-    current: Option<usize>,
-    /// Keys the probe and the lanes' discovery examined while the read opened.
-    opening: u64,
-    direction: ReadDirection,
-}
-
-struct Lane {
-    runs: OrderedRuns<EntryByStatusCreated>,
-    /// The keys `runs` had examined once it opened, counted in
-    /// [`Lanes::opening`].
-    opened: u64,
-    /// While the lane has a key the read hasn't handed out: where the key's
-    /// merge order starts in its payload, after the run's fields.
-    head: Option<usize>,
-}
-
-impl Lanes {
-    /// One step: advances the next lane without a key, if any, and hands out
-    /// the earliest key once every lane has one or is exhausted.
-    fn advance(&mut self) -> Result<CursorStep> {
-        self.current = None;
-        if let Some(&at) = self.unprimed.last() {
-            let lane = &mut self.lanes[at];
-            match lane.runs.advance()? {
-                CursorStep::Skipped => return Ok(CursorStep::Skipped),
-                CursorStep::Record => {
-                    let payload = lane.runs.current()?.0.remaining;
-                    let mut rest = payload;
-                    for field in &EntryByStatusCreatedKey::FIELDS[..LANE_RUN_FIELDS] {
-                        field.take_encoded(&mut rest)?;
-                    }
-                    lane.head = Some(payload.len() - rest.len());
-                }
-                CursorStep::Done => {}
-            }
-            self.unprimed.pop();
-            if !self.unprimed.is_empty() {
-                return Ok(CursorStep::Skipped);
-            }
-        }
-        let mut earliest: Option<(usize, &[u8])> = None;
-        for (at, lane) in self.lanes.iter().enumerate() {
-            let Some(start) = lane.head else {
-                continue;
-            };
-            let order = &lane.runs.current()?.0.remaining[start..];
-            let earlier = earliest.is_none_or(|(_, other)| match self.direction {
-                ReadDirection::Forward => order < other,
-                ReadDirection::Backward => order > other,
-            });
-            if earlier {
-                earliest = Some((at, order));
-            }
-        }
-        let Some(at) = earliest.map(|(at, _)| at) else {
-            return Ok(CursorStep::Done);
-        };
-        self.lanes[at].head = None;
-        self.unprimed.push(at);
-        self.current = Some(at);
-        Ok(CursorStep::Record)
-    }
-
-    fn current(&self) -> Result<(crate::keys::KeyDecoder<'_, EntryByStatusCreatedKey>, &[u8])> {
-        let at = self.current.ok_or(StorageError::DataIntegrityError)?;
-        self.lanes[at].runs.current()
-    }
-
-    fn examined(&self) -> u64 {
-        self.opening
-            + self
-                .lanes
-                .iter()
-                .map(|lane| lane.runs.examined() - lane.opened)
-                .sum::<u64>()
     }
 }
 
@@ -719,7 +583,7 @@ impl EntryIndexCursor {
                 + WINDOW * std::mem::size_of::<(InvocationId, Seq, MillisSinceEpoch)>()
                 + WINDOW * KEY_LEN,
         )?;
-        let (probe, lanes) = match &read.index {
+        let lanes = match &read.index {
             IndexRead::Created(selection) => {
                 let discovery = snapshot.ordered_runs_counted::<EntryByCreated>(
                     Arc::clone(selection),
@@ -736,80 +600,21 @@ impl EntryIndexCursor {
                     }
                 });
             }
-            IndexRead::Status { probe, lanes } => (probe, lanes),
+            IndexRead::Status(lanes) => lanes,
         };
-        // The lanes with keys, in key order, charged while the read holds them.
-        let Some((prefixes, charged)) = snapshot.distinct_prefixes::<EntryByStatusCreated>(
-            Arc::clone(probe),
-            2,
-            (lanes.len(), LIMITS.max_discovery_keys),
-            Box::new(memory.clone()),
-            discovered,
-        )?
-        else {
-            return Ok(Opened::Scan(ScanReason::TooManyRuns, *discovered));
-        };
-        held.bytes += charged;
-        // The lanes, and the order to prime them in.
-        held.grow(prefixes.len() * (std::mem::size_of::<Lane>() + std::mem::size_of::<usize>()))?;
-        let header = <<EntryByStatusCreatedKey as KeySchema>::Header as KeyHeader>::LENGTH;
-        let mut open = Vec::with_capacity(prefixes.len());
-        // The runs the lanes' first hours may still have.
-        let mut available = LIMITS.max_runs;
-        for prefix in &prefixes {
-            let mut fields = prefix
-                .get(header..)
-                .ok_or(StorageError::DataIntegrityError)?;
-            let stage = StageRankCodec::decode_encoded(StageRankCodec::take_encoded(&mut fields)?)?;
-            let status = StatusCodec::decode_encoded(StatusCodec::take_encoded(&mut fields)?)?;
-            let (.., selection) = lanes
-                .iter()
-                .find(|(s, t, _)| (*s, *t) == (stage, status))
-                .ok_or(StorageError::DataIntegrityError)?;
-            let opening = Opening {
-                runs: available,
-                examined: discovered,
-            };
-            match snapshot.ordered_runs_within::<EntryByStatusCreated>(
-                Arc::clone(selection),
-                LANE_RUN_FIELDS,
+        Ok(
+            match Lanes::open(
+                snapshot,
+                lanes,
                 read.direction,
-                LANE_LIMITS,
-                Box::new(memory.clone()),
-                opening,
+                LIMITS,
+                (&memory, &mut held),
+                discovered,
             )? {
-                OrderedRunsDiscovery::Ready(runs) => {
-                    let opened = runs.examined();
-                    available = available.saturating_sub(runs.runs());
-                    if runs.runs() > 0 {
-                        open.push(Lane {
-                            runs,
-                            opened,
-                            head: None,
-                        });
-                    }
-                }
-                OrderedRunsDiscovery::TooManyRuns { .. } => {
-                    return Ok(Opened::Scan(ScanReason::TooManyRuns, *discovered));
-                }
-            }
-        }
-        // The probe's prefixes are done with, and lanes without runs need no
-        // place in the priming order.
-        held.shrink(charged + (prefixes.len() - open.len()) * std::mem::size_of::<usize>());
-        drop(prefixes);
-        let mut unprimed = Vec::with_capacity(open.len());
-        unprimed.extend((0..open.len()).rev());
-        Ok(Opened::Index(
-            Source::Lanes(Lanes {
-                lanes: open,
-                unprimed,
-                current: None,
-                opening: *discovered,
-                direction: read.direction,
-            }),
-            held,
-        ))
+                Some(lanes) => Opened::Index(Source::Lanes(lanes), held),
+                None => Opened::Scan(ScanReason::TooManyRuns, *discovered),
+            },
+        )
     }
 
     fn new(
@@ -1827,7 +1632,8 @@ mod tests {
             wide.retained_bytes()
                 + WINDOW * std::mem::size_of::<(InvocationId, Seq, MillisSinceEpoch)>()
                 + WINDOW * KEY_LEN
-                + 3 * (std::mem::size_of::<Lane>() + std::mem::size_of::<usize>())
+                + 3 * (std::mem::size_of::<crate::status_lanes::Lane<EntryByStatusCreated>>()
+                    + std::mem::size_of::<usize>())
                 + cursor.source.as_ref().unwrap().retained_bytes(),
             "the charge is what the opened read holds"
         );
