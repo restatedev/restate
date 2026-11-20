@@ -26,7 +26,8 @@ use restate_storage_query_api::selection::ValuePredicate;
 
 use crate::keys::OrderedFieldCodec;
 use crate::keys::codecs::{
-    RestateEpochMillisCodec, ReverseUniqueTimestampCodec, RoughTimestampCodec,
+    RestateEpochMillisCodec, ReverseRoughTimestampCodec, ReverseUniqueTimestampCodec,
+    RoughTimestampCodec,
 };
 use crate::keys::predicate::{EncodedValuePredicate, EncodedValueRanges};
 
@@ -75,6 +76,50 @@ impl FieldPredicateCodec for RestateEpochMillisCodec {
             restate_millis_range,
         ))
     }
+}
+
+/// The hour buckets, newest first, that may hold a time matching `predicate`,
+/// for a field that keys each time by its hour (a `RoughTimestamp` floored to
+/// its hour, as `entry_by_created/1` does). Unlike the other translations this
+/// one widens: a bucket holds the whole hour, so an interval's end hours are
+/// included even where the interval covers only part of them, and the time
+/// itself stays to be checked.
+pub(crate) fn prepare_hour_buckets(
+    predicate: &ValuePredicate<MillisSinceEpoch>,
+    literals: &mut Vec<u8>,
+) -> PreparedFieldPredicate {
+    prepare_timestamp_predicate::<ReverseRoughTimestampCodec>(
+        predicate,
+        literals,
+        hour_bucket_range,
+    )
+}
+
+/// The hours of a logical millisecond interval, newest first: the hour of each
+/// end, computed like the index computes an entry's, with times outside a
+/// `RoughTimestamp`'s range clamped to its ends as the index clamps them.
+fn hour_bucket_range(
+    lower: Bound<&MillisSinceEpoch>,
+    upper: Bound<&MillisSinceEpoch>,
+) -> Option<(Reverse<RoughTimestamp>, Reverse<RoughTimestamp>)> {
+    let first = match lower {
+        Included(millis) => millis.as_u64(),
+        Excluded(millis) => millis.as_u64().checked_add(1)?,
+        Unbounded => 0,
+    };
+    let last = match upper {
+        Included(millis) => millis.as_u64(),
+        Excluded(millis) => millis.as_u64().checked_sub(1)?,
+        Unbounded => u64::MAX,
+    };
+    if first > last {
+        return None;
+    }
+    let hour = |millis| {
+        RoughTimestamp::from_unix_millis_clamped(MillisSinceEpoch::new(millis)).floor_to_hour()
+    };
+    // Descending: the newest hour sorts first.
+    Some((Reverse(hour(last)), Reverse(hour(first))))
 }
 
 fn prepare_timestamp_predicate<C: OrderedFieldCodec>(

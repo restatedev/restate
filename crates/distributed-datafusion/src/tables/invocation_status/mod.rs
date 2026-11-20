@@ -25,7 +25,7 @@ use restate_partition_store::invocation_status_table::{
     InvocationStatusRecords, InvocationStatusScan, ScanReason,
 };
 use restate_partition_store::keys::selection::KeySelection;
-use restate_partition_store::vqueue_table::EntryByServiceCreated as StoredEntryIndex;
+use restate_partition_store::vqueue_table::EntryByCreated as StoredEntryIndex;
 use restate_storage_query_api::schema::index::index_restriction;
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
@@ -73,16 +73,16 @@ impl PartitionSource for SysInvocationStatusTable {
 /// The most services a query may name to read them through the entry index.
 const MAX_INDEXED_SERVICES: usize = 64;
 
-/// The entry index, read for the invocations it finds. It holds every
-/// invocation once its partition has fully migrated to vqueues and the index is
-/// Ready; until then, each partition's read scans instead, before returning
-/// anything. Its policy: the query names its services, so the read merges only
-/// their runs, and asks for the newest of them, or the oldest, so the read
-/// stops early:
+/// The entry index `entry_by_created/1`, read for the invocations it finds. It
+/// holds every invocation once its partition has fully migrated to vqueues and
+/// the index is Complete; until then, each partition's read scans instead,
+/// before returning anything. Its policy: the query asks for the newest
+/// invocations, or the oldest, of all services or a few, so the read merges one
+/// creation hour's runs at a time, a run per service, and stops early:
 ///
 /// ```sql
 /// SELECT id FROM sys_invocation_status
-/// WHERE target_service_name = 'Promises' AND target_service_key IS NOT NULL
+/// [WHERE target_service_name = 'Promises' AND target_service_key IS NOT NULL]
 /// ORDER BY created_at DESC [NULLS FIRST | NULLS LAST]
 /// LIMIT 51
 /// ```
@@ -112,9 +112,10 @@ impl CompleteIndex for EntryIndex {
         never_null: true,
     }];
 
-    /// A few services, each with a few handlers, stay within the runs one read
-    /// merges. Where the index isn't maintained, every partition would scan
-    /// and sort instead, so the planner then scans.
+    /// The read merges one creation hour's runs at a time, one per service
+    /// with an invocation in that hour, so pages of all services qualify as
+    /// well as pages of a few. Where the index isn't maintained, every
+    /// partition would scan and sort instead, so the planner then scans.
     fn useful(restriction: &EntryByServiceCreatedDomains) -> bool {
         if !Configuration::pinned()
             .common
@@ -124,9 +125,8 @@ impl CompleteIndex for EntryIndex {
             return false;
         }
         match restriction.target_service_name.to_predicate() {
-            Some(ValuePredicate::Equal(_)) => true,
             Some(ValuePredicate::In(names)) => (1..=MAX_INDEXED_SERVICES).contains(&names.len()),
-            _ => false,
+            _ => true,
         }
     }
 

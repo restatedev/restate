@@ -2379,7 +2379,8 @@ mod backfill_tests {
         // its write budget, nor writes them.
         let mut earlier =
             MigrationJobRecords::new(MigrationJobs::default(), Duration::from_secs(3600));
-        for id in 1_000..1_030 {
+        let earlier_jobs = 5 * all.len() as u32;
+        for id in 1_000..1_000 + earlier_jobs {
             let mut job =
                 MigrationJob::index_backfill(id, ReString::from_static("old/1"), None, None, None);
             job.record_failure(0, &"x".repeat(crate::job::MAX_ERROR_LEN), 0);

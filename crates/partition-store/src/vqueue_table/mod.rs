@@ -34,11 +34,13 @@ use std::pin::Pin;
 
 pub use entry::{EntryStatusKey, EntryStatusKeyRef};
 pub(crate) use entry_index::{
-    ACTIVE_ENTRY_BY_STAGE, ENTRY_BY_SERVICE_CREATED, ENTRY_INDEXES, FINISHED_ENTRY_BY_OUTCOME,
+    ACTIVE_ENTRY_BY_STAGE, ENTRY_BY_CREATED, ENTRY_BY_SERVICE_CREATED, ENTRY_INDEXES,
+    FINISHED_ENTRY_BY_OUTCOME,
 };
 pub use entry_index::{
-    ActiveEntryByStage, ActiveEntryByStageKey, EntryByServiceCreated, EntryByServiceCreatedKey,
-    FinishedEntryByOutcome, FinishedEntryByOutcomeKey,
+    ActiveEntryByStage, ActiveEntryByStageKey, CreatedEntryValue, CreatedEntryValueRef,
+    EntryByCreated, EntryByCreatedKey, EntryByServiceCreated, EntryByServiceCreatedKey,
+    FinishedEntryByOutcome, FinishedEntryByOutcomeKey, created_hour,
 };
 pub use inbox::InboxKey;
 pub use indexed_read::{ActiveRead, FinishedRead};

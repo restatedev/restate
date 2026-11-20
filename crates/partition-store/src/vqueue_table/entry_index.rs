@@ -62,20 +62,52 @@
 //! An entry in any other stage, Finished or a stage this binary doesn't know, has
 //! no key. The key moves with the stage; the processing status isn't part of it.
 //!
-//! All three indexes project an entry's old and new state to their optional keys
+//! **Entries by creation hour and service, newest created first**
+//! (`entry_by_created/1`) holds one key for every entry, like the first index,
+//! but leads with the start of the hour in which the entry was created,
+//! so that the newest entries of all services are the first keys:
+//!
+//! ```text
+//! xI | partition | index ID | hour ↓ | service | created_at ↓ | canonical entry ID
+//!                             h9       "Other"   t9             inv_…
+//!                             h9       "Utils"   t8             inv_…
+//!                             h8       "Utils"   t7             inv_…
+//! value: handler?, scope?
+//! ```
+//!
+//! A page of the newest entries merges one run per service active in its hours;
+//! a service's page reads one run per hour. The value holds the entry's handler
+//! and scope, which a read can return without fetching the entry. Like the first
+//! index, key and value never change after the entry is created.
+//!
+//! All four indexes project an entry's old and new state to their optional keys
 //! and write only when the two differ.
 
 use std::cmp::Reverse;
+use std::ops::Bound::{self, Excluded, Included, Unbounded};
 
+use bytes::{Buf, BufMut};
+use prost::encoding::{decode_varint, encode_varint, encoded_len_varint};
+
+use restate_clock::time::MillisSinceEpoch;
+use restate_clock::{RoughTimestamp, UniqueTimestamp};
+use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{EntryContext, EntryStateRef, Stage};
+use restate_storage_query_api::selection::{Selection, ValuePredicate};
+use restate_storage_query_api::tables::index::{
+    EntryByServiceCreated as InvocationsByCreation, EntryByServiceCreatedClause,
+    EntryByServiceCreatedColumn,
+};
 use restate_types::config::Configuration;
 
 use crate::PartitionStoreTransaction;
-use crate::index::RegisteredIndex;
+use crate::index::{IndexValue, IndexValueRef, RegisteredIndex};
 use crate::keys::codecs::{
-    CanonicalEntryIdCodec, ReverseUniqueTimestampCodec, ServiceNameCodec, StageRankCodec,
-    StatusCodec, StringCodec,
+    CanonicalEntryIdCodec, ReverseRoughTimestampCodec, ReverseUniqueTimestampCodec,
+    ServiceNameCodec, StageRankCodec, StatusCodec, StringCodec,
 };
+use crate::keys::selection::codec::{FieldPredicateCodec, prepare_hour_buckets};
+use crate::keys::selection::{KeySelection, PrepareKeySelection};
 use crate::registry::{Family, IndexDefinition, IndexKind};
 
 crate::index::macros::define_secondary_index!(
@@ -186,12 +218,23 @@ pub(crate) static ACTIVE_ENTRY_BY_STAGE: IndexDefinition = IndexDefinition {
     can_fill: true,
 };
 
+/// Every entry by creation hour and service, newest created first, with its
+/// handler and scope.
+pub(crate) static ENTRY_BY_CREATED: IndexDefinition = IndexDefinition {
+    name: EntryByCreated::DEFINITION,
+    introduced: EntryByCreated::INTRODUCED,
+    kind: IndexKind::Secondary,
+    apply: apply_entry_by_created,
+    can_fill: true,
+};
+
 /// The entry indexes, released and controlled together.
 pub(crate) const ENTRY_INDEXES: Family = Family {
     definitions: &[
         &ENTRY_BY_SERVICE_CREATED,
         &FINISHED_ENTRY_BY_OUTCOME,
         &ACTIVE_ENTRY_BY_STAGE,
+        &ENTRY_BY_CREATED,
     ],
     maintain: track_entry_indexes,
     reset: entry_indexes_reset,
@@ -324,6 +367,241 @@ fn apply_active_entry_by_stage(
             id,
             old.as_ref().map(key).as_ref(),
             new.as_ref().map(key).as_ref(),
+        );
+    }
+}
+
+crate::index::macros::define_secondary_index!(
+    /// Entries by creation hour and service, newest created first; each key
+    /// holds the entry's handler and scope ([`CreatedEntryValue`]).
+    ///
+    /// Since v1.8.2
+    EntryByCreated,
+    definition: "entry_by_created/1",
+    introduced: (1, 8, 2),
+    key: EntryByCreatedKey {
+        created_hour: ReverseRoughTimestampCodec,
+        target_service_name: ServiceNameCodec => str,
+        created_at: ReverseUniqueTimestampCodec,
+        canonical_id: CanonicalEntryIdCodec (primary_key),
+    },
+    value: CreatedEntryValue,
+);
+
+// A query on invocations restricts `entry_by_created/1` through the invocation
+// columns its fields are named after, and the creation hour through
+// `created_at`: the hours that may hold a matching time. The handler is in the
+// value, so the caller's predicate checks it.
+impl PrepareKeySelection<InvocationsByCreation> for EntryByCreatedKey {
+    fn prepare_candidates(
+        selection: &Selection<InvocationsByCreation>,
+    ) -> crate::Result<KeySelection<Self>> {
+        KeySelection::for_key_fields_with(
+            selection,
+            |clause, literals| match clause {
+                EntryByServiceCreatedClause::TargetServiceName(predicate) => {
+                    ServiceNameCodec::try_prepare_value(predicate, literals)
+                }
+                EntryByServiceCreatedClause::CreatedAt(predicate) => {
+                    ReverseUniqueTimestampCodec::try_prepare_value(predicate, literals)
+                }
+                _ => Ok(None),
+            },
+            |tag, literals| {
+                if tag != "created_hour" {
+                    return Ok(None);
+                }
+                Ok(match created_times(selection) {
+                    Some(CreatedTimes::Clause(times)) => {
+                        Some(prepare_hour_buckets(times, literals))
+                    }
+                    Some(CreatedTimes::Range(times)) => {
+                        Some(prepare_hour_buckets(&times, literals))
+                    }
+                    None => None,
+                })
+            },
+        )
+    }
+}
+
+/// The creation times every match has: one of its equalities or IN lists, or
+/// its ranges intersected.
+enum CreatedTimes<'a> {
+    Clause(&'a ValuePredicate<MillisSinceEpoch>),
+    Range(ValuePredicate<MillisSinceEpoch>),
+}
+
+/// The creation times every match of `selection` has: one of its `created_at`
+/// equalities or IN lists, each of which every match satisfies, or else its
+/// ranges intersected. `None` when nothing restricts the creation time.
+fn created_times(selection: &Selection<InvocationsByCreation>) -> Option<CreatedTimes<'_>> {
+    let Selection::Predicates(predicates) = selection else {
+        return None;
+    };
+    let (mut lower, mut upper) = (Unbounded, Unbounded);
+    let mut ranged = false;
+    for clause in predicates.for_column(EntryByServiceCreatedColumn::CreatedAt) {
+        let EntryByServiceCreatedClause::CreatedAt(predicate) = clause else {
+            continue;
+        };
+        match predicate {
+            ValuePredicate::Equal(_) | ValuePredicate::In(_) => {
+                return Some(CreatedTimes::Clause(predicate));
+            }
+            ValuePredicate::Range {
+                lower: low,
+                upper: high,
+            } => {
+                lower = tighter(lower, *low, |a, b| a > b);
+                upper = tighter(upper, *high, |a, b| a < b);
+                ranged = true;
+            }
+        }
+    }
+    ranged.then_some(CreatedTimes::Range(ValuePredicate::Range { lower, upper }))
+}
+
+/// The stricter of two bounds on the same side: `beyond(a, b)` says whether `a`
+/// is further into the interval than `b`; at the same value, exclusive wins.
+fn tighter(
+    current: Bound<MillisSinceEpoch>,
+    other: Bound<MillisSinceEpoch>,
+    beyond: impl Fn(u64, u64) -> bool,
+) -> Bound<MillisSinceEpoch> {
+    let value = |bound: &Bound<MillisSinceEpoch>| match bound {
+        Included(millis) | Excluded(millis) => Some(millis.as_u64()),
+        Unbounded => None,
+    };
+    match (value(&current), value(&other)) {
+        (_, None) => current,
+        (None, Some(_)) => other,
+        (Some(a), Some(b)) if beyond(b, a) => other,
+        (Some(a), Some(b)) if a == b && matches!(other, Excluded(_)) => other,
+        _ => current,
+    }
+}
+
+/// The start of the hour in which `at` falls: the bucket that leads the keys of
+/// `entry_by_created/1`.
+pub fn created_hour(at: UniqueTimestamp) -> RoughTimestamp {
+    RoughTimestamp::from_unix_millis_clamped(at.to_unix_millis()).floor_to_hour()
+}
+
+/// What `entry_by_created/1` stores with each key: the entry's handler, none for
+/// a state mutation, and its scope. Both are fixed when the entry is created.
+pub enum CreatedEntryValue {}
+
+impl IndexValue for CreatedEntryValue {
+    type Ref<'a> = CreatedEntryValueRef<'a>;
+}
+
+/// A [`CreatedEntryValue`], borrowing its strings from the entry or the stored
+/// bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreatedEntryValueRef<'a> {
+    pub handler: Option<&'a str>,
+    pub scope: Option<&'a str>,
+}
+
+// Encoded as a byte of flags, which fields are present, followed by each present
+// field's length (a varint) and UTF-8 bytes, handler first.
+const HAS_HANDLER: u8 = 0b01;
+const HAS_SCOPE: u8 = 0b10;
+
+impl<'a> IndexValueRef<'a> for CreatedEntryValueRef<'a> {
+    fn encoded_len(&self) -> usize {
+        let field = |value: Option<&str>| {
+            value.map_or(0, |value| {
+                encoded_len_varint(value.len() as u64) + value.len()
+            })
+        };
+        1 + field(self.handler) + field(self.scope)
+    }
+
+    fn encode<B: BufMut>(&self, buffer: &mut B) {
+        let mut flags = 0;
+        if self.handler.is_some() {
+            flags |= HAS_HANDLER;
+        }
+        if self.scope.is_some() {
+            flags |= HAS_SCOPE;
+        }
+        buffer.put_u8(flags);
+        for value in [self.handler, self.scope].into_iter().flatten() {
+            encode_varint(value.len() as u64, buffer);
+            buffer.put_slice(value.as_bytes());
+        }
+    }
+
+    fn decode(bytes: &'a [u8]) -> crate::Result<Self> {
+        let (&flags, mut rest) = bytes
+            .split_first()
+            .ok_or(StorageError::DataIntegrityError)?;
+        if flags & !(HAS_HANDLER | HAS_SCOPE) != 0 {
+            return Err(StorageError::DataIntegrityError);
+        }
+        let mut field = |present: bool| -> crate::Result<Option<&'a str>> {
+            if !present {
+                return Ok(None);
+            }
+            let len = decode_varint(&mut rest).map_err(|_| StorageError::DataIntegrityError)?;
+            let len = usize::try_from(len).map_err(|_| StorageError::DataIntegrityError)?;
+            if rest.remaining() < len {
+                return Err(StorageError::DataIntegrityError);
+            }
+            let (value, tail) = rest.split_at(len);
+            rest = tail;
+            std::str::from_utf8(value)
+                .map(Some)
+                .map_err(|_| StorageError::DataIntegrityError)
+        };
+        let handler = field(flags & HAS_HANDLER != 0)?;
+        let scope = field(flags & HAS_SCOPE != 0)?;
+        if !rest.is_empty() {
+            return Err(StorageError::DataIntegrityError);
+        }
+        Ok(Self { handler, scope })
+    }
+}
+
+/// Removes the key of `before` and adds the key of `after`, each with the
+/// entry's handler and scope. Key and value are fixed when the entry is
+/// created, so an update writes nothing.
+fn apply_entry_by_created(
+    storage: &mut PartitionStoreTransaction<'_>,
+    id: u32,
+    context: &EntryContext<'_>,
+    before: Option<&EntryStateRef<'_>>,
+    after: Option<&EntryStateRef<'_>>,
+) {
+    let project = |entry: &EntryStateRef<'_>| {
+        (
+            entry.stats.created_at,
+            entry
+                .entry_key
+                .to_canonical_entry_id(context.qid.partition_key()),
+        )
+    };
+    let (old, new) = (before.map(project), after.map(project));
+    if old != new {
+        let value = CreatedEntryValueRef {
+            handler: context.target.handler(),
+            scope: context.target.scope(),
+        };
+        let key = |(created_at, canonical_id)| {
+            EntryByCreatedKey::borrowed(
+                Reverse(created_hour(created_at)),
+                context.target.service(),
+                Reverse(created_at),
+                canonical_id,
+            )
+        };
+        let (old, new) = (old.map(key), new.map(key));
+        storage.update_secondary_index_entry_with_id(
+            id,
+            old.as_ref().map(|key| (key, value)),
+            new.as_ref().map(|key| (key, value)),
         );
     }
 }

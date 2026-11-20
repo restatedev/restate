@@ -56,6 +56,17 @@ fn index(store: &PartitionStore) -> Option<(u32, IndexStatus)> {
 
 /// The keys of every secondary index in this partition's store.
 fn index_keys(store: &PartitionStore) -> Vec<Vec<u8>> {
+    index_entries(store)
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect()
+}
+
+/// An index key and its value.
+type Entry = (Vec<u8>, Vec<u8>);
+
+/// The keys and values of every secondary index in this partition's store.
+fn index_entries(store: &PartitionStore) -> Vec<Entry> {
     let db = store.partition_db();
     let mut options = ReadOptions::default();
     options.set_total_order_seek(true);
@@ -66,18 +77,19 @@ fn index_keys(store: &PartitionStore) -> Vec<Vec<u8>> {
         .as_raw_db()
         .raw_iterator_cf_opt(db.cf_handle(), options);
     it.seek_to_first();
-    let mut keys = Vec::new();
+    let mut entries = Vec::new();
     while let Some(key) = it.key() {
-        keys.push(key.to_vec());
+        entries.push((key.to_vec(), it.value().unwrap().to_vec()));
         it.next();
     }
     it.status().unwrap();
-    keys
+    entries
 }
 
-/// The entry indexes' keys without their index header, by definition:
-/// comparable across replicas whatever partition and index IDs they have.
-fn payloads(store: &PartitionStore) -> Vec<(&'static str, Vec<Vec<u8>>)> {
+/// The entry indexes' keys without their index header, with their values, by
+/// definition: comparable across replicas whatever partition and index IDs they
+/// have.
+fn payloads(store: &PartitionStore) -> Vec<(&'static str, Vec<Entry>)> {
     let registry = get_registry(store.partition_db())
         .unwrap()
         .unwrap_or_default();
@@ -88,9 +100,11 @@ fn payloads(store: &PartitionStore) -> Vec<(&'static str, Vec<Vec<u8>>)> {
             let keys = registry
                 .maintained(definition.name)
                 .map_or_else(Vec::new, |index| {
-                    keys_of(store, index.id)
+                    entries_of(store, index.id)
                         .into_iter()
-                        .map(|key| key[IndexKeyPrefix::SERIALIZED_LENGTH..].to_vec())
+                        .map(|(key, value)| {
+                            (key[IndexKeyPrefix::SERIALIZED_LENGTH..].to_vec(), value)
+                        })
                         .collect()
                 });
             (definition.name, keys)
@@ -114,7 +128,10 @@ fn tracking() -> Configuration {
 
 /// Every entry has one key, ordered by service, then handler (NULL, a state
 /// mutation, first), then newest created first. Stage and status changes don't
-/// write the index; deleting the entry removes its key.
+/// write the index; deleting the entry removes its key. `entry_by_created/1`
+/// keys the same entries by creation hour, newest first, then service and
+/// newest created first, each with its handler and scope as the value, and
+/// changes the same way.
 #[restate_core::test]
 async fn keys_order_entries_and_change_only_on_create_and_delete() {
     RocksDbManager::init();
@@ -135,7 +152,7 @@ async fn keys_order_entries_and_change_only_on_create_and_delete() {
         handler: "call",
     };
     let run = EntryTargetRef::Service {
-        scope: None,
+        scope: Some("tenant-a"),
         service: "Utils",
         handler: "run",
     };
@@ -156,7 +173,8 @@ async fn keys_order_entries_and_change_only_on_create_and_delete() {
         (&call, EntryKind::Invocation, 2, 3_000),
         (&run, EntryKind::Invocation, 3, 2_000),
         (&mutation, EntryKind::StateMutation, 4, 500),
-        (&other, EntryKind::Invocation, 5, 9_000),
+        // Two hours later than the others.
+        (&other, EntryKind::Invocation, 5, 7_209_000),
     ]
     .map(|(target, kind, byte, created)| {
         let created = UniqueTimestamp::try_from_unix_millis(MillisSinceEpoch::new(
@@ -211,6 +229,52 @@ async fn keys_order_entries_and_change_only_on_create_and_delete() {
     // handler) comes first, then "call" newest first, then "run".
     assert_eq!(keys_of(&store, id), expected(&[4, 3, 1, 0, 2]));
 
+    let created_id = maintained(&store, &ENTRY_BY_CREATED);
+    let expected_created = |order: &[usize]| {
+        order
+            .iter()
+            .map(|&i| {
+                let (target, key, stats) = &entries[i];
+                let mut bytes = Vec::new();
+                EntryByCreatedKey::borrowed(
+                    Reverse(created_hour(stats.created_at)),
+                    target.service(),
+                    Reverse(stats.created_at),
+                    key.to_canonical_entry_id(qid.partition_key()),
+                )
+                .encode_key(
+                    IndexScope {
+                        partition: PartitionId::MIN,
+                        index: created_id,
+                    },
+                    &mut bytes,
+                );
+                let value = (
+                    target.handler().map(str::to_owned),
+                    target.scope().map(str::to_owned),
+                );
+                (bytes, value)
+            })
+            .collect::<Vec<_>>()
+    };
+    let created_entries = |store: &PartitionStore| {
+        entries_of(store, created_id)
+            .into_iter()
+            .map(|(key, value)| {
+                let value = CreatedEntryValueRef::decode(&value).unwrap();
+                let value = (
+                    value.handler.map(str::to_owned),
+                    value.scope.map(str::to_owned),
+                );
+                (key, value)
+            })
+            .collect::<Vec<_>>()
+    };
+    // The entry two hours later leads; the others share an hour and one
+    // service, newest first, with the state mutation's handler NULL and the
+    // scoped target's scope in the value.
+    assert_eq!(created_entries(&store), expected_created(&[4, 1, 2, 0, 3]));
+
     // Running an entry changes its stage, status and transition time, not its key.
     let mut tx = store.transaction();
     let (target, key, stats) = &entries[0];
@@ -235,6 +299,7 @@ async fn keys_order_entries_and_change_only_on_create_and_delete() {
     );
     tx.commit().await.unwrap();
     assert_eq!(keys_of(&store, id), expected(&[4, 3, 1, 0, 2]));
+    assert_eq!(created_entries(&store), expected_created(&[4, 1, 2, 0, 3]));
 
     // Deleting an entry removes exactly its key.
     let mut tx = store.transaction();
@@ -250,13 +315,15 @@ async fn keys_order_entries_and_change_only_on_create_and_delete() {
     );
     tx.commit().await.unwrap();
     assert_eq!(keys_of(&store, id), expected(&[4, 3, 0, 2]));
+    assert_eq!(created_entries(&store), expected_created(&[4, 2, 0, 3]));
 }
 
 /// Backfilling existing entries gives the same keys as maintaining the indexes
 /// from the start: invocations through their invocation status, state
 /// mutations through their input. A reset deletes the keys; tracking again
 /// rebuilds them under new IDs. On a store whose first index is already Complete,
-/// the two later ones get their own full pass, and the first stays as it was.
+/// the later ones get their own full pass, and the first stays as it was. Values
+/// are compared too.
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     RocksDbManager::init();
@@ -288,10 +355,10 @@ async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     // in either the finished or the active index, and the two unusual entries:
     // the Finished one in the finished index, the one in an unknown stage in
     // neither.
-    let [all, finished, active] = <[_; 3]>::try_from(counts(&reference))
+    let [all, finished, active, created] = <[_; 4]>::try_from(counts(&reference))
         .unwrap()
         .map(|(_, count)| count);
-    assert_eq!((all, finished + active), (149, 148));
+    assert_eq!((all, finished + active, created), (149, 148, 149));
     assert!(finished > 0 && active > 0, "{:?}", counts(&reference));
     assert_eq!(payloads(&store), payloads(&reference));
 
@@ -323,12 +390,16 @@ async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     assert_eq!(status, IndexStatus::Complete);
     let before = payloads(&late);
     assert_eq!(before[0], payloads(&reference)[0]);
-    assert!(before[1].1.is_empty() && before[2].1.is_empty());
-    // This release adds the other two: they backfill on their own, and the
-    // first keeps its ID and keys.
+    assert!(before[1..].iter().all(|(_, keys)| keys.is_empty()));
+    // This release adds the others: they backfill on their own, and the first
+    // keeps its ID and keys.
     open(&mut late, &tracking()).await;
     assert_eq!(index(&late), Some((first, IndexStatus::Complete)));
-    for definition in [&FINISHED_ENTRY_BY_OUTCOME, &ACTIVE_ENTRY_BY_STAGE] {
+    for definition in [
+        &FINISHED_ENTRY_BY_OUTCOME,
+        &ACTIVE_ENTRY_BY_STAGE,
+        &ENTRY_BY_CREATED,
+    ] {
         let id = maintained(&late, definition);
         let registry = get_registry(late.partition_db()).unwrap().unwrap();
         assert_eq!(registry.get(id).unwrap().state, IndexStatus::Complete);
@@ -432,9 +503,17 @@ fn maintained(store: &PartitionStore, definition: &IndexDefinition) -> u32 {
 
 /// The keys of index `id`, in storage order.
 fn keys_of(store: &PartitionStore, id: u32) -> Vec<Vec<u8>> {
-    index_keys(store)
+    entries_of(store, id)
         .into_iter()
-        .filter(|key| IndexKeyPrefix::decode_prefix(key).unwrap().0.index_id_raw() == id)
+        .map(|(key, _)| key)
+        .collect()
+}
+
+/// The keys of index `id` with their values, in storage order.
+fn entries_of(store: &PartitionStore, id: u32) -> Vec<Entry> {
+    index_entries(store)
+        .into_iter()
+        .filter(|(key, _)| IndexKeyPrefix::decode_prefix(key).unwrap().0.index_id_raw() == id)
         .collect()
 }
 

@@ -191,9 +191,9 @@ pub mod codecs {
     pub use super::legacy_codec::{DelimitedBytesCodec, LockNameCodec, OptionalScopeCodec};
     pub use super::ordered_key_codec::{
         CanonicalEntryIdCodec, EntryIdCodec, EntryKindCodec, InvocationUuidCodec,
-        RestateEpochMillisCodec, ReverseBoolCodec, ReverseU64Codec, ReverseUniqueTimestampCodec,
-        RoughTimestampCodec, SeqCodec, StageRankCodec, StatusCodec, VQueueIdCodec,
-        VQueueIdSuffixCodec,
+        RestateEpochMillisCodec, ReverseBoolCodec, ReverseRoughTimestampCodec, ReverseU64Codec,
+        ReverseUniqueTimestampCodec, RoughTimestampCodec, SeqCodec, StageRankCodec, StatusCodec,
+        VQueueIdCodec, VQueueIdSuffixCodec,
     };
 }
 
