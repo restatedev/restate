@@ -84,13 +84,20 @@
 //! and write only when the two differ.
 
 use std::cmp::Reverse;
+use std::ops::Bound::{self, Excluded, Included, Unbounded};
 
 use bytes::{Buf, BufMut};
 use prost::encoding::{decode_varint, encode_varint, encoded_len_varint};
 
+use restate_clock::time::MillisSinceEpoch;
 use restate_clock::{RoughTimestamp, UniqueTimestamp};
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{EntryContext, EntryStateRef, Stage};
+use restate_storage_query_api::selection::{Selection, ValuePredicate};
+use restate_storage_query_api::tables::index::{
+    EntryByServiceCreated as InvocationsByCreation, EntryByServiceCreatedClause,
+    EntryByServiceCreatedColumn,
+};
 use restate_types::config::Configuration;
 
 use crate::PartitionStoreTransaction;
@@ -99,6 +106,8 @@ use crate::keys::codecs::{
     CanonicalEntryIdCodec, ReverseRoughTimestampCodec, ReverseUniqueTimestampCodec,
     ServiceNameCodec, StageRankCodec, StatusCodec, StringCodec,
 };
+use crate::keys::selection::codec::{FieldPredicateCodec, prepare_hour_buckets};
+use crate::keys::selection::{KeySelection, PrepareKeySelection};
 use crate::registry::{Family, IndexDefinition, IndexKind};
 
 crate::index::macros::define_secondary_index!(
@@ -378,6 +387,100 @@ crate::index::macros::define_secondary_index!(
     },
     value: CreatedEntryValue,
 );
+
+// A query on invocations restricts `entry_by_created/1` through the invocation
+// columns its fields are named after, and the creation hour through
+// `created_at`: the hours that may hold a matching time. The handler is in the
+// value, so the caller's predicate checks it.
+impl PrepareKeySelection<InvocationsByCreation> for EntryByCreatedKey {
+    fn prepare_candidates(
+        selection: &Selection<InvocationsByCreation>,
+    ) -> crate::Result<KeySelection<Self>> {
+        KeySelection::for_key_fields_with(
+            selection,
+            |clause, literals| match clause {
+                EntryByServiceCreatedClause::TargetServiceName(predicate) => {
+                    ServiceNameCodec::try_prepare_value(predicate, literals)
+                }
+                EntryByServiceCreatedClause::CreatedAt(predicate) => {
+                    ReverseUniqueTimestampCodec::try_prepare_value(predicate, literals)
+                }
+                _ => Ok(None),
+            },
+            |tag, literals| {
+                if tag != "created_hour" {
+                    return Ok(None);
+                }
+                Ok(match created_times(selection) {
+                    Some(CreatedTimes::Clause(times)) => {
+                        Some(prepare_hour_buckets(times, literals))
+                    }
+                    Some(CreatedTimes::Range(times)) => {
+                        Some(prepare_hour_buckets(&times, literals))
+                    }
+                    None => None,
+                })
+            },
+        )
+    }
+}
+
+/// The creation times every match has: one of its equalities or IN lists, or
+/// its ranges intersected.
+enum CreatedTimes<'a> {
+    Clause(&'a ValuePredicate<MillisSinceEpoch>),
+    Range(ValuePredicate<MillisSinceEpoch>),
+}
+
+/// The creation times every match of `selection` has: one of its `created_at`
+/// equalities or IN lists, each of which every match satisfies, or else its
+/// ranges intersected. `None` when nothing restricts the creation time.
+fn created_times(selection: &Selection<InvocationsByCreation>) -> Option<CreatedTimes<'_>> {
+    let Selection::Predicates(predicates) = selection else {
+        return None;
+    };
+    let (mut lower, mut upper) = (Unbounded, Unbounded);
+    let mut ranged = false;
+    for clause in predicates.for_column(EntryByServiceCreatedColumn::CreatedAt) {
+        let EntryByServiceCreatedClause::CreatedAt(predicate) = clause else {
+            continue;
+        };
+        match predicate {
+            ValuePredicate::Equal(_) | ValuePredicate::In(_) => {
+                return Some(CreatedTimes::Clause(predicate));
+            }
+            ValuePredicate::Range {
+                lower: low,
+                upper: high,
+            } => {
+                lower = tighter(lower, *low, |a, b| a > b);
+                upper = tighter(upper, *high, |a, b| a < b);
+                ranged = true;
+            }
+        }
+    }
+    ranged.then_some(CreatedTimes::Range(ValuePredicate::Range { lower, upper }))
+}
+
+/// The stricter of two bounds on the same side: `beyond(a, b)` says whether `a`
+/// is further into the interval than `b`; at the same value, exclusive wins.
+fn tighter(
+    current: Bound<MillisSinceEpoch>,
+    other: Bound<MillisSinceEpoch>,
+    beyond: impl Fn(u64, u64) -> bool,
+) -> Bound<MillisSinceEpoch> {
+    let value = |bound: &Bound<MillisSinceEpoch>| match bound {
+        Included(millis) | Excluded(millis) => Some(millis.as_u64()),
+        Unbounded => None,
+    };
+    match (value(&current), value(&other)) {
+        (_, None) => current,
+        (None, Some(_)) => other,
+        (Some(a), Some(b)) if beyond(b, a) => other,
+        (Some(a), Some(b)) if a == b && matches!(other, Excluded(_)) => other,
+        _ => current,
+    }
+}
 
 /// The start of the hour in which `at` falls: the bucket that leads the keys of
 /// `entry_by_created/1`.

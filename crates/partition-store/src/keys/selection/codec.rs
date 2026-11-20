@@ -40,6 +40,8 @@ use super::PreparedFieldPredicate;
 
 mod timestamp;
 
+pub(crate) use timestamp::prepare_hour_buckets;
+
 #[cfg(test)]
 mod tests;
 

@@ -762,11 +762,19 @@ fn bucketed(
     direction: ReadDirection,
     limits: OrderedRunsLimits,
 ) -> Option<std::result::Result<Vec<(String, u64)>, StorageError>> {
-    use crate::vqueue_table::{EntryByCreated, EntryByCreatedKey};
+    bucketed_with(snapshot, KeySelection::all(), direction, limits)
+}
 
+/// [`bucketed`] with `selection`.
+fn bucketed_with(
+    snapshot: &ReadSnapshot,
+    selection: KeySelection<crate::vqueue_table::EntryByCreatedKey>,
+    direction: ReadDirection,
+    limits: OrderedRunsLimits,
+) -> Option<std::result::Result<Vec<(String, u64)>, StorageError>> {
     let OrderedRunsDiscovery::Ready(mut runs) = snapshot
-        .ordered_runs::<EntryByCreated>(
-            Arc::new(KeySelection::<EntryByCreatedKey>::all()),
+        .ordered_runs::<crate::vqueue_table::EntryByCreated>(
+            Arc::new(selection),
             2,
             direction,
             limits,
@@ -852,4 +860,157 @@ fn expected_in_order(
         rows.reverse();
     }
     rows
+}
+
+/// Backwards, a bucket without a match stays a bucket: oldest first, service
+/// A in hours 0 and 2 and only B in hour 1, the read of A returns each of its
+/// entries once, without reading from hour 1 into the hour it returned.
+#[restate_core::test]
+async fn buckets_without_a_match_are_skipped_in_both_directions() {
+    use crate::vqueue_table::EntryByCreatedKey;
+
+    const HOUR: u64 = 3_600_000;
+    let store = store_with(&[("A", 10, 1), ("B", HOUR + 10, 2), ("A", 2 * HOUR + 10, 3)]).await;
+    let (snapshot, _closed) = store.query_read(CancellationToken::new()).unwrap();
+    let only_a = || {
+        EntryByCreatedKey::prepare_candidates(&Selection::All.and(IndexClause::TargetServiceName(
+            ValuePredicate::Equal("A".into()),
+        )))
+        .unwrap()
+    };
+    let limits = OrderedRunsLimits {
+        bucket_fields: 1,
+        ..limits(4, 2)
+    };
+    let newest_first = vec![("A".to_owned(), 2 * HOUR + 10), ("A".to_owned(), 10)];
+    // A budget of one key a step pauses the later buckets' discovery, which
+    // continues in the next steps with the same rows.
+    let one_key = OrderedRunsLimits {
+        step_budget: NonZeroUsize::MIN,
+        ..limits
+    };
+    for direction in [ReadDirection::Forward, ReadDirection::Backward] {
+        for limits in [limits, one_key] {
+            let rows = bucketed_with(&snapshot, only_a(), direction, limits)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                rows,
+                expected_in_order(&newest_first, direction),
+                "{direction:?}"
+            );
+        }
+        assert!(
+            skipped_steps(&snapshot, only_a(), direction, one_key) > 0,
+            "{direction:?}"
+        );
+    }
+}
+
+/// How many steps of the bucketed read report [`CursorStep::Skipped`].
+fn skipped_steps(
+    snapshot: &ReadSnapshot,
+    selection: KeySelection<crate::vqueue_table::EntryByCreatedKey>,
+    direction: ReadDirection,
+    limits: OrderedRunsLimits,
+) -> usize {
+    let OrderedRunsDiscovery::Ready(mut runs) = snapshot
+        .ordered_runs::<crate::vqueue_table::EntryByCreated>(
+            Arc::new(selection),
+            2,
+            direction,
+            limits,
+            Box::new(()),
+        )
+        .unwrap()
+    else {
+        panic!("too many runs");
+    };
+    let mut skipped = 0;
+    loop {
+        match runs.advance().unwrap() {
+            CursorStep::Record => {}
+            CursorStep::Skipped => skipped += 1,
+            CursorStep::Done => return skipped,
+        }
+    }
+}
+
+/// Bucketed reads charge what they hold and release all of it: when done, when
+/// a later bucket is refused memory, which fails the read after it returned the
+/// first bucket's rows, and when cancelled between buckets.
+#[restate_core::test]
+async fn bucketed_reads_charge_refuse_and_cancel_like_others() {
+    const HOUR: u64 = 3_600_000;
+    let store = store_with(&[
+        ("A", 2 * HOUR + 10, 1),
+        ("A", HOUR + 10, 2),
+        ("B", HOUR + 20, 3),
+        ("C", HOUR + 30, 4),
+        ("D", HOUR + 40, 5),
+    ])
+    .await;
+    let limits = OrderedRunsLimits {
+        bucket_fields: 1,
+        ..limits(8, 2)
+    };
+    let open = |snapshot: &ReadSnapshot, direction, charged: &Charged| {
+        let OrderedRunsDiscovery::Ready(runs) = snapshot
+            .ordered_runs::<crate::vqueue_table::EntryByCreated>(
+                Arc::new(KeySelection::all()),
+                2,
+                direction,
+                limits,
+                Box::new(charged.clone()),
+            )
+            .unwrap()
+        else {
+            panic!("the first bucket's runs are within the limit");
+        };
+        runs
+    };
+    let (snapshot, _closed) = store.query_read(CancellationToken::new()).unwrap();
+
+    // Done: all five rows, and everything charged released.
+    let mut peak = 0;
+    for direction in [ReadDirection::Forward, ReadDirection::Backward] {
+        let charged = Charged::default();
+        let mut runs = open(&snapshot, direction, &charged);
+        let mut rows = 0;
+        while let step = runs.advance().unwrap()
+            && step != CursorStep::Done
+        {
+            rows += usize::from(step == CursorStep::Record);
+        }
+        assert_eq!((rows, charged.now_and_peak().0), (5, 0), "{direction:?}");
+        if direction == ReadDirection::Forward {
+            peak = charged.now_and_peak().1;
+        }
+    }
+
+    // Refused: newest first, the first hour's one run fits and returns its
+    // row; the next hour's four runs don't, which fails the read.
+    let charged = Charged::with_limit(peak - 1);
+    let mut runs = open(&snapshot, ReadDirection::Forward, &charged);
+    let mut rows = 0;
+    let failed = loop {
+        match runs.advance() {
+            Ok(CursorStep::Record) => rows += 1,
+            Ok(CursorStep::Skipped) => {}
+            Ok(CursorStep::Done) => break false,
+            Err(_) => break true,
+        }
+    };
+    assert!(failed && rows == 1, "failed: {failed}, rows: {rows}");
+    assert_eq!((runs.retained_bytes(), charged.now_and_peak().0), (0, 0));
+
+    // Cancelled between buckets: the next step fails and releases everything.
+    let cancel = CancellationToken::new();
+    let (snapshot, _closed) = store.query_read(cancel.clone()).unwrap();
+    let charged = Charged::default();
+    let mut runs = open(&snapshot, ReadDirection::Forward, &charged);
+    assert_eq!(runs.advance().unwrap(), CursorStep::Record);
+    cancel.cancel();
+    assert!(runs.advance().is_err());
+    assert_eq!((runs.retained_bytes(), charged.now_and_peak().0), (0, 0));
 }
