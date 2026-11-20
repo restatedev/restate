@@ -10,8 +10,17 @@
 
 use tracing::{Span, debug_span, trace_span};
 
-use restate_types::{identifiers::InvocationId, invocation::InvocationTarget};
+use restate_storage_api::{
+    StorageError, blob_table::ReadBlobTable, invocation_status_table::ResponseResultRef,
+};
+use restate_types::{
+    errors::GONE_INVOCATION_ERROR,
+    identifiers::InvocationId,
+    invocation::{InvocationTarget, ResponseResult},
+};
 use restate_wal_protocol::v2::CommandKind;
+
+use crate::ResolveResponseResult;
 
 pub(super) trait SpanExt {
     fn record_invocation_id(&self, id: &InvocationId);
@@ -54,5 +63,43 @@ pub(super) fn state_machine_apply_command_span(is_leader: bool, record_kind: Com
             rpc.method = tracing::field::Empty,
             restate.state_machine.command = tracing::field::display(record_kind),
         )
+    }
+}
+
+// Resolves and cache a ResponseResultRef and return
+// a copy of the cached result on resolve
+pub(crate) struct CachedResponseResultRef {
+    inner: ResponseResultRef,
+    cached: Option<ResponseResult>,
+}
+
+impl From<ResponseResultRef> for CachedResponseResultRef {
+    fn from(inner: ResponseResultRef) -> Self {
+        Self {
+            inner,
+            cached: None,
+        }
+    }
+}
+
+impl CachedResponseResultRef {
+    pub async fn resolve<S: ReadBlobTable>(
+        &mut self,
+        storage: &mut S,
+    ) -> Result<ResponseResult, StorageError> {
+        // can we store in an arc?
+        match &self.cached {
+            Some(cached) => Ok(cached.clone()),
+            None => {
+                let result = self
+                    .inner
+                    .resolve(storage)
+                    .await?
+                    .unwrap_or_else(|| ResponseResult::from(GONE_INVOCATION_ERROR));
+
+                self.cached = Some(result);
+                Ok(self.cached.clone().unwrap())
+            }
+        }
     }
 }

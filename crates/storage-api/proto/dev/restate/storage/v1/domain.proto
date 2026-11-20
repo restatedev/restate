@@ -274,7 +274,7 @@ message InvocationStatusV2 {
   oneof output {
     // Inlined output. completion_status must be unset.
     ResponseResult result = 18;
-    // Binary-encoded BaseBlobId of the stored output. completion_status must be set.
+    // Binary-encoded BlobId of the stored output. completion_status must be set.
     bytes blob_id = 39;
   }
 
@@ -771,6 +771,9 @@ message OutboxMessage {
     uint32 kind = 2;
     uint32 codec = 3;
     bytes message = 4;
+    // Raw BlobId bytes of the blob referenced by `message`, if any. The outbox holds a
+    // reference on it until the message is truncated.
+    optional bytes related_blob = 5;
   }
 
   oneof outbox_message {

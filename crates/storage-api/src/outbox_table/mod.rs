@@ -11,8 +11,9 @@
 use std::ops::RangeInclusive;
 
 use bytes::Bytes;
-use serde_with::{TryFromInto, serde_as};
+use serde_with::{DisplayFromStr, TryFromInto, serde_as};
 
+use restate_types::blob::BlobId;
 use restate_types::identifiers::{PartitionKey, WithPartitionKey};
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationResponse, InvocationTermination, NotifySignalRequest,
@@ -27,10 +28,15 @@ use crate::protobuf_types::PartitionStoreProtobufValue;
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OpaqueMessage {
     pub partition_key: PartitionKey,
-    pub kind: u16,
+    pub kind: u32,
     #[serde_as(as = "TryFromInto<u8>")]
     pub codec: StorageCodecKind,
     pub message: Bytes,
+    /// Blob referenced by `message`, if any. Duplicated out of the message so that the outbox
+    /// can track blob references without decoding it.
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[serde(default)]
+    pub related_blob: Option<BlobId>,
 }
 
 /// Types of outbox messages.

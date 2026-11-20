@@ -3739,10 +3739,13 @@ pub mod v1 {
                                         opaque.codec as i32,
                                     )
                                 })?,
-                            kind: u16::try_from(opaque.kind).map_err(|_| {
-                                ConversionError::UnexpectedEnumVariant("kind", opaque.kind as i32)
-                            })?,
+                            kind: opaque.kind,
                             message: opaque.message,
+                            related_blob: opaque
+                                .related_blob
+                                .map(|id| BlobId::from_slice(&id))
+                                .transpose()
+                                .map_err(|err| ConversionError::InvalidData(err.into()))?,
                         };
 
                         crate::outbox_table::OutboxMessage::Opaque(msg)
@@ -3813,9 +3816,12 @@ pub mod v1 {
                     crate::outbox_table::OutboxMessage::Opaque(opaque) => {
                         outbox_message::OutboxMessage::Opaque(outbox_message::Opaque {
                             partition_key: opaque.partition_key,
-                            kind: opaque.kind as u32,
+                            kind: opaque.kind,
                             codec: u8::from(opaque.codec).into(),
                             message: opaque.message,
+                            related_blob: opaque
+                                .related_blob
+                                .map(|id| Bytes::copy_from_slice(&id.to_bytes())),
                         })
                     }
                 };
