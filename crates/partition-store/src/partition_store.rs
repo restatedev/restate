@@ -34,7 +34,7 @@ use tracing::{Level, instrument, trace, warn};
 
 use restate_core::io::{AdmissionClosed, Gate, IoExecutor};
 use restate_futures_util::overdue::OverdueLoggingExt;
-use restate_rocksdb::reads::ReadIterator;
+use restate_rocksdb::reads::{OwnedPinnedValue, ReadIterator, ScopedReads};
 use restate_rocksdb::{
     IoMode, IterAction, Priority, RocksDb, RocksDbManager, RocksError, StorageTaskKind,
 };
@@ -51,6 +51,7 @@ use restate_types::sharding::KeyRange;
 use restate_types::storage::StorageCodec;
 use restate_types::storage::StorageDecode;
 use restate_types::storage::StorageEncode;
+use restate_util_lifecycle::Scope;
 use restate_util_string::ReString;
 
 use crate::PartitionStoreSnapshot;
@@ -69,7 +70,8 @@ use crate::fsm_table::{
 };
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, FixedLengthTableKey, KeyKind};
 use crate::migrations::MigrationError;
-use crate::partition_db::PartitionDb;
+use crate::offloaded_reads::{OffloadedRead, call_cached_or_offload};
+use crate::partition_db::{PartitionDb, PhysicalPartition};
 use crate::registry::PublishedRegistry;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
@@ -409,6 +411,7 @@ impl PartitionStore {
         let key_range = self.partition_key_range();
         let snapshot = self.db.read_snapshot()?;
         Ok(PartitionStoreSnapshot::new(
+            self.db.gate(),
             snapshot,
             &mut self.key_buffer,
             storage_features,
@@ -1061,6 +1064,24 @@ impl StorageRead for PartitionStore {
         self.key_buffer.clear();
         self.key_buffer.reserve(min_size);
         &mut self.key_buffer
+    }
+}
+
+impl OffloadedRead for PartitionStore {
+    type Value = OwnedPinnedValue<Scope<PhysicalPartition>>;
+
+    fn get_cached_or_offload<'a>(
+        &'a self,
+        name: &'static str,
+        key_kind: KeyKind,
+        key: &'a [u8],
+        executor: &(impl IoExecutor + Sync),
+    ) -> Result<impl Future<Output = Result<Option<Self::Value>>> + Send + 'static> {
+        let read = self
+            .db
+            .physical_scope()
+            .prepare_get(self.db.gate(), key_kind, key);
+        call_cached_or_offload(read, name, executor)
     }
 }
 
@@ -1787,9 +1808,6 @@ pub(crate) trait StorageIterator {
     #[allow(clippy::type_complexity)]
     fn item(&self) -> Result<Option<(&[u8], &[u8])>>;
 
-    /// Moves to the first entry at or after `key`.
-    fn seek(&mut self, key: &[u8]);
-
     /// Moves to the next entry.
     fn next(&mut self);
 }
@@ -1807,11 +1825,6 @@ impl<D: rocksdb::DBAccess> StorageIterator for DBRawIteratorWithThreadMode<'_, D
     }
 
     #[inline]
-    fn seek(&mut self, key: &[u8]) {
-        DBRawIteratorWithThreadMode::seek(self, key)
-    }
-
-    #[inline]
     fn next(&mut self) {
         DBRawIteratorWithThreadMode::next(self)
     }
@@ -1821,11 +1834,6 @@ impl<H> StorageIterator for ReadIterator<'_, H> {
     #[inline]
     fn item(&self) -> Result<Option<(&[u8], &[u8])>> {
         ReadIterator::item(self).map_err(|err| StorageError::Generic(err.into()))
-    }
-
-    #[inline]
-    fn seek(&mut self, key: &[u8]) {
-        ReadIterator::seek(self, key)
     }
 
     #[inline]

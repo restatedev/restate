@@ -9449,8 +9449,8 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "1.1.6"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v1.1.6#bfa061ee3b91c6b8ffb79863047d275081cb1916"
+version = "1.1.7"
+source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v1.1.7#b41e8227acd6904c38fc409917bbc02dd7b27eeb"
 
 [[package]]
 name = "restate-worker"

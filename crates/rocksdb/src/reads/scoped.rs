@@ -8,11 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
+
 use rocksdb::ReadOptions;
 
+use restate_core::io::Gate;
 use restate_util_lifecycle::Scope;
 
-use super::{ColumnFamilies, OwnedReadIterator, OwnedReader, ReadIterator, ReadSource, Reader};
+use super::{
+    ColumnFamilies, Get, Iteration, IteratorVisitor, Lookup, OwnedReadIterator, OwnedReader,
+    ReadIterator, ReadSource, Reader, get, iteration,
+};
+use crate::{Cooperative, Gated, IterAction, StorageOp};
 
 /// Reads of a scope's latest data, without a snapshot.
 ///
@@ -66,6 +73,37 @@ pub trait ScopedReads:
     /// so it can be kept across pauses and moved between threads. The same as
     /// calling [`ReadIterator::into_owned`] on a borrowed iterator.
     fn owned_iterator(&self, cf: Self::Cf, options: ReadOptions) -> OwnedReadIterator<Self>;
+
+    /// Prepares a lookup of `key` in the column family `cf`, counted in `gate`.
+    /// See [`ReadSnapshot::prepare_get`](super::ReadSnapshot::prepare_get),
+    /// which it is like, except that it sees the latest data when it runs.
+    fn prepare_get<'a, 'g>(
+        &'a self,
+        gate: &'g Arc<Gate>,
+        cf: Self::Cf,
+        key: &'a [u8],
+    ) -> StorageOp<Lookup<'a, Self>, Get<Self::Cf>, Gated<'g>>;
+
+    /// Prepares an iteration over one column family as one async operation, to
+    /// submit to an executor. See
+    /// [`ReadSnapshot::prepare_iteration`](super::ReadSnapshot::prepare_iteration),
+    /// which it is like, except that it can't start on the calling thread.
+    ///
+    /// The iteration creates its iterator on the storage worker, so it sees the
+    /// database as it was when it started to run there, not when it was
+    /// prepared. Don't set a snapshot in the options that `options` returns,
+    /// see [`Self::iterator`].
+    fn prepare_iteration<'g, O, V>(
+        &self,
+        gate: &'g Arc<Gate>,
+        cf: Self::Cf,
+        options: O,
+        start: IterAction,
+        visitor: V,
+    ) -> StorageOp<Cooperative<&Self>, Iteration<Self::Cf, O, V>, Gated<'g>>
+    where
+        O: Fn() -> ReadOptions + Send + 'static,
+        V: IteratorVisitor;
 }
 
 impl<C: ColumnFamilies> ScopedReads for Scope<C> {
@@ -85,5 +123,29 @@ impl<C: ColumnFamilies> ScopedReads for Scope<C> {
 
     fn owned_iterator(&self, cf: C::Cf, options: ReadOptions) -> OwnedReadIterator<Self> {
         self.iterator(cf, options).into_owned()
+    }
+
+    fn prepare_get<'a, 'g>(
+        &'a self,
+        gate: &'g Arc<Gate>,
+        cf: C::Cf,
+        key: &'a [u8],
+    ) -> StorageOp<Lookup<'a, Self>, Get<C::Cf>, Gated<'g>> {
+        get::prepare(self, gate, cf, key)
+    }
+
+    fn prepare_iteration<'g, O, V>(
+        &self,
+        gate: &'g Arc<Gate>,
+        cf: C::Cf,
+        options: O,
+        start: IterAction,
+        visitor: V,
+    ) -> StorageOp<Cooperative<&Self>, Iteration<C::Cf, O, V>, Gated<'g>>
+    where
+        O: Fn() -> ReadOptions + Send + 'static,
+        V: IteratorVisitor,
+    {
+        iteration::prepare(self, gate, cf, options, start, visitor)
     }
 }

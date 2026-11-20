@@ -648,10 +648,6 @@ mod tests {
         fn next(&mut self) {
             self.1 = self.0.next();
         }
-
-        fn seek(&mut self, _key: &[u8]) {
-            unimplemented!("records are only read in order")
-        }
     }
 
     /// The keys a sink was asked to put (`true`) or delete (`false`).

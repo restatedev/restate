@@ -34,6 +34,10 @@
 /// The index is **registered** under `definition:`: each replica's registry
 /// issues the index ID of its build, and a read resolves the Complete one.
 ///
+/// An optional `value: T,` after the key declares what each key stores besides
+/// itself, an [`IndexValue`](crate::index::IndexValue); without it the index
+/// holds keys only (`()`).
+///
 /// The declaration generates, through `define_ordered_key!`:
 /// - `EntryByStageServiceKey`, its borrowing `…KeyRef` and `…KeyView`, the prefix
 ///   builder and the field-by-field decoder;
@@ -57,13 +61,17 @@ macro_rules! define_secondary_index {
         $index:ident,
         definition: $definition:literal,
         introduced: ($major:literal, $minor:literal, $patch:literal),
-        key: $key:ident { $($fields:tt)* } $(,)?
+        key: $key:ident { $($fields:tt)* }
+        $(, value: $value:ty)? $(,)?
     ) => {
         crate::index::macros::define_secondary_index!(
-            @annotation [$(#[$meta])* $index, $key, [registered $definition ($major, $minor, $patch)]] [];
+            @annotation [$(#[$meta])* $index, $key, [registered $definition ($major, $minor, $patch)], [$($value)?]] [];
             $($fields)*
         );
     };
+
+    (@value) => { () };
+    (@value $value:ty) => { $value };
 
     // A `ty` macro fragment cannot be followed by `(`. Strip the terminal
     // annotation before parsing the field types, preserving arbitrary Rust types.
@@ -97,10 +105,11 @@ macro_rules! define_secondary_index {
         );
     };
 
-    (@identity $index:ident, $primary_type:ty, [registered $definition:literal ($major:literal, $minor:literal, $patch:literal)]) => {
+    (@identity $index:ident, $primary_type:ty, [registered $definition:literal ($major:literal, $minor:literal, $patch:literal)], [$($value:ty)?]) => {
         impl crate::index::SecondaryIndex for $index {
             type PrimaryKey = <$primary_type as crate::keys::FieldCodec>::Value;
             type Scope = crate::keys::header::IndexScope;
+            type Value = crate::index::macros::define_secondary_index!(@value $($value)?);
 
             fn scope(
                 metadata: &crate::table::ReadMetadata<'_>,
@@ -126,7 +135,7 @@ macro_rules! define_secondary_index {
         }
     };
 
-    (@emit [$(#[$meta:meta])* $index:ident, $key:ident, [$($identity:tt)*]]
+    (@emit [$(#[$meta:meta])* $index:ident, $key:ident, [$($identity:tt)*], [$($value:ty)?]]
         [$($field:ident: $codec:ty $(=> $borrowed:ty)?,)*];
         $primary_key:ident: $primary_type:ty
     ) => {
@@ -134,7 +143,7 @@ macro_rules! define_secondary_index {
         pub enum $index {}
 
         crate::index::macros::define_secondary_index!(
-            @identity $index, $primary_type, [$($identity)*]
+            @identity $index, $primary_type, [$($identity)*], [$($value)?]
         );
 
         crate::keys::macros::define_ordered_key!(

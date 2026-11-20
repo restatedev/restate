@@ -18,6 +18,7 @@ use std::sync::{Arc, OnceLock};
 use std::task::{Context, Waker};
 use std::time::Duration;
 
+use futures::FutureExt;
 use rocksdb::{ErrorKind, ReadOptions, ReadTier};
 use tokio::time::timeout;
 
@@ -31,10 +32,10 @@ use super::{ColumnFamilies, PinnedBatch, ReadIterator, ReadSnapshot, ScopedReads
 use crate::configuration::{
     CfConfigurator, DbConfigurator, create_default_cf_options, create_default_db_options,
 };
-use crate::reads::{IterationError, IterationOutcome};
+use crate::reads::{InlineVisitor, IterationError, IterationOutcome, IteratorVisitor};
 use crate::{
     CfHandles, CfName, CfPrefixPattern, DbEnv, DbName, DbSpec, DbSpecBuilder, GlobalExecutor,
-    IterAction, RocksAccess, RocksDb, RocksDbManager, RocksError, StorageTaskKind,
+    Inline, IterAction, RocksAccess, RocksDb, RocksDbManager, RocksError, StorageTaskKind,
 };
 
 const DEADLINE: Duration = Duration::from_secs(10);
@@ -59,14 +60,34 @@ impl CfConfigurator for Configurator {
     }
 }
 
+// Unlike `Configurator`, keeps a block cache, and stores every row in a block
+// of its own, so that a test can choose which rows of a flushed file are in
+// memory.
+struct OneRowBlocks(rocksdb::Cache);
+
+impl CfConfigurator for OneRowBlocks {
+    fn get_cf_options(&self, _: &DbName, _: &str, env: &DbEnv) -> rocksdb::Options {
+        let mut opts = create_default_cf_options(env.write_buffer_manager.as_ref());
+        let mut blocks = rocksdb::BlockBasedOptions::default();
+        blocks.set_block_cache(&self.0);
+        blocks.set_block_size(1);
+        opts.set_block_based_table_factory(&blocks);
+        opts
+    }
+}
+
 fn spec(path: &Path) -> DbSpec {
+    spec_with(path, Configurator)
+}
+
+fn spec_with(path: &Path, cfs: impl CfConfigurator + Send + Sync + 'static) -> DbSpec {
     DbSpecBuilder::new(
         DbName::new("read-snapshot"),
         DatabaseKind::PartitionStore,
         path.to_owned(),
         Configurator,
     )
-    .add_cf_pattern(CfPrefixPattern::ANY, Configurator)
+    .add_cf_pattern(CfPrefixPattern::ANY, cfs)
     .ensure_column_families(vec![CfName::new("data"), CfName::new("other")])
     .build()
     .unwrap()
@@ -75,11 +96,15 @@ fn spec(path: &Path) -> DbSpec {
 /// Opens a database without a manager. Dropping its last handle closes it right
 /// away, on the dropping thread.
 fn standalone(path: &Path) -> anyhow::Result<Arc<RocksDb>> {
+    standalone_with(spec(path))
+}
+
+fn standalone_with(spec: DbSpec) -> anyhow::Result<Arc<RocksDb>> {
     let executor = GlobalExecutor::new(
         crate::SinglePoolExecutor::new("test-high", NonZeroUsize::MIN),
         crate::SinglePoolExecutor::new("test-low", NonZeroUsize::MIN),
     );
-    let native = RocksAccess::open_db(spec(path), DbEnv::default())?;
+    let native = RocksAccess::open_db(spec, DbEnv::default())?;
     Ok(Arc::new(RocksDb::new(native, executor)))
 }
 
@@ -644,18 +669,18 @@ async fn prepared_iteration() -> anyhow::Result<()> {
     // Single threaded executor
     let executor = crate::SinglePoolExecutor::new("test", NonZeroUsize::MIN);
 
-    // Create the iterator
     let scope = test_scope(&db, false);
-    let iterator = scope.owned_iterator(Cf::Data, ReadOptions::default());
 
     // The output channel
     let (tx, mut rx) = tokio::sync::mpsc::channel(50);
 
     let gate = scope.gate().child();
-    let iteration = iterator
+    let iteration = scope
         .prepare_iteration(
             &gate,
-            Some(IterAction::Seek(bytes::Bytes::from_static(&[0]))),
+            Cf::Data,
+            ReadOptions::default,
+            IterAction::Seek(bytes::Bytes::from_static(&[0])),
             async move |key: &[u8], value: &[u8]| -> Result<IterAction, RocksError> {
                 match tx
                     .send(Ok::<_, RocksError>((key.to_vec(), value.to_vec())))
@@ -709,14 +734,32 @@ async fn prepared_iteration() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A callback that sends each key to `tx`.
-#[allow(clippy::type_complexity)]
-fn send_keys(
-    tx: tokio::sync::mpsc::Sender<Vec<u8>>,
-) -> impl AsyncFnMut(&[u8], &[u8]) -> Result<IterAction, RocksError> + Send + 'static {
-    async move |key: &[u8], _value: &[u8]| match tx.send(key.to_vec()).await {
-        Ok(()) => Ok(IterAction::Next),
-        Err(_) => Ok(IterAction::Stop),
+/// A visitor that sends each key to `tx`.
+fn send_keys(tx: tokio::sync::mpsc::Sender<Vec<u8>>) -> SendKeys {
+    SendKeys(tx)
+}
+
+struct SendKeys(tokio::sync::mpsc::Sender<Vec<u8>>);
+
+impl IteratorVisitor for SendKeys {
+    type Error = RocksError;
+
+    async fn visit(&mut self, key: &[u8], _value: &[u8]) -> Result<IterAction, RocksError> {
+        Ok(match self.0.send(key.to_vec()).await {
+            Ok(()) => IterAction::Next,
+            Err(_) => IterAction::Stop,
+        })
+    }
+}
+
+impl InlineVisitor for SendKeys {
+    fn try_visit(&mut self, key: &[u8], _value: &[u8]) -> Option<Result<IterAction, RocksError>> {
+        use tokio::sync::mpsc::error::TrySendError;
+        match self.0.try_send(key.to_vec()) {
+            Ok(()) => Some(Ok(IterAction::Next)),
+            Err(TrySendError::Full(_)) => None,
+            Err(TrySendError::Closed(_)) => Some(Ok(IterAction::Stop)),
+        }
     }
 }
 
@@ -729,6 +772,210 @@ async fn wait_until_full<T>(rx: &tokio::sync::mpsc::Receiver<T>) {
     })
     .await
     .unwrap();
+}
+
+/// Everything sent to `rx` so far.
+fn sent<T>(rx: &mut tokio::sync::mpsc::Receiver<T>) -> Vec<T> {
+    std::iter::from_fn(|| rx.try_recv().ok()).collect()
+}
+
+#[tokio::test]
+async fn prepared_iteration_runs_while_cached_then_on_a_worker() -> anyhow::Result<()> {
+    let tempdir = restate_test_util::tempdir()?;
+    let cache = rocksdb::Cache::new_lru_cache(1 << 20);
+    let db = standalone_with(spec_with(&tempdir.path().join("db"), OneRowBlocks(cache)))?;
+    let keys: Vec<Vec<u8>> = (0..5).map(|b| vec![b]).collect();
+    {
+        // "other" stays in the memtable. "data" is flushed, into a block per row.
+        let raw = db.inner().as_raw_db();
+        let data = db.inner().cf_handle("data").unwrap();
+        let other = db.inner().cf_handle("other").unwrap();
+        for key in &keys {
+            raw.put_cf(&data, key, key)?;
+            raw.put_cf(&other, key, key)?;
+        }
+        raw.flush_cf(&data)?;
+    }
+    let scope = test_scope(&db, false);
+    let snapshot = ReadSnapshot::new(&scope, scope.gate())?;
+    let executor = crate::SinglePoolExecutor::new("test", NonZeroUsize::MIN);
+    let gate = scope.gate().child();
+    // A scan of `cf` that sends its keys to a channel with room for `room`.
+    let scan = |cf, room| {
+        let (tx, rx) = tokio::sync::mpsc::channel(room);
+        let scan = snapshot.prepare_iteration(
+            &gate,
+            cf,
+            ReadOptions::default,
+            IterAction::SeekToFirst,
+            send_keys(tx),
+        );
+        (scan, rx)
+    };
+    // Runs the rest of a scan on a worker, and returns the keys it sent.
+    macro_rules! finish {
+        ($rest:expr, $rx:expr) => {{
+            // The visitor is dropped on the worker, which closes the channel.
+            let rest = $rest
+                .map_ok(|outcome| matches!(outcome, IterationOutcome::Exhausted(_)))
+                .with_read_perf("test");
+            let driver = executor.spawn_cancellable(rest)?;
+            let mut keys = Vec::new();
+            while let Some(key) = timeout(DEADLINE, $rx.recv()).await? {
+                keys.push(key);
+            }
+            assert_matches!(timeout(DEADLINE, driver).await?, Ok(Ok(true)));
+            keys
+        }};
+    }
+
+    // Rows in memory, with room for all of them: the scan finishes on this
+    // thread, and hands its visitor back.
+    let (inline, mut rx) = scan(Cf::Other, 5);
+    let Inline::Done(Ok(IterationOutcome::Exhausted(visitor))) = inline.call_cached()? else {
+        panic!("the scan should have finished inline");
+    };
+    drop(visitor);
+    assert_eq!(sent(&mut rx), keys);
+    assert!(gate.is_idle());
+
+    // After `max_cached_rows`, the rest goes on at the next row.
+    let (inline, mut rx) = scan(Cf::Other, 5);
+    let Inline::WouldBlock(rest) = inline.max_cached_rows(2).call_cached()? else {
+        panic!("the scan should have stopped after two rows");
+    };
+    assert_eq!(sent(&mut rx), keys[..2]);
+    assert_eq!(finish!(rest, rx), keys[2..]);
+
+    // A row the visitor can't take without waiting is left to the worker: it's
+    // sent once.
+    let (inline, mut rx) = scan(Cf::Other, 2);
+    let Inline::WouldBlock(rest) = inline.call_cached()? else {
+        panic!("the scan should have stopped at the first row the visitor can't take");
+    };
+    assert_eq!(rx.len(), 2);
+    assert_eq!(finish!(rest, rx), keys);
+
+    // Flushed rows that aren't in the block cache: nothing is visited here.
+    // The rest isn't run, as that would load the rows.
+    let (inline, mut rx) = scan(Cf::Data, 5);
+    assert!(matches!(inline.call_cached()?, Inline::WouldBlock(_)));
+    assert_eq!(sent(&mut rx), Vec::<Vec<u8>>::new());
+
+    // With only the first row's block loaded, the scan stops at the move to
+    // the second row, which the worker repeats.
+    let mut warm = snapshot.iterator(Cf::Data, ReadOptions::default());
+    warm.seek_to_first();
+    assert!(warm.item()?.is_some());
+    drop(warm);
+    let (inline, mut rx) = scan(Cf::Data, 5);
+    let Inline::WouldBlock(rest) = inline.call_cached()? else {
+        panic!("the scan should have stopped at the first row that isn't in memory");
+    };
+    assert_eq!(sent(&mut rx), keys[..1]);
+    assert_eq!(finish!(rest, rx), keys[1..]);
+
+    // The worker loaded the other rows, so now the scan finishes inline.
+    let (inline, mut rx) = scan(Cf::Data, 5);
+    assert!(matches!(
+        inline.call_cached()?,
+        Inline::Done(Ok(IterationOutcome::Exhausted(_)))
+    ));
+    assert_eq!(sent(&mut rx), keys);
+
+    // Once the gate is sealed, the scan isn't admitted.
+    let (inline, _rx) = scan(Cf::Other, 5);
+    gate.seal();
+    assert_matches!(inline.call_cached().map(drop), Err(AdmissionClosed));
+    timeout(DEADLINE, gate.drain()).await?;
+
+    drop((snapshot, scope, db));
+    Ok(())
+}
+
+#[tokio::test]
+async fn prepared_get_reads_from_memory_or_on_a_worker() -> anyhow::Result<()> {
+    let tempdir = restate_test_util::tempdir()?;
+    let cache = rocksdb::Cache::new_lru_cache(1 << 20);
+    let db = standalone_with(spec_with(&tempdir.path().join("db"), OneRowBlocks(cache)))?;
+    let raw = db.inner().as_raw_db();
+    let other = db.inner().cf_handle("other").unwrap();
+    {
+        // "other" stays in the memtable. "data" is flushed, and not cached yet.
+        let data = db.inner().cf_handle("data").unwrap();
+        raw.put_cf(&data, [1], [10])?;
+        raw.put_cf(&other, [1], [20])?;
+        raw.flush_cf(&data)?;
+    }
+    let scope = test_scope(&db, false);
+    let snapshot = ReadSnapshot::new(&scope, scope.gate())?;
+    let executor = crate::SinglePoolExecutor::new("test", NonZeroUsize::MIN);
+    let gate = scope.gate().child();
+
+    // In memory: the lookup is answered on this thread, also for a missing key.
+    let Inline::Done(Ok(Some(value))) =
+        snapshot.prepare_get(&gate, Cf::Other, &[1]).call_cached()?
+    else {
+        panic!("the lookup should have been answered from memory");
+    };
+    assert_eq!(&*value, [20]);
+    assert!(matches!(
+        snapshot.prepare_get(&gate, Cf::Other, &[9]).call_cached()?,
+        Inline::Done(Ok(None))
+    ));
+    assert!(gate.is_idle());
+
+    // Flushed and not in the block cache: the lookup is handed back, and a
+    // worker answers it.
+    let Inline::WouldBlock(rest) = snapshot.prepare_get(&gate, Cf::Data, &[1]).call_cached()?
+    else {
+        panic!("the lookup should have needed the disk");
+    };
+    let read = executor.spawn_cancellable(rest.with_read_perf("test"))?;
+    assert_eq!(timeout(DEADLINE, read).await???.as_deref(), Some(&[10][..]));
+
+    // The worker's read left the value in the block cache, so the lookup is now
+    // answered before `call_cached_or_spawn` returns.
+    let read = snapshot
+        .prepare_get(&gate, Cf::Data, &[1])
+        .with_read_perf("test")
+        .call_cached_or_spawn(&executor)?;
+    let cached = read.now_or_never().expect("answered from memory")??;
+    assert_eq!(cached.as_deref(), Some(&[10][..]));
+
+    // A scope's lookup sees the latest data, and a snapshot's doesn't.
+    raw.put_cf(&other, [2], [30])?;
+    let latest = scope
+        .prepare_get(&gate, Cf::Other, &[2])
+        .call_cached_or_spawn(&executor)?;
+    assert_eq!(
+        timeout(DEADLINE, latest).await???.as_deref(),
+        Some(&[30][..])
+    );
+    let old = snapshot
+        .prepare_get(&gate, Cf::Other, &[2])
+        .call_cached_or_spawn(&executor)?;
+    assert!(timeout(DEADLINE, old).await???.is_none());
+
+    // A value holds its own clone of the snapshot it was read through.
+    drop((snapshot, cached));
+    assert_eq!(&*value, [20]);
+    drop(value);
+
+    // Once the gate is sealed, a lookup isn't admitted.
+    gate.seal();
+    assert_matches!(
+        scope
+            .prepare_get(&gate, Cf::Other, &[1])
+            .call_cached()
+            .map(drop),
+        Err(AdmissionClosed)
+    );
+    timeout(DEADLINE, gate.drain()).await?;
+
+    drop(other);
+    drop((scope, db));
+    Ok(())
 }
 
 #[tokio::test]
@@ -745,16 +992,16 @@ async fn prepared_iteration_cancellation_cleans_up_before_drain() -> anyhow::Res
     let gate = scope.gate().child();
 
     // An iteration that panics fails, and the pool keeps working.
-    let iteration = scope
-        .owned_iterator(Cf::Data, ReadOptions::default())
-        .prepare_iteration(
-            &gate,
-            Some(IterAction::SeekToFirst),
-            async |key: &[u8], _value: &[u8]| -> Result<IterAction, RocksError> {
-                assert_ne!(key, [5], "callback panic");
-                Ok(IterAction::Next)
-            },
-        );
+    let iteration = scope.prepare_iteration(
+        &gate,
+        Cf::Data,
+        ReadOptions::default,
+        IterAction::SeekToFirst,
+        async |key: &[u8], _value: &[u8]| -> Result<IterAction, RocksError> {
+            assert_ne!(key, [5], "callback panic");
+            Ok(IterAction::Next)
+        },
+    );
     let driver = executor.spawn(iteration)?;
     assert_matches!(
         timeout(DEADLINE, driver).await?.map(|r| r.map(drop)),
@@ -767,13 +1014,13 @@ async fn prepared_iteration_cancellation_cleans_up_before_drain() -> anyhow::Res
     // are dropped.
     let (tx, mut rx) = tokio::sync::mpsc::channel(10);
     let iteration_gate = scope.gate().child();
-    let iteration = scope
-        .owned_iterator(Cf::Data, ReadOptions::default())
-        .prepare_iteration(
-            &iteration_gate,
-            Some(IterAction::SeekToFirst),
-            send_keys(tx),
-        );
+    let iteration = scope.prepare_iteration(
+        &iteration_gate,
+        Cf::Data,
+        ReadOptions::default,
+        IterAction::SeekToFirst,
+        send_keys(tx),
+    );
     let driver = executor.spawn_cancellable(iteration)?;
     wait_until_full(&rx).await;
     drop(driver);
@@ -788,10 +1035,11 @@ async fn prepared_iteration_cancellation_cleans_up_before_drain() -> anyhow::Res
     // Its visitor must not run, and cancellation is distinct from rejection.
     let queued_gate = scope.gate().child();
     let task = scope
-        .owned_iterator(Cf::Data, ReadOptions::default())
         .prepare_iteration(
             &queued_gate,
-            Some(IterAction::SeekToFirst),
+            Cf::Data,
+            ReadOptions::default,
+            IterAction::SeekToFirst,
             async |_: &[u8], _: &[u8]| -> Result<IterAction, RocksError> {
                 panic!("cancelled before starting")
             },
@@ -805,10 +1053,11 @@ async fn prepared_iteration_cancellation_cleans_up_before_drain() -> anyhow::Res
     timeout(DEADLINE, queued_gate.drain()).await?;
     assert!(matches!(
         scope
-            .owned_iterator(Cf::Data, ReadOptions::default())
             .prepare_iteration(
                 &queued_gate,
-                Some(IterAction::Stop),
+                Cf::Data,
+                ReadOptions::default,
+                IterAction::Stop,
                 send_keys(tokio::sync::mpsc::channel(1).0),
             )
             .into_task(),
@@ -819,18 +1068,18 @@ async fn prepared_iteration_cancellation_cleans_up_before_drain() -> anyhow::Res
     // cancellation before the scan exhausts, without relying on backpressure.
     let slice_gate = scope.gate().child();
     let cancel = Arc::clone(&slice_gate);
-    let iteration = scope
-        .owned_iterator(Cf::Data, ReadOptions::default())
-        .prepare_iteration(
-            &slice_gate,
-            Some(IterAction::SeekToFirst),
-            async move |key: &[u8], _: &[u8]| -> Result<IterAction, RocksError> {
-                if key == [0] {
-                    cancel.cancel();
-                }
-                Ok(IterAction::Next)
-            },
-        );
+    let iteration = scope.prepare_iteration(
+        &slice_gate,
+        Cf::Data,
+        ReadOptions::default,
+        IterAction::SeekToFirst,
+        async move |key: &[u8], _: &[u8]| -> Result<IterAction, RocksError> {
+            if key == [0] {
+                cancel.cancel();
+            }
+            Ok(IterAction::Next)
+        },
+    );
     assert_matches!(
         timeout(DEADLINE, executor.spawn(iteration)?)
             .await?
@@ -845,9 +1094,13 @@ async fn prepared_iteration_cancellation_cleans_up_before_drain() -> anyhow::Res
     let dropped = Arc::clone(&scope.payload().dropped);
     let snapshot = ReadSnapshot::new(&scope, &gate)?;
     let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-    let iteration = snapshot
-        .owned_iterator(Cf::Data, ReadOptions::default())
-        .prepare_iteration(&gate, Some(IterAction::SeekToFirst), send_keys(tx));
+    let iteration = snapshot.prepare_iteration(
+        &gate,
+        Cf::Data,
+        ReadOptions::default,
+        IterAction::SeekToFirst,
+        send_keys(tx),
+    );
     let driver = executor.spawn(iteration)?;
     drop((snapshot, scope));
     wait_until_full(&rx).await;

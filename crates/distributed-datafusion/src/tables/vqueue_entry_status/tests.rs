@@ -786,6 +786,16 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
         "SELECT entry_id, status, transitioned_at AS finished FROM sys_vqueue_entry_status \
          WHERE stage = 'finished' ORDER BY finished DESC NULLS LAST LIMIT 6"
             .into(),
+        // Any other condition is checked on each candidate: a column the
+        // index doesn't hold, arithmetic.
+        format!(
+            "{select} WHERE stage = 'finished' AND num_attempts = 0 \
+             ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
+        ),
+        format!(
+            "{select} WHERE stage = 'finished' AND num_attempts + 1 = 1 \
+             ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
+        ),
     ];
     let scans = [
         // Status alone doesn't prove the stage.
@@ -801,11 +811,6 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
              ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
         ),
         format!("{select} WHERE stage = 'finished' ORDER BY created_at DESC NULLS LAST LIMIT 5"),
-        // A condition outside the allowlist.
-        format!(
-            "{select} WHERE stage = 'finished' AND num_attempts = 0 \
-             ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
-        ),
         // An outer join can add NULLs: nothing is asked of the source.
         "SELECT e.entry_id, e.status, e.transitioned_at FROM (SELECT 1 AS one) AS o \
          LEFT JOIN sys_vqueue_entry_status AS e ON e.stage = 'finished' \
@@ -1078,6 +1083,14 @@ async fn active_entries_read_through_their_index_match_the_scan() {
         ),
         // Alternatives, each of active stages.
         format!("{select} WHERE stage = 'inbox' OR stage = 'suspended' {newest} LIMIT 6"),
+        // Any other conditions are checked on each candidate: another column,
+        // arithmetic, and alternatives of several conditions.
+        format!("{select} WHERE stage = 'inbox' AND num_attempts = 0 {newest} LIMIT 5"),
+        format!("{select} WHERE stage = 'inbox' AND num_attempts + 1 = 1 {newest} LIMIT 5"),
+        format!(
+            "{select} WHERE (stage = 'inbox' AND status = 'new') OR stage = 'suspended' \
+             {newest} LIMIT 6"
+        ),
     ];
     let scans = [
         // Status alone doesn't prove the stage.
@@ -1087,13 +1100,6 @@ async fn active_entries_read_through_their_index_match_the_scan() {
         format!("{select} WHERE stage = 'finished' {newest} LIMIT 5"),
         format!("{select} WHERE stage = 'unknown' {newest} LIMIT 5"),
         format!("{select} WHERE stage = 'inbox' ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"),
-        // Conditions outside the allowlist: another column, and alternatives
-        // that aren't each a single stage or status condition.
-        format!("{select} WHERE stage = 'inbox' AND num_attempts = 0 {newest} LIMIT 5"),
-        format!(
-            "{select} WHERE (stage = 'inbox' AND status = 'new') OR stage = 'suspended' \
-             {newest} LIMIT 6"
-        ),
     ];
     // Tie-aware: the creation times in order, and every row a qualifying one.
     let same =

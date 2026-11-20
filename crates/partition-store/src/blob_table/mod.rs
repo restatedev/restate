@@ -8,13 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-
 use bilrost::Message;
 use bytes::{Bytes, BytesMut};
-use rocksdb::BoundColumnFamily;
 
-use restate_rocksdb::{RocksDb, RocksDbReadPerfGuard};
+use restate_core::io::IoExecutor;
+use restate_rocksdb::RocksDbReadPerfGuard;
 use restate_storage_api::blob_table::{
     Blob, BlobDecoder, BlobEncode, Header, ReadBlobTable, WriteBlobTable,
 };
@@ -24,11 +22,8 @@ use restate_types::identifiers::ResourceId;
 
 use crate::TableKind;
 use crate::keys::{FixedLengthTableKey, KeyKind, define_table_key};
-use crate::read_snapshot::PartitionSnapshotReader;
-use crate::{
-    PartitionDb, PartitionStore, PartitionStoreTransaction, ReadSnapshot, StorageAccess,
-    StorageRead,
-};
+use crate::offloaded_reads::OffloadedRead;
+use crate::{PartitionStore, PartitionStoreTransaction, ReadSnapshot, StorageAccess, StorageRead};
 
 mod header;
 pub use header::*;
@@ -65,62 +60,6 @@ fn get_blob<S: StorageAccess, D: BlobDecoder>(
     })
 }
 
-/// Point reads of blob payloads that, unlike a [`PartitionStoreTransaction`], can be held across
-/// `.await` points. Blob payloads never change once written, but a blob can be released after the
-/// referencing entry was read. Read from the live database ([`Self::Db`]) only blobs whose
-/// references can't be released concurrently (e.g. journals of in-flight invocations); otherwise
-/// read from the same snapshot as the referencing entry ([`Self::Snapshot`]).
-pub(crate) enum BlobReader<'a> {
-    Db {
-        rocksdb: &'a Arc<RocksDb>,
-        cf: &'a Arc<BoundColumnFamily<'a>>,
-    },
-    Snapshot(&'a PartitionSnapshotReader<'a>),
-}
-
-impl<'a> BlobReader<'a> {
-    pub(crate) fn new(rocksdb: &'a Arc<RocksDb>, cf: &'a Arc<BoundColumnFamily<'a>>) -> Self {
-        Self::Db { rocksdb, cf }
-    }
-
-    /// Copies the payload of a blob. `None` if the blob doesn't exist or is marked for deletion.
-    pub(crate) fn get_payload(&mut self, blob_id: BlobId) -> Result<Option<Bytes>> {
-        self.map_payload(blob_id, |payload| payload.map(Bytes::copy_from_slice))
-    }
-
-    /// Like [`Self::get_payload`], but lends the payload to `f` instead of copying it.
-    pub(crate) fn map_payload<R>(
-        &mut self,
-        blob_id: BlobId,
-        f: impl FnOnce(Option<&[u8]>) -> R,
-    ) -> Result<R> {
-        let _x = RocksDbReadPerfGuard::new("get-blob");
-        let key = BlobKey { blob_id }.to_bytes();
-        match self {
-            Self::Db { rocksdb, cf } => {
-                let value = rocksdb
-                    .inner()
-                    .as_raw_db()
-                    .get_pinned_cf(*cf, key)
-                    .map_err(|error| StorageError::Generic(error.into()))?;
-                Ok(f(live_value_payload(value.as_deref())?))
-            }
-            Self::Snapshot(reader) => {
-                let value = reader
-                    .get_pinned(KeyKind::Blob, &key)
-                    .map_err(|error| StorageError::Generic(error.into()))?;
-                Ok(f(live_value_payload(value.as_deref())?))
-            }
-        }
-    }
-}
-
-impl<'a> From<&'a PartitionDb> for BlobReader<'a> {
-    fn from(db: &'a PartitionDb) -> Self {
-        Self::new(db.rocksdb(), db.cf_handle_for_key_kind(KeyKind::Blob))
-    }
-}
-
 impl ReadSnapshot {
     /// Lends the payload of a blob to `f`, reading it from the admitted snapshot on the caller's
     /// thread. The payload is `None` if the blob doesn't exist or is marked for deletion.
@@ -130,13 +69,17 @@ impl ReadSnapshot {
         f: impl FnOnce(Option<&[u8]>) -> R,
     ) -> Result<R> {
         self.check_active()?;
+        let _x = RocksDbReadPerfGuard::new("get-blob");
         let reader = self.storage_snapshot().reader();
-        BlobReader::Snapshot(&reader).map_payload(blob_id, f)
+        let value = reader
+            .get_pinned(KeyKind::Blob, &BlobKey { blob_id }.to_bytes())
+            .map_err(|error| StorageError::Generic(error.into()))?;
+        Ok(f(live_value_payload(value.as_deref())?))
     }
 }
 
 /// Copies the payload of a blob. `None` if the blob doesn't exist or is marked for deletion.
-/// Unlike [`BlobReader`], a transaction sees the blobs it wrote.
+/// A transaction sees the blobs it wrote.
 pub(crate) fn get_blob_payload<S: StorageRead>(
     storage: &S,
     blob_id: BlobId,
@@ -149,6 +92,26 @@ pub(crate) fn get_blob_payload<S: StorageRead>(
         .transpose()?
         .flatten()
         .map(Bytes::copy_from_slice))
+}
+
+/// Like [`get_blob_payload`], but if the blob isn't in memory, a worker of `executor` reads it, so
+/// that the calling task doesn't wait for the disk.
+///
+/// Blob payloads never change once written, but a blob can be released after the referencing
+/// entry was read. Read from the live store only blobs whose references can't be released
+/// concurrently (e.g. journals of in-flight invocations); otherwise read from the same snapshot
+/// as the referencing entry.
+pub(crate) async fn get_blob_payload_cached_or_offload<S: OffloadedRead>(
+    storage: &S,
+    blob_id: BlobId,
+    executor: &(impl IoExecutor + Sync),
+) -> Result<Option<Bytes>> {
+    let key = BlobKey { blob_id }.to_bytes();
+    let value = storage
+        .get_cached_or_offload("get-blob", KeyKind::Blob, &key, executor)?
+        .await?;
+    let value = value.as_ref().map(AsRef::as_ref);
+    Ok(live_value_payload(value)?.map(Bytes::copy_from_slice))
 }
 
 /// The payload of an encoded blob, if there is one and it isn't marked for deletion.

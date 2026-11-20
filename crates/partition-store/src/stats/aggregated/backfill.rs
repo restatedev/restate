@@ -82,9 +82,13 @@ fn with_invocation_target<R>(
 }
 
 /// Resolves the target of an entry with point lookups: its invocation status, or
-/// the input of a state mutation. Entries without one are errors. The lookups
-/// don't fill the block cache: a backfill looks each entry up once, and caching
-/// it would push out the data the partition's commands read.
+/// the input of a state mutation. Entries without one are errors.
+///
+/// The lookups fill the block cache. A backfill walks entries in the order of
+/// their IDs, which is the order of their invocation statuses' keys, so
+/// consecutive lookups land in the same data block, a few hundred statuses
+/// each. Cached, each block is read and decompressed once; uncached, once per
+/// lookup. The block a walk leaves behind is the cache's to evict.
 pub(crate) fn with_entry_target<R>(
     db: &PartitionDb,
     id: &restate_types::identifiers::BaseEntryId,
@@ -97,8 +101,7 @@ pub(crate) fn with_entry_target<R>(
         "entry and queue partition keys disagree"
     );
     let raw = db.rocksdb().inner().as_raw_db();
-    let mut options = rocksdb::ReadOptions::default();
-    options.fill_cache(false);
+    let options = rocksdb::ReadOptions::default();
     let mut key = Vec::new();
     match id.kind() {
         EntryKind::Invocation => {

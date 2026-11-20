@@ -31,7 +31,9 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, instrument};
 
-use restate_memory::{LendableMemoryPool, LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
+use restate_memory::{
+    LendableMemoryPool, LocalMemoryLease, LocalMemoryPool, OutOfMemoryKind, PinnableMemoryStream,
+};
 use restate_service_client::{ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::LimitKey;
 use restate_types::deployment::PinnedDeployment;
@@ -119,7 +121,29 @@ where
 
     let mut stream = std::pin::pin!(state.into_inner());
     while let Some(result) = stream.as_mut().next().await {
-        let (key, value, lease) = result.map_err(InvokerError::from_state_reader)?;
+        let (key, value, lease) = match result {
+            Ok(row) => row,
+            // The stream reserves an entry's budget before yielding it, so an entry
+            // that doesn't fit next to the collected (pinned) ones fails with
+            // `UpperBoundExceeded` before the size check below can truncate. Both mean
+            // the same: the rest of the state is served lazily.
+            Err(err)
+                if err
+                    .budget_exhaustion()
+                    .is_some_and(|oom| oom.kind == OutOfMemoryKind::UpperBoundExceeded) =>
+            {
+                debug!(
+                    "Eager state doesn't fit in the invocation's memory budget after {} entries ({}), \
+                     sending partial state",
+                    entries.len(),
+                    ByteCount::from(total_size),
+                );
+                counter!(INVOKER_EAGER_STATE_TRUNCATED).increment(1);
+                is_partial = true;
+                break;
+            }
+            Err(err) => return Err(InvokerError::from_state_reader(err)),
+        };
         let entry_size = key.len() + value.len();
 
         // Check if adding this entry would exceed the limit
@@ -697,23 +721,32 @@ where
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
+    use std::num::NonZeroUsize;
     use std::sync::LazyLock;
 
     use bytes::Bytes;
     use futures::stream;
 
-    use restate_memory::{IgnorePinnableMemoryStream, LocalMemoryLease, LocalMemoryPool};
+    use restate_memory::{
+        IgnorePinnableMemoryStream, LocalMemoryLease, LocalMemoryPool, NonZeroByteCount,
+        OutOfMemory, OutOfMemoryKind,
+    };
     use restate_worker_api::invoker::{InvocationReaderError, invocation_reader::EagerState};
 
     use super::collect_eager_state;
 
+    /// Optionally carries the kind of budget exhaustion to report.
     #[derive(Debug, derive_more::Display)]
-    struct TestError;
+    #[display("test error")]
+    struct TestError(Option<OutOfMemoryKind>);
 
     impl std::error::Error for TestError {}
     impl InvocationReaderError for TestError {
-        fn budget_exhaustion(&self) -> Option<restate_memory::OutOfMemory> {
-            None
+        fn budget_exhaustion(&self) -> Option<OutOfMemory> {
+            self.0.map(|kind| OutOfMemory {
+                needed: NonZeroByteCount::new(NonZeroUsize::MIN),
+                kind,
+            })
         }
     }
 
@@ -810,11 +843,43 @@ mod tests {
 
     #[tokio::test]
     async fn collect_eager_state_stream_error_propagated() {
-        let items: Vec<StateResult> = vec![Err(TestError)];
+        let items: Vec<StateResult> = vec![Err(TestError(None))];
         let state = EagerState::new_complete(IgnorePinnableMemoryStream::new(stream::iter(items)));
 
         let result = collect_eager_state(Some(state), 1024, std::convert::identity).await;
         assert!(result.is_err(), "stream error should be propagated");
+    }
+
+    #[tokio::test]
+    async fn collect_eager_state_budget_exhaustion() {
+        // Exceeding the per-invocation upper bound truncates to partial state
+        let items = vec![
+            entry(10, 10),
+            Err(TestError(Some(OutOfMemoryKind::UpperBoundExceeded))),
+            entry(10, 10),
+        ];
+        let state = EagerState::new_complete(IgnorePinnableMemoryStream::new(stream::iter(items)));
+
+        let (is_partial, entries, _memory_lease) =
+            collect_eager_state(Some(state), 1024, std::convert::identity)
+                .await
+                .unwrap();
+
+        assert!(
+            is_partial,
+            "upper bound exceeded should yield partial state"
+        );
+        assert_eq!(entries.len(), 1, "entries before the error are kept");
+
+        // Other kinds of exhaustion are still propagated
+        let items = vec![
+            entry(10, 10),
+            Err(TestError(Some(OutOfMemoryKind::PoolExhausted))),
+        ];
+        let state = EagerState::new_complete(IgnorePinnableMemoryStream::new(stream::iter(items)));
+
+        let result = collect_eager_state(Some(state), 1024, std::convert::identity).await;
+        assert!(result.is_err(), "pool exhaustion should be propagated");
     }
 
     #[tokio::test]

@@ -170,10 +170,11 @@ async fn persisted_invocations_match_v1_for_scans_lookups_and_projections() {
 /// An invocation the index lacks (impossible once migrated) shows which path
 /// a read took.
 ///
-/// The planner reads the index only for the newest rows of named services,
-/// under conditions from the index's allowlist. The UI's other queries
-/// scan, and match V1 too: the oldest invocations of a service, and its newest
-/// scheduled ones, none at first and then two behind 300 others.
+/// The planner reads the index for the newest or oldest rows of named
+/// services, whatever the other conditions; each returned row is checked
+/// against all of them. The UI's other queries scan, and match V1 too. A
+/// service's newest scheduled invocations come none at first, then two behind
+/// 300 others.
 #[restate_core::test]
 async fn invocations_read_through_the_entry_index_match_v1() {
     RocksDbManager::init();
@@ -351,13 +352,17 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         "SELECT id, created_at FROM sys_invocation_status WHERE target_service_name = 'Many' \
          ORDER BY created_at ASC LIMIT 3"
             .into(),
-    ];
-    // Scanned: another order, a tie-breaker, a condition outside the
-    // allowlist, no LIMIT, or a view above the table.
-    let scans = [
+        // Any other condition is checked on each candidate: a status. 40 of
+        // the workflow page's invocations are running: the newest 20 leave out
+        // the oldest, which has no entry.
         scheduled.to_owned(),
+        page.replace("target_service_key IS NOT NULL", "status = 'invoked'")
+            .replace("LIMIT 51", "LIMIT 20"),
+    ];
+    // Scanned: another order, a tie-breaker, no LIMIT, or a view above the
+    // table.
+    let scans = [
         page.replace("NULLS LAST", "NULLS LAST, id"),
-        page.replace("target_service_key IS NOT NULL", "status = 'invoked'"),
         "SELECT target_service_name, COUNT(*) FROM sys_invocation_status \
          WHERE target_service_name IN ('Promises', 'Utils', 'Missing') \
          GROUP BY target_service_name ORDER BY target_service_name"
@@ -440,9 +445,7 @@ async fn invocations_read_through_the_entry_index_match_v1() {
             plan.contains("TableScanExec") && !plan.contains("IndexScanExec"),
             "{sql}: {plan}"
         );
-        // No invocation is scheduled yet.
-        let found = rows(new.as_ref(), sql).await;
-        assert_eq!(found.is_empty(), sql == scheduled, "{sql}");
+        assert!(!rows(new.as_ref(), sql).await.is_empty(), "{sql}");
     }
     // A partition that can't keep the index's order keeps the newest rows that
     // meet the query's conditions, OFFSET included.
@@ -484,23 +487,20 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         matches_v1(sql, false).await;
     }
     assert!(!orphaned().await);
-    // The scan-routed page reads the partition's every status, without the
-    // index, and emits only those meeting the scan's predicate: none of
-    // Counter's are scheduled.
-    let statuses: u64 = rows(old.as_ref(), "SELECT COUNT(*) FROM sys_invocation_status").await[0]
-        [0]
-    .parse()
-    .unwrap();
-    for (sql, emitted) in [(scheduled, 0)] {
-        let plan = analyzed(sql).await;
-        let source = plan
-            .lines()
-            .find(|line| line.contains("TableScanExec"))
-            .unwrap();
-        assert_eq!(metric(source, "read_rows"), Some(statuses), "{source}");
-        assert_eq!(metric(source, "output_rows"), Some(emitted), "{source}");
-        assert_eq!(metric(source, "entry_index_statuses"), Some(0), "{source}");
-    }
+    // The scheduled page reads Counter's runs and checks each status: it
+    // fetches Counter's 300 statuses, not the partition's every one, and
+    // emits none, as none of them is scheduled.
+    let plan = analyzed(scheduled).await;
+    let source = plan
+        .lines()
+        .find(|line| line.contains("IndexScanExec"))
+        .unwrap();
+    assert_eq!(metric(source, "output_rows"), Some(0), "{source}");
+    assert_eq!(
+        metric(source, "entry_index_statuses"),
+        Some(300),
+        "{source}"
+    );
     let expected = rows(old.as_ref(), promises).await;
     assert!(expected.concat().contains(&orphan.to_string()));
     assert_eq!(

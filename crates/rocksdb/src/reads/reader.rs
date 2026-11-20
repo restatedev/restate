@@ -123,6 +123,31 @@ impl<H: ReadSource> Reader<'_, H> {
         Ok(self.db.get_pinned_cf_opt(self.cf(cf), key, &self.options)?)
     }
 
+    /// Like [`Self::get_pinned`], but the returned value holds its own clone of
+    /// the snapshot or scope, so it can outlive this reader and move between
+    /// threads.
+    pub fn get_pinned_owned(
+        &self,
+        cf: H::CfKey,
+        key: &[u8],
+    ) -> Result<Option<OwnedPinnedValue<H>>, RocksError> {
+        let Some(value) = self.get_pinned(cf, key)? else {
+            return Ok(None);
+        };
+        // SAFETY: the value only borrows the database: once the lookup has
+        // returned, it needs neither the reader nor its options. The source keeps
+        // that database open. Every `ReadSource` is a shared handle, so the clone
+        // keeps the same database open, in the same place, and the owned value
+        // drops it after the native value. The fields are private, and the value
+        // only gives out bytes that borrow it.
+        let value =
+            unsafe { std::mem::transmute::<DBPinnableSlice<'_>, DBPinnableSlice<'static>>(value) };
+        Ok(Some(OwnedPinnedValue {
+            value,
+            _source: self.source.get().clone(),
+        }))
+    }
+
     /// Reads the values of all `keys` in column family `cf` in one batched call,
     /// without copying them.
     ///
@@ -155,6 +180,32 @@ impl<H: ReadSource> Reader<'_, H> {
             )?,
             source: Source::Borrowed(self.source.get()),
         })
+    }
+}
+
+/// The value of one key, read without copying it, from
+/// [`Reader::get_pinned_owned`]. It points into RocksDB's memory and keeps that
+/// memory in place until it is dropped.
+///
+/// `H` is the snapshot or scope the value was read through. The value holds its
+/// own clone of it, so it can be kept across pauses and moved between threads.
+pub struct OwnedPinnedValue<H> {
+    // Dropped first, while `_source` still keeps the database open.
+    value: DBPinnableSlice<'static>,
+    _source: H,
+}
+
+impl<H> AsRef<[u8]> for OwnedPinnedValue<H> {
+    fn as_ref(&self) -> &[u8] {
+        &self.value
+    }
+}
+
+impl<H> std::ops::Deref for OwnedPinnedValue<H> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.value
     }
 }
 

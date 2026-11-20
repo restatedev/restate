@@ -10,12 +10,17 @@
 
 use std::sync::Arc;
 
+use bytes::Bytes;
 use rocksdb::ReadOptions;
 
-use restate_core::io::AdmissionClosed;
-use restate_rocksdb::reads::{ReadIterator, ReadSnapshot, Reader};
+use restate_core::io::{AdmissionClosed, Gate};
+use restate_rocksdb::reads::{
+    Get, InlineVisitor, Iteration, Lookup, OwnedPinnedValue, ReadIterator, ReadSnapshot, Reader,
+};
+use restate_rocksdb::{Cooperative, Gated, IterAction, StorageOp};
 use restate_types::partitions::Partition;
 
+use crate::keys::KeyKind;
 use crate::partition_db::{PartitionDb, PhysicalPartition};
 use crate::scan::PhysicalScan;
 
@@ -60,6 +65,10 @@ pub struct PartitionReadSnapshot {
 /// `PartitionSnapshotReader<'static>`, holds its own clone of the snapshot, so
 /// it can be kept across pauses and moved between threads.
 pub type PartitionSnapshotReader<'a> = Reader<'a, ReadSnapshot<PhysicalPartition>>;
+
+/// The value of a key, read through a [`PartitionReadSnapshot`] without
+/// copying it. It holds its own clone of the snapshot.
+pub(crate) type PartitionSnapshotValue = OwnedPinnedValue<ReadSnapshot<PhysicalPartition>>;
 
 /// A scan of a [`PartitionReadSnapshot`]. A borrowed one, from
 /// [`PartitionReadSnapshot::scan`], can't outlive the snapshot. An owned one,
@@ -116,6 +125,17 @@ impl PartitionReadSnapshot {
         self.scan(scan, options).into_owned()
     }
 
+    /// Prepares a lookup of `key`, whose kind is `key_kind`, counted in `gate`.
+    /// Nothing is read yet. See [`ReadSnapshot::prepare_get`].
+    pub(crate) fn prepare_get<'a, 'g>(
+        &'a self,
+        gate: &'g Arc<Gate>,
+        key_kind: KeyKind,
+        key: &'a [u8],
+    ) -> StorageOp<Lookup<'a, ReadSnapshot<PhysicalPartition>>, Get<KeyKind>, Gated<'g>> {
+        self.inner.prepare_get(gate, key_kind, key)
+    }
+
     /// Like [`Self::scan`], but the iterator isn't positioned yet: seeking is
     /// left to the caller, so this doesn't read anything.
     pub(crate) fn unpositioned_scan<B: AsRef<[u8]>>(
@@ -127,13 +147,30 @@ impl PartitionReadSnapshot {
         self.inner.iterator(scan.key_kind(), options)
     }
 
-    /// Like [`Self::unpositioned_scan`], but the iterator holds its own clone of
-    /// the snapshot, so it can be kept across pauses and moved between threads.
-    pub(crate) fn owned_unpositioned_scan<B: AsRef<[u8]>>(
+    /// Prepares a scan of the keys that `scan` describes, which hands each row
+    /// to `visitor`, counted in `gate`. Nothing is read yet: run it on the
+    /// calling thread while its rows are in memory
+    /// ([`call_cached`](StorageOp::call_cached)), submit it to an executor, or
+    /// both. See [`ReadSnapshot::prepare_iteration`].
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn prepare_scan<'g, V: InlineVisitor>(
         &self,
-        scan: &PhysicalScan<B>,
-        options: ReadOptions,
-    ) -> PartitionSnapshotScan<'static> {
-        self.unpositioned_scan(scan, options).into_owned()
+        gate: &'g Arc<Gate>,
+        scan: PhysicalScan<Bytes>,
+        visitor: V,
+    ) -> StorageOp<
+        Cooperative<&ReadSnapshot<PhysicalPartition>>,
+        Iteration<KeyKind, impl Fn() -> ReadOptions + Send + 'static + use<V>, V>,
+        Gated<'g>,
+    > {
+        let key_kind = scan.key_kind();
+        let start = IterAction::Seek(scan.start().clone());
+        let options = move || {
+            let mut options = ReadOptions::default();
+            scan.configure(&mut options);
+            options
+        };
+        self.inner
+            .prepare_iteration(gate, key_kind, options, start, visitor)
     }
 }

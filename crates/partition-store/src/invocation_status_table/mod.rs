@@ -13,6 +13,7 @@ use std::ops::ControlFlow;
 
 use futures::{FutureExt, Stream};
 
+use restate_core::io::IoExecutor;
 use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
 use restate_storage_api::invocation_status_table::{
     InvocationLite, InvocationStatus, InvocationStatusDiscriminants, ReadInvocationStatusTable,
@@ -27,6 +28,7 @@ use restate_types::storage::{StorageCodecKind, StorageDecodeError};
 use restate_util_string::format_restring;
 
 use crate::keys::{DecodeTableKey, FixedLengthTableKey, KeyKind, define_table_key};
+use crate::offloaded_reads::get_value_proto_cached_or_offload;
 use crate::scan::TableScan;
 use crate::{
     PartitionStore, PartitionStoreSnapshot, PartitionStoreTransaction, StorageAccess,
@@ -312,6 +314,23 @@ impl ReadInvocationStatusTable for PartitionStoreSnapshot<'_> {
 
     async fn any_non_completed_invocation_in_range(&mut self, range: KeyRange) -> Result<bool> {
         any_non_completed_invocation_in_range(self, range)
+    }
+}
+
+impl PartitionStoreSnapshot<'_> {
+    /// Like [`ReadInvocationStatusTable::get_invocation_status`], but if the
+    /// status isn't in memory, a worker of `executor` reads it, so that the
+    /// calling task doesn't wait for the disk.
+    pub async fn get_invocation_status_cached_or_offload(
+        &mut self,
+        invocation_id: &InvocationId,
+        executor: &(impl IoExecutor + Sync),
+    ) -> Result<InvocationStatus> {
+        self.assert_partition_key(invocation_id)?;
+        let key = create_invocation_status_key(invocation_id);
+        let status =
+            get_value_proto_cached_or_offload(self, "get-invocation-status", key, executor).await?;
+        Ok(status.unwrap_or(InvocationStatus::Free))
     }
 }
 
