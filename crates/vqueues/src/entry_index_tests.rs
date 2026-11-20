@@ -24,8 +24,7 @@ use restate_partition_store::keys::KeyKind;
 use restate_partition_store::keys::header::IndexScope;
 use restate_partition_store::registry::IndexKind;
 use restate_partition_store::vqueue_table::{
-    EntryByCreated, EntryByCreatedKey, EntryByStatusCreated, EntryByStatusCreatedKey,
-    FinishedEntryByOutcome, FinishedEntryByOutcomeKey, hour_bucket,
+    EntryByCreated, EntryByCreatedKey, EntryByStatusCreated, EntryByStatusCreatedKey, hour_bucket,
 };
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
@@ -75,12 +74,11 @@ fn target(case: u8) -> EntryTargetRef<'static> {
     }
 }
 
-/// The scopes of the three Complete entry indexes.
+/// The scopes of two Complete entry indexes.
 #[derive(Clone, Copy)]
 struct Scopes {
     /// Every entry, by creation hour and service.
     all: IndexScope,
-    finished: IndexScope,
     /// Every entry in a known stage, by stage, status, creation hour and
     /// service.
     by_status: IndexScope,
@@ -113,7 +111,6 @@ async fn tracking_store() -> (PartitionStore, Scopes) {
     };
     let scopes = Scopes {
         all: scope(EntryByCreated::DEFINITION),
-        finished: scope(FinishedEntryByOutcome::DEFINITION),
         by_status: scope(EntryByStatusCreated::DEFINITION),
     };
     drop(snapshot);
@@ -143,26 +140,6 @@ fn status_key(
         Reverse(hour_bucket(created_at)),
         target.service(),
         Reverse(created_at),
-        id,
-    )
-    .encode_key(scope, &mut key);
-    vec![key]
-}
-
-/// The key of an entry in the finished index.
-fn finished_key(
-    scope: IndexScope,
-    status: Status,
-    target: &EntryTargetRef<'_>,
-    finished_at: UniqueTimestamp,
-    id: CanonicalEntryId,
-) -> Vec<Vec<u8>> {
-    let mut key = Vec::new();
-    FinishedEntryByOutcomeKey::borrowed(
-        status,
-        target.service(),
-        target.handler(),
-        Reverse(finished_at),
         id,
     )
     .encode_key(scope, &mut key);
@@ -244,12 +221,8 @@ async fn entry_index_follows_vqueue_operations() {
         let base_id = entry_id.to_base_id(qid.partition_key());
         let canonical = base_id.canonicalize(Seq::new(1));
         let expected = expected_key(scope, &target, at(0), canonical);
-        // The status key of the entry in its stored stage and status, and its
-        // finished key with its stored status and transition time.
+        // The status key of the entry in its stored stage and status.
         let by_status = |state| status_key(scopes.by_status, state, &target, at(0), canonical);
-        let finished = |status, finished_at| {
-            finished_key(scopes.finished, status, &target, finished_at, canonical)
-        };
 
         let mut tx = store.transaction();
         VQueue::<VQueueEvent, _>::get_or_insert_with(&qid, &mut tx, &mut cache, || {
@@ -271,10 +244,6 @@ async fn entry_index_follows_vqueue_operations() {
         assert_eq!(
             index_keys(&store, scopes.by_status),
             by_status((Stage::Inbox, Status::New)),
-            "case {case}"
-        );
-        assert!(
-            index_keys(&store, scopes.finished).is_empty(),
             "case {case}"
         );
 
@@ -405,16 +374,11 @@ async fn entry_index_follows_vqueue_operations() {
 
         if case % 3 == 0 {
             // A retained finished entry keeps its key until it is deleted, and
-            // moves to the Finished lane and into the finished index.
+            // moves to the Finished lane.
             assert_eq!(index_keys(&store, scope), expected, "case {case}: retained");
             assert_eq!(
                 index_keys(&store, scopes.by_status),
                 by_status((Stage::Finished, Status::Succeeded)),
-                "case {case}: retained"
-            );
-            assert_eq!(
-                index_keys(&store, scopes.finished),
-                finished(Status::Succeeded, at(3)),
                 "case {case}: retained"
             );
             let mut tx = store.transaction();
