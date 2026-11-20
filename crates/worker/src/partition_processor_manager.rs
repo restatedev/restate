@@ -37,6 +37,7 @@ use tracing::{debug, error, field, info, info_span, instrument, trace, warn};
 
 use restate_bifrost::Bifrost;
 use restate_bifrost::loglet::FindTailOptions;
+use restate_clock::WallClock;
 use restate_core::network::{
     BackPressureMode, ControlServiceShards, Incoming, MessageRouterBuilder, Rpc, ServiceMessage,
     ServiceReceiver, ShardControlMessage, ShardRegistrationDecision, Sharded, TransportConnect,
@@ -52,7 +53,8 @@ use restate_memory::ByteCount;
 use restate_metadata_server::{MetadataStoreClient, ReadModifyWriteError};
 use restate_metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
 use restate_partition_store::snapshots::{
-    PartitionSnapshotStatus, SnapshotPartitionTask, SnapshotRepository, remove_leftover_exports,
+    PartitionSnapshotStatus, SnapshotExportMode, SnapshotOutcome, SnapshotPartitionTask,
+    SnapshotRepository, remove_leftover_exports,
 };
 use restate_partition_store::{DroppedPartitionStore, PartitionStoreManager};
 use restate_partition_store::{SnapshotError, SnapshotErrorKind};
@@ -80,6 +82,7 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
+use restate_types::time::MillisSinceEpoch;
 use restate_types::{GenerationalNodeId, Version};
 use restate_util_string::format_restring;
 use restate_util_time::DurationExt;
@@ -129,6 +132,8 @@ pub struct PartitionProcessorManager<T> {
     pending_snapshot_status_refreshes: HashSet<PartitionId>,
     snapshot_export_tasks: FuturesUnordered<TaskHandle<SnapshotResultInternal>>,
     snapshot_repository: Option<SnapshotRepository>,
+    new_files_trigger_states: HashMap<PartitionId, NewFilesTriggerState>,
+    warned_new_files_ignored_num_records: bool,
     fast_forward_on_startup: HashMap<PartitionId, Lsn>,
 
     partition_table: Live<PartitionTable>,
@@ -144,7 +149,19 @@ pub struct PartitionProcessorManager<T> {
 }
 
 type SnapshotResult = Result<PartitionSnapshotStatus, SnapshotError>;
-type SnapshotResultInternal = Result<(PartitionId, PartitionSnapshotStatus), SnapshotError>;
+type SnapshotResultInternal = Result<(PartitionId, SnapshotOutcome), SnapshotError>;
+
+/// Per-partition state of the `new-files` snapshot trigger.
+#[derive(Clone, Debug, Default)]
+struct NewFilesTriggerState {
+    /// When this partition was last checkpointed for the trigger, whether or not it uploaded.
+    last_evaluated: Option<MillisSinceEpoch>,
+    /// When the partition first had applied writes that its store had not persisted yet, since
+    /// the durable LSN last advanced.
+    unflushed_since: Option<MillisSinceEpoch>,
+    /// The last durable LSN observed for the partition.
+    last_durable_lsn: Option<Lsn>,
+}
 
 struct PendingSnapshotTask {
     snapshot_id: SnapshotId,
@@ -309,6 +326,8 @@ where
             pending_snapshot_status_refreshes: HashSet::default(),
             snapshot_export_tasks: FuturesUnordered::default(),
             snapshot_repository,
+            new_files_trigger_states: HashMap::default(),
+            warned_new_files_ignored_num_records: false,
             fast_forward_on_startup: HashMap::default(),
             partition_table: Metadata::with_current(|m| m.updateable_partition_table()),
             wait_for_partition_table_update: false,
@@ -1095,14 +1114,20 @@ where
             min_target_lsn,
             snapshot_repository,
             Some(sender),
+            SnapshotExportMode::Flush,
         );
     }
 
     fn on_create_snapshot_task_completed(&mut self, result: SnapshotResultInternal) {
         let (partition_id, response) = match result {
-            Ok((partition_id, status)) => {
+            Ok((partition_id, SnapshotOutcome::Published(status))) => {
                 self.update_snapshot_status(partition_id, status.clone());
                 (partition_id, Ok(status))
+            }
+            Ok((partition_id, SnapshotOutcome::Skipped)) => {
+                debug!(%partition_id, "Snapshot round skipped");
+                let _ = self.pending_snapshots.remove(&partition_id);
+                return;
             }
             Err(snapshot_error) => (snapshot_error.partition_id, Err(snapshot_error)),
         };
@@ -1149,7 +1174,7 @@ where
             return;
         };
 
-        let snapshots_options = &self.updateable_config.live_load().worker.snapshots;
+        let snapshots_options = self.updateable_config.live_load().worker.snapshots.clone();
         let Some(triggers) = snapshots_options.automatic_snapshots() else {
             return;
         };
@@ -1178,16 +1203,71 @@ where
 
         let mut unknown_latest_snapshot = Vec::new();
         let mut due_partitions = Vec::new();
+        let new_files = snapshots_options.experimental_snapshot_trigger
+            == restate_types::config::SnapshotTrigger::NewFiles;
+        if new_files
+            && snapshots_options.snapshot_interval_num_records.is_some()
+            && !self.warned_new_files_ignored_num_records
+        {
+            self.warned_new_files_ignored_num_records = true;
+            warn!(
+                "snapshot-interval-num-records is ignored when experimental-snapshot-trigger = \
+                 \"new-files\""
+            );
+        }
+        let now = WallClock::recent_ms();
+        let max_unflushed_age = snapshots_options.snapshot_max_unflushed_age();
+        let interval = triggers
+            .interval
+            .unwrap_or_else(|| std::time::Duration::from_secs(5 * 60));
+
         for (partition_id, status) in &candidate_partitions {
             let Some(latest_snapshot) = self.latest_snapshots.get(partition_id) else {
                 unknown_latest_snapshot.push(*partition_id);
                 continue;
             };
-            // Stop evaluating once `limit` partitions are due
-            if due_partitions.len() < limit
-                && is_snapshot_due(*partition_id, triggers, latest_snapshot, status)
-            {
-                due_partitions.push(*partition_id);
+            if !new_files {
+                // Stop evaluating once `limit` partitions are due
+                if due_partitions.len() < limit
+                    && is_snapshot_due(*partition_id, triggers, latest_snapshot, status)
+                {
+                    due_partitions.push((*partition_id, SnapshotExportMode::Flush));
+                }
+                continue;
+            }
+
+            let state = self
+                .new_files_trigger_states
+                .entry(*partition_id)
+                .or_default();
+            let applied_lsn = status.last_applied_log_lsn.unwrap_or(Lsn::INVALID);
+            let durable_lsn = status.durable_lsn.unwrap_or(Lsn::INVALID);
+            update_unflushed_since(state, now, applied_lsn, durable_lsn);
+
+            let backstop = new_files_backstop_due(state, now, max_unflushed_age);
+            let interval_due = !backstop
+                && new_files_interval_due(
+                    state,
+                    now,
+                    interval,
+                    durable_lsn,
+                    latest_snapshot.latest_snapshot_lsn,
+                );
+            if !backstop && !interval_due {
+                continue;
+            }
+            if due_partitions.len() >= limit {
+                continue;
+            }
+
+            state.last_evaluated = Some(now);
+            if backstop {
+                // Restart the age window so the backstop flushes once per window while the
+                // partition remains unflushed.
+                state.unflushed_since = Some(now);
+                due_partitions.push((*partition_id, SnapshotExportMode::NewFilesBackstop));
+            } else {
+                due_partitions.push((*partition_id, SnapshotExportMode::NewFiles));
             }
         }
 
@@ -1195,8 +1275,14 @@ where
             self.spawn_update_latest_snapshot(partition_id);
         }
 
-        for partition_id in due_partitions {
-            self.spawn_create_snapshot_task(partition_id, None, snapshot_repository.clone(), None);
+        for (partition_id, mode) in due_partitions {
+            self.spawn_create_snapshot_task(
+                partition_id,
+                None,
+                snapshot_repository.clone(),
+                None,
+                mode,
+            );
         }
     }
 
@@ -1210,6 +1296,7 @@ where
         min_target_lsn: Option<Lsn>,
         snapshot_repository: SnapshotRepository,
         sender: Option<oneshot::Sender<SnapshotResult>>,
+        mode: SnapshotExportMode,
     ) {
         if let Some(snapshot) = self.latest_snapshots.get(&partition_id)
             && min_target_lsn.is_some_and(|target_lsn| snapshot.archived_lsn >= target_lsn)
@@ -1258,6 +1345,7 @@ where
                 let create_snapshot_task = SnapshotPartitionTask {
                     snapshot_id,
                     partition_id,
+                    mode,
                     commit_fence_tx: self
                         .processor_states
                         .get(&partition_id)
@@ -2092,6 +2180,47 @@ fn is_snapshot_due(
     due
 }
 
+fn update_unflushed_since(
+    state: &mut NewFilesTriggerState,
+    now: MillisSinceEpoch,
+    applied_lsn: Lsn,
+    durable_lsn: Lsn,
+) {
+    let durable_advanced = state.last_durable_lsn.is_none_or(|last| durable_lsn > last);
+    if durable_advanced {
+        state.last_durable_lsn = Some(durable_lsn);
+        // A new durable point starts a new age window, even when the store is still behind.
+        state.unflushed_since = (applied_lsn > durable_lsn).then_some(now);
+    } else if applied_lsn > durable_lsn {
+        state.unflushed_since.get_or_insert(now);
+    } else {
+        state.unflushed_since = None;
+    }
+}
+
+fn new_files_backstop_due(
+    state: &NewFilesTriggerState,
+    now: MillisSinceEpoch,
+    max_unflushed_age: Duration,
+) -> bool {
+    state.unflushed_since.is_some_and(|since| {
+        Duration::from_millis(now.saturating_sub_ms(since)) > max_unflushed_age
+    })
+}
+
+fn new_files_interval_due(
+    state: &NewFilesTriggerState,
+    now: MillisSinceEpoch,
+    interval: Duration,
+    durable_lsn: Lsn,
+    latest_snapshot_lsn: Lsn,
+) -> bool {
+    durable_lsn > latest_snapshot_lsn
+        && state.last_evaluated.is_none_or(|last_evaluated| {
+            Duration::from_millis(now.saturating_sub_ms(last_evaluated)) >= interval
+        })
+}
+
 fn report_quantile_gauges(metric_name: &'static str, samples: &mut [u64]) {
     const PARTITION_METRIC_QUANTILES: [(&str, f64); 4] =
         [("0.5", 0.5), ("0.9", 0.9), ("0.99", 0.99), ("1.0", 1.0)];
@@ -2111,7 +2240,10 @@ fn report_quantile_gauges(metric_name: &'static str, samples: &mut [u64]) {
 
 #[cfg(test)]
 mod tests {
-    use crate::partition_processor_manager::{PartitionProcessorManager, is_snapshot_due};
+    use crate::partition_processor_manager::{
+        NewFilesTriggerState, PartitionProcessorManager, is_snapshot_due, new_files_backstop_due,
+        new_files_interval_due, update_unflushed_since,
+    };
     use googletest::IntoTestResult;
     use restate_bifrost::BifrostService;
     use restate_bifrost::providers::memory_loglet;
@@ -2175,6 +2307,76 @@ mod tests {
         assert!(!due(interval, min_records, &fresh, 1100));
         assert!(!due(interval, min_records, &old, 1099));
         assert!(due(interval, min_records, &old, 1100));
+    }
+
+    #[test]
+    fn new_files_trigger_backstop_and_durable_gate() {
+        let now = MillisSinceEpoch::new(1_000_000);
+        let interval = Duration::from_secs(5 * 60);
+        let max_unflushed_age = Duration::from_secs(6 * 60 * 60);
+        let mut state = NewFilesTriggerState {
+            last_evaluated: Some(now),
+            ..Default::default()
+        };
+
+        // Below the interval, do not checkpoint again.
+        assert!(!new_files_interval_due(
+            &state,
+            now + Duration::from_secs(60),
+            interval,
+            Lsn::new(200),
+            Lsn::new(100),
+        ));
+        // Once the interval elapsed and Bifrost made progress, checkpoint.
+        assert!(new_files_interval_due(
+            &state,
+            now + interval,
+            interval,
+            Lsn::new(200),
+            Lsn::new(100),
+        ));
+        // A compaction without new durable records never triggers a round.
+        assert!(!new_files_interval_due(
+            &state,
+            now + interval * 10,
+            interval,
+            Lsn::new(100),
+            Lsn::new(100),
+        ));
+
+        // The backstop tracks the age of applied-but-unpersisted state.
+        update_unflushed_since(&mut state, now, Lsn::new(200), Lsn::new(100));
+        assert_eq!(state.unflushed_since, Some(now));
+        assert!(!new_files_backstop_due(
+            &state,
+            now + max_unflushed_age,
+            max_unflushed_age
+        ));
+        assert!(new_files_backstop_due(
+            &state,
+            now + max_unflushed_age + Duration::from_millis(1),
+            max_unflushed_age
+        ));
+        // Persisted state clears the age, and the next unflushed write starts a new window.
+        update_unflushed_since(&mut state, now, Lsn::new(100), Lsn::new(200));
+        assert_eq!(state.unflushed_since, None);
+        update_unflushed_since(&mut state, now, Lsn::new(300), Lsn::new(200));
+        assert_eq!(state.unflushed_since, Some(now));
+
+        // A durable advance that is still behind the applied LSN restarts the age window.
+        let later = now + Duration::from_secs(60);
+        update_unflushed_since(&mut state, later, Lsn::new(300), Lsn::new(250));
+        assert_eq!(state.unflushed_since, Some(later));
+        assert!(!new_files_backstop_due(
+            &state,
+            later + max_unflushed_age,
+            max_unflushed_age
+        ));
+        assert!(new_files_backstop_due(
+            &state,
+            later + max_unflushed_age + Duration::from_millis(1),
+            max_unflushed_age
+        ));
     }
 
     #[test(restate_core::test)]

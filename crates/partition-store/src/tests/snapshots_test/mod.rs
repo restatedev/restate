@@ -21,7 +21,7 @@ use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::fsm_table::{FsmPosition, ReadFsmTable, WriteFsmTable};
 use restate_test_util::tempdir;
-use restate_types::config::Configuration;
+use restate_types::config::{Configuration, SnapshotTrigger};
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
 use restate_types::logs::{LogId, Lsn};
 use restate_types::partitions::Partition;
@@ -35,10 +35,10 @@ use crate::fsm_table::{put_fsm_position, put_storage_features_json};
 use crate::migrations::MigrationError;
 use crate::partition_store::StorageAccess;
 use crate::snapshots::{
-    LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotDir, SnapshotFormatVersion,
-    SnapshotLeaseGuard, SnapshotRepository,
+    ExportedSnapshot, LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotDir,
+    SnapshotExportMode, SnapshotFormatVersion, SnapshotLeaseGuard, SnapshotRepository,
 };
-use crate::{PartitionStore, PartitionStoreManager};
+use crate::{PartitionSeal, PartitionStore, PartitionStoreManager};
 
 pub(crate) async fn run_tests(
     manager: Arc<PartitionStoreManager>,
@@ -645,6 +645,363 @@ async fn blob_files_snapshot_and_restore_whole_db() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The `new-files` trigger skips a round below its churn threshold without flushing, publishes
+/// above it, and the published checkpoint restores without any WAL files.
+#[restate_core::test]
+async fn new_files_trigger_skips_below_threshold_and_restores() -> anyhow::Result<()> {
+    let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+    let (config, _repository_dir) = new_files_snapshot_config(1)?;
+    RocksDbManager::init();
+    Configuration::set(config.clone());
+    let manager = PartitionStoreManager::create(true).await?;
+
+    let partition = Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1));
+    let partition_id = partition.partition_id;
+    let cf_name = partition.cf_name().to_string();
+    let mut store = manager.open(&partition, None).await?;
+    let repository = SnapshotRepository::new_from_config_with_stub_leases(
+        &config.worker.snapshots,
+        tempdir()?.keep(),
+    )
+    .await?
+    .expect("a snapshot destination is configured");
+
+    let first_values: Vec<_> = (0..3)
+        .map(|i| (format!("first-{i}"), blob_value(i)))
+        .collect();
+    let mut txn = store.transaction();
+    txn.put_applied_lsn(Lsn::new(100))?;
+    for (key, value) in &first_values {
+        txn.put_kv_raw(key.clone(), value.clone())?;
+    }
+    txn.commit().await?;
+    drop(txn);
+    store.partition_db().flush_memtables(true).await?;
+
+    // This write stays in the memtable. A checkpoint that flushed would include it.
+    let unflushed_value = blob_value(99);
+    let mut txn = store.transaction();
+    txn.put_applied_lsn(Lsn::new(200))?;
+    txn.put_kv_raw("unflushed".to_owned(), unflushed_value.clone())?;
+    txn.commit().await?;
+    drop(txn);
+    assert_eq!(store.get_applied_lsn().await?, Some(Lsn::new(200)));
+    let flushes_before = manager.snapshot_triggered_flushes();
+
+    let snapshots_dir = tempdir()?;
+    let first_id = SnapshotId::new();
+    let ExportedSnapshot::Snapshot(first) = export_with_fence(
+        &manager,
+        &mut store,
+        first_id,
+        snapshots_dir.path(),
+        SnapshotExportMode::NewFiles,
+    )
+    .await?
+    else {
+        panic!("the first checkpoint is above the threshold");
+    };
+    assert_eq!(first.min_applied_lsn, Lsn::new(100));
+    assert!(
+        first.min_applied_lsn < store.get_applied_lsn().await?.unwrap(),
+        "the checkpoint label must be below the in-memory applied LSN"
+    );
+    assert_eq!(
+        manager.snapshot_triggered_flushes(),
+        flushes_before,
+        "the new-files trigger must not flush"
+    );
+    assert_eq!(
+        max_checkpoint_applied_lsn(&first, partition_id, &cf_name).await?,
+        Some(first.min_applied_lsn)
+    );
+    assert_eq!(
+        read_checkpoint_applied_lsn(&first, partition_id, &cf_name)?,
+        Some(first.min_applied_lsn)
+    );
+    let first_live_files = checkpoint_live_file_names(&first);
+    assert_eq!(
+        manager
+            .churn_cache_file_names(partition_id)
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>(),
+        first_live_files,
+        "the cache holds exactly the checkpoint's live files"
+    );
+    let first_metadata = snapshot_metadata(&first, partition_id, first_id);
+    assert!(
+        first_metadata
+            .whole_db_files
+            .iter()
+            .all(|file| !file.name.ends_with(".log")),
+        "the checkpoint never uploads WAL files"
+    );
+    repository
+        .put(
+            &first_metadata,
+            first.base_dir,
+            Arc::new(SnapshotLeaseGuard::noop()),
+        )
+        .await?;
+    let first_latest = manager
+        .snapshots
+        .get_latest_snapshot_metadata(partition_id)
+        .await?
+        .expect("the first snapshot was published");
+
+    // Nothing new is durable, so the round skips without publishing or advancing snapshot state.
+    let skipped = export_with_fence(
+        &manager,
+        &mut store,
+        SnapshotId::new(),
+        snapshots_dir.path(),
+        SnapshotExportMode::NewFiles,
+    )
+    .await?;
+    assert!(matches!(skipped, ExportedSnapshot::Skipped));
+    assert_eq!(manager.snapshot_triggered_flushes(), flushes_before);
+    let still_latest = manager
+        .snapshots
+        .get_latest_snapshot_metadata(partition_id)
+        .await?
+        .expect("the first snapshot is still published");
+    assert_eq!(still_latest.snapshot_id, first_latest.snapshot_id);
+    assert_eq!(still_latest.min_applied_lsn, first_latest.min_applied_lsn);
+    assert_eq!(
+        manager
+            .churn_cache_file_names(partition_id)
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>(),
+        first_live_files,
+        "a skipped round keeps only the checkpoint's live files"
+    );
+
+    // Restoring the first snapshot must not contain the unflushed write.
+    drop(store);
+    wipe_local_database(&manager, &partition).await?;
+    let mut store = manager.open(&partition, None).await?;
+    assert!(manager.churn_cache_file_names(partition_id).is_empty());
+    assert_eq!(store.get_applied_lsn().await?, Some(Lsn::new(100)));
+    for (key, value) in &first_values {
+        assert_eq!(
+            store.get_kv_raw(key.clone(), |_, value| Ok(value.map(<[u8]>::to_vec)))?,
+            Some(value.clone()),
+            "restored {key}"
+        );
+    }
+    assert_eq!(
+        store.get_kv_raw("unflushed".to_owned(), |_, value| Ok(
+            value.map(<[u8]>::to_vec)
+        ))?,
+        None,
+        "the checkpoint must not include the unflushed write"
+    );
+
+    // New durable data crosses the threshold.
+    let second_value = blob_value(7);
+    let mut txn = store.transaction();
+    txn.put_applied_lsn(Lsn::new(300))?;
+    txn.put_kv_raw("second".to_owned(), second_value.clone())?;
+    txn.commit().await?;
+    drop(txn);
+    store.partition_db().flush_memtables(true).await?;
+
+    let second_id = SnapshotId::new();
+    let ExportedSnapshot::Snapshot(second) = export_with_fence(
+        &manager,
+        &mut store,
+        second_id,
+        snapshots_dir.path(),
+        SnapshotExportMode::NewFiles,
+    )
+    .await?
+    else {
+        panic!("the second checkpoint is above the threshold");
+    };
+    assert_eq!(second.min_applied_lsn, Lsn::new(300));
+    let second_metadata = snapshot_metadata(&second, partition_id, second_id);
+    assert!(
+        second_metadata
+            .whole_db_files
+            .iter()
+            .all(|file| !file.name.ends_with(".log"))
+    );
+    repository
+        .put(
+            &second_metadata,
+            second.base_dir,
+            Arc::new(SnapshotLeaseGuard::noop()),
+        )
+        .await?;
+    let latest = manager
+        .snapshots
+        .get_latest_snapshot_metadata(partition_id)
+        .await?
+        .expect("the second snapshot was published");
+    assert_eq!(latest.min_applied_lsn, Lsn::new(300));
+
+    drop(store);
+    wipe_local_database(&manager, &partition).await?;
+
+    let mut restored = manager.open(&partition, None).await?;
+    assert_eq!(restored.get_applied_lsn().await?, Some(Lsn::new(300)));
+    for (key, value) in &first_values {
+        assert_eq!(
+            restored.get_kv_raw(key.clone(), |_, value| Ok(value.map(<[u8]>::to_vec)))?,
+            Some(value.clone()),
+            "restored {key}"
+        );
+    }
+    assert_eq!(
+        restored.get_kv_raw(
+            "second".to_owned(),
+            |_, value| Ok(value.map(<[u8]>::to_vec))
+        )?,
+        Some(second_value)
+    );
+    assert_eq!(
+        restored.get_kv_raw("unflushed".to_owned(), |_, value| Ok(
+            value.map(<[u8]>::to_vec)
+        ))?,
+        None
+    );
+    Ok(())
+}
+
+/// A seal written through the WAL is flushed immediately and is part of the next checkpoint.
+#[restate_core::test]
+async fn new_files_snapshot_includes_seal() -> anyhow::Result<()> {
+    let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+    let (config, _repository_dir) = new_files_snapshot_config(1)?;
+    RocksDbManager::init();
+    Configuration::set(config.clone());
+    let manager = PartitionStoreManager::create(true).await?;
+
+    let partition = Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1));
+    let partition_id = partition.partition_id;
+    let mut store = manager.open(&partition, None).await?;
+    let repository = SnapshotRepository::new_from_config_with_stub_leases(
+        &config.worker.snapshots,
+        tempdir()?.keep(),
+    )
+    .await?
+    .expect("a snapshot destination is configured");
+
+    let value = blob_value(11);
+    let mut txn = store.transaction();
+    txn.put_applied_lsn(Lsn::new(100))?;
+    txn.put_kv_raw("sealed".to_owned(), value.clone())?;
+    txn.commit().await?;
+    drop(txn);
+    store.partition_db().flush_memtables(true).await?;
+    store
+        .seal(&PartitionSeal::AheadOfLog {
+            partition_applied_lsn: Lsn::new(100),
+            log_tail_lsn: Lsn::new(50),
+        })
+        .await?;
+    let flushes_before = manager.snapshot_triggered_flushes();
+
+    let snapshots_dir = tempdir()?;
+    let snapshot_id = SnapshotId::new();
+    let ExportedSnapshot::Snapshot(snapshot) = export_with_fence(
+        &manager,
+        &mut store,
+        snapshot_id,
+        snapshots_dir.path(),
+        SnapshotExportMode::NewFiles,
+    )
+    .await?
+    else {
+        panic!("the checkpoint is above the threshold");
+    };
+    assert_eq!(snapshot.min_applied_lsn, Lsn::new(100));
+    assert_eq!(manager.snapshot_triggered_flushes(), flushes_before);
+    repository
+        .put(
+            &snapshot_metadata(&snapshot, partition_id, snapshot_id),
+            snapshot.base_dir,
+            Arc::new(SnapshotLeaseGuard::noop()),
+        )
+        .await?;
+
+    drop(store);
+    wipe_local_database(&manager, &partition).await?;
+
+    let mut restored = manager.open(&partition, None).await?;
+    assert_eq!(restored.get_applied_lsn().await?, Some(Lsn::new(100)));
+    assert!(
+        restored.get_seal_marker().await?.is_some(),
+        "the restored database has the seal"
+    );
+    assert_eq!(
+        restored.get_kv_raw(
+            "sealed".to_owned(),
+            |_, value| Ok(value.map(<[u8]>::to_vec))
+        )?,
+        Some(value)
+    );
+    Ok(())
+}
+
+/// The backstop flushes once and publishes even when churn is below the threshold.
+#[restate_core::test]
+async fn new_files_backstop_flushes_once_and_publishes() -> anyhow::Result<()> {
+    let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+    let (config, _repository_dir) = new_files_snapshot_config(1024 * 1024 * 1024)?;
+    RocksDbManager::init();
+    Configuration::set(config.clone());
+    let manager = PartitionStoreManager::create(true).await?;
+
+    let partition = Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1));
+    let mut store = manager.open(&partition, None).await?;
+    let value = blob_value(21);
+    let mut txn = store.transaction();
+    txn.put_applied_lsn(Lsn::new(100))?;
+    txn.put_kv_raw("unflushed".to_owned(), value.clone())?;
+    txn.commit().await?;
+    drop(txn);
+    let flushes_before = manager.snapshot_triggered_flushes();
+    let snapshots_dir = tempdir()?;
+
+    // Nothing was ever flushed, so there is no applied LSN in the checkpoint.
+    let skipped = export_with_fence(
+        &manager,
+        &mut store,
+        SnapshotId::new(),
+        snapshots_dir.path(),
+        SnapshotExportMode::NewFiles,
+    )
+    .await?;
+    assert!(matches!(skipped, ExportedSnapshot::Skipped));
+    assert_eq!(manager.snapshot_triggered_flushes(), flushes_before);
+
+    let ExportedSnapshot::Snapshot(snapshot) = export_with_fence(
+        &manager,
+        &mut store,
+        SnapshotId::new(),
+        snapshots_dir.path(),
+        SnapshotExportMode::NewFilesBackstop,
+    )
+    .await?
+    else {
+        panic!("the backstop publishes regardless of churn");
+    };
+    assert_eq!(snapshot.min_applied_lsn, Lsn::new(100));
+    assert_eq!(
+        manager.snapshot_triggered_flushes(),
+        flushes_before + 1,
+        "the backstop flushes exactly once"
+    );
+    assert!(
+        snapshot
+            .whole_db_files
+            .iter()
+            .all(|file| !file.name.ends_with(".log"))
+    );
+    Ok(())
+}
+
 /// A corrupt blob file in the newest snapshot fails verification during restore, which falls
 /// back to the next older retained snapshot.
 #[restate_core::test]
@@ -1112,6 +1469,117 @@ async fn blob_files_dropped_open_does_not_abandon_restore() -> anyhow::Result<()
         Some(value)
     );
     Ok(())
+}
+
+fn checkpoint_live_file_names(
+    snapshot: &LocalPartitionSnapshot,
+) -> std::collections::HashSet<String> {
+    snapshot
+        .files
+        .iter()
+        .map(|file| file.name.trim_start_matches('/').to_owned())
+        .chain(
+            snapshot
+                .whole_db_files
+                .iter()
+                .filter(|file| file.name.ends_with(".blob"))
+                .map(|file| file.name.clone()),
+        )
+        .collect()
+}
+
+fn new_files_snapshot_config(
+    min_new_bytes: u64,
+) -> anyhow::Result<(Configuration, std::path::PathBuf)> {
+    let repository_dir = tempdir()?.keep();
+    let mut config = Configuration::pinned().clone();
+    config.worker.storage.experimental_rocksdb_enable_blob_files = true;
+    config.worker.storage.experimental_rocksdb_blob_min_size =
+        Some(NonZeroByteCount::new(NonZeroUsize::new(64).unwrap()));
+    config.worker.use_multi_db_layout = true;
+    config.worker.snapshots.destination = Some(
+        Url::from_file_path(&repository_dir)
+            .expect("the tempdir is an absolute path")
+            .to_string(),
+    );
+    config.worker.snapshots.num_retained = NonZeroU8::new(3).unwrap();
+    config.worker.snapshots.experimental_snapshot_trigger = SnapshotTrigger::NewFiles;
+    config.worker.snapshots.snapshot_min_new_bytes = Some(NonZeroByteCount::new(
+        NonZeroUsize::new(usize::try_from(min_new_bytes)?).unwrap(),
+    ));
+    Ok((config, repository_dir))
+}
+
+async fn export_with_fence(
+    manager: &Arc<PartitionStoreManager>,
+    store: &mut PartitionStore,
+    snapshot_id: SnapshotId,
+    snapshot_base_path: &std::path::Path,
+    mode: SnapshotExportMode,
+) -> anyhow::Result<ExportedSnapshot> {
+    let partition_id = store.partition_id();
+    let (commit_fence_tx, mut commit_fence_rx) =
+        tokio::sync::mpsc::channel::<crate::snapshots::CommitFenceRequest>(1);
+    let mut txn = store.transaction();
+    let processor = async move {
+        let request = commit_fence_rx
+            .recv()
+            .await
+            .expect("export asks for a fence");
+        let _ = request.send(txn.fence_commits());
+    };
+    let export = manager.export_partition(
+        partition_id,
+        Some(&commit_fence_tx),
+        None,
+        snapshot_id,
+        snapshot_base_path,
+        mode,
+    );
+    let (result, ()) = tokio::join!(export, processor);
+    result.map_err(|err| anyhow::anyhow!("{err}"))
+}
+
+fn read_checkpoint_applied_lsn(
+    snapshot: &LocalPartitionSnapshot,
+    partition_id: PartitionId,
+    cf_name: &str,
+) -> anyhow::Result<Option<Lsn>> {
+    let path = snapshot.base_dir.path();
+    let options = rocksdb::Options::default();
+    let cfs = rocksdb::DB::list_cf(&options, path)?;
+    let db = rocksdb::DB::open_cf_for_read_only(&options, path, &cfs, false)?;
+    let cf = db
+        .cf_handle(cf_name)
+        .ok_or_else(|| anyhow::anyhow!("checkpoint has no column family '{cf_name}'"))?;
+    Ok(crate::fsm_table::read_applied_lsn_from_db(
+        &db,
+        &cf,
+        partition_id,
+    )?)
+}
+
+async fn max_checkpoint_applied_lsn(
+    snapshot: &LocalPartitionSnapshot,
+    partition_id: PartitionId,
+    _cf_name: &str,
+) -> anyhow::Result<Option<Lsn>> {
+    let key = format!("p:{partition_id}");
+    let mut max = None;
+    for file in &snapshot.files {
+        let path = snapshot
+            .base_dir
+            .path()
+            .join(file.name.trim_start_matches('/'));
+        let Some(value) =
+            crate::snapshots::sst_fingerprint::read_user_property(&path, key.as_bytes()).await?
+        else {
+            continue;
+        };
+        let value = std::str::from_utf8(&value)?.parse::<u64>()?;
+        max = Some(max.map_or_else(|| Lsn::new(value), |max: Lsn| max.max(Lsn::new(value))));
+    }
+    Ok(max)
 }
 
 fn blob_snapshot_config() -> anyhow::Result<Configuration> {

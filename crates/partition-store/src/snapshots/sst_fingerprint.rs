@@ -170,7 +170,7 @@ impl From<io::Error> for ParseError {
 fn fingerprint_rocksdb_layout(path: &Path) -> Result<u128, ParseError> {
     let file = File::open(path)?;
     let file_size = file.metadata()?.len();
-    let properties_offset = properties_block_offset(&file, file_size)?;
+    let (properties_offset, _) = properties_block_handle(&file, file_size)?;
 
     let mut hasher = Algorithm::TailV6.hasher();
     hasher.update(&file_size.to_le_bytes());
@@ -178,8 +178,8 @@ fn fingerprint_rocksdb_layout(path: &Path) -> Result<u128, ParseError> {
     Ok(hasher.digest128())
 }
 
-/// Returns the offset of the properties block, read from the metaindex through the footer.
-fn properties_block_offset(file: &File, file_size: u64) -> Result<u64, ParseError> {
+/// Returns the offset and size of the properties block, read from the metaindex through the footer.
+fn properties_block_handle(file: &File, file_size: u64) -> Result<(u64, u64), ParseError> {
     let (metaindex_offset, metaindex_size) = read_metaindex_handle(file, file_size)?;
 
     let metaindex_len = usize::try_from(metaindex_size)
@@ -211,7 +211,47 @@ fn properties_block_offset(file: &File, file_size: u64) -> Result<u64, ParseErro
         ));
     }
 
-    Ok(properties_offset)
+    Ok((properties_offset, properties_size))
+}
+
+/// Reads a user-collected property from an SST's uncompressed properties block.
+pub(crate) async fn read_user_property(path: &Path, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+    let blocking_path = path.to_path_buf();
+    let key = key.to_vec();
+    tokio::task::spawn_blocking(move || read_user_property_blocking(&blocking_path, &key))
+        .await
+        .map_err(io::Error::other)?
+}
+
+fn read_user_property_blocking(path: &Path, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+    let file = File::open(path)?;
+    let file_size = file.metadata()?.len();
+    let (properties_offset, properties_size) =
+        properties_block_handle(&file, file_size).map_err(parse_error_to_io)?;
+    let len = usize::try_from(properties_size)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "properties block too large"))?;
+    let mut block = vec![0u8; len];
+    read_at(&file, properties_offset, &mut block).map_err(parse_error_to_io)?;
+    let mut trailer = [0u8; BLOCK_TRAILER_LEN as usize];
+    read_at(&file, properties_offset + properties_size, &mut trailer).map_err(parse_error_to_io)?;
+    if trailer[0] != NO_COMPRESSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "properties block is compressed",
+        ));
+    }
+    Ok(find_block_entry(&block, key)
+        .map_err(parse_error_to_io)?
+        .map(<[u8]>::to_vec))
+}
+
+fn parse_error_to_io(err: ParseError) -> io::Error {
+    match err {
+        ParseError::Io(err) => err,
+        err @ ParseError::Malformed(_) => {
+            io::Error::new(io::ErrorKind::InvalidData, err.to_string())
+        }
+    }
 }
 
 /// Reads the footer and returns the offset and size of the metaindex block.
@@ -448,7 +488,9 @@ mod tests {
         let properties_offset = {
             let file = File::open(&original)?;
             let file_size = file.metadata()?.len();
-            properties_block_offset(&file, file_size).expect("properties block offset")
+            properties_block_handle(&file, file_size)
+                .expect("properties block offset")
+                .0
         };
         let bytes = std::fs::read(&original)?;
         let mut hasher = Xxh3::with_seed(1);

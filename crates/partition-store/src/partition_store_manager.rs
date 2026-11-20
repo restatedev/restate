@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use ahash::HashMap;
-use parking_lot::{RwLock, RwLockUpgradableReadGuard};
+use ahash::{HashMap, HashSet};
+use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard};
 use tokio::sync::{Mutex as AsyncMutex, OwnedRwLockWriteGuard, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{Level, debug, error, field, info, instrument, warn};
@@ -41,8 +41,8 @@ use crate::partition_db::{
     RocksConfigurator, State,
 };
 use crate::snapshots::{
-    CommitFenceRequest, GetSnapshotError, LocalPartitionSnapshot, PartitionSnapshotStatus,
-    RestoreSnapshot, SnapshotFormatVersion, Snapshots,
+    CommitFenceRequest, ExportedSnapshot, GetSnapshotError, LocalPartitionSnapshot,
+    PartitionSnapshotStatus, RestoreSnapshot, SnapshotExportMode, SnapshotFormatVersion, Snapshots,
 };
 use crate::{BuildError, OpenError, PartitionStore, SnapshotErrorKind};
 
@@ -112,6 +112,14 @@ struct CachedDb {
     notifications: Arc<DurableLsnSenders>,
 }
 
+/// Content keys of a partition database incarnation's SST and blob files, keyed by file name and
+/// size. It is cleared whenever the database is opened, closed, dropped or replaced; losing the
+/// cache only costs re-hashing.
+#[derive(Default)]
+struct ChurnCache {
+    files: HashMap<(String, u64), String>,
+}
+
 /// Restores a downloaded snapshot by importing it into the partition's database.
 struct ImportSnapshot<'a> {
     cell: &'a PartitionCell,
@@ -168,8 +176,9 @@ enum WholeDbRestoreOutcome {
 
 pub struct PartitionStoreManager {
     state: Arc<SharedState>,
-    snapshots: Snapshots,
+    pub(crate) snapshots: Snapshots,
     db_cache: AsyncMutex<HashMap<restate_rocksdb::DbName, CachedDb>>,
+    churn_cache: Mutex<HashMap<PartitionId, ChurnCache>>,
     memory_controller: MemoryController,
     use_multi_db_layout: bool,
 }
@@ -190,6 +199,7 @@ impl PartitionStoreManager {
                 .await
                 .map_err(BuildError::Snapshots)?,
             db_cache: Default::default(),
+            churn_cache: Default::default(),
             memory_controller,
             use_multi_db_layout,
         });
@@ -270,7 +280,9 @@ impl PartitionStoreManager {
             db_cache_guard.remove(&db_name);
         }
 
-        // We need to create/open this database.
+        // We need to create/open this database. Any cached content keys belong to the previous
+        // database incarnation.
+        self.clear_churn_cache(partition.partition_id);
         let notifications = Arc::new(DurableLsnSenders::default());
         let path = Configuration::pinned().worker.storage.data_dir(&db_name);
         let db_spec = self.db_spec(&db_name, path, &notifications);
@@ -731,6 +743,12 @@ impl PartitionStoreManager {
         self.snapshots.is_repository_configured()
     }
 
+    /// Number of flushes requested by snapshot exports. Test hook.
+    #[cfg(test)]
+    pub(crate) fn snapshot_triggered_flushes(&self) -> u64 {
+        self.snapshots.snapshot_triggered_flushes()
+    }
+
     /// Asks the snapshot repository for the partition's latest snapshot status and records
     /// its archived LSN. This doesn't need the partition's store: it works whether the store
     /// is open, closed, or not on this node at all. Returns `None` if no snapshot repository
@@ -1015,11 +1033,16 @@ impl PartitionStoreManager {
                 format!("Closing partition {partition_id}"),
             )
             .await;
+        self.clear_churn_cache(partition_id);
     }
 
     /// Exports a snapshot of the partition while nothing writes to it. An open partition needs
     /// `commit_fence_tx`, which reaches its running processor so that it holds back its commits.
     /// A closed partition is exported as it is. A partition that is still closing is refused.
+    ///
+    /// With a `new-files` mode, the checkpoint is dropped and [`ExportedSnapshot::Skipped`]
+    /// returned unless enough of its SST and blob files are not in the latest published snapshot.
+    #[allow(clippy::too_many_arguments)]
     pub async fn export_partition(
         &self,
         partition_id: PartitionId,
@@ -1027,7 +1050,8 @@ impl PartitionStoreManager {
         min_target_lsn: Option<Lsn>,
         snapshot_id: SnapshotId,
         snapshot_base_path: &Path,
-    ) -> Result<LocalPartitionSnapshot, SnapshotError> {
+        mode: SnapshotExportMode,
+    ) -> Result<ExportedSnapshot, SnapshotError> {
         let error = |kind| SnapshotError { partition_id, kind };
         // note: we don't hold the map read lock while trying to acquire the partition cell's lock.
         // hence the `cloned()` call.
@@ -1055,16 +1079,182 @@ impl PartitionStoreManager {
             _ => return Err(error(SnapshotErrorKind::PartitionNotFound)),
         };
 
-        Snapshots::create_local_snapshot(
-            PartitionStore::from(db),
-            permit,
-            cell_guard,
-            commit_fence_tx,
-            min_target_lsn,
-            snapshot_id,
-            snapshot_base_path,
-        )
-        .await
+        let exported = self
+            .snapshots
+            .create_local_snapshot(
+                PartitionStore::from(db),
+                permit,
+                cell_guard,
+                commit_fence_tx,
+                min_target_lsn,
+                snapshot_id,
+                snapshot_base_path,
+                mode,
+            )
+            .await?;
+
+        if !mode.is_new_files() {
+            return Ok(ExportedSnapshot::Snapshot(
+                exported.expect("a flushing export is never skipped"),
+            ));
+        }
+
+        let Some(snapshot) = exported else {
+            metrics::counter!(crate::metric_definitions::SNAPSHOT_ROUNDS_SKIPPED).increment(1);
+            self.clear_churn_cache(partition_id);
+            return Ok(ExportedSnapshot::Skipped);
+        };
+
+        let latest = self
+            .snapshots
+            .get_latest_snapshot_metadata(partition_id)
+            .await
+            .map_err(|err| error(SnapshotErrorKind::RepositoryIo(err)))?;
+        let referenced: HashSet<String> = latest
+            .as_ref()
+            .map(|metadata| metadata.file_keys.values().cloned().collect())
+            .unwrap_or_default();
+        let churn = self
+            .churn_since_latest(partition_id, &snapshot, &referenced)
+            .await
+            .map_err(|err| error(SnapshotErrorKind::Export(err)))?;
+        self.retain_churn_cache(partition_id, &snapshot);
+        let threshold = Configuration::pinned()
+            .worker
+            .snapshots
+            .snapshot_min_new_bytes();
+
+        debug!(
+            %partition_id,
+            churn = %ByteCount::from(churn),
+            threshold = %ByteCount::from(threshold),
+            ?mode,
+            "Computed snapshot churn since latest snapshot"
+        );
+
+        if mode == SnapshotExportMode::NewFiles && churn < threshold {
+            metrics::counter!(crate::metric_definitions::SNAPSHOT_ROUNDS_SKIPPED).increment(1);
+            drop(snapshot);
+            return Ok(ExportedSnapshot::Skipped);
+        }
+
+        Ok(ExportedSnapshot::Snapshot(snapshot))
+    }
+
+    /// Sums the sizes of the checkpoint's SST and blob files whose content key is not referenced
+    /// by the latest published snapshot.
+    async fn churn_since_latest(
+        &self,
+        partition_id: PartitionId,
+        snapshot: &LocalPartitionSnapshot,
+        referenced: &HashSet<String>,
+    ) -> anyhow::Result<u64> {
+        let mut entries = Vec::with_capacity(
+            snapshot.files.len()
+                + snapshot
+                    .whole_db_files
+                    .iter()
+                    .filter(|file| file.name.ends_with(".blob"))
+                    .count(),
+        );
+        for file in &snapshot.files {
+            entries.push((
+                file.name.trim_start_matches('/').to_owned(),
+                file.size as u64,
+                "sst",
+            ));
+        }
+        for file in &snapshot.whole_db_files {
+            if file.name.ends_with(".blob") {
+                entries.push((file.name.clone(), file.size as u64, "blob"));
+            }
+        }
+
+        let mut churn = 0;
+        for (name, size, extension) in entries {
+            let key = self
+                .cached_content_key(
+                    partition_id,
+                    snapshot.base_dir.path(),
+                    name,
+                    size,
+                    extension,
+                )
+                .await?;
+            if !referenced.contains(&key) {
+                churn += size;
+            }
+        }
+        Ok(churn)
+    }
+
+    async fn cached_content_key(
+        &self,
+        partition_id: PartitionId,
+        base_dir: &Path,
+        name: String,
+        size: u64,
+        extension: &'static str,
+    ) -> anyhow::Result<String> {
+        {
+            let cache = self.churn_cache.lock();
+            if let Some(key) = cache
+                .get(&partition_id)
+                .and_then(|entry| entry.files.get(&(name.clone(), size)))
+            {
+                return Ok(key.clone());
+            }
+        }
+
+        let fingerprint =
+            crate::snapshots::sst_fingerprint::sst_fingerprint(&base_dir.join(&name)).await?;
+        let key = format!("ssts/{fingerprint}.{extension}");
+        self.churn_cache
+            .lock()
+            .entry(partition_id)
+            .or_default()
+            .files
+            .insert((name, size), key.clone());
+        Ok(key)
+    }
+
+    fn clear_churn_cache(&self, partition_id: PartitionId) {
+        self.churn_cache.lock().remove(&partition_id);
+    }
+
+    /// Drops content keys of files that the checkpoint no longer has, so a long-lived partition
+    /// does not keep an entry per SST or blob file it ever wrote.
+    fn retain_churn_cache(&self, partition_id: PartitionId, snapshot: &LocalPartitionSnapshot) {
+        let live_files: HashSet<String> = snapshot
+            .files
+            .iter()
+            .map(|file| file.name.trim_start_matches('/').to_owned())
+            .chain(
+                snapshot
+                    .whole_db_files
+                    .iter()
+                    .filter(|file| file.name.ends_with(".blob"))
+                    .map(|file| file.name.clone()),
+            )
+            .collect();
+        let mut cache = self.churn_cache.lock();
+        let Some(entry) = cache.get_mut(&partition_id) else {
+            return;
+        };
+        entry.files.retain(|(name, _), _| live_files.contains(name));
+        if entry.files.is_empty() {
+            cache.remove(&partition_id);
+        }
+    }
+
+    /// The content keys currently cached for the partition. Test hook.
+    #[cfg(test)]
+    pub(crate) fn churn_cache_file_names(&self, partition_id: PartitionId) -> Vec<String> {
+        self.churn_cache
+            .lock()
+            .get(&partition_id)
+            .map(|entry| entry.files.keys().map(|(name, _)| name.clone()).collect())
+            .unwrap_or_default()
     }
 
     /// A capture guard for an open partition that the test doesn't write to while exporting it.
@@ -1112,6 +1302,7 @@ impl PartitionStoreManager {
             ),
         )
         .await?;
+        self.clear_churn_cache(partition.partition_id);
 
         match dropped {
             Some(DroppedPartitionStore { disk_usage }) => info!(
@@ -1184,6 +1375,7 @@ impl PartitionStoreManager {
         let mut state_guard = cell.inner.write().await;
         let db = state_guard.db().cloned();
         cell.reset_to_unknown(&mut state_guard).await;
+        self.clear_churn_cache(partition_id);
         // making sure the rocksdb database is fully closed.
         if let Some(db) = db {
             db.into_rocksdb()
@@ -1246,6 +1438,8 @@ mod tests {
     use restate_storage_api::{StorageError, Transaction};
     use restate_types::config::Configuration;
     use restate_types::identifiers::{PartitionId, SnapshotId};
+
+    use crate::snapshots::{ExportedSnapshot, SnapshotExportMode};
     use restate_types::logs::{Lsn, SequenceNumber};
     use restate_types::partitions::Partition;
     use restate_types::sharding::KeyRange;
@@ -2509,6 +2703,7 @@ mod tests {
                     None,
                     SnapshotId::new(),
                     snapshots.path(),
+                    SnapshotExportMode::Flush,
                 )
             };
 
@@ -2523,7 +2718,10 @@ mod tests {
                 let _ = request.send(txn.fence_commits());
             };
             let (snapshot, ()) = tokio::join!(export(Some(&commit_fence_tx)), processor);
-            assert_eq!(snapshot.unwrap().min_applied_lsn, Lsn::new(100));
+            let ExportedSnapshot::Snapshot(snapshot) = snapshot.unwrap() else {
+                panic!("a flushing export is never skipped");
+            };
+            assert_eq!(snapshot.min_applied_lsn, Lsn::new(100));
 
             let refused = export(None).await.unwrap_err();
             assert!(matches!(refused.kind, SnapshotErrorKind::InvalidState));
@@ -2549,7 +2747,10 @@ mod tests {
             assert!(cell.inner.try_write().is_ok());
             manager.close(partition.partition_id).await;
             drop(slots);
-            assert_eq!(queued.await.unwrap().min_applied_lsn, Lsn::new(100));
+            let ExportedSnapshot::Snapshot(queued) = queued.await.unwrap() else {
+                panic!("a flushing export is never skipped");
+            };
+            assert_eq!(queued.min_applied_lsn, Lsn::new(100));
         }
         Ok(())
     }

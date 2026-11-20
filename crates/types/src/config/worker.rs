@@ -1267,6 +1267,21 @@ pub enum SnapshotType {
     Incremental,
 }
 
+/// # Snapshot trigger
+///
+/// What makes the node take automatic partition snapshots.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum SnapshotTrigger {
+    /// Snapshot when enough log records have been applied and enough time has passed.
+    #[default]
+    LogRecords,
+    /// Periodically checkpoint the whole database without flushing, and publish it when enough
+    /// newly durable files have accumulated. Requires blob files and the multi-database layout.
+    NewFiles,
+}
+
 /// # Snapshot options
 ///
 /// Partition store object-store snapshotting settings. Setting `destination` enables automatic
@@ -1446,6 +1461,42 @@ pub struct SnapshotsOptions {
     #[serde(default)]
     pub experimental_snapshot_type: SnapshotType,
 
+    /// # Snapshot trigger
+    ///
+    /// [Experimental]
+    /// `log-records` (default) keeps the record-count and elapsed-time triggers. `new-files`
+    /// periodically creates a whole-database checkpoint without flushing, and uploads it only when
+    /// enough of its SST and blob files are not in the repository yet. It requires
+    /// `experimental-rocksdb-enable-blob-files` and `worker.use-multi-db-layout`.
+    ///
+    /// Since v1.8.2
+    #[serde(default)]
+    pub experimental_snapshot_trigger: SnapshotTrigger,
+
+    /// # Minimum newly durable snapshot bytes
+    ///
+    /// [Experimental]
+    /// With `experimental-snapshot-trigger = "new-files"`, upload a checkpoint only when at least
+    /// this many bytes of its SST and blob files are not in the repository yet.
+    ///
+    /// Default: 64 MiB
+    ///
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_min_new_bytes: Option<NonZeroByteCount>,
+
+    /// # Maximum age of unflushed state
+    ///
+    /// [Experimental]
+    /// With `experimental-snapshot-trigger = "new-files"`, flush and snapshot a partition when it
+    /// has had applied writes that the partition store hasn't persisted for longer than this.
+    ///
+    /// Default: `6h`
+    ///
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_max_unflushed_age: Option<FriendlyDuration>,
+
     /// # Snapshot check interval
     ///
     /// How frequently to check snapshot trigger conditions. Lower values will result in snapshots
@@ -1495,6 +1546,9 @@ impl Default for SnapshotsOptions {
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: true,
             experimental_snapshot_type: SnapshotType::default(),
+            experimental_snapshot_trigger: SnapshotTrigger::default(),
+            snapshot_min_new_bytes: None,
+            snapshot_max_unflushed_age: None,
             check_interval: None,
         }
     }
@@ -1523,6 +1577,20 @@ impl SnapshotsOptions {
         self.automatic_snapshot_concurrency_limit
             .map(|v| v.get())
             .unwrap_or(4)
+    }
+
+    /// Upload threshold for the `new-files` trigger. Defaults to 64 MiB.
+    pub fn snapshot_min_new_bytes(&self) -> u64 {
+        self.snapshot_min_new_bytes
+            .map(|bytes| bytes.as_u64())
+            .unwrap_or(64 * 1024 * 1024)
+    }
+
+    /// Staleness backstop for unflushed state with the `new-files` trigger. Defaults to 6 hours.
+    pub fn snapshot_max_unflushed_age(&self) -> Duration {
+        self.snapshot_max_unflushed_age
+            .map(FriendlyDuration::to_std)
+            .unwrap_or(Duration::from_secs(6 * 60 * 60))
     }
 
     /// Part size for multipart uploads, in bytes.
@@ -1571,6 +1639,17 @@ impl SnapshotsOptions {
     /// disabled: no destination is set, or `snapshot-interval` is zero.
     pub fn automatic_snapshots(&self) -> Option<AutomaticSnapshots> {
         self.destination.as_ref()?;
+        if self.experimental_snapshot_trigger == SnapshotTrigger::NewFiles {
+            let interval = self
+                .snapshot_interval
+                .map(FriendlyDuration::to_std)
+                .unwrap_or(Duration::from_secs(5 * 60));
+            return (!interval.is_zero()).then_some(AutomaticSnapshots {
+                interval: Some(interval),
+                // The new-files trigger ignores the record-count trigger.
+                min_records: None,
+            });
+        }
         match (self.snapshot_interval, self.snapshot_interval_num_records) {
             (None, None) => Some(AutomaticSnapshots::DEFAULT),
             (Some(interval), _) if interval.is_zero() => None,

@@ -57,6 +57,7 @@ use super::{
 };
 use crate::metric_definitions::{
     SNAPSHOT_DOWNLOAD_BYTES, SNAPSHOT_DOWNLOAD_INFLIGHT, SNAPSHOT_UPLOAD_BYTES,
+    SNAPSHOT_UPLOADED_BYTES,
 };
 
 #[derive(Clone)]
@@ -2367,6 +2368,7 @@ async fn put_snapshot_object(
 ) -> anyhow::Result<object_store::PutResult> {
     debug!(path = ?file_path, "Putting snapshot object from local file");
     let uploaded_bytes = metrics::counter!(SNAPSHOT_UPLOAD_BYTES);
+    let uploaded_bytes_after_dedup = metrics::counter!(SNAPSHOT_UPLOADED_BYTES);
     let mut snapshot = tokio::fs::File::open(file_path).await?;
 
     let file_len = snapshot.metadata().await?.len();
@@ -2374,6 +2376,7 @@ async fn put_snapshot_object(
         let payload = PutPayload::from(tokio::fs::read(file_path).await?);
         let result = object_store.put(key, payload).await?;
         uploaded_bytes.increment(file_len);
+        uploaded_bytes_after_dedup.increment(file_len);
         return Ok(result);
     }
 
@@ -2401,6 +2404,7 @@ async fn put_snapshot_object(
                 let part_len = part.len() as u64;
                 upload.put_part(PutPayload::from_bytes(part)).await?;
                 uploaded_bytes.increment(part_len);
+                uploaded_bytes_after_dedup.increment(part_len);
             }
 
             if len == 0 {
@@ -3510,6 +3514,7 @@ mod tests {
         let snapshots = crate::snapshots::Snapshots {
             repository: Some(repository.clone()),
             concurrency_limit: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
+            flush_count: Default::default(),
         };
 
         // An empty repository is "no snapshot present", not an error.

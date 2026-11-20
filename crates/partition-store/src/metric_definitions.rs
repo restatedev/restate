@@ -36,6 +36,12 @@ pub(crate) const SNAPSHOT_FAST_FORWARD_FAILED: &str =
     "restate.partition_store.snapshots.fast_forward.failed.total";
 pub(crate) const SNAPSHOT_UPLOAD_BYTES_DEDUPLICATED: &str =
     "restate.partition_store.snapshots.upload.bytes.deduplicated.total";
+pub(crate) const SNAPSHOT_UPLOADED_BYTES: &str =
+    "restate.partition_store.snapshots.uploaded_bytes.total";
+pub(crate) const SNAPSHOT_ROUNDS_SKIPPED: &str =
+    "restate.partition_store.snapshots.rounds_skipped.total";
+pub(crate) const SNAPSHOT_BACKSTOP_FLUSHES: &str =
+    "restate.partition_store.snapshots.backstop_flushes.total";
 pub(crate) const SNAPSHOT_FINGERPRINT_FALLBACK: &str =
     "restate.partition_store.snapshots.fingerprint.fallback.total";
 pub(crate) const SNAPSHOT_ORPHAN_SCAN_TOTAL: &str =
@@ -62,6 +68,24 @@ pub(crate) fn describe_metrics() {
         SNAPSHOT_UPLOAD_BYTES_DEDUPLICATED,
         Unit::Bytes,
         "Total bytes deduplicated (not uploaded) for partition snapshots"
+    );
+
+    describe_counter!(
+        SNAPSHOT_UPLOADED_BYTES,
+        Unit::Bytes,
+        "Bytes actually uploaded after snapshot deduplication"
+    );
+
+    describe_counter!(
+        SNAPSHOT_ROUNDS_SKIPPED,
+        Unit::Count,
+        "Snapshot rounds skipped because churn was below the threshold or nothing was flushed"
+    );
+
+    describe_counter!(
+        SNAPSHOT_BACKSTOP_FLUSHES,
+        Unit::Count,
+        "Flushes triggered by the unflushed-age snapshot backstop"
     );
 
     describe_counter!(
