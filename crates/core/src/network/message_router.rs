@@ -233,6 +233,7 @@ impl MessageRouter {
             raw_rpc,
             connection.peer,
             PeerMetadataVersion::from(header),
+            Some(connection.clone()),
         );
 
         let op = ServiceOp::CallRpc(incoming);
@@ -280,6 +281,7 @@ impl MessageRouter {
             },
             connection.peer(),
             PeerMetadataVersion::from(header),
+            Some(connection.clone()),
         );
 
         let op = ServiceOp::Watch(incoming);
@@ -319,6 +321,7 @@ impl MessageRouter {
             },
             connection.peer(),
             PeerMetadataVersion::from(header),
+            Some(connection.clone()),
         );
 
         let op = ServiceOp::Unary(incoming);
@@ -678,6 +681,7 @@ impl<S: Service> ServiceMessage<S> {
             raw_rpc,
             from_peer,
             peer_metadata.unwrap_or_default(),
+            None,
         );
 
         tokio::spawn(async move {
@@ -1015,6 +1019,77 @@ mod tests {
 
     const SVC: ServiceTag = ServiceTag::LogServerDataService;
     const SORT_CODE: u64 = 42;
+
+    #[tokio::test]
+    async fn incoming_keeps_the_original_connection_through_rpc_conversions() {
+        use restate_types::GenerationalNodeId;
+        use restate_types::net::codec::WireEncode;
+        use restate_types::net::node::{GetNodeState, GossipService};
+        use restate_types::net::{CURRENT_PROTOCOL_VERSION, RpcRequest};
+
+        use crate::network::Swimlane;
+        use crate::network::io::EgressSender;
+
+        let peer = GenerationalNodeId::new(2, 1);
+        let (sender, receiver) = mpsc::channel(1);
+        let connection = Connection::new(
+            peer,
+            CURRENT_PROTOCOL_VERSION,
+            Swimlane::Datafusion,
+            EgressSender::new(sender),
+        );
+        let (sender, _replacement_receiver) = mpsc::channel(1);
+        let replacement = Connection::new(
+            peer,
+            CURRENT_PROTOCOL_VERSION,
+            Swimlane::Datafusion,
+            EgressSender::new(sender),
+        );
+        let mut builder = MessageRouterBuilder::with_default_pool(MemoryPool::unlimited());
+        let mut service = builder
+            .register_service::<GossipService>(BackPressureMode::Lossy)
+            .start();
+        let router = builder.build();
+        let _reply = router
+            .call_rpc(
+                protobuf::network::Header::default(),
+                protobuf::network::RpcCall {
+                    service: <GossipService as Service>::TAG as i32,
+                    msg_type: GetNodeState::TYPE.to_owned(),
+                    payload: GetNodeState {}
+                        .encode_to_bytes(CURRENT_PROTOCOL_VERSION)
+                        .unwrap(),
+                    sort_code: Some(SORT_CODE),
+                    ..Default::default()
+                },
+                &connection,
+            )
+            .await
+            .unwrap();
+        let ServiceMessage::Rpc(incoming) = service.next().await.unwrap() else {
+            panic!("expected RPC");
+        };
+        assert_eq!(incoming.connection(), Some(&connection));
+        assert_ne!(incoming.connection(), Some(&replacement));
+        #[cfg(feature = "message-util")]
+        let incoming = Incoming::<RawSvcRpc<GossipService>>::from_raw_rpc(incoming.into_raw_rpc());
+        let incoming = incoming.into_typed::<GetNodeState>();
+        assert_eq!(incoming.connection(), Some(&connection));
+        assert_eq!(incoming.peer(), peer);
+        assert_eq!(incoming.protocol_version(), CURRENT_PROTOCOL_VERSION);
+        assert_eq!(incoming.sort_code(), Some(SORT_CODE));
+        let closed = incoming.connection().unwrap().closed();
+        let (_reply, GetNodeState {}) = incoming.split();
+        tokio::pin!(closed);
+        assert!(futures::poll!(&mut closed).is_pending());
+        drop(receiver);
+        closed.await;
+        assert!(connection.is_closed());
+        assert!(
+            !replacement.is_closed(),
+            "a same-peer replacement has independent liveness"
+        );
+    }
 
     /// Creates a `ShardedSender` + control stream + `Shards` triple ready for
     /// testing `get_sharded_sender` in isolation.
