@@ -1420,8 +1420,6 @@ where
 
         let created_at =
             UniqueTimestamp::from_unix_millis_unchecked(completed.timestamps.creation_time());
-        let modified_at =
-            UniqueTimestamp::from_unix_millis_unchecked(completed.timestamps.modification_time());
         let completed_at = UniqueTimestamp::from_unix_millis_unchecked(
             completed
                 .timestamps
@@ -1454,7 +1452,9 @@ where
         // truth for this information.
         // This needs to be > 0 because this is how we denote that an entry "has_started" in stats.
         stats.num_attempts = 1;
-        stats.transitioned_at = modified_at;
+        // The entry entered Finished when the invocation completed: its stored
+        // completion time, or its modification time when that is absent.
+        stats.transitioned_at = completed_at;
         stats.latest_attempt_at = completed
             .timestamps
             .running_transition_time()
