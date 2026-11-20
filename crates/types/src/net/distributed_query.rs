@@ -219,7 +219,13 @@ pub enum QueryTaskRequest {
 
 define_rpc! { @request = QueryTaskRequest, @response = QueryTaskReply, @service = DistributedQueryService, }
 bilrost_wire_codec!(QueryTaskRequest, ProtocolVersion::V7);
-bilrost_wire_codec!(QueryTaskReply, ProtocolVersion::V7);
+// Replies carry already-encoded payloads, so sizing them is cheap. Encode straight
+// into the final Bytes buffer rather than flattening a growable ReverseBuffer.
+bilrost_wire_codec!(
+    QueryTaskReply,
+    ProtocolVersion::V7,
+    bilrost::Message::encode_to_bytes
+);
 
 #[cfg(test)]
 mod tests {
