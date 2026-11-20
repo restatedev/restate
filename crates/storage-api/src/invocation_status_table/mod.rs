@@ -104,8 +104,17 @@ impl StatusTimestamps {
 
     /// Update the statistics with an updated [`Self::completed_transition_time()`].
     fn record_completed_transition_time(&mut self, timestamp: MillisSinceEpoch) {
-        self.update(timestamp);
-        self.completed_transition_time = Some(self.modification_time)
+        let completed_at = self.completion_time(timestamp);
+        self.update(completed_at);
+        self.completed_transition_time = Some(completed_at)
+    }
+
+    /// When the invocation completes if the record completing it was created at
+    /// `timestamp`: never before its last modification. Records come from different
+    /// nodes' clocks, so the completing record can be older than one before it. This
+    /// is what [`Self::completed_transition_time()`] records.
+    pub fn completion_time(&self, timestamp: MillisSinceEpoch) -> MillisSinceEpoch {
+        self.modification_time.max(timestamp)
     }
 
     /// Creation time of the [`InvocationStatus`].

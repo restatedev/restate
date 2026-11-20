@@ -1210,6 +1210,24 @@ experimental! {
     /// Since v1.8.2
     byte_offsets,
 
+    /// # Record vqueue entries' lifecycle more precisely
+    ///
+    /// When enabled, every run of a vqueue entry records `started`, so that a paused or suspended
+    /// entry comes back with its latest attempt's status instead of an earlier one such as
+    /// `backing-off`, and an invocation's entry enters Finished at the invocation's completion
+    /// time instead of the completing record's time. A
+    /// partition turns this on when it next elects a leader with this option enabled. Leaders
+    /// running v1.9.0 or newer turn it on regardless of this option, once every worker node in
+    /// the cluster runs v1.9.0 or newer.
+    ///
+    /// Only enable once all nodes run v1.8.2 or newer. Once a partition has enabled it, it stays
+    /// enabled even if this option is removed.
+    ///
+    /// Once enabled, you **cannot** roll back to a Restate-server version older than v1.8.2.
+    ///
+    /// Since v1.8.2
+    vq_lifecycle_refined,
+
     /// # Evenly spaced partition-key buckets for unscoped services
     ///
     /// When enabled while the cluster is provisioned, idempotent invocations of unscoped

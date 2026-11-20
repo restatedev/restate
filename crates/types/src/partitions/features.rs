@@ -85,6 +85,16 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.8.2*
     EnableByteOffsets = 8,
+    /// Record vqueue entries' lifecycle more precisely, from the record that applies this change
+    /// on:
+    /// - every run of an entry records `started`, so that pausing or suspending it carries its
+    ///   latest attempt's status, which resuming or waking it up restores; before, a later run
+    ///   kept the status the entry had in the inbox, such as `backing-off`;
+    /// - an invocation's entry enters Finished at the invocation's completion time, never before
+    ///   its last modification, instead of at the completing record's time.
+    ///
+    /// *Since v1.8.2*
+    EnableVqLifecycleRefined = 9,
 }
 
 impl PartitionFeatureChange {
@@ -106,6 +116,7 @@ impl PartitionFeatureChange {
             Self::EnableInconsistentStateMutationCleanup => &RESTATE_VERSION_1_8_0,
             Self::EnablePreflightSignalRecording => &RESTATE_VERSION_1_8_1,
             Self::EnableByteOffsets => &RESTATE_VERSION_1_8_2,
+            Self::EnableVqLifecycleRefined => &RESTATE_VERSION_1_8_2,
         }
     }
 
@@ -137,6 +148,9 @@ impl PartitionFeatureChange {
                 !std::mem::replace(&mut features.preflight_signal_recording, true)
             }
             Self::EnableByteOffsets => !std::mem::replace(&mut features.byte_offsets, true),
+            Self::EnableVqLifecycleRefined => {
+                !std::mem::replace(&mut features.vq_lifecycle_refined, true)
+            }
         }
     }
 }
@@ -213,6 +227,13 @@ pub struct PersistedFeatures {
     /// *Since v1.8.2*
     #[bilrost(tag(8))]
     pub byte_offsets: bool,
+
+    /// Vqueue entries record their lifecycle more precisely
+    /// ([`PartitionFeatureChange::EnableVqLifecycleRefined`]).
+    ///
+    /// *Since v1.8.2*
+    #[bilrost(tag(9))]
+    pub vq_lifecycle_refined: bool,
 }
 
 impl PersistedFeatures {
@@ -233,6 +254,7 @@ impl PersistedFeatures {
             self.preflight_signal_recording
                 .then_some("preflight_signal_recording"),
             self.byte_offsets.then_some("byte_offsets"),
+            self.vq_lifecycle_refined.then_some("vq_lifecycle_refined"),
         ]
         .into_iter()
         .flatten()
@@ -304,9 +326,26 @@ mod tests {
         assert!(byte_offsets.apply_to(&mut features));
         assert!(!byte_offsets.apply_to(&mut features));
         assert!(features.byte_offsets);
+        // So can the refined vqueue lifecycle.
+        let lifecycle_refined = PartitionFeatureChange::EnableVqLifecycleRefined;
+        assert_eq!(
+            PartitionFeatureChange::from_repr(9),
+            Some(lifecycle_refined)
+        );
+        assert_eq!(
+            lifecycle_refined.min_required_version(),
+            &*crate::RESTATE_VERSION_1_8_2
+        );
+        assert!(lifecycle_refined.apply_to(&mut features));
+        assert!(!lifecycle_refined.apply_to(&mut features));
         assert_eq!(
             features.enabled_names().collect::<Vec<_>>(),
-            ["vqueues", "unique_random_seeds", "byte_offsets"]
+            [
+                "vqueues",
+                "unique_random_seeds",
+                "byte_offsets",
+                "vq_lifecycle_refined"
+            ]
         );
     }
 

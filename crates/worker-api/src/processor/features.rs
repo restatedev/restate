@@ -73,6 +73,15 @@ pub trait PartitionFeatures {
     fn is_byte_offsets_enabled(&self) -> bool {
         self.has_feature(PartitionFeatureChange::EnableByteOffsets)
     }
+
+    /// Whether vqueue entries record their lifecycle more precisely: every run of an entry
+    /// records `started`, and an invocation's entry enters Finished at the invocation's
+    /// completion time.
+    ///
+    /// *Since v1.8.2*
+    fn is_vq_lifecycle_refined_enabled(&self) -> bool {
+        self.has_feature(PartitionFeatureChange::EnableVqLifecycleRefined)
+    }
 }
 
 impl PartitionFeatures for PersistedFeatures {
@@ -93,6 +102,7 @@ impl PartitionFeatures for PersistedFeatures {
                 self.preflight_signal_recording
             }
             PartitionFeatureChange::EnableByteOffsets => self.byte_offsets,
+            PartitionFeatureChange::EnableVqLifecycleRefined => self.vq_lifecycle_refined,
         }
     }
 
