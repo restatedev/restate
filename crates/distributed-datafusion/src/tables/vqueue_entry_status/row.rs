@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_clock::RoughTimestamp;
+use restate_partition_store::vqueue_table::EntryKeyRow;
 use restate_storage_api::vqueue_table::stats::EntryStatistics;
 use restate_storage_api::vqueue_table::{EntryMetadataRef, RawStatusHeaderRef, Stage, Status};
 use restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatusRow;
@@ -87,6 +88,46 @@ pub(crate) fn covered_row(
         total_blocked_on_lock: total.blocked_on_lock_ms as i64,
         total_blocked_on_deployment_concurrency: total.blocked_on_deployment_concurrency_ms as i64,
         canonical_id: id.canonicalize(place.seq),
+    }
+}
+
+/// Appends the row of an entry as a status index's key holds it: only the
+/// columns the key holds, written as [`append_entry_row`] writes them from an
+/// entry status. The caller projects no other column.
+#[inline]
+pub(crate) fn append_status_key_row(builder: &mut SysVqueueEntryStatusBuilder, key: &EntryKeyRow) {
+    let mut row = builder.row();
+    let id = key.id.to_base_entry_id();
+    if row.is_partition_key_defined() {
+        row.partition_key(id.partition_key());
+    }
+    if row.is_entry_id_defined() {
+        row.fmt_entry_id(id);
+    }
+    if row.is_canonical_id_defined() {
+        row.fmt_canonical_id(key.id);
+    }
+    if row.is_sequence_number_defined() {
+        row.sequence_number(key.id.seq().as_u64());
+    }
+    if row.is_entry_kind_defined() {
+        row.fmt_entry_kind(id.kind());
+    }
+    if row.is_stage_defined() {
+        row.stage(key.stage.as_str());
+    }
+    if row.is_status_defined() {
+        row.status(key.status.as_str());
+    }
+    if row.is_created_at_defined()
+        && let Some(at) = key.created_at
+    {
+        row.created_at(at.to_unix_millis().as_u64() as i64);
+    }
+    if row.is_transitioned_at_defined()
+        && let Some(at) = key.transitioned_at
+    {
+        row.transitioned_at(at.to_unix_millis().as_u64() as i64);
     }
 }
 

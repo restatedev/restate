@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::num::NonZeroUsize;
-use std::ops::{ControlFlow, RangeBounds};
+use std::ops::{Bound, ControlFlow, RangeBounds};
 use std::sync::Arc;
 
 use bilrost::{Message, OwnedMessage};
@@ -33,10 +33,10 @@ use restate_partition_store::vqueue_table::{
     ActiveEntryByStage as StoredActiveIndex, ActiveRead,
     EntryByStatusCreated as StoredStatusCreated, EntryByStatusCreatedKey,
     EntryByStatusTransitioned as StoredStatusTransitioned, EntryByStatusTransitionedKey,
-    EntryStatusCursor, EntryStatusKey, EntryStatusKeys, EntryStatusRecords, EntryStatusScan,
-    FinishedEntryByOutcome as StoredFinishedIndex, FinishedRead, StagePrefilter, StageReads,
-    StageRowRecords, StageRowScan, StageRowsCursor, StatusCreatedRead, StatusTransitionedRead,
-    status_indexes_hold,
+    EntryKeyRecords, EntryKeyScan, EntryStatusCursor, EntryStatusKey, EntryStatusKeys,
+    EntryStatusRecords, EntryStatusScan, FinishedEntryByOutcome as StoredFinishedIndex,
+    FinishedRead, StagePrefilter, StageReads, StageRowRecords, StageRowScan, StageRowsCursor,
+    StatusCreatedRead, StatusTransitionedRead, status_indexes_hold,
 };
 use restate_storage_api::vqueue_table::Stage;
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
@@ -70,7 +70,8 @@ use crate::table_providers::{
 };
 
 use super::row::{
-    EntryPlace, EntryState, append_entry_row, append_vqueue_entry_status_row, covered_row,
+    EntryPlace, EntryState, append_entry_row, append_status_key_row,
+    append_vqueue_entry_status_row, covered_row,
 };
 
 /// Complete physical locators, independently of the SQL string representation.
@@ -426,6 +427,21 @@ impl CompleteIndex for StatusCreatedIndex {
                 < EntryByStatusCreatedKey::entry_lanes(&Selection::All).count()
     }
 
+    /// The columns of the index's keys: a query that needs no other reads the
+    /// keys alone, fetching no status.
+    const COVERS: &'static [VqueueEntryStatusColumn] =
+        &status_covers(VqueueEntryStatusColumn::CreatedAt);
+
+    /// For a query that reads the keys alone without a supported demand, only
+    /// where the query restricts the creation time to points or from below, a
+    /// window since some time: the read visits only the hours since then. An
+    /// upper bound alone keeps the existing access selection, as do other such
+    /// queries. A selection policy, not a cost estimate; an ordered demand the
+    /// index serves stays eligible whatever the time restriction.
+    fn useful_covered(restriction: &EntryStatusByStatusCreatedDomains) -> bool {
+        tracked() && since(restriction.created_at.to_predicate())
+    }
+
     /// Every alternative fixes the stage to stages the index holds.
     fn admits(alternatives: &[VqueueEntryStatusDomains]) -> bool {
         stages_held(alternatives, status_indexes_hold)
@@ -454,11 +470,45 @@ impl CompleteIndex for StatusTransitionedIndex {
                 < EntryByStatusTransitionedKey::entry_lanes(&Selection::All).count()
     }
 
+    /// As [`StatusCreatedIndex::COVERS`].
+    const COVERS: &'static [VqueueEntryStatusColumn] =
+        &status_covers(VqueueEntryStatusColumn::TransitionedAt);
+
+    /// As [`StatusCreatedIndex::useful_covered`], by transition time.
+    fn useful_covered(restriction: &EntryStatusByStatusTransitionedDomains) -> bool {
+        tracked() && since(restriction.transitioned_at.to_predicate())
+    }
+
     fn admits(alternatives: &[VqueueEntryStatusDomains]) -> bool {
         stages_held(alternatives, status_indexes_hold)
     }
 
     const NEEDS_ORDERED_DEMAND: bool = true;
+}
+
+/// The columns a status index's keys hold, `time` being the index's: written
+/// from them as from an entry status ([`append_status_key_row`]).
+const fn status_covers(time: VqueueEntryStatusColumn) -> [VqueueEntryStatusColumn; 8] {
+    [
+        VqueueEntryStatusColumn::PartitionKey,
+        VqueueEntryStatusColumn::EntryId,
+        VqueueEntryStatusColumn::CanonicalId,
+        VqueueEntryStatusColumn::SequenceNumber,
+        VqueueEntryStatusColumn::EntryKind,
+        VqueueEntryStatusColumn::Stage,
+        VqueueEntryStatusColumn::Status,
+        time,
+    ]
+}
+
+/// Whether a time predicate bounds the times from below: points, or a range
+/// with a lower end.
+fn since<V>(predicate: Option<ValuePredicate<V>>) -> bool {
+    match predicate {
+        Some(ValuePredicate::Equal(_) | ValuePredicate::In(_)) => true,
+        Some(ValuePredicate::Range { lower, .. }) => !matches!(lower, Bound::Unbounded),
+        None => false,
+    }
 }
 
 /// Whether the entry indexes are maintained.
@@ -613,12 +663,17 @@ impl ScanPartition for EntryStatusScanner {
                 let selection =
                     index_restriction::<EntryStatusByStatusCreated>(predicate.as_slice())?
                         .map_or(Selection::Empty, |domains| domains.to_selection());
-                EntryStatusAccess::StatusCreated {
-                    read: Arc::new(StatusCreatedRead::prepare(
-                        &selection,
-                        index.direction::<StatusCreatedIndex>()?,
-                    )?),
-                    fallback: scan()?,
+                let read = Arc::new(StatusCreatedRead::prepare(
+                    &selection,
+                    index.direction::<StatusCreatedIndex>()?,
+                )?);
+                let fallback = scan()?;
+                // The coordinator and the worker read the same projection, so
+                // they agree on a keys-only read.
+                if covers::<StatusCreatedIndex>(&projection) {
+                    EntryStatusAccess::Keys(Keys::StatusCreated { read, fallback })
+                } else {
+                    EntryStatusAccess::StatusCreated { read, fallback }
                 }
             }
             PrimaryRead::Index(index) if index.name() == EntryStatusByStatusTransitioned::NAME => {
@@ -626,12 +681,15 @@ impl ScanPartition for EntryStatusScanner {
                 let selection =
                     index_restriction::<EntryStatusByStatusTransitioned>(predicate.as_slice())?
                         .map_or(Selection::Empty, |domains| domains.to_selection());
-                EntryStatusAccess::StatusTransitioned {
-                    read: Arc::new(StatusTransitionedRead::prepare(
-                        &selection,
-                        index.direction::<StatusTransitionedIndex>()?,
-                    )?),
-                    fallback: scan()?,
+                let read = Arc::new(StatusTransitionedRead::prepare(
+                    &selection,
+                    index.direction::<StatusTransitionedIndex>()?,
+                )?);
+                let fallback = scan()?;
+                if covers::<StatusTransitionedIndex>(&projection) {
+                    EntryStatusAccess::Keys(Keys::StatusTransitioned { read, fallback })
+                } else {
+                    EntryStatusAccess::StatusTransitioned { read, fallback }
                 }
             }
             PrimaryRead::Index(index) => {
@@ -723,6 +781,43 @@ enum EntryStatusAccess {
         #[debug(skip)]
         fallback: Arc<KeySelection<EntryStatusKey>>,
     },
+    /// A status index's keys alone, for a query they cover, or the fallback
+    /// scan.
+    Keys(Keys),
+}
+
+/// A keys-only read of one of the status indexes.
+#[derive(derive_more::Debug, Clone)]
+enum Keys {
+    StatusCreated {
+        #[debug(skip)]
+        read: Arc<StatusCreatedRead>,
+        #[debug(skip)]
+        fallback: Arc<KeySelection<EntryStatusKey>>,
+    },
+    StatusTransitioned {
+        #[debug(skip)]
+        read: Arc<StatusTransitionedRead>,
+        #[debug(skip)]
+        fallback: Arc<KeySelection<EntryStatusKey>>,
+    },
+}
+
+impl Keys {
+    fn scan(self, execution: Arc<EntryIndexExecution>) -> EntryKeyScan {
+        match self {
+            Self::StatusCreated { read, fallback } => EntryKeyScan::StatusCreated {
+                read,
+                fallback,
+                execution,
+            },
+            Self::StatusTransitioned { read, fallback } => EntryKeyScan::StatusTransitioned {
+                read,
+                fallback,
+                execution,
+            },
+        }
+    }
 }
 
 impl EntryStatusAccess {
@@ -734,6 +829,7 @@ impl EntryStatusAccess {
                 | Self::Active { .. }
                 | Self::StatusCreated { .. }
                 | Self::StatusTransitioned { .. }
+                | Self::Keys(_)
         )
     }
 }
@@ -865,6 +961,37 @@ impl EntryStatusRead {
                 return Ok(());
             }
             let filter = match access {
+                EntryStatusAccess::Keys(keys) => {
+                    let Some(execution) = ordered else {
+                        return datafusion::common::internal_err!(
+                            "an entry index read has no execution"
+                        );
+                    };
+                    return scan_rows_into::<EntryKeyRecords, VqueueEntryStatus, _>(
+                        store,
+                        &executor,
+                        Arc::new(keys.scan(execution)),
+                        BatchSink::new(
+                            Batches::<VqueueEntryStatus>::new(
+                                projection,
+                                batch_size,
+                                limit,
+                                metrics.elapsed_compute,
+                            ),
+                            tx.clone(),
+                        ),
+                        move |row, batches: &mut Batches<VqueueEntryStatus>| {
+                            if let ControlFlow::Break(result) = batches.append_with(|builder| {
+                                append_status_key_row(builder, &row);
+                                Ok(())
+                            }) {
+                                result?;
+                            }
+                            Ok(())
+                        },
+                    )
+                    .await;
+                }
                 EntryStatusAccess::Covered(scan) => {
                     let Some(counters) = stage_metrics else {
                         return datafusion::common::internal_err!("a covered read has no metrics");
