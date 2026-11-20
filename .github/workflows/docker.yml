@@ -242,8 +242,11 @@ jobs:
           flavor: |
             latest=${{ (steps.is-latest.outputs.is_latest == 'true') && 'true' || 'false' }}
             ${{ steps.prefix.outputs.value != '' && format('prefix={0},onlatest=true', steps.prefix.outputs.value) || '' }}
+          # Non-`v` tags (e.g. custom builds dispatched on `my-build.2`) get their own name as an
+          # immutable image tag; release tags (`v*`) keep getting only the semver tags below.
           tags: |
             type=ref,event=branch
+            type=ref,event=tag,enable=${{ !startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{version}}
             type=semver,pattern={{version}},suffix=-{{date 'YYYYMMDD'}}
             type=semver,pattern={{major}}.{{minor}}

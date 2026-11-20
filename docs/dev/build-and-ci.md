@@ -203,6 +203,11 @@ A **reusable workflow** called by this repo and many others in the restatedev or
 - `profile`: Select which Cargo profile to build
 - `runnerSize`: Select a `16x` or `32x` runner; `auto` uses `32x` for Parca builds and `16x` otherwise
 
+**Image tags** (non-`release` profiles prefix each tag with `<profile>-`):
+- Branch builds are tagged with the branch name (`/` becomes `-`). The tag moves with every rebuild of that branch.
+- Release tags (`vX.Y.Z`) get semver tags (`X.Y.Z`, `X.Y.Z-<date>`, `X.Y`) and, for the newest release, `latest`.
+- Any other git tag becomes the image tag as is. Use this for a custom build that must stay identifiable: push a tag and dispatch the workflow on it, e.g. `gh workflow run docker.yml --ref my-build.2` publishes `restate:my-build.2`. Such tags must not start with `v` (no image tag would be produced) and must not contain `X.Y.Z`, because that would trigger `release.yml`.
+
 **Build optimizations:**
 - Uses `sccache` with WarpBuild cache
 - Multi-platform builds via Docker Buildx
