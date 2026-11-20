@@ -331,36 +331,3 @@ crate::define_schema! {
         key {}
     }
 }
-
-crate::define_schema! {
-    /// Finished vqueue entries by stored status, service and handler, newest
-    /// finished first: the entry index `finished_entry_by_outcome/1`, read
-    /// instead of scanning `sys_vqueue_entry_status` for its Finished entries.
-    /// Status and transition time are the entry table's columns; service and
-    /// handler are the index's own, which the entry table doesn't show. Not
-    /// shown as a table.
-    finished_entry_by_outcome {
-        name: "_idx_finished_entry_by_outcome",
-        primary: vqueue_entry_status::VqueueEntryStatus,
-        reference: canonical_id => |id| id.to_base_entry_id(),
-        columns {
-            /// The entry's stored status.
-            status => DataType::LargeUtf8,
-            /// The service the entry targets.
-            target_service_name: ReString => DataType::LargeUtf8,
-            /// The handler the entry targets; NULL for a state mutation.
-            target_handler_name: Option<ReString> => DataType::LargeUtf8,
-            /// When the entry entered Finished. The index keeps its full
-            /// timestamp; this column compares at millisecond precision.
-            transitioned_at => TimestampMillisecond,
-            /// The complete indexed entry incarnation.
-            canonical_id => DataType::LargeUtf8,
-        }
-        key {
-            status: asc nulls_last,
-            target_service_name: asc nulls_last,
-            target_handler_name: asc nulls_first,
-            transitioned_at: desc nulls_last,
-        }
-    }
-}

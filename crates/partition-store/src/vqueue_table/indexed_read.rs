@@ -10,14 +10,9 @@
 
 //! Entries newest first, or oldest first ([`ReadDirection::Backward`]), through
 //! an entry index whose keys each name one entry status:
-//!
-//! - `finished_entry_by_outcome/1` holds one key per entry whose stored stage
-//!   is Finished, sorted by stored status, service and handler, then by the
-//!   time the entry entered Finished, newest first ([`FinishedRead`]);
-//! - `entry_by_status_created/1` and `entry_by_status_transitioned/1` hold one
-//!   key per entry in a known stage, by stage and status, a **lane** each,
-//!   then by the hour and time of creation or of the last transition
-//!   ([`LanesRead`]).
+//! `entry_by_status_created/1` and `entry_by_status_transitioned/1` hold one
+//! key per entry in a known stage, by stage and status, a **lane** each, then
+//! by the hour and time of creation or of the last transition ([`LanesRead`]).
 //!
 //! A query on those entries, perhaps of a few statuses or stages, ordered by
 //! that time, merges the matching runs into one order and fetches each entry's
@@ -62,7 +57,6 @@ use restate_storage_query_api::selection::Selection;
 use restate_storage_query_api::tables::index::{
     EntryStatusByStatusCreated as StatusCreatedIndex,
     EntryStatusByStatusTransitioned as StatusTransitionedIndex,
-    FinishedEntryByOutcome as FinishedIndex,
 };
 use restate_types::identifiers::{BaseEntryId, CanonicalEntryId};
 
@@ -70,9 +64,9 @@ use crate::index::RegisteredIndex;
 use crate::invocation_status_table::entry_index_read::{
     EntryIndexExecution, EntryIndexPath, Execution, Held, ScanReason, SharedMemory,
 };
-use crate::keys::selection::{KeySelection, OrderedKeySchema, PrepareKeySelection};
+use crate::keys::selection::OrderedKeySchema;
 use crate::keys::{EncodeTableKey, KeyDecoder, KeyKind};
-use crate::ordered_runs::{OrderedRuns, OrderedRunsDiscovery, OrderedRunsLimits};
+use crate::ordered_runs::OrderedRunsLimits;
 use crate::partition_db::PhysicalPartition;
 use crate::registry::IndexKind;
 use crate::status_lanes::{Lanes, StatusLanes};
@@ -83,15 +77,12 @@ use super::read_cursor::EntryKeyRow;
 use super::{
     ENTRY_STATUS_MULTI_GET_BATCH_SIZE, EntryByStatusCreated, EntryByStatusCreatedKey,
     EntryByStatusTransitioned, EntryByStatusTransitionedKey, EntryStatusKey,
-    FinishedEntryByOutcome, FinishedEntryByOutcomeKey,
 };
 
 /// An entry index whose keys each name one entry status, read newest first or
-/// backwards. The finished and active indexes are read as runs
-/// ([`Keys::Runs`]), each the entries of one value of their three leading
-/// fields: a stage or status, a service and a handler. The two status indexes
-/// are read as lanes ([`Keys::Lanes`]), each the entries of one stage and
-/// status, whose runs are its hours and services ([`crate::status_lanes`]).
+/// backwards: one of the two status indexes, read as lanes, each the entries of
+/// one stage and status, whose runs are its hours and services
+/// ([`crate::status_lanes`]).
 pub(crate) trait EntryIndex: RegisteredIndex + PhysicalTable<Key: OrderedKeySchema> {
     /// What `key` says its entry's current status must still say.
     fn reference(key: KeyDecoder<'_, Self::Key>) -> Result<Reference>;
@@ -100,29 +91,13 @@ pub(crate) trait EntryIndex: RegisteredIndex + PhysicalTable<Key: OrderedKeySche
     fn time(header: &RawStatusHeaderRef<'_>) -> UniqueTimestamp;
 }
 
-impl EntryIndex for FinishedEntryByOutcome {
-    fn reference(key: KeyDecoder<'_, FinishedEntryByOutcomeKey>) -> Result<Reference> {
-        let key = key.decode_all()?;
-        Ok(Reference {
-            id: key.canonical_id,
-            stage: Stage::Finished,
-            status: Some(key.status),
-            at: key.transitioned_at.0,
-        })
-    }
-
-    fn time(header: &RawStatusHeaderRef<'_>) -> UniqueTimestamp {
-        header.stats.transitioned_at
-    }
-}
-
 impl EntryIndex for EntryByStatusCreated {
     fn reference(key: KeyDecoder<'_, EntryByStatusCreatedKey>) -> Result<Reference> {
         let key = key.decode_all()?;
         Ok(Reference {
             id: key.canonical_id,
             stage: key.stage,
-            status: Some(key.status),
+            status: key.status,
             at: key.created_at.0,
         })
     }
@@ -138,7 +113,7 @@ impl EntryIndex for EntryByStatusTransitioned {
         Ok(Reference {
             id: key.canonical_id,
             stage: key.stage,
-            status: Some(key.status),
+            status: key.status,
             at: key.transitioned_at.0,
         })
     }
@@ -147,9 +122,6 @@ impl EntryIndex for EntryByStatusTransitioned {
         header.stats.transitioned_at
     }
 }
-
-/// A run is the entries of one stage or status, service and handler.
-const RUN_FIELDS: usize = 3;
 
 /// The same as the invocation entry-index read's: a few statuses of a few
 /// hundred handlers stay within one read.
@@ -163,23 +135,6 @@ const LIMITS: OrderedRunsLimits = OrderedRunsLimits {
 
 const WINDOW: usize = ENTRY_STATUS_MULTI_GET_BATCH_SIZE.get();
 const KEY_LEN: usize = EntryStatusKey::serialized_length_fixed();
-
-/// A read of finished entries through the index, restricted by the index's
-/// columns. The restriction may admit more entries than the query matches: the
-/// caller keeps its predicate.
-pub struct FinishedRead {
-    index: Arc<KeySelection<FinishedEntryByOutcomeKey>>,
-    direction: ReadDirection,
-}
-
-impl FinishedRead {
-    pub fn prepare(selection: &Selection<FinishedIndex>, direction: ReadDirection) -> Result<Self> {
-        Ok(Self {
-            index: Arc::new(FinishedEntryByOutcomeKey::prepare_candidates(selection)?),
-            direction,
-        })
-    }
-}
 
 /// A read of the entries of some stages and statuses through one of the two
 /// status indexes, a lane per stage and status
@@ -228,59 +183,6 @@ impl StatusTransitionedRead {
     }
 }
 
-/// What an indexed read merges: one read of the index's runs, or a status
-/// index's lanes.
-enum Keys<I: EntryIndex> {
-    Runs(OrderedRuns<I>),
-    Lanes(Lanes<I>),
-}
-
-impl<I: EntryIndex> Keys<I> {
-    fn advance(&mut self) -> Result<CursorStep> {
-        match self {
-            Self::Runs(runs) => runs.advance(),
-            Self::Lanes(lanes) => lanes.advance(),
-        }
-    }
-
-    /// The reference of the key the last step produced.
-    fn reference(&self) -> Result<Reference> {
-        match self {
-            Self::Runs(runs) => I::reference(runs.current()?.0),
-            Self::Lanes(lanes) => I::reference(lanes.current()?.0),
-        }
-    }
-
-    fn examined(&self) -> u64 {
-        match self {
-            Self::Runs(runs) => runs.examined(),
-            Self::Lanes(lanes) => lanes.examined(),
-        }
-    }
-
-    fn runs(&self) -> usize {
-        match self {
-            Self::Runs(runs) => runs.runs(),
-            Self::Lanes(lanes) => lanes.runs(),
-        }
-    }
-}
-
-/// How to open an indexed read: its selection, or its lanes.
-enum Opening<'a, I: EntryIndex> {
-    Runs(&'a Arc<KeySelection<I::Key>>),
-    Lanes(&'a StatusLanes<I::Key>),
-}
-
-impl<I: EntryIndex> Opening<'_, I> {
-    fn retained_bytes(&self) -> usize {
-        match self {
-            Self::Runs(selection) => selection.shared_retained_bytes(),
-            Self::Lanes(lanes) => lanes.retained_bytes(),
-        }
-    }
-}
-
 /// Why a read of `I` on `snapshot` can't go through it, if it can't: the index
 /// isn't Complete on it.
 fn unusable<I: EntryIndex>(snapshot: &ReadSnapshot) -> Result<Option<ScanReason>> {
@@ -291,12 +193,12 @@ fn unusable<I: EntryIndex>(snapshot: &ReadSnapshot) -> Result<Option<ScanReason>
 }
 
 /// An index key's reference to an entry status, with what the status must
-/// still say: its stage, its status if the key holds one, the time the index
-/// orders by and the incarnation.
+/// still say: its stage and status, the time the index orders by and the
+/// incarnation.
 pub(crate) struct Reference {
     id: CanonicalEntryId,
     stage: Stage,
-    status: Option<Status>,
+    status: Status,
     at: UniqueTimestamp,
 }
 
@@ -307,12 +209,12 @@ enum Ended {
     Failed,
 }
 
-/// Merges the index runs, collects references into a window, fetches the
+/// Merges the index's lanes, collects references into a window, fetches the
 /// window's entry statuses with one multi-get and hands out the ones that are
 /// still the keys', in index order.
 pub(super) struct IndexedCursor<I: EntryIndex> {
     /// `None` once the read ended: it holds nothing then.
-    runs: Option<Keys<I>>,
+    runs: Option<Lanes<I>>,
     runs_done: bool,
     /// The most references a window holds.
     window_size: usize,
@@ -344,24 +246,6 @@ impl<I: EntryIndex> Drop for IndexedCursor<I> {
     }
 }
 
-impl IndexedCursor<FinishedEntryByOutcome> {
-    pub(super) fn finished(
-        snapshot: &ReadSnapshot,
-        read: &FinishedRead,
-        execution: &EntryIndexExecution,
-        window: NonZeroUsize,
-    ) -> Result<Option<Self>> {
-        Self::open(
-            snapshot,
-            Opening::Runs(&read.index),
-            read.direction,
-            execution,
-            window,
-            false,
-        )
-    }
-}
-
 impl IndexedCursor<EntryByStatusCreated> {
     /// A read of the statuses the lanes' keys name or, `keys_only`, of the keys
     /// alone ([`KeySteps`]).
@@ -374,7 +258,7 @@ impl IndexedCursor<EntryByStatusCreated> {
     ) -> Result<Option<Self>> {
         Self::open(
             snapshot,
-            Opening::Lanes(&read.lanes),
+            &read.lanes,
             read.direction,
             execution,
             window,
@@ -394,7 +278,7 @@ impl IndexedCursor<EntryByStatusTransitioned> {
     ) -> Result<Option<Self>> {
         Self::open(
             snapshot,
-            Opening::Lanes(&read.lanes),
+            &read.lanes,
             read.direction,
             execution,
             window,
@@ -410,7 +294,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
     /// read holds one.
     fn open(
         snapshot: &ReadSnapshot,
-        index: Opening<'_, I>,
+        lanes: &StatusLanes<I::Key>,
         direction: ReadDirection,
         execution: &EntryIndexExecution,
         window: NonZeroUsize,
@@ -432,7 +316,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
         let mut discovered = 0;
         let opened = match Self::try_open(
             snapshot,
-            index,
+            lanes,
             direction,
             memory,
             window_size,
@@ -474,7 +358,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
         };
         chosen(match &cursor {
             Ok(cursor) => EntryIndexPath::Index {
-                runs: cursor.runs.as_ref().map_or(0, Keys::runs),
+                runs: cursor.runs.as_ref().map_or(0, Lanes::runs),
             },
             Err(reason) => EntryIndexPath::Scan(*reason),
         });
@@ -484,12 +368,12 @@ impl<I: EntryIndex> IndexedCursor<I> {
     #[allow(clippy::type_complexity)]
     fn try_open(
         snapshot: &ReadSnapshot,
-        index: Opening<'_, I>,
+        lanes: &StatusLanes<I::Key>,
         direction: ReadDirection,
         memory: SharedMemory,
         window_size: usize,
         discovered: &mut u64,
-    ) -> Result<std::result::Result<(Keys<I>, Held), (ScanReason, u64)>> {
+    ) -> Result<std::result::Result<(Lanes<I>, Held), (ScanReason, u64)>> {
         if let Some(reason) = unusable::<I>(snapshot)? {
             return Ok(Err((reason, 0)));
         }
@@ -498,41 +382,21 @@ impl<I: EntryIndex> IndexedCursor<I> {
             bytes: 0,
         };
         held.grow(
-            index.retained_bytes()
+            lanes.retained_bytes()
                 + window_size * std::mem::size_of::<Reference>()
                 + window_size * KEY_LEN,
         )?;
-        let selection = match index {
-            Opening::Runs(selection) => selection,
-            Opening::Lanes(lanes) => {
-                return Ok(
-                    match Lanes::open(
-                        snapshot,
-                        lanes,
-                        direction,
-                        LIMITS,
-                        (&memory, &mut held),
-                        discovered,
-                    )? {
-                        Some(lanes) => Ok((Keys::Lanes(lanes), held)),
-                        None => Err((ScanReason::TooManyRuns, *discovered)),
-                    },
-                );
-            }
-        };
         Ok(
-            match snapshot.ordered_runs_counted::<I>(
-                Arc::clone(selection),
-                RUN_FIELDS,
+            match Lanes::open(
+                snapshot,
+                lanes,
                 direction,
                 LIMITS,
-                Box::new(memory),
+                (&memory, &mut held),
                 discovered,
             )? {
-                OrderedRunsDiscovery::Ready(runs) => Ok((Keys::Runs(runs), held)),
-                OrderedRunsDiscovery::TooManyRuns { examined } => {
-                    Err((ScanReason::TooManyRuns, examined))
-                }
+                Some(lanes) => Ok((lanes, held)),
+                None => Err((ScanReason::TooManyRuns, *discovered)),
             },
         )
     }
@@ -540,7 +404,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
     /// Tells `fetched` of a multi-get of `statuses`, if any, and of the index
     /// keys examined since it last learned.
     fn report(&mut self, statuses: usize) {
-        let examined = self.runs.as_ref().map_or(self.reported, Keys::examined);
+        let examined = self.runs.as_ref().map_or(self.reported, Lanes::examined);
         let new = examined.saturating_sub(self.reported);
         if statuses > 0 || new > 0 {
             (self.fetched)(statuses, new);
@@ -603,7 +467,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
                 CursorStep::Skipped => CursorStep::Skipped,
                 CursorStep::Record => {
                     self.window.clear();
-                    self.window.push(runs.reference()?);
+                    self.window.push(I::reference(runs.current()?.0)?);
                     self.current = Some(0);
                     CursorStep::Record
                 }
@@ -630,7 +494,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
         match runs.advance()? {
             CursorStep::Done => self.runs_done = true,
             CursorStep::Skipped => {}
-            CursorStep::Record => self.window.push(runs.reference()?),
+            CursorStep::Record => self.window.push(I::reference(runs.current()?.0)?),
         }
         Ok(CursorStep::Skipped)
     }
@@ -677,9 +541,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
         };
         let header = RawStatusHeaderRef::decode_stored(&mut value)?;
         if header.stage == reference.stage
-            && reference
-                .status
-                .is_none_or(|status| header.status == status)
+            && header.status == reference.status
             && I::time(&header) == reference.at
             && header.seq == reference.id.seq()
         {
@@ -739,7 +601,7 @@ impl KeySteps for IndexedCursor<EntryByStatusCreated> {
         Ok(EntryKeyRow {
             id: key.id,
             stage: key.stage,
-            status: key.status.ok_or(StorageError::DataIntegrityError)?,
+            status: key.status,
             created_at: Some(key.at),
             transitioned_at: None,
         })
@@ -756,7 +618,7 @@ impl KeySteps for IndexedCursor<EntryByStatusTransitioned> {
         Ok(EntryKeyRow {
             id: key.id,
             stage: key.stage,
-            status: key.status.ok_or(StorageError::DataIntegrityError)?,
+            status: key.status,
             created_at: None,
             transitioned_at: Some(key.at),
         })
@@ -782,9 +644,7 @@ mod tests {
     use restate_storage_query_api::scan::CursorScan;
     use restate_storage_query_api::scan::ReadCursor;
     use restate_storage_query_api::selection::ValuePredicate;
-    use restate_storage_query_api::tables::index::{
-        EntryStatusByStatusTransitionedClause, FinishedEntryByOutcomeClause,
-    };
+    use restate_storage_query_api::tables::index::EntryStatusByStatusTransitionedClause;
     use restate_types::config::Configuration;
     use restate_types::identifiers::PartitionId;
     use restate_types::partitions::Partition;
@@ -792,6 +652,7 @@ mod tests {
     use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, Seq, VQueueId};
 
     use crate::invocation_status_table::entry_index_read::counting::{Charge, Counting};
+    use crate::keys::selection::KeySelection;
     use crate::vqueue_table::{EntryKeyRecords, EntryKeyScan, EntryStatusKeys, EntryStatusScan};
     use crate::{PartitionStore, PartitionStoreManager};
 
@@ -808,7 +669,7 @@ mod tests {
         After(usize),
     }
 
-    /// A read of `selection` through the Finished path, on a snapshot of its
+    /// A read of `selection` through `entry_by_status_transitioned/1`, on a snapshot of its
     /// own whose last outside reference is dropped once the read opens, and
     /// what it showed at each point it promises something. Everything is
     /// collected before anything is asserted, so an error can't skip a
@@ -873,10 +734,11 @@ mod tests {
         }
     }
 
-    /// A finished-entry read of `selection`: [`run_scan`].
+    /// A read of `selection` through `entry_by_status_transitioned/1`:
+    /// [`run_scan`].
     fn run(
         store: &PartitionStore,
-        selection: Selection<FinishedIndex>,
+        selection: Selection<StatusTransitionedIndex>,
         charge: Charge,
         stop: Stop,
     ) -> Run {
@@ -886,21 +748,28 @@ mod tests {
     /// [`run`] in `direction`.
     fn run_in(
         store: &PartitionStore,
-        selection: Selection<FinishedIndex>,
+        selection: Selection<StatusTransitionedIndex>,
         direction: ReadDirection,
         charge: Charge,
         stop: Stop,
     ) -> Run {
         run_scan(
             store,
-            |execution| EntryStatusScan::Finished {
-                read: Arc::new(FinishedRead::prepare(&selection, direction).unwrap()),
+            |execution| EntryStatusScan::StatusTransitioned {
+                read: Arc::new(StatusTransitionedRead::prepare(&selection, direction).unwrap()),
                 fallback: scan_all(),
                 execution,
             },
             charge,
             stop,
         )
+    }
+
+    /// The Finished entries: the index's Finished lanes.
+    fn finished() -> Selection<StatusTransitionedIndex> {
+        Selection::All.and(EntryStatusByStatusTransitionedClause::Stage(
+            ValuePredicate::Equal(Stage::Finished),
+        ))
     }
 
     fn scan_all() -> Arc<KeySelection<EntryStatusKey>> {
@@ -1033,7 +902,7 @@ mod tests {
     /// it holds nothing once dropped, and its snapshot completes.
     fn read(
         store: &PartitionStore,
-        selection: Selection<FinishedIndex>,
+        selection: Selection<StatusTransitionedIndex>,
     ) -> std::result::Result<(Vec<Row>, Option<EntryIndexPath>, u64), String> {
         let run = run(store, selection, Charge::default(), Stop::End);
         assert_eq!((run.held, run.closed), (0, true), "{run:#?}");
@@ -1043,8 +912,8 @@ mod tests {
         }
     }
 
-    /// The read returns Finished entries newest finished first, narrowed by
-    /// status, and only those whose current status is still their key's: a
+    /// A read of the Finished lanes returns Finished entries newest finished
+    /// first, narrowed by status, and only those whose current status is still their key's: a
     /// stale, missing or reincarnated reference is skipped and counted, a
     /// malformed status fails the read. Without a Complete index, it scans.
     ///
@@ -1052,7 +921,7 @@ mod tests {
     /// part-way, it releases every charge and its snapshot, and tells its work
     /// once. A refusal fails the read: it never scans instead.
     #[restate_core::test]
-    async fn finished_reads_check_each_status_and_skip_stale_references() {
+    async fn lane_reads_check_each_status_and_skip_stale_references() {
         RocksDbManager::init();
         let manager = PartitionStoreManager::create(true).await.unwrap();
         let mut store = manager
@@ -1114,11 +983,12 @@ mod tests {
         drop(tx);
         ids.reverse();
 
-        // Newest finished first, over (status, service) runs. At its last
+        // Newest finished first, over the (Finished, status) lanes, a run per
+        // service in each. At its last
         // step the read releases everything, its snapshot included, with the
         // cursor still alive, and stays done. Its one multi-get and every key
         // it examined are told once.
-        let all = run(&store, Selection::All, Charge::default(), Stop::End);
+        let all = run(&store, finished(), Charge::default(), Stop::End);
         assert_eq!(all.rows, ids);
         assert_eq!(
             (all.path, all.skipped, all.ended.clone()),
@@ -1135,7 +1005,7 @@ mod tests {
         // its end the same way.
         let oldest = run_in(
             &store,
-            Selection::All,
+            finished(),
             ReadDirection::Backward,
             Charge::default(),
             Stop::End,
@@ -1149,7 +1019,7 @@ mod tests {
         // Stopped after one record, as past a LIMIT, it holds its window until
         // dropped, then releases everything and tells its work once. Here the
         // merge read every key ahead of the first record.
-        let part = run(&store, Selection::All, Charge::default(), Stop::After(1));
+        let part = run(&store, finished(), Charge::default(), Stop::After(1));
         assert_eq!((part.rows.len(), part.ended.clone()), (1, None));
         assert!(part.held_at_end > 0 && !part.closed_at_end);
         assert_eq!((part.held, part.closed), (0, true));
@@ -1157,8 +1027,8 @@ mod tests {
             (part.statuses(), Run::keys(&part.reported)),
             (ids.len(), examined)
         );
-        // A status narrows the runs.
-        let failed = Selection::All.and(FinishedEntryByOutcomeClause::Status(
+        // A status narrows the lanes.
+        let failed = finished().and(EntryStatusByStatusTransitionedClause::Status(
             ValuePredicate::Equal(Status::Failed),
         ));
         let (rows, path, _) = read(&store, failed).unwrap();
@@ -1175,15 +1045,15 @@ mod tests {
         // A refused charge fails the read with the refusal, never a scan in
         // its place; every charge is released and the snapshot completes.
         // Refused for the read's own state, as it opens: no work, no path.
-        let fixed = FinishedRead::prepare(&Selection::All, ReadDirection::Forward)
+        let fixed = StatusTransitionedRead::prepare(&finished(), ReadDirection::Forward)
             .unwrap()
-            .index
-            .shared_retained_bytes()
+            .lanes
+            .retained_bytes()
             + WINDOW * std::mem::size_of::<Reference>()
             + WINDOW * KEY_LEN;
         let refused = run(
             &store,
-            Selection::All,
+            finished(),
             Charge {
                 limit: Some(fixed - 1),
                 ..Default::default()
@@ -1203,7 +1073,7 @@ mod tests {
         // exactly once.
         let refused = run(
             &store,
-            Selection::All,
+            finished(),
             Charge {
                 limit: Some(all.opened_peak - 1),
                 ..Default::default()
@@ -1230,7 +1100,7 @@ mod tests {
             .sum::<usize>();
         let refused = run(
             &store,
-            Selection::All,
+            finished(),
             Charge {
                 refuse: Some(window),
                 ..Default::default()
@@ -1264,7 +1134,7 @@ mod tests {
         );
         tx.commit().await.unwrap();
         drop(tx);
-        let (rows, _, skipped) = read(&store, Selection::All).unwrap();
+        let (rows, _, skipped) = read(&store, finished()).unwrap();
         assert_eq!(rows, ids[3..]);
         assert_eq!(skipped, 3);
 
@@ -1278,8 +1148,7 @@ mod tests {
         );
         tx.commit().await.unwrap();
         drop(tx);
-        run(&store, Selection::All, Charge::default(), Stop::End)
-            .failed_and_released("cannot decode");
+        run(&store, finished(), Charge::default(), Stop::End).failed_and_released("cannot decode");
 
         // Not Complete: a partition that doesn't maintain the index scans.
         let mut plain = manager
@@ -1314,7 +1183,7 @@ mod tests {
         );
         tx.commit().await.unwrap();
         drop(tx);
-        let (rows, path, _) = read(&plain, Selection::All).unwrap();
+        let (rows, path, _) = read(&plain, finished()).unwrap();
         assert_eq!(path, Some(EntryIndexPath::Scan(ScanReason::NotComplete)));
         assert_eq!(rows.len(), 1);
     }
