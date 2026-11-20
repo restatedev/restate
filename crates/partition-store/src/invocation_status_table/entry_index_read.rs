@@ -8,23 +8,42 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Invocations found through the entry index, newest created first or,
+//! Invocations found through an entry index, newest created first or,
 //! backwards ([`ReadDirection::Backward`]), oldest first.
 //!
-//! The entry index `entry_by_service_created/1` holds one key per vqueue entry,
-//! sorted by service, handler and creation time, newest first. A query that
-//! names a service, and perhaps a handler, reads the matching runs merged into
-//! creation order and fetches the invocation of each entry, instead of reading
-//! every invocation status of the partition:
+//! The entry index `entry_by_created/1` holds one key per vqueue entry, sorted
+//! by creation hour, service and creation time, newest first. A query reads
+//! the matching runs, an hour's services at a time, merged into creation order
+//! and fetches the invocation of each entry, instead of reading every
+//! invocation status of the partition:
 //!
 //! ```text
 //! entry index runs                     invocation statuses, 25 per multi-get
-//! (Promises, "promise"): t9 t7 t4   ─┐
-//!                                    ├─▶  t9 t8 t7 t5 t4 …, each checked
-//! (Promises, "resolve"): t8 t5      ─┘
+//! (h9, Promises): t9 t7 t4   ─┐
+//!                             ├─▶  t9 t8 t7 t5 t4 …, each checked
+//! (h9, Utils):    t8 t5      ─┘
 //! ```
 //!
-//! The index finds every invocation only once the partition has fully migrated
+//! A query on invocation statuses or outcomes reads `entry_by_status_created/1`
+//! instead, which leads with each entry's stored stage and status. Each stage
+//! and status, a **lane**, is read like `entry_by_created/1`, and the lanes
+//! are merged into creation order again:
+//!
+//! ```text
+//! lane (Finished, Failed):    t8 t3    ─┐
+//! lane (Finished, Killed):    t9       ─┼─▶  t9 t8 t5 t3 …
+//! lane (Finished, Cancelled): t5       ─┘
+//! ```
+//!
+//! A query names the invocations' public `status` or `completion_result`,
+//! which select the lanes their entries can be in
+//! ([`EntryByStatusCreatedKey::lanes`]). One probe of the index finds which of
+//! them have keys, and only those are read. The probe and the lanes' discovery
+//! share the limits of one read; past them the read scans instead, before it
+//! returns anything. Later, each step advances one lane, and every lane has its
+//! next key at hand before the read hands out the earliest.
+//!
+//! An index finds every invocation only once the partition has fully migrated
 //! to vqueues and the index is Complete ([`EntryIndexRead::unusable`]). Both are
 //! read through the query's own snapshot when the read opens. If either doesn't
 //! hold, or finding the runs takes more than one read allows, the read scans the
@@ -52,20 +71,29 @@ use std::sync::{Arc, Mutex};
 use restate_rocksdb::reads::{OwnedPinnedBatch, ReadSnapshot as RocksReadSnapshot};
 use restate_storage_api::StorageError;
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
+use restate_storage_api::vqueue_table::{Stage, Status};
 use restate_storage_query_api::scan::{CursorStep, ReadDirection};
 use restate_storage_query_api::selection::Selection;
-use restate_storage_query_api::tables::index::EntryByServiceCreated as EntryIndex;
+use restate_storage_query_api::tables::index::{
+    EntryByServiceCreated as EntryIndex, EntryByStatusCreated as StatusIndex,
+};
 use restate_types::identifiers::InvocationId;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::vqueues::Seq;
+use restate_types::vqueues::{CanonicalEntryId, Seq};
 
 use crate::index::RegisteredIndex;
-use crate::keys::selection::{KeySelection, PrepareKeySelection};
-use crate::keys::{EncodeTableKey, KeyKind};
-use crate::ordered_runs::{OrderedRuns, OrderedRunsDiscovery, OrderedRunsLimits, RetainedMemory};
+use crate::keys::codecs::{StageRankCodec, StatusCodec};
+use crate::keys::header::{KeyHeader, KeySchema};
+use crate::keys::selection::{KeySelection, OrderedKeySchema, PrepareKeySelection};
+use crate::keys::{EncodeTableKey, FieldCodec, KeyKind};
+use crate::ordered_runs::{
+    Opening, OrderedRuns, OrderedRunsDiscovery, OrderedRunsLimits, RetainedMemory, RunAllowance,
+};
 use crate::partition_db::PhysicalPartition;
 use crate::registry::IndexKind;
-use crate::vqueue_table::{EntryByCreated, EntryByCreatedKey};
+use crate::vqueue_table::{
+    EntryByCreated, EntryByCreatedKey, EntryByStatusCreated, EntryByStatusCreatedKey,
+};
 use crate::{ReadSnapshot, Result};
 
 use super::{
@@ -87,6 +115,19 @@ const LIMITS: OrderedRunsLimits = OrderedRunsLimits {
     step_budget: NonZeroUsize::new(256).unwrap(),
     // Runs of an hour and a service, merged one hour at a time.
     bucket_fields: 1,
+};
+
+/// A lane's run is the entries of one creation hour and service in its stage
+/// and status (`entry_by_status_created/1`); the stage, status and hour are its
+/// bucket.
+const LANE_RUN_FIELDS: usize = 4;
+
+/// [`LIMITS`] for each lane. The lanes share `LIMITS`' runs, held at once in
+/// every bucket, and their opening shares its discovery keys, the probe's
+/// included; each bucket of a lane merges up to `max_runs` of them.
+const LANE_LIMITS: OrderedRunsLimits = OrderedRunsLimits {
+    bucket_fields: 3,
+    ..LIMITS
 };
 
 /// Statuses fetched per multi-get, and the window that holds their invocations.
@@ -205,19 +246,65 @@ impl Drop for Held {
     }
 }
 
-/// A read of invocations through the entry index, restricted by the index's
+/// A read of invocations through an entry index, restricted by the index's
 /// columns, newest created first or, backwards, oldest first. The restriction
 /// may admit more entries than the query matches: the caller keeps its
 /// predicate.
 pub struct EntryIndexRead {
-    index: Arc<KeySelection<EntryByCreatedKey>>,
+    index: IndexRead,
     direction: ReadDirection,
 }
 
+enum IndexRead {
+    /// `entry_by_created/1`.
+    Created(Arc<KeySelection<EntryByCreatedKey>>),
+    /// `entry_by_status_created/1`, a lane per stage and status.
+    Status {
+        /// Every lane at once, to find the ones with keys.
+        probe: Arc<KeySelection<EntryByStatusCreatedKey>>,
+        /// Each lane's stage, status and selection, in key order.
+        lanes: Vec<(Stage, Status, Arc<KeySelection<EntryByStatusCreatedKey>>)>,
+    },
+}
+
 impl EntryIndexRead {
+    /// A read of `entry_by_created/1`.
     pub fn prepare(selection: &Selection<EntryIndex>, direction: ReadDirection) -> Result<Self> {
         Ok(Self {
-            index: Arc::new(EntryByCreatedKey::prepare_candidates(selection)?),
+            index: IndexRead::Created(Arc::new(EntryByCreatedKey::prepare_candidates(selection)?)),
+            direction,
+        })
+    }
+
+    /// A read of `entry_by_status_created/1`, of the lanes `selection`'s
+    /// invocations can be in.
+    pub fn prepare_by_status(
+        selection: &Selection<StatusIndex>,
+        direction: ReadDirection,
+    ) -> Result<Self> {
+        let pairs = EntryByStatusCreatedKey::lanes(selection).collect::<Vec<_>>();
+        let (mut stages, mut statuses) = (Vec::new(), Vec::new());
+        for (stage, status) in &pairs {
+            if !stages.contains(stage) {
+                stages.push(*stage);
+            }
+            if !statuses.contains(status) {
+                statuses.push(*status);
+            }
+        }
+        let probe = EntryByStatusCreatedKey::prepare_lanes(selection, &stages, &statuses)?;
+        let lanes = pairs
+            .into_iter()
+            .map(|(stage, status)| {
+                let lane = EntryByStatusCreatedKey::prepare_lanes(selection, &[stage], &[status])?;
+                Ok((stage, status, Arc::new(lane)))
+            })
+            .collect::<Result<_>>()?;
+        Ok(Self {
+            index: IndexRead::Status {
+                probe: Arc::new(probe),
+                lanes,
+            },
             direction,
         })
     }
@@ -226,17 +313,180 @@ impl EntryIndexRead {
     /// and so return the invocations in creation order, once the partition
     /// has fully migrated to vqueues, so every invocation has its entry, and the
     /// index is Complete.
-    pub fn unusable(snapshot: &ReadSnapshot) -> Result<Option<ScanReason>> {
+    pub fn unusable(&self, snapshot: &ReadSnapshot) -> Result<Option<ScanReason>> {
+        let definition = match self.index {
+            IndexRead::Created(_) => EntryByCreated::DEFINITION,
+            IndexRead::Status { .. } => EntryByStatusCreated::DEFINITION,
+        };
         Ok(if !snapshot.fully_migrated_to_vqueues()? {
             Some(ScanReason::NotMigrated)
         } else if snapshot
-            .complete_index(EntryByCreated::DEFINITION, IndexKind::Secondary)
+            .complete_index(definition, IndexKind::Secondary)
             .is_err()
         {
             Some(ScanReason::NotComplete)
         } else {
             None
         })
+    }
+
+    /// The bytes its selections hold.
+    fn retained_bytes(&self) -> usize {
+        match &self.index {
+            IndexRead::Created(selection) => selection.retained_bytes(),
+            IndexRead::Status { probe, lanes } => {
+                probe.retained_bytes()
+                    + lanes.capacity() * std::mem::size_of::<(Stage, Status, Arc<()>)>()
+                    + lanes
+                        .iter()
+                        .map(|(.., lane)| lane.retained_bytes())
+                        .sum::<usize>()
+            }
+        }
+    }
+}
+
+/// The index read the cursor merges.
+enum Source {
+    Created(OrderedRuns<EntryByCreated>),
+    Lanes(Lanes),
+}
+
+impl Source {
+    fn advance(&mut self) -> Result<CursorStep> {
+        match self {
+            Self::Created(runs) => runs.advance(),
+            Self::Lanes(lanes) => lanes.advance(),
+        }
+    }
+
+    /// The entry of the key the last step produced: its canonical ID and when
+    /// it was created.
+    fn current(&self) -> Result<(CanonicalEntryId, MillisSinceEpoch)> {
+        Ok(match self {
+            Self::Created(runs) => {
+                let key = runs.current()?.0.decode_all()?;
+                (key.canonical_id, key.created_at.0.to_unix_millis())
+            }
+            Self::Lanes(lanes) => {
+                let key = lanes.current()?.decode_all()?;
+                (key.canonical_id, key.created_at.0.to_unix_millis())
+            }
+        })
+    }
+
+    /// Keys examined so far.
+    fn examined(&self) -> u64 {
+        match self {
+            Self::Created(runs) => runs.examined(),
+            Self::Lanes(lanes) => lanes.examined(),
+        }
+    }
+
+    /// Runs merged now.
+    fn runs(&self) -> usize {
+        match self {
+            Self::Created(runs) => runs.runs(),
+            Self::Lanes(lanes) => lanes.lanes.iter().map(|lane| lane.runs.runs()).sum(),
+        }
+    }
+
+    #[cfg(test)]
+    fn retained_bytes(&self) -> usize {
+        match self {
+            Self::Created(runs) => runs.retained_bytes(),
+            Self::Lanes(lanes) => lanes
+                .lanes
+                .iter()
+                .map(|lane| lane.runs.retained_bytes())
+                .sum(),
+        }
+    }
+}
+
+/// The lanes of `entry_by_status_created/1` with keys, merged into creation
+/// order.
+struct Lanes {
+    lanes: Vec<Lane>,
+    /// The lanes to advance before the read hands out a key, the next last:
+    /// every lane at first, then the lane of each key handed out.
+    unprimed: Vec<usize>,
+    /// The lane of the key the last step produced.
+    current: Option<usize>,
+    /// Keys the probe and the lanes' discovery examined while the read opened.
+    opening: u64,
+    direction: ReadDirection,
+}
+
+struct Lane {
+    runs: OrderedRuns<EntryByStatusCreated>,
+    /// The keys `runs` had examined once it opened, counted in
+    /// [`Lanes::opening`].
+    opened: u64,
+    /// While the lane has a key the read hasn't handed out: where the key's
+    /// merge order starts in its payload, after the run's fields.
+    head: Option<usize>,
+}
+
+impl Lanes {
+    /// One step: advances the next lane without a key, if any, and hands out
+    /// the earliest key once every lane has one or is exhausted.
+    fn advance(&mut self) -> Result<CursorStep> {
+        self.current = None;
+        if let Some(&at) = self.unprimed.last() {
+            let lane = &mut self.lanes[at];
+            match lane.runs.advance()? {
+                CursorStep::Skipped => return Ok(CursorStep::Skipped),
+                CursorStep::Record => {
+                    let payload = lane.runs.current()?.0.remaining;
+                    let mut rest = payload;
+                    for field in &EntryByStatusCreatedKey::FIELDS[..LANE_RUN_FIELDS] {
+                        field.take_encoded(&mut rest)?;
+                    }
+                    lane.head = Some(payload.len() - rest.len());
+                }
+                CursorStep::Done => {}
+            }
+            self.unprimed.pop();
+            if !self.unprimed.is_empty() {
+                return Ok(CursorStep::Skipped);
+            }
+        }
+        let mut earliest: Option<(usize, &[u8])> = None;
+        for (at, lane) in self.lanes.iter().enumerate() {
+            let Some(start) = lane.head else {
+                continue;
+            };
+            let order = &lane.runs.current()?.0.remaining[start..];
+            let earlier = earliest.is_none_or(|(_, other)| match self.direction {
+                ReadDirection::Forward => order < other,
+                ReadDirection::Backward => order > other,
+            });
+            if earlier {
+                earliest = Some((at, order));
+            }
+        }
+        let Some(at) = earliest.map(|(at, _)| at) else {
+            return Ok(CursorStep::Done);
+        };
+        self.lanes[at].head = None;
+        self.unprimed.push(at);
+        self.current = Some(at);
+        Ok(CursorStep::Record)
+    }
+
+    fn current(&self) -> Result<crate::keys::KeyDecoder<'_, EntryByStatusCreatedKey>> {
+        let at = self.current.ok_or(StorageError::DataIntegrityError)?;
+        Ok(self.lanes[at].runs.current()?.0)
+    }
+
+    fn examined(&self) -> u64 {
+        self.opening
+            + self
+                .lanes
+                .iter()
+                .map(|lane| lane.runs.examined() - lane.opened)
+                .sum::<u64>()
     }
 }
 
@@ -245,7 +495,7 @@ impl EntryIndexRead {
 /// out in index order.
 pub(super) struct EntryIndexCursor {
     /// `None` once the read failed: it holds nothing then.
-    runs: Option<OrderedRuns<EntryByCreated>>,
+    source: Option<Source>,
     runs_done: bool,
     /// The window's invocations in index order, with their entries' creation
     /// records and times.
@@ -282,7 +532,7 @@ impl Drop for EntryIndexCursor {
 /// How opening went: the runs to merge and what the read holds, or the scan's
 /// reason and the index keys examined before it was chosen.
 enum Opened {
-    Index(OrderedRuns<EntryByCreated>, Held),
+    Index(Source, Held),
     Scan(ScanReason, u64),
 }
 
@@ -323,7 +573,7 @@ impl EntryIndexCursor {
             }
         };
         let cursor = match opened {
-            Opened::Index(runs, held) => Ok(Self::new(snapshot, runs, held, fetched)),
+            Opened::Index(source, held) => Ok(Self::new(snapshot, source, held, fetched)),
             Opened::Scan(reason, examined) => {
                 // What discovery examined before it gave up is work done too.
                 if examined > 0 {
@@ -334,7 +584,7 @@ impl EntryIndexCursor {
         };
         chosen(match &cursor {
             Ok(cursor) => EntryIndexPath::Index {
-                runs: cursor.runs.as_ref().map_or(0, OrderedRuns::runs),
+                runs: cursor.source.as_ref().map_or(0, Source::runs),
             },
             Err(reason) => EntryIndexPath::Scan(*reason),
         });
@@ -347,44 +597,120 @@ impl EntryIndexCursor {
         memory: SharedMemory,
         discovered: &mut u64,
     ) -> Result<Opened> {
-        if let Some(reason) = EntryIndexRead::unusable(snapshot)? {
+        if let Some(reason) = read.unusable(snapshot)? {
             return Ok(Opened::Scan(reason, 0));
         }
-        // The caller's selection, and the window with its keys, before the window
-        // is allocated.
+        // The caller's selections, and the window with its keys, before the
+        // window is allocated.
         let mut held = Held {
             memory: memory.clone(),
             bytes: 0,
         };
         held.grow(
-            read.index.retained_bytes()
+            read.retained_bytes()
                 + WINDOW * std::mem::size_of::<(InvocationId, Seq, MillisSinceEpoch)>()
                 + WINDOW * KEY_LEN,
         )?;
-        let discovery = snapshot.ordered_runs_counted::<EntryByCreated>(
-            Arc::clone(&read.index),
-            RUN_FIELDS,
-            read.direction,
-            LIMITS,
-            Box::new(memory),
-            discovered,
-        )?;
-        Ok(match discovery {
-            OrderedRunsDiscovery::Ready(runs) => Opened::Index(runs, held),
-            OrderedRunsDiscovery::TooManyRuns { examined } => {
-                Opened::Scan(ScanReason::TooManyRuns, examined)
+        let (probe, lanes) = match &read.index {
+            IndexRead::Created(selection) => {
+                let discovery = snapshot.ordered_runs_counted::<EntryByCreated>(
+                    Arc::clone(selection),
+                    RUN_FIELDS,
+                    read.direction,
+                    LIMITS,
+                    Box::new(memory),
+                    discovered,
+                )?;
+                return Ok(match discovery {
+                    OrderedRunsDiscovery::Ready(runs) => Opened::Index(Source::Created(runs), held),
+                    OrderedRunsDiscovery::TooManyRuns { examined } => {
+                        Opened::Scan(ScanReason::TooManyRuns, examined)
+                    }
+                });
             }
-        })
+            IndexRead::Status { probe, lanes } => (probe, lanes),
+        };
+        // The lanes with keys, in key order, charged while the read holds them.
+        let Some((prefixes, charged)) = snapshot.distinct_prefixes::<EntryByStatusCreated>(
+            Arc::clone(probe),
+            2,
+            (lanes.len(), LIMITS.max_discovery_keys),
+            Box::new(memory.clone()),
+            discovered,
+        )?
+        else {
+            return Ok(Opened::Scan(ScanReason::TooManyRuns, *discovered));
+        };
+        held.bytes += charged;
+        // The lanes, and the order to prime them in.
+        held.grow(prefixes.len() * (std::mem::size_of::<Lane>() + std::mem::size_of::<usize>()))?;
+        let header = <<EntryByStatusCreatedKey as KeySchema>::Header as KeyHeader>::LENGTH;
+        let mut open = Vec::with_capacity(prefixes.len());
+        held.grow(RunAllowance::SHARED_BYTES)?;
+        let allowance = RunAllowance::shared(LIMITS.max_runs);
+        for prefix in &prefixes {
+            let mut fields = prefix
+                .get(header..)
+                .ok_or(StorageError::DataIntegrityError)?;
+            let stage = StageRankCodec::decode_encoded(StageRankCodec::take_encoded(&mut fields)?)?;
+            let status = StatusCodec::decode_encoded(StatusCodec::take_encoded(&mut fields)?)?;
+            let (.., selection) = lanes
+                .iter()
+                .find(|(s, t, _)| (*s, *t) == (stage, status))
+                .ok_or(StorageError::DataIntegrityError)?;
+            let opening = Opening {
+                runs: allowance.share().ok_or(StorageError::DataIntegrityError)?,
+                examined: discovered,
+            };
+            match snapshot.ordered_runs_within::<EntryByStatusCreated>(
+                Arc::clone(selection),
+                LANE_RUN_FIELDS,
+                read.direction,
+                LANE_LIMITS,
+                Box::new(memory.clone()),
+                opening,
+            )? {
+                OrderedRunsDiscovery::Ready(runs) => {
+                    let opened = runs.examined();
+                    if runs.runs() > 0 {
+                        open.push(Lane {
+                            runs,
+                            opened,
+                            head: None,
+                        });
+                    }
+                }
+                OrderedRunsDiscovery::TooManyRuns { .. } => {
+                    return Ok(Opened::Scan(ScanReason::TooManyRuns, *discovered));
+                }
+            }
+        }
+        // The probe's prefixes are done with, and lanes without runs need no
+        // place in the priming order.
+        held.shrink(charged + (prefixes.len() - open.len()) * std::mem::size_of::<usize>());
+        drop(prefixes);
+        let mut unprimed = Vec::with_capacity(open.len());
+        unprimed.extend((0..open.len()).rev());
+        Ok(Opened::Index(
+            Source::Lanes(Lanes {
+                lanes: open,
+                unprimed,
+                current: None,
+                opening: *discovered,
+                direction: read.direction,
+            }),
+            held,
+        ))
     }
 
     fn new(
         snapshot: &ReadSnapshot,
-        runs: OrderedRuns<EntryByCreated>,
+        source: Source,
         held: Held,
         fetched: Box<dyn Fn(usize, u64) + Send>,
     ) -> Self {
         Self {
-            runs: Some(runs),
+            source: Some(source),
             runs_done: false,
             window: Vec::with_capacity(WINDOW),
             next: None,
@@ -403,10 +729,7 @@ impl EntryIndexCursor {
     /// Tells `fetched` of a multi-get of `statuses`, if any, and of the index
     /// keys examined since it last learned.
     fn report(&mut self, statuses: usize) {
-        let examined = self
-            .runs
-            .as_ref()
-            .map_or(self.reported, OrderedRuns::examined);
+        let examined = self.source.as_ref().map_or(self.reported, Source::examined);
         let new = examined.saturating_sub(self.reported);
         if statuses > 0 || new > 0 {
             (self.fetched)(statuses, new);
@@ -430,7 +753,7 @@ impl EntryIndexCursor {
     /// window with its keys, the fetched statuses and the snapshot.
     fn release(&mut self, ended: Ended) {
         self.report(0);
-        self.runs = None;
+        self.source = None;
         self.results = None;
         self.results_bytes = 0;
         self.window = Vec::new();
@@ -453,7 +776,7 @@ impl EntryIndexCursor {
             }
             None => {}
         }
-        let (Some(runs), Some(snapshot)) = (&mut self.runs, &self.snapshot) else {
+        let (Some(source), Some(snapshot)) = (&mut self.source, &self.snapshot) else {
             return Err(StorageError::DataIntegrityError);
         };
         snapshot.check_active()?;
@@ -476,14 +799,13 @@ impl EntryIndexCursor {
         if self.runs_done {
             return Ok(CursorStep::Done);
         }
-        match runs.advance()? {
+        match source.advance()? {
             CursorStep::Done => self.runs_done = true,
             CursorStep::Skipped => {}
             CursorStep::Record => {
-                let key = runs.current()?.0.decode_all()?;
-                if let Some(id) = key.canonical_id.to_base_entry_id().to_invocation_id() {
-                    let created_at = key.created_at.0.to_unix_millis();
-                    self.window.push((id, key.canonical_id.seq(), created_at));
+                let (canonical_id, created_at) = source.current()?;
+                if let Some(id) = canonical_id.to_base_entry_id().to_invocation_id() {
+                    self.window.push((id, canonical_id.seq(), created_at));
                 }
             }
         }
@@ -765,10 +1087,10 @@ mod tests {
             ))
         };
         let read = EntryIndexRead::prepare(&service(), ReadDirection::Forward).unwrap();
-        let fixed = read.index.retained_bytes()
+        let fixed = read.retained_bytes()
             + WINDOW * std::mem::size_of::<(InvocationId, Seq, MillisSinceEpoch)>()
             + WINDOW * KEY_LEN;
-        assert!(read.index.retained_bytes() > 0);
+        assert!(read.retained_bytes() > 0);
 
         // Newest first, and backwards, oldest first.
         let backward = EntryIndexRead::prepare(&service(), ReadDirection::Backward).unwrap();
@@ -790,7 +1112,7 @@ mod tests {
                 assert_eq!(cursor.results_bytes, statuses);
                 assert_eq!(
                     memory.now(),
-                    fixed + statuses + cursor.runs.as_ref().unwrap().retained_bytes(),
+                    fixed + statuses + cursor.source.as_ref().unwrap().retained_bytes(),
                     "the charge is what the read holds"
                 );
                 fetched = fetched.max(statuses);
@@ -908,7 +1230,7 @@ mod tests {
         };
         assert_eq!(refusing.refused(), Some(window), "{failed}");
         assert_eq!(refusing.now(), 0, "a failed read holds nothing");
-        assert!(cursor.runs.is_none() && cursor.results.is_none());
+        assert!(cursor.source.is_none() && cursor.results.is_none());
         assert_eq!(cursor.window.capacity() + cursor.key_buf.capacity(), 0);
         assert!(
             closed.as_mut().now_or_never().is_some(),
@@ -964,7 +1286,7 @@ mod tests {
         };
         assert!(failed.to_string().contains("created by record"), "{failed}");
         assert_eq!(memory.now(), 0);
-        assert!(cursor.runs.is_none() && cursor.results.is_none());
+        assert!(cursor.source.is_none() && cursor.results.is_none());
         assert!(
             closed.as_mut().now_or_never().is_some(),
             "a failed read releases its snapshot"
@@ -1017,7 +1339,7 @@ mod tests {
             .unwrap();
         let unreported = loop {
             assert_ne!(cursor.advance().unwrap(), CursorStep::Done);
-            let navigated = cursor.runs.as_ref().map_or(0, OrderedRuns::examined);
+            let navigated = cursor.source.as_ref().map_or(0, Source::examined);
             if navigated > cursor.reported && cursor.reported > 0 {
                 break navigated - cursor.reported;
             }
@@ -1074,5 +1396,352 @@ mod tests {
             Ok(EntryIndexPath::Scan(ScanReason::NotMigrated))
         );
         assert_eq!(memory.now(), 0);
+    }
+
+    /// A read of invocation statuses or outcomes reads only the lanes their
+    /// entries can be in, merged into creation order both ways: failed
+    /// invocations skip every Succeeded key, and other stages every Finished
+    /// one. The lanes' opening shares one read's limits, so lanes that each
+    /// fit but together don't scan instead, before returning anything; a later
+    /// hour with more runs than one read merges fails the read.
+    #[restate_core::test]
+    async fn status_lanes_merge_into_creation_order_within_shared_limits() {
+        use restate_storage_query_api::tables::index::EntryByStatusCreatedClause;
+
+        const HOUR: u64 = 3_600_000;
+        const BASE: u64 = 1_744_009_200_000; // the start of an hour
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        let mut config = Configuration::default();
+        config.common.experimental.set_track_entry_indexes(true);
+        let mut next = 0u64;
+        // Stores an invocation of `service` and its entry in `stage` and `status`.
+        let mut put = |tx: &mut crate::PartitionStoreTransaction<'_>,
+                       service: &str,
+                       stage: Stage,
+                       status: Status,
+                       created: u64| {
+            next += 1;
+            let id = InvocationId::from_parts(next * 7919, InvocationUuid::from_u128(next.into()));
+            let target = InvocationTarget::service(service, "h");
+            let created = MillisSinceEpoch::new(created);
+            let mut completed = CompletedInvocation::mock_neo();
+            completed.invocation_target = target.clone();
+            completed.timestamps = StatusTimestamps::init(created);
+            completed.creation_seq = Some(Seq::new(next));
+            tx.put_invocation_status(&id, &InvocationStatus::Completed(completed))
+                .unwrap();
+            let created = UniqueTimestamp::from_unix_millis_unchecked(created);
+            let key = EntryKey::new(false, created.to_unix_millis(), next, EntryId::from(id));
+            tx.create_vqueue_entry_status(
+                &EntryContext {
+                    qid: &VQueueId::custom(id.partition_key(), "q"),
+                    target: &target.entry_target_ref(),
+                },
+                EntryStateRef {
+                    stage,
+                    status,
+                    entry_key: &key,
+                    metadata: &EntryMetadata::default(),
+                    stats: &EntryStatistics::new(created, key.run_at()),
+                },
+            );
+            (created.to_unix_millis().as_u64(), stage, status)
+        };
+        let open = async |id: u16| {
+            let mut store = manager
+                .open(&Partition::new(PartitionId::from(id), KeyRange::FULL), None)
+                .await
+                .unwrap();
+            store
+                .verify_and_run_migrations(CancellationToken::new(), &config)
+                .await
+                .unwrap();
+            store
+        };
+        let migrated = |tx: &mut crate::PartitionStoreTransaction<'_>| {
+            tx.put_state_machine_features(&PersistedFeatures {
+                vqueues: true,
+                ..Default::default()
+            })
+            .unwrap()
+        };
+
+        // Three hours of two services, in every kind of stage and status: the
+        // statuses of each stage interleave in creation time.
+        let mut store = open(10).await;
+        let mut tx = store.transaction();
+        let kinds = [
+            (Stage::Finished, Status::Succeeded),
+            (Stage::Finished, Status::Failed),
+            (Stage::Finished, Status::Killed),
+            (Stage::Finished, Status::Succeeded),
+            (Stage::Running, Status::Started),
+            (Stage::Inbox, Status::New),
+            (Stage::Suspended, Status::Started),
+            (Stage::Finished, Status::Succeeded),
+        ];
+        let mut stored = Vec::new();
+        for n in 0..96u64 {
+            let (stage, status) = kinds[(n % 8) as usize];
+            let service = if n % 3 == 0 { "A" } else { "B" };
+            stored.push(put(&mut tx, service, stage, status, BASE + n * (HOUR / 32)));
+        }
+        migrated(&mut tx);
+        tx.commit().await.unwrap();
+        drop(tx);
+        let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
+        let read = |selection: Selection<StatusIndex>, direction| {
+            EntryIndexRead::prepare_by_status(&selection, direction).unwrap()
+        };
+        let failure = || {
+            Selection::All.and(EntryByStatusCreatedClause::CompletionResult(
+                ValuePredicate::Equal(Some("failure".into())),
+            ))
+        };
+        let active = || {
+            Selection::All.and(EntryByStatusCreatedClause::Status(ValuePredicate::In(
+                vec!["invoked".into(), "inboxed".into(), "suspended".into()],
+            )))
+        };
+        let memory = Counting::default();
+        // Every record's creation time, and the keys the read examined.
+        let records = |read: &EntryIndexRead| {
+            let (opening, path, examined) = execution(&memory);
+            let mut cursor = EntryIndexCursor::open(&snapshot, read, &opening)
+                .unwrap()
+                .unwrap();
+            let mut created = Vec::new();
+            loop {
+                match cursor.advance().unwrap() {
+                    CursorStep::Record => {
+                        created.push(cursor.current().unwrap().1.inner.creation_time)
+                    }
+                    CursorStep::Skipped => {}
+                    CursorStep::Done => break,
+                }
+            }
+            assert_eq!(memory.now(), 0, "everything is released at the end");
+            (
+                path.try_recv().unwrap(),
+                created,
+                examined.load(std::sync::atomic::Ordering::Relaxed),
+            )
+        };
+        let expected = |keep: &dyn Fn(Stage, Status) -> bool, backward: bool| {
+            let mut times = stored
+                .iter()
+                .filter(|(_, stage, status)| keep(*stage, *status))
+                .map(|(created, ..)| *created)
+                .collect::<Vec<_>>();
+            times.sort_unstable();
+            if !backward {
+                times.reverse();
+            }
+            times
+        };
+        let failed = |stage, status| stage == Stage::Finished && status != Status::Succeeded;
+        let (path, created, examined) = records(&read(failure(), ReadDirection::Forward));
+        // Two lanes, Failed and Killed, each with a run per service and hour.
+        assert_eq!(path, EntryIndexPath::Index { runs: 4 });
+        assert_eq!(created, expected(&failed, false));
+        // At most twice the 24 failed keys; the 48 Succeeded ones aren't read.
+        assert!(examined <= 2 * 24, "{examined}");
+        let (_, created, _) = records(&read(failure(), ReadDirection::Backward));
+        assert_eq!(created, expected(&failed, true));
+        let (_, created, examined) = records(&read(active(), ReadDirection::Forward));
+        assert_eq!(
+            created,
+            expected(&|stage, _| stage != Stage::Finished, false)
+        );
+        // At most twice the 36 active keys, which discovery and reading ahead
+        // each visit; none of the 60 Finished keys beyond the probe's seeks.
+        assert!(examined <= 2 * 36, "{examined}");
+        // A service and a time window narrow every lane.
+        let windowed = failure()
+            .and(EntryByStatusCreatedClause::TargetServiceName(
+                ValuePredicate::Equal("B".into()),
+            ))
+            .and(EntryByStatusCreatedClause::CreatedAt(
+                ValuePredicate::Range {
+                    lower: std::ops::Bound::Included(MillisSinceEpoch::new(BASE + HOUR)),
+                    upper: std::ops::Bound::Unbounded,
+                },
+            ));
+        let (_, created, _) = records(&read(windowed, ReadDirection::Forward));
+        let b = stored
+            .iter()
+            .enumerate()
+            .filter(|(n, (created, stage, status))| {
+                n % 3 != 0 && *created >= BASE + HOUR && failed(*stage, *status)
+            })
+            .map(|(_, (created, ..))| *created)
+            .rev()
+            .collect::<Vec<_>>();
+        assert_eq!(created, b);
+        drop(snapshot);
+
+        // Two lanes with 130 services each in their first hour: each lane fits
+        // one read's 256 runs, both don't, so the read scans.
+        let mut store = open(11).await;
+        let mut tx = store.transaction();
+        for (n, status) in (0..260u64).zip([Status::Failed, Status::Killed].into_iter().cycle()) {
+            put(
+                &mut tx,
+                &format!("s{}", n / 2),
+                Stage::Finished,
+                status,
+                BASE + n,
+            );
+        }
+        migrated(&mut tx);
+        tx.commit().await.unwrap();
+        drop(tx);
+        let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
+        let (opening, path, examined) = execution(&memory);
+        let wide = read(failure(), ReadDirection::Forward);
+        assert!(
+            EntryIndexCursor::open(&snapshot, &wide, &opening)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            path.try_recv(),
+            Ok(EntryIndexPath::Scan(ScanReason::TooManyRuns))
+        );
+        assert!(examined.load(std::sync::atomic::Ordering::Relaxed) > 0);
+        assert_eq!(memory.now(), 0);
+        drop(snapshot);
+
+        // A later hour of one lane with more runs than one read merges fails
+        // the read once it gets there, holding nothing.
+        let mut store = open(12).await;
+        let mut tx = store.transaction();
+        put(
+            &mut tx,
+            "first",
+            Stage::Finished,
+            Status::Failed,
+            BASE + HOUR,
+        );
+        for n in 0..257u64 {
+            put(
+                &mut tx,
+                &format!("s{n}"),
+                Stage::Finished,
+                Status::Failed,
+                BASE + n,
+            );
+        }
+        migrated(&mut tx);
+        tx.commit().await.unwrap();
+        drop(tx);
+        let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
+        let (opening, _, _) = execution(&memory);
+        let mut cursor = EntryIndexCursor::open(&snapshot, &wide, &opening)
+            .unwrap()
+            .unwrap();
+        let failed = loop {
+            match cursor.advance() {
+                Ok(CursorStep::Done) => panic!("the later hour fails the read"),
+                Ok(_) => {}
+                Err(error) => break error,
+            }
+        };
+        assert!(failed.to_string().contains("more runs"), "{failed}");
+        assert_eq!(memory.now(), 0, "a failed read holds nothing");
+        drop((cursor, snapshot));
+
+        // Two lanes, each with one run in its newest hour and 130 in the hour
+        // before: each fits one read's 256 runs, but they hold their runs at
+        // once, so the second lane's older hour fails the read.
+        let mut store = open(13).await;
+        let mut tx = store.transaction();
+        for status in [Status::Failed, Status::Killed] {
+            put(
+                &mut tx,
+                &format!("{status}"),
+                Stage::Finished,
+                status,
+                BASE + HOUR,
+            );
+            for n in 0..130u64 {
+                put(
+                    &mut tx,
+                    &format!("{status}{n}"),
+                    Stage::Finished,
+                    status,
+                    BASE + n,
+                );
+            }
+        }
+        migrated(&mut tx);
+        tx.commit().await.unwrap();
+        drop(tx);
+        let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
+        let (opening, path, _) = execution(&memory);
+        let mut cursor = EntryIndexCursor::open(&snapshot, &wide, &opening)
+            .unwrap()
+            .unwrap();
+        assert_eq!(path.try_recv(), Ok(EntryIndexPath::Index { runs: 2 }));
+        let failed = loop {
+            match cursor.advance() {
+                Ok(CursorStep::Done) => panic!("the lanes' older hours fail the read"),
+                Ok(_) => {}
+                Err(error) => break error,
+            }
+        };
+        assert!(failed.to_string().contains("more runs"), "{failed}");
+        assert_eq!(memory.now(), 0, "a failed read holds nothing");
+        drop((cursor, snapshot));
+
+        // Opened, the read charges exactly what it holds: its selections, the
+        // window, each lane's slot, place in the priming order and own charge,
+        // and none of the probe's prefixes any more. Refused at its largest
+        // charge, nothing opens and nothing stays charged.
+        let mut store = open(14).await;
+        let mut tx = store.transaction();
+        for (n, status) in (0..6u64).zip(
+            [Status::Failed, Status::Killed, Status::Cancelled]
+                .into_iter()
+                .cycle(),
+        ) {
+            put(&mut tx, "s", Stage::Finished, status, BASE + n);
+        }
+        migrated(&mut tx);
+        tx.commit().await.unwrap();
+        drop(tx);
+        let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
+        let measuring = Counting::default();
+        let (opening, _, _) = execution(&measuring);
+        let cursor = EntryIndexCursor::open(&snapshot, &wide, &opening)
+            .unwrap()
+            .unwrap();
+        let Some(Source::Lanes(lanes)) = &cursor.source else {
+            panic!("a status read merges lanes");
+        };
+        assert_eq!(lanes.lanes.len(), 3);
+        assert_eq!(lanes.unprimed.capacity(), 3);
+        assert_eq!(
+            measuring.now(),
+            wide.retained_bytes()
+                + WINDOW * std::mem::size_of::<(InvocationId, Seq, MillisSinceEpoch)>()
+                + WINDOW * KEY_LEN
+                + 3 * (std::mem::size_of::<Lane>() + std::mem::size_of::<usize>())
+                + RunAllowance::SHARED_BYTES
+                + cursor.source.as_ref().unwrap().retained_bytes(),
+            "the charge is what the opened read holds"
+        );
+        let peak = measuring.peak();
+        drop(cursor);
+        assert_eq!(measuring.now(), 0);
+        let refusing = Counting::with(Charge {
+            limit: Some(peak - 1),
+            ..Default::default()
+        });
+        let (opening, path, _) = execution(&refusing);
+        assert!(EntryIndexCursor::open(&snapshot, &wide, &opening).is_err());
+        assert!(path.try_recv().is_err(), "a failed open chooses no path");
+        assert_eq!(refusing.now(), 0, "a refused open holds nothing");
     }
 }
