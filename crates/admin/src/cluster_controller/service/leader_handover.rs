@@ -511,8 +511,8 @@ pub fn drop_deferral(
 /// `progress`. Starts a deferral at the first check if the candidate is not close enough, and
 /// clears it when it proceeds.
 ///
-/// A different candidate than the deferral's (reconfigurations pick the least lagging member on
-/// every pass) ends the current round and starts the next one.
+/// A different candidate than the deferral's (a reconfiguration whose candidate dropped out or
+/// was overtaken by a member that is close enough) ends the current round.
 pub fn evaluate(
     deferral: &mut Option<Deferral>,
     ctx: &Context,
@@ -600,8 +600,8 @@ fn advance(
     let candidate_changed = d.candidate != ctx.candidate;
 
     // A round ends when the candidate applied the log up to the round's target, or when a
-    // reconfiguration picked a different candidate. A candidate that fell further behind during
-    // the round still gets all rounds.
+    // reconfiguration switched to a different candidate. A candidate that fell further behind
+    // during the round still gets all rounds.
     if candidate_changed || m.applied.next() >= d.round_target {
         let decision = if close_enough {
             Decision::Proceed(ProceedReason::CloseEnough)

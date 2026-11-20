@@ -49,8 +49,8 @@ use restate_types::replication::{NodeSet, ReplicationProperty};
 use restate_types::{GenerationalNodeId, NodeId, PlainNodeId, Version, Versioned};
 
 use super::leader_handover::{
-    self, Context, DropReason, HandoverKind, HandoverOptions, OrUnknown, PartitionHandover,
-    Progress,
+    self, Context, Deferral, DropReason, HandoverKind, HandoverOptions, OrUnknown,
+    PartitionHandover, Progress,
 };
 use crate::cluster_controller::safety_checker::PartitionPlacement;
 
@@ -838,9 +838,11 @@ impl<T: TransportConnect> Scheduler<T> {
     /// Decides whether a pending reconfiguration completes now, given why it can be completed
     /// (see [`Self::should_complete_reconfiguration`]).
     ///
-    /// With the `catch-up-time` leader handover policy, a completion that would remove a leading
-    /// current leader is deferred until the least lagging alive member of the new replica set is
-    /// close enough to the log tail. All other completions happen right away.
+    /// With the `catch-up-time` leader handover policy, a completion that would remove the
+    /// replica in leader mode is deferred until an alive member of the new replica set is close
+    /// enough to the log tail. The deferral follows the member that was least lagging when it
+    /// started, until another member is close enough or the candidate drops out. All other
+    /// completions happen right away.
     fn gate_reconfiguration_completion(
         partition_id: PartitionId,
         partition: &mut PartitionState,
@@ -894,16 +896,25 @@ impl<T: TransportConnect> Scheduler<T> {
             &partition.handover.rates,
             partition.alive_members(cluster_state),
         );
-        let current_leader = partition.target_leader.or_else(|| {
-            progress.leading(
-                partition
-                    .current
-                    .replica_set()
-                    .iter()
-                    .copied()
-                    .filter(|node_id| is_alive(*node_id)),
-            )
-        });
+        // The target leader may still be campaigning while the previous leader keeps serving, so
+        // gate on the replica that reports leader mode. Without one, the target leader yields the
+        // reason why the completion is not gated.
+        let current_leader = partition
+            .target_leader
+            .filter(|leader| {
+                legacy_cluster_state.runs_partition_processor_leader(leader, &partition_id)
+            })
+            .or_else(|| {
+                progress.leading(
+                    partition
+                        .current
+                        .replica_set()
+                        .iter()
+                        .copied()
+                        .filter(|node_id| is_alive(*node_id)),
+                )
+            })
+            .or(partition.target_leader);
         let gated_leader = match current_leader {
             None => Err(DropReason::NoLeader),
             Some(leader) if !is_alive(leader) => Err(DropReason::LeaderDied),
@@ -926,12 +937,31 @@ impl<T: TransportConnect> Scheduler<T> {
             }
         };
 
-        let Some(candidate) = progress.least_lagging(
+        // Keep the deferral's candidate while it is an alive member of the new replica set with a
+        // known lag, so that members overtaking each other don't use up catch-up rounds. Switch to
+        // the least lagging member once that one is close enough.
+        let least_lagging = progress.least_lagging(
             next.replica_set()
                 .iter()
                 .copied()
                 .filter(|node_id| is_alive(*node_id)),
-        ) else {
+        );
+        let least_lagging_close_enough = least_lagging
+            .and_then(|node_id| progress.of(node_id))
+            .is_some_and(|p| p.is_close_enough(options.max_catch_up_time));
+        let Some(candidate) = partition
+            .handover
+            .reconfiguration
+            .as_ref()
+            .map(Deferral::candidate)
+            .filter(|node_id| {
+                !least_lagging_close_enough
+                    && next.replica_set().contains(*node_id)
+                    && is_alive(*node_id)
+                    && progress.lag(*node_id).is_some()
+            })
+            .or(least_lagging)
+        else {
             return true;
         };
         let ctx = Context {
@@ -2422,6 +2452,54 @@ mod tests {
         assert_eq!(f.pass(&both(1, 1_000_000)), Some(n(1)));
         assert!(!f.completed());
         assert_eq!(f.pass(&both(2, 1_000_200)), Some(n(3)));
+        assert!(f.completed());
+
+        // both are replaced while a leader switch from N2 to N1 goes ahead: the completion waits
+        // on behalf of N2, which keeps serving while N1 campaigns
+        let mut f = Fixture::new(&[1, 2], Some(&[3, 4]), CatchUpTime);
+        f.set_target_leader(Some(2));
+        let tail = 1_000_001;
+        assert_eq!(
+            f.pass(&[
+                (1, replica(0, tail - 1, tail)),
+                (2, replica(0, tail - 1, tail).leading()),
+                (3, replica(0, 500_000, tail)),
+                (4, replica(0, 500_000, tail)),
+            ]),
+            Some(n(1))
+        );
+        assert!(!f.completed());
+        // N3 and N4 overtaking each other don't use up the catch-up rounds
+        for t in 1..=10 {
+            let tail = 1_000_001 + t * 10_000;
+            let (behind, ahead) = (500_000 + t * 20_000, 501_000 + t * 20_000);
+            let (n3, n4) = if t % 2 == 0 {
+                (ahead, behind)
+            } else {
+                (behind, ahead)
+            };
+            assert_eq!(
+                f.pass(&[
+                    (1, replica(t, tail - 1, tail).leading()),
+                    (2, replica(t, tail - 1, tail)),
+                    (3, replica(t, n3, tail)),
+                    (4, replica(t, n4, tail)),
+                ]),
+                Some(n(1))
+            );
+            assert!(!f.completed());
+        }
+        // N4 takes over from the deferral's candidate N3 once it is close enough
+        let tail = 1_110_001;
+        assert_eq!(
+            f.pass(&[
+                (1, replica(11, tail - 1, tail).leading()),
+                (2, replica(11, tail - 1, tail)),
+                (3, replica(11, 720_000, tail)),
+                (4, replica(11, tail - 1, tail)),
+            ]),
+            Some(n(4))
+        );
         assert!(f.completed());
 
         // with the immediate policy, the reconfiguration completes at once
