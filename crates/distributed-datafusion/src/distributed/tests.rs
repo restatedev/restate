@@ -133,6 +133,9 @@ impl PartitionLocator for RemoteOwner {
 
 struct Fixture<N> {
     network: N,
+    /// A second connection manager to the same mock worker/router.
+    other_network: N,
+    connections: tokio::sync::mpsc::UnboundedReceiver<restate_core::network::MockPeerConnection>,
     scanners: SourceRegistry,
     /// The owner's sources, whose server starts on first connection.
     owner_scanners: Arc<OnceLock<SourceRegistry>>,
@@ -255,7 +258,7 @@ async fn setup_at_version(
     // Queries keep the connector through their network, possibly past teardown
     // (see `keep_network_past_teardown`), so it must not own storage: it only
     // borrows the owner's sources and the observations.
-    let (connector, _connections) = MockConnector::new({
+    let (connector, connections) = MockConnector::new({
         let owner_scanners = Arc::downgrade(&owner_scanners);
         let observations = Arc::downgrade(&observations);
         let tamper = Arc::clone(&tamper);
@@ -309,12 +312,12 @@ async fn setup_at_version(
             .unwrap()
             .clone(),
     );
-    let coordinator = TestCoreEnvBuilder::with_transport_connector(
-        connector.with_max_protocol_version(protocol_version),
-    )
-    .set_nodes_config(nodes)
-    .build()
-    .await;
+    let connector = connector.with_max_protocol_version(protocol_version);
+    let other_network = restate_core::network::Networking::with_connector(connector.clone());
+    let coordinator = TestCoreEnvBuilder::with_transport_connector(connector)
+        .set_nodes_config(nodes)
+        .build()
+        .await;
     crate::mocks::keep_network_past_teardown(coordinator.networking.clone());
     // The injected worker metadata belongs to N2, while the loopback transport's
     // task-center/global metadata remains N1. RPC, codecs and Arrow IPC are real.
@@ -342,6 +345,8 @@ async fn setup_at_version(
     );
     Fixture {
         network: coordinator.networking,
+        other_network,
+        connections,
         scanners,
         owner_scanners,
         store,
@@ -350,6 +355,390 @@ async fn setup_at_version(
         tamper,
         read_hold,
     }
+}
+
+async fn owner_event(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<WorkerEvent>,
+    kind: &str,
+    id: &QueryTaskId,
+) -> WorkerEvent {
+    let mut seen = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.expect("worker event channel");
+            if event.kind == kind && event.id == *id {
+                return event;
+            }
+            seen.push(event);
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("no {kind} for {id:?}: {seen:?}"))
+}
+
+async fn query_connection(network: &impl NetworkSender) -> restate_core::network::Connection {
+    network
+        .get_connection(OWNER, Swimlane::Datafusion)
+        .in_tc_as_task(
+            &TaskCenter::current(),
+            TaskKind::InPlace,
+            "owner-loss-connect",
+        )
+        .await
+        .unwrap()
+}
+
+/// Abort the real mock peer reactor without signalling its cancellation token
+/// or asking it to drain. Dropping its input/egress exercises fabric closure.
+async fn break_connection(
+    peer: restate_core::network::MockPeerConnection,
+    client: &restate_core::network::Connection,
+) {
+    let reactor = TaskCenter::take_task(peer.reactor_task_id).unwrap();
+    reactor.abort();
+    assert!(reactor.await.is_err());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(peer.conn.closed(), client.closed());
+    })
+    .await
+    .expect("both fabric endpoints close");
+}
+
+fn take_worker_context(
+    fixture: &Fixture<impl NetworkSender>,
+    id: &QueryTaskId,
+) -> std::sync::Weak<datafusion::execution::TaskContext> {
+    let mut observations = fixture.observations.lock();
+    let at = observations.iter().position(|task| task.id == *id).unwrap();
+    // Remove the test's own strong reference, so a dead Weak proves destruction.
+    Arc::downgrade(&observations.remove(at).context)
+}
+
+async fn context_released(context: std::sync::Weak<datafusion::execution::TaskContext>) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while context.strong_count() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("worker context is destroyed without idle reaping");
+    assert!(context.upgrade().is_none());
+}
+
+fn empty_task_install() -> QueryTaskInstall {
+    use datafusion::arrow::datatypes::Schema;
+    use datafusion::physical_plan::{ExecutionPlan, empty::EmptyExec};
+    use datafusion_distributed::MaybeEncoded;
+
+    let context = environment(1, 128)
+        .build_session_state()
+        .unwrap()
+        .task_ctx();
+    QueryTaskInstall {
+        id: QueryTaskId {
+            session_id: context.session_id().into(),
+            query_ts: UniqueTimestamp::MIN,
+            runtime_query_id: *uuid::Uuid::new_v4().as_bytes(),
+            stage: 1,
+            task: 0,
+        },
+        plan: MaybeEncoded::<Arc<dyn ExecutionPlan>>::Decoded(Arc::new(EmptyExec::new(Arc::new(
+            Schema::empty(),
+        ))))
+        .encode(&context)
+        .unwrap()
+        .into(),
+        options: Default::default(),
+        runtime_headers: OutputTask::headers()
+            .iter()
+            .map(|(k, v)| (k.as_str().into(), v.to_str().unwrap().into()))
+            .collect(),
+        query_start_time_ns: 0,
+        query_headers: vec![],
+        redacted_sql: Default::default(),
+        planning_duration: Default::default(),
+        analyze: Some(restate_types::net::distributed_query::QueryTaskAnalyze {}),
+        stream_ipc: Some(restate_types::net::distributed_query::QueryTaskStreamIpc {}),
+    }
+}
+
+fn execute_request(id: &QueryTaskId) -> QueryTaskRequest {
+    QueryTaskRequest::Execute(restate_types::net::distributed_query::QueryTaskExecute {
+        id: id.clone(),
+        partition_start: 0,
+        partition_end: 1,
+    })
+}
+
+fn next_request(id: &QueryTaskId) -> QueryTaskRequest {
+    QueryTaskRequest::Next(restate_types::net::distributed_query::QueryTaskNext {
+        id: id.clone(),
+        partition: 0,
+    })
+}
+
+#[restate_core::test]
+async fn owner_loss_releases_a_blocked_snapshot_but_healthy_silence_survives() {
+    let mut fixture = setup(false).await;
+    let mut transaction = fixture.store.transaction();
+    transaction
+        .put_user_state(
+            &ServiceId::new(None, "service", "object"),
+            &Bytes::from_static(b"key"),
+            Bytes::from_static(b"value"),
+        )
+        .unwrap();
+    transaction.commit().await.unwrap();
+    drop(transaction);
+    let (events, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+    fixture.tamper.lock().events = Some(events);
+    let (entered, mut reads) = tokio::sync::mpsc::unbounded_channel();
+    *fixture.read_hold.lock() = Some(ReadHold {
+        entered,
+        release: Arc::new(tokio::sync::Notify::new()),
+    });
+    let mut stream = fixture
+        .engine(1, 1)
+        .create_session(SessionOptions::default())
+        .unwrap()
+        .execute("SELECT * FROM state", QueryOptions {})
+        .await
+        .unwrap()
+        .stream;
+    let consumer = tokio::spawn(async move { stream.next().await });
+    let snapshot_closed = tokio::time::timeout(Duration::from_secs(5), reads.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let id = fixture.observations.lock()[0].id.clone();
+    owner_event(&mut events_rx, "next-polling", &id).await;
+    let context = take_worker_context(&fixture, &id);
+    let connection = query_connection(&fixture.network).await;
+    let peer = fixture.connections.recv().await.unwrap();
+
+    // An active request survives more than the unchanged 300 s idle threshold.
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(361)).await;
+    tokio::time::resume();
+    assert!(!consumer.is_finished());
+    assert!(context.upgrade().is_some());
+    assert!(
+        rpc(&connection, next_request(&id))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("concurrent pull")
+    );
+    assert!(!connection.is_closed());
+
+    break_connection(peer, &connection).await;
+    owner_event(&mut events_rx, "owner-lost", &id).await;
+    tokio::time::timeout(Duration::from_secs(5), snapshot_closed)
+        .await
+        .expect("owner loss drops the held storage snapshot");
+    context_released(context).await;
+    assert!(consumer.await.unwrap().unwrap().is_err());
+    // A new connection cannot resurrect the removed task or its lane.
+    let replacement = query_connection(&fixture.network).await;
+    assert_ne!(replacement, connection);
+    assert!(
+        rpc(&replacement, next_request(&id))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("not installed")
+    );
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn owner_loss_cancels_install_and_execute_and_isolates_replacements() {
+    let mut fixture = setup(false).await;
+    let (events, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+    fixture.tamper.lock().events = Some(events);
+    for (during_install, late_execute) in [(true, false), (false, false), (false, true)] {
+        let connection = query_connection(&fixture.network).await;
+        let peer = fixture.connections.recv().await.unwrap();
+        let other = query_connection(&fixture.other_network).await;
+        if during_install {
+            let _other_peer = fixture.connections.recv().await.unwrap();
+        }
+        assert_ne!(connection, other);
+        let sibling = empty_task_install();
+        rpc(&other, QueryTaskRequest::Install(sibling.clone()))
+            .await
+            .unwrap();
+        let sibling_context = take_worker_context(&fixture, &sibling.id);
+        assert!(
+            rpc(&connection, execute_request(&sibling.id))
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("not installed")
+        );
+        rpc(
+            &connection,
+            QueryTaskRequest::Close(QueryTaskClose {
+                id: sibling.id.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(
+            sibling_context.upgrade().is_some(),
+            "Close is scoped to its connection"
+        );
+        let install = empty_task_install();
+        let id = install.id.clone();
+        let (entered, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let hold = Hold {
+            entered,
+            release: Arc::clone(&release),
+        };
+        if during_install {
+            fixture.tamper.lock().install_hold = Some(hold);
+        } else {
+            rpc(&connection, QueryTaskRequest::Install(install.clone()))
+                .await
+                .unwrap();
+            if late_execute {
+                fixture.tamper.lock().publish_hold = Some(hold);
+            } else {
+                fixture.tamper.lock().execute_inside_hold = Some(hold);
+            }
+        }
+        let work = tokio::spawn({
+            let connection = connection.clone();
+            let request = if during_install {
+                QueryTaskRequest::Install(install.clone())
+            } else {
+                execute_request(&id)
+            };
+            async move { rpc(&connection, request).await }
+        });
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), entered_rx.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            id
+        );
+        let context = take_worker_context(&fixture, &id);
+        break_connection(peer, &connection).await;
+        if late_execute {
+            owner_event(&mut events_rx, "owner-lost", &id).await;
+        } else {
+            context_released(context.clone()).await;
+        }
+        assert!(work.await.unwrap().is_err());
+        fixture.tamper.lock().install_hold = None;
+        fixture.tamper.lock().execute_inside_hold = None;
+        fixture.tamper.lock().publish_hold = None;
+
+        // A live same-peer connection and its query survive the loss. Old
+        // completions cannot publish into a reinstalled task with the same ID.
+        assert!(sibling_context.upgrade().is_some());
+        rpc(&other, execute_request(&sibling.id)).await.unwrap();
+        assert!(
+            matches!(rpc(&other, next_request(&sibling.id)).await.unwrap(), QueryTaskReplyBody::Ipc(chunk) if chunk.end)
+        );
+        rpc(&other, QueryTaskRequest::Install(install))
+            .await
+            .unwrap();
+        let replacement_context = take_worker_context(&fixture, &id);
+        // Let the old execution finish only after a replacement is installed.
+        // Its own lanes must remain closed and its built streams must drop.
+        release.notify_waiters();
+        if late_execute {
+            let result = owner_event(&mut events_rx, "execute", &id).await;
+            assert!(result.outcome.contains("query task closed"), "{result:?}");
+            context_released(context).await;
+        }
+        let error = rpc(&other, next_request(&id)).await.unwrap_err();
+        assert!(
+            error.to_string().contains("not running"),
+            "no late lane publication: {error}"
+        );
+        rpc(&other, execute_request(&id)).await.unwrap();
+        assert!(
+            matches!(rpc(&other, next_request(&id)).await.unwrap(), QueryTaskReplyBody::Ipc(chunk) if chunk.end)
+        );
+        for id in [id, sibling.id] {
+            rpc(&other, QueryTaskRequest::Close(QueryTaskClose { id }))
+                .await
+                .unwrap();
+        }
+        context_released(sibling_context).await;
+        context_released(replacement_context).await;
+    }
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn owner_loss_and_old_close_completion_cannot_remove_a_replacement_close() {
+    let mut fixture = setup(false).await;
+    let (events, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+    fixture.tamper.lock().events = Some(events);
+    let connection = query_connection(&fixture.network).await;
+    let peer = fixture.connections.recv().await.unwrap();
+    let install = empty_task_install();
+    let id = install.id.clone();
+    rpc(&connection, QueryTaskRequest::Install(install.clone()))
+        .await
+        .unwrap();
+    let original_context = take_worker_context(&fixture, &id);
+    let (entered, mut held) = tokio::sync::mpsc::unbounded_channel();
+    let release_old = Arc::new(tokio::sync::Notify::new());
+    fixture.tamper.lock().finalize_hold = Some(Hold {
+        entered,
+        release: Arc::clone(&release_old),
+    });
+    let old_close = tokio::spawn({
+        let connection = connection.clone();
+        let id = id.clone();
+        async move { rpc(&connection, QueryTaskRequest::Close(QueryTaskClose { id })).await }
+    });
+    assert_eq!(held.recv().await.unwrap(), id);
+    break_connection(peer, &connection).await;
+    assert!(old_close.await.unwrap().is_err());
+
+    let replacement = query_connection(&fixture.other_network).await;
+    rpc(&replacement, QueryTaskRequest::Install(install))
+        .await
+        .unwrap();
+    let replacement_context = take_worker_context(&fixture, &id);
+    let (entered, mut held) = tokio::sync::mpsc::unbounded_channel();
+    let release_new = Arc::new(tokio::sync::Notify::new());
+    fixture.tamper.lock().finalize_hold = Some(Hold {
+        entered,
+        release: Arc::clone(&release_new),
+    });
+    let new_close = tokio::spawn({
+        let connection = replacement.clone();
+        let id = id.clone();
+        async move { rpc(&connection, QueryTaskRequest::Close(QueryTaskClose { id })).await }
+    });
+    assert_eq!(held.recv().await.unwrap(), id);
+    release_old.notify_one();
+    owner_event(&mut events_rx, "close", &id).await;
+    context_released(original_context).await;
+    // Send a repeated Close after the stale completion. It must still share
+    // the replacement's pending report, not return an empty Closed.
+    let repeated = tokio::spawn({
+        let connection = replacement.clone();
+        let id = id.clone();
+        async move { rpc(&connection, QueryTaskRequest::Close(QueryTaskClose { id })).await }
+    });
+    owner_event(&mut events_rx, "close-received", &id).await;
+    release_new.notify_one();
+    let QueryTaskReplyBody::Closed(first) = new_close.await.unwrap().unwrap() else {
+        panic!("expected Closed");
+    };
+    let QueryTaskReplyBody::Closed(second) = repeated.await.unwrap().unwrap() else {
+        panic!("expected Closed");
+    };
+    assert!(first.report.is_some());
+    assert_eq!(first.report, second.report);
+    context_released(replacement_context).await;
 }
 
 impl<N: NetworkSender> Fixture<N> {
@@ -364,6 +753,517 @@ impl<N: NetworkSender> Fixture<N> {
         .unwrap();
         Arc::new(DataFusionQueryEngine::from_env(env, None))
     }
+}
+
+/// A real worker channel over the fixture's native RPC connection. An EmptyExec
+/// supplies the installed output contract; the typed output hook supplies only
+/// the unusual lane batches being tested, after the runtime has executed it.
+struct OutputTask {
+    client: Box<dyn datafusion_distributed::WorkerChannel>,
+    context: Arc<datafusion::execution::TaskContext>,
+    key: datafusion_distributed::TaskKey,
+    _control: futures::stream::BoxStream<
+        'static,
+        datafusion::common::Result<datafusion_distributed::WorkerToCoordinatorMsg>,
+    >,
+}
+
+impl OutputTask {
+    fn headers() -> http::HeaderMap {
+        use datafusion::common::config::{ConfigExtension, ExtensionOptions};
+        use datafusion_distributed::DistributedConfig;
+
+        let mut headers = http::HeaderMap::new();
+        for entry in super::runtime_config().entries() {
+            if let Some(value) = entry.value {
+                headers.insert(
+                    http::HeaderName::from_bytes(
+                        format!(
+                            "x-datafusion-distributed-config-{}.{}",
+                            DistributedConfig::PREFIX,
+                            entry.key
+                        )
+                        .as_bytes(),
+                    )
+                    .unwrap(),
+                    value.parse().unwrap(),
+                );
+            }
+        }
+        headers
+    }
+
+    async fn install<N: NetworkSender>(
+        fixture: &Fixture<N>,
+        schema: SchemaRef,
+        partitions: usize,
+    ) -> datafusion::common::Result<Self> {
+        use datafusion::physical_plan::empty::EmptyExec;
+        use datafusion_distributed::{ChannelResolver, MaybeEncoded, SetPlanRequest, TaskKey};
+
+        let mut state = environment(partitions, 128).build_session_state().unwrap();
+        let session_id = state.task_ctx().session_id();
+        state
+            .config_mut()
+            .set_extension(Arc::new(UniqueTimestamp::MIN));
+        state
+            .config_mut()
+            .set_extension(Arc::new(restate_storage_query_api::QueryMetadata {
+                session_id: session_id.into(),
+                query_ts: UniqueTimestamp::MIN,
+                headers: Default::default(),
+                redacted_sql: "IPC transport fixture".into(),
+                planning_duration: Default::default(),
+            }));
+        let context = state.task_ctx();
+        let key = TaskKey {
+            query_id: uuid::Uuid::new_v4(),
+            stage_id: 1,
+            task_number: 0,
+        };
+        let url = super::worker_url(OWNER).unwrap();
+        let mut client = super::transport::RestateChannelResolver::new(fixture.network.clone())
+            .get_worker_client_for_url(&url)
+            .await?;
+        let control = client
+            .coordinator_channel(
+                Self::headers(),
+                SetPlanRequest {
+                    task_key: key,
+                    task_count: 1,
+                    plan: MaybeEncoded::Decoded(Arc::new(
+                        EmptyExec::new(schema).with_partitions(partitions),
+                    )),
+                    dynamic_filter_remote_producer_ids: vec![],
+                    work_unit_feed_declarations: vec![],
+                    target_worker_url: url,
+                    query_start_time_ns: 0,
+                },
+                stream::pending().boxed(),
+                Default::default(),
+                &context,
+            )
+            .await?;
+        Ok(Self {
+            client,
+            context,
+            key,
+            _control: control,
+        })
+    }
+
+    async fn execute(
+        &mut self,
+        end: usize,
+    ) -> datafusion::common::Result<
+        Vec<
+            futures::stream::BoxStream<
+                'static,
+                datafusion::common::Result<datafusion::arrow::record_batch::RecordBatch>,
+            >,
+        >,
+    > {
+        self.client
+            .execute_task(
+                Default::default(),
+                datafusion_distributed::ExecuteTaskRequest {
+                    task_key: self.key,
+                    target_partition_start: 0,
+                    target_partition_end: end,
+                    producer_head: datafusion_distributed::ProducerHead::None,
+                },
+                Default::default(),
+                &self.context,
+            )
+            .await
+    }
+}
+
+fn dictionary_output(
+    partition: usize,
+    input: SendableRecordBatchStream,
+) -> SendableRecordBatchStream {
+    use datafusion::arrow::array::{ArrayRef, DictionaryArray, Int32Array, StringArray};
+    use datafusion::arrow::datatypes::Int32Type;
+    use datafusion::arrow::record_batch::RecordBatch;
+
+    let schema = input.schema();
+    let first = Arc::new(StringArray::from(vec![format!("lane-{partition}-first")])) as ArrayRef;
+    let replacement = Arc::new(StringArray::from(vec![format!(
+        "lane-{partition}-replacement"
+    )])) as ArrayRef;
+    let batches = [Arc::clone(&first), first, replacement].map(|values| {
+        RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(
+                DictionaryArray::<Int32Type>::try_new(Int32Array::from(vec![0, 0]), values)
+                    .unwrap(),
+            )],
+        )
+        .map_err(Into::into)
+    });
+    Box::pin(RecordBatchStreamAdapter::new(schema, stream::iter(batches)))
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ipc_negotiation_preserves_independent_lanes_and_checks_installation() {
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion_distributed::MaybeEncoded;
+
+    use restate_types::net::distributed_query::{QueryTaskExecute, QueryTaskNext};
+
+    let fixture = setup(false).await;
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "dictionary",
+        DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+        false,
+    )]));
+    fixture.tamper.lock().output = Some(dictionary_output);
+    let (events, mut replies) = tokio::sync::mpsc::unbounded_channel();
+    fixture.tamper.lock().events = Some(events);
+    for legacy in [false, true] {
+        fixture.tamper.lock().legacy_ipc = legacy;
+        let mut task = OutputTask::install(&fixture, Arc::clone(&schema), 2)
+            .await
+            .unwrap();
+        let mut lanes = task.execute(2).await.unwrap();
+        // Interleave the lanes, including dictionary replacement under the same
+        // dictionary ID on each lane. An old worker's no-ack profile also works.
+        for suffix in ["first", "first", "replacement"] {
+            for partition in [1, 0] {
+                let batch = lanes[partition].next().await.unwrap().unwrap();
+                assert_eq!(batch.num_rows(), 2);
+                assert_eq!(
+                    array_value_to_string(batch.column(0), 0).unwrap(),
+                    format!("lane-{partition}-{suffix}")
+                );
+            }
+        }
+        for lane in &mut lanes {
+            assert!(lane.next().await.is_none());
+        }
+        let seen = std::iter::from_fn(|| replies.try_recv().ok()).collect::<Vec<_>>();
+        let profile = if legacy {
+            ("batch", "end")
+        } else {
+            ("ipc-data", "ipc-end")
+        };
+        assert_eq!(
+            seen.iter()
+                .filter(|event| event.kind == "next" && event.outcome == profile.0)
+                .count(),
+            6
+        );
+        assert_eq!(
+            seen.iter()
+                .filter(|event| event.kind == "next" && event.outcome == profile.1)
+                .count(),
+            2
+        );
+        drop(task);
+    }
+    // A coordinator with no IPC request gets Batch/End from a capable worker.
+    fixture.tamper.lock().legacy_ipc = false;
+    let connection = fixture
+        .network
+        .get_connection(OWNER, Swimlane::Datafusion)
+        .in_tc_as_task(
+            &TaskCenter::current(),
+            TaskKind::InPlace,
+            "ipc-legacy-connect",
+        )
+        .await
+        .unwrap();
+    let context = environment(1, 128)
+        .build_session_state()
+        .unwrap()
+        .task_ctx();
+    let id = QueryTaskId {
+        session_id: context.session_id().into(),
+        query_ts: UniqueTimestamp::MIN,
+        runtime_query_id: *uuid::Uuid::new_v4().as_bytes(),
+        stage: 1,
+        task: 0,
+    };
+    let installed = rpc(
+        &connection,
+        QueryTaskRequest::Install(QueryTaskInstall {
+            id: id.clone(),
+            plan: MaybeEncoded::<Arc<dyn datafusion::physical_plan::ExecutionPlan>>::Decoded(
+                Arc::new(EmptyExec::new(Arc::clone(&schema))),
+            )
+            .encode(&context)
+            .unwrap()
+            .into(),
+            options: Default::default(),
+            runtime_headers: OutputTask::headers()
+                .iter()
+                .map(|(k, v)| (k.as_str().into(), v.to_str().unwrap().into()))
+                .collect(),
+            query_start_time_ns: 0,
+            query_headers: vec![],
+            redacted_sql: Default::default(),
+            planning_duration: Default::default(),
+            analyze: None,
+            stream_ipc: None,
+        }),
+    )
+    .await
+    .unwrap();
+    let QueryTaskReplyBody::Installed(installed) = installed else {
+        panic!("expected Installed");
+    };
+    assert!(installed.stream_ipc.is_none());
+    assert_eq!(crate::decode_schema(&installed.schema).unwrap(), *schema);
+    rpc(
+        &connection,
+        QueryTaskRequest::Execute(QueryTaskExecute {
+            id: id.clone(),
+            partition_start: 0,
+            partition_end: 1,
+        }),
+    )
+    .await
+    .unwrap();
+    for _ in 0..3 {
+        let QueryTaskReplyBody::Batch(data) = rpc(
+            &connection,
+            QueryTaskRequest::Next(QueryTaskNext {
+                id: id.clone(),
+                partition: 0,
+            }),
+        )
+        .await
+        .unwrap() else {
+            panic!("expected legacy Batch");
+        };
+        assert_eq!(crate::decode_record_batch(&data).unwrap().num_rows(), 2);
+    }
+    assert!(matches!(
+        rpc(
+            &connection,
+            QueryTaskRequest::Next(QueryTaskNext {
+                id: id.clone(),
+                partition: 0
+            })
+        )
+        .await
+        .unwrap(),
+        QueryTaskReplyBody::End(())
+    ));
+    rpc(&connection, QueryTaskRequest::Close(QueryTaskClose { id }))
+        .await
+        .unwrap();
+    // Wrong-profile data is rejected in both directions, without another Next.
+    fixture.tamper.lock().wrong_output_profile = true;
+    for legacy in [false, true] {
+        fixture.tamper.lock().legacy_ipc = legacy;
+        let mut task = OutputTask::install(&fixture, Arc::clone(&schema), 1)
+            .await
+            .unwrap();
+        let mut lanes = task.execute(1).await.unwrap();
+        let error = lanes[0].next().await.unwrap().unwrap_err();
+        assert!(error.to_string().contains("installed profile"), "{error}");
+        assert!(lanes[0].next().await.is_none());
+    }
+    fixture.tamper.lock().wrong_output_profile = false;
+    // Reject a different Installed schema before Execute, even with no polling.
+    fixture.tamper.lock().installed_schema = Some(Arc::new(Schema::empty()));
+    for legacy in [false, true] {
+        fixture.tamper.lock().legacy_ipc = legacy;
+        let Err(error) = OutputTask::install(&fixture, Arc::clone(&schema), 1).await else {
+            panic!("mismatched install must fail");
+        };
+        assert!(
+            error.to_string().contains("installed task output schema"),
+            "{error}"
+        );
+    }
+}
+
+fn zero_body_output(
+    partition: usize,
+    input: SendableRecordBatchStream,
+) -> SendableRecordBatchStream {
+    use datafusion::arrow::array::{Int32Array, RecordBatchOptions};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::record_batch::RecordBatch;
+
+    let schema = input.schema();
+    let batches = match partition {
+        0 => vec![
+            Ok(RecordBatch::try_new_with_options(
+                Arc::clone(&schema),
+                vec![],
+                &RecordBatchOptions::new().with_row_count(Some(7)),
+            )
+            .unwrap()),
+            Ok(RecordBatch::new_empty(Arc::clone(&schema))),
+            Err(DataFusionError::Execution("later lane failure".into())),
+        ],
+        1 => vec![],
+        _ => vec![Ok(RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "wrong",
+                DataType::Int32,
+                false,
+            )])),
+            vec![Arc::new(Int32Array::from(vec![1]))],
+        )
+        .unwrap())],
+    };
+    Box::pin(RecordBatchStreamAdapter::new(schema, stream::iter(batches)))
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ipc_delivers_zero_body_batches_before_failure_and_discards_failed_lanes() {
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+
+    use restate_types::net::distributed_query::QueryTaskNext;
+
+    let fixture = setup(false).await;
+    fixture.tamper.lock().output = Some(zero_body_output);
+    let mut task = OutputTask::install(&fixture, Arc::new(Schema::empty()), 3)
+        .await
+        .unwrap();
+    let mut lanes = task.execute(3).await.unwrap();
+    assert_eq!(lanes[0].next().await.unwrap().unwrap().num_rows(), 7);
+    assert!(
+        lanes[1].next().await.is_none(),
+        "empty sibling must finish independently"
+    );
+    assert_eq!(lanes[0].next().await.unwrap().unwrap().num_rows(), 0);
+    assert!(
+        lanes[0]
+            .next()
+            .await
+            .unwrap()
+            .unwrap_err()
+            .to_string()
+            .contains("later lane failure")
+    );
+    assert!(lanes[0].next().await.is_none());
+    assert!(
+        lanes[2]
+            .next()
+            .await
+            .unwrap()
+            .unwrap_err()
+            .to_string()
+            .contains("batch schema")
+    );
+    let id = fixture.observations.lock().last().unwrap().id.clone();
+    let connection = fixture
+        .network
+        .get_connection(OWNER, Swimlane::Datafusion)
+        .in_tc_as_task(
+            &TaskCenter::current(),
+            TaskKind::InPlace,
+            "ipc-test-connect",
+        )
+        .await
+        .unwrap();
+    for partition in 0..3 {
+        let error = rpc(
+            &connection,
+            QueryTaskRequest::Next(QueryTaskNext {
+                id: id.clone(),
+                partition,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("already ended"), "{error}");
+    }
+
+    // A mismatched second stream must prevent publication of the entire range.
+    fixture.tamper.lock().output = Some(|partition, input| {
+        if partition == 0 {
+            input
+        } else {
+            Box::pin(RecordBatchStreamAdapter::new(
+                Arc::new(Schema::new(vec![Field::new(
+                    "wrong",
+                    DataType::Int32,
+                    false,
+                )])),
+                stream::empty(),
+            ))
+        }
+    });
+    let mut task = OutputTask::install(&fixture, Arc::new(Schema::empty()), 2)
+        .await
+        .unwrap();
+    let Err(error) = task.execute(2).await else {
+        panic!("stream mismatch must fail Execute");
+    };
+    assert!(error.to_string().contains("stream schema"), "{error}");
+    let id = fixture.observations.lock().last().unwrap().id.clone();
+    let error = rpc(
+        &connection,
+        QueryTaskRequest::Next(QueryTaskNext { id, partition: 0 }),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("not running"), "{error}");
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ipc_connection_loss_ends_the_consumer_without_reconnecting_or_replaying() {
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+
+    use restate_core::network::DrainReason;
+
+    let fixture = setup(false).await;
+    fixture.tamper.lock().output = Some(dictionary_output);
+    let (events, mut replies) = tokio::sync::mpsc::unbounded_channel();
+    fixture.tamper.lock().events = Some(events);
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "dictionary",
+        DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+        false,
+    )]));
+    let mut task = OutputTask::install(&fixture, schema, 1).await.unwrap();
+    let mut lanes = task.execute(1).await.unwrap();
+    assert_eq!(lanes[0].next().await.unwrap().unwrap().num_rows(), 2);
+    let connection = fixture
+        .network
+        .get_connection(OWNER, Swimlane::Datafusion)
+        .in_tc_as_task(
+            &TaskCenter::current(),
+            TaskKind::InPlace,
+            "ipc-loss-connect",
+        )
+        .await
+        .unwrap();
+    let closed = connection.closed();
+    connection
+        .drain(DrainReason::ConnectionDrain)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), closed)
+        .await
+        .unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(5), lanes[0].next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(error.to_string().contains("closed"), "{error}");
+    assert!(
+        lanes[0].next().await.is_none(),
+        "one terminal error, no retry"
+    );
+    let seen = std::iter::from_fn(|| replies.try_recv().ok()).collect::<Vec<_>>();
+    assert_eq!(
+        seen.iter()
+            .filter(|event| event.kind == "next-received")
+            .count(),
+        1,
+        "{seen:?}"
+    );
+    assert_eq!(fixture.observations.lock().len(), 1, "no reinstallation");
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
@@ -714,6 +1614,7 @@ async fn invalid_task_and_required_storage_fail_closed() {
         redacted_sql: Default::default(),
         planning_duration: Default::default(),
         analyze: None,
+        stream_ipc: None,
     };
     let id = invalid.id.clone();
     let error = rpc(&connection, QueryTaskRequest::Install(invalid))
@@ -1237,6 +2138,29 @@ async fn a_close_ends_a_blocked_execute_or_next_once() {
     let task = fixture.observations.lock()[0].id.clone();
     assert_eq!(fixture.observations.lock()[0].owner, OWNER);
     next_event("next-received", &task, &mut seen, &mut taken).await;
+    next_event("next-polling", &task, &mut seen, &mut taken).await;
+    let connection = fixture
+        .network
+        .get_connection(OWNER, Swimlane::Datafusion)
+        .in_tc_as_task(
+            &TaskCenter::current(),
+            TaskKind::InPlace,
+            "ipc-concurrent-connect",
+        )
+        .await
+        .unwrap();
+    let error = rpc(
+        &connection,
+        QueryTaskRequest::Next(restate_types::net::distributed_query::QueryTaskNext {
+            id: task.clone(),
+            partition: 0,
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("concurrent pull"), "{error}");
+    let concurrent = next_event("next", &task, &mut seen, &mut taken).await;
+    assert!(concurrent.outcome.contains("concurrent pull"));
     consumer.abort();
     let next = next_event("next", &task, &mut seen, &mut taken).await;
     let close = next_event("close", &task, &mut seen, &mut taken).await;

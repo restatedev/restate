@@ -22,7 +22,7 @@ use restate_types::net::{ProtocolVersion, Service, UnaryMessage, WatchResponse};
 use restate_types::net::{RpcRequest, RpcResponse, WatchRequest};
 
 use super::protobuf::network::{rpc_reply, watch_update};
-use super::{ConnectionClosed, PeerMetadataVersion, Verdict};
+use super::{Connection, ConnectionClosed, PeerMetadataVersion, Verdict};
 
 /// A wrapper for incoming messages over a network connection.
 #[derive(Debug)]
@@ -31,6 +31,7 @@ pub struct Incoming<M> {
     inner: M,
     peer: GenerationalNodeId,
     metadata_version: PeerMetadataVersion,
+    connection: Option<Connection>,
 }
 
 impl<M> Incoming<M> {
@@ -44,12 +45,14 @@ impl<M> Incoming<M> {
         inner: M,
         peer: GenerationalNodeId,
         metadata_version: PeerMetadataVersion,
+        connection: Option<Connection>,
     ) -> Self {
         Self {
             protocol_version,
             inner,
             peer,
             metadata_version,
+            connection,
         }
     }
 
@@ -61,6 +64,14 @@ impl<M> Incoming<M> {
     /// The sender's node-id if known
     pub fn peer(&self) -> GenerationalNodeId {
         self.peer
+    }
+
+    /// The actual connection that carried this message, including its lifetime.
+    /// This is not a lookup by peer: a replacement connection has a distinct
+    /// identity. Only synthetic messages made by `ServiceMessage::fake_rpc`
+    /// have no connection.
+    pub fn connection(&self) -> Option<&Connection> {
+        self.connection.as_ref()
     }
 }
 
@@ -295,6 +306,7 @@ impl<S: Service> Incoming<RawSvcRpc<S>> {
             },
             peer: raw.peer,
             metadata_version: raw.metadata_version,
+            connection: raw.connection,
         }
     }
 
@@ -311,6 +323,7 @@ impl<S: Service> Incoming<RawSvcRpc<S>> {
             },
             peer: self.peer,
             metadata_version: self.metadata_version,
+            connection: self.connection,
         }
     }
 
@@ -354,6 +367,7 @@ impl<S: Service> Incoming<RawSvcRpc<S>> {
             protocol_version: self.protocol_version,
             peer: self.peer,
             metadata_version: self.metadata_version,
+            connection: self.connection,
         }
     }
 }
@@ -412,6 +426,7 @@ impl<S: Service> Incoming<RawSvcUnary<S>> {
             },
             peer: raw.peer,
             metadata_version: raw.metadata_version,
+            connection: raw.connection,
         }
     }
 
@@ -427,6 +442,7 @@ impl<S: Service> Incoming<RawSvcUnary<S>> {
             },
             peer: self.peer,
             metadata_version: self.metadata_version,
+            connection: self.connection,
         }
     }
 
@@ -469,6 +485,7 @@ impl<S: Service> Incoming<RawSvcUnary<S>> {
             protocol_version: self.protocol_version,
             peer: self.peer,
             metadata_version: self.metadata_version,
+            connection: self.connection,
         }
     }
 }
@@ -528,6 +545,7 @@ impl<S: Service> Incoming<RawSvcWatch<S>> {
             },
             peer: raw.peer,
             metadata_version: raw.metadata_version,
+            connection: raw.connection,
         }
     }
 
@@ -544,6 +562,7 @@ impl<S: Service> Incoming<RawSvcWatch<S>> {
             },
             peer: self.peer,
             metadata_version: self.metadata_version,
+            connection: self.connection,
         }
     }
 
@@ -598,6 +617,7 @@ impl<S: Service> Incoming<RawSvcWatch<S>> {
             protocol_version: self.protocol_version,
             peer: self.peer,
             metadata_version: self.metadata_version,
+            connection: self.connection,
         }
     }
 }
