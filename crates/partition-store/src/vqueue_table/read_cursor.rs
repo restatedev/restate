@@ -31,16 +31,17 @@
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use restate_clock::UniqueTimestamp;
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::RawStatusHeaderRef;
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
+use restate_storage_api::vqueue_table::{RawStatusHeaderRef, Stage, Status};
 use restate_storage_query_api::scan::{CursorScan, CursorStep, ReadCursor, Table};
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
 use restate_storage_query_api::tables::vqueue_entry_status::{
     VqueueEntryStatus, VqueueEntryStatusClause, VqueueEntryStatusColumn,
 };
-use restate_types::identifiers::{BaseEntryId, PartitionKey};
+use restate_types::identifiers::{BaseEntryId, CanonicalEntryId, PartitionKey};
 use restate_types::sharding::KeyRange;
 
 use crate::invocation_status_table::EntryIndexExecution;
@@ -55,7 +56,8 @@ use crate::table::{MultiGetCursor, MultiGetTable, PhysicalTable, TableCursor};
 use crate::{ReadSnapshot, Result};
 
 use super::indexed_read::{
-    ActiveRead, EntryIndex, FinishedRead, IndexedCursor, StatusCreatedRead, StatusTransitionedRead,
+    ActiveRead, EntryIndex, FinishedRead, IndexedCursor, KeySteps, StatusCreatedRead,
+    StatusTransitionedRead,
 };
 use super::stage_reads::{StageReadCounters, StageReads, StagesCursor};
 use super::{ENTRY_STATUS_MULTI_GET_BATCH_SIZE, EntryStatusKey};
@@ -297,7 +299,7 @@ impl ReadSnapshot {
                 fallback,
                 execution,
             } => {
-                let cursor = IndexedCursor::status_created(self, &read, &execution, window)?;
+                let cursor = IndexedCursor::status_created(self, &read, &execution, window, false)?;
                 return self.indexed_or(cursor, fallback);
             }
             EntryStatusScan::StatusTransitioned {
@@ -305,7 +307,8 @@ impl ReadSnapshot {
                 fallback,
                 execution,
             } => {
-                let cursor = IndexedCursor::status_transitioned(self, &read, &execution, window)?;
+                let cursor =
+                    IndexedCursor::status_transitioned(self, &read, &execution, window, false)?;
                 return self.indexed_or(cursor, fallback);
             }
         };
@@ -435,6 +438,130 @@ impl ReadCursor<EntryStatusRecords> for EntryStatusCursor {
         };
         let header = RawStatusHeaderRef::decode_stored(&mut value)?;
         Ok((id, header))
+    }
+}
+
+/// An entry as a status index's key holds it, for a query that needs no other
+/// column: its incarnation, stage and status, and the index's time. A read that
+/// scans instead has both times.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EntryKeyRow {
+    pub id: CanonicalEntryId,
+    pub stage: Stage,
+    pub status: Status,
+    pub created_at: Option<UniqueTimestamp>,
+    pub transitioned_at: Option<UniqueTimestamp>,
+}
+
+/// A keys-only read of a status index, in the order of the index's time
+/// ([`StatusCreatedRead`], [`StatusTransitionedRead`]), or the `fallback`
+/// iteration of entry statuses if the index can't stand in for it on the
+/// snapshot. `execution` is charged for the index read and learns which path
+/// it took.
+#[derive(Clone)]
+pub enum EntryKeyScan {
+    StatusCreated {
+        read: Arc<StatusCreatedRead>,
+        fallback: Arc<KeySelection<EntryStatusKey>>,
+        execution: Arc<EntryIndexExecution>,
+    },
+    StatusTransitioned {
+        read: Arc<StatusTransitionedRead>,
+        fallback: Arc<KeySelection<EntryStatusKey>>,
+        execution: Arc<EntryIndexExecution>,
+    },
+}
+
+/// Entries read through a status index's keys alone ([`EntryKeyScan`]).
+pub enum EntryKeyRecords {}
+
+impl Table for EntryKeyRecords {
+    type Record<'a> = EntryKeyRow;
+    type Scan = EntryKeyScan;
+}
+
+/// A keys-only read's cursor: the index's keys, or the fallback's statuses.
+pub struct EntryKeyCursor {
+    mode: KeyMode,
+}
+
+enum KeyMode {
+    Empty,
+    Indexed(Box<dyn KeySteps>),
+    Navigate(Box<TableCursor<EntryStatusKeys>>),
+}
+
+impl CursorScan<EntryKeyRecords> for ReadSnapshot {
+    type Cursor = EntryKeyCursor;
+
+    fn scan_cursor(&self, request: Arc<EntryKeyScan>) -> Result<Self::Cursor> {
+        self.check_active()?;
+        let (cursor, fallback) = match Arc::unwrap_or_clone(request) {
+            EntryKeyScan::StatusCreated {
+                read,
+                fallback,
+                execution,
+            } => (
+                IndexedCursor::status_created(self, &read, &execution, NonZeroUsize::MIN, true)?
+                    .map(|cursor| Box::new(cursor) as Box<dyn KeySteps>),
+                fallback,
+            ),
+            EntryKeyScan::StatusTransitioned {
+                read,
+                fallback,
+                execution,
+            } => (
+                IndexedCursor::status_transitioned(
+                    self,
+                    &read,
+                    &execution,
+                    NonZeroUsize::MIN,
+                    true,
+                )?
+                .map(|cursor| Box::new(cursor) as Box<dyn KeySteps>),
+                fallback,
+            ),
+        };
+        let mode = match cursor {
+            Some(cursor) => KeyMode::Indexed(cursor),
+            None => KeyMode::Navigate(Box::new(
+                <Self as CursorScan<EntryStatusKeys>>::scan_cursor(self, fallback)?,
+            )),
+        };
+        Ok(EntryKeyCursor { mode })
+    }
+}
+
+impl ReadCursor<EntryKeyRecords> for EntryKeyCursor {
+    fn advance(&mut self) -> Result<CursorStep> {
+        let step = match &mut self.mode {
+            KeyMode::Empty => CursorStep::Done,
+            KeyMode::Indexed(cursor) => cursor.advance()?,
+            KeyMode::Navigate(cursor) => cursor.advance()?,
+        };
+        if step == CursorStep::Done {
+            self.mode = KeyMode::Empty;
+        }
+        Ok(step)
+    }
+
+    fn current(&self) -> Result<EntryKeyRow> {
+        match &self.mode {
+            KeyMode::Indexed(cursor) => cursor.current(),
+            KeyMode::Navigate(cursor) => {
+                let (key, mut value) = cursor.current()?;
+                let (id,) = key.decode_all()?.split();
+                let header = RawStatusHeaderRef::decode_stored(&mut value)?;
+                Ok(EntryKeyRow {
+                    id: id.canonicalize(header.seq),
+                    stage: header.stage,
+                    status: header.status,
+                    created_at: Some(header.stats.created_at),
+                    transitioned_at: Some(header.stats.transitioned_at),
+                })
+            }
+            KeyMode::Empty => Err(StorageError::DataIntegrityError),
+        }
     }
 }
 
