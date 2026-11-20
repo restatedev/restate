@@ -214,7 +214,7 @@ fn sequence(store: &PartitionStore) -> u64 {
 /// Through enqueueing, metadata and status updates, yielding and running, and
 /// every way an entry ends (retained then deleted, deleted at once, finished
 /// inline), an entry has exactly its one key until it is deleted, and updates
-/// that don't change the key write only the entry status.
+/// that don't change the key don't write it.
 #[restate_core::test]
 async fn entry_index_follows_vqueue_operations() {
     let (mut store, scopes) = tracking_store().await;
@@ -270,7 +270,9 @@ async fn entry_index_follows_vqueue_operations() {
             "case {case}"
         );
 
-        // Metadata and status changes write only the entry status.
+        // A metadata change writes only the entry status; a status change also
+        // moves the entry's key in each of the two status indexes, a delete and
+        // a put each.
         let before = sequence(&store);
         let mut tx = store.transaction();
         let header = tx.get_vqueue_entry_status(&base_id).await.unwrap().unwrap();
@@ -300,7 +302,7 @@ async fn entry_index_follows_vqueue_operations() {
         );
         tx.commit().await.unwrap();
         drop(tx);
-        assert_eq!(sequence(&store), before + 1, "case {case}: status");
+        assert_eq!(sequence(&store), before + 5, "case {case}: status");
         assert_eq!(index_keys(&store, scope), expected, "case {case}: updated");
         assert_eq!(
             index_keys(&store, scopes.active),
@@ -427,8 +429,7 @@ async fn entry_index_follows_vqueue_operations() {
 /// The key holds the entry's sequence: when it changes, the entry moves to its
 /// new key, even through an intermediate sequence that was never committed.
 /// Changes to anything else the key doesn't hold (an unchanged entry, the
-/// schedule, the status, the transition time, the stage) write only the entry
-/// status.
+/// schedule, the status, the transition time, the stage) don't write it.
 #[restate_core::test]
 async fn entry_index_moves_with_the_sequence_and_ignores_the_rest() {
     let (mut store, scopes) = tracking_store().await;
@@ -501,9 +502,10 @@ async fn entry_index_moves_with_the_sequence_and_ignores_the_rest() {
             "case {case}"
         );
 
-        // None of these changes the first index's key: each writes the entry
-        // status alone, except the stage change, which also moves the active key
-        // (a delete and a put).
+        // None of these changes the first index's key. Each writes the entry
+        // status, and moves (a delete and a put) the keys that hold what
+        // changed: the status moves both status keys, the transition time the
+        // transition key, and the stage the active key and both status keys.
         let rescheduled_key = keys[2].set_run_at(Some(RoughTimestamp::MAX));
         let rescheduled = EntryStateRef {
             entry_key: &rescheduled_key,
@@ -526,9 +528,9 @@ async fn entry_index_moves_with_the_sequence_and_ignores_the_rest() {
         for (change, after, writes, stage) in [
             ("unchanged", states[2], 1, Stage::Inbox),
             ("schedule", rescheduled, 1, Stage::Inbox),
-            ("status", scheduled, 1, Stage::Inbox),
-            ("transition time", later, 1, Stage::Inbox),
-            ("stage", running, 3, Stage::Running),
+            ("status", scheduled, 5, Stage::Inbox),
+            ("transition time", later, 3, Stage::Inbox),
+            ("stage", running, 7, Stage::Running),
         ] {
             assert_eq!(
                 update(&mut store, after).await,

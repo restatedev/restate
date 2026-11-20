@@ -9,7 +9,9 @@ Partitions can now maintain three indexes of their invocations and state mutatio
 - all of them by service and handler, newest created first;
 - the finished ones by outcome, service and handler, newest finished first;
 - the active ones, in the inbox, running, suspended or paused, by stage, service and handler, newest
-  created first.
+  created first;
+- all of them in a known stage by stage and status, then newest created first, and again by stage
+  and status, then newest by when they entered their stage.
 
 With query engine V2, a query on `sys_invocation_status` that names
 its services and asks for their newest invocations under a `LIMIT`, like the UI's page of a
@@ -39,9 +41,9 @@ Both take effect when partition processors start.
   - one by service, written when it is created and removed when it is deleted;
   - one by stage while it is active, moved each time it changes stage, and removed when it
     finishes;
-  - one by outcome once it has finished, removed when it is deleted.
-
-  Other status changes don't write to the indexes.
+  - one by outcome once it has finished, removed when it is deleted;
+  - two by stage and status, each moved every time it changes stage or status, and removed when it
+    is deleted.
 - Once a partition has maintained the indexes, it keeps doing so after restarts, even if
   `experimental-enable-track-entry-indexes` is removed. Only the reset option stops it.
 - Turning the indexes on raises the partition's minimum Restate version to v1.8.2. That stays after the
