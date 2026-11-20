@@ -82,6 +82,7 @@ const LIMITS: OrderedRunsLimits = OrderedRunsLimits {
     max_discovery_keys: 4096,
     buffer: NonZeroUsize::new(8).unwrap(),
     step_budget: NonZeroUsize::new(256).unwrap(),
+    bucket_fields: 0,
 };
 
 /// Statuses fetched per multi-get, and the window that holds their invocations.

@@ -40,6 +40,34 @@
 //! first after its prefix. Keys of records the partition doesn't own, left over
 //! from a split, are skipped like in any index read.
 //!
+//! **Buckets** ([`OrderedRunsLimits::bucket_fields`]). An index keyed
+//! `hour ↓ | service | created_at ↓ | id` has a run per hour and service, too
+//! many to discover at once over days of hours. But every key of a newer hour
+//! sorts before every key of an older one, so the read discovers the runs of the
+//! first hour only, stopping at the first key of the next, merges them, and
+//! then discovers the next hour's runs from that key, on the same iterator:
+//!
+//! ```text
+//! hour h9: run (h9, "Other"): t9 t6   ─┐ merge ─▶ t9 t8 t6
+//!          run (h9, "Utils"): t8      ─┘
+//! hour h8: run (h8, "Utils"): t7 t5   ──────────▶ t7 t5     (discovered next)
+//! ```
+//!
+//! Backwards, the read starts at the last bucket: it steps back to the last key
+//! of the read, discovers the runs of that key's bucket from the bucket's start,
+//! and later steps back from that start to the bucket before. A bucket without
+//! a match is skipped.
+//!
+//! The first bucket's discovery has the limits: past them, it ends as without
+//! buckets, before the read returns anything, so the caller can still read
+//! another way. A later bucket can't: the read has returned the earlier
+//! buckets' rows. It fails the read if it has more runs than the limit, and its
+//! discovery, which may pass many keys and buckets without a match, debits the
+//! step's budget like reading ahead does, pausing where it is spent and
+//! continuing in the next step, instead of having a limit of its own. Later
+//! buckets reuse the runs' read-ahead buffers, with everything they hold
+//! charged as before.
+//!
 //! **Backwards** ([`ReadDirection::Backward`]), the same merge yields the reverse
 //! order, oldest first, for a query that asks for it:
 //!
@@ -140,11 +168,22 @@ mod tests;
 /// How much work a read may do and how many keys each run reads ahead.
 #[derive(Debug, Clone, Copy)]
 pub struct OrderedRunsLimits {
-    /// The most runs one read merges.
+    /// The most runs one read merges: in each bucket, for a bucketed read.
     pub max_runs: usize,
     /// The most keys discovery evaluates, including keys the selection rejects
-    /// and runs without a key in the read's window.
+    /// and runs without a key in the read's window: in its first bucket, for a
+    /// bucketed read, whose later buckets' discovery debits the step budget.
     pub max_discovery_keys: usize,
+    /// How many of the run fields form a **bucket**, `0` for none: leading
+    /// fields whose every key sorts, in the read's order, before every key of
+    /// the next bucket, such as a creation time floored to its hour in front of
+    /// the creation time. Discovery then finds one bucket's runs at a time, and
+    /// the read merges them before it discovers the next bucket's (see the
+    /// module docs), backwards from the last bucket. Only a read of one key
+    /// header, such as an index's, can have buckets: a bucket's keys under one
+    /// header don't sort before the next bucket's under another, so a read of
+    /// several headers, such as a partition key range, refuses them.
+    pub bucket_fields: usize,
     /// Keys read ahead per run.
     pub buffer: NonZeroUsize,
     /// The most keys one step examines while reading ahead, including keys the
@@ -251,6 +290,78 @@ struct Merge<K> {
     buffer: usize,
     step_budget: usize,
     direction: ReadDirection,
+    shape: Shape,
+    /// A bucketed read's next bucket. Forward: its first key, where discovery
+    /// stopped. Backward: the start of the current bucket, to step back from.
+    next_bucket: Option<Box<[u8]>>,
+    /// Each bucket's discovery limits.
+    caps: Caps,
+    /// A later bucket's discovery that ran out of a step's budget: where the
+    /// next step continues it.
+    resume: Option<Resume>,
+    /// Read-ahead buffers of exhausted runs, empty, for the next bucket's runs.
+    spare: Vec<VecDeque<Record>>,
+}
+
+/// How a read's keys split into runs and buckets.
+struct Shape {
+    /// The length of the key's header.
+    header: usize,
+    run_fields: usize,
+    /// `0` for a read without buckets.
+    bucket_fields: usize,
+    direction: ReadDirection,
+}
+
+/// The limits of one bucket's discovery, or the whole read's without buckets.
+#[derive(Clone, Copy)]
+struct Caps {
+    max_runs: usize,
+    max_discovery_keys: usize,
+}
+
+/// Where discovery stopped.
+enum Discovered {
+    /// At the end of the read's keys.
+    End,
+    /// Past its limits ([`Caps`]).
+    TooManyRuns,
+    /// At the first key of the next bucket, which it holds, charged.
+    NextBucket(Box<[u8]>),
+    /// Out of the step's budget, before evaluating a key: where it continues.
+    Paused(Resume),
+}
+
+/// Where a paused discovery continues, with the keys it holds, charged.
+enum Resume {
+    /// At this key.
+    At(Box<[u8]>),
+    /// Backwards, at `at`, within the bucket that starts at `anchor`.
+    Within { anchor: Box<[u8]>, at: Box<[u8]> },
+}
+
+/// A bucket's start and the key within it where its discovery continues.
+type Anchored = (Box<[u8]>, Box<[u8]>);
+
+/// What the next later bucket's discovery came to.
+enum NextBucket {
+    /// Its runs, ready to merge.
+    Ready,
+    /// Out of the step's budget: the next step continues it.
+    Paused,
+    /// No bucket is left.
+    Done,
+}
+
+/// Discovery over a read's cursor and selection.
+struct Discovery<'a, K> {
+    cursor: &'a mut SnapshotCursor,
+    selection: &'a mut KeySelectionCursor<K>,
+    shape: &'a Shape,
+    memory: &'a mut Accounted,
+    /// Kept up to date key by key, so that a caller can report the work even
+    /// when discovery fails.
+    examined: &'a mut u64,
 }
 
 struct Run {
@@ -396,6 +507,11 @@ impl ReadSnapshot {
         else {
             return Ok(OrderedRunsDiscovery::Ready(runs));
         };
+        if limits.bucket_fields > 0 && !selection.fixed_header() {
+            return Err(StorageError::Generic(anyhow::anyhow!(
+                "a bucketed read must cover one key header"
+            )));
+        }
         runs.memory.selection(&selection)?;
         let scan = match direction {
             ReadDirection::Forward => selection.scan().to_exact(),
@@ -405,40 +521,240 @@ impl ReadSnapshot {
         // their length, for a prefix and the end of its range.
         runs.memory.grow(3 * scan.bound_bytes())?;
         let mut cursor = self.physical_cursor(scan)?;
-        let header = <<T::Key as KeySchema>::Header as KeyHeader>::LENGTH;
-        let fields = &<T::Key as OrderedKeySchema>::FIELDS[..run_fields];
-
+        let shape = Shape {
+            header: <<T::Key as KeySchema>::Header as KeyHeader>::LENGTH,
+            run_fields,
+            bucket_fields: limits.bucket_fields.min(run_fields),
+            direction,
+        };
+        let caps = Caps {
+            max_runs: limits.max_runs,
+            max_discovery_keys: limits.max_discovery_keys,
+        };
         let mut found = Vec::new();
+        let mut discovery = Discovery {
+            cursor: &mut cursor,
+            selection: &mut selection,
+            shape: &shape,
+            memory: &mut runs.memory,
+            examined,
+        };
+        let discovered = if shape.bucket_fields > 0 && direction == ReadDirection::Backward {
+            discovery.bucket_before(Some(caps), &mut found, &mut Vec::new(), None, None, None)?
+        } else {
+            discovery.runs(Some(caps), &mut found, &mut Vec::new(), None, None)?
+        };
+        runs.examined = *examined;
+        let next_bucket = match discovered {
+            Discovered::TooManyRuns => {
+                return Ok(OrderedRunsDiscovery::TooManyRuns {
+                    examined: runs.examined,
+                });
+            }
+            Discovered::End => None,
+            Discovered::NextBucket(start) => Some(start),
+            // Discovery of the first bucket has no budget.
+            Discovered::Paused(_) => return Err(StorageError::DataIntegrityError),
+        };
+
+        if found.is_empty() {
+            // Nothing to merge: release the selection, the cursor and their charge.
+            drop((cursor, selection, next_bucket));
+            runs.memory.release();
+            return Ok(OrderedRunsDiscovery::Ready(runs));
+        }
+        runs.memory.grow(size_of::<Merge<T::Key>>())?;
+        let mut merge = Box::new(Merge {
+            cursor,
+            selection,
+            runs: found,
+            heads: BinaryHeap::new(),
+            pending: Some(0),
+            primed: false,
+            buffer: limits.buffer.get(),
+            step_budget: limits.step_budget.get(),
+            direction,
+            shape,
+            next_bucket,
+            caps,
+            resume: None,
+            spare: Vec::new(),
+        });
+        merge.reserve(&mut runs.memory)?;
+        runs.inner = Some(merge);
+        Ok(OrderedRunsDiscovery::Ready(runs))
+    }
+}
+
+/// The length of the prefix of `key` that holds its bucket: the header and the
+/// bucket fields.
+fn bucket_len<K: OrderedKeySchema>(shape: &Shape, key: &[u8]) -> Result<usize> {
+    let payload = key
+        .get(shape.header..)
+        .ok_or(StorageError::DataIntegrityError)?;
+    let mut rest = payload;
+    for field in &K::FIELDS[..shape.bucket_fields] {
+        field.take_encoded(&mut rest)?;
+    }
+    Ok(shape.header + payload.len() - rest.len())
+}
+
+impl<K: OrderedKeySchema> Discovery<'_, K> {
+    /// Backwards, the runs of the last bucket with a match before `before`, a
+    /// bucket's start, or before the end of the read: steps back to the last
+    /// key, discovers its bucket from the bucket's start, and steps back again
+    /// past a bucket without a match. Returns the start of the bucket found as
+    /// [`Discovered::NextBucket`], charged, to step back from next. A
+    /// discovery paused within a bucket continues from `within`.
+    fn bucket_before(
+        &mut self,
+        caps: Option<Caps>,
+        found: &mut Vec<Run>,
+        spare: &mut Vec<VecDeque<Record>>,
+        mut budget: Option<&mut usize>,
+        mut before: Option<Box<[u8]>>,
+        mut within: Option<Anchored>,
+    ) -> Result<Discovered> {
+        loop {
+            let bucket = match within.take() {
+                Some((anchor, at)) => {
+                    let positioned = self.cursor.reposition(&at)?;
+                    self.memory.shrink(at.len());
+                    if !positioned {
+                        self.memory.shrink(anchor.len());
+                        return Ok(Discovered::End);
+                    }
+                    anchor
+                }
+                None => {
+                    // Past the read's last key, the cursor goes to its last key.
+                    let target = before.as_deref().unwrap_or(&[u8::MAX]);
+                    let bucket = if self.cursor.reposition_back(target)?
+                        && let Some((key, _)) = self.cursor.peek()?
+                    {
+                        // Charged before it is copied.
+                        let len = bucket_len::<K>(self.shape, key)?;
+                        self.memory.grow(len)?;
+                        Some(Box::<[u8]>::from(&key[..len]))
+                    } else {
+                        None
+                    };
+                    if let Some(before) = before.take() {
+                        self.memory.shrink(before.len());
+                    }
+                    let Some(bucket) = bucket else {
+                        return Ok(Discovered::End);
+                    };
+                    if !self.cursor.reposition_from(&bucket)? {
+                        self.memory.shrink(bucket.len());
+                        return Ok(Discovered::End);
+                    }
+                    bucket
+                }
+            };
+            // Only this bucket: past it in key order are the buckets the read
+            // returned, even where this one has no match.
+            match self.runs(caps, found, spare, Some(&bucket), budget.as_deref_mut())? {
+                Discovered::TooManyRuns => {
+                    self.memory.shrink(bucket.len());
+                    return Ok(Discovered::TooManyRuns);
+                }
+                Discovered::Paused(Resume::At(at)) => {
+                    return Ok(Discovered::Paused(Resume::Within { anchor: bucket, at }));
+                }
+                Discovered::Paused(Resume::Within { .. }) => {
+                    return Err(StorageError::DataIntegrityError);
+                }
+                Discovered::NextBucket(next) => self.memory.shrink(next.len()),
+                Discovered::End => {}
+            }
+            if !found.is_empty() {
+                return Ok(Discovered::NextBucket(bucket));
+            }
+            before = Some(bucket);
+        }
+    }
+
+    /// Finds runs from the cursor's position on, into `found`: all of the
+    /// read's, or for a bucketed read the runs of its first match's bucket,
+    /// stopping at the first key of the next. With an `anchor`, a bucket's
+    /// prefix, it stops at the first key outside it, matching or not. New runs
+    /// take their read-ahead buffers from `spare`. Past `caps`, discovery ends
+    /// with [`Discovered::TooManyRuns`]. With a `budget`, each key examined
+    /// debits it, and discovery pauses when it is spent, continuing later with
+    /// the runs already in `found`.
+    fn runs(
+        &mut self,
+        caps: Option<Caps>,
+        found: &mut Vec<Run>,
+        spare: &mut Vec<VecDeque<Record>>,
+        anchor: Option<&[u8]>,
+        mut budget: Option<&mut usize>,
+    ) -> Result<Discovered> {
+        let Shape {
+            header,
+            run_fields,
+            bucket_fields,
+            direction,
+        } = *self.shape;
+        let fields = &K::FIELDS[..run_fields];
+        // The length of the bucket's prefix, once a run is found.
+        let mut bucket = match found.first() {
+            Some(first) if bucket_fields > 0 => Some(bucket_len::<K>(self.shape, &first.prefix)?),
+            _ => None,
+        };
         loop {
             let step = {
-                let Some((key, _)) = cursor.peek()? else {
+                let Some((key, _)) = self.cursor.peek()? else {
                     break;
                 };
-                runs.examined += 1;
-                *examined = runs.examined;
-                if runs.examined > limits.max_discovery_keys as u64 {
-                    return Ok(OrderedRunsDiscovery::TooManyRuns {
-                        examined: runs.examined,
-                    });
+                if anchor.is_some_and(|anchor| !key.starts_with(anchor)) {
+                    break;
                 }
-                let matched = selection.evaluate(key)?;
-                runs.memory.selection(&selection)?;
+                if let Some(budget) = budget.as_deref_mut() {
+                    if *budget == 0 {
+                        self.memory.grow(key.len())?;
+                        return Ok(Discovered::Paused(Resume::At(Box::from(key))));
+                    }
+                    *budget -= 1;
+                }
+                *self.examined += 1;
+                if caps.is_some_and(|caps| *self.examined > caps.max_discovery_keys as u64) {
+                    return Ok(Discovered::TooManyRuns);
+                }
+                let matched = self.selection.evaluate(key)?;
+                self.memory.selection(self.selection)?;
                 match matched {
                     KeyMatch::Done => Step::Stop,
                     KeyMatch::Skip => Step::Next,
                     KeyMatch::Seek => Step::Seek,
                     KeyMatch::Match => {
-                        if found.len() == limits.max_runs {
-                            return Ok(OrderedRunsDiscovery::TooManyRuns {
-                                examined: runs.examined,
-                            });
-                        }
-                        reserve_run(&mut found, limits.max_runs, &mut runs.memory)?;
                         let payload = key.get(header..).ok_or(StorageError::DataIntegrityError)?;
                         let mut rest = payload;
-                        for field in fields {
+                        let mut bucket_len = header;
+                        for (index, field) in fields.iter().enumerate() {
                             field.take_encoded(&mut rest)?;
+                            if index + 1 == bucket_fields {
+                                bucket_len = header + payload.len() - rest.len();
+                            }
                         }
+                        if bucket_fields > 0 {
+                            match (bucket, found.first()) {
+                                (None, _) => bucket = Some(bucket_len),
+                                (Some(len), Some(first))
+                                    if len != bucket_len || first.prefix[..len] != key[..len] =>
+                                {
+                                    self.memory.grow(key.len())?;
+                                    return Ok(Discovered::NextBucket(Box::from(key)));
+                                }
+                                _ => {}
+                            }
+                        }
+                        if caps.is_some_and(|caps| found.len() == caps.max_runs) {
+                            return Ok(Discovered::TooManyRuns);
+                        }
+                        let max_runs = caps.map_or(usize::MAX, |caps| caps.max_runs);
+                        reserve_run(found, max_runs, self.memory)?;
                         let prefix_len = header + payload.len() - rest.len();
                         let prefix = &key[..prefix_len];
                         // Forward, the run starts at this key, its first match.
@@ -446,23 +762,23 @@ impl ReadSnapshot {
                         // selection may match in the run, and stops at this key.
                         let (start, floor): (Box<[u8]>, _) = match direction {
                             ReadDirection::Forward => {
-                                runs.memory.grow(prefix_len + key.len())?;
+                                self.memory.grow(prefix_len + key.len())?;
                                 (Box::from(key), None)
                             }
                             ReadDirection::Backward => {
-                                let end = selection.end_within(prefix, run_fields)?;
+                                let end = self.selection.end_within(prefix, run_fields)?;
                                 if end <= key {
                                     return Err(StorageError::DataIntegrityError);
                                 }
-                                runs.memory.grow(prefix_len + key.len() + end.len())?;
+                                self.memory.grow(prefix_len + key.len() + end.len())?;
                                 let end = Box::from(end);
-                                runs.memory.selection(&selection)?;
+                                self.memory.selection(self.selection)?;
                                 (end, Some(Box::from(key)))
                             }
                         };
                         found.push(Run {
                             prefix: Box::from(prefix),
-                            records: VecDeque::new(),
+                            records: spare.pop().unwrap_or_default(),
                             resume: Some(start),
                             floor,
                         });
@@ -471,21 +787,21 @@ impl ReadSnapshot {
                 }
             };
             match step {
-                Step::Next => cursor.advance()?,
+                Step::Next => self.cursor.advance()?,
                 Step::Seek => {
-                    if !cursor.reposition(selection.seek_target())? {
+                    if !self.cursor.reposition(self.selection.seek_target())? {
                         break;
                     }
                 }
                 Step::PastRun => {
                     let prefix = &found.last().ok_or(StorageError::DataIntegrityError)?.prefix;
                     // The target is held only for the seek.
-                    runs.memory.grow(prefix.len())?;
+                    self.memory.grow(prefix.len())?;
                     let positioned = match successor(prefix) {
-                        Some(next) => cursor.reposition(&next)?,
+                        Some(next) => self.cursor.reposition(&next)?,
                         None => false,
                     };
-                    runs.memory.shrink(prefix.len());
+                    self.memory.shrink(prefix.len());
                     if !positioned {
                         break;
                     }
@@ -493,49 +809,14 @@ impl ReadSnapshot {
                 Step::Stop => break,
             }
         }
-
-        if found.is_empty() {
-            // Nothing to merge: release the selection, the cursor and their charge.
-            drop((cursor, selection));
-            runs.memory.release();
-            return Ok(OrderedRunsDiscovery::Ready(runs));
-        }
-        let buffer = limits.buffer.get();
-        let slots = found.len() * buffer;
-        runs.memory.grow(
-            size_of::<Merge<T::Key>>()
-                + slots * size_of::<Record>()
-                + found.len() * size_of::<Reverse<Head>>(),
-        )?;
-        for run in &mut found {
-            run.records.reserve_exact(buffer);
-        }
-        let heads = BinaryHeap::with_capacity(found.len());
-        // In case the allocations are larger than requested.
-        let records = found
-            .iter()
-            .map(|run| run.records.capacity())
-            .sum::<usize>();
-        runs.memory.grow(
-            (records - slots) * size_of::<Record>()
-                + (heads.capacity() - found.len()) * size_of::<Reverse<Head>>(),
-        )?;
-        runs.inner = Some(Box::new(Merge {
-            cursor,
-            selection,
-            runs: found,
-            heads,
-            pending: Some(0),
-            primed: false,
-            buffer,
-            step_budget: limits.step_budget.get(),
-            direction,
-        }));
-        Ok(OrderedRunsDiscovery::Ready(runs))
+        Ok(Discovered::End)
     }
 }
 
-impl<T: PhysicalTable> OrderedRuns<T> {
+impl<T: PhysicalTable> OrderedRuns<T>
+where
+    T::Key: OrderedKeySchema,
+{
     /// Moves to the next key in merge order. While runs are being read ahead, a
     /// step that runs out of its budget reports [`CursorStep::Skipped`]. Once the
     /// read is done, or a step fails, it releases everything it holds, its
@@ -565,27 +846,35 @@ impl<T: PhysicalTable> OrderedRuns<T> {
         }
 
         let mut budget = merge.step_budget;
-        while let Some(run) = merge.pending {
-            match merge.fill::<T>(run, &mut budget, &mut self.memory, &mut self.examined)? {
-                Fill::Paused => return Ok(CursorStep::Skipped),
-                Fill::Done => {
-                    merge.push_head(run);
-                    merge.pending = if merge.primed || run + 1 == merge.runs.len() {
-                        merge.primed = true;
-                        None
-                    } else {
-                        Some(run + 1)
-                    };
+        loop {
+            while let Some(run) = merge.pending {
+                match merge.fill::<T>(run, &mut budget, &mut self.memory, &mut self.examined)? {
+                    Fill::Paused => return Ok(CursorStep::Skipped),
+                    Fill::Done => {
+                        merge.push_head(run);
+                        merge.pending = if merge.primed || run + 1 == merge.runs.len() {
+                            merge.primed = true;
+                            None
+                        } else {
+                            Some(run + 1)
+                        };
+                    }
                 }
             }
-        }
 
-        match merge.heads.pop() {
-            Some(Reverse(head)) => {
-                self.current = Some(head);
-                Ok(CursorStep::Record)
+            match merge.heads.pop() {
+                Some(Reverse(head)) => {
+                    self.current = Some(head);
+                    return Ok(CursorStep::Record);
+                }
+                None => {
+                    match merge.next_bucket(&mut self.memory, &mut self.examined, &mut budget)? {
+                        NextBucket::Ready => {}
+                        NextBucket::Paused => return Ok(CursorStep::Skipped),
+                        NextBucket::Done => return Ok(CursorStep::Done),
+                    }
+                }
             }
-            None => Ok(CursorStep::Done),
         }
     }
 
@@ -615,6 +904,135 @@ impl<T: PhysicalTable> OrderedRuns<T> {
     /// How many runs the read merges; none once they're exhausted.
     pub fn runs(&self) -> usize {
         self.inner.as_ref().map_or(0, |merge| merge.runs.len())
+    }
+}
+
+impl<K: OrderedKeySchema> Merge<K> {
+    /// Gives every run a read-ahead buffer of `buffer` records and the heads
+    /// room for one per run, charging what is allocated: before, and for any
+    /// excess the allocator gives, right after.
+    fn reserve(&mut self, memory: &mut Accounted) -> Result<()> {
+        let buffer = self.buffer;
+        for run in &mut self.runs {
+            let had = run.records.capacity();
+            if had < buffer {
+                memory.grow((buffer - had) * size_of::<Record>())?;
+                run.records.reserve_exact(buffer);
+                memory.grow((run.records.capacity() - buffer) * size_of::<Record>())?;
+            }
+        }
+        let had = self.heads.capacity();
+        let runs = self.runs.len();
+        if had < runs {
+            memory.grow((runs - had) * size_of::<Reverse<Head>>())?;
+            self.heads.reserve_exact(runs - self.heads.len());
+            memory.grow((self.heads.capacity() - runs) * size_of::<Reverse<Head>>())?;
+        }
+        Ok(())
+    }
+
+    /// Discovers the runs of the next bucket once the current bucket's runs are
+    /// exhausted, their read-ahead buffers, empty, serving the next ones; or
+    /// continues the discovery a spent `budget` paused. The read has emitted
+    /// earlier buckets' rows, so it can't read another way any more: a bucket
+    /// with more runs than the limit fails it. Its discovery has no key limit;
+    /// it pauses with the step's budget instead.
+    fn next_bucket(
+        &mut self,
+        memory: &mut Accounted,
+        examined: &mut u64,
+        budget: &mut usize,
+    ) -> Result<NextBucket> {
+        let resume = self.resume.take();
+        let start = match resume {
+            Some(_) => None,
+            None => {
+                let Some(start) = self.next_bucket.take() else {
+                    return Ok(NextBucket::Done);
+                };
+                let mut exhausted = std::mem::take(&mut self.runs);
+                for run in exhausted.drain(..) {
+                    let held = run.prefix.len()
+                        + run.resume.as_ref().map_or(0, |resume| resume.len())
+                        + run.floor.as_ref().map_or(0, |floor| floor.len());
+                    memory.shrink(held);
+                    if self.spare.len() == self.spare.capacity() {
+                        let additional = self.spare.len().max(4);
+                        memory.grow(additional * size_of::<VecDeque<Record>>())?;
+                        self.spare.reserve_exact(additional);
+                        let excess = self.spare.capacity() - self.spare.len() - additional;
+                        memory.grow(excess * size_of::<VecDeque<Record>>())?;
+                    }
+                    self.spare.push(run.records);
+                }
+                self.runs = exhausted;
+                Some(start)
+            }
+        };
+        let caps = Caps {
+            max_discovery_keys: usize::MAX,
+            ..self.caps
+        };
+        let mut runs = std::mem::take(&mut self.runs);
+        let mut discovery = Discovery {
+            cursor: &mut self.cursor,
+            selection: &mut self.selection,
+            shape: &self.shape,
+            memory,
+            examined,
+        };
+        let discovered = match (self.direction, resume, start) {
+            (ReadDirection::Forward, Some(Resume::At(at)), None)
+            | (ReadDirection::Forward, None, Some(at)) => {
+                let positioned = discovery.cursor.reposition(&at)?;
+                discovery.memory.shrink(at.len());
+                drop(at);
+                if positioned {
+                    discovery.runs(Some(caps), &mut runs, &mut self.spare, None, Some(budget))
+                } else {
+                    Ok(Discovered::End)
+                }
+            }
+            (ReadDirection::Backward, Some(Resume::Within { anchor, at }), None) => discovery
+                .bucket_before(
+                    Some(caps),
+                    &mut runs,
+                    &mut self.spare,
+                    Some(budget),
+                    None,
+                    Some((anchor, at)),
+                ),
+            (ReadDirection::Backward, None, Some(start)) => discovery.bucket_before(
+                Some(caps),
+                &mut runs,
+                &mut self.spare,
+                Some(budget),
+                Some(start),
+                None,
+            ),
+            _ => Err(StorageError::DataIntegrityError),
+        };
+        self.runs = runs;
+        match discovered? {
+            Discovered::Paused(resume) => {
+                self.resume = Some(resume);
+                return Ok(NextBucket::Paused);
+            }
+            Discovered::NextBucket(start) => self.next_bucket = Some(start),
+            Discovered::End => self.next_bucket = None,
+            Discovered::TooManyRuns => {
+                return Err(StorageError::Generic(anyhow::anyhow!(
+                    "a later bucket of the index read has more runs than one read merges"
+                )));
+            }
+        }
+        if self.runs.is_empty() {
+            return Ok(NextBucket::Done);
+        }
+        self.reserve(memory)?;
+        self.pending = Some(0);
+        self.primed = false;
+        Ok(NextBucket::Ready)
     }
 }
 

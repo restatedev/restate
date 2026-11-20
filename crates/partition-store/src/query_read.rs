@@ -455,6 +455,24 @@ impl SnapshotCursor {
         Ok(true)
     }
 
+    /// Moves to the first key at or after `target`, or to the cursor's first key
+    /// when `target` lies before its bounds. Returns `false`, without moving,
+    /// when `target` lies past them. A bucketed read stepping back to the start
+    /// of a bucket ([`crate::ordered_runs`]) navigates with this: the start of
+    /// the bucket can lie before the read's bounds, which go further into it.
+    pub(crate) fn reposition_from(&mut self, target: &[u8]) -> Result<bool> {
+        self.snapshot.check_active()?;
+        if target < self.scan.start().as_ref() {
+            self.iterator.seek(self.scan.start().as_ref());
+            return Ok(true);
+        }
+        if !self.scan.contains_key(target) {
+            return Ok(false);
+        }
+        self.iterator.seek(target);
+        Ok(true)
+    }
+
     /// Moves to the last key at or before `target`, or to the cursor's last key
     /// when `target` lies past its bounds. Returns `false`, without moving, when
     /// `target` lies before them. A read that merges runs backwards

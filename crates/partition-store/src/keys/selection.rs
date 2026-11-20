@@ -1117,6 +1117,12 @@ pub(crate) struct KeySelectionCursor<K> {
 }
 
 impl<K> KeySelectionCursor<K> {
+    /// Whether every key the cursor visits has one header, as an index's keys
+    /// have: a bucket of a read's keys is then one range of them.
+    pub(crate) fn fixed_header(&self) -> bool {
+        matches!(self.position.header, CursorHeader::Fixed(_))
+    }
+
     /// The static bounds the caller must enforce while iterating and seeking.
     pub(crate) fn scan(&self) -> &PhysicalScan<Bytes> {
         &self.position.scan

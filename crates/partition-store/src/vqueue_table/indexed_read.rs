@@ -128,6 +128,7 @@ const LIMITS: OrderedRunsLimits = OrderedRunsLimits {
     max_discovery_keys: 4096,
     buffer: NonZeroUsize::new(8).unwrap(),
     step_budget: NonZeroUsize::new(256).unwrap(),
+    bucket_fields: 0,
 };
 
 const WINDOW: usize = ENTRY_STATUS_MULTI_GET_BATCH_SIZE.get();
