@@ -325,7 +325,7 @@ impl EntryIndexRead {
     fn retained_bytes(&self) -> usize {
         self.handlers.retained_bytes()
             + match &self.index {
-                IndexRead::Created(selection) => selection.retained_bytes(),
+                IndexRead::Created(selection) => selection.shared_retained_bytes(),
                 IndexRead::Status(lanes) => lanes.retained_bytes(),
             }
     }
@@ -379,6 +379,8 @@ impl HandlerConditions {
         }))
     }
 
+    /// Everything the shared conditions hold, the two reference counts of
+    /// their `Arc` included.
     fn retained_bytes(&self) -> usize {
         let string = |value: &ReString| value.len();
         let heap = |predicate: &ValuePredicate<ReString>| match predicate {
@@ -395,7 +397,10 @@ impl HandlerConditions {
                 })
                 .sum(),
         };
-        std::mem::size_of_val(&*self.0) + self.0.iter().map(heap).sum::<usize>()
+        std::mem::size_of::<Self>()
+            + 2 * std::mem::size_of::<usize>()
+            + std::mem::size_of_val(&*self.0)
+            + self.0.iter().map(heap).sum::<usize>()
     }
 }
 
@@ -1539,6 +1544,14 @@ mod tests {
         let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
         let (opening, path, examined) = execution(&memory);
         let wide = read(failure(), ReadDirection::Forward);
+        // Counted independently of the read's accounting: the probe and the
+        // nine failure lanes' selections, each behind its own `Arc`.
+        assert!(
+            wide.retained_bytes()
+                >= 10
+                    * (std::mem::size_of::<KeySelection<EntryByStatusCreatedKey>>()
+                        + 2 * std::mem::size_of::<usize>())
+        );
         assert!(
             EntryIndexCursor::open(&snapshot, &wide, &opening)
                 .unwrap()

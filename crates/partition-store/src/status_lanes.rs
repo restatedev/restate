@@ -85,14 +85,15 @@ impl<K> StatusLanes<K> {
         Ok(Self { probe, lanes })
     }
 
-    /// The bytes its selections hold.
+    /// The bytes it holds: the shared probe and lane selections, each with its
+    /// own fields and `Arc`, and the lanes' vector.
     pub(crate) fn retained_bytes(&self) -> usize {
-        self.probe.retained_bytes()
+        self.probe.shared_retained_bytes()
             + self.lanes.capacity() * size_of::<(Stage, Status, Arc<()>)>()
             + self
                 .lanes
                 .iter()
-                .map(|(.., lane)| lane.retained_bytes())
+                .map(|(.., lane)| lane.shared_retained_bytes())
                 .sum::<usize>()
     }
 }
