@@ -56,7 +56,7 @@ use crate::table::{MultiGetCursor, MultiGetTable, PhysicalTable, TableCursor};
 use crate::{ReadSnapshot, Result};
 
 use super::indexed_read::{
-    EntryIndex, FinishedRead, IndexedCursor, KeySteps, StatusCreatedRead, StatusTransitionedRead,
+    EntryIndex, IndexedCursor, KeySteps, StatusCreatedRead, StatusTransitionedRead,
 };
 use super::stage_reads::{StageReadCounters, StageReads, StagesCursor};
 use super::{ENTRY_STATUS_MULTI_GET_BATCH_SIZE, EntryStatusKey};
@@ -169,16 +169,6 @@ pub enum EntryStatusScan {
     /// Statuses referenced by the scheduler's stage tables, navigated by the
     /// prepared stage reads. See [`StageReads`].
     Stages(Arc<StageReads>),
-    /// Finished entries through their index, newest finished first (or oldest
-    /// first, as the [`FinishedRead`] says), or the
-    /// `fallback` iteration if the index can't stand in for it on the snapshot.
-    /// `execution` is charged for the index read and learns which path it took.
-    /// See [`FinishedRead`].
-    Finished {
-        read: Arc<FinishedRead>,
-        fallback: Arc<KeySelection<EntryStatusKey>>,
-        execution: Arc<EntryIndexExecution>,
-    },
     /// Entries of some stages and statuses through `entry_by_status_created/1`,
     /// newest created first (or oldest first, as the [`StatusCreatedRead`]
     /// says), or the `fallback` iteration if the index can't stand in for it
@@ -266,14 +256,6 @@ impl ReadSnapshot {
                     mode: Mode::Stages(Box::new(StagesCursor::new(self.clone(), reads, window))),
                     first: true,
                 });
-            }
-            EntryStatusScan::Finished {
-                read,
-                fallback,
-                execution,
-            } => {
-                let cursor = IndexedCursor::finished(self, &read, &execution, window)?;
-                return self.indexed_or(cursor, fallback);
             }
             EntryStatusScan::StatusCreated {
                 read,

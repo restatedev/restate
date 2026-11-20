@@ -22,7 +22,7 @@ use restate_storage_api::vqueue_table::{
 use restate_types::identifiers::PartitionId;
 use restate_types::partitions::Partition;
 use restate_types::sharding::KeyRange;
-use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, HandlerRef, Seq, VQueueId};
+use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, HandlerRef, VQueueId};
 
 use crate::index::SecondaryIndexKey;
 use crate::keys::header::IndexScope;
@@ -325,20 +325,13 @@ async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     assert_eq!(status, IndexStatus::Complete);
     // 48 invocations and a state mutation on each of three partition keys, and
     // the two unusual entries: every one in the creation index, all but the one
-    // in an unknown stage in the two status indexes, and the Finished ones, the
-    // unusual Finished one included, in the finished index.
-    let [finished, created, status_created, status_transitioned] =
-        <[_; 4]>::try_from(counts(&reference))
-            .unwrap()
-            .map(|(_, count)| count);
+    // in an unknown stage in the two status indexes.
+    let [created, status_created, status_transitioned] = <[_; 3]>::try_from(counts(&reference))
+        .unwrap()
+        .map(|(_, count)| count);
     assert_eq!(
         (created, status_created, status_transitioned),
         (149, 148, 148)
-    );
-    assert!(
-        finished > 0 && finished < status_created,
-        "{:?}",
-        counts(&reference)
     );
     assert_eq!(payloads(&store), payloads(&reference));
 
@@ -379,7 +372,6 @@ async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     assert!(registry.maintained(ENTRY_BY_SERVICE_CREATED.name).is_none());
     assert!(keys_of(&late, retired).is_empty());
     for definition in [
-        &FINISHED_ENTRY_BY_OUTCOME,
         &ENTRY_BY_CREATED,
         &ENTRY_BY_STATUS_CREATED,
         &ENTRY_BY_STATUS_TRANSITIONED,
@@ -465,11 +457,10 @@ fn entries_of(store: &PartitionStore, id: u32) -> Vec<Entry> {
         .collect()
 }
 
-/// The indexes keyed by stage or status key each entry as its stored state says.
-/// Finished entries, whatever their stored status, by status, service, handler
-/// and newest transition first; entries in every known
-/// stage by stage, status, hour and service, newest first, once by creation and
-/// once by transition, with the handler and scope as the value. A move between
+/// The indexes keyed by stage and status key each entry as its stored state
+/// says: entries in every known stage by stage, status, hour and service,
+/// newest first, once by creation and once by transition, with the handler and
+/// scope as the value. A move between
 /// stages, or a new status, moves or removes the key once; an entry in an
 /// unknown stage has no key in any of them, and leaving or entering an unknown
 /// stage adds or removes its keys once.
@@ -482,9 +473,8 @@ async fn stage_and_status_keys_follow_each_entry() {
         .await
         .unwrap();
     open(&mut store, &tracking()).await;
-    let [all, finished, status_created, status_transitioned] = [
+    let [all, status_created, status_transitioned] = [
         &ENTRY_BY_CREATED,
-        &FINISHED_ENTRY_BY_OUTCOME,
         &ENTRY_BY_STATUS_CREATED,
         &ENTRY_BY_STATUS_TRANSITIONED,
     ]
@@ -623,25 +613,6 @@ async fn stage_and_status_keys_follow_each_entry() {
     tx.commit().await.unwrap();
 
     let canonical = |i: usize| entries[i].1.to_canonical_entry_id(qid.partition_key());
-    let finished_key = |status: Status, i: usize, transitioned: u64| {
-        let target = entries[i].0;
-        let mut bytes = Vec::new();
-        FinishedEntryByOutcomeKey::borrowed(
-            status,
-            target.service(),
-            target.handler(),
-            Reverse(at(transitioned)),
-            canonical(i),
-        )
-        .encode_key(
-            IndexScope {
-                partition: PartitionId::MIN,
-                index: finished,
-            },
-            &mut bytes,
-        );
-        bytes
-    };
     // The status indexes' entries: the key, then the target's handler and scope.
     let status_entry = |index: u32, key: &dyn Fn(&mut Vec<u8>, IndexScope), i: usize| {
         let target = entries[i].0;
@@ -693,15 +664,6 @@ async fn stage_and_status_keys_follow_each_entry() {
         keys_of(&store, all).len(),
         8,
         "every entry is in the creation index"
-    );
-    // Statuses in their codec order: Started (70) before Succeeded (80).
-    assert_eq!(
-        keys_of(&store, finished),
-        [
-            finished_key(Status::Started, 5, 8_000),
-            finished_key(Status::Succeeded, 4, 7_300_000),
-            finished_key(Status::Succeeded, 7, 7_210_000),
-        ]
     );
     // Stages in rank order, then statuses in codec order, then hours newest
     // first, then services. Among the succeeded: by creation, the entry created
@@ -778,14 +740,6 @@ async fn stage_and_status_keys_follow_each_entry() {
 
     assert_eq!(keys_of(&store, all).len(), 7);
     assert_eq!(
-        keys_of(&store, finished),
-        [
-            finished_key(Status::Killed, 1, 7_000),
-            finished_key(Status::Started, 5, 8_000),
-            finished_key(Status::Succeeded, 7, 7_210_000),
-        ]
-    );
-    assert_eq!(
         entries_of(&store, status_created),
         [
             by_created(Stage::Finished, Status::Killed, 1),
@@ -853,150 +807,6 @@ async fn stage_and_status_keys_follow_each_entry() {
             "{stage:?} {status:?}"
         );
     }
-}
-
-// `finished_entry_by_outcome/1` as it was accepted, before its key fields took
-// the entry table's names (`outcome` → `status`, `finished_at` →
-// `transitioned_at`).
-crate::index::macros::define_secondary_index!(
-    AcceptedFinishedEntryByOutcome,
-    definition: "finished_entry_by_outcome/1",
-    introduced: (1, 8, 2),
-    key: AcceptedFinishedEntryByOutcomeKey {
-        outcome: StatusCodec,
-        target_service_name: ServiceNameCodec => str,
-        target_handler_name: Option<StringCodec> => str,
-        finished_at: ReverseUniqueTimestampCodec,
-        canonical_id: CanonicalEntryIdCodec (primary_key),
-    }
-);
-
-/// Renaming the finished index's key fields changed no byte. Over every
-/// stored status, a handler or none, timestamps tied at a millisecond and apart
-/// only by their logical clock, and two incarnations, today's keys are exactly
-/// the bytes the change that introduced the index wrote
-/// (`finished_entry_by_outcome_v1.keys`): its header, with zero padding, the
-/// partition and the index, then every field. Both declarations decode those
-/// bytes to the values encoded.
-#[test]
-fn finished_keys_encode_as_before_their_fields_were_renamed() {
-    use std::cmp::Reverse;
-
-    use zerocopy::IntoBytes;
-
-    let mut frozen = include_str!("finished_entry_by_outcome_v1.keys")
-        .lines()
-        .filter(|line| !line.starts_with('#'))
-        .map(|line| {
-            let (case, hex) = line.rsplit_once(' ').unwrap();
-            let bytes: Vec<u8> = (0..hex.len())
-                .step_by(2)
-                .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
-                .collect();
-            (case.to_owned(), bytes)
-        });
-    let scope = IndexScope {
-        partition: PartitionId::MIN,
-        index: 7,
-    };
-    const BASE: u64 = 1_744_010_000_000;
-    let statuses = [
-        Status::Unknown,
-        Status::New,
-        Status::Scheduled,
-        Status::Started,
-        Status::BackingOff,
-        Status::Yielded,
-        Status::Killed,
-        Status::Cancelled,
-        Status::Failed,
-        Status::Succeeded,
-    ];
-    let qid = VQueueId::custom(7, "q");
-    let mut compared = 0;
-    for status in statuses {
-        for handler in [Some("call"), None] {
-            for (millis, logical) in [(0, 0), (0, 1), (1, 0)] {
-                let at = UniqueTimestamp::from_parts_unchecked(BASE + millis, logical);
-                for seq in [1, 2] {
-                    let kind = if handler.is_some() {
-                        EntryKind::Invocation
-                    } else {
-                        EntryKind::StateMutation
-                    };
-                    let canonical =
-                        EntryKey::new(false, at.to_unix_millis(), seq, EntryId::new(kind, [3; 16]))
-                            .to_canonical_entry_id(qid.partition_key());
-                    let (case, frozen) = frozen.next().unwrap();
-                    assert_eq!(
-                        case,
-                        format!(
-                            "{status:?} {} +{millis}ms/{logical} seq{seq}",
-                            handler.unwrap_or("-")
-                        )
-                    );
-                    let (mut renamed, mut accepted) = (Vec::new(), Vec::new());
-                    FinishedEntryByOutcomeKey::borrowed(
-                        status,
-                        "Utils",
-                        handler,
-                        Reverse(at),
-                        canonical,
-                    )
-                    .encode_key(scope, &mut renamed);
-                    AcceptedFinishedEntryByOutcomeKey::borrowed(
-                        status,
-                        "Utils",
-                        handler,
-                        Reverse(at),
-                        canonical,
-                    )
-                    .encode_key(scope, &mut accepted);
-                    assert_eq!((&renamed, &accepted), (&frozen, &frozen), "{case}");
-                    let (prefix, payload) = IndexKeyPrefix::decode_prefix(&frozen).unwrap();
-                    assert_eq!(
-                        prefix.as_bytes(),
-                        IndexKeyPrefix::new(PartitionId::MIN, 7).as_bytes()
-                    );
-                    let new = payload
-                        .into_decoder::<FinishedEntryByOutcomeKey>()
-                        .decode_all()
-                        .unwrap();
-                    let old = payload
-                        .into_decoder::<AcceptedFinishedEntryByOutcomeKey>()
-                        .decode_all()
-                        .unwrap();
-                    let encoded = (status, "Utils", handler, Reverse(at), canonical);
-                    assert_eq!(
-                        (
-                            new.status,
-                            new.target_service_name.as_str(),
-                            new.target_handler_name.as_deref(),
-                            new.transitioned_at,
-                            new.canonical_id
-                        ),
-                        encoded,
-                        "{case}"
-                    );
-                    assert_eq!(
-                        (
-                            old.outcome,
-                            old.target_service_name.as_str(),
-                            old.target_handler_name.as_deref(),
-                            old.finished_at,
-                            old.canonical_id
-                        ),
-                        encoded,
-                        "{case}"
-                    );
-                    assert_eq!(new.canonical_id.seq(), Seq::new(seq), "{case}");
-                    compared += 1;
-                }
-            }
-        }
-    }
-    assert!(frozen.next().is_none());
-    assert_eq!(compared, 10 * 2 * 3 * 2);
 }
 
 /// The status indexes' stages and statuses are listed in their codecs' byte
