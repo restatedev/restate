@@ -75,7 +75,7 @@ use crate::keys::{EncodeTableKey, KeyKind};
 use crate::ordered_runs::{OrderedRuns, OrderedRunsDiscovery, OrderedRunsLimits, RetainedMemory};
 use crate::partition_db::PhysicalPartition;
 use crate::registry::IndexKind;
-use crate::vqueue_table::{CreatedEntryValueRef, EntryByCreated, EntryByCreatedKey};
+use crate::vqueue_table::{EntryByCreated, EntryByCreatedKey, EntryTargetValueRef};
 use crate::{ReadSnapshot, Result};
 
 use super::{
@@ -280,7 +280,7 @@ impl HandlerConditions {
         if self.0.is_empty() {
             return Ok(true);
         }
-        let handler = CreatedEntryValueRef::decode(value)?
+        let handler = EntryTargetValueRef::decode(value)?
             .handler
             .ok_or(StorageError::DataIntegrityError)?;
         Ok(self.0.iter().all(|predicate| match predicate {

@@ -100,6 +100,8 @@ pub(crate) const INDEX_DEFINITIONS: &[&IndexDefinition] = &[
     &crate::vqueue_table::FINISHED_ENTRY_BY_OUTCOME,
     &crate::vqueue_table::ACTIVE_ENTRY_BY_STAGE,
     &crate::vqueue_table::ENTRY_BY_CREATED,
+    &crate::vqueue_table::ENTRY_BY_STATUS_CREATED,
+    &crate::vqueue_table::ENTRY_BY_STATUS_TRANSITIONED,
 ];
 
 struct Active {
@@ -339,7 +341,8 @@ mod tests {
     use crate::stats::Stat;
     use crate::stats::aggregated::{DeploymentStats, ServiceStats, VirtualObjectStats};
     use crate::vqueue_table::{
-        ActiveEntryByStage, EntryByCreated, EntryByServiceCreated, FinishedEntryByOutcome,
+        ActiveEntryByStage, EntryByCreated, EntryByServiceCreated, EntryByStatusCreated,
+        EntryByStatusTransitioned, FinishedEntryByOutcome,
     };
 
     use super::*;
@@ -369,6 +372,14 @@ mod tests {
                 ActiveEntryByStage::INTRODUCED,
             ),
             (EntryByCreated::DEFINITION, EntryByCreated::INTRODUCED),
+            (
+                EntryByStatusCreated::DEFINITION,
+                EntryByStatusCreated::INTRODUCED,
+            ),
+            (
+                EntryByStatusTransitioned::DEFINITION,
+                EntryByStatusTransitioned::INTRODUCED,
+            ),
         ];
         let carried = INDEX_DEFINITIONS
             .iter()
