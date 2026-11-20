@@ -335,6 +335,7 @@ impl SchemaUpdater {
     fn into_inner(mut self) -> Schema {
         if self.modified {
             self.schema.unindexed.version = self.schema.unindexed.version.next();
+            self.schema.uncompressed_size = None;
             // TODO(v1.9): Set `bilrost_encoded` to true unconditionally and remove the experimental
             // configuration lookup. This upgrades a legacy Flexbuffers schema on its next update.
             // TODO(v1.10): Remove the assignment together with the coordination field.
