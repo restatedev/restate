@@ -16,6 +16,7 @@ use arc_swap::ArcSwap;
 use bytestring::ByteString;
 use futures::future::OptionFuture;
 use itertools::Itertools;
+use metrics::gauge;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
@@ -25,11 +26,12 @@ use restate_metadata_store::{MetadataStoreClient, ReadError, retry_on_retryable_
 use restate_types::config::Configuration;
 use restate_types::live::Live;
 use restate_types::metadata::GlobalMetadata;
-use restate_types::net::metadata::{Extraction, GetMetadataRequest};
+use restate_types::net::metadata::{Extraction, GetMetadataRequest, MetadataContainer};
 use restate_types::retries::RetryPolicy;
 use restate_types::{GenerationalNodeId, Version};
 use restate_util_time::DurationExt;
 
+use crate::metric_definitions::SCHEMA_SIZE_BYTES;
 use crate::network::Connection;
 use crate::{ShutdownError, TaskCenter, TaskHandle, TaskKind, cancellation_watcher};
 
@@ -335,6 +337,15 @@ where
     fn update_internal(&mut self, new_value: Arc<T>) -> Result<Version, anyhow::Error> {
         let current_value = self.item.load();
         let mut maybe_new_version = new_value.version();
+
+        // Schemas built in memory carry no size, so a node that wrote a new version reports it once
+        // it reads that version back from the metadata store.
+        if new_value.version() >= current_value.version()
+            && let MetadataContainer::Schema(schema) = Arc::clone(&new_value).into_container()
+            && let Some(size) = schema.uncompressed_size()
+        {
+            gauge!(SCHEMA_SIZE_BYTES).set(size as f64);
+        }
 
         if new_value.version() > current_value.version() {
             trace!(
