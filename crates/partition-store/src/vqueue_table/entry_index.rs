@@ -80,7 +80,33 @@
 //! and scope, which a read can return without fetching the entry. Like the first
 //! index, key and value never change after the entry is created.
 //!
-//! All four indexes project an entry's old and new state to their optional keys
+//! **Entries by stage and status, newest created first**
+//! (`entry_by_status_created/1`) and **newest transitioned first**
+//! (`entry_by_status_transitioned/1`) hold one key for every entry in a known
+//! stage, of both kinds, and lead with its stored stage and status. Below that,
+//! they are laid out like `entry_by_created/1`, by the creation time in the
+//! first and by the stored `transitioned_at`, when the entry entered its stage,
+//! in the second:
+//!
+//! ```text
+//! xI | partition | index ID | stage | status | hour ↓ | service | time ↓ | canonical entry ID
+//!                             finished killed    h9       "Utils"   t9       inv_…
+//!                             finished succeeded h9       "Other"   t9       inv_…
+//!                             finished succeeded h9       "Utils"   t8       inv_…
+//!                             finished succeeded h8       "Utils"   t7       inv_…
+//!                             running  started   h9       "Utils"   t9       inv_…
+//! value: handler?, scope?
+//! ```
+//!
+//! Each stage and status is one contiguous range over all hours and services.
+//! Finished entries that succeeded, typically the bulk of a partition, are one
+//! range that a page of any other outcome or stage never reads; a page of
+//! killed entries in the past hours reads only the killed range's newest hours.
+//! The key moves whenever the entry's stage or status changes, and, in the
+//! second index, when its `transitioned_at` does. An entry in a stage this
+//! binary doesn't know has no key.
+//!
+//! All six indexes project an entry's old and new state to their optional keys
 //! and write only when the two differ.
 
 use std::cmp::Reverse;
@@ -92,20 +118,23 @@ use prost::encoding::{decode_varint, encode_varint, encoded_len_varint};
 use restate_clock::time::MillisSinceEpoch;
 use restate_clock::{RoughTimestamp, UniqueTimestamp};
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::{EntryContext, EntryStateRef, Stage};
+use restate_storage_api::vqueue_table::stats::EntryStatistics;
+use restate_storage_api::vqueue_table::{EntryContext, EntryStateRef, Stage, Status};
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
 use restate_storage_query_api::tables::index::{
     EntryByServiceCreated as InvocationsByCreation, EntryByServiceCreatedClause,
     EntryByServiceCreatedColumn,
 };
 use restate_types::config::Configuration;
+use restate_types::vqueues::CanonicalEntryId;
 
 use crate::PartitionStoreTransaction;
-use crate::index::{IndexValue, IndexValueRef, RegisteredIndex};
+use crate::index::{IndexValue, IndexValueRef, RegisteredIndex, SecondaryIndex, SecondaryIndexKey};
 use crate::keys::codecs::{
     CanonicalEntryIdCodec, ReverseRoughTimestampCodec, ReverseUniqueTimestampCodec,
     ServiceNameCodec, StageRankCodec, StatusCodec, StringCodec,
 };
+use crate::keys::header::IndexScope;
 use crate::keys::selection::codec::{FieldPredicateCodec, prepare_hour_buckets};
 use crate::keys::selection::{KeySelection, PrepareKeySelection};
 use crate::registry::{Family, IndexDefinition, IndexKind};
@@ -228,6 +257,26 @@ pub(crate) static ENTRY_BY_CREATED: IndexDefinition = IndexDefinition {
     can_fill: true,
 };
 
+/// Every entry in a known stage by stage, status, creation hour and service,
+/// newest created first, with its handler and scope.
+pub(crate) static ENTRY_BY_STATUS_CREATED: IndexDefinition = IndexDefinition {
+    name: EntryByStatusCreated::DEFINITION,
+    introduced: EntryByStatusCreated::INTRODUCED,
+    kind: IndexKind::Secondary,
+    apply: apply_entry_by_status_created,
+    can_fill: true,
+};
+
+/// Every entry in a known stage by stage, status, transition hour and service,
+/// newest transitioned first, with its handler and scope.
+pub(crate) static ENTRY_BY_STATUS_TRANSITIONED: IndexDefinition = IndexDefinition {
+    name: EntryByStatusTransitioned::DEFINITION,
+    introduced: EntryByStatusTransitioned::INTRODUCED,
+    kind: IndexKind::Secondary,
+    apply: apply_entry_by_status_transitioned,
+    can_fill: true,
+};
+
 /// The entry indexes, released and controlled together.
 pub(crate) const ENTRY_INDEXES: Family = Family {
     definitions: &[
@@ -235,6 +284,8 @@ pub(crate) const ENTRY_INDEXES: Family = Family {
         &FINISHED_ENTRY_BY_OUTCOME,
         &ACTIVE_ENTRY_BY_STAGE,
         &ENTRY_BY_CREATED,
+        &ENTRY_BY_STATUS_CREATED,
+        &ENTRY_BY_STATUS_TRANSITIONED,
     ],
     maintain: track_entry_indexes,
     reset: entry_indexes_reset,
@@ -373,7 +424,7 @@ fn apply_active_entry_by_stage(
 
 crate::index::macros::define_secondary_index!(
     /// Entries by creation hour and service, newest created first; each key
-    /// holds the entry's handler and scope ([`CreatedEntryValue`]).
+    /// holds the entry's handler and scope ([`EntryTargetValue`]).
     ///
     /// Since v1.8.2
     EntryByCreated,
@@ -385,7 +436,7 @@ crate::index::macros::define_secondary_index!(
         created_at: ReverseUniqueTimestampCodec,
         canonical_id: CanonicalEntryIdCodec (primary_key),
     },
-    value: CreatedEntryValue,
+    value: EntryTargetValue,
 );
 
 // A query on invocations restricts `entry_by_created/1` through the invocation
@@ -482,24 +533,25 @@ fn tighter(
     }
 }
 
-/// The start of the hour in which `at` falls: the bucket that leads the keys of
-/// `entry_by_created/1`.
-pub fn created_hour(at: UniqueTimestamp) -> RoughTimestamp {
+/// The start of the hour in which `at` falls: the bucket that orders the keys of
+/// `entry_by_created/1` and the two status indexes, newest first.
+pub fn hour_bucket(at: UniqueTimestamp) -> RoughTimestamp {
     RoughTimestamp::from_unix_millis_clamped(at.to_unix_millis()).floor_to_hour()
 }
 
-/// What `entry_by_created/1` stores with each key: the entry's handler, none for
-/// a state mutation, and its scope. Both are fixed when the entry is created.
-pub enum CreatedEntryValue {}
+/// What `entry_by_created/1` and the two status indexes store with each key: the
+/// parts of the entry's target their keys don't hold, its handler, none for a
+/// state mutation, and its scope. Both are fixed when the entry is created.
+pub enum EntryTargetValue {}
 
-impl IndexValue for CreatedEntryValue {
-    type Ref<'a> = CreatedEntryValueRef<'a>;
+impl IndexValue for EntryTargetValue {
+    type Ref<'a> = EntryTargetValueRef<'a>;
 }
 
-/// A [`CreatedEntryValue`], borrowing its strings from the entry or the stored
+/// An [`EntryTargetValue`], borrowing its strings from the entry or the stored
 /// bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CreatedEntryValueRef<'a> {
+pub struct EntryTargetValueRef<'a> {
     pub handler: Option<&'a str>,
     pub scope: Option<&'a str>,
 }
@@ -509,7 +561,7 @@ pub struct CreatedEntryValueRef<'a> {
 const HAS_HANDLER: u8 = 0b01;
 const HAS_SCOPE: u8 = 0b10;
 
-impl<'a> IndexValueRef<'a> for CreatedEntryValueRef<'a> {
+impl<'a> IndexValueRef<'a> for EntryTargetValueRef<'a> {
     fn encoded_len(&self) -> usize {
         let field = |value: Option<&str>| {
             value.map_or(0, |value| {
@@ -585,19 +637,175 @@ fn apply_entry_by_created(
     };
     let (old, new) = (before.map(project), after.map(project));
     if old != new {
-        let value = CreatedEntryValueRef {
+        let value = EntryTargetValueRef {
             handler: context.target.handler(),
             scope: context.target.scope(),
         };
         let key = |(created_at, canonical_id)| {
             EntryByCreatedKey::borrowed(
-                Reverse(created_hour(created_at)),
+                Reverse(hour_bucket(created_at)),
                 context.target.service(),
                 Reverse(created_at),
                 canonical_id,
             )
         };
         let (old, new) = (old.map(key), new.map(key));
+        storage.update_secondary_index_entry_with_id(
+            id,
+            old.as_ref().map(|key| (key, value)),
+            new.as_ref().map(|key| (key, value)),
+        );
+    }
+}
+
+crate::index::macros::define_secondary_index!(
+    /// Entries in a known stage by stored stage and status, creation hour and
+    /// service, newest created first; each key holds the entry's handler and
+    /// scope ([`EntryTargetValue`]).
+    ///
+    /// Since v1.8.2
+    EntryByStatusCreated,
+    definition: "entry_by_status_created/1",
+    introduced: (1, 8, 2),
+    key: EntryByStatusCreatedKey {
+        stage: StageRankCodec,
+        status: StatusCodec,
+        created_hour: ReverseRoughTimestampCodec,
+        target_service_name: ServiceNameCodec => str,
+        created_at: ReverseUniqueTimestampCodec,
+        canonical_id: CanonicalEntryIdCodec (primary_key),
+    },
+    value: EntryTargetValue,
+);
+
+crate::index::macros::define_secondary_index!(
+    /// Entries in a known stage by stored stage and status, transition hour and
+    /// service, newest transitioned first; each key holds the entry's handler
+    /// and scope ([`EntryTargetValue`]).
+    ///
+    /// Since v1.8.2
+    EntryByStatusTransitioned,
+    definition: "entry_by_status_transitioned/1",
+    introduced: (1, 8, 2),
+    key: EntryByStatusTransitionedKey {
+        stage: StageRankCodec,
+        status: StatusCodec,
+        transitioned_hour: ReverseRoughTimestampCodec,
+        target_service_name: ServiceNameCodec => str,
+        transitioned_at: ReverseUniqueTimestampCodec,
+        canonical_id: CanonicalEntryIdCodec (primary_key),
+    },
+    value: EntryTargetValue,
+);
+
+/// Whether the two status indexes hold an entry in `stage`: every stage this
+/// binary knows. A new stage needs a rank in [`StageRankCodec`], a decision
+/// here, and new definition names, since it changes both indexes' membership
+/// (README rule 1): a binary that doesn't know the stage projects no key for
+/// it, and would leave a newer binary's key behind. The same holds for a new
+/// [`StatusCodec`] rank. Queries decide which queries the indexes can serve
+/// from this too.
+pub fn status_indexes_hold(stage: Stage) -> bool {
+    match stage {
+        Stage::Inbox | Stage::Running | Stage::Suspended | Stage::Paused | Stage::Finished => true,
+        Stage::Unknown => false,
+    }
+}
+
+/// Removes the key of `before` and adds the key of `after` in
+/// `entry_by_status_created/1`.
+fn apply_entry_by_status_created(
+    storage: &mut PartitionStoreTransaction<'_>,
+    id: u32,
+    context: &EntryContext<'_>,
+    before: Option<&EntryStateRef<'_>>,
+    after: Option<&EntryStateRef<'_>>,
+) {
+    apply_by_status(
+        storage,
+        id,
+        context,
+        before,
+        after,
+        |stats| stats.created_at,
+        |(stage, status, created_at, canonical_id)| {
+            EntryByStatusCreatedKey::borrowed(
+                stage,
+                status,
+                Reverse(hour_bucket(created_at)),
+                context.target.service(),
+                Reverse(created_at),
+                canonical_id,
+            )
+        },
+    );
+}
+
+/// Removes the key of `before` and adds the key of `after` in
+/// `entry_by_status_transitioned/1`.
+fn apply_entry_by_status_transitioned(
+    storage: &mut PartitionStoreTransaction<'_>,
+    id: u32,
+    context: &EntryContext<'_>,
+    before: Option<&EntryStateRef<'_>>,
+    after: Option<&EntryStateRef<'_>>,
+) {
+    apply_by_status(
+        storage,
+        id,
+        context,
+        before,
+        after,
+        |stats| stats.transitioned_at,
+        |(stage, status, transitioned_at, canonical_id)| {
+            EntryByStatusTransitionedKey::borrowed(
+                stage,
+                status,
+                Reverse(hour_bucket(transitioned_at)),
+                context.target.service(),
+                Reverse(transitioned_at),
+                canonical_id,
+            )
+        },
+    );
+}
+
+/// Removes the key of `before` and adds the key of `after`, each only if its
+/// entry's stage is known ([`status_indexes_hold`]), with the
+/// entry's handler and scope. `time` picks the timestamp that orders the index,
+/// and `key` lays the key out from the stage, status, that time and the entry's
+/// ID: a change of any of them moves the key.
+fn apply_by_status<K>(
+    storage: &mut PartitionStoreTransaction<'_>,
+    id: u32,
+    context: &EntryContext<'_>,
+    before: Option<&EntryStateRef<'_>>,
+    after: Option<&EntryStateRef<'_>>,
+    time: fn(&EntryStatistics) -> UniqueTimestamp,
+    key: impl Fn((Stage, Status, UniqueTimestamp, CanonicalEntryId)) -> K,
+) where
+    K: SecondaryIndexKey,
+    K::Index: SecondaryIndex<Scope = IndexScope, Value = EntryTargetValue>,
+{
+    let project = |entry: &EntryStateRef<'_>| {
+        status_indexes_hold(entry.stage).then(|| {
+            (
+                entry.stage,
+                entry.status,
+                time(entry.stats),
+                entry
+                    .entry_key
+                    .to_canonical_entry_id(context.qid.partition_key()),
+            )
+        })
+    };
+    let (old, new) = (before.and_then(project), after.and_then(project));
+    if old != new {
+        let value = EntryTargetValueRef {
+            handler: context.target.handler(),
+            scope: context.target.scope(),
+        };
+        let (old, new) = (old.map(&key), new.map(&key));
         storage.update_secondary_index_entry_with_id(
             id,
             old.as_ref().map(|key| (key, value)),

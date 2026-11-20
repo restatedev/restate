@@ -237,7 +237,7 @@ async fn keys_order_entries_and_change_only_on_create_and_delete() {
                 let (target, key, stats) = &entries[i];
                 let mut bytes = Vec::new();
                 EntryByCreatedKey::borrowed(
-                    Reverse(created_hour(stats.created_at)),
+                    Reverse(hour_bucket(stats.created_at)),
                     target.service(),
                     Reverse(stats.created_at),
                     key.to_canonical_entry_id(qid.partition_key()),
@@ -261,7 +261,7 @@ async fn keys_order_entries_and_change_only_on_create_and_delete() {
         entries_of(store, created_id)
             .into_iter()
             .map(|(key, value)| {
-                let value = CreatedEntryValueRef::decode(&value).unwrap();
+                let value = EntryTargetValueRef::decode(&value).unwrap();
                 let value = (
                     value.handler.map(str::to_owned),
                     value.scope.map(str::to_owned),
@@ -354,11 +354,27 @@ async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     // 48 invocations and a state mutation on each of three partition keys, each
     // in either the finished or the active index, and the two unusual entries:
     // the Finished one in the finished index, the one in an unknown stage in
-    // neither.
-    let [all, finished, active, created] = <[_; 4]>::try_from(counts(&reference))
+    // neither, nor in the two status indexes.
+    let [
+        all,
+        finished,
+        active,
+        created,
+        status_created,
+        status_transitioned,
+    ] = <[_; 6]>::try_from(counts(&reference))
         .unwrap()
         .map(|(_, count)| count);
-    assert_eq!((all, finished + active, created), (149, 148, 149));
+    assert_eq!(
+        (
+            all,
+            finished + active,
+            created,
+            status_created,
+            status_transitioned
+        ),
+        (149, 148, 149, 148, 148)
+    );
     assert!(finished > 0 && active > 0, "{:?}", counts(&reference));
     assert_eq!(payloads(&store), payloads(&reference));
 
@@ -399,6 +415,8 @@ async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
         &FINISHED_ENTRY_BY_OUTCOME,
         &ACTIVE_ENTRY_BY_STAGE,
         &ENTRY_BY_CREATED,
+        &ENTRY_BY_STATUS_CREATED,
+        &ENTRY_BY_STATUS_TRANSITIONED,
     ] {
         let id = maintained(&late, definition);
         let registry = get_registry(late.partition_db()).unwrap().unwrap();
@@ -517,14 +535,17 @@ fn entries_of(store: &PartitionStore, id: u32) -> Vec<Entry> {
         .collect()
 }
 
-/// The two partial indexes key each entry as its stored state says. Finished
-/// entries, whatever their stored status, by status, service, handler and
-/// newest transition first; entries in the four known active stages by stage,
-/// service, handler and newest created first. A move between stages moves or
-/// removes the key once; an entry in an unknown stage has no key in either, and
-/// leaving or entering an unknown stage adds or removes its active key once.
+/// The indexes keyed by stage or status key each entry as its stored state says.
+/// Finished entries, whatever their stored status, by status, service, handler
+/// and newest transition first; entries in the four known active stages by
+/// stage, service, handler and newest created first; entries in every known
+/// stage by stage, status, hour and service, newest first, once by creation and
+/// once by transition, with the handler and scope as the value. A move between
+/// stages, or a new status, moves or removes the key once; an entry in an
+/// unknown stage has no key in any of them, and leaving or entering an unknown
+/// stage adds or removes its keys once.
 #[restate_core::test]
-async fn partial_indexes_follow_each_entry_stage() {
+async fn stage_and_status_keys_follow_each_entry() {
     RocksDbManager::init();
     let manager = PartitionStoreManager::create(true).await.unwrap();
     let mut store = manager
@@ -532,10 +553,12 @@ async fn partial_indexes_follow_each_entry_stage() {
         .await
         .unwrap();
     open(&mut store, &tracking()).await;
-    let [all, finished, active] = [
+    let [all, finished, active, status_created, status_transitioned] = [
         &ENTRY_BY_SERVICE_CREATED,
         &FINISHED_ENTRY_BY_OUTCOME,
         &ACTIVE_ENTRY_BY_STAGE,
+        &ENTRY_BY_STATUS_CREATED,
+        &ENTRY_BY_STATUS_TRANSITIONED,
     ]
     .map(|definition| maintained(&store, definition));
 
@@ -546,7 +569,7 @@ async fn partial_indexes_follow_each_entry_stage() {
         handler: "call",
     };
     let run = EntryTargetRef::Service {
-        scope: None,
+        scope: Some("tenant-a"),
         service: "Utils",
         handler: "run",
     };
@@ -603,6 +626,7 @@ async fn partial_indexes_follow_each_entry_stage() {
             Status::New,
             600,
         ),
+        // Finished two hours after it was created.
         (
             &other,
             EntryKind::Invocation,
@@ -610,7 +634,7 @@ async fn partial_indexes_follow_each_entry_stage() {
             9_000,
             Stage::Finished,
             Status::Succeeded,
-            9_900,
+            7_300_000,
         ),
         // A Finished entry with a status that isn't an outcome still belongs.
         (
@@ -630,6 +654,16 @@ async fn partial_indexes_follow_each_entry_stage() {
             Stage::Unknown,
             Status::New,
             5_000,
+        ),
+        // Created and finished two hours later than the others.
+        (
+            &call,
+            EntryKind::Invocation,
+            8,
+            7_209_000,
+            Stage::Finished,
+            Status::Succeeded,
+            7_210_000,
         ),
     ]
     .map(
@@ -699,9 +733,56 @@ async fn partial_indexes_follow_each_entry_stage() {
         );
         bytes
     };
+    // The status indexes' entries: the key, then the target's handler and scope.
+    let status_entry = |index: u32, key: &dyn Fn(&mut Vec<u8>, IndexScope), i: usize| {
+        let target = entries[i].0;
+        let (mut bytes, mut value) = (Vec::new(), Vec::new());
+        key(
+            &mut bytes,
+            IndexScope {
+                partition: PartitionId::MIN,
+                index,
+            },
+        );
+        EntryTargetValueRef {
+            handler: target.handler(),
+            scope: target.scope(),
+        }
+        .encode(&mut value);
+        (bytes, value)
+    };
+    let by_created = |stage: Stage, status: Status, i: usize| {
+        let created_at = entries[i].2.created_at;
+        let key = |bytes: &mut Vec<u8>, scope| {
+            EntryByStatusCreatedKey::borrowed(
+                stage,
+                status,
+                Reverse(hour_bucket(created_at)),
+                entries[i].0.service(),
+                Reverse(created_at),
+                canonical(i),
+            )
+            .encode_key(scope, bytes)
+        };
+        status_entry(status_created, &key, i)
+    };
+    let by_transitioned = |stage: Stage, status: Status, i: usize, transitioned: u64| {
+        let key = |bytes: &mut Vec<u8>, scope| {
+            EntryByStatusTransitionedKey::borrowed(
+                stage,
+                status,
+                Reverse(hour_bucket(at(transitioned))),
+                entries[i].0.service(),
+                Reverse(at(transitioned)),
+                canonical(i),
+            )
+            .encode_key(scope, bytes)
+        };
+        status_entry(status_transitioned, &key, i)
+    };
     assert_eq!(
         keys_of(&store, all).len(),
-        7,
+        8,
         "every entry is in the first index"
     );
     // Statuses in their codec order: Started (70) before Succeeded (80).
@@ -709,7 +790,8 @@ async fn partial_indexes_follow_each_entry_stage() {
         keys_of(&store, finished),
         [
             finished_key(Status::Started, 5, 8_000),
-            finished_key(Status::Succeeded, 4, 9_900)
+            finished_key(Status::Succeeded, 4, 7_300_000),
+            finished_key(Status::Succeeded, 7, 7_210_000),
         ]
     );
     // Stages in rank order: Inbox, Paused, Running, Suspended.
@@ -722,14 +804,44 @@ async fn partial_indexes_follow_each_entry_stage() {
             active_key(Stage::Suspended, 2),
         ]
     );
+    // Stages in rank order, then statuses in codec order, then hours newest
+    // first, then services. Among the succeeded: by creation, the entry created
+    // two hours later leads; by transition both finished in that hour, so
+    // "Other" sorts first. No key for the entry in an unknown stage.
+    assert_eq!(
+        entries_of(&store, status_created),
+        [
+            by_created(Stage::Finished, Status::Started, 5),
+            by_created(Stage::Finished, Status::Succeeded, 7),
+            by_created(Stage::Finished, Status::Succeeded, 4),
+            by_created(Stage::Inbox, Status::New, 0),
+            by_created(Stage::Paused, Status::New, 3),
+            by_created(Stage::Running, Status::Started, 1),
+            by_created(Stage::Suspended, Status::Started, 2),
+        ]
+    );
+    assert_eq!(
+        entries_of(&store, status_transitioned),
+        [
+            by_transitioned(Stage::Finished, Status::Started, 5, 8_000),
+            by_transitioned(Stage::Finished, Status::Succeeded, 4, 7_300_000),
+            by_transitioned(Stage::Finished, Status::Succeeded, 7, 7_210_000),
+            by_transitioned(Stage::Inbox, Status::New, 0, 1_000),
+            by_transitioned(Stage::Paused, Status::New, 3, 600),
+            by_transitioned(Stage::Running, Status::Started, 1, 3_500),
+            by_transitioned(Stage::Suspended, Status::Started, 2, 2_500),
+        ]
+    );
 
     // Moves: Inbox → Running, Running → Finished (killed), Unknown → Inbox,
-    // Suspended → Unknown. Then the Finished "other" entry is deleted.
+    // Suspended → Unknown, and a new status in the same stage, Paused. Then the
+    // Finished "other" entry is deleted.
     let moves = [
         (0, Stage::Running, Status::Started, 1_100),
         (1, Stage::Finished, Status::Killed, 7_000),
         (6, Stage::Inbox, Status::New, 5_100),
         (2, Stage::Unknown, Status::New, 2_600),
+        (3, Stage::Paused, Status::BackingOff, 600),
     ];
     let mut tx = store.transaction();
     for (i, stage, status, transitioned) in moves {
@@ -765,20 +877,44 @@ async fn partial_indexes_follow_each_entry_stage() {
     );
     tx.commit().await.unwrap();
 
-    assert_eq!(keys_of(&store, all).len(), 6);
+    assert_eq!(keys_of(&store, all).len(), 7);
     assert_eq!(
         keys_of(&store, finished),
         [
             finished_key(Status::Killed, 1, 7_000),
             finished_key(Status::Started, 5, 8_000),
+            finished_key(Status::Succeeded, 7, 7_210_000),
         ]
     );
+    // The new status leaves the stage, and so the active key, as it was.
     assert_eq!(
         keys_of(&store, active),
         [
             active_key(Stage::Inbox, 6),
             active_key(Stage::Paused, 3),
             active_key(Stage::Running, 0),
+        ]
+    );
+    assert_eq!(
+        entries_of(&store, status_created),
+        [
+            by_created(Stage::Finished, Status::Killed, 1),
+            by_created(Stage::Finished, Status::Started, 5),
+            by_created(Stage::Finished, Status::Succeeded, 7),
+            by_created(Stage::Inbox, Status::New, 6),
+            by_created(Stage::Paused, Status::BackingOff, 3),
+            by_created(Stage::Running, Status::Started, 0),
+        ]
+    );
+    assert_eq!(
+        entries_of(&store, status_transitioned),
+        [
+            by_transitioned(Stage::Finished, Status::Killed, 1, 7_000),
+            by_transitioned(Stage::Finished, Status::Started, 5, 8_000),
+            by_transitioned(Stage::Finished, Status::Succeeded, 7, 7_210_000),
+            by_transitioned(Stage::Inbox, Status::New, 6, 5_100),
+            by_transitioned(Stage::Paused, Status::BackingOff, 3, 600),
+            by_transitioned(Stage::Running, Status::Started, 0, 1_100),
         ]
     );
 }
