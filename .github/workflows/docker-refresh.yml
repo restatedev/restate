@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.4.0
 
       - name: Determine target stable release
         id: target-release
@@ -151,7 +151,7 @@ jobs:
 
       - name: Set up Docker containerd snapshotter
         if: steps.target-release.outputs.skip != 'true' && steps.source-check.outputs.skip != 'true' && steps.base-changed.outputs.skip != 'true'
-        uses: docker/setup-docker-action@v4
+        uses: docker/setup-docker-action@v4.7.0
         with:
           daemon-config: |
             {
@@ -162,11 +162,11 @@ jobs:
 
       - name: Set up Docker Buildx
         if: steps.target-release.outputs.skip != 'true' && steps.source-check.outputs.skip != 'true' && steps.base-changed.outputs.skip != 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v3.12.0
 
       - name: Log into GitHub container registry
         if: steps.target-release.outputs.skip != 'true' && steps.source-check.outputs.skip != 'true' && steps.base-changed.outputs.skip != 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v3.7.0
         with:
           registry: ${{ env.GHCR_REGISTRY }}
           username: ${{ github.actor }}
@@ -174,7 +174,7 @@ jobs:
 
       - name: Log into DockerHub
         if: steps.target-release.outputs.skip != 'true' && steps.source-check.outputs.skip != 'true' && steps.base-changed.outputs.skip != 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v3.7.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
@@ -182,7 +182,7 @@ jobs:
       - name: Extract metadata (tags, labels) for Docker
         if: steps.target-release.outputs.skip != 'true' && steps.source-check.outputs.skip != 'true' && steps.base-changed.outputs.skip != 'true'
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v5.10.0
         with:
           images: |
             ${{ env.GHCR_REGISTRY }}/${{ env.REPOSITORY_OWNER }}/${{ env.IMAGE_NAME }}
@@ -199,7 +199,7 @@ jobs:
 
       - name: Build and push refreshed Docker image
         if: steps.target-release.outputs.skip != 'true' && steps.source-check.outputs.skip != 'true' && steps.base-changed.outputs.skip != 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v6.19.2
         with:
           context: .
           file: docker/Dockerfile.refresh
