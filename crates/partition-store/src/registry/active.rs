@@ -96,7 +96,6 @@ pub(crate) const INDEX_DEFINITIONS: &[&IndexDefinition] = &[
     &crate::vqueue_table::SERVICE_STATS,
     &crate::vqueue_table::DEPLOYMENT_STATS,
     &crate::vqueue_table::VIRTUAL_OBJECT_STATS,
-    &crate::vqueue_table::ENTRY_BY_SERVICE_CREATED,
     &crate::vqueue_table::FINISHED_ENTRY_BY_OUTCOME,
     &crate::vqueue_table::ACTIVE_ENTRY_BY_STAGE,
     &crate::vqueue_table::ENTRY_BY_CREATED,
@@ -341,8 +340,8 @@ mod tests {
     use crate::stats::Stat;
     use crate::stats::aggregated::{DeploymentStats, ServiceStats, VirtualObjectStats};
     use crate::vqueue_table::{
-        ActiveEntryByStage, EntryByCreated, EntryByServiceCreated, EntryByStatusCreated,
-        EntryByStatusTransitioned, FinishedEntryByOutcome,
+        ActiveEntryByStage, EntryByCreated, EntryByStatusCreated, EntryByStatusTransitioned,
+        FinishedEntryByOutcome,
     };
 
     use super::*;
@@ -358,10 +357,6 @@ mod tests {
             (
                 VirtualObjectStats::DEFINITION,
                 VirtualObjectStats::INTRODUCED,
-            ),
-            (
-                EntryByServiceCreated::DEFINITION,
-                EntryByServiceCreated::INTRODUCED,
             ),
             (
                 FinishedEntryByOutcome::DEFINITION,

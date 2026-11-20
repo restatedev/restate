@@ -146,6 +146,12 @@ use crate::keys::selection::codec::{FieldPredicateCodec, prepare_hour_buckets};
 use crate::keys::selection::{KeySelection, PrepareKeySelection, PreparedFieldPredicate};
 use crate::registry::{Family, IndexDefinition, IndexKind};
 
+// `entry_by_service_created/1`, the first entry index, keyed every entry by
+// service and handler, newest created first. `entry_by_created/1` replaced it
+// for the invocation list, and nothing reads it: stores retire it at open
+// (README rule 1). Kept for tests only: its runs, a service and handler each,
+// are the run merge's fixture, and a store holding it shows the retirement.
+#[cfg(test)]
 crate::index::macros::define_secondary_index!(
     /// Entries by service and handler, newest created first.
     EntryByServiceCreated,
@@ -162,6 +168,7 @@ crate::index::macros::define_secondary_index!(
 // A query on invocations restricts the index through the invocation columns its
 // fields are named after. Every invocation's key has a handler; only state
 // mutations, which a query on invocations skips, have none.
+#[cfg(test)]
 crate::keys::macros::define_key_selection!(
     EntryByServiceCreatedKey;
     [restate_storage_query_api::tables::index::EntryByServiceCreated];
@@ -225,7 +232,9 @@ crate::keys::macros::define_key_selection!(
     created_at,
 );
 
-/// Every entry by service and handler, newest created first.
+/// Every entry by service and handler, newest created first. Retired; for
+/// tests only.
+#[cfg(test)]
 pub(crate) static ENTRY_BY_SERVICE_CREATED: IndexDefinition = IndexDefinition {
     name: EntryByServiceCreated::DEFINITION,
     introduced: EntryByServiceCreated::INTRODUCED,
@@ -287,7 +296,6 @@ pub(crate) static ENTRY_BY_STATUS_TRANSITIONED: IndexDefinition = IndexDefinitio
 /// The entry indexes, released and controlled together.
 pub(crate) const ENTRY_INDEXES: Family = Family {
     definitions: &[
-        &ENTRY_BY_SERVICE_CREATED,
         &FINISHED_ENTRY_BY_OUTCOME,
         &ACTIVE_ENTRY_BY_STAGE,
         &ENTRY_BY_CREATED,
@@ -309,6 +317,7 @@ fn entry_indexes_reset(config: &Configuration) -> bool {
 /// Removes the key of `before` and adds the key of `after`. Both share the
 /// entry's target, and the rest of the key never changes after creation, so an
 /// update writes nothing.
+#[cfg(test)]
 fn apply_entry_by_service_created(
     storage: &mut PartitionStoreTransaction<'_>,
     id: u32,

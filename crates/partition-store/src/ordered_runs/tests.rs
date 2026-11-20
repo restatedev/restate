@@ -37,7 +37,9 @@ use restate_util_string::ReString;
 use crate::keys::FieldCodec;
 use crate::keys::codecs::CanonicalEntryIdCodec;
 use crate::keys::selection::PrepareKeySelection;
-use crate::vqueue_table::{EntryByServiceCreated, EntryByServiceCreatedKey};
+use crate::vqueue_table::{
+    ENTRY_BY_SERVICE_CREATED, EntryByServiceCreated, EntryByServiceCreatedKey,
+};
 use crate::walk::engine;
 use crate::{PartitionStore, PartitionStoreManager};
 
@@ -86,6 +88,9 @@ async fn store_with_entries() -> PartitionStore {
         .verify_and_run_migrations(CancellationToken::new(), &config)
         .await
         .unwrap();
+    // The retired `entry_by_service_created/1`: its runs, a service and
+    // handler each, are this merge's fixture.
+    store.maintain_only(&[&ENTRY_BY_SERVICE_CREATED]).await;
     engine::run_all(&mut store, 3).await.unwrap();
 
     let qid = VQueueId::custom(7, "q");
