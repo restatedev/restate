@@ -99,6 +99,7 @@ macro_rules! default_wire_codec {
 /// Implements bilrost wire codec for a type
 /// - Message type
 /// - Optional minimum network protocol version (defaults to the fabric minimum)
+/// - Optional encoder (defaults to `codec::encode_as_bilrost`)
 ///
 /// Example:
 /// ```ignore
@@ -112,6 +113,15 @@ macro_rules! bilrost_wire_codec {
     (
         $message:ty, $min_version:path
     ) => {
+        $crate::net::bilrost_wire_codec!(
+            $message,
+            $min_version,
+            $crate::net::codec::encode_as_bilrost
+        );
+    };
+    (
+        $message:ty, $min_version:path, $encode:path
+    ) => {
         impl $crate::net::codec::WireEncode for $message {
             fn encode_to_bytes(
                 &self,
@@ -124,7 +134,7 @@ macro_rules! bilrost_wire_codec {
                         actual: protocol_version,
                     })
                 } else {
-                    Ok($crate::net::codec::encode_as_bilrost(self))
+                    Ok($encode(self))
                 }
             }
         }
