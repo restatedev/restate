@@ -111,6 +111,13 @@ pub fn sys_invocation_table_docs() -> TableDocs {
     let state = |name| column(invocation_state::InvocationState::COLUMN_DOCS, name);
     let columns = vec![
         status("id"),
+        // The view shows the column one release after its table did.
+        ColumnDocs {
+            description: status("canonical_id")
+                .description
+                .replace("Since v1.8.1.", "Since v1.8.2."),
+            ..status("canonical_id")
+        },
         status("vqueue_id"),
         status("target"),
         status("target_service_name"),

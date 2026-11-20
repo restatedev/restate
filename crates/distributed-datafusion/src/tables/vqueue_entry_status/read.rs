@@ -325,7 +325,8 @@ impl CompleteIndex for StatusCreatedIndex {
         tracked() && since(restriction.created_at.to_predicate())
     }
 
-    /// Every alternative fixes the stage to stages the index holds.
+    /// Every alternative fixes the stage, through its stage or its effective
+    /// status, to stages the index holds.
     fn admits(alternatives: &[VqueueEntryStatusDomains]) -> bool {
         stages_held(alternatives, status_indexes_hold)
     }
@@ -436,15 +437,46 @@ fn tracked() -> bool {
 }
 
 /// Whether every alternative fixes the stage to a non-empty set of stages the
-/// index `holds`. A domain of points, even one, is an `IN` set.
+/// index `holds`, through its stage, its effective status or both. A domain of
+/// points, even one, is an `IN` set.
+///
+/// An effective status tells its stage, so `status = 'failed'` alone fixes
+/// Finished. `unknown` tells none: a status set that holds it fixes no stage.
+/// An alternative whose stage and status rule each other out, such as
+/// `stage = 'paused' AND status = 'backing-off'`, matches nothing, which any
+/// index serves.
 fn stages_held(alternatives: &[VqueueEntryStatusDomains], holds: fn(Stage) -> bool) -> bool {
     !alternatives.is_empty()
         && alternatives.iter().all(|alternative| {
-            matches!(
-                alternative.stage.to_predicate(),
-                Some(ValuePredicate::In(stages))
-                    if !stages.is_empty() && stages.iter().all(|stage| holds(*stage))
-            )
+            let fixed = match alternative.stage.to_predicate() {
+                Some(ValuePredicate::In(stages)) => Some(stages),
+                _ => None,
+            };
+            let implied = match alternative.status.to_predicate() {
+                Some(ValuePredicate::In(statuses))
+                    if statuses
+                        .iter()
+                        .all(|status| status.stage() != Stage::Unknown) =>
+                {
+                    Some(
+                        statuses
+                            .iter()
+                            .map(|status| status.stage())
+                            .collect::<Vec<_>>(),
+                    )
+                }
+                _ => None,
+            };
+            match (fixed, implied) {
+                (Some(stages), Some(implied)) => stages
+                    .into_iter()
+                    .filter(|stage| implied.contains(stage))
+                    .all(holds),
+                (Some(stages), None) | (None, Some(stages)) => {
+                    !stages.is_empty() && stages.into_iter().all(holds)
+                }
+                (None, None) => false,
+            }
         })
 }
 

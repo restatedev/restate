@@ -45,6 +45,7 @@ use super::{RegisterTable, TableInventoryBuilder};
 
 pub(super) const SYS_INVOCATION_VIEW: &str = "CREATE VIEW restate.public.sys_invocation as SELECT
             ss.id,
+            ss.canonical_id,
             ss.vqueue_id,
             ss.target,
             ss.target_service_name,

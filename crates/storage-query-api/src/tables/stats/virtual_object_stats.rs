@@ -11,9 +11,9 @@
 use datafusion::arrow::datatypes::DataType;
 use strum::VariantArray;
 
-use restate_storage_api::vqueue_table::{Stage, Status};
+use restate_storage_api::vqueue_table::Stage;
 use restate_types::identifiers::PartitionKey;
-use restate_types::vqueues::EntryKind;
+use restate_types::vqueues::{EffectiveStatus, EntryKind};
 use restate_util_string::ReString;
 
 use crate::{ShardingScheme, define_schema};
@@ -45,9 +45,11 @@ define_schema! {
             /// VQueue stage, including unknown and finished entries.
             #[values(Stage::VARIANTS.iter().copied())]
             stage: Stage => DataType::LargeUtf8,
-            /// Entry processing status, including unknown and terminal statuses.
-            #[values(Status::VARIANTS.iter().copied())]
-            status: Status => DataType::LargeUtf8,
+            /// The entries' effective status, as in `sys_vqueue_entry_status`:
+            /// what they are doing now, which also tells their stage. `unknown`
+            /// for a stored stage and status this version doesn't know.
+            #[values(EffectiveStatus::ALL.iter().copied())]
+            status: EffectiveStatus => DataType::LargeUtf8,
             /// Count in this partition-local stage/status bucket.
             num_entries: u64 => DataType::UInt64,
             /// The entry's routing partition key, which may come from a custom queue.

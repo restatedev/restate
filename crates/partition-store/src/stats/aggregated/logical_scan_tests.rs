@@ -46,7 +46,7 @@ use restate_storage_query_api::test_util::datafusion::prelude::SessionContext;
 use restate_storage_query_api::{AsyncRowSink, LogicalSchema, RowSink, SchemaBinding, Table};
 use restate_types::partitions::Partition;
 use restate_types::sharding::{KeyRange, PartitionId};
-use restate_types::vqueues::EntryKind;
+use restate_types::vqueues::{EffectiveStatus, EntryKind};
 use restate_util_string::ReString;
 
 use crate::keys::header::IndexScope;
@@ -194,7 +194,7 @@ async fn deployment_and_object_schemas_expand_buckets_before_sql_residuals() {
             deployment_id: deployment.into(),
             service_name: service.into(),
             stage,
-            status,
+            status: EffectiveStatus::new(stage, status),
             num_entries: count,
         });
         objects.append(&VirtualObjectStatsRow {
@@ -205,7 +205,7 @@ async fn deployment_and_object_schemas_expand_buckets_before_sql_residuals() {
             kind,
             partition_key,
             stage,
-            status,
+            status: EffectiveStatus::new(stage, status),
             num_entries: count,
         });
     }
@@ -240,7 +240,7 @@ async fn deployment_and_object_schemas_expand_buckets_before_sql_residuals() {
         ("WHERE partition_key = 22 AND stage = 'finished'",                    1),
         ("WHERE kind = 'state-mutation'",                                      1),
         ("WHERE stage = 'unknown' AND status = 'unknown'",                     1),
-        ("WHERE scope IS NULL OR (partition_key = 22 AND status = 'started') ORDER BY num_entries",2),
+        ("WHERE scope IS NULL OR (partition_key = 22 AND status = 'running') ORDER BY num_entries",2),
         ("WHERE kind = 'unknown'",                                             0),
         ("WHERE handler IS NOT NULL AND num_entries > 2 ORDER BY num_entries LIMIT 1",1),
     ];
@@ -318,7 +318,7 @@ async fn seed(store: &mut PartitionStore) -> Vec<ServiceStatsRow> {
                 handler: handler.map(ReString::from),
                 kind,
                 stage,
-                status,
+                status: EffectiveStatus::new(stage, status),
                 num_entries: count,
             });
         }

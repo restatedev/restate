@@ -840,12 +840,12 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
             "{select} WHERE stage IN ('finished', 'running') \
              ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
         ),
-    ];
-    let scans = [
-        // Status alone doesn't prove the stage.
+        // An effective status alone tells its stage.
         format!(
             "{select} WHERE status = 'failed' ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
         ),
+    ];
+    let scans = [
         format!(
             "{select} WHERE stage = 'finished' OR status = 'new' \
              ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
@@ -1288,11 +1288,13 @@ async fn active_entries_read_through_the_status_index_match_the_scan() {
         ),
         // The index holds Finished entries too.
         format!("{select} WHERE stage IN ('inbox', 'finished') {newest} LIMIT 5"),
+        // An effective status alone tells its stage.
+        format!("{select} WHERE status = 'new' {newest} LIMIT 5"),
     ];
     let scans = [
-        // Status alone doesn't prove the stage.
-        format!("{select} WHERE status = 'new' {newest} LIMIT 5"),
         format!("{select} WHERE stage = 'inbox' OR status = 'new' {newest} LIMIT 5"),
+        // `unknown` tells no stage: it may be in one the index doesn't hold.
+        format!("{select} WHERE status = 'unknown' {newest} LIMIT 5"),
         format!("{select} WHERE stage = 'unknown' {newest} LIMIT 5"),
         // The transition index's order.
         format!("{select} WHERE stage = 'inbox' ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"),
