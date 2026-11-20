@@ -685,6 +685,14 @@ mod tests {
                     "_idx_active_entry_by_stage",
                     restate_partition_store::vqueue_table::ActiveEntryByStage::INTRODUCED
                 ),
+                (
+                    "_idx_entry_status_by_status_created",
+                    restate_partition_store::vqueue_table::EntryByStatusCreated::INTRODUCED
+                ),
+                (
+                    "_idx_entry_status_by_status_transitioned",
+                    restate_partition_store::vqueue_table::EntryByStatusTransitioned::INTRODUCED
+                ),
                 ("_idx_entry_by_queue", SemanticRestateVersion::new(1, 8, 2)),
             ]
         );

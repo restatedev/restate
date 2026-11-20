@@ -126,6 +126,10 @@ use restate_storage_query_api::tables::index::{
     EntryByServiceCreated as InvocationsByCreation, EntryByServiceCreatedClause,
     EntryByServiceCreatedColumn, EntryByStatusCreated as InvocationsByStatus,
     EntryByStatusCreatedClause, EntryByStatusCreatedColumn,
+    EntryStatusByStatusCreated as EntriesByStatusCreated, EntryStatusByStatusCreatedClause,
+    EntryStatusByStatusCreatedColumn,
+    EntryStatusByStatusTransitioned as EntriesByStatusTransitioned,
+    EntryStatusByStatusTransitionedClause, EntryStatusByStatusTransitionedColumn,
 };
 use restate_types::config::Configuration;
 use restate_types::vqueues::CanonicalEntryId;
@@ -856,6 +860,55 @@ impl Keyed {
         }
     }
 
+    /// The entries in `stage`, in any status.
+    fn of_stage(stage: &Stage) -> Self {
+        Self {
+            stages: stage_bit(*stage),
+            statuses: Self::ALL.statuses,
+        }
+    }
+
+    /// The entries with the stored `status`, in any stage.
+    fn of_stored_status(status: &Status) -> Self {
+        Self {
+            stages: Self::ALL.stages,
+            statuses: status_bit(*status),
+        }
+    }
+
+    /// The pairs `selection`'s clauses allow, each clause mapped by `of`, or
+    /// left out if it doesn't restrict them.
+    fn of_selection<T: SelectionSchema>(
+        selection: &Selection<T>,
+        of: impl Fn(&T::Clause) -> Option<Self>,
+    ) -> Self {
+        match selection {
+            Selection::All => Self::ALL,
+            Selection::Empty => Self::NONE,
+            Selection::Predicates(predicates) => predicates
+                .iter()
+                .flat_map(|(_, clauses)| clauses.iter())
+                .filter_map(of)
+                .fold(Self::ALL, Self::intersect),
+        }
+    }
+
+    /// Every pair of an allowed stage and an allowed status, in key order.
+    fn pairs(self) -> impl Iterator<Item = (Stage, Status)> {
+        let member = |bits: u16, at: usize| bits & (1 << at) != 0;
+        KEYED_STAGES
+            .into_iter()
+            .enumerate()
+            .filter(move |&(at, _)| member(self.stages.into(), at))
+            .flat_map(move |(_, stage)| {
+                KEYED_STATUSES
+                    .into_iter()
+                    .enumerate()
+                    .filter(move |&(at, _)| member(self.statuses, at))
+                    .map(move |(_, status)| (stage, status))
+            })
+    }
+
     /// The entries of invocations with the public `completion_result`, NULL
     /// for those that haven't completed.
     fn of_completion_result(result: &Option<ReString>) -> Self {
@@ -877,43 +930,71 @@ impl EntryByStatusCreatedKey {
     pub fn lanes(
         selection: &Selection<InvocationsByStatus>,
     ) -> impl Iterator<Item = (Stage, Status)> {
-        let keyed = match selection {
-            Selection::All => Keyed::ALL,
-            Selection::Empty => Keyed::NONE,
-            Selection::Predicates(predicates) => {
-                let statuses = predicates
-                    .for_column(EntryByStatusCreatedColumn::Status)
-                    .iter()
-                    .filter_map(|clause| match clause {
-                        EntryByStatusCreatedClause::Status(status) => {
-                            Some(Keyed::matching(status, Keyed::of_status))
-                        }
-                        _ => None,
-                    });
-                let results = predicates
-                    .for_column(EntryByStatusCreatedColumn::CompletionResult)
-                    .iter()
-                    .filter_map(|clause| match clause {
-                        EntryByStatusCreatedClause::CompletionResult(result) => {
-                            Some(Keyed::matching(result, Keyed::of_completion_result))
-                        }
-                        _ => None,
-                    });
-                statuses.chain(results).fold(Keyed::ALL, Keyed::intersect)
+        Keyed::of_selection(selection, |clause| match clause {
+            EntryByStatusCreatedClause::Status(status) => {
+                Some(Keyed::matching(status, Keyed::of_status))
             }
-        };
-        let member = |bits: u16, at: usize| bits & (1 << at) != 0;
-        KEYED_STAGES
-            .into_iter()
-            .enumerate()
-            .filter(move |&(at, _)| member(keyed.stages.into(), at))
-            .flat_map(move |(_, stage)| {
-                KEYED_STATUSES
-                    .into_iter()
-                    .enumerate()
-                    .filter(move |&(at, _)| member(keyed.statuses, at))
-                    .map(move |(_, status)| (stage, status))
-            })
+            EntryByStatusCreatedClause::CompletionResult(result) => {
+                Some(Keyed::matching(result, Keyed::of_completion_result))
+            }
+            _ => None,
+        })
+        .pairs()
+    }
+
+    /// The stages and stored statuses whose keys can hold an entry
+    /// `selection` matches, in key order: those its conditions on the entry's
+    /// own stage and status allow. Each pair is a lane
+    /// ([`Self::prepare_entry_lanes`]).
+    pub fn entry_lanes(
+        selection: &Selection<EntriesByStatusCreated>,
+    ) -> impl Iterator<Item = (Stage, Status)> {
+        Keyed::of_selection(selection, |clause| match clause {
+            EntryStatusByStatusCreatedClause::Stage(stage) => {
+                Some(Keyed::matching(stage, Keyed::of_stage))
+            }
+            EntryStatusByStatusCreatedClause::Status(status) => {
+                Some(Keyed::matching(status, Keyed::of_stored_status))
+            }
+            _ => None,
+        })
+        .pairs()
+    }
+
+    /// The selection of the keys of entries `selection` may match in the lanes
+    /// of every one of `stages` with every one of `statuses`: their creation
+    /// time, and the hours that may hold it. The caller keeps its predicate.
+    pub fn prepare_entry_lanes(
+        selection: &Selection<EntriesByStatusCreated>,
+        stages: &[Stage],
+        statuses: &[Status],
+    ) -> crate::Result<KeySelection<Self>> {
+        KeySelection::for_key_fields_with(
+            selection,
+            |clause, literals| match clause {
+                EntryStatusByStatusCreatedClause::CreatedAt(predicate) => {
+                    ReverseUniqueTimestampCodec::try_prepare_value(predicate, literals)
+                }
+                // The stage and status select the lanes.
+                _ => Ok(None),
+            },
+            |tag, literals| match tag {
+                "stage" => pinned_stages(stages, literals),
+                "status" => pinned_statuses(statuses, literals),
+                "created_hour" => {
+                    let times = created_times(
+                        selection,
+                        EntryStatusByStatusCreatedColumn::CreatedAt,
+                        |clause| match clause {
+                            EntryStatusByStatusCreatedClause::CreatedAt(times) => Some(times),
+                            _ => None,
+                        },
+                    );
+                    Ok(hour_buckets(times, literals))
+                }
+                _ => Ok(None),
+            },
+        )
     }
 
     /// The selection of the keys `selection` may match in the lanes of every
@@ -939,13 +1020,8 @@ impl EntryByStatusCreatedKey {
                 _ => Ok(None),
             },
             |tag, literals| match tag {
-                "stage" => StageRankCodec::try_prepare_value(
-                    &ValuePredicate::In(stages.to_vec()),
-                    literals,
-                ),
-                "status" => {
-                    StatusCodec::try_prepare_value(&ValuePredicate::In(statuses.to_vec()), literals)
-                }
+                "stage" => pinned_stages(stages, literals),
+                "status" => pinned_statuses(statuses, literals),
                 "created_hour" => {
                     let times =
                         created_times(selection, EntryByStatusCreatedColumn::CreatedAt, |clause| {
@@ -960,6 +1036,81 @@ impl EntryByStatusCreatedKey {
             },
         )
     }
+}
+
+impl EntryByStatusTransitionedKey {
+    /// The stages and stored statuses whose keys can hold an entry
+    /// `selection` matches, in key order: those its conditions on the entry's
+    /// own stage and status allow. Each pair is a lane
+    /// ([`Self::prepare_entry_lanes`]).
+    pub fn entry_lanes(
+        selection: &Selection<EntriesByStatusTransitioned>,
+    ) -> impl Iterator<Item = (Stage, Status)> {
+        Keyed::of_selection(selection, |clause| match clause {
+            EntryStatusByStatusTransitionedClause::Stage(stage) => {
+                Some(Keyed::matching(stage, Keyed::of_stage))
+            }
+            EntryStatusByStatusTransitionedClause::Status(status) => {
+                Some(Keyed::matching(status, Keyed::of_stored_status))
+            }
+            _ => None,
+        })
+        .pairs()
+    }
+
+    /// The selection of the keys of entries `selection` may match in the lanes
+    /// of every one of `stages` with every one of `statuses`: their transition
+    /// time, and the hours that may hold it. The caller keeps its predicate.
+    pub fn prepare_entry_lanes(
+        selection: &Selection<EntriesByStatusTransitioned>,
+        stages: &[Stage],
+        statuses: &[Status],
+    ) -> crate::Result<KeySelection<Self>> {
+        KeySelection::for_key_fields_with(
+            selection,
+            |clause, literals| match clause {
+                EntryStatusByStatusTransitionedClause::TransitionedAt(predicate) => {
+                    ReverseUniqueTimestampCodec::try_prepare_value(predicate, literals)
+                }
+                // The stage and status select the lanes.
+                _ => Ok(None),
+            },
+            |tag, literals| match tag {
+                "stage" => pinned_stages(stages, literals),
+                "status" => pinned_statuses(statuses, literals),
+                "transitioned_hour" => {
+                    let times = created_times(
+                        selection,
+                        EntryStatusByStatusTransitionedColumn::TransitionedAt,
+                        |clause| match clause {
+                            EntryStatusByStatusTransitionedClause::TransitionedAt(times) => {
+                                Some(times)
+                            }
+                            _ => None,
+                        },
+                    );
+                    Ok(hour_buckets(times, literals))
+                }
+                _ => Ok(None),
+            },
+        )
+    }
+}
+
+/// A status index's stage field, pinned to `stages`.
+fn pinned_stages(
+    stages: &[Stage],
+    literals: &mut Vec<u8>,
+) -> crate::Result<Option<PreparedFieldPredicate>> {
+    StageRankCodec::try_prepare_value(&ValuePredicate::In(stages.to_vec()), literals)
+}
+
+/// A status index's status field, pinned to `statuses`.
+fn pinned_statuses(
+    statuses: &[Status],
+    literals: &mut Vec<u8>,
+) -> crate::Result<Option<PreparedFieldPredicate>> {
+    StatusCodec::try_prepare_value(&ValuePredicate::In(statuses.to_vec()), literals)
 }
 
 /// Removes the key of `before` and adds the key of `after` in
