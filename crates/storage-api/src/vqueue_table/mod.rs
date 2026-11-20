@@ -21,6 +21,6 @@ mod tables;
 pub use entry::*;
 pub use entry_change::*;
 pub use entry_status::*;
-pub use restate_types::vqueues::{EntryId, EntryKind};
+pub use restate_types::vqueues::{EntryId, EntryKind, Stage, Status};
 pub use store::*;
 pub use tables::*;
