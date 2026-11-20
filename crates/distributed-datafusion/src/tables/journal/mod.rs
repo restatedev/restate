@@ -17,10 +17,8 @@ use datafusion::catalog::TableProvider;
 
 use restate_partition_store::journal_scan::{JournalTable, JournalV2Table};
 use restate_partition_store::lookup::LookupBinding;
+use restate_partition_store::table::WithSnapshot;
 use restate_storage_api::Result;
-use restate_storage_api::journal_table::JournalEntry;
-use restate_storage_api::journal_table_v2::StoredEntry;
-use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_query_api::schema::RecordProgress;
 use restate_storage_query_api::selection::Selection;
 use restate_storage_query_api::selection::domain::Domain;
@@ -28,7 +26,9 @@ use restate_storage_query_api::tables::journal::{
     Journal, JournalColumn, JournalDomains, JournalView, named_journal_entries,
 };
 use restate_storage_query_api::{PreparedRead, RowSink, SchemaBinding, Table};
-use restate_types::identifiers::{InvocationId, InvocationUuid, JournalEntryId, PartitionKey};
+use restate_types::identifiers::{
+    InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithInvocationId,
+};
 use restate_util_string::ReString;
 
 use crate::QuerySource;
@@ -103,13 +103,16 @@ fn entry_id(partition_key: PartitionKey, uuid: InvocationUuid, index: u32) -> Jo
     JournalEntryId::from_parts(InvocationId::from_parts(partition_key, uuid), index)
 }
 
+/// Binds a journal layout to `sys_journal`. `$write` writes one stored entry
+/// through the projected row writer; its errors fail the query. Records come with
+/// their snapshot, from which V2 reads the content blobs of large entries.
 macro_rules! journal_binding {
-    ($binding:ident, $table:ty, $decode:expr, $write:path) => {
+    ($binding:ident, $table:ty, $write:expr) => {
         pub(crate) enum $binding {}
 
         impl SchemaBinding for $binding {
             type Schema = Journal;
-            type Table = $table;
+            type Table = WithSnapshot<$table>;
             type Materializer = ();
 
             fn materialize_next(
@@ -123,20 +126,39 @@ macro_rules! journal_binding {
                 Ok(RecordProgress::Done)
             }
 
-            fn prepare(selection: &Selection<Journal>) -> Result<PreparedRead<$table>> {
-                <$table>::prepare(selection)
+            fn prepare(selection: &Selection<Journal>) -> Result<PreparedRead<Self::Table>> {
+                Ok(<$table>::prepare(selection)?.cast())
             }
 
+            fn materialize_projected(
+                ((key, value), snapshot): <Self::Table as Table>::Record<'_>,
+                emit: &mut impl RowSink<Journal>,
+            ) -> ControlFlow<Result<()>> {
+                let id = key
+                    .decode_all()
+                    .map(|key| entry_id(key.partition_key, key.invocation_uuid, key.journal_index));
+                match id {
+                    Ok(id) => emit
+                        .append_with(|builder| ($write)(&mut builder.row(), id, value, snapshot)),
+                    Err(error) => ControlFlow::Break(Err(error)),
+                }
+            }
+
+            /// Unlike [`Self::materialize_projected`], a row can't fail here: a
+            /// stored entry that can't be written is logged and its row left partial.
             fn materialize(
-                (key, mut value): <Self::Table as Table>::Record<'_>,
+                ((key, value), snapshot): <Self::Table as Table>::Record<'_>,
                 emit: &mut impl for<'a> FnMut(JournalView<'a>) -> ControlFlow<Result<()>>,
             ) -> ControlFlow<Result<()>> {
-                let decoded = key.decode_all().and_then(|key| {
-                    let id = entry_id(key.partition_key, key.invocation_uuid, key.journal_index);
-                    Ok((id, ($decode)(&mut value)?))
-                });
-                match decoded {
-                    Ok((id, entry)) => emit(JournalView(&|row| $write(row, id, &entry))),
+                let id = key
+                    .decode_all()
+                    .map(|key| entry_id(key.partition_key, key.invocation_uuid, key.journal_index));
+                match id {
+                    Ok(id) => emit(JournalView(&|row| {
+                        if let Err(error) = ($write)(row, id, value, snapshot) {
+                            row::log_corruption(&id.invocation_id(), "entry", error);
+                        }
+                    })),
                     Err(error) => ControlFlow::Break(Err(error)),
                 }
             }
@@ -152,16 +174,7 @@ macro_rules! journal_binding {
     };
 }
 
-journal_binding!(
-    JournalV1Binding,
-    JournalTable,
-    |value: &mut &[u8]| JournalEntry::decode(value),
-    row::write_v1
-);
-journal_binding!(
-    JournalV2Binding,
-    JournalV2Table,
-    |value: &mut &[u8]| StoredEntry::decode(value)
-        .map(|entry| entry.0.try_into_inline().map_err(Box::new)),
-    row::write_v2
-);
+journal_binding!(JournalV1Binding, JournalTable, |row, id, value, _| {
+    row::write_v1(row, id, value)
+});
+journal_binding!(JournalV2Binding, JournalV2Table, row::write_v2);

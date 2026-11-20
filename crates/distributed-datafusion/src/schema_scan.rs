@@ -23,7 +23,7 @@ use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 
 use restate_partition_store::ReadSnapshot;
-use restate_partition_store::lookup::{LookupBinding, LookupKeys};
+use restate_partition_store::lookup::{LookupBinding, LookupKeys, LookupKeysOf};
 use restate_storage_query_api::scan::CursorScan;
 use restate_storage_query_api::selection::{self, Selection};
 use restate_storage_query_api::{LogicalSchema, PreparedRead, RecordsOf, SchemaBinding};
@@ -187,7 +187,7 @@ impl<B: LookupBinding> Debug for LookupScanner<B> {
 
 impl<B: LookupBinding> ScanPartition for LookupScanner<B>
 where
-    ReadSnapshot: CursorScan<B::Table> + CursorScan<RecordsOf<B::Table, LookupKeys<B::Table>>>,
+    ReadSnapshot: CursorScan<B::Table> + CursorScan<RecordsOf<B::Table, LookupKeysOf<B>>>,
     for<'a> <B::Table as restate_storage_query_api::scan::Table>::Record<'a>: Copy + Send,
 {
     fn supports_primary_lookup(&self) -> bool {
@@ -219,7 +219,7 @@ where
 
 struct BoundLookupRead<B: LookupBinding> {
     projection: SchemaRef,
-    keys: Arc<LookupKeys<B::Table>>,
+    keys: Arc<LookupKeysOf<B>>,
     limit: Option<usize>,
 }
 
@@ -234,7 +234,7 @@ impl<B: LookupBinding> Debug for BoundLookupRead<B> {
 
 impl<B: LookupBinding> PreparedPartitionRead for BoundLookupRead<B>
 where
-    ReadSnapshot: CursorScan<RecordsOf<B::Table, LookupKeys<B::Table>>>,
+    ReadSnapshot: CursorScan<RecordsOf<B::Table, LookupKeysOf<B>>>,
     for<'a> <B::Table as restate_storage_query_api::scan::Table>::Record<'a>: Copy + Send,
 {
     fn capture_requirements(&self) -> restate_worker_api::PartitionCaptureRequirements {
