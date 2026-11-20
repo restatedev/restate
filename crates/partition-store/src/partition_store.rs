@@ -1351,6 +1351,11 @@ impl<'a> PartitionStoreTransaction<'a> {
         self.meta.partition_id
     }
 
+    #[inline]
+    pub(crate) fn partition_key_range(&self) -> KeyRange {
+        self.meta.key_range
+    }
+
     /// Puts the partition's `position` into the batch, with its partition store byte offset
     /// advanced by the size of the batch, this put included. Returns the position it put.
     fn put_fsm_position_counting_batch(

@@ -87,6 +87,13 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.8.2*
     EnableByteOffsets = 8,
+    /// Retire journal v1: move the input of invocations that aren't pinned to a deployment yet to
+    /// journal v2, kill the other invocations whose journal is still stored in journal v1, and
+    /// delete what is left in the journal v1 table. Afterwards, the partition holds no journal v1
+    /// data, and stores the journal of new invocations in journal v2.
+    ///
+    /// *Since v1.8.2*
+    RetireJournalV1 = 9,
 }
 
 /// The partition features this server requires. Each one retires logic this server no longer
@@ -120,6 +127,7 @@ impl PartitionFeatureChange {
             Self::EnableInconsistentStateMutationCleanup => &RESTATE_VERSION_1_8_0,
             Self::EnablePreflightSignalRecording => &RESTATE_VERSION_1_8_1,
             Self::EnableByteOffsets => &RESTATE_VERSION_1_8_2,
+            Self::RetireJournalV1 => &RESTATE_VERSION_1_8_2,
         }
     }
 
@@ -140,6 +148,7 @@ impl PartitionFeatureChange {
             Self::EnableInconsistentStateMutationCleanup => "inconsistent_state_mutation_cleanup",
             Self::EnablePreflightSignalRecording => "preflight_signal_recording",
             Self::EnableByteOffsets => "byte_offsets",
+            Self::RetireJournalV1 => "journal_v1_retired",
         }
     }
 
@@ -171,6 +180,7 @@ impl PartitionFeatureChange {
                 !std::mem::replace(&mut features.preflight_signal_recording, true)
             }
             Self::EnableByteOffsets => !std::mem::replace(&mut features.byte_offsets, true),
+            Self::RetireJournalV1 => !std::mem::replace(&mut features.journal_v1_retired, true),
         }
     }
 }
@@ -246,6 +256,12 @@ pub struct PersistedFeatures {
     /// *Since v1.8.2*
     #[bilrost(tag(8))]
     pub byte_offsets: bool,
+
+    /// The partition holds no journal v1 data, and creates none.
+    ///
+    /// *Since v1.8.2*
+    #[bilrost(tag(9))]
+    pub journal_v1_retired: bool,
 }
 
 impl PersistedFeatures {
@@ -267,6 +283,7 @@ impl PersistedFeatures {
                 self.preflight_signal_recording
             }
             PartitionFeatureChange::EnableByteOffsets => self.byte_offsets,
+            PartitionFeatureChange::RetireJournalV1 => self.journal_v1_retired,
         }
     }
 

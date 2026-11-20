@@ -87,6 +87,21 @@ pub trait ScanJournalTable {
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
+/// Walks the journal table invocation by invocation, to delete what it stores.
+///
+/// *Since v1.8.2*
+pub trait RetireJournalTable {
+    /// Returns the first invocation after `after`, in key order, that has journal entries, or
+    /// the first one that has any if `after` is `None`.
+    fn next_invocation_with_journal(
+        &mut self,
+        after: Option<&InvocationId>,
+    ) -> Result<Option<InvocationId>>;
+
+    /// Deletes every journal entry stored for the invocation, whatever its journal length.
+    fn delete_all_journal_entries(&mut self, invocation_id: &InvocationId) -> Result<()>;
+}
+
 pub trait WriteJournalTable {
     fn put_journal_entry(
         &mut self,
