@@ -42,7 +42,8 @@ use restate_types::GenerationalNodeId;
 use restate_types::net::distributed_query::{
     DistributedQueryService, PartitionReadError, QueryFailureKind, QueryTaskAnalyze,
     QueryTaskClosed, QueryTaskError, QueryTaskExecute, QueryTaskId, QueryTaskInstall,
-    QueryTaskInstalled, QueryTaskReply, QueryTaskReplyBody, QueryTaskRequest, TaskOutcome,
+    QueryTaskInstalled, QueryTaskIpcChunk, QueryTaskReply, QueryTaskReplyBody, QueryTaskRequest,
+    QueryTaskStreamIpc, TaskOutcome,
 };
 use restate_types::net::{ProtocolVersion, RpcRequest};
 
@@ -51,11 +52,22 @@ use crate::source_registry::SourceRegistry;
 use crate::{encode_record_batch, encode_schema};
 
 use super::analyze::{AnalyzeCollector, Shape, build_report, shape};
+use super::ipc;
 use super::report::digest;
 use super::source::SourceCodec;
 use super::worker_url;
 
-type Lane = Arc<tokio::sync::Mutex<Option<SendableRecordBatchStream>>>;
+type Lane = Arc<tokio::sync::Mutex<Option<OutputLane>>>;
+
+struct OutputLane {
+    stream: SendableRecordBatchStream,
+    encoding: LaneEncoding,
+}
+
+enum LaneEncoding {
+    Legacy,
+    Ipc(Box<ipc::Encoder>),
+}
 
 /// Opt-in service for task installation and pull-based output over Restate RPC.
 /// The library owns the installed plan and its shared execution state; this service
@@ -76,6 +88,15 @@ pub struct DistributedQueryServer {
 pub(super) struct Tamper {
     /// Ignores the request for a report, as a worker from before reports.
     pub legacy: bool,
+    /// Ignores the stream IPC request, as a worker from before persistent IPC.
+    pub legacy_ipc: bool,
+    /// Substitutes the Installed output schema, before any lane is polled.
+    pub installed_schema: Option<datafusion::arrow::datatypes::SchemaRef>,
+    /// Sends output in the opposite profile to the acknowledged one.
+    pub wrong_output_profile: bool,
+    /// Replaces executed output streams to exercise batch shapes and failures
+    /// the storage fixture cannot produce.
+    pub output: Option<fn(usize, SendableRecordBatchStream) -> SendableRecordBatchStream>,
     /// Sends these bytes as every report.
     pub report: Option<Vec<u8>>,
     /// Holds each Execute before it runs: tells its task's ID, then waits for
@@ -144,6 +165,9 @@ fn outcome(reply: &Result<QueryTaskReplyBody>) -> String {
         Ok(QueryTaskReplyBody::Executing(())) => "executing".to_owned(),
         Ok(QueryTaskReplyBody::Batch(_)) => "batch".to_owned(),
         Ok(QueryTaskReplyBody::End(())) => "end".to_owned(),
+        Ok(QueryTaskReplyBody::Ipc(chunk)) => {
+            if chunk.end { "ipc-end" } else { "ipc-data" }.to_owned()
+        }
         Ok(_) => "other".to_owned(),
         Err(error) => format!("error: {error}"),
     }
@@ -244,18 +268,23 @@ impl DistributedQueryServer {
                             #[cfg(test)]
                             let request = QueryTaskInstall {
                                 analyze: request.analyze.filter(|_| !self.tamper.lock().legacy),
+                                stream_ipc: request.stream_ipc.filter(|_| !self.tamper.lock().legacy_ipc),
                                 ..request
                             };
                             // Installation builds state and decodes once, without polling storage.
                             match InstalledTask::install(&self.env, &self.scanners, request).await {
                                 Ok(task) => {
-                                    let schema = encode_schema(&task.plan.schema()).into();
+                                    let schema = task.plan.schema();
+                                    #[cfg(test)]
+                                    let schema = self.tamper.lock().installed_schema.clone().unwrap_or(schema);
+                                    let schema = encode_schema(&schema).into();
                                     #[cfg(test)]
                                     self.observations.lock().push(TaskObservation {
                                         id: key.1.clone(), context: Arc::clone(&task.context), partitions: task.plan.output_partitioning().partition_count(),
                                         owner: self.scanners.node_id(), plan: datafusion::physical_plan::displayable(task.plan.as_ref()).indent(true).to_string(), output: Arc::clone(&task.output),
                                     });
                                     let analyze = task.collector.as_ref().map(|_| QueryTaskAnalyze {});
+                                    let stream_ipc = task.stream_ipc.then_some(QueryTaskStreamIpc {});
                                     #[cfg_attr(not(test), expect(unused_mut))]
                                     let mut task = task;
                                     #[cfg(test)]
@@ -264,7 +293,7 @@ impl DistributedQueryServer {
                                         task.id = Some(key.1.clone());
                                     }
                                     tasks.insert(key, Arc::new(task));
-                                    reply.send(QueryTaskReplyBody::Installed(QueryTaskInstalled { schema, analyze }).into());
+                                    reply.send(QueryTaskReplyBody::Installed(QueryTaskInstalled { schema, analyze, stream_ipc }).into());
                                 }
                                 Err(error) => reply.send(task_reply(Err(error), origin)),
                             }
@@ -559,6 +588,8 @@ struct InstalledTask {
     key: TaskKey,
     context: Arc<TaskContext>,
     plan: Arc<dyn ExecutionPlan>,
+    /// Output profile selected once, from the Install request.
+    stream_ipc: bool,
     /// Of the plan's bytes as installed, for the report.
     plan_digest: u64,
     /// The plan's shape as installed, for the report: only when asked for one.
@@ -623,6 +654,7 @@ impl InstalledTask {
             .analyze
             .is_some()
             .then(|| Arc::new(AnalyzeCollector::default()));
+        let stream_ipc = request.stream_ipc.is_some();
         let key = TaskKey {
             query_id: Uuid::from_bytes(request.id.runtime_query_id),
             stage_id: request.id.stage as usize,
@@ -733,6 +765,7 @@ impl InstalledTask {
             context: channel.task_ctx,
             shape: collector.as_ref().and_then(|_| shape(&plan)),
             plan,
+            stream_ipc,
             plan_digest,
             started: Default::default(),
             lanes: Mutex::new(Some(HashMap::new())),
@@ -783,6 +816,10 @@ impl InstalledTask {
                         producer_head: ProducerHead::None,
                     })
                     .await
+                    .inspect_err(|_| {
+                        self.failed
+                            .store(true, std::sync::atomic::Ordering::Relaxed)
+                    })
             })
             .await?;
         if !Arc::ptr_eq(&self.context, &context)
@@ -794,15 +831,56 @@ impl InstalledTask {
                 != Some(&request.id.query_ts)
             || streams.len() != end - start
         {
+            self.failed
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             return exec_err!("worker did not preserve shared task state and execution identity");
         }
+        #[cfg(test)]
+        let streams = {
+            let rewrite = self.tamper.lock().output;
+            streams
+                .into_iter()
+                .enumerate()
+                .map(|(offset, stream)| match rewrite {
+                    Some(rewrite) => rewrite(start + offset, stream),
+                    None => stream,
+                })
+                .collect::<Vec<_>>()
+        };
+        let schema = self.plan.schema();
+        // Build the whole range before publishing any lane. A failed schema or
+        // encoder setup must not leave a partially executable range behind.
+        let output = (start..end)
+            .zip(streams)
+            .map(|(partition, stream)| {
+                if stream.schema() != schema {
+                    return exec_err!(
+                        "task stream schema differs from its installed output schema"
+                    );
+                }
+                let encoding = if self.stream_ipc {
+                    LaneEncoding::Ipc(Box::new(ipc::Encoder::new(Arc::clone(&schema))?))
+                } else {
+                    LaneEncoding::Legacy
+                };
+                Ok((
+                    partition,
+                    Arc::new(tokio::sync::Mutex::new(Some(OutputLane {
+                        stream,
+                        encoding,
+                    }))),
+                ))
+            })
+            .collect::<Result<Vec<_>>>()
+            .inspect_err(|_| {
+                self.failed
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            })?;
         let mut lanes = self.lanes.lock();
         let Some(lanes) = lanes.as_mut() else {
             return Err(closed_error());
         };
-        lanes.extend((start..end).zip(streams).map(|(partition, stream)| {
-            (partition, Arc::new(tokio::sync::Mutex::new(Some(stream))))
-        }));
+        lanes.extend(output);
         Ok(QueryTaskReplyBody::Executing(()))
     }
 
@@ -818,37 +896,75 @@ impl InstalledTask {
             let mut lane = lane
                 .try_lock()
                 .map_err(|_| protocol_error("concurrent pull for the same task partition"))?;
-            let Some(stream) = lane.as_mut() else {
+            // Cancellation or any error drops the taken state. Only a fully
+            // encoded data reply restores it; a partially advanced codec is
+            // never available to a subsequent pull.
+            let Some(mut output) = lane.take() else {
                 return Err(protocol_error("task output partition already ended"));
             };
-            match stream.next().await {
-                Some(Ok(batch)) => {
-                    let rows = batch.num_rows();
-                    let encoded = encode_record_batch(&self.plan.schema(), batch)?;
-                    if let Some(collector) = &self.collector {
-                        collector.sent(rows, encoded.len());
+            #[cfg(test)]
+            self.event("next-polling", String::new());
+            let result = async {
+                match output.stream.next().await {
+                    Some(Ok(batch)) => {
+                        let rows = batch.num_rows();
+                        let (encoded, persistent) = match &mut output.encoding {
+                            LaneEncoding::Legacy => {
+                                let schema = self.plan.schema();
+                                if batch.schema() != schema {
+                                    return exec_err!(
+                                        "task batch schema differs from its installed output schema"
+                                    );
+                                }
+                                (encode_record_batch(&schema, batch)?.into(), false)
+                            }
+                            // The persistent encoder validates its installed schema.
+                            LaneEncoding::Ipc(encoder) => (encoder.encode(&batch)?, true),
+                        };
+                        if let Some(collector) = &self.collector {
+                            collector.sent(rows, encoded.len());
+                        }
+                        #[cfg(test)]
+                        {
+                            let mut output = self.output.lock();
+                            output.rows += rows;
+                            output.bytes += encoded.len();
+                        }
+                        *lane = Some(output);
+                        #[cfg(test)]
+                        let persistent = persistent ^ self.tamper.lock().wrong_output_profile;
+                        if persistent {
+                            Ok(QueryTaskReplyBody::Ipc(QueryTaskIpcChunk {
+                                data: encoded,
+                                end: false,
+                            }))
+                        } else {
+                            Ok(QueryTaskReplyBody::Batch(encoded))
+                        }
                     }
-                    #[cfg(test)]
-                    {
-                        let mut output = self.output.lock();
-                        output.rows += rows;
-                        output.bytes += encoded.len();
+                    Some(Err(error)) => Err(error),
+                    None => {
+                        let reply = match output.encoding {
+                            LaneEncoding::Legacy => QueryTaskReplyBody::End(()),
+                            LaneEncoding::Ipc(encoder) => {
+                                QueryTaskReplyBody::Ipc(QueryTaskIpcChunk {
+                                    data: encoder.finish()?,
+                                    end: true,
+                                })
+                            }
+                        };
+                        self.ended
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        Ok(reply)
                     }
-                    Ok(QueryTaskReplyBody::Batch(encoded.into()))
-                }
-                Some(Err(error)) => {
-                    *lane = None;
-                    self.failed
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                    Err(error)
-                }
-                None => {
-                    *lane = None;
-                    self.ended
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    Ok(QueryTaskReplyBody::End(()))
                 }
             }
+            .await;
+            if result.is_err() {
+                self.failed
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            result
         })
         .await
     }

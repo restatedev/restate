@@ -20,9 +20,10 @@
 //! 2. **Execute** starts the task over a half-open range of its plan's output
 //!    partitions (DataFusion partitions, not Restate partitions). Answer:
 //!    `Executing`.
-//! 3. **Next** asks for the next batch of one output partition. Answer: `Batch`,
-//!    one Arrow IPC-encoded record batch, or `End` once that partition has no
-//!    more.
+//! 3. **Next** asks for the next batch of one output partition. By default the
+//!    answer is `Batch`, a standalone Arrow IPC stream, or `End`. When Install
+//!    requests and acknowledges [`QueryTaskStreamIpc`], answers are instead
+//!    `Ipc`: one persistent Arrow stream per output partition.
 //! 4. **Close** releases the task. Answer: `Closed`.
 //!
 //! For `EXPLAIN ANALYZE`, Install can ask for a report of what the task did,
@@ -37,7 +38,7 @@
 //!
 //! For example, a coordinator reading output partitions 0 and 1 from a worker
 //! installs the task, executes it over `0..2`, sends `Next` for each partition
-//! until it gets `End`, and closes it.
+//! until each gets `End` (or terminal `Ipc`), and closes it.
 
 mod error;
 mod report;
@@ -107,7 +108,16 @@ pub struct QueryTaskInstall {
     /// Asks for a report of what the task did, returned by `Close`.
     #[bilrost(9)]
     pub analyze: Option<QueryTaskAnalyze>,
+    /// Requests persistent per-output-partition IPC. Absent acknowledgment means
+    /// the worker will use the existing standalone `Batch` / `End` profile.
+    #[bilrost(10)]
+    pub stream_ipc: Option<QueryTaskStreamIpc>,
 }
+
+/// Selects uncompressed V5 stream IPC with nonlegacy framing and Resend
+/// dictionaries. The profile is fixed at Install and does not enable retries.
+#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
+pub struct QueryTaskStreamIpc {}
 
 /// A header of the original query. A list, so that repeated headers and raw
 /// byte values survive.
@@ -150,17 +160,32 @@ pub struct QueryTaskClose {
 /// The answer to an install: the encoded schema of the task's output.
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct QueryTaskInstalled {
+    /// Always present, including when persistent stream IPC is acknowledged.
     #[bilrost(1)]
     pub schema: Bytes,
     /// Acknowledges Install's `analyze` request: `Close` will carry a report.
     #[bilrost(2)]
     pub analyze: Option<QueryTaskAnalyze>,
+    /// Acknowledges Install's `stream_ipc` request.
+    #[bilrost(3)]
+    pub stream_ipc: Option<QueryTaskStreamIpc>,
+}
+
+/// One complete encode/finish result from an output partition's Arrow stream.
+/// Data carries exactly one batch, preceded by its dictionaries and, on the
+/// first reply, its schema. A terminal reply carries EOS (schema + EOS if empty).
+#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
+pub struct QueryTaskIpcChunk {
+    #[bilrost(1)]
+    pub data: Bytes,
+    #[bilrost(2)]
+    pub end: bool,
 }
 
 /// The answer to any task request.
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct QueryTaskReply {
-    #[bilrost(oneof(1, 2, 3, 4, 5, 6))]
+    #[bilrost(oneof(1, 2, 3, 4, 5, 6, 7))]
     pub body: QueryTaskReplyBody,
 }
 
@@ -180,6 +205,8 @@ pub enum QueryTaskReplyBody {
     Closed(QueryTaskClosed),
     #[bilrost(6)]
     Failure(QueryTaskError),
+    #[bilrost(7)]
+    Ipc(QueryTaskIpcChunk),
 }
 
 impl From<QueryTaskReplyBody> for QueryTaskReply {
@@ -250,6 +277,7 @@ mod tests {
         let reply = QueryTaskReply::from(QueryTaskReplyBody::Installed(QueryTaskInstalled {
             schema: Bytes::from_static(b"schema"),
             analyze: None,
+            stream_ipc: None,
         }));
         let request_bytes = request.encode_to_bytes(ProtocolVersion::V7).unwrap();
         let reply_bytes = reply.encode_to_bytes(ProtocolVersion::V7).unwrap();
@@ -287,7 +315,7 @@ mod tests {
         assert_eq!(decoded.schema, Bytes::from_static(b"schema"));
     }
 
-    /// Reports are additive. Messages without them encode exactly as before;
+    /// Reports and persistent IPC are additive. Messages without them encode as before;
     /// a worker or coordinator from before reports decodes the new messages,
     /// ignoring the request and acknowledgment; and the new ones decode the old
     /// messages as "no report".
@@ -359,6 +387,7 @@ mod tests {
             redacted_sql: "SELECT 1".into(),
             planning_duration: Duration::from_millis(3),
             analyze,
+            stream_ipc: None,
         };
         let old_install = OldInstall {
             id: id.clone(),
@@ -392,6 +421,22 @@ mod tests {
                 .analyze,
             Some(QueryTaskAnalyze {})
         );
+        let mut ipc = install(None);
+        ipc.stream_ipc = Some(QueryTaskStreamIpc {});
+        let requesting = ipc.encode_to_vec();
+        assert_eq!(
+            OldInstall::decode(requesting.as_slice())
+                .unwrap()
+                .encode_to_vec(),
+            old_install.encode_to_vec()
+        );
+        assert_eq!(
+            QueryTaskInstall::decode(requesting.as_slice())
+                .unwrap()
+                .stream_ipc,
+            Some(QueryTaskStreamIpc {})
+        );
+        assert!(decoded.stream_ipc.is_none());
 
         let reply = |body| QueryTaskReply::from(body).encode_to_vec();
         let old_reply = |body| OldReply { body }.encode_to_vec();
@@ -402,6 +447,7 @@ mod tests {
             reply(QueryTaskReplyBody::Installed(QueryTaskInstalled {
                 schema: schema.clone(),
                 analyze: None,
+                stream_ipc: None,
             })),
             old_reply(OldReplyBody::Installed(OldInstalled {
                 schema: schema.clone()
@@ -410,12 +456,51 @@ mod tests {
         let acknowledged = reply(QueryTaskReplyBody::Installed(QueryTaskInstalled {
             schema: schema.clone(),
             analyze: Some(QueryTaskAnalyze {}),
+            stream_ipc: Some(QueryTaskStreamIpc {}),
         }));
+        let QueryTaskReplyBody::Installed(installed) =
+            <QueryTaskReply as OwnedMessage>::decode(acknowledged.as_slice())
+                .unwrap()
+                .body
+        else {
+            panic!("expected Installed");
+        };
+        assert_eq!(installed.schema, schema);
+        assert_eq!(installed.stream_ipc, Some(QueryTaskStreamIpc {}));
+        let QueryTaskReplyBody::Installed(installed) = <QueryTaskReply as OwnedMessage>::decode(
+            old_reply(OldReplyBody::Installed(OldInstalled {
+                schema: schema.clone(),
+            }))
+            .as_slice(),
+        )
+        .unwrap()
+        .body
+        else {
+            panic!("expected Installed");
+        };
+        assert!(installed.stream_ipc.is_none());
         assert_eq!(
             <OldReply as OwnedMessage>::decode(acknowledged.as_slice())
                 .unwrap()
                 .body,
             OldReplyBody::Installed(OldInstalled { schema })
+        );
+        let chunk = QueryTaskIpcChunk {
+            data: Bytes::from_static(b"ipc"),
+            end: true,
+        };
+        let bytes = reply(QueryTaskReplyBody::Ipc(chunk.clone()));
+        let QueryTaskReplyBody::Ipc(decoded) =
+            <QueryTaskReply as OwnedMessage>::decode(bytes.as_slice())
+                .unwrap()
+                .body
+        else {
+            panic!("expected Ipc");
+        };
+        assert_eq!(decoded, chunk);
+        assert_eq!(
+            OldReply::decode(bytes.as_slice()).unwrap().body,
+            OldReplyBody::Unknown
         );
         let empty = reply(QueryTaskReplyBody::Closed(QueryTaskClosed::default()));
         assert_eq!(empty, old_reply(OldReplyBody::Closed(())));

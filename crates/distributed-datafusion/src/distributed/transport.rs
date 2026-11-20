@@ -38,11 +38,13 @@ use restate_types::net::ProtocolVersion;
 use restate_types::net::distributed_query::{
     QueryTaskAnalyze, QueryTaskClose, QueryTaskClosed, QueryTaskExecute, QueryTaskId,
     QueryTaskInstall, QueryTaskInstalled, QueryTaskNext, QueryTaskReplyBody, QueryTaskRequest,
+    QueryTaskStreamIpc,
 };
 
 use crate::{decode_record_batch, decode_schema};
 
 use super::analyze::{Arrival, ReportRegistry};
+use super::ipc;
 use super::report::{digest, read_report};
 
 type Tasks = Arc<Mutex<HashMap<TaskKey, RemoteTask>>>;
@@ -101,6 +103,7 @@ struct RemoteTask {
     connection: Connection,
     schema: SchemaRef,
     partitions: usize,
+    stream_ipc: bool,
 }
 
 struct RestateWorkerChannel {
@@ -163,6 +166,22 @@ pub(super) async fn rpc(
     })
     .await
     .map_err(|_| exec_datafusion_err!("query task request to {peer} timed out"))?
+}
+
+fn installed_profile(
+    schema: &SchemaRef,
+    requested: bool,
+    installed: &QueryTaskInstalled,
+) -> Result<bool> {
+    if installed.stream_ipc.is_some() && !requested {
+        return exec_err!("worker acknowledged unrequested stream IPC");
+    }
+    if decode_schema(&installed.schema).map_err(|err| DataFusionError::External(err.into()))?
+        != **schema
+    {
+        return exec_err!("installed task output schema differs from its planned schema");
+    }
+    Ok(installed.stream_ipc.is_some())
 }
 
 #[async_trait]
@@ -241,28 +260,25 @@ impl WorkerChannel for RestateWorkerChannel {
             planning_duration: metadata.planning_duration,
             // Only an EXPLAIN ANALYZE asks for the task's report.
             analyze: registry.as_ref().map(|_| QueryTaskAnalyze {}),
+            stream_ipc: Some(QueryTaskStreamIpc {}),
         };
+        let requested_ipc = install.stream_ipc.is_some();
         let plan_digest = digest(&install.plan);
         let reply = rpc(&self.connection, QueryTaskRequest::Install(install)).await?;
         // The registry waits for the task's report only if its worker will send one.
-        let registry = match reply {
-            QueryTaskReplyBody::Installed(QueryTaskInstalled {
-                schema: actual,
-                analyze,
-            }) => {
-                if decode_schema(&actual).map_err(|err| DataFusionError::External(err.into()))?
-                    != *schema
-                {
-                    return exec_err!(
-                        "installed task output schema differs from its planned schema"
-                    );
-                }
-                registry.filter(|registry| {
-                    registry.installed(report_key, analyze.is_some(), plan_digest);
+        let (registry, stream_ipc) = match reply {
+            QueryTaskReplyBody::Installed(installed) => {
+                let stream_ipc = installed_profile(&schema, requested_ipc, &installed)?;
+                let registry = registry.filter(|registry| {
+                    registry.installed(report_key, installed.analyze.is_some(), plan_digest);
                     #[cfg(test)]
-                    telemetry(&id, format!("installed report={}", analyze.is_some()));
-                    analyze.is_some()
-                })
+                    telemetry(
+                        &id,
+                        format!("installed report={}", installed.analyze.is_some()),
+                    );
+                    installed.analyze.is_some()
+                });
+                (registry, stream_ipc)
             }
             _ => return exec_err!("worker did not acknowledge task installation"),
         };
@@ -273,6 +289,7 @@ impl WorkerChannel for RestateWorkerChannel {
                 connection: self.connection.clone(),
                 schema,
                 partitions,
+                stream_ipc,
             },
         );
 
@@ -366,7 +383,10 @@ impl WorkerChannel for RestateWorkerChannel {
         Ok(
             (request.target_partition_start..request.target_partition_end)
                 .map(|partition| {
-                    stream::try_unfold(task.clone(), move |task| async move {
+                    let decoder = task
+                        .stream_ipc
+                        .then(|| ipc::Decoder::new(Arc::clone(&task.schema)));
+                    stream::try_unfold((task.clone(), decoder), move |(task, decoder)| async move {
                         let reply = rpc(
                             &task.connection,
                             QueryTaskRequest::Next(QueryTaskNext {
@@ -375,18 +395,29 @@ impl WorkerChannel for RestateWorkerChannel {
                             }),
                         )
                         .await?;
-                        match reply {
-                            QueryTaskReplyBody::End(()) => Ok(None),
-                            QueryTaskReplyBody::Batch(bytes) => {
+                        match (reply, decoder) {
+                            (QueryTaskReplyBody::End(()), None) => Ok(None),
+                            (QueryTaskReplyBody::Batch(bytes), None) => {
                                 let batch = decode_record_batch(&bytes)?;
                                 if batch.schema() != task.schema {
                                     return exec_err!(
                                         "remote task returned a different output schema"
                                     );
                                 }
-                                Ok(Some((batch, task)))
+                                Ok(Some((batch, (task, None))))
                             }
-                            _ => exec_err!("unexpected task output response"),
+                            (QueryTaskReplyBody::Ipc(chunk), Some(mut decoder)) => {
+                                if chunk.end {
+                                    decoder.finish(chunk.data)?;
+                                    Ok(None)
+                                } else {
+                                    let batch = decoder.decode(chunk.data)?;
+                                    Ok(Some((batch, (task, Some(decoder)))))
+                                }
+                            }
+                            _ => {
+                                exec_err!("task output response differs from the installed profile")
+                            }
                         }
                     })
                     .boxed()
@@ -444,6 +475,53 @@ impl Drop for TaskGuard {
                 #[cfg(test)]
                 telemetry(&closed, "closed unread".to_owned());
             });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+
+    use crate::encode_schema;
+
+    use super::*;
+
+    #[test]
+    fn installation_validates_schema_and_selects_only_requested_ipc() {
+        let schema = Arc::new(Schema::empty());
+        for requested in [false, true] {
+            for acknowledged in [false, true] {
+                let installed = QueryTaskInstalled {
+                    schema: encode_schema(&schema).into(),
+                    analyze: None,
+                    stream_ipc: acknowledged.then_some(QueryTaskStreamIpc {}),
+                };
+                let selected = installed_profile(&schema, requested, &installed);
+                if acknowledged && !requested {
+                    assert!(selected.unwrap_err().to_string().contains("unrequested"));
+                } else {
+                    assert_eq!(selected.unwrap(), acknowledged);
+                }
+                // Acknowledgment never permits deferring the output-contract check.
+                for invalid in [
+                    bytes::Bytes::new(),
+                    encode_schema(&Schema::new(vec![Field::new("x", DataType::Int32, false)]))
+                        .into(),
+                ] {
+                    assert!(
+                        installed_profile(
+                            &schema,
+                            requested,
+                            &QueryTaskInstalled {
+                                schema: invalid,
+                                ..installed.clone()
+                            },
+                        )
+                        .is_err()
+                    );
+                }
+            }
         }
     }
 }
