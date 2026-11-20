@@ -1215,15 +1215,18 @@ experimental! {
     /// When enabled, every run of a vqueue entry records `started`, so that a paused or suspended
     /// entry comes back with its latest attempt's status instead of an earlier one such as
     /// `backing-off`, and an invocation's entry enters Finished at the invocation's completion
-    /// time instead of the completing record's time. A
-    /// partition turns this on when it next elects a leader with this option enabled. Leaders
-    /// running v1.9.0 or newer turn it on regardless of this option, once every worker node in
-    /// the cluster runs v1.9.0 or newer.
+    /// time instead of the completing record's time. A partition turns this on when it next
+    /// elects a leader with this option enabled. Any leader turns it on regardless of this option
+    /// once the partition requires v1.8.2 anyway, for example for byte offsets, and leaders
+    /// running v1.9.0 or newer once every worker node in the cluster runs v1.9.0 or newer.
     ///
     /// Only enable once all nodes run v1.8.2 or newer. Once a partition has enabled it, it stays
     /// enabled even if this option is removed.
     ///
     /// Once enabled, you **cannot** roll back to a Restate-server version older than v1.8.2.
+    ///
+    /// TODO(v1.9): Remove this option. From v1.9.0, leaders turn the feature on by themselves once
+    /// every worker node runs v1.9.0 or newer.
     ///
     /// Since v1.8.2
     vq_lifecycle_refined,
