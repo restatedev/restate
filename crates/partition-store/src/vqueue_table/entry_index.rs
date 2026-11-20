@@ -873,7 +873,7 @@ impl EntryByStatusCreatedKey {
     /// invocation `selection` matches, in key order: a superset, derived from
     /// its conditions on `status` and `completion_result`. The caller keeps
     /// its predicate. Each pair is a lane of the index
-    /// ([`Self::prepare_lane`]).
+    /// ([`Self::prepare_lanes`]).
     pub fn lanes(
         selection: &Selection<InvocationsByStatus>,
     ) -> impl Iterator<Item = (Stage, Status)> {
@@ -916,13 +916,14 @@ impl EntryByStatusCreatedKey {
             })
     }
 
-    /// The selection of the keys of one lane, `stage` and `status`, that
-    /// `selection` may match: its service and creation time, and the hours that
-    /// may hold that time. The caller keeps its predicate.
-    pub fn prepare_lane(
+    /// The selection of the keys `selection` may match in the lanes of every
+    /// one of `stages` with every one of `statuses`: their service and creation
+    /// time, and the hours that may hold that time. The caller keeps its
+    /// predicate.
+    pub fn prepare_lanes(
         selection: &Selection<InvocationsByStatus>,
-        stage: Stage,
-        status: Status,
+        stages: &[Stage],
+        statuses: &[Status],
     ) -> crate::Result<KeySelection<Self>> {
         KeySelection::for_key_fields_with(
             selection,
@@ -938,11 +939,12 @@ impl EntryByStatusCreatedKey {
                 _ => Ok(None),
             },
             |tag, literals| match tag {
-                "stage" => {
-                    StageRankCodec::try_prepare_value(&ValuePredicate::Equal(stage), literals)
-                }
+                "stage" => StageRankCodec::try_prepare_value(
+                    &ValuePredicate::In(stages.to_vec()),
+                    literals,
+                ),
                 "status" => {
-                    StatusCodec::try_prepare_value(&ValuePredicate::Equal(status), literals)
+                    StatusCodec::try_prepare_value(&ValuePredicate::In(statuses.to_vec()), literals)
                 }
                 "created_hour" => {
                     let times =
