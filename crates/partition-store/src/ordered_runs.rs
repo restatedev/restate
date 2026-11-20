@@ -211,6 +211,22 @@ impl RetainedMemory for () {
     fn shrink(&mut self, _: usize) {}
 }
 
+/// Distinct key prefixes, and the bytes charged for them
+/// ([`ReadSnapshot::distinct_prefixes`]).
+pub type Prefixes = (Vec<Box<[u8]>>, usize);
+
+/// What a read shares with the other reads that open with it, such as the
+/// lanes of one cursor: `runs`, the runs its first bucket may still have, what
+/// the reads opened before it left of their shared
+/// [`OrderedRunsLimits::max_runs`]; and `examined`, the keys their discoveries
+/// examined so far, against [`OrderedRunsLimits::max_discovery_keys`]. Past
+/// either, the read stops before reading anything. Later buckets merge all of
+/// their runs (see the module docs).
+pub struct Opening<'a> {
+    pub runs: usize,
+    pub examined: &'a mut u64,
+}
+
 /// What discovery found.
 pub enum OrderedRunsDiscovery<T: PhysicalTable> {
     /// The runs, ready to be merged.
@@ -485,6 +501,31 @@ impl ReadSnapshot {
         T: PhysicalTable,
         T::Key: OrderedKeySchema,
     {
+        let opening = Opening {
+            runs: limits.max_runs,
+            examined,
+        };
+        self.ordered_runs_within(request, run_fields, direction, limits, memory, opening)
+    }
+
+    /// [`Self::ordered_runs_counted`] as one of several reads that share the
+    /// runs and the keys their openings may find and examine ([`Opening`]).
+    pub fn ordered_runs_within<T>(
+        &self,
+        request: Arc<KeySelection<T::Key>>,
+        run_fields: usize,
+        direction: ReadDirection,
+        limits: OrderedRunsLimits,
+        memory: Box<dyn RetainedMemory>,
+        Opening {
+            runs: available,
+            examined,
+        }: Opening<'_>,
+    ) -> Result<OrderedRunsDiscovery<T>>
+    where
+        T: PhysicalTable,
+        T::Key: OrderedKeySchema,
+    {
         self.check_active()?;
         let mut runs = OrderedRuns {
             inner: None,
@@ -528,7 +569,7 @@ impl ReadSnapshot {
             direction,
         };
         let caps = Caps {
-            max_runs: limits.max_runs,
+            max_runs: available.min(limits.max_runs),
             max_discovery_keys: limits.max_discovery_keys,
         };
         let mut found = Vec::new();
@@ -582,6 +623,89 @@ impl ReadSnapshot {
         merge.reserve(&mut runs.memory)?;
         runs.inner = Some(merge);
         Ok(OrderedRunsDiscovery::Ready(runs))
+    }
+}
+
+impl ReadSnapshot {
+    /// The distinct prefixes, the header and first `fields` fields, of the keys
+    /// `request` matches, in key order, found as discovery finds runs: the
+    /// first match of each prefix, then a seek past it. `None` past `max`
+    /// prefixes, or once `examined`, kept up to date key by key, passes
+    /// `max_keys`. Charges `memory` while it works. The prefixes it returns
+    /// stay charged to `memory`, by the bytes returned with them, until the
+    /// caller releases them.
+    pub fn distinct_prefixes<T>(
+        &self,
+        request: Arc<KeySelection<T::Key>>,
+        fields: usize,
+        (max, max_keys): (usize, usize),
+        memory: Box<dyn RetainedMemory>,
+        examined: &mut u64,
+    ) -> Result<Option<Prefixes>>
+    where
+        T: PhysicalTable,
+        T::Key: OrderedKeySchema,
+    {
+        self.check_active()?;
+        let mut memory = Accounted {
+            memory,
+            bytes: 0,
+            selection: 0,
+        };
+        let metadata = self.metadata();
+        if !T::is_active(&metadata) {
+            return Ok(Some((Vec::new(), 0)));
+        }
+        let Some(mut selection) = request.cursor(
+            <<T::Key as KeySchema>::Header as KeyHeader>::scope(&metadata)?,
+        )?
+        else {
+            return Ok(Some((Vec::new(), 0)));
+        };
+        memory.selection(&selection)?;
+        let scan = selection.scan().to_exact();
+        memory.grow(3 * scan.bound_bytes())?;
+        let mut cursor = self.physical_cursor(scan)?;
+        let shape = Shape {
+            header: <<T::Key as KeySchema>::Header as KeyHeader>::LENGTH,
+            run_fields: fields,
+            bucket_fields: 0,
+            direction: ReadDirection::Forward,
+        };
+        let mut found = Vec::new();
+        let discovered = Discovery {
+            cursor: &mut cursor,
+            selection: &mut selection,
+            shape: &shape,
+            memory: &mut memory,
+            examined,
+        }
+        .runs(
+            Some(Caps {
+                max_runs: max,
+                max_discovery_keys: max_keys,
+            }),
+            &mut found,
+            &mut Vec::new(),
+            None,
+            None,
+        )?;
+        match discovered {
+            Discovered::End => {
+                // Charged for the caller before the work's own charge ends.
+                let kept = found.len() * size_of::<Box<[u8]>>()
+                    + found.iter().map(|run| run.prefix.len()).sum::<usize>();
+                memory.memory.grow(kept)?;
+                let mut prefixes = Vec::with_capacity(found.len());
+                prefixes.extend(found.into_iter().map(|run| run.prefix));
+                Ok(Some((prefixes, kept)))
+            }
+            Discovered::TooManyRuns => Ok(None),
+            // Without buckets or a budget, discovery ends or passes its caps.
+            Discovered::NextBucket(_) | Discovered::Paused(_) => {
+                Err(StorageError::DataIntegrityError)
+            }
+        }
     }
 }
 
