@@ -452,6 +452,11 @@ impl Deferral {
         self.candidate
     }
 
+    /// Whether the last probe found that the candidate applied nothing.
+    pub fn is_stalled(&self) -> bool {
+        self.last_advanced_at < self.last_probe_at
+    }
+
     fn start_round(round: u32, ctx: &Context, m: &Measured) -> Self {
         Self {
             candidate: ctx.candidate,

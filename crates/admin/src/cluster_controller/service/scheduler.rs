@@ -937,9 +937,9 @@ impl<T: TransportConnect> Scheduler<T> {
             }
         };
 
-        // Keep the deferral's candidate while it is an alive member of the new replica set with a
-        // known lag, so that members overtaking each other don't use up catch-up rounds. Switch to
-        // the least lagging member once that one is close enough.
+        // Keep the deferral's candidate while it advances and is an alive member of the new
+        // replica set with a known lag, so that members overtaking each other don't use up
+        // catch-up rounds. Switch to the least lagging member once that one is close enough.
         let least_lagging = progress.least_lagging(
             next.replica_set()
                 .iter()
@@ -953,6 +953,7 @@ impl<T: TransportConnect> Scheduler<T> {
             .handover
             .reconfiguration
             .as_ref()
+            .filter(|deferral| !deferral.is_stalled())
             .map(Deferral::candidate)
             .filter(|node_id| {
                 !least_lagging_close_enough
@@ -2501,6 +2502,34 @@ mod tests {
             Some(n(4))
         );
         assert!(f.completed());
+
+        // the deferral's candidate N3 stalls: it is replaced by N4, which keeps replaying
+        let stalled = |t: u64, n4_applied: u64| {
+            let tail = 1_000_001 + t * 10_000;
+            [
+                (1, replica(t, tail - 1, tail).leading()),
+                (2, replica(t, tail - 1, tail)),
+                (3, replica(t, 600_000, tail)),
+                (4, replica(t, n4_applied, tail)),
+            ]
+        };
+        let candidate = |f: &Fixture| {
+            f.state()
+                .handover
+                .reconfiguration
+                .as_ref()
+                .map(Deferral::candidate)
+        };
+        let mut f = Fixture::new(&[1, 2], Some(&[3, 4]), CatchUpTime);
+        f.set_target_leader(Some(1));
+        assert_eq!(f.pass(&stalled(0, 500_000)), Some(n(1)));
+        assert_eq!(candidate(&f), Some(n(3)));
+        // the probe finds that N3 applied nothing, although N4 overtook it
+        assert_eq!(f.pass(&stalled(10, 700_000)), Some(n(1)));
+        assert_eq!(candidate(&f), Some(n(3)));
+        assert_eq!(f.pass(&stalled(11, 720_000)), Some(n(1)));
+        assert!(!f.completed());
+        assert_eq!(candidate(&f), Some(n(4)));
 
         // with the immediate policy, the reconfiguration completes at once
         let mut f = Fixture::new(&[1, 2], Some(&[2, 3]), Immediate);
