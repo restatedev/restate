@@ -61,12 +61,12 @@
 //! The first bucket's discovery has the limits: past them, it ends as without
 //! buckets, before the read returns anything, so the caller can still read
 //! another way. A later bucket can't: the read has returned the earlier
-//! buckets' rows. It fails the read if it has more runs than the limit, and its
-//! discovery, which may pass many keys and buckets without a match, debits the
-//! step's budget like reading ahead does, pausing where it is spent and
-//! continuing in the next step, instead of having a limit of its own. Later
-//! buckets reuse the runs' read-ahead buffers, with everything they hold
-//! charged as before.
+//! buckets' rows. So it merges every run it has, however many, with what they
+//! hold charged to the read's memory, which bounds them as it bounds the rest
+//! of the query. Its discovery, which may pass many keys and buckets without a
+//! match, debits the step's budget like reading ahead does, pausing where it
+//! is spent and continuing in the next step, instead of having a limit of its
+//! own. Later buckets reuse the runs' read-ahead buffers.
 //!
 //! **Backwards** ([`ReadDirection::Backward`]), the same merge yields the reverse
 //! order, oldest first, for a query that asks for it:
@@ -168,7 +168,8 @@ mod tests;
 /// How much work a read may do and how many keys each run reads ahead.
 #[derive(Debug, Clone, Copy)]
 pub struct OrderedRunsLimits {
-    /// The most runs one read merges: in each bucket, for a bucketed read.
+    /// The most runs one read merges: in its first bucket, for a bucketed
+    /// read. A later bucket merges all of its runs (see the module docs).
     pub max_runs: usize,
     /// The most keys discovery evaluates, including keys the selection rejects
     /// and runs without a key in the read's window: in its first bucket, for a
@@ -294,8 +295,6 @@ struct Merge<K> {
     /// A bucketed read's next bucket. Forward: its first key, where discovery
     /// stopped. Backward: the start of the current bucket, to step back from.
     next_bucket: Option<Box<[u8]>>,
-    /// Each bucket's discovery limits.
-    caps: Caps,
     /// A later bucket's discovery that ran out of a step's budget: where the
     /// next step continues it.
     resume: Option<Resume>,
@@ -313,7 +312,8 @@ struct Shape {
     direction: ReadDirection,
 }
 
-/// The limits of one bucket's discovery, or the whole read's without buckets.
+/// The limits of the first bucket's discovery, or the whole read's without
+/// buckets.
 #[derive(Clone, Copy)]
 struct Caps {
     max_runs: usize,
@@ -576,7 +576,6 @@ impl ReadSnapshot {
             direction,
             shape,
             next_bucket,
-            caps,
             resume: None,
             spare: Vec::new(),
         });
@@ -934,9 +933,9 @@ impl<K: OrderedKeySchema> Merge<K> {
     /// Discovers the runs of the next bucket once the current bucket's runs are
     /// exhausted, their read-ahead buffers, empty, serving the next ones; or
     /// continues the discovery a spent `budget` paused. The read has emitted
-    /// earlier buckets' rows, so it can't read another way any more: a bucket
-    /// with more runs than the limit fails it. Its discovery has no key limit;
-    /// it pauses with the step's budget instead.
+    /// earlier buckets' rows, so it can't read another way any more: it merges
+    /// all of the bucket's runs, charged to its memory. Its discovery has no
+    /// key limit; it pauses with the step's budget instead.
     fn next_bucket(
         &mut self,
         memory: &mut Accounted,
@@ -969,10 +968,6 @@ impl<K: OrderedKeySchema> Merge<K> {
                 Some(start)
             }
         };
-        let caps = Caps {
-            max_discovery_keys: usize::MAX,
-            ..self.caps
-        };
         let mut runs = std::mem::take(&mut self.runs);
         let mut discovery = Discovery {
             cursor: &mut self.cursor,
@@ -988,14 +983,14 @@ impl<K: OrderedKeySchema> Merge<K> {
                 discovery.memory.shrink(at.len());
                 drop(at);
                 if positioned {
-                    discovery.runs(Some(caps), &mut runs, &mut self.spare, None, Some(budget))
+                    discovery.runs(None, &mut runs, &mut self.spare, None, Some(budget))
                 } else {
                     Ok(Discovered::End)
                 }
             }
             (ReadDirection::Backward, Some(Resume::Within { anchor, at }), None) => discovery
                 .bucket_before(
-                    Some(caps),
+                    None,
                     &mut runs,
                     &mut self.spare,
                     Some(budget),
@@ -1003,7 +998,7 @@ impl<K: OrderedKeySchema> Merge<K> {
                     Some((anchor, at)),
                 ),
             (ReadDirection::Backward, None, Some(start)) => discovery.bucket_before(
-                Some(caps),
+                None,
                 &mut runs,
                 &mut self.spare,
                 Some(budget),
@@ -1020,11 +1015,8 @@ impl<K: OrderedKeySchema> Merge<K> {
             }
             Discovered::NextBucket(start) => self.next_bucket = Some(start),
             Discovered::End => self.next_bucket = None,
-            Discovered::TooManyRuns => {
-                return Err(StorageError::Generic(anyhow::anyhow!(
-                    "a later bucket of the index read has more runs than one read merges"
-                )));
-            }
+            // Without caps, discovery finds every run.
+            Discovered::TooManyRuns => return Err(StorageError::DataIntegrityError),
         }
         if self.runs.is_empty() {
             return Ok(NextBucket::Done);
