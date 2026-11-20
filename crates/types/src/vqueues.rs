@@ -16,12 +16,16 @@
 mod entry_id;
 mod entry_target;
 mod seq;
+mod stage;
+mod status;
 mod vqueue_id;
 
 pub use crate::identifiers::CanonicalEntryId;
 pub use entry_id::{EntryId, EntryIdDisplay, EntryKind};
 pub use entry_target::{EntryTargetExt, EntryTargetRef, HandlerRef};
 pub use seq::Seq;
+pub use stage::Stage;
+pub use status::Status;
 pub use vqueue_id::{VQueueId, VQueueIdRef};
 
 /// Errors returned when parsing encoded vqueue entry identifiers or entry kinds.
