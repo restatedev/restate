@@ -138,6 +138,18 @@ impl CompleteIndex for EntryIndex {
     }
 
     const NEEDS_ORDERED_DEMAND: bool = true;
+
+    /// A LIMIT without an ORDER BY, such as the UI's
+    /// `WHERE target_service_name IN ('Doss') LIMIT 250`, reads the newest
+    /// matches and stops, where the query names its services or bounds the
+    /// creation time: the read visits only their runs or hours. Without either,
+    /// it would visit every service's runs, and the scan, which stops at the
+    /// LIMIT too, reads instead.
+    fn useful_unordered(restriction: &EntryByServiceCreatedDomains) -> bool {
+        (restriction.target_service_name.to_predicate().is_some()
+            || restriction.created_at.to_predicate().is_some())
+            && Self::useful(restriction)
+    }
 }
 
 /// The entry index `entry_by_status_created/1`, read for the invocations of
@@ -186,6 +198,11 @@ impl CompleteIndex for StatusIndex {
     }
 
     const NEEDS_ORDERED_DEMAND: bool = true;
+
+    /// The statuses always narrow the read to fewer lanes ([`Self::useful`]).
+    fn useful_unordered(restriction: &EntryByStatusCreatedDomains) -> bool {
+        Self::useful(restriction)
+    }
 }
 
 impl SysInvocationStatusTable {

@@ -102,6 +102,16 @@ pub trait CompleteIndex: 'static {
     /// so nothing is promised about errors another plan, such as a scan,
     /// might meet there.
     const NEEDS_ORDERED_DEMAND: bool = false;
+
+    /// Whether the index also pays off for a query that wants any first rows in
+    /// no order, a LIMIT without an ORDER BY: only where `restriction` narrows
+    /// what the read visits, since a scan stops after the LIMIT's rows too.
+    /// Consulted only with [`Self::NEEDS_ORDERED_DEMAND`]. Such a read ships no
+    /// order ([`ordering`]), so a partition that can't read the index scans
+    /// without sorting and stops at the LIMIT as before.
+    fn useful_unordered(_restriction: &<Self::Index as SelectionSchema>::Domains) -> bool {
+        false
+    }
 }
 
 type PrimaryOf<B> = <<B as CompleteIndex>::Index as IndexSchema>::Primary;
@@ -235,14 +245,15 @@ fn select<B: CompleteIndex>(
     demand: Option<&Demand>,
     projection: &Schema,
 ) -> anyhow::Result<bool> {
-    let covered = covers::<B>(projection);
-    if !index_restriction::<B::Index>(filters)?.is_some_and(|restriction| {
-        if covered {
-            B::useful_covered(&restriction)
-        } else {
-            B::useful(&restriction)
-        }
-    }) {
+    let Some(restriction) = index_restriction::<B::Index>(filters)? else {
+        return Ok(false);
+    };
+    let useful = if covers::<B>(projection) {
+        B::useful_covered(&restriction)
+    } else {
+        B::useful(&restriction)
+    };
+    if !useful {
         return Ok(false);
     }
     let alternatives = <PrimaryOf<B> as SelectionSchema>::analyze(
@@ -255,7 +266,13 @@ fn select<B: CompleteIndex>(
     if !B::NEEDS_ORDERED_DEMAND {
         return Ok(true);
     }
-    Ok(demand.is_some_and(|demand| orders::<B>(demand).is_some()))
+    Ok(demand.is_some_and(|demand| {
+        if demand.ordering.is_empty() {
+            B::useful_unordered(&restriction)
+        } else {
+            orders::<B>(demand).is_some()
+        }
+    }))
 }
 
 /// Whether `projection`, a scan's columns, its conditions' included, lies in
@@ -276,6 +293,10 @@ pub(crate) fn covers<B: CompleteIndex>(projection: &Schema) -> bool {
 fn orders<B: CompleteIndex>(demand: &Demand) -> Option<ReadDirection> {
     if B::ORDERING.is_empty() {
         return None;
+    }
+    // Any order will do: read forward.
+    if demand.ordering.is_empty() {
+        return Some(ReadDirection::Forward);
     }
     let mut columns = Vec::with_capacity(demand.ordering.len());
     for sort in demand.ordering.iter() {
@@ -323,8 +344,14 @@ fn introduced<B: CompleteIndex>() -> SemanticRestateVersion {
 /// The order of the index's read for `demand`: its declared order, or the
 /// exact reverse where `demand` asks for that ([`orders`]). NULLs go where
 /// `demand` puts them if a column is never NULL: the same rows in the same
-/// order, so that the planner adds no sort for the query's own spelling.
+/// order, so that the planner adds no sort for the query's own spelling. A
+/// demand in no order, a LIMIT without an ORDER BY, gets none: nothing above
+/// the source relies on one, so a partition that can't read the index scans
+/// without sorting.
 fn ordering<B: CompleteIndex>(demand: Option<&Demand>) -> Vec<SortedColumn> {
+    if demand.is_some_and(|demand| demand.ordering.is_empty()) {
+        return Vec::new();
+    }
     let asked = demand.and_then(|demand| Some((&demand.ordering, orders::<B>(demand)?)));
     let backward = matches!(asked, Some((_, ReadDirection::Backward)));
     B::ORDERING
@@ -335,8 +362,8 @@ fn ordering<B: CompleteIndex>(demand: Option<&Demand>) -> Vec<SortedColumn> {
                 .expect("an ordered column has a SQL name")
                 .to_owned(),
             descending: order.options.descending != backward,
-            nulls_first: match asked {
-                Some((asked, _)) if order.never_null => asked[at].options.nulls_first,
+            nulls_first: match asked.and_then(|(asked, _)| asked.get(at)) {
+                Some(asked) if order.never_null => asked.options.nulls_first,
                 _ => order.options.nulls_first != backward,
             },
         })
@@ -346,7 +373,11 @@ fn ordering<B: CompleteIndex>(demand: Option<&Demand>) -> Vec<SortedColumn> {
 /// Which way to read `B` for work shipped with `ordering`: the order the
 /// coordinator planned for, and declared to DataFusion. Any other order fails
 /// the read: nothing downstream checks that rows come in the declared order.
+/// Without an order, forward.
 fn shipped_direction<B: CompleteIndex>(ordering: &[SortedColumn]) -> anyhow::Result<ReadDirection> {
+    if ordering.is_empty() {
+        return Ok(ReadDirection::Forward);
+    }
     let columns: Vec<_> = ordering
         .iter()
         .map(|column| {
@@ -469,15 +500,18 @@ pub(crate) fn select_access(
                 .flat_map(split_conjunction)
                 .cloned()
                 .collect::<Vec<_>>();
+            let ordering = index.ordering(demand);
+            // A fallback scan sorts only to keep an order.
             let bound = demand
                 .filter(|demand| {
-                    index.orders(demand).is_some()
+                    !ordering.is_empty()
+                        && index.orders(demand).is_some()
                         && physical_exprs_bag_equal(&demand.residual, &conditions)
                 })
                 .map(|demand| demand.fetch);
             return Ok(Access::Index {
                 index: ReString::from_static(index.identity()),
-                ordering: index.ordering(demand),
+                ordering,
                 bound,
             });
         }
@@ -967,6 +1001,82 @@ mod tests {
             select_access(&source, Some(&id), None, &Schema::empty()).unwrap(),
             Access::Primary(_)
         ));
+    }
+
+    /// A LIMIT without an ORDER BY reads the creation index only where the
+    /// query names its services: the read then ships no order and no bound, so
+    /// a partition that can't read the index scans without sorting. A condition
+    /// the index doesn't narrow scans, as the scan stops at the LIMIT too. A
+    /// page in the index's order ships the order and its bound.
+    #[restate_core::test]
+    async fn unordered_limits_read_an_index_only_where_it_narrows() {
+        use datafusion::common::{DFSchema, ScalarValue};
+        use datafusion::physical_expr::PhysicalSortExpr;
+        use datafusion::physical_expr::expressions::col as predicate_col;
+        use datafusion::prelude::{Expr, SessionContext, col, lit};
+        use restate_core::test_env::TestCoreEnv;
+        use restate_storage_query_api::tables::invocation_status::InvocationStatus;
+        use restate_types::config::Configuration;
+
+        use crate::source_registry::SourceRegistry;
+        use crate::tables::invocation_status::SysInvocationStatusTable;
+
+        let env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let mut config = Configuration::default();
+        config.common.experimental.set_track_entry_indexes(true);
+        Configuration::set(config);
+        let sources = SourceRegistry::local_only(env.metadata);
+        let source = sources.create_declared_source::<SysInvocationStatusTable>();
+        let arrow = InvocationStatus::arrow_schema();
+        let schema = DFSchema::try_from(arrow.as_ref().clone()).unwrap();
+        let predicate = |condition: Expr| {
+            SessionContext::new()
+                .create_physical_expr(condition, &schema)
+                .unwrap()
+        };
+        let projection = Schema::new(
+            ["id", "created_at"]
+                .map(|name| arrow.field_with_name(name).unwrap().clone())
+                .to_vec(),
+        );
+        // `LIMIT 25` right above the source, in no order or newest first.
+        let demand = |predicate: &Arc<dyn PhysicalExpr>, ordered: bool| Demand {
+            ordering: ordered
+                .then(|| PhysicalSortExpr {
+                    expr: predicate_col("created_at", &arrow).unwrap(),
+                    options: SortOptions {
+                        descending: true,
+                        nulls_first: false,
+                    },
+                })
+                .into_iter()
+                .collect(),
+            fetch: 25,
+            residual: split_conjunction(predicate).into_iter().cloned().collect(),
+        };
+        let chosen = |predicate: Arc<dyn PhysicalExpr>, ordered: bool| {
+            let demand = demand(&predicate, ordered);
+            match select_access(&source, Some(&predicate), Some(&demand), &projection).unwrap() {
+                Access::Index {
+                    index,
+                    ordering,
+                    bound,
+                } => (index.to_string(), ordering.len(), bound),
+                other => (format!("{other:?}"), 0, None),
+            }
+        };
+        let utils = || {
+            predicate(
+                col("target_service_name").eq(lit(ScalarValue::LargeUtf8(Some("Utils".into())))),
+            )
+        };
+        let creation = "_idx_entry_by_service_created".to_owned();
+        assert_eq!(chosen(utils(), false), (creation.clone(), 0, None));
+        assert_eq!(chosen(utils(), true), (creation, 1, Some(25)));
+        assert_eq!(
+            chosen(predicate(col("idempotency_key").is_not_null()), false),
+            ("Scan".to_owned(), 0, None)
+        );
     }
 
     /// Each partition is sent its own keys and nothing else, a partition without

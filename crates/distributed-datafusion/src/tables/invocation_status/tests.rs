@@ -580,6 +580,86 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         matches_v1(sql, false).await;
     }
     assert!(!orphaned().await);
+    // A LIMIT without an ORDER BY, as the UI's lists send, reads an index and
+    // stops: any rows meeting the conditions will do, so each page holds the
+    // LIMIT's count of them, all matches.
+    // The UI's outcome list as it sends it, byte for byte, without an order:
+    // any 250 of Utils' completed invocations, through the Finished lanes.
+    let original = include_str!("../../ui_queries/service_outcomes_any.sql");
+    let original_all = original.replace("\n      LIMIT 250", "");
+    assert_ne!(original_all, original);
+    let unordered = [
+        (
+            original,
+            "_idx_entry_by_status_created",
+            original_all.as_str(),
+        ),
+        (
+            "SELECT ss.id AS id FROM sys_invocation_status ss \
+             WHERE ss.target_service_name IN ('Utils') LIMIT 25",
+            "_idx_entry_by_service_created",
+            "SELECT id FROM sys_invocation_status WHERE target_service_name = 'Utils'",
+        ),
+        (
+            "SELECT ss.id AS id FROM sys_invocation_status ss \
+             WHERE ss.status = 'invoked' AND ss.target_service_name IN ('Promises') \
+             AND ss.partition_key BETWEEN 0 AND 18446744073709551615 LIMIT 10",
+            "_idx_entry_by_status_created",
+            "SELECT id FROM sys_invocation_status \
+             WHERE status = 'invoked' AND target_service_name = 'Promises'",
+        ),
+        // The status's values are complete: excluding some selects the
+        // others' lanes, here those of invocations that haven't completed.
+        (
+            "SELECT ss.id AS id FROM sys_invocation_status ss \
+             WHERE ss.status != 'completed' AND ss.target_service_name IN ('Utils') LIMIT 10",
+            "_idx_entry_by_status_created",
+            "SELECT id FROM sys_invocation_status \
+             WHERE status <> 'completed' AND target_service_name = 'Utils'",
+        ),
+        (
+            "SELECT ss.id AS id FROM sys_invocation_status ss \
+             WHERE ss.status NOT IN ('completed', 'paused') \
+             AND ss.target_service_name IN ('Utils') LIMIT 10",
+            "_idx_entry_by_status_created",
+            "SELECT id FROM sys_invocation_status \
+             WHERE status NOT IN ('completed', 'paused') AND target_service_name = 'Utils'",
+        ),
+        (
+            "SELECT id FROM sys_invocation_status \
+             WHERE target_service_name IN ('Utils') AND idempotency_key IS NULL LIMIT 25",
+            "_idx_entry_by_service_created",
+            "SELECT id FROM sys_invocation_status \
+             WHERE target_service_name = 'Utils' AND idempotency_key IS NULL",
+        ),
+    ];
+    for (sql, index, all) in unordered {
+        let plan = explained(sql).await;
+        assert!(
+            plan.contains("IndexScanExec") && plan.contains(&format!("index={index}")),
+            "{sql}: {plan}"
+        );
+        let page = rows(new.as_ref(), sql).await;
+        let all: HashSet<_> = rows(old.as_ref(), all).await.into_iter().collect();
+        assert!(!all.is_empty(), "{sql}");
+        let limit: usize = sql.rsplit(' ').next().unwrap().parse().unwrap();
+        assert_eq!(page.len(), limit.min(all.len()), "{sql}");
+        assert!(page.iter().all(|row| all.contains(row)), "{sql}");
+        assert_eq!(
+            page.iter().collect::<HashSet<_>>().len(),
+            page.len(),
+            "{sql}"
+        );
+    }
+    // Without a condition the index narrows by, it scans: the scan stops at
+    // the LIMIT too.
+    for sql in [
+        "SELECT id FROM sys_invocation_status LIMIT 25",
+        "SELECT id FROM sys_invocation_status WHERE idempotency_key IS NOT NULL LIMIT 25",
+    ] {
+        let plan = explained(sql).await;
+        assert!(!plan.contains("IndexScanExec"), "{sql}: {plan}");
+    }
     // The service's scheduled invocations, none yet, through the status index:
     // it fetches the statuses of Counter's active invocations only, not the
     // partition's every status. The newest failures read only failed keys.
