@@ -222,6 +222,11 @@ A **reusable workflow** called by this repo and many others in the restatedev or
 
 `cacheOnly` and `cacheReadOnly` can only be set through `workflow_call`. `workflow_dispatch` is at GitHub's 10-input limit.
 
+**Image tags** (non-`release` profiles prefix each tag with `<profile>-`):
+- Branch builds are tagged with the branch name (`/` becomes `-`). The tag moves with every rebuild of that branch.
+- Release tags (`vX.Y.Z`) get semver tags (`X.Y.Z`, `X.Y.Z-<date>`, `X.Y`) and, for the newest release, `latest`.
+- Any other git tag becomes the image tag as is. Use this for a custom build that must stay identifiable: push a tag and dispatch the workflow on it, e.g. `gh workflow run docker.yml --ref my-build.2` publishes `restate:my-build.2`. Such tags must not start with `v` (no image tag would be produced) and must not contain `X.Y.Z`, because that would trigger `release.yml`.
+
 **Build optimizations:**
 - Uses `sccache` with WarpBuild cache, keyed by Cargo profile and `Cargo.lock`
 - Multi-platform builds via Docker Buildx
