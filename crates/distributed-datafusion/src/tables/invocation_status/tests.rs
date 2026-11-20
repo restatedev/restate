@@ -275,11 +275,22 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         let target = &targets[index as usize % targets.len()];
         put(index, BASE + (index / 2) * 7, target, true);
     }
-    // More handlers than one read merges, stored oldest first: the read scans.
-    for handler in 0..257 {
-        let target = InvocationTarget::service("Many", format!("h{handler}"));
-        put(2000 + handler, BASE + 10_000 + handler * 7, &target, true);
+    // More services in one hour than one read merges, stored oldest first: a
+    // read of that hour scans.
+    for service in 0..257 {
+        let target = InvocationTarget::service(format!("Many{service}"), "h");
+        put(2000 + service, BASE + 10_000 + service * 7, &target, true);
     }
+    let many = |order: &str| {
+        format!(
+            "SELECT id, created_at FROM sys_invocation_status \
+             WHERE created_at >= to_timestamp_millis({}) \
+             AND created_at < to_timestamp_millis({}) \
+             ORDER BY created_at {order} LIMIT 3",
+            BASE + 10_000,
+            BASE + 12_000
+        )
+    };
     // A service with many invocations, none of them scheduled yet, created in
     // pairs at the same time.
     let counter = |key: String| {
@@ -336,9 +347,7 @@ async fn invocations_read_through_the_entry_index_match_v1() {
     let indexed = [
         page.to_owned(),
         page.replace("LIMIT 51", "LIMIT 9 OFFSET 40"),
-        "SELECT id, created_at FROM sys_invocation_status WHERE target_service_name = 'Many' \
-         ORDER BY created_at DESC NULLS LAST LIMIT 3"
-            .into(),
+        many("DESC NULLS LAST"),
         window("DESC"),
         newest_counter.clone(),
         page.replace("DESC NULLS LAST", "DESC NULLS FIRST"),
@@ -349,9 +358,7 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         oldest.to_owned(),
         oldest.replace("LIMIT 250", "LIMIT 9 OFFSET 240"),
         window("ASC"),
-        "SELECT id, created_at FROM sys_invocation_status WHERE target_service_name = 'Many' \
-         ORDER BY created_at ASC LIMIT 3"
-            .into(),
+        many("ASC"),
         // Any other condition is checked on each candidate: a status. 40 of
         // the workflow page's invocations are running: the newest 20 leave out
         // the oldest, which has no entry.
@@ -513,13 +520,15 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         )
     );
     // The page fetches the statuses of its runs' entries, a fraction of the
-    // partition's: the Promises "promise" runs hold 120.
+    // partition's: the Promises runs hold 175, of which the "promise" handler's
+    // 120. The index keeps the handler in its value, so the fetched statuses
+    // are checked for it.
     let plan = analyzed(page).await;
     assert!(
         plan.contains("entry_index_reads=1") && !plan.contains("entry_index_scans=1"),
         "{plan}"
     );
-    assert_eq!(metric(&plan, "entry_index_statuses"), Some(120), "{plan}");
+    assert_eq!(metric(&plan, "entry_index_statuses"), Some(175), "{plan}");
     // One run, ("Promises", "promise"), whatever the service's type; every one
     // of its keys examined at least once.
     assert_eq!(metric(&plan, "entry_index_runs"), Some(1), "{plan}");
@@ -545,9 +554,9 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         metric(&plan, "entry_index_keys_examined") < Some(300),
         "{plan}"
     );
-    // The time window's two runs, backwards: each reads back from the
-    // window's end, examining none of the three keys older than it, and one
-    // window of statuses holds its 7 rows.
+    // The time window's one run, the service in its hour, backwards: it reads
+    // back from the window's end, examining none of the keys older than it, and
+    // one window of statuses holds its 7 rows; the handlers are checked on them.
     let plan = analyzed(&indexed[9]).await;
     assert_eq!(
         [
@@ -556,7 +565,7 @@ async fn invocations_read_through_the_entry_index_match_v1() {
             "entry_index_statuses"
         ]
         .map(|name| metric(&plan, name)),
-        [Some(2), Some(43), Some(25)],
+        [Some(1), Some(33), Some(25)],
         "{plan}"
     );
     // Too many runs: the read scans and sorts, before returning anything,
@@ -632,13 +641,19 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         sorted(rows(new.as_ref(), scheduled).await),
         sorted([0, 1].map(|n| vec![scheduled_id(n).to_string()]).into())
     );
-    // Without a service, the index has no runs to read.
-    let plan = explained(
-        "SELECT id FROM sys_invocation_status WHERE target_handler_name = 'promise' \
-        ORDER BY created_at DESC NULLS LAST LIMIT 5",
-    )
-    .await;
-    assert!(!plan.contains("IndexScanExec"), "{plan}");
+    // Without a service, the index reads each hour's runs, one per service,
+    // and returns V1's rows.
+    let all_services = "SELECT id FROM sys_invocation_status WHERE target_handler_name = 'promise' \
+        ORDER BY created_at DESC NULLS LAST LIMIT 5";
+    let plan = explained(all_services).await;
+    assert!(
+        plan.contains("IndexScanExec") && plan.contains("index=_idx_entry_by_service_created"),
+        "{plan}"
+    );
+    assert_eq!(
+        rows(new.as_ref(), all_services).await,
+        rows(old.as_ref(), all_services).await
+    );
     // Where the index isn't maintained, the planner scans, with the same page.
     Configuration::set(Configuration::default());
     let plan = explained(page).await;

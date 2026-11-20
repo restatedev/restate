@@ -11,17 +11,20 @@
 //! Invocations found through the entry index, newest created first or,
 //! backwards ([`ReadDirection::Backward`]), oldest first.
 //!
-//! The entry index `entry_by_service_created/1` holds one key per vqueue entry,
-//! sorted by service, handler and creation time, newest first. A query that
-//! names a service, and perhaps a handler, reads the matching runs merged into
-//! creation order and fetches the invocation of each entry, instead of reading
-//! every invocation status of the partition:
+//! The entry index `entry_by_created/1` holds one key per vqueue entry, sorted
+//! by creation hour, newest first, then service and creation time, newest
+//! first; the handler is in the key's value. A query reads one hour at a time:
+//! the hour's runs, one per service it names (or every service with an
+//! invocation in that hour), merged into creation order, and fetches the
+//! invocation of each entry, instead of reading every invocation status of the
+//! partition. The handler, and every other condition, is checked on the
+//! fetched status:
 //!
 //! ```text
-//! entry index runs                     invocation statuses, 25 per multi-get
-//! (Promises, "promise"): t9 t7 t4   ─┐
-//!                                    ├─▶  t9 t8 t7 t5 t4 …, each checked
-//! (Promises, "resolve"): t8 t5      ─┘
+//! entry index runs                invocation statuses, 25 per multi-get
+//! hour h9: (h9, A): t9 t7     ─┐
+//!          (h9, B): t8        ─┴─▶  t9 t8 t7, each checked
+//! hour h8: (h8, A): t5 t4     ─┬─▶  t5 t4 …
 //! ```
 //!
 //! The index finds every invocation only once the partition has fully migrated
@@ -65,24 +68,28 @@ use crate::keys::{EncodeTableKey, KeyKind};
 use crate::ordered_runs::{OrderedRuns, OrderedRunsDiscovery, OrderedRunsLimits, RetainedMemory};
 use crate::partition_db::PhysicalPartition;
 use crate::registry::IndexKind;
-use crate::vqueue_table::{EntryByServiceCreated, EntryByServiceCreatedKey};
+use crate::vqueue_table::{EntryByCreated, EntryByCreatedKey};
 use crate::{ReadSnapshot, Result};
 
 use super::{
     INVOCATION_STATUS_MULTI_GET_BATCH_SIZE, InvocationStatusKey, create_invocation_status_key,
 };
 
-/// A run is the entries of one service and handler.
+/// A run is the entries of one creation hour and service
+/// (`entry_by_created/1`).
 const RUN_FIELDS: usize = 2;
 
-/// Not measured. A service has few handlers, so a query naming a few services
-/// stays well within `max_runs`.
+/// Not measured. The read merges one hour's runs at a time, one per service
+/// with an invocation created in that hour, so a page across all services stays
+/// within `max_runs` while fewer than that many services were active in each
+/// hour it reads.
 const LIMITS: OrderedRunsLimits = OrderedRunsLimits {
     max_runs: 256,
     max_discovery_keys: 4096,
     buffer: NonZeroUsize::new(8).unwrap(),
     step_budget: NonZeroUsize::new(256).unwrap(),
-    bucket_fields: 0,
+    // Runs of an hour and a service, merged one hour at a time.
+    bucket_fields: 1,
 };
 
 /// Statuses fetched per multi-get, and the window that holds their invocations.
@@ -206,14 +213,14 @@ impl Drop for Held {
 /// may admit more entries than the query matches: the caller keeps its
 /// predicate.
 pub struct EntryIndexRead {
-    index: Arc<KeySelection<EntryByServiceCreatedKey>>,
+    index: Arc<KeySelection<EntryByCreatedKey>>,
     direction: ReadDirection,
 }
 
 impl EntryIndexRead {
     pub fn prepare(selection: &Selection<EntryIndex>, direction: ReadDirection) -> Result<Self> {
         Ok(Self {
-            index: Arc::new(EntryByServiceCreatedKey::prepare_candidates(selection)?),
+            index: Arc::new(EntryByCreatedKey::prepare_candidates(selection)?),
             direction,
         })
     }
@@ -226,7 +233,7 @@ impl EntryIndexRead {
         Ok(if !snapshot.fully_migrated_to_vqueues()? {
             Some(ScanReason::NotMigrated)
         } else if snapshot
-            .complete_index(EntryByServiceCreated::DEFINITION, IndexKind::Secondary)
+            .complete_index(EntryByCreated::DEFINITION, IndexKind::Secondary)
             .is_err()
         {
             Some(ScanReason::NotComplete)
@@ -241,7 +248,7 @@ impl EntryIndexRead {
 /// out in index order.
 pub(super) struct EntryIndexCursor {
     /// `None` once the read failed: it holds nothing then.
-    runs: Option<OrderedRuns<EntryByServiceCreated>>,
+    runs: Option<OrderedRuns<EntryByCreated>>,
     runs_done: bool,
     /// The window's invocations in index order, with their entries' creation
     /// records and times.
@@ -278,7 +285,7 @@ impl Drop for EntryIndexCursor {
 /// How opening went: the runs to merge and what the read holds, or the scan's
 /// reason and the index keys examined before it was chosen.
 enum Opened {
-    Index(OrderedRuns<EntryByServiceCreated>, Held),
+    Index(OrderedRuns<EntryByCreated>, Held),
     Scan(ScanReason, u64),
 }
 
@@ -357,7 +364,7 @@ impl EntryIndexCursor {
                 + WINDOW * std::mem::size_of::<(InvocationId, Seq, MillisSinceEpoch)>()
                 + WINDOW * KEY_LEN,
         )?;
-        let discovery = snapshot.ordered_runs_counted::<EntryByServiceCreated>(
+        let discovery = snapshot.ordered_runs_counted::<EntryByCreated>(
             Arc::clone(&read.index),
             RUN_FIELDS,
             read.direction,
@@ -375,7 +382,7 @@ impl EntryIndexCursor {
 
     fn new(
         snapshot: &ReadSnapshot,
-        runs: OrderedRuns<EntryByServiceCreated>,
+        runs: OrderedRuns<EntryByCreated>,
         held: Held,
         fetched: Box<dyn Fn(usize, u64) + Send>,
     ) -> Self {
