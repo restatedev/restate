@@ -148,6 +148,7 @@ use std::marker::PhantomData;
 use std::mem::size_of;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::Bytes;
 
@@ -208,6 +209,79 @@ impl RetainedMemory for () {
     }
 
     fn shrink(&mut self, _: usize) {}
+}
+
+/// Distinct key prefixes, and the bytes charged for them
+/// ([`ReadSnapshot::distinct_prefixes`]).
+pub type Prefixes = (Vec<Box<[u8]>>, usize);
+
+/// The runs a read may hold at once: each read takes the runs it discovers, in
+/// its first bucket and in later ones, and gives them back once they are
+/// exhausted, when it moves to its next bucket or ends. A read on its own
+/// keeps its allowance inline. Reads that hold their runs together share one
+/// ([`Self::shared`]); they must advance one at a time, as the lanes of one
+/// cursor do: the shared count is no reservation between concurrent reads.
+pub enum RunAllowance {
+    Own(usize),
+    Shared(Arc<AtomicUsize>),
+}
+
+impl RunAllowance {
+    /// The bytes a shared allowance allocates: its count, behind two
+    /// reference counts. Its creator charges them.
+    pub const SHARED_BYTES: usize = 3 * size_of::<usize>();
+
+    /// An allowance to share between reads, allocating [`Self::SHARED_BYTES`].
+    pub fn shared(runs: usize) -> Self {
+        Self::Shared(Arc::new(AtomicUsize::new(runs)))
+    }
+
+    /// Another handle on a shared allowance; `None` for a read's own.
+    pub fn share(&self) -> Option<Self> {
+        match self {
+            Self::Own(_) => None,
+            Self::Shared(count) => Some(Self::Shared(Arc::clone(count))),
+        }
+    }
+
+    /// The runs a read may still take.
+    pub fn available(&self) -> usize {
+        match self {
+            Self::Own(runs) => *runs,
+            Self::Shared(count) => count.load(Ordering::Relaxed),
+        }
+    }
+
+    fn take(&mut self, runs: usize) {
+        debug_assert!(
+            self.available() >= runs,
+            "a read takes at most the runs available"
+        );
+        match self {
+            Self::Own(left) => *left -= runs,
+            Self::Shared(count) => {
+                count.fetch_sub(runs, Ordering::Relaxed);
+            }
+        }
+    }
+
+    fn give(&mut self, runs: usize) {
+        match self {
+            Self::Own(left) => *left += runs,
+            Self::Shared(count) => {
+                count.fetch_add(runs, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+/// What a read shares with the other reads it is part of: the runs they may
+/// hold at once, and `examined`, the keys their discoveries examined so far,
+/// against [`OrderedRunsLimits::max_discovery_keys`]. Each bucket of each read
+/// still merges at most [`OrderedRunsLimits::max_runs`].
+pub struct Opening<'a> {
+    pub runs: RunAllowance,
+    pub examined: &'a mut u64,
 }
 
 /// What discovery found.
@@ -301,6 +375,28 @@ struct Merge<K> {
     resume: Option<Resume>,
     /// Read-ahead buffers of exhausted runs, empty, for the next bucket's runs.
     spare: Vec<VecDeque<Record>>,
+    /// The runs taken from `allowance`: the current bucket's.
+    held: usize,
+    allowance: RunAllowance,
+}
+
+impl<K> Merge<K> {
+    fn hold(&mut self, runs: usize) {
+        self.allowance.take(runs);
+        self.held += runs;
+    }
+
+    fn release_runs(&mut self, runs: usize) {
+        self.allowance.give(runs);
+        self.held -= runs;
+    }
+}
+
+impl<K> Drop for Merge<K> {
+    /// The runs a read held are the other reads' again once it ends.
+    fn drop(&mut self) {
+        self.allowance.give(self.held);
+    }
 }
 
 /// How a read's keys split into runs and buckets.
@@ -485,6 +581,31 @@ impl ReadSnapshot {
         T: PhysicalTable,
         T::Key: OrderedKeySchema,
     {
+        let opening = Opening {
+            runs: RunAllowance::Own(limits.max_runs),
+            examined,
+        };
+        self.ordered_runs_within(request, run_fields, direction, limits, memory, opening)
+    }
+
+    /// [`Self::ordered_runs_counted`] as one of several reads that share the
+    /// runs they hold and the keys their discoveries examine ([`Opening`]).
+    pub fn ordered_runs_within<T>(
+        &self,
+        request: Arc<KeySelection<T::Key>>,
+        run_fields: usize,
+        direction: ReadDirection,
+        limits: OrderedRunsLimits,
+        memory: Box<dyn RetainedMemory>,
+        Opening {
+            runs: allowance,
+            examined,
+        }: Opening<'_>,
+    ) -> Result<OrderedRunsDiscovery<T>>
+    where
+        T: PhysicalTable,
+        T::Key: OrderedKeySchema,
+    {
         self.check_active()?;
         let mut runs = OrderedRuns {
             inner: None,
@@ -531,6 +652,10 @@ impl ReadSnapshot {
             max_runs: limits.max_runs,
             max_discovery_keys: limits.max_discovery_keys,
         };
+        let opening = Caps {
+            max_runs: allowance.available().min(limits.max_runs),
+            ..caps
+        };
         let mut found = Vec::new();
         let mut discovery = Discovery {
             cursor: &mut cursor,
@@ -540,9 +665,9 @@ impl ReadSnapshot {
             examined,
         };
         let discovered = if shape.bucket_fields > 0 && direction == ReadDirection::Backward {
-            discovery.bucket_before(Some(caps), &mut found, &mut Vec::new(), None, None, None)?
+            discovery.bucket_before(Some(opening), &mut found, &mut Vec::new(), None, None, None)?
         } else {
-            discovery.runs(Some(caps), &mut found, &mut Vec::new(), None, None)?
+            discovery.runs(Some(opening), &mut found, &mut Vec::new(), None, None)?
         };
         runs.examined = *examined;
         let next_bucket = match discovered {
@@ -579,10 +704,96 @@ impl ReadSnapshot {
             caps,
             resume: None,
             spare: Vec::new(),
+            held: 0,
+            allowance,
         });
+        merge.hold(merge.runs.len());
         merge.reserve(&mut runs.memory)?;
         runs.inner = Some(merge);
         Ok(OrderedRunsDiscovery::Ready(runs))
+    }
+}
+
+impl ReadSnapshot {
+    /// The distinct prefixes, the header and first `fields` fields, of the keys
+    /// `request` matches, in key order, found as discovery finds runs: the
+    /// first match of each prefix, then a seek past it. `None` past `max`
+    /// prefixes, or once `examined`, kept up to date key by key, passes
+    /// `max_keys`. Charges `memory` while it works. The prefixes it returns
+    /// stay charged to `memory`, by the bytes returned with them, until the
+    /// caller releases them.
+    pub fn distinct_prefixes<T>(
+        &self,
+        request: Arc<KeySelection<T::Key>>,
+        fields: usize,
+        (max, max_keys): (usize, usize),
+        memory: Box<dyn RetainedMemory>,
+        examined: &mut u64,
+    ) -> Result<Option<Prefixes>>
+    where
+        T: PhysicalTable,
+        T::Key: OrderedKeySchema,
+    {
+        self.check_active()?;
+        let mut memory = Accounted {
+            memory,
+            bytes: 0,
+            selection: 0,
+        };
+        let metadata = self.metadata();
+        if !T::is_active(&metadata) {
+            return Ok(Some((Vec::new(), 0)));
+        }
+        let Some(mut selection) = request.cursor(
+            <<T::Key as KeySchema>::Header as KeyHeader>::scope(&metadata)?,
+        )?
+        else {
+            return Ok(Some((Vec::new(), 0)));
+        };
+        memory.selection(&selection)?;
+        let scan = selection.scan().to_exact();
+        memory.grow(3 * scan.bound_bytes())?;
+        let mut cursor = self.physical_cursor(scan)?;
+        let shape = Shape {
+            header: <<T::Key as KeySchema>::Header as KeyHeader>::LENGTH,
+            run_fields: fields,
+            bucket_fields: 0,
+            direction: ReadDirection::Forward,
+        };
+        let mut found = Vec::new();
+        let discovered = Discovery {
+            cursor: &mut cursor,
+            selection: &mut selection,
+            shape: &shape,
+            memory: &mut memory,
+            examined,
+        }
+        .runs(
+            Some(Caps {
+                max_runs: max,
+                max_discovery_keys: max_keys,
+            }),
+            &mut found,
+            &mut Vec::new(),
+            None,
+            None,
+        )?;
+        match discovered {
+            Discovered::End => {
+                // Charged for the caller before the work's own charge ends.
+                let kept = found.len() * size_of::<Box<[u8]>>()
+                    + found.iter().map(|run| run.prefix.len()).sum::<usize>();
+                memory.memory.grow(kept)?;
+                let mut prefixes = Vec::with_capacity(found.len());
+                prefixes.extend(found.into_iter().map(|run| run.prefix));
+                Ok(Some((prefixes, kept)))
+            }
+            Discovered::TooManyRuns => Ok(None),
+            // Without buckets or a budget, discovery ends or passes its caps.
+            Discovered::NextBucket(_) | Discovered::Paused(_) => {
+                Err(StorageError::DataIntegrityError)
+            }
+        }
     }
 }
 
@@ -951,6 +1162,7 @@ impl<K: OrderedKeySchema> Merge<K> {
                     return Ok(NextBucket::Done);
                 };
                 let mut exhausted = std::mem::take(&mut self.runs);
+                self.release_runs(exhausted.len());
                 for run in exhausted.drain(..) {
                     let held = run.prefix.len()
                         + run.resume.as_ref().map_or(0, |resume| resume.len())
@@ -969,11 +1181,13 @@ impl<K: OrderedKeySchema> Merge<K> {
                 Some(start)
             }
         };
+        let mut runs = std::mem::take(&mut self.runs);
+        // A paused discovery holds the runs it found so far.
+        let before = runs.len();
         let caps = Caps {
             max_discovery_keys: usize::MAX,
-            ..self.caps
+            max_runs: self.caps.max_runs.min(before + self.allowance.available()),
         };
-        let mut runs = std::mem::take(&mut self.runs);
         let mut discovery = Discovery {
             cursor: &mut self.cursor,
             selection: &mut self.selection,
@@ -1012,7 +1226,9 @@ impl<K: OrderedKeySchema> Merge<K> {
             ),
             _ => Err(StorageError::DataIntegrityError),
         };
+        let found = runs.len() - before;
         self.runs = runs;
+        self.hold(found);
         match discovered? {
             Discovered::Paused(resume) => {
                 self.resume = Some(resume);

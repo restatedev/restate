@@ -930,7 +930,8 @@ async fn stage_and_status_keys_follow_each_entry() {
         (Stage::Finished, Status::Killed, 1),
         (Stage::Suspended, Status::Started, 0),
     ] {
-        let lane = EntryByStatusCreatedKey::prepare_lane(&Selection::All, stage, status).unwrap();
+        let lane =
+            EntryByStatusCreatedKey::prepare_lanes(&Selection::All, &[stage], &[status]).unwrap();
         let OrderedRunsDiscovery::Ready(mut runs) = snapshot
             .ordered_runs::<EntryByStatusCreated>(
                 std::sync::Arc::new(lane),
