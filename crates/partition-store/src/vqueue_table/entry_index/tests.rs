@@ -45,12 +45,13 @@ async fn open(store: &mut PartitionStore, config: &Configuration) {
     engine::run_all(store, 3).await.unwrap();
 }
 
-/// The maintained index of `entry_by_service_created/1`: its ID and status.
+/// The maintained index of `entry_by_created/1`, which holds every entry: its
+/// ID and status.
 fn index(store: &PartitionStore) -> Option<(u32, IndexStatus)> {
     get_registry(store.partition_db())
         .unwrap()
         .unwrap_or_default()
-        .maintained(ENTRY_BY_SERVICE_CREATED.name)
+        .maintained(ENTRY_BY_CREATED.name)
         .map(|index| (index.id, index.state))
 }
 
@@ -126,12 +127,10 @@ fn tracking() -> Configuration {
     config
 }
 
-/// Every entry has one key, ordered by service, then handler (NULL, a state
-/// mutation, first), then newest created first. Stage and status changes don't
-/// write the index; deleting the entry removes its key. `entry_by_created/1`
-/// keys the same entries by creation hour, newest first, then service and
-/// newest created first, each with its handler and scope as the value, and
-/// changes the same way.
+/// `entry_by_created/1` keys every entry by creation hour, newest first, then
+/// service and newest created first, each with its handler and scope as the
+/// value. Stage and status changes don't write the index; deleting the entry
+/// removes its key.
 #[restate_core::test]
 async fn keys_order_entries_and_change_only_on_create_and_delete() {
     RocksDbManager::init();
@@ -204,32 +203,7 @@ async fn keys_order_entries_and_change_only_on_create_and_delete() {
     }
     tx.commit().await.unwrap();
 
-    let scope = IndexScope {
-        partition: PartitionId::MIN,
-        index: id,
-    };
-    let expected = |order: &[usize]| {
-        order
-            .iter()
-            .map(|&i| {
-                let (target, key, stats) = &entries[i];
-                let mut bytes = Vec::new();
-                EntryByServiceCreatedKey::borrowed(
-                    target.service(),
-                    target.handler(),
-                    Reverse(stats.created_at),
-                    key.to_canonical_entry_id(qid.partition_key()),
-                )
-                .encode_key(scope, &mut bytes);
-                bytes
-            })
-            .collect::<Vec<_>>()
-    };
-    // "Other" sorts before "Utils"; within Utils the state mutation (NULL
-    // handler) comes first, then "call" newest first, then "run".
-    assert_eq!(keys_of(&store, id), expected(&[4, 3, 1, 0, 2]));
-
-    let created_id = maintained(&store, &ENTRY_BY_CREATED);
+    let created_id = id;
     let expected_created = |order: &[usize]| {
         order
             .iter()
@@ -298,7 +272,6 @@ async fn keys_order_entries_and_change_only_on_create_and_delete() {
         },
     );
     tx.commit().await.unwrap();
-    assert_eq!(keys_of(&store, id), expected(&[4, 3, 1, 0, 2]));
     assert_eq!(created_entries(&store), expected_created(&[4, 1, 2, 0, 3]));
 
     // Deleting an entry removes exactly its key.
@@ -314,16 +287,15 @@ async fn keys_order_entries_and_change_only_on_create_and_delete() {
         StoredEntryRef::from_header(&header),
     );
     tx.commit().await.unwrap();
-    assert_eq!(keys_of(&store, id), expected(&[4, 3, 0, 2]));
     assert_eq!(created_entries(&store), expected_created(&[4, 2, 0, 3]));
 }
 
 /// Backfilling existing entries gives the same keys as maintaining the indexes
 /// from the start: invocations through their invocation status, state
 /// mutations through their input. A reset deletes the keys; tracking again
-/// rebuilds them under new IDs. On a store whose first index is already Complete,
-/// the later ones get their own full pass, and the first stays as it was. Values
-/// are compared too.
+/// rebuilds them under new IDs. A store of an earlier build that has only the
+/// retired `entry_by_service_created/1`, Complete, drops it and its keys at open,
+/// and the current indexes get their own full pass. Values are compared too.
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     RocksDbManager::init();
@@ -356,24 +328,22 @@ async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     // the Finished one in the finished index, the one in an unknown stage in
     // neither, nor in the two status indexes.
     let [
-        all,
         finished,
         active,
         created,
         status_created,
         status_transitioned,
-    ] = <[_; 6]>::try_from(counts(&reference))
+    ] = <[_; 5]>::try_from(counts(&reference))
         .unwrap()
         .map(|(_, count)| count);
     assert_eq!(
         (
-            all,
             finished + active,
             created,
             status_created,
             status_transitioned
         ),
-        (149, 148, 149, 148, 148)
+        (148, 149, 148, 148)
     );
     assert!(finished > 0 && active > 0, "{:?}", counts(&reference));
     assert_eq!(payloads(&store), payloads(&reference));
@@ -392,7 +362,8 @@ async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     assert!(rebuilt > built);
     assert_eq!(payloads(&store), payloads(&reference));
 
-    // A store of the previous release: only the first index, Complete.
+    // A store of an earlier build: only `entry_by_service_created/1`, the first
+    // entry index, Complete.
     let mut late = manager
         .open(&Partition::new(PartitionId::from(3), KeyRange::FULL), None)
         .await
@@ -400,17 +371,19 @@ async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     open(&mut late, &Configuration::default()).await;
     seed(&mut late).await;
     unusual(&mut late).await;
-    maintain_only(&mut late, &[&ENTRY_BY_SERVICE_CREATED]).await;
+    late.maintain_only(&[&ENTRY_BY_SERVICE_CREATED]).await;
     engine::run_all(&mut late, 3).await.unwrap();
-    let (first, status) = index(&late).unwrap();
-    assert_eq!(status, IndexStatus::Complete);
-    let before = payloads(&late);
-    assert_eq!(before[0], payloads(&reference)[0]);
-    assert!(before[1..].iter().all(|(_, keys)| keys.is_empty()));
-    // This release adds the others: they backfill on their own, and the first
-    // keeps its ID and keys.
+    let retired = maintained(&late, &ENTRY_BY_SERVICE_CREATED);
+    let registry = get_registry(late.partition_db()).unwrap().unwrap();
+    assert_eq!(registry.get(retired).unwrap().state, IndexStatus::Complete);
+    assert_eq!(keys_of(&late, retired).len(), 149);
+    assert!(payloads(&late).iter().all(|(_, keys)| keys.is_empty()));
+    // This release doesn't know it: the open retires it and deletes its keys,
+    // and the current indexes backfill on their own.
     open(&mut late, &tracking()).await;
-    assert_eq!(index(&late), Some((first, IndexStatus::Complete)));
+    let registry = get_registry(late.partition_db()).unwrap().unwrap();
+    assert!(registry.maintained(ENTRY_BY_SERVICE_CREATED.name).is_none());
+    assert!(keys_of(&late, retired).is_empty());
     for definition in [
         &FINISHED_ENTRY_BY_OUTCOME,
         &ACTIVE_ENTRY_BY_STAGE,
@@ -473,42 +446,6 @@ async fn unusual(store: &mut PartitionStore) {
     tx.commit().await.unwrap();
 }
 
-/// Reconciles `store`'s registry to maintain only `definitions`, as an earlier
-/// release that knew only those would.
-async fn maintain_only(store: &mut PartitionStore, definitions: &[&'static IndexDefinition]) {
-    use crate::features::LoadedStorageFeatures;
-    use crate::fsm_table::{
-        get_min_restate_version_from_partition_db, get_storage_features_from_partition_db,
-        get_storage_version_from_partition_db,
-    };
-    use crate::registry::{FenceState, Requests};
-    use restate_types::SemanticRestateVersion;
-
-    let db = store.partition_db().clone();
-    let mut features = LoadedStorageFeatures::load(
-        get_storage_features_from_partition_db(&db).unwrap(),
-        get_storage_version_from_partition_db(&db).unwrap(),
-        SemanticRestateVersion::current(),
-    )
-    .unwrap();
-    let mut min = get_min_restate_version_from_partition_db(&db).unwrap();
-    store
-        .reconcile_registry(
-            definitions,
-            &Requests {
-                maintain: definitions.to_vec(),
-                ..Default::default()
-            },
-            FenceState {
-                features: &mut features,
-                current_version: SemanticRestateVersion::current(),
-                min_restate_version: &mut min,
-            },
-        )
-        .await
-        .unwrap();
-}
-
 /// The ID of the maintained index of `definition`.
 fn maintained(store: &PartitionStore, definition: &IndexDefinition) -> u32 {
     get_registry(store.partition_db())
@@ -554,7 +491,7 @@ async fn stage_and_status_keys_follow_each_entry() {
         .unwrap();
     open(&mut store, &tracking()).await;
     let [all, finished, active, status_created, status_transitioned] = [
-        &ENTRY_BY_SERVICE_CREATED,
+        &ENTRY_BY_CREATED,
         &FINISHED_ENTRY_BY_OUTCOME,
         &ACTIVE_ENTRY_BY_STAGE,
         &ENTRY_BY_STATUS_CREATED,
@@ -783,7 +720,7 @@ async fn stage_and_status_keys_follow_each_entry() {
     assert_eq!(
         keys_of(&store, all).len(),
         8,
-        "every entry is in the first index"
+        "every entry is in the creation index"
     );
     // Statuses in their codec order: Started (70) before Succeeded (80).
     assert_eq!(

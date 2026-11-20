@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! The entry index by service and handler (`entry_by_service_created/1`), kept
+//! The entry index by creation hour and service (`entry_by_created/1`), kept
 //! up to date through the real vqueue operations rather than raw table writes:
 //! each entry has exactly its one key from creation to deletion, an entry whose
 //! sequence changes moves to its new key, and changes to anything else the key
@@ -24,8 +24,8 @@ use restate_partition_store::keys::KeyKind;
 use restate_partition_store::keys::header::IndexScope;
 use restate_partition_store::registry::IndexKind;
 use restate_partition_store::vqueue_table::{
-    ActiveEntryByStage, ActiveEntryByStageKey, EntryByServiceCreated, EntryByServiceCreatedKey,
-    FinishedEntryByOutcome, FinishedEntryByOutcomeKey,
+    ActiveEntryByStage, ActiveEntryByStageKey, EntryByCreated, EntryByCreatedKey,
+    FinishedEntryByOutcome, FinishedEntryByOutcomeKey, hour_bucket,
 };
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
@@ -78,7 +78,7 @@ fn target(case: u8) -> EntryTargetRef<'static> {
 /// The scopes of the three Complete entry indexes.
 #[derive(Clone, Copy)]
 struct Scopes {
-    /// By service and handler.
+    /// Every entry, by creation hour and service.
     all: IndexScope,
     finished: IndexScope,
     active: IndexScope,
@@ -110,7 +110,7 @@ async fn tracking_store() -> (PartitionStore, Scopes) {
             .unwrap(),
     };
     let scopes = Scopes {
-        all: scope(EntryByServiceCreated::DEFINITION),
+        all: scope(EntryByCreated::DEFINITION),
         finished: scope(FinishedEntryByOutcome::DEFINITION),
         active: scope(ActiveEntryByStage::DEFINITION),
     };
@@ -195,8 +195,13 @@ fn expected_key(
     id: CanonicalEntryId,
 ) -> Vec<Vec<u8>> {
     let mut key = Vec::new();
-    EntryByServiceCreatedKey::borrowed(target.service(), target.handler(), Reverse(created_at), id)
-        .encode_key(scope, &mut key);
+    EntryByCreatedKey::borrowed(
+        Reverse(hour_bucket(created_at)),
+        target.service(),
+        Reverse(created_at),
+        id,
+    )
+    .encode_key(scope, &mut key);
     vec![key]
 }
 
@@ -502,7 +507,7 @@ async fn entry_index_moves_with_the_sequence_and_ignores_the_rest() {
             "case {case}"
         );
 
-        // None of these changes the first index's key. Each writes the entry
+        // None of these changes the creation index's key. Each writes the entry
         // status, and moves (a delete and a put) the keys that hold what
         // changed: the status moves both status keys, the transition time the
         // transition key, and the stage the active key and both status keys.

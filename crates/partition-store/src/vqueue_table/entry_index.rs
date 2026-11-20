@@ -11,26 +11,9 @@
 //! The entry indexes: secondary indexes over VQueue entries, released together
 //! and switched on by `experimental-enable-track-entry-indexes`.
 //!
-//! **Entries by service and handler, newest created first**
-//! (`entry_by_service_created/1`) holds one key for every entry, of both kinds,
-//! in every stage, including finished entries kept for their retention:
-//!
-//! ```text
-//! xI | partition | index ID | service | handler? | created_at ↓ | canonical entry ID
-//!                             "Utils"   "call"     t9             inv_…
-//!                             "Utils"   "call"     t7             inv_…
-//!                             "Utils"   "run"      t8             inv_…
-//!                             "object"  NULL       t6             (a state mutation)
-//! ```
-//!
-//! So the entries of one service and handler are one contiguous run, newest
-//! first, and a query naming only the service reads one run per handler. The
-//! handler is NULL for state mutations, and NULL sorts first within its service.
-//!
-//! Service and handler come from the entry's target, which every write already
-//! passes (`EntryContext`), so the entry header stays as it is. None of the key's
-//! fields changes after the entry is created, so only creating, adopting and
-//! deleting an entry writes the index; stage and status changes don't.
+//! Each index takes the entry's service, handler and scope from its target,
+//! which every write passes (`EntryContext`), so the entry header stays as it
+//! is.
 //!
 //! **Finished entries by outcome, service and handler, newest finished first**
 //! (`finished_entry_by_outcome/1`) holds one key for every entry whose stored
@@ -63,9 +46,10 @@
 //! no key. The key moves with the stage; the processing status isn't part of it.
 //!
 //! **Entries by creation hour and service, newest created first**
-//! (`entry_by_created/1`) holds one key for every entry, like the first index,
-//! but leads with the start of the hour in which the entry was created,
-//! so that the newest entries of all services are the first keys:
+//! (`entry_by_created/1`) holds one key for every entry, of both kinds, in
+//! every stage, including finished entries kept for their retention. It leads
+//! with the start of the hour in which the entry was created, so that the
+//! newest entries of all services are the first keys:
 //!
 //! ```text
 //! xI | partition | index ID | hour ↓ | service | created_at ↓ | canonical entry ID
@@ -77,8 +61,12 @@
 //!
 //! A page of the newest entries merges one run per service active in its hours;
 //! a service's page reads one run per hour. The value holds the entry's handler
-//! and scope, which a read can return without fetching the entry. Like the first
-//! index, key and value never change after the entry is created.
+//! and scope, which a read can check or return without fetching the entry. Key
+//! and value never change after the entry is created, so only creating,
+//! adopting and deleting an entry writes the index; stage and status changes
+//! don't. It replaced `entry_by_service_created/1`, a run per service and
+//! handler for all time, which is retired: a store that maintained it drops it
+//! at open.
 //!
 //! **Entries by stage and status, newest created first**
 //! (`entry_by_status_created/1`) and **newest transitioned first**
@@ -106,8 +94,8 @@
 //! second index, when its `transitioned_at` does. An entry in a stage this
 //! binary doesn't know has no key.
 //!
-//! All six indexes project an entry's old and new state to their optional keys
-//! and write only when the two differ.
+//! Every index projects an entry's old and new state to its optional key and
+//! writes only when the two differ.
 
 use std::cmp::Reverse;
 use std::ops::Bound::{self, Excluded, Included, Unbounded};
@@ -146,6 +134,12 @@ use crate::keys::selection::codec::{FieldPredicateCodec, prepare_hour_buckets};
 use crate::keys::selection::{KeySelection, PrepareKeySelection, PreparedFieldPredicate};
 use crate::registry::{Family, IndexDefinition, IndexKind};
 
+// `entry_by_service_created/1`, the first entry index, keyed every entry by
+// service and handler, newest created first. `entry_by_created/1` replaced it
+// for the invocation list, and nothing reads it: stores retire it at open
+// (README rule 1). Kept for tests only: its runs, a service and handler each,
+// are the run merge's fixture, and a store holding it shows the retirement.
+#[cfg(test)]
 crate::index::macros::define_secondary_index!(
     /// Entries by service and handler, newest created first.
     EntryByServiceCreated,
@@ -162,6 +156,7 @@ crate::index::macros::define_secondary_index!(
 // A query on invocations restricts the index through the invocation columns its
 // fields are named after. Every invocation's key has a handler; only state
 // mutations, which a query on invocations skips, have none.
+#[cfg(test)]
 crate::keys::macros::define_key_selection!(
     EntryByServiceCreatedKey;
     [restate_storage_query_api::tables::index::EntryByServiceCreated];
@@ -225,7 +220,9 @@ crate::keys::macros::define_key_selection!(
     created_at,
 );
 
-/// Every entry by service and handler, newest created first.
+/// Every entry by service and handler, newest created first. Retired; for
+/// tests only.
+#[cfg(test)]
 pub(crate) static ENTRY_BY_SERVICE_CREATED: IndexDefinition = IndexDefinition {
     name: EntryByServiceCreated::DEFINITION,
     introduced: EntryByServiceCreated::INTRODUCED,
@@ -287,7 +284,6 @@ pub(crate) static ENTRY_BY_STATUS_TRANSITIONED: IndexDefinition = IndexDefinitio
 /// The entry indexes, released and controlled together.
 pub(crate) const ENTRY_INDEXES: Family = Family {
     definitions: &[
-        &ENTRY_BY_SERVICE_CREATED,
         &FINISHED_ENTRY_BY_OUTCOME,
         &ACTIVE_ENTRY_BY_STAGE,
         &ENTRY_BY_CREATED,
@@ -309,6 +305,7 @@ fn entry_indexes_reset(config: &Configuration) -> bool {
 /// Removes the key of `before` and adds the key of `after`. Both share the
 /// entry's target, and the rest of the key never changes after creation, so an
 /// update writes nothing.
+#[cfg(test)]
 fn apply_entry_by_service_created(
     storage: &mut PartitionStoreTransaction<'_>,
     id: u32,

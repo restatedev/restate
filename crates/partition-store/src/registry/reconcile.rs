@@ -851,6 +851,44 @@ fn registry_error(err: RegistryError) -> MigrationError {
 }
 
 #[cfg(test)]
+impl PartitionStore {
+    /// Reconciles the registry to maintain only `definitions`, as a release
+    /// that knew only those would; definitions outside the binary's own list
+    /// included, such as a retired one kept for tests.
+    pub(crate) async fn maintain_only(&mut self, definitions: &[&'static IndexDefinition]) {
+        use crate::features::LoadedStorageFeatures;
+        use crate::fsm_table::{
+            get_min_restate_version_from_partition_db, get_storage_features_from_partition_db,
+            get_storage_version_from_partition_db,
+        };
+        use restate_types::SemanticRestateVersion;
+
+        let db = self.partition_db().clone();
+        let mut features = LoadedStorageFeatures::load(
+            get_storage_features_from_partition_db(&db).unwrap(),
+            get_storage_version_from_partition_db(&db).unwrap(),
+            SemanticRestateVersion::current(),
+        )
+        .unwrap();
+        let mut min = get_min_restate_version_from_partition_db(&db).unwrap();
+        self.reconcile_registry(
+            definitions,
+            &Requests {
+                maintain: definitions.to_vec(),
+                ..Default::default()
+            },
+            FenceState {
+                features: &mut features,
+                current_version: SemanticRestateVersion::current(),
+                min_restate_version: &mut min,
+            },
+        )
+        .await
+        .unwrap();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use restate_rocksdb::RocksDbManager;
     use restate_types::identifiers::PartitionId;
