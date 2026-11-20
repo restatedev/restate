@@ -589,8 +589,6 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
             "SELECT id FROM sys_invocation_status WHERE target_service_name = 'Many' \
              ORDER BY created_at ASC NULLS LAST LIMIT 3"
                 .to_owned(),
-            // A condition the index doesn't navigate, checked on each candidate.
-            exact.replace("target_service_key IS NOT NULL", "status = 'invoked'"),
         ] {
             let (rows, accesses) = run(&sql).await;
             through_index(&accesses, &sql);
@@ -602,6 +600,24 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
             );
         }
         assert_eq!(run(exact).await.0.len(), 51);
+        // A condition on the status reads the status index on every owner,
+        // with the scan's rows.
+        let running = exact.replace("target_service_key IS NOT NULL", "status = 'invoked'");
+        let (rows, accesses) = run(&running).await;
+        assert_eq!(accesses.len(), fixture.stores.len(), "{running}");
+        assert!(
+            accesses.iter().all(|(_, access)| matches!(
+                access,
+                PrimaryRead::Index(index) if index.name() == "_idx_entry_by_status_created"
+            )),
+            "{running}: {accesses:?}"
+        );
+        assert!(!rows.is_empty(), "{running}");
+        assert_eq!(
+            rows,
+            scanned(&running).await,
+            "parallelism {parallelism}: {running}"
+        );
         for sql in [
             // Ties with another key, which the query orders by.
             "SELECT id, created_at FROM sys_invocation_status WHERE target_service_name = 'Promises' \

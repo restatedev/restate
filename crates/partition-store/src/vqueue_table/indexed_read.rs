@@ -53,7 +53,9 @@ use restate_storage_api::vqueue_table::{RawStatusHeaderRef, Stage, Status};
 use restate_storage_query_api::scan::{CursorStep, ReadDirection};
 use restate_storage_query_api::selection::Selection;
 use restate_storage_query_api::tables::index::{
-    ActiveEntryByStage as ActiveIndex, FinishedEntryByOutcome as FinishedIndex,
+    ActiveEntryByStage as ActiveIndex, EntryStatusByStatusCreated as StatusCreatedIndex,
+    EntryStatusByStatusTransitioned as StatusTransitionedIndex,
+    FinishedEntryByOutcome as FinishedIndex,
 };
 use restate_types::identifiers::{BaseEntryId, CanonicalEntryId};
 
@@ -66,12 +68,15 @@ use crate::keys::{EncodeTableKey, KeyDecoder, KeyKind};
 use crate::ordered_runs::{OrderedRuns, OrderedRunsDiscovery, OrderedRunsLimits};
 use crate::partition_db::PhysicalPartition;
 use crate::registry::IndexKind;
+use crate::status_lanes::{Lanes, StatusLanes};
 use crate::table::PhysicalTable;
 use crate::{ReadSnapshot, Result};
 
 use super::{
-    ActiveEntryByStage, ActiveEntryByStageKey, ENTRY_STATUS_MULTI_GET_BATCH_SIZE, EntryStatusKey,
-    FinishedEntryByOutcome, FinishedEntryByOutcomeKey,
+    ActiveEntryByStage, ActiveEntryByStageKey, ENTRY_STATUS_MULTI_GET_BATCH_SIZE,
+    EntryByStatusCreated, EntryByStatusCreatedKey, EntryByStatusTransitioned,
+    EntryByStatusTransitionedKey, EntryStatusKey, FinishedEntryByOutcome,
+    FinishedEntryByOutcomeKey,
 };
 
 /// An entry index whose keys each name one entry status, read newest first or
@@ -115,6 +120,38 @@ impl EntryIndex for ActiveEntryByStage {
 
     fn time(header: &RawStatusHeaderRef<'_>) -> UniqueTimestamp {
         header.stats.created_at
+    }
+}
+
+impl EntryIndex for EntryByStatusCreated {
+    fn reference(key: KeyDecoder<'_, EntryByStatusCreatedKey>) -> Result<Reference> {
+        let key = key.decode_all()?;
+        Ok(Reference {
+            id: key.canonical_id,
+            stage: key.stage,
+            status: Some(key.status),
+            at: key.created_at.0,
+        })
+    }
+
+    fn time(header: &RawStatusHeaderRef<'_>) -> UniqueTimestamp {
+        header.stats.created_at
+    }
+}
+
+impl EntryIndex for EntryByStatusTransitioned {
+    fn reference(key: KeyDecoder<'_, EntryByStatusTransitionedKey>) -> Result<Reference> {
+        let key = key.decode_all()?;
+        Ok(Reference {
+            id: key.canonical_id,
+            stage: key.stage,
+            status: Some(key.status),
+            at: key.transitioned_at.0,
+        })
+    }
+
+    fn time(header: &RawStatusHeaderRef<'_>) -> UniqueTimestamp {
+        header.stats.transitioned_at
     }
 }
 
@@ -169,6 +206,106 @@ impl ActiveRead {
     }
 }
 
+/// A read of the entries of some stages and statuses through one of the two
+/// status indexes, a lane per stage and status
+/// ([`crate::status_lanes`]), in the order of the index's time: newest first
+/// or, backwards, oldest first. The lanes may admit more entries than the query
+/// matches: the caller keeps its predicate.
+pub struct LanesRead<K> {
+    lanes: StatusLanes<K>,
+    direction: ReadDirection,
+}
+
+/// Entries by stage and status, newest created first:
+/// `entry_by_status_created/1`.
+pub type StatusCreatedRead = LanesRead<EntryByStatusCreatedKey>;
+/// Entries by stage and status, newest transitioned first:
+/// `entry_by_status_transitioned/1`.
+pub type StatusTransitionedRead = LanesRead<EntryByStatusTransitionedKey>;
+
+impl StatusCreatedRead {
+    pub fn prepare(
+        selection: &Selection<StatusCreatedIndex>,
+        direction: ReadDirection,
+    ) -> Result<Self> {
+        let lanes = StatusLanes::new(
+            EntryByStatusCreatedKey::entry_lanes(selection),
+            |stages, statuses| {
+                EntryByStatusCreatedKey::prepare_entry_lanes(selection, stages, statuses)
+            },
+        )?;
+        Ok(Self { lanes, direction })
+    }
+}
+
+impl StatusTransitionedRead {
+    pub fn prepare(
+        selection: &Selection<StatusTransitionedIndex>,
+        direction: ReadDirection,
+    ) -> Result<Self> {
+        let lanes = StatusLanes::new(
+            EntryByStatusTransitionedKey::entry_lanes(selection),
+            |stages, statuses| {
+                EntryByStatusTransitionedKey::prepare_entry_lanes(selection, stages, statuses)
+            },
+        )?;
+        Ok(Self { lanes, direction })
+    }
+}
+
+/// What an indexed read merges: one read of the index's runs, or a status
+/// index's lanes.
+enum Keys<I: EntryIndex> {
+    Runs(OrderedRuns<I>),
+    Lanes(Lanes<I>),
+}
+
+impl<I: EntryIndex> Keys<I> {
+    fn advance(&mut self) -> Result<CursorStep> {
+        match self {
+            Self::Runs(runs) => runs.advance(),
+            Self::Lanes(lanes) => lanes.advance(),
+        }
+    }
+
+    /// The reference of the key the last step produced.
+    fn reference(&self) -> Result<Reference> {
+        match self {
+            Self::Runs(runs) => I::reference(runs.current()?.0),
+            Self::Lanes(lanes) => I::reference(lanes.current()?.0),
+        }
+    }
+
+    fn examined(&self) -> u64 {
+        match self {
+            Self::Runs(runs) => runs.examined(),
+            Self::Lanes(lanes) => lanes.examined(),
+        }
+    }
+
+    fn runs(&self) -> usize {
+        match self {
+            Self::Runs(runs) => runs.runs(),
+            Self::Lanes(lanes) => lanes.runs(),
+        }
+    }
+}
+
+/// How to open an indexed read: its selection, or its lanes.
+enum Opening<'a, I: EntryIndex> {
+    Runs(&'a Arc<KeySelection<I::Key>>),
+    Lanes(&'a StatusLanes<I::Key>),
+}
+
+impl<I: EntryIndex> Opening<'_, I> {
+    fn retained_bytes(&self) -> usize {
+        match self {
+            Self::Runs(selection) => selection.shared_retained_bytes(),
+            Self::Lanes(lanes) => lanes.retained_bytes(),
+        }
+    }
+}
+
 /// Why a read of `I` on `snapshot` can't go through it, if it can't: the index
 /// isn't Complete on it.
 fn unusable<I: EntryIndex>(snapshot: &ReadSnapshot) -> Result<Option<ScanReason>> {
@@ -200,7 +337,7 @@ enum Ended {
 /// still the keys', in index order.
 pub(super) struct IndexedCursor<I: EntryIndex> {
     /// `None` once the read ended: it holds nothing then.
-    runs: Option<OrderedRuns<I>>,
+    runs: Option<Keys<I>>,
     runs_done: bool,
     /// The most references a window holds.
     window_size: usize,
@@ -237,7 +374,13 @@ impl IndexedCursor<FinishedEntryByOutcome> {
         execution: &EntryIndexExecution,
         window: NonZeroUsize,
     ) -> Result<Option<Self>> {
-        Self::open(snapshot, &read.index, read.direction, execution, window)
+        Self::open(
+            snapshot,
+            Opening::Runs(&read.index),
+            read.direction,
+            execution,
+            window,
+        )
     }
 }
 
@@ -248,7 +391,47 @@ impl IndexedCursor<ActiveEntryByStage> {
         execution: &EntryIndexExecution,
         window: NonZeroUsize,
     ) -> Result<Option<Self>> {
-        Self::open(snapshot, &read.index, read.direction, execution, window)
+        Self::open(
+            snapshot,
+            Opening::Runs(&read.index),
+            read.direction,
+            execution,
+            window,
+        )
+    }
+}
+
+impl IndexedCursor<EntryByStatusCreated> {
+    pub(super) fn status_created(
+        snapshot: &ReadSnapshot,
+        read: &StatusCreatedRead,
+        execution: &EntryIndexExecution,
+        window: NonZeroUsize,
+    ) -> Result<Option<Self>> {
+        Self::open(
+            snapshot,
+            Opening::Lanes(&read.lanes),
+            read.direction,
+            execution,
+            window,
+        )
+    }
+}
+
+impl IndexedCursor<EntryByStatusTransitioned> {
+    pub(super) fn status_transitioned(
+        snapshot: &ReadSnapshot,
+        read: &StatusTransitionedRead,
+        execution: &EntryIndexExecution,
+        window: NonZeroUsize,
+    ) -> Result<Option<Self>> {
+        Self::open(
+            snapshot,
+            Opening::Lanes(&read.lanes),
+            read.direction,
+            execution,
+            window,
+        )
     }
 }
 
@@ -258,7 +441,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
     /// `window` bounds a window's references, at most [`WINDOW`].
     fn open(
         snapshot: &ReadSnapshot,
-        index: &Arc<KeySelection<I::Key>>,
+        index: Opening<'_, I>,
         direction: ReadDirection,
         execution: &EntryIndexExecution,
         window: NonZeroUsize,
@@ -316,7 +499,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
         };
         chosen(match &cursor {
             Ok(cursor) => EntryIndexPath::Index {
-                runs: cursor.runs.as_ref().map_or(0, OrderedRuns::runs),
+                runs: cursor.runs.as_ref().map_or(0, Keys::runs),
             },
             Err(reason) => EntryIndexPath::Scan(*reason),
         });
@@ -326,12 +509,12 @@ impl<I: EntryIndex> IndexedCursor<I> {
     #[allow(clippy::type_complexity)]
     fn try_open(
         snapshot: &ReadSnapshot,
-        index: &Arc<KeySelection<I::Key>>,
+        index: Opening<'_, I>,
         direction: ReadDirection,
         memory: SharedMemory,
         window_size: usize,
         discovered: &mut u64,
-    ) -> Result<std::result::Result<(OrderedRuns<I>, Held), (ScanReason, u64)>> {
+    ) -> Result<std::result::Result<(Keys<I>, Held), (ScanReason, u64)>> {
         if let Some(reason) = unusable::<I>(snapshot)? {
             return Ok(Err((reason, 0)));
         }
@@ -344,16 +527,34 @@ impl<I: EntryIndex> IndexedCursor<I> {
                 + window_size * std::mem::size_of::<Reference>()
                 + window_size * KEY_LEN,
         )?;
+        let selection = match index {
+            Opening::Runs(selection) => selection,
+            Opening::Lanes(lanes) => {
+                return Ok(
+                    match Lanes::open(
+                        snapshot,
+                        lanes,
+                        direction,
+                        LIMITS,
+                        (&memory, &mut held),
+                        discovered,
+                    )? {
+                        Some(lanes) => Ok((Keys::Lanes(lanes), held)),
+                        None => Err((ScanReason::TooManyRuns, *discovered)),
+                    },
+                );
+            }
+        };
         Ok(
             match snapshot.ordered_runs_counted::<I>(
-                Arc::clone(index),
+                Arc::clone(selection),
                 RUN_FIELDS,
                 direction,
                 LIMITS,
                 Box::new(memory),
                 discovered,
             )? {
-                OrderedRunsDiscovery::Ready(runs) => Ok((runs, held)),
+                OrderedRunsDiscovery::Ready(runs) => Ok((Keys::Runs(runs), held)),
                 OrderedRunsDiscovery::TooManyRuns { examined } => {
                     Err((ScanReason::TooManyRuns, examined))
                 }
@@ -364,10 +565,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
     /// Tells `fetched` of a multi-get of `statuses`, if any, and of the index
     /// keys examined since it last learned.
     fn report(&mut self, statuses: usize) {
-        let examined = self
-            .runs
-            .as_ref()
-            .map_or(self.reported, OrderedRuns::examined);
+        let examined = self.runs.as_ref().map_or(self.reported, Keys::examined);
         let new = examined.saturating_sub(self.reported);
         if statuses > 0 || new > 0 {
             (self.fetched)(statuses, new);
@@ -438,7 +636,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
         match runs.advance()? {
             CursorStep::Done => self.runs_done = true,
             CursorStep::Skipped => {}
-            CursorStep::Record => self.window.push(I::reference(runs.current()?.0)?),
+            CursorStep::Record => self.window.push(runs.reference()?),
         }
         Ok(CursorStep::Skipped)
     }
@@ -963,7 +1161,7 @@ mod tests {
         let fixed = FinishedRead::prepare(&Selection::All, ReadDirection::Forward)
             .unwrap()
             .index
-            .retained_bytes()
+            .shared_retained_bytes()
             + WINDOW * std::mem::size_of::<Reference>()
             + WINDOW * KEY_LEN;
         let refused = run(

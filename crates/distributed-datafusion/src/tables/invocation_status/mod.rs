@@ -25,12 +25,16 @@ use restate_partition_store::invocation_status_table::{
     InvocationStatusRecords, InvocationStatusScan, ScanReason,
 };
 use restate_partition_store::keys::selection::KeySelection;
-use restate_partition_store::vqueue_table::EntryByCreated as StoredEntryIndex;
+use restate_partition_store::vqueue_table::{
+    EntryByCreated as StoredEntryIndex, EntryByStatusCreated as StoredStatusIndex,
+    EntryByStatusCreatedKey,
+};
 use restate_storage_query_api::schema::index::index_restriction;
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
 use restate_storage_query_api::tables::index::{
-    EntryByServiceCreated, EntryByServiceCreatedDomains,
+    EntryByServiceCreated, EntryByServiceCreatedDomains, EntryByStatusCreated,
+    EntryByStatusCreatedDomains,
 };
 use restate_storage_query_api::tables::invocation_status::{
     InvocationStatus, InvocationStatusColumn,
@@ -67,7 +71,12 @@ crate::tables::table_adapter!(pub(crate) SysInvocationStatusTable, InvocationSta
 impl PartitionSource for SysInvocationStatusTable {
     const ORDERING: &'static [InvocationStatusColumn] = &[InvocationStatusColumn::PartitionKey];
     const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> = Some(select_primary);
-    const INDEXES: &'static [IndexAccess<InvocationStatus>] = &[IndexAccess::of::<EntryIndex>()];
+    // A query whose statuses narrow the status index's lanes reads it; any
+    // other, the creation index, which checks statuses on each candidate.
+    const INDEXES: &'static [IndexAccess<InvocationStatus>] = &[
+        IndexAccess::of::<StatusIndex>(),
+        IndexAccess::of::<EntryIndex>(),
+    ];
 }
 
 /// The entry index `entry_by_created/1`, read for the invocations it finds. It
@@ -129,6 +138,59 @@ impl CompleteIndex for EntryIndex {
     }
 
     const NEEDS_ORDERED_DEMAND: bool = true;
+    /// A LIMIT without an ORDER BY, such as the UI's
+    /// `WHERE target_service_name IN ('Doss') LIMIT 250`, reads the newest
+    /// matches and stops.
+    const SERVES_UNORDERED_LIMITS: bool = true;
+}
+
+/// The entry index `entry_by_status_created/1`, read for the invocations of
+/// some statuses or outcomes. The public `status` and `completion_result`
+/// select the stages and stored statuses their entries can be in, the
+/// index's **lanes**: completed invocations are Finished, failed ones in any
+/// stored status but Succeeded, the others in any other stage. Each partition
+/// reads the lanes with keys, like `entry_by_created/1`, and merges them into
+/// creation order; until the index is Complete it scans instead. Its policy:
+/// the newest or oldest invocations of some statuses, of all services or a
+/// few, under the creation index's other conditions:
+///
+/// ```sql
+/// SELECT id FROM sys_invocation_status
+/// WHERE status = 'scheduled' [AND target_service_name IN ('Counter')]
+/// ORDER BY created_at DESC NULLS LAST
+/// LIMIT 250
+/// ```
+///
+/// A status condition that doesn't narrow the lanes, such as
+/// `status IN ('invoked', 'completed')`, leaves it unused.
+struct StatusIndex;
+
+impl CompleteIndex for StatusIndex {
+    type Index = EntryByStatusCreated;
+    const INTRODUCED: SemanticRestateVersion = <StoredStatusIndex as RegisteredIndex>::INTRODUCED;
+    /// As [`EntryIndex::ORDERING`]: the lanes merge by creation time.
+    const ORDERING: &'static [IndexOrder<InvocationStatusColumn>] = EntryIndex::ORDERING;
+
+    fn useful(restriction: &EntryByStatusCreatedDomains) -> bool {
+        if !Configuration::pinned()
+            .common
+            .experimental
+            .is_track_entry_indexes_enabled()
+        {
+            return false;
+        }
+        // An empty list of services selects nothing.
+        if let Some(ValuePredicate::In(names)) = restriction.target_service_name.to_predicate()
+            && names.is_empty()
+        {
+            return false;
+        }
+        let all = EntryByStatusCreatedKey::lanes(&Selection::All).count();
+        EntryByStatusCreatedKey::lanes(&restriction.to_selection()).count() < all
+    }
+
+    const NEEDS_ORDERED_DEMAND: bool = true;
+    const SERVES_UNORDERED_LIMITS: bool = true;
 }
 
 impl SysInvocationStatusTable {
@@ -220,7 +282,7 @@ impl ScanPartition for StatusScanner {
     }
 
     fn supports_index(&self, index: &str) -> bool {
-        index == EntryByServiceCreated::NAME
+        index == EntryByServiceCreated::NAME || index == EntryByStatusCreated::NAME
     }
 
     fn prepare_read(
@@ -249,13 +311,19 @@ impl ScanPartition for StatusScanner {
                 // The planner's choice is fixed, its order too; the restriction is
                 // derived again from the shipped predicate, and the predicate stays
                 // residual.
-                let selection = index_restriction::<EntryByServiceCreated>(predicate.as_slice())?
-                    .map_or(Selection::Empty, |domains| domains.to_selection());
+                let index = if read.name() == EntryByStatusCreated::NAME {
+                    let selection =
+                        index_restriction::<EntryByStatusCreated>(predicate.as_slice())?
+                            .map_or(Selection::Empty, |domains| domains.to_selection());
+                    EntryIndexRead::prepare_by_status(&selection, read.direction::<StatusIndex>()?)?
+                } else {
+                    let selection =
+                        index_restriction::<EntryByServiceCreated>(predicate.as_slice())?
+                            .map_or(Selection::Empty, |domains| domains.to_selection());
+                    EntryIndexRead::prepare(&selection, read.direction::<EntryIndex>()?)?
+                };
                 StatusAccess::EntryIndex {
-                    index: Arc::new(EntryIndexRead::prepare(
-                        &selection,
-                        read.direction::<EntryIndex>()?,
-                    )?),
+                    index: Arc::new(index),
                     fallback: scan()?,
                 }
             }
