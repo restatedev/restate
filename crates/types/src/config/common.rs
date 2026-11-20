@@ -1225,6 +1225,9 @@ experimental! {
     ///
     /// Once enabled, you **cannot** roll back to a Restate-server version older than v1.8.2.
     ///
+    /// TODO(v1.9): Remove this option. From v1.9.0, leaders turn the feature on by themselves once
+    /// every worker node runs v1.9.0 or newer.
+    ///
     /// Since v1.8.2
     vq_lifecycle_refined,
 
