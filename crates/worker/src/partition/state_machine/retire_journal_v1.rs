@@ -212,6 +212,7 @@ where
 mod tests {
     use std::time::Duration;
 
+    use bytes::Bytes;
     use googletest::prelude::{assert_that, pat};
     use test_log::test;
 
@@ -223,7 +224,10 @@ mod tests {
     use restate_storage_api::{Transaction, journal_table_v2};
     use restate_types::deployment::PinnedDeployment;
     use restate_types::identifiers::{DeploymentId, InvocationId};
-    use restate_types::invocation::{InvocationTarget, ServiceInvocation};
+    use restate_types::invocation::{
+        InvocationResponse, InvocationTarget, JournalCompletionTarget, ResponseResult,
+        ServiceInvocation,
+    };
     use restate_types::journal::CompletionResult;
     use restate_types::logs::Lsn;
     use restate_types::partitions::PersistedFeatures;
@@ -385,6 +389,19 @@ mod tests {
             )
             .await?
             .is_some()
+        );
+        // A completion for an invocation that isn't pinned to a deployment yet has no entry to
+        // complete. It is dropped rather than stored in journal v1.
+        env.apply(commands::InvocationResponseCommand::test_envelope(
+            InvocationResponse {
+                target: JournalCompletionTarget::from_parts(started_after, 3),
+                result: ResponseResult::Success(Bytes::new()),
+            },
+        ))
+        .await;
+        assert_that!(
+            env.storage.get_invocation_status(&started_after).await?,
+            pat!(InvocationStatus::Invoked(_))
         );
         assert_eq!(
             env.storage
