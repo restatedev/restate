@@ -11,6 +11,7 @@
 use ahash::HashSet;
 
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
+use restate_storage_api::blob_table::{ReadBlobTable, WriteBlobTable};
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
@@ -87,7 +88,9 @@ where
         + WriteLockTable
         + journal_table_v1::WriteJournalTable
         + journal_table_v2::WriteJournalTable
-        + ReadVQueueTable,
+        + ReadVQueueTable
+        + ReadBlobTable
+        + WriteBlobTable,
     P: ProcessorContext,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
@@ -338,10 +341,19 @@ where
 mod tests {
     use super::*;
 
+    use bytes::Bytes;
     use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceId, TraceState};
 
+    use futures::StreamExt;
+    use restate_memory::{LendableMemoryPool, LocalMemoryPool};
+    use restate_worker_api::invoker::invocation_reader::{
+        InvocationReader, InvocationReaderTransaction, JournalEntry, JournalKind,
+    };
+
+    use crate::partition::invoker_storage_reader::InvokerStorageReader;
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use googletest::prelude::*;
+    use restate_storage_api::blob_table::RawParts;
     use restate_storage_api::invocation_status_table::{
         InFlightInvocationMetadata, InvocationStatusDiscriminants, ReadInvocationStatusTable,
     };
@@ -799,6 +811,135 @@ mod tests {
                 ],
             )
             .await;
+
+        test_env.shutdown().await;
+    }
+
+    /// An entry storing its content in a blob is copied as is, the new journal shares the blob
+    /// (its ref count is incremented). The invoker replays it with the content read back from the
+    /// blob.
+    ///
+    /// The Output entry is used here because the completed status shares its blob too. It's never
+    /// copied in practice: it marks the end of the invocation, so the restart-as-new RPC rejects
+    /// prefixes including it. This tests the copying of blob-backed entries in general.
+    #[restate_core::test]
+    async fn restart_shares_content_blob() {
+        TestEnv::always_write_output_blobs();
+        let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
+            PartitionFeatureChange::EnableJournalV2,
+            PartitionFeatureChange::EnableInvocationStatusOutputBlob,
+        ]))
+        .await;
+
+        let invocation_target = InvocationTarget::mock_service();
+        let original_invocation_id = InvocationId::generate(&invocation_target, None);
+        let output = OutputCommand {
+            result: OutputResult::Success(Bytes::from_static(b"done")),
+            name: "my-output".into(),
+        };
+        let _ = test_env
+            .apply_multiple([
+                commands::InvokeCommand::test_envelope(ServiceInvocation {
+                    invocation_id: original_invocation_id,
+                    invocation_target: invocation_target.clone(),
+                    completion_retention_duration: Duration::from_secs(120),
+                    journal_retention_duration: Duration::from_secs(120),
+                    ..ServiceInvocation::mock()
+                }),
+                fixtures::pinned_deployment(original_invocation_id, ServiceProtocolVersion::V6),
+                fixtures::invoker_entry_effect(original_invocation_id, output.clone()),
+            ])
+            .await;
+        let original_output = journal_table_v2::ReadJournalTable::get_journal_entry(
+            &mut test_env.storage,
+            original_invocation_id,
+            1,
+        )
+        .await
+        .unwrap()
+        .expect("output entry");
+        let blob_id = original_output
+            .content_blob()
+            .expect("blob-backed output")
+            .id;
+
+        let new_invocation_id = InvocationId::mock_generate(&invocation_target);
+        let _ = test_env
+            .apply(commands::RestartAsNewInvocationCommand::test_envelope(
+                RestartAsNewInvocationRequest {
+                    invocation_id: original_invocation_id,
+                    new_invocation_id,
+                    copy_prefix_up_to_index_included: 1,
+                    patch_deployment_id: None,
+                    response_sink: None,
+                    span_context: None,
+                },
+            ))
+            .await;
+
+        let copied_output = journal_table_v2::ReadJournalTable::get_journal_entry(
+            &mut test_env.storage,
+            new_invocation_id,
+            1,
+        )
+        .await
+        .unwrap()
+        .expect("copied output entry");
+        assert_eq!(copied_output, original_output);
+        // Referenced by the original status and journal, and the new journal
+        let (_, ref_count, _) = test_env
+            .storage
+            .get_blob::<RawParts>(blob_id)
+            .await
+            .unwrap()
+            .expect("output blob");
+        assert_eq!(ref_count, 3);
+
+        // The invoker reads the entry with its result, through both its read paths
+        let executor = test_env
+            .storage
+            .partition_db()
+            .rocksdb()
+            .executor()
+            .low_pri()
+            .clone();
+        let mut reader = InvokerStorageReader::new(test_env.storage.clone(), executor);
+        let mut budget = LocalMemoryPool::unlimited();
+        let (entry, lease) = reader
+            .read_journal_entry_budgeted(&new_invocation_id, 1, JournalKind::V2, &mut budget)
+            .await
+            .unwrap()
+            .expect("output entry");
+        let JournalEntry::JournalV2(entry) = entry else {
+            panic!("expected a v2 entry");
+        };
+        assert_eq!(
+            entry
+                .decode::<ServiceProtocolV4Codec, OutputCommand>()
+                .unwrap(),
+            output
+        );
+        // The lease covers the blob payload too
+        assert!(lease.size() > entry.inner.serialized_length());
+
+        let mut budget = LendableMemoryPool::new(budget);
+        let txn = reader.transaction().unwrap();
+        let replayed: Vec<_> = txn
+            .read_journal_budgeted(&new_invocation_id, 2, JournalKind::V2, budget.claim().await)
+            .unwrap()
+            .map(|entry| match entry.unwrap().0 {
+                JournalEntry::JournalV2(entry) => entry,
+                _ => panic!("expected a v2 entry"),
+            })
+            .collect()
+            .await;
+        assert_eq!(
+            replayed[1]
+                .decode::<ServiceProtocolV4Codec, OutputCommand>()
+                .unwrap(),
+            output
+        );
+        drop(txn);
 
         test_env.shutdown().await;
     }

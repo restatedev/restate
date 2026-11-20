@@ -105,7 +105,8 @@ pub(super) const SYS_INVOCATION_VIEW: &str = "CREATE VIEW restate.public.sys_inv
                 ELSE 'ready'
             END, 'LargeUtf8') AS status,
             ss.completion_result,
-            ss.completion_failure
+            ss.completion_failure,
+            ss.completion_failure_code
         FROM restate.public.sys_invocation_state sis
         RIGHT JOIN restate.public.sys_invocation_status ss ON ss.id = sis.id";
 

@@ -281,7 +281,8 @@ pub const KILLED_INVOCATION_ERROR: InvocationError =
 pub const CANCELED_INVOCATION_ERROR: InvocationError =
     InvocationError::new_static(codes::ABORTED, "canceled");
 
-pub const GONE_INVOCATION_ERROR: InvocationError = InvocationError::new_static(codes::GONE, "gone");
+pub const GONE_INVOCATION_ERROR: InvocationError =
+    InvocationError::new_static(codes::GONE, "invocation result is gone");
 
 pub const NOT_FOUND_INVOCATION_ERROR: InvocationError =
     InvocationError::new_static(codes::NOT_FOUND, "not found");

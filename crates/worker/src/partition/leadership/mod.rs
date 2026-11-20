@@ -630,6 +630,15 @@ where
                 feature_changes.push(PartitionFeatureChange::EnableByteOffsets);
             }
 
+            if config.common.experimental.is_write_blob_table_enabled()
+                && !processor
+                    .fsm()
+                    .features()
+                    .is_invocation_status_output_blob_enabled()
+            {
+                feature_changes.push(PartitionFeatureChange::EnableInvocationStatusOutputBlob);
+            }
+
             if !feature_changes.is_empty() {
                 // Smallest version that supports every listed feature, but never below
                 // the partition's current min_restate_version.
@@ -1319,6 +1328,7 @@ mod tests {
                 inconsistent_state_mutation_cleanup: true,
                 preflight_signal_recording: true,
                 byte_offsets: true,
+                invocation_status_output_blob: true,
             },
         );
         let (leader_query_tx, _leader_query_rx) = restate_worker_api::channel();

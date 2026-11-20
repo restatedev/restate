@@ -85,6 +85,13 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.8.2*
     EnableByteOffsets = 8,
+    /// The invocation status of a completed invocation refers to the blob of its Output journal
+    /// entry instead of holding a copy of the result. Independent of the partition store's
+    /// journal-entry-blobs storage feature, which decides where entry contents are stored.
+    /// Proposed by the leader when `experimental-enable-write-blob-table` is set.
+    ///
+    /// *Since v1.8.2*
+    EnableInvocationStatusOutputBlob = 9,
 }
 
 impl PartitionFeatureChange {
@@ -106,6 +113,7 @@ impl PartitionFeatureChange {
             Self::EnableInconsistentStateMutationCleanup => &RESTATE_VERSION_1_8_0,
             Self::EnablePreflightSignalRecording => &RESTATE_VERSION_1_8_1,
             Self::EnableByteOffsets => &RESTATE_VERSION_1_8_2,
+            Self::EnableInvocationStatusOutputBlob => &RESTATE_VERSION_1_8_2,
         }
     }
 
@@ -137,6 +145,9 @@ impl PartitionFeatureChange {
                 !std::mem::replace(&mut features.preflight_signal_recording, true)
             }
             Self::EnableByteOffsets => !std::mem::replace(&mut features.byte_offsets, true),
+            Self::EnableInvocationStatusOutputBlob => {
+                !std::mem::replace(&mut features.invocation_status_output_blob, true)
+            }
         }
     }
 }
@@ -213,6 +224,15 @@ pub struct PersistedFeatures {
     /// *Since v1.8.2*
     #[bilrost(tag(8))]
     pub byte_offsets: bool,
+
+    /// The invocation status of a completed invocation refers to the blob of its Output journal
+    /// entry instead of holding a copy of the result. Independent of the partition store's
+    /// journal-entry-blobs storage feature, which decides where entry contents are stored.
+    /// Proposed by the leader when `experimental-enable-write-blob-table` is set.
+    ///
+    /// *Since v1.8.2*
+    #[bilrost(tag(9))]
+    pub invocation_status_output_blob: bool,
 }
 
 impl PersistedFeatures {
@@ -233,6 +253,8 @@ impl PersistedFeatures {
             self.preflight_signal_recording
                 .then_some("preflight_signal_recording"),
             self.byte_offsets.then_some("byte_offsets"),
+            self.invocation_status_output_blob
+                .then_some("invocation_status_output_blob"),
         ]
         .into_iter()
         .flatten()

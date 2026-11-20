@@ -272,8 +272,9 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
         SqlColumnDoc { name: "last_failure_related_command_type", ty: "Utf8", description: "The type of the command that caused the failure, if any. You can check all the available command types in [`entries.rs`](https://github.com/restatedev/restate/blob/main/crates/types/src/journal_v2/command.rs)." },
         SqlColumnDoc { name: "last_awaiting_on_future_json", ty: "Utf8", description: "Last known future the SDK was awaiting on, if `in_flight = true`." },
         SqlColumnDoc { name: "status", ty: "Utf8", description: "Either `pending` or `scheduled` or `ready` or `running` or `paused` or `backing-off` or `suspended` or `completed`." },
-        SqlColumnDoc { name: "completion_result", ty: "Utf8", description: "If `status = 'completed'`, this contains either `success` or `failure`" },
+        SqlColumnDoc { name: "completion_result", ty: "Utf8", description: "If `status = 'completed'`, this contains either `success`, `failure`, or `killed`" },
         SqlColumnDoc { name: "completion_failure", ty: "Utf8", description: "If `status = 'completed' AND completion_result = 'failure'`, this contains the error cause" },
+        SqlColumnDoc { name: "completion_failure_code", ty: "UInt32", description: "If `status = 'completed' AND completion_result = 'failure'`, this contains the error code" },
     ] },
 ];
 

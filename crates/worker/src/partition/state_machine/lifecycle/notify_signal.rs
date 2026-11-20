@@ -11,6 +11,7 @@
 use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::entries::OnJournalEntryCommand;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+use restate_storage_api::blob_table::WriteBlobTable;
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
@@ -56,7 +57,8 @@ where
         + ReadVQueueTable
         + WriteVQueueTable
         + WriteLockTable
-        + WriteVirtualObjectStatusTable,
+        + WriteVirtualObjectStatusTable
+        + WriteBlobTable,
     P: ProcessorContext,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
