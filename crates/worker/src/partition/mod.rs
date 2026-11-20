@@ -83,7 +83,7 @@ use restate_types::net::partition_processor::{
     PurgeInvocationRpcRequest, PurgeJournalRpcRequest, RestartAsNewInvocationRpcRequest,
     ResumeInvocationRpcRequest,
 };
-use restate_types::partitions::PartitionFeatureChange;
+use restate_types::partitions::{PartitionFeatureChange, REQUIRED_PARTITION_FEATURES};
 use restate_types::protobuf::cluster::DetailedRunMode;
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::Schema;
@@ -107,6 +107,7 @@ use self::processor::commands::{
     AnnounceLeaderContext, ApplyPartitionCommand, NextStep, TruncateOutboxContext,
     UpdateDurabilityContext, UpsertRuleBookContext, UpsertSchemaContext, VersionBarrierContext,
 };
+use self::processor::required_features::CommandCheck;
 use self::processor::*;
 use self::state_machine::StateMachine;
 use crate::metric_definitions::{
@@ -264,6 +265,12 @@ impl PartitionProcessorBuilder {
         let leadership_state =
             LeadershipState::new(ctx.partition_id(), ingestion_client, leader_query_tx);
 
+        let required_features = CommandCheck::new(
+            ctx.partition_id(),
+            ctx.enabled_features(),
+            REQUIRED_PARTITION_FEATURES,
+        );
+
         Ok(PartitionProcessor {
             query_reads,
             partition_store,
@@ -277,6 +284,7 @@ impl PartitionProcessorBuilder {
             commit_fence_rx,
             encoding_arena: BytesMut::new(),
             read_stream_tags: None,
+            required_features,
         })
     }
 }
@@ -296,6 +304,8 @@ pub struct PartitionProcessor<T> {
     encoding_arena: BytesMut,
     /// Shows the processor's leadership on its read stream in `bifrost_read_streams`.
     read_stream_tags: Option<ReadStreamTags>,
+    /// Checks that the partition has the required features before a command is applied.
+    required_features: CommandCheck,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1266,6 +1276,12 @@ where
             );
             return Ok(NextStep::SkipUntil(lsn));
         }
+
+        self.required_features.check(
+            envelope.as_ref().kind(),
+            self.ctx.enabled_features(),
+            REQUIRED_PARTITION_FEATURES,
+        )?;
 
         let scope = envelope.as_ref().scope();
         match scope {
