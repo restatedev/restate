@@ -209,6 +209,44 @@ impl FieldCodec for ReverseUniqueTimestampCodec {
     }
 }
 
+/// A [`RoughTimestamp`] in descending order: the bitwise complement of its
+/// seconds, big-endian. Used for time buckets that read newest first, such as
+/// a creation time floored to its hour.
+pub enum ReverseRoughTimestampCodec {}
+
+impl OrderedFieldCodec for ReverseRoughTimestampCodec {}
+
+impl FieldCodec for ReverseRoughTimestampCodec {
+    type Value = Reverse<RoughTimestamp>;
+    type Ref<'a> = &'a Reverse<RoughTimestamp>;
+    type Encoded<'a> = &'a [u8; size_of::<u32>()];
+
+    fn borrow(value: &Self::Value) -> Self::Ref<'_> {
+        value
+    }
+
+    fn encode_ref<B: BufMut>(value: Self::Ref<'_>, target: &mut B) {
+        target.put_u32(!value.0.as_u32());
+    }
+
+    fn serialized_length_ref(_: Self::Ref<'_>) -> usize {
+        size_of::<u32>()
+    }
+
+    fn decode_encoded(encoded: Self::Encoded<'_>) -> crate::Result<Self::Value> {
+        let seconds = !u32::from_be_bytes(*encoded);
+        // The constructor clamps; reject the unrepresentable value on disk instead.
+        if seconds > RoughTimestamp::MAX.as_u32() {
+            return Err(StorageError::DataIntegrityError);
+        }
+        Ok(Reverse(RoughTimestamp::new(seconds)))
+    }
+
+    fn take_encoded<'a>(source: &mut &'a [u8]) -> crate::Result<Self::Encoded<'a>> {
+        RoughTimestampCodec::take_encoded(source)
+    }
+}
+
 pub enum ReverseU64Codec {}
 
 impl OrderedFieldCodec for ReverseU64Codec {}

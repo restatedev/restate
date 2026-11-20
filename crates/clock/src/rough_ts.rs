@@ -177,6 +177,13 @@ impl RoughTimestamp {
         Self::new(secs - (secs % 60))
     }
 
+    /// Floors the timestamp to the start of its hour.
+    #[inline]
+    pub const fn floor_to_hour(&self) -> Self {
+        let secs = self.as_u32();
+        Self::new(secs - (secs % 3600))
+    }
+
     /// Floors the timestamp to the nearest minute and adds a random second in `[0, 59]`.
     ///
     /// For values near [`Self::MAX`], the result is saturating and can be clamped to [`Self::MAX`].
