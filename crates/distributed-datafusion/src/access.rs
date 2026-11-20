@@ -623,7 +623,7 @@ mod tests {
     #[restate_core::test]
     async fn registered_index_declarations_carry_their_versions() {
         use restate_partition_store::index::RegisteredIndex;
-        use restate_partition_store::vqueue_table::EntryByServiceCreated;
+        use restate_partition_store::vqueue_table::{EntryByServiceCreated, EntryByStatusCreated};
 
         use crate::source_registry::SourceRegistry;
         use crate::tables::invocation_status::SysInvocationStatusTable;
@@ -643,10 +643,16 @@ mod tests {
                     .create_declared_source::<SysInvocationStatusTable>()
                     .indexes
             ),
-            [(
-                "_idx_entry_by_service_created",
-                EntryByServiceCreated::INTRODUCED
-            )]
+            [
+                (
+                    "_idx_entry_by_status_created",
+                    EntryByStatusCreated::INTRODUCED
+                ),
+                (
+                    "_idx_entry_by_service_created",
+                    EntryByServiceCreated::INTRODUCED
+                )
+            ]
         );
         assert_eq!(
             declared(

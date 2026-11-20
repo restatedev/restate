@@ -32,6 +32,7 @@ use restate_storage_api::vqueue_table::{
 };
 use restate_storage_query_api::tables::invocation_status::InvocationStatus as InvocationStatusSchema;
 use restate_types::config::Configuration;
+use restate_types::errors::KILLED_INVOCATION_ERROR;
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionId, WithPartitionKey};
 use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType, WorkflowHandlerType};
 use restate_types::partition_table::Partition;
@@ -232,21 +233,38 @@ async fn invocations_read_through_the_entry_index_match_v1() {
             stats: &EntryStatistics::new(mutation, mutation_key.run_at()),
         },
     );
+    // Every third invocation completed, every ninth killed; the others are
+    // running. Their entries are in the stage and status that goes with that.
     let mut put = |index: u64, created: u64, target: &InvocationTarget, entry: bool| {
         let id = InvocationId::from_parts(index * 997, InvocationUuid::from_u128(index.into()));
         let created = MillisSinceEpoch::new(created);
-        let status = if index.is_multiple_of(3) {
+        let (status, stage, entry_status) = if index.is_multiple_of(3) {
             let mut completed = CompletedInvocation::mock_neo();
             completed.invocation_target = target.clone();
             completed.timestamps = StatusTimestamps::init(created);
             completed.creation_seq = Some(Seq::new(index));
-            InvocationStatus::Completed(completed)
+            let outcome = if index.is_multiple_of(9) {
+                completed.response_result =
+                    restate_types::invocation::ResponseResult::Failure(KILLED_INVOCATION_ERROR);
+                Status::Killed
+            } else {
+                Status::Succeeded
+            };
+            (
+                InvocationStatus::Completed(completed),
+                Stage::Finished,
+                outcome,
+            )
         } else {
             let mut invoked = InFlightInvocationMetadata::mock();
             invoked.invocation_target = target.clone();
             invoked.timestamps = StatusTimestamps::init(created);
             invoked.creation_seq = Some(Seq::new(index));
-            InvocationStatus::Invoked(invoked)
+            (
+                InvocationStatus::Invoked(invoked),
+                Stage::Running,
+                Status::Started,
+            )
         };
         tx.put_invocation_status(&id, &status).unwrap();
         if entry {
@@ -260,8 +278,8 @@ async fn invocations_read_through_the_entry_index_match_v1() {
                     target: &target.entry_target_ref(),
                 },
                 EntryStateRef {
-                    stage: Stage::Finished,
-                    status: Status::Succeeded,
+                    stage,
+                    status: entry_status,
                     entry_key: &key,
                     metadata: &EntryMetadata::default(),
                     stats: &EntryStatistics::new(created, key.run_at()),
@@ -323,6 +341,10 @@ async fn invocations_read_through_the_entry_index_match_v1() {
     let page = include_str!("../../ui_queries/workflow_page.sql");
     let oldest = include_str!("../../ui_queries/service_oldest.sql");
     let scheduled = include_str!("../../ui_queries/service_scheduled_newest.sql");
+    // Every completed invocation of a service, by outcome: Utils' succeeded and
+    // killed ones, through the Finished lanes.
+    let outcomes =
+        include_str!("../../ui_queries/service_outcomes_newest.sql").replace("'State'", "'Utils'");
     // Diagnostic: the same service, newest first, through the index.
     let newest_counter = oldest.replace("ASC", "DESC");
     // Every invocation of a service, newest first: the orphan is the oldest.
@@ -344,10 +366,35 @@ async fn invocations_read_through_the_entry_index_match_v1() {
             BASE + 400
         )
     };
+    // A page of invocations of some statuses. Rows that share a creation time
+    // and a status are equal.
+    let status_page = |condition: &str, order: &str, limit: u32| {
+        format!(
+            "SELECT created_at, status, completion_result FROM sys_invocation_status \
+             WHERE {condition} ORDER BY created_at {order} NULLS LAST LIMIT {limit}"
+        )
+    };
+    // The queries the assertions below name.
+    let offset_page = page.replace("LIMIT 51", "LIMIT 9 OFFSET 40");
+    let many_newest = many("DESC NULLS LAST");
+    let window_oldest = window("ASC");
+    let many_oldest = many("ASC");
+    let failed_page = status_page("completion_result = 'failure'", "DESC", 10);
+    let not_completed = status_page("status != 'completed'", "DESC", 20);
+    let not_completed_or_paused = status_page("status NOT IN ('completed', 'paused')", "DESC", 10);
+    // Statuses whose entries can be in every lane: the creation index,
+    // checking them. Only the creation times: rows of both statuses share them.
+    let every_lane = "SELECT created_at FROM sys_invocation_status \
+        WHERE status IN ('invoked', 'completed') ORDER BY created_at DESC NULLS LAST LIMIT 20";
+    // A range of handlers, checked on the index's values.
+    let handler_range = page.replace(
+        "target_handler_name = 'promise'",
+        "target_handler_name >= 'p' AND target_handler_name < 'q'",
+    );
     let indexed = [
         page.to_owned(),
-        page.replace("LIMIT 51", "LIMIT 9 OFFSET 40"),
-        many("DESC NULLS LAST"),
+        offset_page.clone(),
+        many_newest.clone(),
         window("DESC"),
         newest_counter.clone(),
         page.replace("DESC NULLS LAST", "DESC NULLS FIRST"),
@@ -357,19 +404,39 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         // too many runs, which scan and sort oldest first.
         oldest.to_owned(),
         oldest.replace("LIMIT 250", "LIMIT 9 OFFSET 240"),
-        window("ASC"),
-        many("ASC"),
-        // Any other condition is checked on each candidate: a status. 40 of
-        // the workflow page's invocations are running: the newest 20 leave out
-        // the oldest, which has no entry.
+        window_oldest.clone(),
+        many_oldest.clone(),
+        // Through the status index: the service's scheduled invocations, the
+        // running ones, the failed ones and the completed ones, newest or
+        // oldest first.
         scheduled.to_owned(),
+        status_page("status = 'invoked'", "DESC", 20),
+        failed_page.clone(),
+        status_page(
+            "status = 'completed' AND completion_result = 'failure' \
+             AND target_service_name = 'Promises'",
+            "ASC",
+            10,
+        ),
+        status_page("status = 'completed'", "DESC", 20),
+        // The status's values are complete: excluding some selects the others'
+        // lanes, here those of invocations that haven't completed.
+        not_completed.clone(),
+        not_completed_or_paused.clone(),
+        // 40 of the workflow page's invocations are running: the newest 20
+        // leave out the oldest, which has no entry.
         page.replace("target_service_key IS NOT NULL", "status = 'invoked'")
             .replace("LIMIT 51", "LIMIT 20"),
-        // A range of handlers, checked on the index's values.
+        // Any other condition is checked on each candidate: a column the
+        // index doesn't hold, a function, the UI's outcome alternatives.
+        page.replace("target_service_key IS NOT NULL", "idempotency_key IS NULL"),
         page.replace(
-            "target_handler_name = 'promise'",
-            "target_handler_name >= 'p' AND target_handler_name < 'q'",
+            "target_service_key IS NOT NULL",
+            "LOWER(target_handler_name) = 'promise'",
         ),
+        outcomes.clone(),
+        every_lane.into(),
+        handler_range.clone(),
     ];
     // Scanned: another order, a tie-breaker, no LIMIT, or a view above the
     // table.
@@ -451,6 +518,20 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         let plan = explained(sql).await;
         assert!(plan.contains("IndexScanExec"), "{sql}: {plan}");
     }
+    // The outcome alternatives all fix the status to `completed`: the Finished
+    // lanes of the status index. Exclusions select the other statuses' lanes.
+    for sql in [&outcomes, &not_completed, &not_completed_or_paused] {
+        let plan = explained(sql).await;
+        assert!(
+            plan.contains("index=_idx_entry_by_status_created"),
+            "{sql}: {plan}"
+        );
+    }
+    let plan = explained(every_lane).await;
+    assert!(
+        plan.contains("index=_idx_entry_by_service_created"),
+        "{every_lane}: {plan}"
+    );
     for sql in &scans {
         let plan = explained(sql).await;
         assert!(
@@ -462,7 +543,7 @@ async fn invocations_read_through_the_entry_index_match_v1() {
     // A partition that can't keep the index's order keeps the newest rows that
     // meet the query's conditions, OFFSET included.
     assert!(explained(page).await.contains("fallback_fetch=51"));
-    assert!(explained(&indexed[1]).await.contains("fallback_fetch=49"));
+    assert!(explained(&offset_page).await.contains("fallback_fetch=49"));
 
     // Not migrated: the index path scans, and finds the invocation without an entry.
     for sql in indexed.iter().chain(&scans) {
@@ -499,19 +580,50 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         matches_v1(sql, false).await;
     }
     assert!(!orphaned().await);
-    // The scheduled page reads Counter's runs and checks each status: it
-    // fetches Counter's 300 statuses, not the partition's every one, and
-    // emits none, as none of them is scheduled.
-    let plan = analyzed(scheduled).await;
-    let source = plan
-        .lines()
-        .find(|line| line.contains("IndexScanExec"))
-        .unwrap();
-    assert_eq!(metric(source, "output_rows"), Some(0), "{source}");
+    // The service's scheduled invocations, none yet, through the status index:
+    // it fetches the statuses of Counter's active invocations only, not the
+    // partition's every status. The newest failures read only failed keys.
+    let count = async |condition: &str| -> u64 {
+        rows(
+            old.as_ref(),
+            &format!("SELECT COUNT(*) FROM sys_invocation_status {condition}"),
+        )
+        .await[0][0]
+            .parse()
+            .unwrap()
+    };
+    let statuses = count("").await;
+    let counter_active =
+        count("WHERE target_service_name = 'Counter' AND status <> 'completed'").await;
+    let status_source = |plan: &str| {
+        plan.lines()
+            .find(|line| line.contains("index=_idx_entry_by_status_created"))
+            .unwrap()
+            .to_owned()
+    };
+    let source = status_source(&analyzed(scheduled).await);
+    assert_eq!(metric(&source, "output_rows"), Some(0), "{source}");
     assert_eq!(
-        metric(source, "entry_index_statuses"),
-        Some(300),
+        metric(&source, "entry_index_statuses"),
+        Some(counter_active),
         "{source}"
+    );
+    assert!(
+        counter_active < statuses / 3,
+        "{counter_active} of {statuses}"
+    );
+    // Ten failures: one window of statuses, and fewer keys than the succeeded
+    // invocations the read never visits.
+    let succeeded = count("WHERE completion_result = 'success'").await;
+    let failures = status_source(&analyzed(&failed_page).await);
+    assert_eq!(
+        metric(&failures, "entry_index_statuses"),
+        Some(25),
+        "{failures}"
+    );
+    assert!(
+        metric(&failures, "entry_index_keys_examined").unwrap() < succeeded,
+        "{failures}"
     );
     let expected = rows(old.as_ref(), promises).await;
     assert!(expected.concat().contains(&orphan.to_string()));
@@ -534,7 +646,7 @@ async fn invocations_read_through_the_entry_index_match_v1() {
     );
     assert_eq!(metric(&plan, "entry_index_statuses"), Some(120), "{plan}");
     // As does a range of handlers.
-    let range = analyzed(indexed.last().unwrap()).await;
+    let range = analyzed(&handler_range).await;
     assert_eq!(metric(&range, "entry_index_statuses"), Some(120), "{range}");
     // One run, ("Promises", "promise"), whatever the service's type; every one
     // of its keys examined at least once.
@@ -564,7 +676,7 @@ async fn invocations_read_through_the_entry_index_match_v1() {
     // The time window's one run, the service in its hour, backwards: it reads
     // back from the window's end, examining none of the keys older than it, and
     // one window of statuses, of the window's two handlers, holds its 7 rows.
-    let plan = analyzed(&indexed[9]).await;
+    let plan = analyzed(&window_oldest).await;
     assert_eq!(
         [
             "entry_index_runs",
@@ -577,14 +689,14 @@ async fn invocations_read_through_the_entry_index_match_v1() {
     );
     // Too many runs: the read scans and sorts, before returning anything,
     // oldest first too.
-    let plan = analyzed(&indexed[10]).await;
+    let plan = analyzed(&many_oldest).await;
     assert_eq!(
         metric(&plan, "entry_index_scans_too_many_runs"),
         Some(1),
         "{plan}"
     );
     // Too many runs: the read scans and sorts, before returning anything.
-    let plan = analyzed(&indexed[2]).await;
+    let plan = analyzed(&many_newest).await;
     assert!(plan.contains("entry_index_scans=1"), "{plan}");
     assert_eq!(
         metric(&plan, "entry_index_scans_too_many_runs"),
