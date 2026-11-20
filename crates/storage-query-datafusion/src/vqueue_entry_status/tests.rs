@@ -258,7 +258,7 @@ async fn get_vqueue_entry_status_header_fields() {
                 "canonical_id" => LargeStringArray: eq(key.to_canonical_entry_id(qid.partition_key()).to_string()),
                 "vqueue_id" => LargeStringArray: eq(qid.to_string()),
                 "stage" => LargeStringArray: eq("running"),
-                "status" => LargeStringArray: eq("started"),
+                "status" => LargeStringArray: eq("running"),
                 "has_lock" => BooleanArray: eq(true),
                 "next_at" => TimestampMillisecondArray: eq(key.run_at().as_unix_millis().as_u64() as i64),
                 "sequence_number" => UInt64Array: eq(42),

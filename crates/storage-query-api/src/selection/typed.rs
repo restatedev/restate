@@ -586,8 +586,8 @@ mod tests {
     use datafusion::physical_expr::planner::logical2physical;
     use datafusion::prelude::SessionContext;
 
-    use restate_storage_api::vqueue_table::{Stage, Status};
-    use restate_types::vqueues::EntryKind;
+    use restate_storage_api::vqueue_table::Stage;
+    use restate_types::vqueues::{EffectiveStatus, EntryKind};
     use restate_util_string::ReString;
 
     use crate::selection::{Selection, compile};
@@ -976,47 +976,36 @@ mod tests {
             },
             |domains| &domains.stage,
         );
+        // The effective status: NULL, then the twelve names in their order.
         #[rustfmt::skip]
         let statuses = [
-            // SQL predicate                                          backing-off cancelled failed killed new scheduled started succeeded unknown yielded
-            ("status < 'queued'",                                     [T, T, T, T, T, F, F, F, F, F], E, E),
-            ("status >= 'started'",                                   [F, F, F, F, F, F, T, T, T, T], E, E),
-            ("status BETWEEN 'scheduled' AND 'succeeded'",             [F, F, F, F, F, T, T, T, F, F], E, E),
-            ("status = 'unknown'",                                    [F, F, F, F, F, F, F, F, T, F], E, E),
-            ("status != 'queued'",                                    [T, T, T, T, T, T, T, T, T, T], E, E),
-            ("status IN ('bogus', 'started', NULL)",                   [U, U, U, U, U, U, T, U, U, U], E, E),
-            ("status NOT IN ('new', 'started', 'unknown')",             [T, T, T, T, F, T, F, T, F, T], E, E),
-            ("status NOT IN ('bogus', NULL)",                          [U, U, U, U, U, U, U, U, U, U], E, E),
+            // SQL predicate                                   NULL backing-off cancelled failed killed new paused ready running scheduled succeeded suspended yielded
+            ("status < 'queued'",                              [U, T, T, T, T, T, T, F, F, F, F, F, F], E, E),
+            ("status >= 'started'",                            [U, F, F, F, F, F, F, F, F, F, T, T, T], E, E),
+            ("status BETWEEN 'ready' AND 'scheduled'",          [U, F, F, F, F, F, F, T, T, T, F, F, F], E, E),
+            // The stored status `started` is no effective status.
+            ("status = 'started'",                             [U, F, F, F, F, F, F, F, F, F, F, F, F], E, E),
+            ("status != 'queued'",                             [U, T, T, T, T, T, T, T, T, T, T, T, T], E, E),
+            ("status IN ('bogus', 'ready', NULL)",              [U, U, U, U, U, U, U, T, U, U, U, U, U], E, E),
+            ("status NOT IN ('new', 'ready', 'running')",        [U, T, T, T, T, F, T, F, F, T, T, T, T], E, E),
+            ("status NOT IN ('bogus', NULL)",                   [U, U, U, U, U, U, U, U, U, U, U, U, U], E, E),
+            ("status IS NULL",                                 [T, F, F, F, F, F, F, F, F, F, F, F, F], E, C),
             // This column deliberately does not declare prefix support.
-            ("status LIKE 's%'",                                       [F, F, F, F, F, T, T, T, F, F], C, C),
+            ("status LIKE 's%'",                                [U, F, F, F, F, F, F, F, F, T, T, T, F], C, C),
         ];
-        check_enum_cases::<VqueueEntryStatus, _, 10>(
+        let effective = std::iter::once(None)
+            .chain(EffectiveStatus::ALL.map(Some))
+            .collect::<Vec<_>>();
+        check_enum_cases::<VqueueEntryStatus, _, 13>(
             VqueueEntryStatus::arrow_schema(),
             "status",
-            [
-                Status::BackingOff,
-                Status::Cancelled,
-                Status::Failed,
-                Status::Killed,
-                Status::New,
-                Status::Scheduled,
-                Status::Started,
-                Status::Succeeded,
-                Status::Unknown,
-                Status::Yielded,
-            ],
-            [
-                Some("backing-off"),
-                Some("cancelled"),
-                Some("failed"),
-                Some("killed"),
-                Some("new"),
-                Some("scheduled"),
-                Some("started"),
-                Some("succeeded"),
-                Some("unknown"),
-                Some("yielded"),
-            ],
+            effective.clone().try_into().unwrap(),
+            effective
+                .iter()
+                .map(|status| status.map(EffectiveStatus::as_str))
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
             &statuses,
             |clause, value| match clause {
                 Clause::Status(predicate) => matches_value(predicate, value),

@@ -314,7 +314,7 @@ async fn get_vqueue_entry_status_header_fields() {
                 "canonical_id" => LargeStringArray: eq(key.to_canonical_entry_id(qid.partition_key()).to_string()),
                 "vqueue_id" => LargeStringArray: eq(qid.to_string()),
                 "stage" => LargeStringArray: eq("running"),
-                "status" => LargeStringArray: eq("started"),
+                "status" => LargeStringArray: eq("running"),
                 "has_lock" => BooleanArray: eq(true),
                 "next_at" => TimestampMillisecondArray: eq(key.run_at().as_unix_millis().as_u64() as i64),
                 "sequence_number" => UInt64Array: eq(42),
@@ -496,6 +496,38 @@ async fn vqueues_view_matches_v1_stage_reads() {
             [["10", "2"]],
             "run_at_is_present_only_for_inbox_entries"
         );
+        // Each row shows its effective status, in both engines: the stage's own
+        // for running, suspended and paused entries whatever they stored, and
+        // NULL for a Finished entry without an outcome; a status condition
+        // selects by it.
+        for session in [&old, &new] {
+            assert_eq!(
+                rows(
+                    session.as_ref(),
+                    "SELECT DISTINCT stage, COALESCE(status, 'NULL') FROM sys_vqueues \
+                     ORDER BY stage"
+                )
+                .await,
+                [
+                    ["finished", "NULL"],
+                    ["inbox", "new"],
+                    ["paused", "paused"],
+                    ["running", "running"],
+                    ["suspended", "suspended"],
+                ],
+                "effective_status"
+            );
+            assert_eq!(
+                rows(
+                    session.as_ref(),
+                    "SELECT COUNT(*) FROM sys_vqueue_entry_status \
+                     WHERE status IN ('paused', 'yielded') OR status IS NULL"
+                )
+                .await,
+                [["4"]],
+                "status_conditions_select_effective_statuses"
+            );
+        }
 
         // Queue and active-stage restrictions read the stage tables; finished-only,
         // unrestricted and entry-ID reads keep their access paths.
@@ -782,7 +814,7 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
              ORDER BY transitioned_at DESC NULLS LAST LIMIT 5 OFFSET 2"
         ),
         format!(
-            "{select} WHERE stage = 'finished' AND status = 'started' \
+            "{select} WHERE stage = 'finished' AND status IS NULL \
              ORDER BY transitioned_at DESC NULLS LAST LIMIT 3"
         ),
         format!(

@@ -57,7 +57,8 @@ struct VQueueEntryRow {
     entry_id: String,
     entry_kind: String,
     stage: String,
-    status: String,
+    /// NULL from Restate 1.8.2 for a stage and status the server doesn't know.
+    status: Option<String>,
     has_lock: bool,
     created_at: DateTime<Local>,
     num_attempts: u32,
@@ -127,7 +128,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
             Field::new(entry.entry_id.as_str()),
             Field::new(entry.entry_kind.as_str()),
             Field::new(entry.stage.as_str()),
-            Field::new(entry.status.as_str()),
+            optional_str(entry.status.as_deref()),
             Field::new(entry.has_lock),
             Field::new(entry.num_attempts),
             time(entry.created_at),
