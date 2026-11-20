@@ -13,7 +13,7 @@ use strum::VariantArray;
 use restate_storage_api::vqueue_table::{Stage, Status};
 use restate_types::identifiers::{BaseEntryId, CanonicalEntryId, InvocationId};
 use restate_types::time::MillisSinceEpoch;
-use restate_types::vqueues::EntryKind;
+use restate_types::vqueues::{EffectiveStatus, EntryKind};
 use restate_util_string::ReString;
 
 /// Borrowed logical literals understood by selection value types.
@@ -66,7 +66,7 @@ pub enum LiteralConversionError {
 /// | `bool` | `Bool` | Yes |
 /// | [`MillisSinceEpoch`] | Non-negative `TimestampMillis` | Yes |
 /// | [`EntryKind`] | `String`: `"invocation"`, `"state-mutation"` or `"unknown"` | No |
-/// | [`Stage`], [`Status`] | `String`, matched against the variant's SQL name | Finite sets via [`Self::finite_strings`] |
+/// | [`Stage`], [`Status`], [`EffectiveStatus`] | `String`, matched against the variant's SQL name | Finite sets via [`Self::finite_strings`] |
 /// | [`BaseEntryId`] | `String`, parsed as a base entry ID | No |
 /// | [`CanonicalEntryId`] | `String`, parsed as a canonical entry ID | No |
 /// | [`VQueueId`](restate_types::vqueues::VQueueId) | `String`, parsed as a queue ID | No |
@@ -206,6 +206,12 @@ impl SelectionValue for Stage {
 impl SelectionValue for Status {
     fn finite_strings() -> Option<impl Iterator<Item = (&'static str, Self)>> {
         Some(Self::VARIANTS.iter().map(|&value| (value.as_str(), value)))
+    }
+}
+
+impl SelectionValue for EffectiveStatus {
+    fn finite_strings() -> Option<impl Iterator<Item = (&'static str, Self)>> {
+        Some(Self::ALL.into_iter().map(|value| (value.as_str(), value)))
     }
 }
 

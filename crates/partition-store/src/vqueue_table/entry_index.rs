@@ -15,22 +15,6 @@
 //! which every write passes (`EntryContext`), so the entry header stays as it
 //! is.
 //!
-//! **Finished entries by outcome, service and handler, newest finished first**
-//! (`finished_entry_by_outcome/1`) holds one key for every entry whose stored
-//! stage is Finished, of both kinds, whatever its stored status:
-//!
-//! ```text
-//! xI | partition | index ID | status | service | handler? | finished ↓ | canonical entry ID
-//!                             failed   "Utils"   "call"     t9           inv_…
-//!                             killed   "Utils"   "call"     t4           inv_…
-//!                             succeeded "Utils"  "call"     t8           inv_…
-//! ```
-//!
-//! The status is the entry's stored status, and "finished" its stored
-//! `transitioned_at`: when it entered Finished, or, for an invocation migrated
-//! already completed, the transition time the migration recorded. Neither is
-//! claimed to equal an invocation's completion time.
-//!
 //! **Entries by creation hour and service, newest created first**
 //! (`entry_by_created/1`) holds one key for every entry, of both kinds, in
 //! every stage, including finished entries kept for their retention. It leads
@@ -80,6 +64,12 @@
 //! second index, when its `transitioned_at` does. An entry in a stage this
 //! binary doesn't know has no key.
 //!
+//! The status indexes replaced `active_entry_by_stage/1`, a run per active
+//! stage, service and handler, and `finished_entry_by_outcome/1`, a run per
+//! outcome, service and handler of Finished entries: their pages read the
+//! status indexes' lanes in the same order. Both are retired: a store that
+//! maintained them drops them at open.
+//!
 //! Every index projects an entry's old and new state to its optional key and
 //! writes only when the two differ.
 
@@ -106,14 +96,16 @@ use restate_storage_query_api::tables::index::{
     EntryStatusByStatusTransitionedClause, EntryStatusByStatusTransitionedColumn,
 };
 use restate_types::config::Configuration;
-use restate_types::vqueues::CanonicalEntryId;
+use restate_types::vqueues::{CanonicalEntryId, EffectiveStatus};
 use restate_util_string::ReString;
 
 use crate::PartitionStoreTransaction;
 use crate::index::{IndexValue, IndexValueRef, RegisteredIndex, SecondaryIndex, SecondaryIndexKey};
+#[cfg(test)]
+use crate::keys::codecs::StringCodec;
 use crate::keys::codecs::{
     CanonicalEntryIdCodec, ReverseRoughTimestampCodec, ReverseUniqueTimestampCodec,
-    ServiceNameCodec, StageRankCodec, StatusCodec, StringCodec,
+    ServiceNameCodec, StageRankCodec, StatusCodec,
 };
 use crate::keys::header::IndexScope;
 use crate::keys::selection::codec::{FieldPredicateCodec, prepare_hour_buckets};
@@ -151,35 +143,6 @@ crate::keys::macros::define_key_selection!(
     created_at,
 );
 
-crate::index::macros::define_secondary_index!(
-    /// Finished entries by stored status, service and handler, newest finished
-    /// first.
-    FinishedEntryByOutcome,
-    definition: "finished_entry_by_outcome/1",
-    introduced: (1, 8, 2),
-    // `status` is the stored status, the outcome; `transitioned_at` is when
-    // the entry entered Finished. Named after the entry table's columns, so
-    // that a query's conditions on them restrict the index.
-    key: FinishedEntryByOutcomeKey {
-        status: StatusCodec,
-        target_service_name: ServiceNameCodec => str,
-        target_handler_name: Option<StringCodec> => str,
-        transitioned_at: ReverseUniqueTimestampCodec,
-        canonical_id: CanonicalEntryIdCodec (primary_key),
-    }
-);
-
-// A query on entries restricts the index through the entry table's status and
-// transition time; the entry table shows no service or handler.
-crate::keys::macros::define_key_selection!(
-    FinishedEntryByOutcomeKey;
-    [restate_storage_query_api::tables::index::FinishedEntryByOutcome];
-    status,
-    target_service_name,
-    target_handler_name,
-    transitioned_at,
-);
-
 /// Every entry by service and handler, newest created first. Retired; for
 /// tests only.
 #[cfg(test)]
@@ -188,16 +151,6 @@ pub(crate) static ENTRY_BY_SERVICE_CREATED: IndexDefinition = IndexDefinition {
     introduced: EntryByServiceCreated::INTRODUCED,
     kind: IndexKind::Secondary,
     apply: apply_entry_by_service_created,
-    can_fill: true,
-};
-
-/// Every entry whose stored stage is Finished, by stored status, service and
-/// handler, newest finished first.
-pub(crate) static FINISHED_ENTRY_BY_OUTCOME: IndexDefinition = IndexDefinition {
-    name: FinishedEntryByOutcome::DEFINITION,
-    introduced: FinishedEntryByOutcome::INTRODUCED,
-    kind: IndexKind::Secondary,
-    apply: apply_finished_entry_by_outcome,
     can_fill: true,
 };
 
@@ -234,7 +187,6 @@ pub(crate) static ENTRY_BY_STATUS_TRANSITIONED: IndexDefinition = IndexDefinitio
 /// The entry indexes, released and controlled together.
 pub(crate) const ENTRY_INDEXES: Family = Family {
     definitions: &[
-        &FINISHED_ENTRY_BY_OUTCOME,
         &ENTRY_BY_CREATED,
         &ENTRY_BY_STATUS_CREATED,
         &ENTRY_BY_STATUS_TRANSITIONED,
@@ -281,45 +233,6 @@ fn apply_entry_by_service_created(
             )
         };
         storage.update_secondary_index_with_id(id, old.map(key).as_ref(), new.map(key).as_ref());
-    }
-}
-
-/// Removes the key of `before` and adds the key of `after`, each only if its
-/// entry's stored stage is Finished.
-fn apply_finished_entry_by_outcome(
-    storage: &mut PartitionStoreTransaction<'_>,
-    id: u32,
-    context: &EntryContext<'_>,
-    before: Option<&EntryStateRef<'_>>,
-    after: Option<&EntryStateRef<'_>>,
-) {
-    let project = |entry: &EntryStateRef<'_>| {
-        (entry.stage == Stage::Finished).then(|| {
-            (
-                entry.status,
-                Reverse(entry.stats.transitioned_at),
-                entry
-                    .entry_key
-                    .to_canonical_entry_id(context.qid.partition_key()),
-            )
-        })
-    };
-    let (old, new) = (before.and_then(project), after.and_then(project));
-    if old != new {
-        let key = |(outcome, finished_at, canonical_id): &(_, _, _)| {
-            FinishedEntryByOutcomeKey::borrowed(
-                *outcome,
-                context.target.service(),
-                context.target.handler(),
-                *finished_at,
-                *canonical_id,
-            )
-        };
-        storage.update_secondary_index_with_id(
-            id,
-            old.as_ref().map(key).as_ref(),
-            new.as_ref().map(key).as_ref(),
-        );
     }
 }
 
@@ -762,14 +675,6 @@ impl Keyed {
         }
     }
 
-    /// The entries with the stored `status`, in any stage.
-    fn of_stored_status(status: &Status) -> Self {
-        Self {
-            stages: Self::ALL.stages,
-            statuses: status_bit(*status),
-        }
-    }
-
     /// The pairs `selection`'s clauses allow, each clause mapped by `of`, or
     /// left out if it doesn't restrict them.
     fn of_selection<T: SelectionSchema>(
@@ -785,6 +690,36 @@ impl Keyed {
                 .filter_map(of)
                 .fold(Self::ALL, Self::intersect),
         }
+    }
+
+    /// The pairs of the stages `selection`'s conditions on the entry's stage
+    /// allow, each kept only if its effective status satisfies every condition
+    /// on the entry's `status`: exactly the pairs of the entries it may match,
+    /// as an entry's effective status is a function of its stored pair.
+    fn of_entry_selection<T: SelectionSchema>(
+        selection: &Selection<T>,
+        stage: impl Fn(&T::Clause) -> Option<&ValuePredicate<Stage>>,
+        status: impl Fn(&T::Clause) -> Option<&ValuePredicate<Option<EffectiveStatus>>>,
+    ) -> impl Iterator<Item = (Stage, Status)> {
+        let conditions: Vec<_> = match selection {
+            Selection::Predicates(predicates) => predicates
+                .iter()
+                .flat_map(|(_, clauses)| clauses.iter())
+                .filter_map(&status)
+                .cloned()
+                .collect(),
+            Selection::All | Selection::Empty => Vec::new(),
+        };
+        Self::of_selection(selection, |clause| {
+            stage(clause).map(|stage| Self::matching(stage, Self::of_stage))
+        })
+        .pairs()
+        .filter(move |&(stage, stored)| {
+            let effective = EffectiveStatus::new(stage, stored);
+            conditions
+                .iter()
+                .all(|condition| condition.matches(&effective))
+        })
     }
 
     /// Every pair of an allowed stage and an allowed status, in key order.
@@ -838,21 +773,22 @@ impl EntryByStatusCreatedKey {
 
     /// The stages and stored statuses whose keys can hold an entry
     /// `selection` matches, in key order: those its conditions on the entry's
-    /// own stage and status allow. Each pair is a lane
+    /// stage and effective status allow. Each pair is a lane
     /// ([`Self::prepare_entry_lanes`]).
     pub fn entry_lanes(
         selection: &Selection<EntriesByStatusCreated>,
     ) -> impl Iterator<Item = (Stage, Status)> {
-        Keyed::of_selection(selection, |clause| match clause {
-            EntryStatusByStatusCreatedClause::Stage(stage) => {
-                Some(Keyed::matching(stage, Keyed::of_stage))
-            }
-            EntryStatusByStatusCreatedClause::Status(status) => {
-                Some(Keyed::matching(status, Keyed::of_stored_status))
-            }
-            _ => None,
-        })
-        .pairs()
+        Keyed::of_entry_selection(
+            selection,
+            |clause| match clause {
+                EntryStatusByStatusCreatedClause::Stage(stage) => Some(stage),
+                _ => None,
+            },
+            |clause| match clause {
+                EntryStatusByStatusCreatedClause::Status(status) => Some(status),
+                _ => None,
+            },
+        )
     }
 
     /// The selection of the keys of entries `selection` may match in the lanes
@@ -935,21 +871,22 @@ impl EntryByStatusCreatedKey {
 impl EntryByStatusTransitionedKey {
     /// The stages and stored statuses whose keys can hold an entry
     /// `selection` matches, in key order: those its conditions on the entry's
-    /// own stage and status allow. Each pair is a lane
+    /// stage and effective status allow. Each pair is a lane
     /// ([`Self::prepare_entry_lanes`]).
     pub fn entry_lanes(
         selection: &Selection<EntriesByStatusTransitioned>,
     ) -> impl Iterator<Item = (Stage, Status)> {
-        Keyed::of_selection(selection, |clause| match clause {
-            EntryStatusByStatusTransitionedClause::Stage(stage) => {
-                Some(Keyed::matching(stage, Keyed::of_stage))
-            }
-            EntryStatusByStatusTransitionedClause::Status(status) => {
-                Some(Keyed::matching(status, Keyed::of_stored_status))
-            }
-            _ => None,
-        })
-        .pairs()
+        Keyed::of_entry_selection(
+            selection,
+            |clause| match clause {
+                EntryStatusByStatusTransitionedClause::Stage(stage) => Some(stage),
+                _ => None,
+            },
+            |clause| match clause {
+                EntryStatusByStatusTransitionedClause::Status(status) => Some(status),
+                _ => None,
+            },
+        )
     }
 
     /// The selection of the keys of entries `selection` may match in the lanes

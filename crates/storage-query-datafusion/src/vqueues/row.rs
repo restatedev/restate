@@ -12,7 +12,7 @@ use std::fmt::Display;
 
 use restate_storage_api::vqueue_table::stats::EntryStatistics;
 use restate_storage_api::vqueue_table::{EntryKey, EntryValue, RawStatusHeaderRef, Stage, Status};
-use restate_types::vqueues::{CanonicalEntryId, VQueueId};
+use restate_types::vqueues::{CanonicalEntryId, EffectiveStatus, VQueueId};
 
 use super::schema::SysVqueuesBuilder;
 
@@ -78,7 +78,9 @@ fn append_vqueues_row_inner(
     if row.is_stage_defined() {
         row.fmt_stage(stage);
     }
-    if row.is_status_defined() {
+    if row.is_status_defined()
+        && let Some(status) = EffectiveStatus::new(stage, status)
+    {
         row.fmt_status(status);
     }
 

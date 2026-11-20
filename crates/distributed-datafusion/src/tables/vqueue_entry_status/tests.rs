@@ -314,7 +314,7 @@ async fn get_vqueue_entry_status_header_fields() {
                 "canonical_id" => LargeStringArray: eq(key.to_canonical_entry_id(qid.partition_key()).to_string()),
                 "vqueue_id" => LargeStringArray: eq(qid.to_string()),
                 "stage" => LargeStringArray: eq("running"),
-                "status" => LargeStringArray: eq("started"),
+                "status" => LargeStringArray: eq("running"),
                 "has_lock" => BooleanArray: eq(true),
                 "next_at" => TimestampMillisecondArray: eq(key.run_at().as_unix_millis().as_u64() as i64),
                 "sequence_number" => UInt64Array: eq(42),
@@ -496,6 +496,38 @@ async fn vqueues_view_matches_v1_stage_reads() {
             [["10", "2"]],
             "run_at_is_present_only_for_inbox_entries"
         );
+        // Each row shows its effective status, in both engines: the stage's own
+        // for running, suspended and paused entries whatever they stored, and
+        // NULL for a Finished entry without an outcome; a status condition
+        // selects by it.
+        for session in [&old, &new] {
+            assert_eq!(
+                rows(
+                    session.as_ref(),
+                    "SELECT DISTINCT stage, COALESCE(status, 'NULL') FROM sys_vqueues \
+                     ORDER BY stage"
+                )
+                .await,
+                [
+                    ["finished", "NULL"],
+                    ["inbox", "new"],
+                    ["paused", "paused"],
+                    ["running", "running"],
+                    ["suspended", "suspended"],
+                ],
+                "effective_status"
+            );
+            assert_eq!(
+                rows(
+                    session.as_ref(),
+                    "SELECT COUNT(*) FROM sys_vqueue_entry_status \
+                     WHERE status IN ('paused', 'yielded') OR status IS NULL"
+                )
+                .await,
+                [["4"]],
+                "status_conditions_select_effective_statuses"
+            );
+        }
 
         // Queue and active-stage restrictions read the stage tables; finished-only,
         // unrestricted and entry-ID reads keep their access paths.
@@ -651,13 +683,13 @@ async fn vqueues_view_matches_v1_stage_reads() {
     );
 }
 
-/// Finished entries newest finished first, through `finished_entry_by_outcome/1`
-/// when every alternative fixes the stage to `finished`: the same rows as the
-/// current-status scan, ties included, with the read's path and work shown. A
-/// query that doesn't prove its rows are Finished, or wants another order,
-/// reads as before.
+/// Finished entries newest finished first, through the Finished lanes of
+/// `entry_by_status_transitioned/1` when every alternative fixes the stage to
+/// stages the index holds: the same rows as the current-status scan, ties
+/// included, with the read's path and work shown. A query that doesn't fix its
+/// stages, or wants another order, reads another way.
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn finished_entries_read_through_their_index_match_the_scan() {
+async fn finished_entries_read_through_the_transition_index_match_the_scan() {
     use restate_types::vqueues::HandlerRef;
 
     RocksDbManager::init();
@@ -771,7 +803,7 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
         ))
         .await
     };
-    const INDEX: &str = "_idx_finished_entry_by_outcome";
+    const INDEX: &str = "_idx_entry_status_by_status_transitioned";
     let select = "SELECT entry_id, status, transitioned_at FROM sys_vqueue_entry_status";
     let indexed = [
         format!(
@@ -782,7 +814,7 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
              ORDER BY transitioned_at DESC NULLS LAST LIMIT 5 OFFSET 2"
         ),
         format!(
-            "{select} WHERE stage = 'finished' AND status = 'started' \
+            "{select} WHERE stage = 'finished' AND status IS NULL \
              ORDER BY transitioned_at DESC NULLS LAST LIMIT 3"
         ),
         format!(
@@ -804,6 +836,11 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
             "{select} WHERE stage = 'finished' AND num_attempts + 1 = 1 \
              ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
         ),
+        // Two stages: both stages' lanes, merged.
+        format!(
+            "{select} WHERE stage IN ('finished', 'running') \
+             ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
+        ),
     ];
     let scans = [
         // Status alone doesn't prove the stage.
@@ -814,10 +851,7 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
             "{select} WHERE stage = 'finished' OR status = 'new' \
              ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
         ),
-        format!(
-            "{select} WHERE stage IN ('finished', 'running') \
-             ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
-        ),
+        // Another order reads the creation index instead.
         format!("{select} WHERE stage = 'finished' ORDER BY created_at DESC NULLS LAST LIMIT 5"),
         // An outer join can add NULLs: nothing is asked of the source.
         "SELECT e.entry_id, e.status, e.transitioned_at FROM (SELECT 1 AS one) AS o \
@@ -867,7 +901,7 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
     // Entries of some stages and statuses by creation time, as the UI's
     // invocation list asks, read the status index: one lane per stage and
     // status, merged into creation order. By transition time, a running page
-    // reads the transition index; finished pages keep their own index above.
+    // reads the transition index, as finished pages do above.
     // Creation times are distinct here, as are running entries' transition
     // times, so the rows equal the scan's in order.
     let by_created = "SELECT entry_id, status, created_at FROM sys_vqueue_entry_status \
@@ -1036,23 +1070,24 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
         "{analyzed}"
     );
 
-    // More runs than one read merges: the partition scans and sorts instead,
-    // before returning anything, and says why and what discovery examined.
+    // More runs than one read merges in its first hour, 260 services in one
+    // lane: the partition scans and sorts instead, before returning anything,
+    // and says why and what discovery examined.
     let mut tx = store.transaction();
-    for handler in 0..260u64 {
+    for service in 0..260u64 {
         let created = UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::new(
-            BASE + 1_000 + handler,
+            BASE + 1_000 + service,
         ));
         let key = EntryKey::new(
             false,
             created.to_unix_millis(),
-            1_000 + handler,
+            1_000 + service,
             EntryId::new(
                 EntryKind::Invocation,
                 [
                     200,
-                    handler as u8,
-                    (handler >> 8) as u8,
+                    service as u8,
+                    (service >> 8) as u8,
                     0,
                     0,
                     0,
@@ -1069,14 +1104,14 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
                 ],
             ),
         );
-        let name = format!("h{handler}");
+        let name = format!("s{service}");
         tx.create_vqueue_entry_status(
             &EntryContext {
                 qid: &qid,
                 target: &EntryTargetRef::Service {
                     scope: None,
-                    service: "Many",
-                    handler: &name,
+                    service: &name,
+                    handler: "h",
                 },
             },
             EntryStateRef {

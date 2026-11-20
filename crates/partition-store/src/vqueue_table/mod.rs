@@ -35,7 +35,6 @@ use std::pin::Pin;
 pub use entry::{EntryStatusKey, EntryStatusKeyRef};
 pub(crate) use entry_index::{
     ENTRY_BY_CREATED, ENTRY_BY_STATUS_CREATED, ENTRY_BY_STATUS_TRANSITIONED, ENTRY_INDEXES,
-    FINISHED_ENTRY_BY_OUTCOME,
 };
 #[cfg(test)]
 pub(crate) use entry_index::{
@@ -44,10 +43,10 @@ pub(crate) use entry_index::{
 pub use entry_index::{
     EntryByCreated, EntryByCreatedKey, EntryByStatusCreated, EntryByStatusCreatedKey,
     EntryByStatusTransitioned, EntryByStatusTransitionedKey, EntryTargetValue, EntryTargetValueRef,
-    FinishedEntryByOutcome, FinishedEntryByOutcomeKey, hour_bucket, status_indexes_hold,
+    hour_bucket, status_indexes_hold,
 };
 pub use inbox::InboxKey;
-pub use indexed_read::{FinishedRead, LanesRead, StatusCreatedRead, StatusTransitionedRead};
+pub use indexed_read::{LanesRead, StatusCreatedRead, StatusTransitionedRead};
 pub use input::InputPayloadKey;
 pub use meta_binding::{VQueueMetaBinding, VQueueMetaTable};
 pub use meta_cursor::{VQueueMetaCursor, VQueueMetaRecords};

@@ -716,10 +716,6 @@ mod tests {
             [
                 ("_idx_entry_by_queue", SemanticRestateVersion::new(1, 8, 2)),
                 (
-                    "_idx_finished_entry_by_outcome",
-                    restate_partition_store::vqueue_table::FinishedEntryByOutcome::INTRODUCED
-                ),
-                (
                     "_idx_entry_status_by_status_created",
                     restate_partition_store::vqueue_table::EntryByStatusCreated::INTRODUCED
                 ),
