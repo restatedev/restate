@@ -56,8 +56,7 @@ use crate::table::{MultiGetCursor, MultiGetTable, PhysicalTable, TableCursor};
 use crate::{ReadSnapshot, Result};
 
 use super::indexed_read::{
-    ActiveRead, EntryIndex, FinishedRead, IndexedCursor, KeySteps, StatusCreatedRead,
-    StatusTransitionedRead,
+    EntryIndex, FinishedRead, IndexedCursor, KeySteps, StatusCreatedRead, StatusTransitionedRead,
 };
 use super::stage_reads::{StageReadCounters, StageReads, StagesCursor};
 use super::{ENTRY_STATUS_MULTI_GET_BATCH_SIZE, EntryStatusKey};
@@ -180,16 +179,6 @@ pub enum EntryStatusScan {
         fallback: Arc<KeySelection<EntryStatusKey>>,
         execution: Arc<EntryIndexExecution>,
     },
-    /// Active entries, in Inbox, Running, Suspended or Paused, through their
-    /// index, newest created first (or oldest first, as the [`ActiveRead`]
-    /// says), or the `fallback` iteration if the index
-    /// can't stand in for it on the snapshot. `execution` is charged for the
-    /// index read and learns which path it took. See [`ActiveRead`].
-    Active {
-        read: Arc<ActiveRead>,
-        fallback: Arc<KeySelection<EntryStatusKey>>,
-        execution: Arc<EntryIndexExecution>,
-    },
     /// Entries of some stages and statuses through `entry_by_status_created/1`,
     /// newest created first (or oldest first, as the [`StatusCreatedRead`]
     /// says), or the `fallback` iteration if the index can't stand in for it
@@ -284,14 +273,6 @@ impl ReadSnapshot {
                 execution,
             } => {
                 let cursor = IndexedCursor::finished(self, &read, &execution, window)?;
-                return self.indexed_or(cursor, fallback);
-            }
-            EntryStatusScan::Active {
-                read,
-                fallback,
-                execution,
-            } => {
-                let cursor = IndexedCursor::active(self, &read, &execution, window)?;
                 return self.indexed_or(cursor, fallback);
             }
             EntryStatusScan::StatusCreated {
