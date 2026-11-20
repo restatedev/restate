@@ -19,3 +19,5 @@ This directory contains documentation relevant for Restate developers.
 [hotfix.md](hotfix.md) explains how to release a hotfix of a released version.
 
 [bilrost-migration-guidelines](bilrost-migration-guidelines.md) guidelines on how to create bilrost messages and how to migrate current serde messages to bilrost without breaking compatibility
+
+[retiring-partition-processor-logic.md](retiring-partition-processor-logic.md) explains how to retire partition processor logic, such as a command or a state format, with a partition feature.
