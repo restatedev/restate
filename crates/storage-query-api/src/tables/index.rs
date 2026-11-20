@@ -243,6 +243,43 @@ crate::define_schema! {
 }
 
 crate::define_schema! {
+    /// Vqueue entries by stored stage and status, creation hour and service,
+    /// newest created first: the entry index `entry_by_status_created/1`, read
+    /// instead of scanning `sys_invocation_status` for the invocations of some
+    /// statuses or outcomes. Its columns are the invocation columns that
+    /// restrict it: `status` and `completion_result` select the stored stages
+    /// and statuses their invocations' entries can have. The stage and status
+    /// lead the key, so no column orders it as a whole; each stage and status
+    /// is newest created first. The index also holds state mutations, which
+    /// name no invocation; reads skip them. Not shown as a table.
+    entry_by_status_created {
+        name: "_idx_entry_by_status_created",
+        primary: invocation_status::InvocationStatus,
+        // A locator only: a state mutation's names no invocation.
+        reference: canonical_id => |id| InvocationId::from_parts(
+            id.partition_key(),
+            InvocationUuid::from_bytes(*id.as_entry_id().remainder_bytes()),
+        ),
+        columns {
+            /// The invocation's status.
+            status => DataType::LargeUtf8,
+            /// Whether a completed invocation succeeded or failed.
+            completion_result => DataType::LargeUtf8,
+            /// The invoked service.
+            target_service_name => DataType::LargeUtf8,
+            /// The invoked handler, held in each key's value.
+            target_handler_name => DataType::LargeUtf8,
+            /// When the invocation was created. The index keeps its full
+            /// timestamp; this column compares at millisecond precision.
+            created_at => TimestampMillisecond,
+            /// The complete indexed entry incarnation.
+            canonical_id: CanonicalEntryId => DataType::LargeUtf8,
+        }
+        key {}
+    }
+}
+
+crate::define_schema! {
     /// Finished vqueue entries by stored status, service and handler, newest
     /// finished first: the entry index `finished_entry_by_outcome/1`, read
     /// instead of scanning `sys_vqueue_entry_status` for its Finished entries.
