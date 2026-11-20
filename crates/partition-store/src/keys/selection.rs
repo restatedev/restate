@@ -714,14 +714,19 @@ impl<K> KeySelection<K> {
             empty: matches!(selection, Selection::Empty),
             ..Self::all()
         };
-        let Selection::Predicates(predicates) = selection else {
-            return Ok(result);
+        // A selection without clauses still takes the restrictions `derive`
+        // gives, such as a status index lane's pinned stage and status.
+        let predicates = match selection {
+            Selection::Empty => return Ok(result),
+            Selection::Predicates(predicates) if !predicates.is_unconstrained() => Some(predicates),
+            _ => None,
         };
-        if predicates.is_unconstrained() {
-            return Ok(result);
-        }
         let mut has_key_clauses = false;
-        for (column, _) in predicates.iter().filter(|(_, clauses)| !clauses.is_empty()) {
+        for (column, _) in predicates
+            .into_iter()
+            .flat_map(|predicates| predicates.iter())
+            .filter(|(_, clauses)| !clauses.is_empty())
+        {
             if K::FIELDS
                 .iter()
                 .any(|field| T::column_from_tag(field.tag()) == Some(column))
@@ -752,7 +757,8 @@ impl<K> KeySelection<K> {
                 }
                 _ => {}
             }
-            if let Some(column) = T::column_from_tag(schema.tag()) {
+            if let (Some(predicates), Some(column)) = (predicates, T::column_from_tag(schema.tag()))
+            {
                 for clause in predicates.for_column(column) {
                     match prepare(clause, &mut literals)? {
                         // A terminal field accepts only finite predicates.

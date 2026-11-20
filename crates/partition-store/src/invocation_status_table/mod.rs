@@ -75,7 +75,9 @@ fn create_invocation_status_key(invocation_id: &InvocationId) -> InvocationStatu
     }
 }
 
-fn decode_invocation_status_lazy(mut value: &[u8]) -> Result<InvocationStatusV2Lazy<'_>> {
+pub(crate) fn decode_invocation_status_lazy(
+    mut value: &[u8],
+) -> Result<InvocationStatusV2Lazy<'_>> {
     if value.is_empty() {
         return Err(StorageError::Conversion(
             StorageDecodeError::ReadingCodec(format_restring!(
