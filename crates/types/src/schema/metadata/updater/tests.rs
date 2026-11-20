@@ -53,6 +53,7 @@ fn greeter_service_greet_handler() -> endpoint_manifest::Handler {
         enable_lazy_state: None,
         eager_state_keys_whitelist: vec![],
         ingress_private: None,
+        preemptable: None,
         retry_policy_on_max_attempts: None,
     }
 }
@@ -77,6 +78,7 @@ fn greeter_workflow_greet_handler() -> endpoint_manifest::Handler {
         enable_lazy_state: None,
         eager_state_keys_whitelist: vec![],
         ingress_private: None,
+        preemptable: None,
         retry_policy_on_max_attempts: None,
     }
 }
@@ -86,6 +88,7 @@ fn greeter_service() -> endpoint_manifest::Service {
         abort_timeout: None,
         documentation: None,
         ingress_private: None,
+        preemptable: None,
         ty: endpoint_manifest::ServiceType::Service,
         name: GREETER_SERVICE_NAME.parse().unwrap(),
         retry_policy_exponentiation_factor: None,
@@ -108,6 +111,7 @@ fn greeter_virtual_object() -> endpoint_manifest::Service {
         abort_timeout: None,
         documentation: None,
         ingress_private: None,
+        preemptable: None,
         ty: endpoint_manifest::ServiceType::VirtualObject,
         name: GREETER_SERVICE_NAME.parse().unwrap(),
         retry_policy_exponentiation_factor: None,
@@ -133,6 +137,7 @@ fn greeter_virtual_object() -> endpoint_manifest::Service {
             enable_lazy_state: None,
             eager_state_keys_whitelist: vec![],
             ingress_private: None,
+            preemptable: None,
             retry_policy_on_max_attempts: None,
         }],
         idempotency_retention: None,
@@ -150,6 +155,7 @@ fn greeter_workflow() -> endpoint_manifest::Service {
         abort_timeout: None,
         documentation: None,
         ingress_private: None,
+        preemptable: None,
         ty: endpoint_manifest::ServiceType::Workflow,
         name: GREETER_SERVICE_NAME.parse().unwrap(),
         retry_policy_exponentiation_factor: None,
@@ -172,6 +178,7 @@ fn another_greeter_service() -> endpoint_manifest::Service {
         abort_timeout: None,
         documentation: None,
         ingress_private: None,
+        preemptable: None,
         ty: endpoint_manifest::ServiceType::Service,
         name: ANOTHER_GREETER_SERVICE_NAME.parse().unwrap(),
         retry_policy_exponentiation_factor: None,
@@ -197,6 +204,7 @@ fn another_greeter_service() -> endpoint_manifest::Service {
             enable_lazy_state: None,
             eager_state_keys_whitelist: vec![],
             ingress_private: None,
+            preemptable: None,
             retry_policy_on_max_attempts: None,
         }],
         idempotency_retention: None,
@@ -1073,6 +1081,7 @@ fn update_latest_deployment_add_handler() {
             enable_lazy_state: None,
             eager_state_keys_whitelist: vec![],
             ingress_private: None,
+            preemptable: None,
             retry_policy_on_max_attempts: None,
         });
 
@@ -1148,6 +1157,7 @@ fn update_draining_deployment_add_handler() {
             enable_lazy_state: None,
             eager_state_keys_whitelist: vec![],
             ingress_private: None,
+            preemptable: None,
             retry_policy_on_max_attempts: None,
         });
 
@@ -2189,6 +2199,7 @@ mod endpoint_manifest_options_propagation {
                 abort_timeout: Some(Duration::from_secs(120)),
                 inactivity_timeout: Some(Duration::from_secs(60)),
                 state_preload_policy: StatePreloadPolicy::All,
+                preemptable: true,
             })
         )
     }
@@ -2214,8 +2225,57 @@ mod endpoint_manifest_options_propagation {
                 abort_timeout: Some(Duration::from_secs(120)),
                 inactivity_timeout: Some(Duration::from_secs(30)),
                 state_preload_policy: StatePreloadPolicy::All,
+                preemptable: true,
             })
         )
+    }
+
+    #[test]
+    fn preemptable_handler_overrides_service() {
+        // The greeter opts out, its "greet" handler opts back in and "inherited" keeps the
+        // service setting. The other service declares nothing.
+        let mut service = greeter_service();
+        service.preemptable = Some(false);
+        service.handlers[0].preemptable = Some(true);
+        service.handlers.push(endpoint_manifest::Handler {
+            name: "inherited".parse().unwrap(),
+            ..greeter_service_greet_handler()
+        });
+        let ((_, deployment_id), schema) =
+            SchemaUpdater::update_and_return(Schema::default(), |updater| {
+                updater.add_deployment(add_deployment_request(vec![
+                    service,
+                    another_greeter_service(),
+                ]))
+            })
+            .unwrap();
+
+        let preemptable = |service_name, handler_name| {
+            schema
+                .resolve_invocation_attempt_options(&deployment_id, service_name, handler_name)
+                .unwrap()
+                .preemptable
+        };
+        assert_that!(
+            preemptable(GREETER_SERVICE_NAME, GREET_HANDLER_NAME),
+            eq(true)
+        );
+        assert_that!(preemptable(GREETER_SERVICE_NAME, "inherited"), eq(false));
+        assert_that!(
+            preemptable(ANOTHER_GREETER_SERVICE_NAME, "another_greeter"),
+            eq(true)
+        );
+
+        // The admin API shows the effective values.
+        let greeter = schema.resolve_latest_service(GREETER_SERVICE_NAME).unwrap();
+        assert_that!(greeter.preemptable, eq(false));
+        assert_that!(greeter.handlers[GREET_HANDLER_NAME].preemptable, eq(true));
+        assert_that!(greeter.handlers["inherited"].preemptable, eq(false));
+        let another = schema
+            .resolve_latest_service(ANOTHER_GREETER_SERVICE_NAME)
+            .unwrap();
+        assert_that!(another.preemptable, eq(true));
+        assert_that!(another.handlers["another_greeter"].preemptable, eq(true));
     }
 
     #[test]
@@ -3407,6 +3467,8 @@ mod lite {
     #[test]
     fn wire_compatible_with_full_schema_and_drops_json_schemas() {
         let mut service = greeter_service();
+        // Non-default, so that dropping it on either side would show
+        service.preemptable = Some(false);
         service.handlers[0].input = Some(endpoint_manifest::InputPayload {
             content_type: Some("application/json".to_owned()),
             json_schema: Some(json!({"type": "object", "title": "Greeting"})),
@@ -3428,6 +3490,11 @@ mod lite {
 
         let stripped = Schema::from(SchemaUnindexedLite::clone_from_schema(&full));
         assert_eq!(json_schemas(&stripped), (None, None));
+        let greeter = stripped
+            .resolve_latest_service(GREETER_SERVICE_NAME)
+            .unwrap();
+        assert!(!greeter.preemptable);
+        assert!(!greeter.handlers[GREET_HANDLER_NAME].preemptable);
         let expected = serde_json::to_value(&stripped).unwrap();
 
         for codec in [

@@ -589,6 +589,11 @@ struct ServiceRevision {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[bilrost(tag(18))]
     retry_policy_on_max_attempts: Option<OnMaxAttempts>,
+    /// If false, invocations of this service are never preempted, i.e. eagerly suspended to free
+    /// up concurrency capacity for other invocations. Unset means preemptable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag(20))]
+    preemptable: Option<bool>,
 
     /// This is a cache for the computed value of ServiceOpenAPI
     #[serde(skip)]
@@ -726,6 +731,7 @@ impl ServiceRevision {
                 .unwrap_or_else(|| configuration.worker.invoker.abort_timeout.into()),
             enable_lazy_state: self.enable_lazy_state.unwrap_or(false),
             state_preload_policy: self.state_preload_policy.clone().unwrap_or_default(),
+            preemptable: self.preemptable.unwrap_or(true),
             retry_policy,
             info,
         }
@@ -833,6 +839,13 @@ struct Handler {
     #[bilrost(tag = 18)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retry_policy_on_max_attempts: Option<OnMaxAttempts>,
+    /// Whether invocations of this handler can be preempted, i.e. eagerly suspended to free up
+    /// concurrency capacity for other invocations. Resolved at discovery from the handler and
+    /// service settings, so readers don't need the service. Unset only in schemas written before
+    /// this field existed, which means preemptable.
+    #[bilrost(tag = 20)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    preemptable: Option<bool>,
 }
 
 impl MapAsVecItem for Handler {
@@ -903,6 +916,7 @@ impl Handler {
             abort_timeout: self.abort_timeout,
             enable_lazy_state: self.enable_lazy_state,
             state_preload_policy: self.state_preload_policy.clone(),
+            preemptable: self.preemptable.unwrap_or(true),
             retry_policy: HandlerRetryPolicyMetadata {
                 initial_interval: self.retry_policy_initial_interval,
                 exponentiation_factor: self.retry_policy_exponentiation_factor,
@@ -1136,6 +1150,7 @@ impl InvocationTargetResolver for Schema {
                 .inactivity_timeout
                 .or(service_revision.inactivity_timeout),
             state_preload_policy,
+            preemptable: handler.preemptable.unwrap_or(true),
         })
     }
 

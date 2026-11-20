@@ -111,6 +111,16 @@ impl ReservedResources {
     pub fn is_empty(&self) -> bool {
         self.resources.is_empty()
     }
+
+    /// The scope/limit-key concurrency permit held by this reservation, if any.
+    pub fn limit_key_permit(&self) -> Option<(&Scope, &LimitKey<ReString>)> {
+        self.resources
+            .iter()
+            .map(|resource| match resource {
+                UserPermitKind::LimitKeyConcurrency(scope, limit_key) => (scope, limit_key),
+            })
+            .next()
+    }
 }
 
 // Release the resources via a channel with the resource manager

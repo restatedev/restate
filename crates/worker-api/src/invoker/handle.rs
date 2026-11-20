@@ -8,14 +8,63 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::resources::ReservedResources;
 use restate_errors::NotRunningError;
-use restate_types::LimitKey;
+use restate_limiter::Level;
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::{FencingToken, InvocationTarget};
 use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::vqueues::VQueueId;
+use restate_types::{LimitKey, Scope};
 use restate_util_string::ReString;
+
+use crate::ResourceKind;
+use crate::resources::ReservedResources;
+
+/// The resource a blocked vqueue is waiting for, used to ask the invoker to eagerly suspend
+/// one waiting invocation that holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SuspendIdleTarget {
+    /// The node-wide invoker concurrency limit. Any invocation of this partition frees it.
+    InvokerConcurrency,
+    /// A scope/limit-key concurrency rule. Only invocations whose limit-key permit lies
+    /// under `limit_key` (in `scope`) free it. `limit_key` is already truncated to the
+    /// level at which the waiter is blocked.
+    LimitKey {
+        scope: Scope,
+        limit_key: LimitKey<ReString>,
+    },
+}
+
+impl SuspendIdleTarget {
+    /// Maps the resource a queue is blocked on to a suspension target. Returns `None` for
+    /// resources that suspending an invocation does not release (locks are held across
+    /// suspensions) or that are not tied to an invocation (throttling, memory).
+    pub fn from_blocked(resource: &ResourceKind) -> Option<Self> {
+        match resource {
+            ResourceKind::InvokerConcurrency => Some(Self::InvokerConcurrency),
+            ResourceKind::LimitKeyConcurrency {
+                scope,
+                limit_key,
+                blocked_level,
+                ..
+            } => {
+                let limit_key = match blocked_level {
+                    Level::Scope => LimitKey::None,
+                    Level::Level1 => LimitKey::L1(limit_key.level1()?.clone()),
+                    Level::Level2 => limit_key.clone(),
+                };
+                Some(Self::LimitKey {
+                    scope: scope.clone(),
+                    limit_key,
+                })
+            }
+            ResourceKind::Lock { .. }
+            | ResourceKind::InvokerThrottling { .. }
+            | ResourceKind::InvokerMemory
+            | ResourceKind::DeploymentConcurrency => None,
+        }
+    }
+}
 
 pub trait InvokerHandle {
     #[allow(clippy::too_many_arguments)]
@@ -53,4 +102,9 @@ pub trait InvokerHandle {
     /// fencing-token map: it is used to terminate an invocation, pause it, or clean up an orphaned
     /// task.
     fn abort_invocation(&mut self, invocation_id: InvocationId) -> Result<(), NotRunningError>;
+
+    /// Asks the invoker to suspend one in-flight invocation that is waiting on an await point
+    /// and holds `target`, as if its inactivity timeout had fired. Best effort: nothing
+    /// happens if no such invocation exists.
+    fn suspend_idle(&mut self, target: SuspendIdleTarget) -> Result<(), NotRunningError>;
 }
