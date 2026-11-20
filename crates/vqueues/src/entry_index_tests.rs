@@ -24,7 +24,7 @@ use restate_partition_store::keys::KeyKind;
 use restate_partition_store::keys::header::IndexScope;
 use restate_partition_store::registry::IndexKind;
 use restate_partition_store::vqueue_table::{
-    ActiveEntryByStage, ActiveEntryByStageKey, EntryByCreated, EntryByCreatedKey,
+    EntryByCreated, EntryByCreatedKey, EntryByStatusCreated, EntryByStatusCreatedKey,
     FinishedEntryByOutcome, FinishedEntryByOutcomeKey, hour_bucket,
 };
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
@@ -81,7 +81,9 @@ struct Scopes {
     /// Every entry, by creation hour and service.
     all: IndexScope,
     finished: IndexScope,
-    active: IndexScope,
+    /// Every entry in a known stage, by stage, status, creation hour and
+    /// service.
+    by_status: IndexScope,
 }
 
 /// An empty store that tracks the entry indexes, and their scopes.
@@ -112,7 +114,7 @@ async fn tracking_store() -> (PartitionStore, Scopes) {
     let scopes = Scopes {
         all: scope(EntryByCreated::DEFINITION),
         finished: scope(FinishedEntryByOutcome::DEFINITION),
-        active: scope(ActiveEntryByStage::DEFINITION),
+        by_status: scope(EntryByStatusCreated::DEFINITION),
     };
     drop(snapshot);
     (store, scopes)
@@ -126,19 +128,20 @@ fn index_keys(store: &PartitionStore, scope: IndexScope) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// The key of an entry in the active index.
-fn active_key(
+/// The key of an entry in `entry_by_status_created/1`.
+fn status_key(
     scope: IndexScope,
-    stage: Stage,
+    (stage, status): (Stage, Status),
     target: &EntryTargetRef<'_>,
     created_at: UniqueTimestamp,
     id: CanonicalEntryId,
 ) -> Vec<Vec<u8>> {
     let mut key = Vec::new();
-    ActiveEntryByStageKey::borrowed(
+    EntryByStatusCreatedKey::borrowed(
         stage,
+        status,
+        Reverse(hour_bucket(created_at)),
         target.service(),
-        target.handler(),
         Reverse(created_at),
         id,
     )
@@ -241,9 +244,9 @@ async fn entry_index_follows_vqueue_operations() {
         let base_id = entry_id.to_base_id(qid.partition_key());
         let canonical = base_id.canonicalize(Seq::new(1));
         let expected = expected_key(scope, &target, at(0), canonical);
-        // The active key of the entry in its stored stage, and its finished key
-        // with its stored status and transition time.
-        let active = |stage| active_key(scopes.active, stage, &target, at(0), canonical);
+        // The status key of the entry in its stored stage and status, and its
+        // finished key with its stored status and transition time.
+        let by_status = |state| status_key(scopes.by_status, state, &target, at(0), canonical);
         let finished = |status, finished_at| {
             finished_key(scopes.finished, status, &target, finished_at, canonical)
         };
@@ -266,8 +269,8 @@ async fn entry_index_follows_vqueue_operations() {
         drop(tx);
         assert_eq!(index_keys(&store, scope), expected, "case {case}: enqueued");
         assert_eq!(
-            index_keys(&store, scopes.active),
-            active(Stage::Inbox),
+            index_keys(&store, scopes.by_status),
+            by_status((Stage::Inbox, Status::New)),
             "case {case}"
         );
         assert!(
@@ -310,8 +313,8 @@ async fn entry_index_follows_vqueue_operations() {
         assert_eq!(sequence(&store), before + 5, "case {case}: status");
         assert_eq!(index_keys(&store, scope), expected, "case {case}: updated");
         assert_eq!(
-            index_keys(&store, scopes.active),
-            active(Stage::Inbox),
+            index_keys(&store, scopes.by_status),
+            by_status((Stage::Inbox, Status::Started)),
             "case {case}"
         );
 
@@ -333,16 +336,15 @@ async fn entry_index_follows_vqueue_operations() {
             tx.commit().await.unwrap();
             drop(tx);
             assert_eq!(index_keys(&store, scope), expected, "case {case}: yielded");
-            let stage = store
+            let header = store
                 .transaction()
                 .get_vqueue_entry_status(&base_id)
                 .await
                 .unwrap()
-                .unwrap()
-                .stage();
+                .unwrap();
             assert_eq!(
-                index_keys(&store, scopes.active),
-                active(stage),
+                index_keys(&store, scopes.by_status),
+                by_status((header.stage(), header.status())),
                 "case {case}: yielded"
             );
             let mut tx = store.transaction();
@@ -355,9 +357,16 @@ async fn entry_index_follows_vqueue_operations() {
             tx.commit().await.unwrap();
             drop(tx);
             assert_eq!(index_keys(&store, scope), expected, "case {case}: ran");
+            let header = store
+                .transaction()
+                .get_vqueue_entry_status(&base_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(header.stage(), Stage::Running);
             assert_eq!(
-                index_keys(&store, scopes.active),
-                active(Stage::Running),
+                index_keys(&store, scopes.by_status),
+                by_status((Stage::Running, header.status())),
                 "case {case}: ran"
             );
         }
@@ -390,9 +399,13 @@ async fn entry_index_follows_vqueue_operations() {
 
         if case % 3 == 0 {
             // A retained finished entry keeps its key until it is deleted, and
-            // moves from the active index to the finished one.
+            // moves to the Finished lane and into the finished index.
             assert_eq!(index_keys(&store, scope), expected, "case {case}: retained");
-            assert!(index_keys(&store, scopes.active).is_empty(), "case {case}");
+            assert_eq!(
+                index_keys(&store, scopes.by_status),
+                by_status((Stage::Finished, Status::Succeeded)),
+                "case {case}: retained"
+            );
             assert_eq!(
                 index_keys(&store, scopes.finished),
                 finished(Status::Succeeded, at(3)),
@@ -492,25 +505,25 @@ async fn entry_index_moves_with_the_sequence_and_ignores_the_rest() {
         tx.commit().await.unwrap();
         drop(tx);
         assert_eq!(index_keys(&store, scope), expected[2], "case {case}");
-        let active = |stage| {
-            active_key(
-                scopes.active,
-                stage,
+        let by_status = |state| {
+            status_key(
+                scopes.by_status,
+                state,
                 &target,
                 at,
                 keys[2].to_canonical_entry_id(qid.partition_key()),
             )
         };
         assert_eq!(
-            index_keys(&store, scopes.active),
-            active(Stage::Inbox),
+            index_keys(&store, scopes.by_status),
+            by_status((Stage::Inbox, Status::New)),
             "case {case}"
         );
 
         // None of these changes the creation index's key. Each writes the entry
         // status, and moves (a delete and a put) the keys that hold what
         // changed: the status moves both status keys, the transition time the
-        // transition key, and the stage the active key and both status keys.
+        // transition key, and the stage both status keys.
         let rescheduled_key = keys[2].set_run_at(Some(RoughTimestamp::MAX));
         let rescheduled = EntryStateRef {
             entry_key: &rescheduled_key,
@@ -530,12 +543,17 @@ async fn entry_index_moves_with_the_sequence_and_ignores_the_rest() {
             stage: Stage::Running,
             ..later
         };
-        for (change, after, writes, stage) in [
-            ("unchanged", states[2], 1, Stage::Inbox),
-            ("schedule", rescheduled, 1, Stage::Inbox),
-            ("status", scheduled, 5, Stage::Inbox),
-            ("transition time", later, 3, Stage::Inbox),
-            ("stage", running, 7, Stage::Running),
+        for (change, after, writes, state) in [
+            ("unchanged", states[2], 1, (Stage::Inbox, Status::New)),
+            ("schedule", rescheduled, 1, (Stage::Inbox, Status::New)),
+            ("status", scheduled, 5, (Stage::Inbox, Status::Scheduled)),
+            (
+                "transition time",
+                later,
+                3,
+                (Stage::Inbox, Status::Scheduled),
+            ),
+            ("stage", running, 5, (Stage::Running, Status::Scheduled)),
         ] {
             assert_eq!(
                 update(&mut store, after).await,
@@ -548,8 +566,8 @@ async fn entry_index_moves_with_the_sequence_and_ignores_the_rest() {
                 "case {case}: {change}"
             );
             assert_eq!(
-                index_keys(&store, scopes.active),
-                active(stage),
+                index_keys(&store, scopes.by_status),
+                by_status(state),
                 "case {case}: {change}"
             );
         }

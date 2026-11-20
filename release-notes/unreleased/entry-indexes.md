@@ -8,8 +8,6 @@ Partitions can now maintain these indexes of their invocations and state mutatio
 
 - all of them by the hour they were created in and by service, newest created first;
 - the finished ones by outcome, service and handler, newest finished first;
-- the active ones, in the inbox, running, suspended or paused, by stage, service and handler, newest
-  created first;
 - all of them in a known stage by stage and status, then newest created first, and again by stage
   and status, then newest by when they entered their stage.
 
@@ -17,9 +15,9 @@ With query engine V2, a query on `sys_invocation_status` that asks for the newes
 invocations under a `LIMIT`, of every service or of the ones it names, like the UI's invocation
 list or its page of a workflow's invocations, reads only those invocations through the first index
 instead of every invocation of every partition. On `sys_vqueue_entry_status`, a query for the
-newest or oldest finished entries by when they finished, or for the newest or oldest active entries
-by when they were created, under a `LIMIT`, reads the other two. Other queries, and query engine
-V1, read as before.
+newest or oldest finished entries by when they finished, under a `LIMIT`, reads the second; one for
+the newest or oldest entries of some stages, active ones included, by when they were created, reads
+the last, by creation. Other queries, and query engine V1, read as before.
 
 Two new experimental options, both off by default, control it:
 
@@ -39,8 +37,6 @@ Both take effect when partition processors start.
   example during a rolling upgrade, queries read as before too.
 - With the indexes on, every invocation and state mutation also writes small index keys:
   - one by creation hour and service, written when it is created and removed when it is deleted;
-  - one by stage while it is active, moved each time it changes stage, and removed when it
-    finishes;
   - one by outcome once it has finished, removed when it is deleted;
   - two by stage and status, each moved every time it changes stage or status, and removed when it
     is deleted.
