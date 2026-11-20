@@ -87,6 +87,17 @@ pub enum PartitionFeatureChange {
     EnableByteOffsets = 8,
 }
 
+/// The partition features this server requires. Each one retires logic this server no longer
+/// has, such as commands, command variants or state formats. A partition processor that lacks one
+/// of them refuses to start once it has applied a version barrier, and refuses to apply any
+/// command other than `AnnounceLeader` or `VersionBarrier` before then.
+///
+/// A release may only add a feature here once the previous release enables it on every
+/// partition, so that a rolling upgrade or a rollback never runs a partition without it.
+///
+/// *Since v1.8.2*
+pub const REQUIRED_PARTITION_FEATURES: &[PartitionFeatureChange] = &[];
+
 impl PartitionFeatureChange {
     /// The raw ID used on the wire.
     pub fn id(self) -> u16 {
