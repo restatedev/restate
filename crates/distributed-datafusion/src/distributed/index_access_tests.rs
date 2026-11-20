@@ -311,10 +311,9 @@ async fn stage_index_access_matches_scans_across_windows_and_owners() {
 
 /// The workflow page through the entry index, across eight partitions on three
 /// owners: the same rows as a scan, newest created first, with the query's other
-/// conditions applied before its LIMIT and OFFSET. Another order, a tie-breaker
-/// or a condition outside the index's allowlist scans every partition instead,
-/// with the same rows. Each partition takes its own path, shown by
-/// invocations the index lacks:
+/// conditions applied before its LIMIT and OFFSET, whatever they are. Another
+/// order or a tie-breaker scans every partition instead, with the same rows.
+/// Each partition takes its own path, shown by invocations the index lacks:
 /// - most read the index;
 /// - one hasn't fully migrated to vqueues, and one has no Complete index: they
 ///   scan, filter, and keep the newest rows the query needs; the first holds
@@ -590,6 +589,8 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
             "SELECT id FROM sys_invocation_status WHERE target_service_name = 'Many' \
              ORDER BY created_at ASC NULLS LAST LIMIT 3"
                 .to_owned(),
+            // A condition the index doesn't navigate, checked on each candidate.
+            exact.replace("target_service_key IS NOT NULL", "status = 'invoked'"),
         ] {
             let (rows, accesses) = run(&sql).await;
             through_index(&accesses, &sql);
@@ -606,7 +607,6 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
             "SELECT id, created_at FROM sys_invocation_status WHERE target_service_name = 'Promises' \
              AND target_handler_name = 'promise' ORDER BY created_at DESC NULLS LAST, id LIMIT 40"
                 .to_owned(),
-            exact.replace("target_service_key IS NOT NULL", "status = 'invoked'"),
         ] {
             let (rows, accesses) = run(&sql).await;
             assert_eq!(accesses.len(), fixture.stores.len(), "{sql}");

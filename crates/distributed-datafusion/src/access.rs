@@ -93,17 +93,15 @@ pub trait CompleteIndex: 'static {
     /// read, forward or backward, then stops early. Without such a demand,
     /// reading every candidate and its primary record can cost more than the
     /// scan it replaces.
+    ///
+    /// The query's other conditions, whatever they are, are checked on every
+    /// row the read returns, as on a scan's. Whether they reject most
+    /// candidates is not judged: a read that visits many in vain is still
+    /// chosen. A condition fails the query where it fails on a row the read
+    /// evaluates; a row outside the index's restriction is never evaluated,
+    /// so nothing is promised about errors another plan, such as a scan,
+    /// might meet there.
     const NEEDS_ORDERED_DEMAND: bool = false;
-
-    /// Whether the index's policy admits a condition the query applies to the
-    /// rows beyond the index's restriction. A selective condition the index
-    /// can't navigate makes the read visit many candidates in vain, so a policy
-    /// admits only the shapes it chooses to trust: a syntactic choice, not a
-    /// proof that the read pays off. Consulted only with
-    /// [`Self::NEEDS_ORDERED_DEMAND`].
-    fn residual_allowed(_conjunct: &Arc<dyn PhysicalExpr>) -> bool {
-        true
-    }
 }
 
 type PrimaryOf<B> = <<B as CompleteIndex>::Index as IndexSchema>::Primary;
@@ -257,15 +255,7 @@ fn select<B: CompleteIndex>(
     if !B::NEEDS_ORDERED_DEMAND {
         return Ok(true);
     }
-    // Every condition, whether the source or a filter above applies it.
-    Ok(demand.is_some_and(|demand| {
-        orders::<B>(demand).is_some()
-            && filters
-                .iter()
-                .flat_map(split_conjunction)
-                .chain(demand.residual.iter())
-                .all(B::residual_allowed)
-    }))
+    Ok(demand.is_some_and(|demand| orders::<B>(demand).is_some()))
 }
 
 /// Whether `projection`, a scan's columns, its conditions' included, lies in
@@ -830,9 +820,9 @@ mod tests {
         ] {
             assert_eq!(plan_with(nodes, &service).await, expected, "{nodes:?}");
         }
-        // The index pays off only for its own order, or its exact reverse, and
-        // conditions that keep most candidates; the fallback bound needs every
-        // condition above the source in its predicate.
+        // The index pays off only for its own order, or its exact reverse,
+        // whatever the conditions; the fallback bound needs every condition
+        // above the source in its predicate.
         let condition = |column: &str, value: &str| {
             predicate(col(column).eq(lit(ScalarValue::LargeUtf8(Some(value.into())))))
         };
@@ -865,7 +855,7 @@ mod tests {
         };
         assert_eq!(chosen(None), "scan");
         assert_eq!(chosen(Some(&oldest)), "index Some(51)");
-        assert_eq!(chosen(Some(&scheduled)), "scan");
+        assert_eq!(chosen(Some(&scheduled)), "index None");
         assert_eq!(chosen(Some(&typed)), "index None");
         assert_eq!(chosen(Some(&newest(&service))), "index Some(51)");
         // `created_at` is never NULL: `DESC`, which puts NULLs first, reads the

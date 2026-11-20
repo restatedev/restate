@@ -16,9 +16,7 @@ use bilrost::{Message, OwnedMessage};
 use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::execution::SendableRecordBatchStream;
-use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::conjunction_opt;
-use datafusion::physical_expr::expressions::{BinaryExpr, Column, InListExpr, Literal};
 use datafusion::physical_expr::utils::{collect_columns, split_conjunction};
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::metrics::Count;
@@ -283,8 +281,8 @@ impl CompleteIndex for StageIndex {
 /// The index holds only Finished entries, so every alternative of the query
 /// must fix the stage to `finished` ([`Self::admits`]); a status condition
 /// narrows the runs it reads but proves nothing alone. Ascending, the index is
-/// read backwards. Another order, or a condition outside the allowlist below,
-/// reads as before.
+/// read backwards. Another order reads as before. Other conditions are checked
+/// on each candidate ([`CompleteIndex::NEEDS_ORDERED_DEMAND`]).
 pub(crate) struct FinishedIndex;
 
 impl CompleteIndex for FinishedIndex {
@@ -330,13 +328,6 @@ impl CompleteIndex for FinishedIndex {
     }
 
     const NEEDS_ORDERED_DEMAND: bool = true;
-
-    /// The allowlist: the stage, the status, and the transition time. A
-    /// syntactic choice, not a selectivity proof: a status condition can still
-    /// reject every candidate.
-    fn residual_allowed(conjunct: &Arc<dyn PhysicalExpr>) -> bool {
-        ordered_condition(conjunct, VqueueEntryStatusColumn::TransitionedAt, true)
-    }
 }
 
 /// Active entries, those in Inbox, Running, Suspended or Paused, through
@@ -353,8 +344,8 @@ impl CompleteIndex for FinishedIndex {
 /// The index holds only active entries, so every alternative of the query must
 /// fix the stage to some of those stages ([`Self::admits`]); a status condition
 /// is checked on each row and proves nothing. Ascending, the index is read
-/// backwards. Another order, or a condition outside the allowlist below, reads
-/// as before.
+/// backwards. Another order reads as before. Other conditions are checked on
+/// each candidate ([`CompleteIndex::NEEDS_ORDERED_DEMAND`]).
 pub(crate) struct ActiveIndex;
 
 impl CompleteIndex for ActiveIndex {
@@ -401,65 +392,6 @@ impl CompleteIndex for ActiveIndex {
     }
 
     const NEEDS_ORDERED_DEMAND: bool = true;
-
-    /// The allowlist: the stage, the status, and the creation time.
-    fn residual_allowed(conjunct: &Arc<dyn PhysicalExpr>) -> bool {
-        ordered_condition(conjunct, VqueueEntryStatusColumn::CreatedAt, true)
-    }
-}
-
-/// Whether `condition` is on the stage or status by `=` or `IN`, or compares
-/// `time`, the column an ordered entry index sorts by. `times` admits the time
-/// comparisons; not inside alternatives, which would leave gaps to visit. See
-/// [`FinishedIndex::residual_allowed`].
-fn ordered_condition(
-    condition: &Arc<dyn PhysicalExpr>,
-    time: VqueueEntryStatusColumn,
-    times: bool,
-) -> bool {
-    use VqueueEntryStatusColumn::{Stage as StageColumn, Status};
-    let column = |expr: &Arc<dyn PhysicalExpr>| {
-        let name = expr.downcast_ref::<Column>()?.name();
-        [StageColumn, Status, time]
-            .into_iter()
-            .find(|column| VqueueEntryStatus::sql_name(*column) == Some(name))
-    };
-    let literal = |expr: &Arc<dyn PhysicalExpr>| expr.downcast_ref::<Literal>().is_some();
-    if let Some(binary) = condition.downcast_ref::<BinaryExpr>() {
-        if *binary.op() == Operator::Or {
-            // A small IN list arrives as alternatives.
-            return ordered_condition(binary.left(), time, false)
-                && ordered_condition(binary.right(), time, false);
-        }
-        let (column, op) = if literal(binary.right()) {
-            (column(binary.left()), Some(*binary.op()))
-        } else if literal(binary.left()) {
-            (column(binary.right()), binary.op().swap())
-        } else {
-            return false;
-        };
-        return match (column, op) {
-            (Some(StageColumn | Status), Some(op)) => op == Operator::Eq,
-            (Some(_), Some(op)) => {
-                times
-                    && matches!(
-                        op,
-                        Operator::Eq
-                            | Operator::Lt
-                            | Operator::LtEq
-                            | Operator::Gt
-                            | Operator::GtEq
-                    )
-            }
-            _ => false,
-        };
-    }
-    if let Some(list) = condition.downcast_ref::<InListExpr>() {
-        return !list.negated()
-            && matches!(column(list.expr()), Some(StageColumn | Status))
-            && list.list().iter().all(literal);
-    }
-    false
 }
 
 pub(crate) fn select_primary(

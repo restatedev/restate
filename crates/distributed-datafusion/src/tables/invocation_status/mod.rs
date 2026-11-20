@@ -16,10 +16,6 @@ use bilrost::{Message, OwnedMessage};
 use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::TableProvider;
-use datafusion::logical_expr::Operator;
-use datafusion::physical_expr::expressions::{
-    BinaryExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr, Literal,
-};
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::{PhysicalExpr, SendableRecordBatchStream};
 
@@ -92,8 +88,9 @@ const MAX_INDEXED_SERVICES: usize = 64;
 /// ```
 ///
 /// Oldest first (`ORDER BY created_at ASC … LIMIT 250`) reads each run from
-/// its oldest end. Another order, or a condition outside the allowlist below,
-/// such as `status = 'scheduled'`, scans instead.
+/// its oldest end. Another order scans instead. Other conditions, such as
+/// `status = 'scheduled'`, are checked on each candidate
+/// ([`CompleteIndex::NEEDS_ORDERED_DEMAND`]).
 struct EntryIndex;
 
 impl CompleteIndex for EntryIndex {
@@ -134,86 +131,6 @@ impl CompleteIndex for EntryIndex {
     }
 
     const NEEDS_ORDERED_DEMAND: bool = true;
-
-    /// The allowlist: conditions on what the read navigates (service, handler,
-    /// creation time), on the service's type and on the key's presence.
-    /// Alternatives of these qualify too, except for creation times: the read
-    /// would visit the gaps between them. A service has one type and keys or
-    /// not, so a type or key condition keeps all of a named service's
-    /// invocations or none of them. A syntactic choice, not a selectivity
-    /// proof: such a condition can still reject every candidate.
-    fn residual_allowed(conjunct: &Arc<dyn PhysicalExpr>) -> bool {
-        allowed_condition(conjunct, true)
-    }
-}
-
-/// See [`EntryIndex::residual_allowed`]. `times` admits creation-time
-/// comparisons.
-fn allowed_condition(condition: &Arc<dyn PhysicalExpr>, times: bool) -> bool {
-    use InvocationStatusColumn::{
-        CreatedAt, TargetHandlerName, TargetServiceKey, TargetServiceName, TargetServiceTy,
-    };
-    let column = |expr: &Arc<dyn PhysicalExpr>| {
-        let name = expr.downcast_ref::<Column>()?.name();
-        [
-            CreatedAt,
-            TargetHandlerName,
-            TargetServiceKey,
-            TargetServiceName,
-            TargetServiceTy,
-        ]
-        .into_iter()
-        .find(|column| InvocationStatus::sql_name(*column) == Some(name))
-    };
-    let literal = |expr: &Arc<dyn PhysicalExpr>| expr.downcast_ref::<Literal>().is_some();
-    if let Some(binary) = condition.downcast_ref::<BinaryExpr>() {
-        if *binary.op() == Operator::Or {
-            // A small IN list arrives as alternatives.
-            return allowed_condition(binary.left(), false)
-                && allowed_condition(binary.right(), false);
-        }
-        let (column, op) = if literal(binary.right()) {
-            (column(binary.left()), Some(*binary.op()))
-        } else if literal(binary.left()) {
-            (column(binary.right()), binary.op().swap())
-        } else {
-            return false;
-        };
-        return match (column, op) {
-            (Some(TargetServiceName | TargetHandlerName | TargetServiceTy), Some(op)) => {
-                op == Operator::Eq
-            }
-            (Some(CreatedAt), Some(op)) => {
-                times
-                    && matches!(
-                        op,
-                        Operator::Eq
-                            | Operator::Lt
-                            | Operator::LtEq
-                            | Operator::Gt
-                            | Operator::GtEq
-                    )
-            }
-            _ => false,
-        };
-    }
-    if let Some(list) = condition.downcast_ref::<InListExpr>() {
-        return !list.negated()
-            && matches!(
-                column(list.expr()),
-                Some(TargetServiceName | TargetHandlerName)
-            )
-            && list.list().iter().all(literal);
-    }
-    let presence = condition
-        .downcast_ref::<IsNullExpr>()
-        .map(IsNullExpr::arg)
-        .or_else(|| {
-            condition
-                .downcast_ref::<IsNotNullExpr>()
-                .map(IsNotNullExpr::arg)
-        });
-    presence.is_some_and(|arg| column(arg) == Some(TargetServiceKey))
 }
 
 impl SysInvocationStatusTable {
