@@ -80,7 +80,33 @@
 //! and scope, which a read can return without fetching the entry. Like the first
 //! index, key and value never change after the entry is created.
 //!
-//! All four indexes project an entry's old and new state to their optional keys
+//! **Entries by stage and status, newest created first**
+//! (`entry_by_status_created/1`) and **newest transitioned first**
+//! (`entry_by_status_transitioned/1`) hold one key for every entry in a known
+//! stage, of both kinds, and lead with its stored stage and status. Below that,
+//! they are laid out like `entry_by_created/1`, by the creation time in the
+//! first and by the stored `transitioned_at`, when the entry entered its stage,
+//! in the second:
+//!
+//! ```text
+//! xI | partition | index ID | stage | status | hour ↓ | service | time ↓ | canonical entry ID
+//!                             finished killed    h9       "Utils"   t9       inv_…
+//!                             finished succeeded h9       "Other"   t9       inv_…
+//!                             finished succeeded h9       "Utils"   t8       inv_…
+//!                             finished succeeded h8       "Utils"   t7       inv_…
+//!                             running  started   h9       "Utils"   t9       inv_…
+//! value: handler?, scope?
+//! ```
+//!
+//! Each stage and status is one contiguous range over all hours and services.
+//! Finished entries that succeeded, typically the bulk of a partition, are one
+//! range that a page of any other outcome or stage never reads; a page of
+//! killed entries in the past hours reads only the killed range's newest hours.
+//! The key moves whenever the entry's stage or status changes, and, in the
+//! second index, when its `transitioned_at` does. An entry in a stage this
+//! binary doesn't know has no key.
+//!
+//! All six indexes project an entry's old and new state to their optional keys
 //! and write only when the two differ.
 
 use std::cmp::Reverse;
@@ -92,22 +118,28 @@ use prost::encoding::{decode_varint, encode_varint, encoded_len_varint};
 use restate_clock::time::MillisSinceEpoch;
 use restate_clock::{RoughTimestamp, UniqueTimestamp};
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::{EntryContext, EntryStateRef, Stage};
+use restate_storage_api::vqueue_table::stats::EntryStatistics;
+use restate_storage_api::vqueue_table::{EntryContext, EntryStateRef, Stage, Status};
+use restate_storage_query_api::SelectionSchema;
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
 use restate_storage_query_api::tables::index::{
     EntryByServiceCreated as InvocationsByCreation, EntryByServiceCreatedClause,
-    EntryByServiceCreatedColumn,
+    EntryByServiceCreatedColumn, EntryByStatusCreated as InvocationsByStatus,
+    EntryByStatusCreatedClause, EntryByStatusCreatedColumn,
 };
 use restate_types::config::Configuration;
+use restate_types::vqueues::CanonicalEntryId;
+use restate_util_string::ReString;
 
 use crate::PartitionStoreTransaction;
-use crate::index::{IndexValue, IndexValueRef, RegisteredIndex};
+use crate::index::{IndexValue, IndexValueRef, RegisteredIndex, SecondaryIndex, SecondaryIndexKey};
 use crate::keys::codecs::{
     CanonicalEntryIdCodec, ReverseRoughTimestampCodec, ReverseUniqueTimestampCodec,
     ServiceNameCodec, StageRankCodec, StatusCodec, StringCodec,
 };
+use crate::keys::header::IndexScope;
 use crate::keys::selection::codec::{FieldPredicateCodec, prepare_hour_buckets};
-use crate::keys::selection::{KeySelection, PrepareKeySelection};
+use crate::keys::selection::{KeySelection, PrepareKeySelection, PreparedFieldPredicate};
 use crate::registry::{Family, IndexDefinition, IndexKind};
 
 crate::index::macros::define_secondary_index!(
@@ -228,6 +260,26 @@ pub(crate) static ENTRY_BY_CREATED: IndexDefinition = IndexDefinition {
     can_fill: true,
 };
 
+/// Every entry in a known stage by stage, status, creation hour and service,
+/// newest created first, with its handler and scope.
+pub(crate) static ENTRY_BY_STATUS_CREATED: IndexDefinition = IndexDefinition {
+    name: EntryByStatusCreated::DEFINITION,
+    introduced: EntryByStatusCreated::INTRODUCED,
+    kind: IndexKind::Secondary,
+    apply: apply_entry_by_status_created,
+    can_fill: true,
+};
+
+/// Every entry in a known stage by stage, status, transition hour and service,
+/// newest transitioned first, with its handler and scope.
+pub(crate) static ENTRY_BY_STATUS_TRANSITIONED: IndexDefinition = IndexDefinition {
+    name: EntryByStatusTransitioned::DEFINITION,
+    introduced: EntryByStatusTransitioned::INTRODUCED,
+    kind: IndexKind::Secondary,
+    apply: apply_entry_by_status_transitioned,
+    can_fill: true,
+};
+
 /// The entry indexes, released and controlled together.
 pub(crate) const ENTRY_INDEXES: Family = Family {
     definitions: &[
@@ -235,6 +287,8 @@ pub(crate) const ENTRY_INDEXES: Family = Family {
         &FINISHED_ENTRY_BY_OUTCOME,
         &ACTIVE_ENTRY_BY_STAGE,
         &ENTRY_BY_CREATED,
+        &ENTRY_BY_STATUS_CREATED,
+        &ENTRY_BY_STATUS_TRANSITIONED,
     ],
     maintain: track_entry_indexes,
     reset: entry_indexes_reset,
@@ -373,7 +427,7 @@ fn apply_active_entry_by_stage(
 
 crate::index::macros::define_secondary_index!(
     /// Entries by creation hour and service, newest created first; each key
-    /// holds the entry's handler and scope ([`CreatedEntryValue`]).
+    /// holds the entry's handler and scope ([`EntryTargetValue`]).
     ///
     /// Since v1.8.2
     EntryByCreated,
@@ -385,7 +439,7 @@ crate::index::macros::define_secondary_index!(
         created_at: ReverseUniqueTimestampCodec,
         canonical_id: CanonicalEntryIdCodec (primary_key),
     },
-    value: CreatedEntryValue,
+    value: EntryTargetValue,
 );
 
 // A query on invocations restricts `entry_by_created/1` through the invocation
@@ -411,17 +465,28 @@ impl PrepareKeySelection<InvocationsByCreation> for EntryByCreatedKey {
                 if tag != "created_hour" {
                     return Ok(None);
                 }
-                Ok(match created_times(selection) {
-                    Some(CreatedTimes::Clause(times)) => {
-                        Some(prepare_hour_buckets(times, literals))
-                    }
-                    Some(CreatedTimes::Range(times)) => {
-                        Some(prepare_hour_buckets(&times, literals))
-                    }
-                    None => None,
-                })
+                let times = created_times(
+                    selection,
+                    EntryByServiceCreatedColumn::CreatedAt,
+                    |clause| match clause {
+                        EntryByServiceCreatedClause::CreatedAt(times) => Some(times),
+                        _ => None,
+                    },
+                );
+                Ok(hour_buckets(times, literals))
             },
         )
+    }
+}
+
+/// The hours that may hold a time in `times`, if anything restricts them.
+fn hour_buckets(
+    times: Option<CreatedTimes<'_>>,
+    literals: &mut Vec<u8>,
+) -> Option<PreparedFieldPredicate> {
+    match times? {
+        CreatedTimes::Clause(times) => Some(prepare_hour_buckets(times, literals)),
+        CreatedTimes::Range(times) => Some(prepare_hour_buckets(&times, literals)),
     }
 }
 
@@ -435,16 +500,19 @@ enum CreatedTimes<'a> {
 /// The creation times every match of `selection` has: one of its `created_at`
 /// equalities or IN lists, each of which every match satisfies, or else its
 /// ranges intersected. `None` when nothing restricts the creation time.
-fn created_times(selection: &Selection<InvocationsByCreation>) -> Option<CreatedTimes<'_>> {
+/// `column` is the creation time's column, and `times` its predicate in a
+/// clause.
+fn created_times<'a, T: SelectionSchema>(
+    selection: &'a Selection<T>,
+    column: T::Column,
+    times: impl Fn(&'a T::Clause) -> Option<&'a ValuePredicate<MillisSinceEpoch>>,
+) -> Option<CreatedTimes<'a>> {
     let Selection::Predicates(predicates) = selection else {
         return None;
     };
     let (mut lower, mut upper) = (Unbounded, Unbounded);
     let mut ranged = false;
-    for clause in predicates.for_column(EntryByServiceCreatedColumn::CreatedAt) {
-        let EntryByServiceCreatedClause::CreatedAt(predicate) = clause else {
-            continue;
-        };
+    for predicate in predicates.for_column(column).iter().filter_map(times) {
         match predicate {
             ValuePredicate::Equal(_) | ValuePredicate::In(_) => {
                 return Some(CreatedTimes::Clause(predicate));
@@ -482,24 +550,25 @@ fn tighter(
     }
 }
 
-/// The start of the hour in which `at` falls: the bucket that leads the keys of
-/// `entry_by_created/1`.
-pub fn created_hour(at: UniqueTimestamp) -> RoughTimestamp {
+/// The start of the hour in which `at` falls: the bucket that orders the keys of
+/// `entry_by_created/1` and the two status indexes, newest first.
+pub fn hour_bucket(at: UniqueTimestamp) -> RoughTimestamp {
     RoughTimestamp::from_unix_millis_clamped(at.to_unix_millis()).floor_to_hour()
 }
 
-/// What `entry_by_created/1` stores with each key: the entry's handler, none for
-/// a state mutation, and its scope. Both are fixed when the entry is created.
-pub enum CreatedEntryValue {}
+/// What `entry_by_created/1` and the two status indexes store with each key: the
+/// parts of the entry's target their keys don't hold, its handler, none for a
+/// state mutation, and its scope. Both are fixed when the entry is created.
+pub enum EntryTargetValue {}
 
-impl IndexValue for CreatedEntryValue {
-    type Ref<'a> = CreatedEntryValueRef<'a>;
+impl IndexValue for EntryTargetValue {
+    type Ref<'a> = EntryTargetValueRef<'a>;
 }
 
-/// A [`CreatedEntryValue`], borrowing its strings from the entry or the stored
+/// An [`EntryTargetValue`], borrowing its strings from the entry or the stored
 /// bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CreatedEntryValueRef<'a> {
+pub struct EntryTargetValueRef<'a> {
     pub handler: Option<&'a str>,
     pub scope: Option<&'a str>,
 }
@@ -509,7 +578,7 @@ pub struct CreatedEntryValueRef<'a> {
 const HAS_HANDLER: u8 = 0b01;
 const HAS_SCOPE: u8 = 0b10;
 
-impl<'a> IndexValueRef<'a> for CreatedEntryValueRef<'a> {
+impl<'a> IndexValueRef<'a> for EntryTargetValueRef<'a> {
     fn encoded_len(&self) -> usize {
         let field = |value: Option<&str>| {
             value.map_or(0, |value| {
@@ -585,19 +654,401 @@ fn apply_entry_by_created(
     };
     let (old, new) = (before.map(project), after.map(project));
     if old != new {
-        let value = CreatedEntryValueRef {
+        let value = EntryTargetValueRef {
             handler: context.target.handler(),
             scope: context.target.scope(),
         };
         let key = |(created_at, canonical_id)| {
             EntryByCreatedKey::borrowed(
-                Reverse(created_hour(created_at)),
+                Reverse(hour_bucket(created_at)),
                 context.target.service(),
                 Reverse(created_at),
                 canonical_id,
             )
         };
         let (old, new) = (old.map(key), new.map(key));
+        storage.update_secondary_index_entry_with_id(
+            id,
+            old.as_ref().map(|key| (key, value)),
+            new.as_ref().map(|key| (key, value)),
+        );
+    }
+}
+
+crate::index::macros::define_secondary_index!(
+    /// Entries in a known stage by stored stage and status, creation hour and
+    /// service, newest created first; each key holds the entry's handler and
+    /// scope ([`EntryTargetValue`]).
+    ///
+    /// Since v1.8.2
+    EntryByStatusCreated,
+    definition: "entry_by_status_created/1",
+    introduced: (1, 8, 2),
+    key: EntryByStatusCreatedKey {
+        stage: StageRankCodec,
+        status: StatusCodec,
+        created_hour: ReverseRoughTimestampCodec,
+        target_service_name: ServiceNameCodec => str,
+        created_at: ReverseUniqueTimestampCodec,
+        canonical_id: CanonicalEntryIdCodec (primary_key),
+    },
+    value: EntryTargetValue,
+);
+
+crate::index::macros::define_secondary_index!(
+    /// Entries in a known stage by stored stage and status, transition hour and
+    /// service, newest transitioned first; each key holds the entry's handler
+    /// and scope ([`EntryTargetValue`]).
+    ///
+    /// Since v1.8.2
+    EntryByStatusTransitioned,
+    definition: "entry_by_status_transitioned/1",
+    introduced: (1, 8, 2),
+    key: EntryByStatusTransitionedKey {
+        stage: StageRankCodec,
+        status: StatusCodec,
+        transitioned_hour: ReverseRoughTimestampCodec,
+        target_service_name: ServiceNameCodec => str,
+        transitioned_at: ReverseUniqueTimestampCodec,
+        canonical_id: CanonicalEntryIdCodec (primary_key),
+    },
+    value: EntryTargetValue,
+);
+
+/// Whether the two status indexes hold an entry in `stage`: every stage this
+/// binary knows. A new stage needs a rank in [`StageRankCodec`] and a decision
+/// here. Queries decide which queries the indexes can serve from this too.
+pub fn status_indexes_hold(stage: Stage) -> bool {
+    match stage {
+        Stage::Inbox | Stage::Running | Stage::Suspended | Stage::Paused | Stage::Finished => true,
+        Stage::Unknown => false,
+    }
+}
+
+/// The stages in the order the two status indexes key them
+/// ([`StageRankCodec`]): every stage they hold.
+const KEYED_STAGES: [Stage; 5] = [
+    Stage::Finished,
+    Stage::Inbox,
+    Stage::Paused,
+    Stage::Running,
+    Stage::Suspended,
+];
+
+/// Every stored status, in the order the two status indexes key them
+/// ([`StatusCodec`]).
+const KEYED_STATUSES: [Status; 10] = [
+    Status::BackingOff,
+    Status::Cancelled,
+    Status::Failed,
+    Status::Killed,
+    Status::New,
+    Status::Scheduled,
+    Status::Started,
+    Status::Succeeded,
+    Status::Unknown,
+    Status::Yielded,
+];
+
+/// The bit of `stage` in [`Keyed::stages`]: its position in [`KEYED_STAGES`].
+const fn stage_bit(stage: Stage) -> u8 {
+    let mut at = 0;
+    while at < KEYED_STAGES.len() {
+        if KEYED_STAGES[at] as u8 == stage as u8 {
+            return 1 << at;
+        }
+        at += 1;
+    }
+    0
+}
+
+/// The bit of `status` in [`Keyed::statuses`]: its position in
+/// [`KEYED_STATUSES`].
+const fn status_bit(status: Status) -> u16 {
+    let mut at = 0;
+    while at < KEYED_STATUSES.len() {
+        if KEYED_STATUSES[at] as u8 == status as u8 {
+            return 1 << at;
+        }
+        at += 1;
+    }
+    0
+}
+
+/// Sets of stored stages and statuses, a bit for each of [`KEYED_STAGES`] and
+/// [`KEYED_STATUSES`] by position. They stand for every pair of one of the
+/// stages with one of the statuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Keyed {
+    stages: u8,
+    statuses: u16,
+}
+
+impl Keyed {
+    const ALL: Self = Self {
+        stages: (1 << KEYED_STAGES.len()) - 1,
+        statuses: (1 << KEYED_STATUSES.len()) - 1,
+    };
+    const NONE: Self = Self {
+        stages: 0,
+        statuses: 0,
+    };
+    /// The entries of completed invocations: Finished, whatever the stored
+    /// status. Only completing an invocation (`end_invocation`, terminating an
+    /// inboxed or scheduled one) moves its entry to Finished, under the same
+    /// retention that keeps the invocation's completed status; the migration
+    /// to vqueues adds completed invocations as Finished.
+    const COMPLETED: Self = Self {
+        stages: stage_bit(Stage::Finished),
+        statuses: Self::ALL.statuses,
+    };
+    /// The entries of invocations that haven't completed: any other stage.
+    const ACTIVE: Self = Self {
+        stages: Self::ALL.stages & !Self::COMPLETED.stages,
+        statuses: Self::ALL.statuses,
+    };
+    /// The entries of invocations that completed with a failure: Finished, with
+    /// any stored status but Succeeded. Completing with a failure stores
+    /// Failed, Cancelled or Killed; so does the migration. No release stored
+    /// Succeeded for a failure.
+    const FAILED: Self = Self {
+        stages: Self::COMPLETED.stages,
+        statuses: Self::ALL.statuses & !status_bit(Status::Succeeded),
+    };
+
+    fn union(self, other: Self) -> Self {
+        Self {
+            stages: self.stages | other.stages,
+            statuses: self.statuses | other.statuses,
+        }
+    }
+
+    fn intersect(self, other: Self) -> Self {
+        Self {
+            stages: self.stages & other.stages,
+            statuses: self.statuses & other.statuses,
+        }
+    }
+
+    /// The entries of the invocations whose value satisfies `predicate`, with
+    /// `of` mapping one value. A range is no restriction.
+    fn matching<V>(predicate: &ValuePredicate<V>, of: impl Fn(&V) -> Self) -> Self {
+        match predicate {
+            ValuePredicate::Equal(value) => of(value),
+            ValuePredicate::In(values) => values
+                .iter()
+                .fold(Self::NONE, |keyed, value| keyed.union(of(value))),
+            ValuePredicate::Range { .. } => Self::ALL,
+        }
+    }
+
+    /// The entries of invocations with the public `status`.
+    fn of_status(status: &ReString) -> Self {
+        match status.as_str() {
+            "completed" => Self::COMPLETED,
+            "inboxed" | "scheduled" | "invoked" | "suspended" | "paused" => Self::ACTIVE,
+            // No invocation has another status.
+            _ => Self::NONE,
+        }
+    }
+
+    /// The entries of invocations with the public `completion_result`, NULL
+    /// for those that haven't completed.
+    fn of_completion_result(result: &Option<ReString>) -> Self {
+        match result.as_ref().map(ReString::as_str) {
+            None => Self::ACTIVE,
+            Some("success") => Self::COMPLETED,
+            Some("failure") => Self::FAILED,
+            Some(_) => Self::NONE,
+        }
+    }
+}
+
+impl EntryByStatusCreatedKey {
+    /// The stages and stored statuses whose keys can hold the entry of an
+    /// invocation `selection` matches, in key order: a superset, derived from
+    /// its conditions on `status` and `completion_result`. The caller keeps
+    /// its predicate. Each pair is a lane of the index
+    /// ([`Self::prepare_lane`]).
+    pub fn lanes(
+        selection: &Selection<InvocationsByStatus>,
+    ) -> impl Iterator<Item = (Stage, Status)> {
+        let keyed = match selection {
+            Selection::All => Keyed::ALL,
+            Selection::Empty => Keyed::NONE,
+            Selection::Predicates(predicates) => {
+                let statuses = predicates
+                    .for_column(EntryByStatusCreatedColumn::Status)
+                    .iter()
+                    .filter_map(|clause| match clause {
+                        EntryByStatusCreatedClause::Status(status) => {
+                            Some(Keyed::matching(status, Keyed::of_status))
+                        }
+                        _ => None,
+                    });
+                let results = predicates
+                    .for_column(EntryByStatusCreatedColumn::CompletionResult)
+                    .iter()
+                    .filter_map(|clause| match clause {
+                        EntryByStatusCreatedClause::CompletionResult(result) => {
+                            Some(Keyed::matching(result, Keyed::of_completion_result))
+                        }
+                        _ => None,
+                    });
+                statuses.chain(results).fold(Keyed::ALL, Keyed::intersect)
+            }
+        };
+        let member = |bits: u16, at: usize| bits & (1 << at) != 0;
+        KEYED_STAGES
+            .into_iter()
+            .enumerate()
+            .filter(move |&(at, _)| member(keyed.stages.into(), at))
+            .flat_map(move |(_, stage)| {
+                KEYED_STATUSES
+                    .into_iter()
+                    .enumerate()
+                    .filter(move |&(at, _)| member(keyed.statuses, at))
+                    .map(move |(_, status)| (stage, status))
+            })
+    }
+
+    /// The selection of the keys of one lane, `stage` and `status`, that
+    /// `selection` may match: its service and creation time, and the hours that
+    /// may hold that time. The caller keeps its predicate.
+    pub fn prepare_lane(
+        selection: &Selection<InvocationsByStatus>,
+        stage: Stage,
+        status: Status,
+    ) -> crate::Result<KeySelection<Self>> {
+        KeySelection::for_key_fields_with(
+            selection,
+            |clause, literals| match clause {
+                EntryByStatusCreatedClause::TargetServiceName(predicate) => {
+                    ServiceNameCodec::try_prepare_value(predicate, literals)
+                }
+                EntryByStatusCreatedClause::CreatedAt(predicate) => {
+                    ReverseUniqueTimestampCodec::try_prepare_value(predicate, literals)
+                }
+                // The public status and completion result select the lanes.
+                _ => Ok(None),
+            },
+            |tag, literals| match tag {
+                "stage" => {
+                    StageRankCodec::try_prepare_value(&ValuePredicate::Equal(stage), literals)
+                }
+                "status" => {
+                    StatusCodec::try_prepare_value(&ValuePredicate::Equal(status), literals)
+                }
+                "created_hour" => {
+                    let times =
+                        created_times(selection, EntryByStatusCreatedColumn::CreatedAt, |clause| {
+                            match clause {
+                                EntryByStatusCreatedClause::CreatedAt(times) => Some(times),
+                                _ => None,
+                            }
+                        });
+                    Ok(hour_buckets(times, literals))
+                }
+                _ => Ok(None),
+            },
+        )
+    }
+}
+
+/// Removes the key of `before` and adds the key of `after` in
+/// `entry_by_status_created/1`.
+fn apply_entry_by_status_created(
+    storage: &mut PartitionStoreTransaction<'_>,
+    id: u32,
+    context: &EntryContext<'_>,
+    before: Option<&EntryStateRef<'_>>,
+    after: Option<&EntryStateRef<'_>>,
+) {
+    apply_by_status(
+        storage,
+        id,
+        context,
+        before,
+        after,
+        |stats| stats.created_at,
+        |(stage, status, created_at, canonical_id)| {
+            EntryByStatusCreatedKey::borrowed(
+                stage,
+                status,
+                Reverse(hour_bucket(created_at)),
+                context.target.service(),
+                Reverse(created_at),
+                canonical_id,
+            )
+        },
+    );
+}
+
+/// Removes the key of `before` and adds the key of `after` in
+/// `entry_by_status_transitioned/1`.
+fn apply_entry_by_status_transitioned(
+    storage: &mut PartitionStoreTransaction<'_>,
+    id: u32,
+    context: &EntryContext<'_>,
+    before: Option<&EntryStateRef<'_>>,
+    after: Option<&EntryStateRef<'_>>,
+) {
+    apply_by_status(
+        storage,
+        id,
+        context,
+        before,
+        after,
+        |stats| stats.transitioned_at,
+        |(stage, status, transitioned_at, canonical_id)| {
+            EntryByStatusTransitionedKey::borrowed(
+                stage,
+                status,
+                Reverse(hour_bucket(transitioned_at)),
+                context.target.service(),
+                Reverse(transitioned_at),
+                canonical_id,
+            )
+        },
+    );
+}
+
+/// Removes the key of `before` and adds the key of `after`, each only if its
+/// entry's stage is known ([`status_indexes_hold`]), with the
+/// entry's handler and scope. `time` picks the timestamp that orders the index,
+/// and `key` lays the key out from the stage, status, that time and the entry's
+/// ID: a change of any of them moves the key.
+fn apply_by_status<K>(
+    storage: &mut PartitionStoreTransaction<'_>,
+    id: u32,
+    context: &EntryContext<'_>,
+    before: Option<&EntryStateRef<'_>>,
+    after: Option<&EntryStateRef<'_>>,
+    time: fn(&EntryStatistics) -> UniqueTimestamp,
+    key: impl Fn((Stage, Status, UniqueTimestamp, CanonicalEntryId)) -> K,
+) where
+    K: SecondaryIndexKey,
+    K::Index: SecondaryIndex<Scope = IndexScope, Value = EntryTargetValue>,
+{
+    let project = |entry: &EntryStateRef<'_>| {
+        status_indexes_hold(entry.stage).then(|| {
+            (
+                entry.stage,
+                entry.status,
+                time(entry.stats),
+                entry
+                    .entry_key
+                    .to_canonical_entry_id(context.qid.partition_key()),
+            )
+        })
+    };
+    let (old, new) = (before.and_then(project), after.and_then(project));
+    if old != new {
+        let value = EntryTargetValueRef {
+            handler: context.target.handler(),
+            scope: context.target.scope(),
+        };
+        let (old, new) = (old.map(&key), new.map(&key));
         storage.update_secondary_index_entry_with_id(
             id,
             old.as_ref().map(|key| (key, value)),
