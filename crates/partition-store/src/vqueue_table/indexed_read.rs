@@ -649,7 +649,9 @@ mod tests {
     use restate_types::identifiers::PartitionId;
     use restate_types::partitions::Partition;
     use restate_types::sharding::KeyRange;
-    use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, Seq, VQueueId};
+    use restate_types::vqueues::{
+        EffectiveStatus, EntryId, EntryKind, EntryTargetRef, Seq, VQueueId,
+    };
 
     use crate::invocation_status_table::entry_index_read::counting::{Charge, Counting};
     use crate::keys::selection::KeySelection;
@@ -1029,7 +1031,7 @@ mod tests {
         );
         // A status narrows the lanes.
         let failed = finished().and(EntryStatusByStatusTransitionedClause::Status(
-            ValuePredicate::Equal(Status::Failed),
+            ValuePredicate::Equal(EffectiveStatus::new(Stage::Finished, Status::Failed)),
         ));
         let (rows, path, _) = read(&store, failed).unwrap();
         let expected: Vec<_> = ids

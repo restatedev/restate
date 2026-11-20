@@ -96,7 +96,7 @@ use restate_storage_query_api::tables::index::{
     EntryStatusByStatusTransitionedClause, EntryStatusByStatusTransitionedColumn,
 };
 use restate_types::config::Configuration;
-use restate_types::vqueues::CanonicalEntryId;
+use restate_types::vqueues::{CanonicalEntryId, EffectiveStatus};
 use restate_util_string::ReString;
 
 use crate::PartitionStoreTransaction;
@@ -675,14 +675,6 @@ impl Keyed {
         }
     }
 
-    /// The entries with the stored `status`, in any stage.
-    fn of_stored_status(status: &Status) -> Self {
-        Self {
-            stages: Self::ALL.stages,
-            statuses: status_bit(*status),
-        }
-    }
-
     /// The pairs `selection`'s clauses allow, each clause mapped by `of`, or
     /// left out if it doesn't restrict them.
     fn of_selection<T: SelectionSchema>(
@@ -698,6 +690,36 @@ impl Keyed {
                 .filter_map(of)
                 .fold(Self::ALL, Self::intersect),
         }
+    }
+
+    /// The pairs of the stages `selection`'s conditions on the entry's stage
+    /// allow, each kept only if its effective status satisfies every condition
+    /// on the entry's `status`: exactly the pairs of the entries it may match,
+    /// as an entry's effective status is a function of its stored pair.
+    fn of_entry_selection<T: SelectionSchema>(
+        selection: &Selection<T>,
+        stage: impl Fn(&T::Clause) -> Option<&ValuePredicate<Stage>>,
+        status: impl Fn(&T::Clause) -> Option<&ValuePredicate<EffectiveStatus>>,
+    ) -> impl Iterator<Item = (Stage, Status)> {
+        let conditions: Vec<_> = match selection {
+            Selection::Predicates(predicates) => predicates
+                .iter()
+                .flat_map(|(_, clauses)| clauses.iter())
+                .filter_map(&status)
+                .cloned()
+                .collect(),
+            Selection::All | Selection::Empty => Vec::new(),
+        };
+        Self::of_selection(selection, |clause| {
+            stage(clause).map(|stage| Self::matching(stage, Self::of_stage))
+        })
+        .pairs()
+        .filter(move |&(stage, stored)| {
+            let effective = EffectiveStatus::new(stage, stored);
+            conditions
+                .iter()
+                .all(|condition| condition.matches(&effective))
+        })
     }
 
     /// Every pair of an allowed stage and an allowed status, in key order.
@@ -751,21 +773,22 @@ impl EntryByStatusCreatedKey {
 
     /// The stages and stored statuses whose keys can hold an entry
     /// `selection` matches, in key order: those its conditions on the entry's
-    /// own stage and status allow. Each pair is a lane
+    /// stage and effective status allow. Each pair is a lane
     /// ([`Self::prepare_entry_lanes`]).
     pub fn entry_lanes(
         selection: &Selection<EntriesByStatusCreated>,
     ) -> impl Iterator<Item = (Stage, Status)> {
-        Keyed::of_selection(selection, |clause| match clause {
-            EntryStatusByStatusCreatedClause::Stage(stage) => {
-                Some(Keyed::matching(stage, Keyed::of_stage))
-            }
-            EntryStatusByStatusCreatedClause::Status(status) => {
-                Some(Keyed::matching(status, Keyed::of_stored_status))
-            }
-            _ => None,
-        })
-        .pairs()
+        Keyed::of_entry_selection(
+            selection,
+            |clause| match clause {
+                EntryStatusByStatusCreatedClause::Stage(stage) => Some(stage),
+                _ => None,
+            },
+            |clause| match clause {
+                EntryStatusByStatusCreatedClause::Status(status) => Some(status),
+                _ => None,
+            },
+        )
     }
 
     /// The selection of the keys of entries `selection` may match in the lanes
@@ -848,21 +871,22 @@ impl EntryByStatusCreatedKey {
 impl EntryByStatusTransitionedKey {
     /// The stages and stored statuses whose keys can hold an entry
     /// `selection` matches, in key order: those its conditions on the entry's
-    /// own stage and status allow. Each pair is a lane
+    /// stage and effective status allow. Each pair is a lane
     /// ([`Self::prepare_entry_lanes`]).
     pub fn entry_lanes(
         selection: &Selection<EntriesByStatusTransitioned>,
     ) -> impl Iterator<Item = (Stage, Status)> {
-        Keyed::of_selection(selection, |clause| match clause {
-            EntryStatusByStatusTransitionedClause::Stage(stage) => {
-                Some(Keyed::matching(stage, Keyed::of_stage))
-            }
-            EntryStatusByStatusTransitionedClause::Status(status) => {
-                Some(Keyed::matching(status, Keyed::of_stored_status))
-            }
-            _ => None,
-        })
-        .pairs()
+        Keyed::of_entry_selection(
+            selection,
+            |clause| match clause {
+                EntryStatusByStatusTransitionedClause::Stage(stage) => Some(stage),
+                _ => None,
+            },
+            |clause| match clause {
+                EntryStatusByStatusTransitionedClause::Status(status) => Some(status),
+                _ => None,
+            },
+        )
     }
 
     /// The selection of the keys of entries `selection` may match in the lanes

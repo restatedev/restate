@@ -5,11 +5,11 @@
 Two values a vqueue entry records could mislead, as `sys_vqueue_entry_status` and `sys_vqueues`
 show them:
 
-- **The status of a running invocation, and of one resumed or woken up.** Paused and suspended
-  entries keep their status, and resuming or waking them up restores it. But an invocation that
-  once backed off, or was yielded, kept `backing-off` or `yielded` while it ran again, so pausing
-  or suspending it carried that status, and it came back showing `backing-off` or `yielded`
-  although it was simply ready to run. Every run now records `started`.
+- **The status of an invocation resumed or woken up.** Paused and suspended entries keep their
+  status, and resuming or waking them up restores it. But an invocation that once backed off, or
+  was yielded, kept that status while it ran again, so pausing or suspending it carried it, and it
+  came back to the inbox showing `backing-off` or `yielded` although it was simply ready to run. It
+  now comes back `ready`.
 - **When a completed invocation's entry finished.** The entry recorded the time of the record that
   completed the invocation. That record can come from a node whose clock is behind, so an entry
   could appear to finish before it was created, or before the invocation's own `completed_at`.

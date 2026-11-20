@@ -37,8 +37,14 @@ define_table!(
     /// 'suspended', and 'finished'.
     stage: DataType::LargeUtf8,
 
-    /// The entry processing status. Examples are `new`, `scheduled`, `started`,
-    /// `backing-off`, `yielded`, `killed`, `cancelled`, `failed`, and `succeeded`.
+    /// What the entry is doing now, its effective status, which also tells its
+    /// stage. In the inbox: `new`, `scheduled`, `backing-off`, `ready` or
+    /// `yielded`; then `running`, `suspended` or `paused`; once finished, its
+    /// outcome: `succeeded`, `failed`, `killed` or `cancelled`; `unknown` if
+    /// the stored stage and status are ones this version doesn't know.
+    ///
+    /// Until v1.8.2, this showed the stored status, which can be `started` and
+    /// doesn't tell the stage.
     status: DataType::LargeUtf8,
 
     /// Whether this entry currently holds a lock.
