@@ -179,6 +179,8 @@ where
                 .expect("Ingestion session options to build"),
         );
 
+        let metadata_store_client = metadata_writer.raw_metadata_store_client().clone();
+
         let partition_processor_manager = PartitionProcessorManager::new(
             health_status,
             Configuration::live(),
@@ -190,6 +192,7 @@ where
             SnapshotRepository::new_from_config(
                 snapshots_options,
                 config.worker.storage.snapshots_staging_dir(),
+                metadata_store_client,
             )
             .await
             .map_err(BuildError::SnapshotRepository)?,
