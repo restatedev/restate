@@ -46,16 +46,22 @@ use restate_types::net::distributed_query::{
 };
 use restate_types::net::{ProtocolVersion, RpcRequest};
 
+use crate::encode_schema;
 use crate::environment::DataFusionEnv;
 use crate::source_registry::SourceRegistry;
-use crate::{encode_record_batch, encode_schema};
 
 use super::analyze::{AnalyzeCollector, Shape, build_report, shape};
+use super::ipc;
 use super::report::digest;
 use super::source::SourceCodec;
 use super::worker_url;
 
-type Lane = Arc<tokio::sync::Mutex<Option<SendableRecordBatchStream>>>;
+type Lane = Arc<tokio::sync::Mutex<Option<OutputLane>>>;
+
+struct OutputLane {
+    stream: SendableRecordBatchStream,
+    encoder: ipc::Encoder,
+}
 
 /// Opt-in service for task installation and pull-based output over Restate RPC.
 /// The library owns the installed plan and its shared execution state; this service
@@ -76,6 +82,11 @@ pub struct DistributedQueryServer {
 pub(super) struct Tamper {
     /// Ignores the request for a report, as a worker from before reports.
     pub legacy: bool,
+    /// Substitutes the Installed output schema, before any lane is polled.
+    pub installed_schema: Option<datafusion::arrow::datatypes::SchemaRef>,
+    /// Replaces executed output streams to exercise batch shapes and failures
+    /// the storage fixture cannot produce.
+    pub output: Option<fn(usize, SendableRecordBatchStream) -> SendableRecordBatchStream>,
     /// Sends these bytes as every report.
     pub report: Option<Vec<u8>>,
     /// Holds each Execute before it runs: tells its task's ID, then waits for
@@ -249,7 +260,10 @@ impl DistributedQueryServer {
                             // Installation builds state and decodes once, without polling storage.
                             match InstalledTask::install(&self.env, &self.scanners, request).await {
                                 Ok(task) => {
-                                    let schema = encode_schema(&task.plan.schema()).into();
+                                    let schema = task.plan.schema();
+                                    #[cfg(test)]
+                                    let schema = self.tamper.lock().installed_schema.clone().unwrap_or(schema);
+                                    let schema = encode_schema(&schema).into();
                                     #[cfg(test)]
                                     self.observations.lock().push(TaskObservation {
                                         id: key.1.clone(), context: Arc::clone(&task.context), partitions: task.plan.output_partitioning().partition_count(),
@@ -783,6 +797,10 @@ impl InstalledTask {
                         producer_head: ProducerHead::None,
                     })
                     .await
+                    .inspect_err(|_| {
+                        self.failed
+                            .store(true, std::sync::atomic::Ordering::Relaxed)
+                    })
             })
             .await?;
         if !Arc::ptr_eq(&self.context, &context)
@@ -794,15 +812,52 @@ impl InstalledTask {
                 != Some(&request.id.query_ts)
             || streams.len() != end - start
         {
+            self.failed
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             return exec_err!("worker did not preserve shared task state and execution identity");
         }
+        #[cfg(test)]
+        let streams = {
+            let rewrite = self.tamper.lock().output;
+            streams
+                .into_iter()
+                .enumerate()
+                .map(|(offset, stream)| match rewrite {
+                    Some(rewrite) => rewrite(start + offset, stream),
+                    None => stream,
+                })
+                .collect::<Vec<_>>()
+        };
+        let schema = self.plan.schema();
+        // Build the whole range before publishing any lane. A failed schema or
+        // encoder setup must not leave a partially executable range behind.
+        let output = (start..end)
+            .zip(streams)
+            .map(|(partition, stream)| {
+                if stream.schema() != schema {
+                    return exec_err!(
+                        "task stream schema differs from its installed output schema"
+                    );
+                }
+                let encoder = ipc::Encoder::new(Arc::clone(&schema))?;
+                Ok((
+                    partition,
+                    Arc::new(tokio::sync::Mutex::new(Some(OutputLane {
+                        stream,
+                        encoder,
+                    }))),
+                ))
+            })
+            .collect::<Result<Vec<_>>>()
+            .inspect_err(|_| {
+                self.failed
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            })?;
         let mut lanes = self.lanes.lock();
         let Some(lanes) = lanes.as_mut() else {
             return Err(closed_error());
         };
-        lanes.extend((start..end).zip(streams).map(|(partition, stream)| {
-            (partition, Arc::new(tokio::sync::Mutex::new(Some(stream))))
-        }));
+        lanes.extend(output);
         Ok(QueryTaskReplyBody::Executing(()))
     }
 
@@ -818,13 +873,26 @@ impl InstalledTask {
             let mut lane = lane
                 .try_lock()
                 .map_err(|_| protocol_error("concurrent pull for the same task partition"))?;
-            let Some(stream) = lane.as_mut() else {
+            let Some(output) = lane.as_mut() else {
                 return Err(protocol_error("task output partition already ended"));
             };
-            match stream.next().await {
-                Some(Ok(batch)) => {
-                    let rows = batch.num_rows();
-                    let encoded = encode_record_batch(&self.plan.schema(), batch)?;
+            #[cfg(test)]
+            self.event("next-polling", String::new());
+            let encoded = match output.stream.next().await {
+                Some(Ok(batch)) => output
+                    .encoder
+                    .encode(&batch)
+                    .map(|encoded| (batch.num_rows(), encoded)),
+                Some(Err(error)) => Err(error),
+                None => {
+                    *lane = None;
+                    self.ended
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return Ok(QueryTaskReplyBody::End(()));
+                }
+            };
+            match encoded {
+                Ok((rows, encoded)) => {
                     if let Some(collector) = &self.collector {
                         collector.sent(rows, encoded.len());
                     }
@@ -834,19 +902,14 @@ impl InstalledTask {
                         output.rows += rows;
                         output.bytes += encoded.len();
                     }
-                    Ok(QueryTaskReplyBody::Batch(encoded.into()))
+                    Ok(QueryTaskReplyBody::Batch(encoded))
                 }
-                Some(Err(error)) => {
+                // A failed lane ends: its encoder may have advanced.
+                Err(error) => {
                     *lane = None;
                     self.failed
                         .store(true, std::sync::atomic::Ordering::Relaxed);
                     Err(error)
-                }
-                None => {
-                    *lane = None;
-                    self.ended
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    Ok(QueryTaskReplyBody::End(()))
                 }
             }
         })

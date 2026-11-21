@@ -21,8 +21,9 @@
 //!    partitions (DataFusion partitions, not Restate partitions). Answer:
 //!    `Executing`.
 //! 3. **Next** asks for the next batch of one output partition. Answer: `Batch`,
-//!    one Arrow IPC-encoded record batch, or `End` once that partition has no
-//!    more.
+//!    the next record batch of that partition's Arrow IPC stream, or `End` once
+//!    the partition has no more. A partition's first `Batch` starts with the
+//!    stream's schema; a later one carries only the dictionaries that changed.
 //! 4. **Close** releases the task. Answer: `Closed`.
 //!
 //! For `EXPLAIN ANALYZE`, Install can ask for a report of what the task did,
@@ -39,9 +40,11 @@
 //! installs the task, executes it over `0..2`, sends `Next` for each partition
 //! until it gets `End`, and closes it.
 
+mod batch;
 mod error;
 mod report;
 
+pub use batch::QueryTaskBatch;
 pub use error::{PartitionReadError, QueryErrorCode, QueryFailureKind, QueryTaskError};
 pub use report::{
     LatencyKind, LeftOut, MetricCategoryRecord, MetricLabel, MetricLevel, MetricRecord,
@@ -172,8 +175,10 @@ pub enum QueryTaskReplyBody {
     Installed(QueryTaskInstalled),
     #[bilrost(2)]
     Executing(()),
+    /// The next part of an output partition's Arrow IPC stream: exactly one
+    /// record batch, after its dictionaries and, in the first reply, the schema.
     #[bilrost(3)]
-    Batch(Bytes),
+    Batch(QueryTaskBatch),
     #[bilrost(4)]
     End(()),
     #[bilrost(5)]
@@ -285,6 +290,41 @@ mod tests {
             panic!("expected Installed reply")
         };
         assert_eq!(decoded.schema, Bytes::from_static(b"schema"));
+    }
+
+    /// A batch of several buffers is one byte string on the wire, whichever
+    /// way the message is encoded, and one buffer once decoded.
+    #[test]
+    fn a_batch_of_buffers_is_one_byte_string_on_the_wire() {
+        #[derive(bilrost::Message)]
+        struct Plain {
+            #[bilrost(3)]
+            batch: Bytes,
+        }
+        let plain = Plain {
+            batch: Bytes::from_static(b"schema, dictionary and batch"),
+        };
+        let reply = QueryTaskReply::from(QueryTaskReplyBody::Batch(QueryTaskBatch::from(vec![
+            b"schema, ".as_slice().into(),
+            b"dictionary".as_slice().into(),
+            b"".as_slice().into(),
+            b" and batch".as_slice().into(),
+        ])));
+        let bytes = reply.encode_to_bytes(ProtocolVersion::V7).unwrap();
+        assert_eq!(bytes, bilrost::Message::encode_to_bytes(&plain));
+        assert_eq!(
+            bilrost::Message::encode_fast(&reply).into_vec(),
+            bilrost::Message::encode_fast(&plain).into_vec()
+        );
+        let QueryTaskReplyBody::Batch(decoded) =
+            QueryTaskReply::try_decode(bytes, ProtocolVersion::V7)
+                .unwrap()
+                .body
+        else {
+            panic!("expected Batch reply")
+        };
+        assert_eq!(decoded.len(), plain.batch.len());
+        assert_eq!(decoded.into_buffer().as_slice(), plain.batch.as_ref());
     }
 
     /// Reports are additive. Messages without them encode exactly as before;
