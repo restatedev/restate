@@ -14,12 +14,17 @@
 //! The proof comes from declared sharding columns (see
 //! `restate_storage_query_api::schema::sharding`), traced through projections and
 //! filters to each input's scan. If some equality pair compares sharding columns
-//! with the same derivation, matching rows have equal shard keys, and therefore
-//! share a shard under any topology:
+//! whose values imply their shard keys the same way (`ShardKeyKind::colocates`),
+//! matching rows have equal shard keys, and therefore share a shard under any
+//! topology:
 //!
 //! ```text
 //! sys_invocation_status s JOIN sys_invocation_state l ON s.id = l.id
 //!     both InvocationId              -> shard-local
+//! sys_invocation_status s JOIN sys_vqueue_entry_status e ON s.id = e.entry_id
+//!     InvocationId, BaseEntryId: both read the ID's key -> shard-local
+//! sys_user_limits u JOIN sys_invocation_status s ON u.scope = s.id
+//!     Scope, InvocationId: a hash, an ID's key -> global
 //! ... ON s.invoked_by_id = l.id      (a caller's ID, not a sharding column) -> global
 //! ... ON a.scope IS NOT DISTINCT FROM b.scope
 //!     NULL scopes match but determine no shard   -> global
@@ -125,14 +130,15 @@ fn column_lineage(plan: &Arc<dyn ExecutionPlan>, index: usize) -> Option<Shardin
 }
 
 /// Whether equal values of `left` and `right` place matching rows in one shard:
-/// both columns must derive the shard key the same way, and NULLs must not match
-/// each other, because a NULL determines no shard key.
+/// both columns must imply shard keys of one space the same way
+/// (`ShardKeyKind::colocates`), and NULLs must not match each other, because a
+/// NULL determines no shard key.
 fn colocates(
     left: ShardingColumn<usize>,
     right: ShardingColumn<usize>,
     nulls: NullEquality,
 ) -> bool {
-    left.kind == right.kind
+    left.kind.colocates(right.kind)
         && (nulls == NullEquality::NullEqualsNothing || !(left.nullable && right.nullable))
 }
 
@@ -305,7 +311,7 @@ fn group(
     }) {
         return Ok(None);
     }
-    // Equal derivations imply one sharding scheme, so the scans are of one kind.
+    // Colocated kinds share a space, so one sharding scheme: the scans are of one kind.
     Ok(match (left, right) {
         (ShardScan::Partitions(left), ShardScan::Partitions(right)) => group_partitions(
             plan,
