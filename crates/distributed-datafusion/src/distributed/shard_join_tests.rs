@@ -22,7 +22,7 @@ use restate_storage_api::vqueue_table::{
     WriteVQueueTable, stats::EntryStatistics,
 };
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
-use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, VQueueId};
+use restate_types::vqueues::{EntryId, EntryTargetRef, VQueueId};
 use restate_types::{PlainNodeId, Scope, ServiceName};
 use restate_util_string::ReString;
 use restate_worker_api::invoker::InvocationStatusReport;
@@ -283,7 +283,8 @@ async fn cross_schema_fixture_with(
             &InvocationStatus::Invoked(scoped),
         )
         .unwrap();
-        // One entry, in the first of the partition's two scheduled vqueues.
+        // One entry, the first invocation's, in the first of the partition's two
+        // scheduled vqueues.
         let qid = VQueueId::custom(start, "join");
         tx.create_vqueue(
             &qid,
@@ -294,7 +295,8 @@ async fn cross_schema_fixture_with(
                 VQueueLink::Service(ServiceName::new("join")),
             ),
         );
-        let key = EntryKey::new(false, now, 1, EntryId::new(EntryKind::Invocation, [1; 16]));
+        let first = InvocationId::from_parts(start, InvocationUuid::from_u128(0));
+        let key = EntryKey::new(false, now, 1, EntryId::from(&first));
         // Its stage key, as the scheduler writes it, for index access.
         tx.put_vqueue_inbox(
             &qid,
@@ -370,6 +372,8 @@ async fn sharding_columns_colocate_cross_schema_joins_with_shared_admission() {
         ("SELECT COUNT(*) FROM sys_invocation_status s JOIN sys_invocation_state l ON s.id = l.id", "16", Some(invoker)),
         // Vqueue IDs across the scheduler and vqueue entries.
         ("SELECT COUNT(*) FROM sys_scheduler q JOIN sys_vqueue_entry_status e ON q.id = e.vqueue_id", "8", Some(scheduler)),
+        // Different derivations of one shard-key space: an invocation and its entry.
+        ("SELECT COUNT(*) FROM sys_invocation_status s JOIN sys_vqueue_entry_status e ON s.id = e.entry_id", "8", Some(storage_and(Default::default()))),
         // Scope-derived counters and scoped invocations.
         ("SELECT COUNT(*) FROM sys_user_limits u JOIN sys_invocation_status s ON u.scope = s.scope", "8", Some(user_limits)),
         // Lineage follows aliases and reordered projections: `partition_key` here is an invocation ID.

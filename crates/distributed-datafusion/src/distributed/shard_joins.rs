@@ -14,12 +14,14 @@
 //! The proof comes from declared sharding columns (see
 //! `restate_storage_query_api::schema::sharding`), traced through projections and
 //! filters to each input's scan. If some equality pair compares sharding columns
-//! with the same derivation, matching rows have equal shard keys, and therefore
+//! of one shard-key space, matching rows have equal shard keys, and therefore
 //! share a shard under any topology:
 //!
 //! ```text
 //! sys_invocation_status s JOIN sys_invocation_state l ON s.id = l.id
 //!     both InvocationId              -> shard-local
+//! sys_invocation_status s JOIN sys_vqueue_entry_status e ON s.id = e.entry_id
+//!     InvocationId, BaseEntryId: both partition keys -> shard-local
 //! ... ON s.invoked_by_id = l.id      (a caller's ID, not a sharding column) -> global
 //! ... ON a.scope IS NOT DISTINCT FROM b.scope
 //!     NULL scopes match but determine no shard   -> global
@@ -125,14 +127,14 @@ fn column_lineage(plan: &Arc<dyn ExecutionPlan>, index: usize) -> Option<Shardin
 }
 
 /// Whether equal values of `left` and `right` place matching rows in one shard:
-/// both columns must derive the shard key the same way, and NULLs must not match
-/// each other, because a NULL determines no shard key.
+/// both columns must derive shard keys of one space (see `ShardKeyKind::space`),
+/// and NULLs must not match each other, because a NULL determines no shard key.
 fn colocates(
     left: ShardingColumn<usize>,
     right: ShardingColumn<usize>,
     nulls: NullEquality,
 ) -> bool {
-    left.kind == right.kind
+    left.kind.space() == right.kind.space()
         && (nulls == NullEquality::NullEqualsNothing || !(left.nullable && right.nullable))
 }
 
@@ -305,7 +307,7 @@ fn group(
     }) {
         return Ok(None);
     }
-    // Equal derivations imply one sharding scheme, so the scans are of one kind.
+    // One shard-key space implies one sharding scheme, so the scans are of one kind.
     Ok(match (left, right) {
         (ShardScan::Partitions(left), ShardScan::Partitions(right)) => group_partitions(
             plan,
