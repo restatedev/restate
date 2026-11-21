@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
 use datafusion::common::{DataFusionError, Result, exec_datafusion_err, exec_err};
@@ -23,17 +23,19 @@ use datafusion_distributed::{
     WorkerQueryContext, WorkerToCoordinatorMsg,
 };
 use futures::future::{BoxFuture, Shared};
+use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, stream};
 use http::{HeaderMap, HeaderName, HeaderValue};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
-use tokio_util::sync::CancellationToken;
+use tokio_util::sync::{CancellationToken, DropGuard};
 use uuid::Uuid;
 
 use restate_clock::UniqueTimestamp;
 use restate_core::cancellation_watcher;
 use restate_core::network::{
-    BackPressureMode, MessageRouterBuilder, ServiceMessage, ServiceReceiver, Verdict,
+    BackPressureMode, Connection, MessageRouterBuilder, Oneshot, Reciprocal, ServiceMessage,
+    ServiceReceiver, Verdict,
 };
 use restate_platform::sync::Mutex;
 use restate_storage_api::StorageError;
@@ -62,6 +64,74 @@ type Lane = Arc<tokio::sync::Mutex<Option<OutputLane>>>;
 struct OutputLane {
     stream: SendableRecordBatchStream,
     encoder: ipc::Encoder,
+}
+
+type TaskIdentity = (GenerationalNodeId, QueryTaskId);
+type ClosingIdentity = (TaskIdentity, Weak<InstalledTask>);
+
+/// Shared by tasks installed on the same physical connection. Observations own
+/// only a weak reference; dropping the last task retires the observation too.
+struct TaskOwner {
+    connection: Connection,
+    _retire: DropGuard,
+}
+
+#[derive(Default)]
+struct Owners {
+    live: Vec<Weak<TaskOwner>>,
+    closed: FuturesUnordered<BoxFuture<'static, Weak<TaskOwner>>>,
+}
+
+impl Owners {
+    fn get(&mut self, connection: Connection) -> Arc<TaskOwner> {
+        self.live.retain(|owner| owner.strong_count() > 0);
+        if let Some(owner) = self
+            .live
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|owner| owner.connection == connection)
+        {
+            return owner;
+        }
+        let retire = CancellationToken::new();
+        let closed = connection.closed();
+        let owner = Arc::new(TaskOwner {
+            connection,
+            _retire: retire.clone().drop_guard(),
+        });
+        let weak = Arc::downgrade(&owner);
+        self.live.push(weak.clone());
+        self.closed.push(
+            async move {
+                tokio::select! {
+                    () = closed => {}
+                    () = retire.cancelled() => {}
+                }
+                weak
+            }
+            .boxed(),
+        );
+        owner
+    }
+}
+
+struct PendingInstall {
+    owner: Arc<TaskOwner>,
+    cancel: CancellationToken,
+}
+
+struct Installation {
+    key: TaskIdentity,
+    pending: Arc<PendingInstall>,
+    task: Result<InstalledTask>,
+    reply: Reciprocal<Oneshot<QueryTaskReply>>,
+}
+
+#[derive(Clone)]
+struct Closing {
+    owner: Arc<TaskOwner>,
+    instance: Weak<InstalledTask>,
+    result: Shared<BoxFuture<'static, QueryTaskClosed>>,
 }
 
 /// Opt-in service for task installation and pull-based output over Restate RPC.
@@ -98,6 +168,11 @@ pub(super) struct Tamper {
     /// Holds each Execute inside the task's cancellable work, before the
     /// runtime executes it.
     pub execute_inside_hold: Option<Hold>,
+    /// Holds a constructed task before publishing it or acknowledging Install.
+    pub install_hold: Option<Hold>,
+    /// Delays an already-built lane range before its publication, outside the
+    /// cancellable execution future, to exercise a late completion.
+    pub publish_hold: Option<Hold>,
     /// Holds each closing with a report after its streams were dropped and its
     /// copies settled, before it freezes what was collected.
     pub finalize_hold: Option<Hold>,
@@ -200,20 +275,70 @@ impl DistributedQueryServer {
         let mut receiver = self.receiver.start();
         let shutdown = cancellation_watcher();
         tokio::pin!(shutdown);
-        let mut tasks: HashMap<(GenerationalNodeId, QueryTaskId), Arc<InstalledTask>> =
-            HashMap::new();
+        let mut tasks: HashMap<TaskIdentity, Arc<InstalledTask>> = HashMap::new();
+        let mut owners = Owners::default();
+        let mut pending: HashMap<TaskIdentity, Arc<PendingInstall>> = HashMap::new();
+        let mut installations: FuturesUnordered<BoxFuture<'static, Installation>> =
+            FuturesUnordered::new();
         // Tasks closing with a report: a repeated Close shares the first one's
         // result, until it's sent.
-        let mut closing: HashMap<
-            (GenerationalNodeId, QueryTaskId),
-            Shared<BoxFuture<'static, QueryTaskClosed>>,
-        > = HashMap::new();
+        let mut closing: HashMap<TaskIdentity, Closing> = HashMap::new();
         // Each request's task, which yields the key of a closing it ended.
-        let mut requests: JoinSet<Option<(GenerationalNodeId, QueryTaskId)>> = JoinSet::new();
+        let mut requests: JoinSet<Option<ClosingIdentity>> = JoinSet::new();
         let mut reap = tokio::time::interval(Duration::from_secs(60));
         loop {
             tokio::select! {
+                biased;
                 _ = &mut shutdown => break,
+                Some(weak) = owners.closed.next(), if !owners.closed.is_empty() => {
+                    owners.live.retain(|owner| !Weak::ptr_eq(owner, &weak));
+                    if let Some(owner) = weak.upgrade() {
+                        pending.retain(|_, install| {
+                            let keep = !Arc::ptr_eq(&install.owner, &owner);
+                            if !keep { install.cancel.cancel(); }
+                            keep
+                        });
+                        tasks.retain(|_, task| {
+                            let keep = !Arc::ptr_eq(&task.owner, &owner);
+                            if !keep {
+                                #[cfg(test)]
+                                task.event("owner-lost", String::new());
+                                close_unwaited(task, &mut requests);
+                            }
+                            keep
+                        });
+                        closing.retain(|_, close| {
+                            let keep = !Arc::ptr_eq(&close.owner, &owner);
+                            if !keep && let Some(task) = close.instance.upgrade() {
+                                task.cancel_work();
+                            }
+                            keep
+                        });
+                    }
+                }
+                Some(Installation { key, pending: install, task, reply }) = installations.next(), if !installations.is_empty() => {
+                    // A removed/cancelled installation must never publish over a
+                    // replacement, even if both use the same task identity.
+                    let current = pending.get(&key).is_some_and(|current| Arc::ptr_eq(current, &install));
+                    if current { pending.remove(&key); }
+                    if !current || install.owner.connection.is_closed() {
+                        drop(task);
+                        reply.send(task_reply(Err(closed_error()), self.scanners.node_id()));
+                        continue;
+                    }
+                    match task {
+                        Ok(task) => {
+                            let schema = task.plan.schema();
+                            #[cfg(test)]
+                            let schema = self.tamper.lock().installed_schema.clone().unwrap_or(schema);
+                            let schema = encode_schema(&schema).into();
+                            let analyze = task.collector.as_ref().map(|_| QueryTaskAnalyze {});
+                            tasks.insert(key, Arc::new(task));
+                            reply.send(QueryTaskReplyBody::Installed(QueryTaskInstalled { schema, analyze }).into());
+                        }
+                        Err(error) => reply.send(task_reply(Err(error), self.scanners.node_id())),
+                    }
+                }
                 _ = reap.tick() => {
                     tasks.retain(|_, task| {
                         let keep = task
@@ -229,7 +354,11 @@ impl DistributedQueryServer {
                 }
                 Some(result) = requests.join_next(), if !requests.is_empty() => {
                     match result {
-                        Ok(Some(closed)) => { closing.remove(&closed); }
+                        Ok(Some((key, instance))) => {
+                            if closing.get(&key).is_some_and(|close| Weak::ptr_eq(&close.instance, &instance)) {
+                                closing.remove(&key);
+                            }
+                        }
                         Ok(None) => {}
                         Err(error) => tracing::warn!(%error, "Distributed query request failed"),
                     }
@@ -243,14 +372,23 @@ impl DistributedQueryServer {
                         continue;
                     }
                     let peer = message.peer();
+                    let connection = message.connection().cloned();
                     let (reply, request) = message.into_typed::<QueryTaskRequest>().split();
                     // The receiver starts before node identity is published.
                     // Resolve the origin only when a query request arrives.
                     let origin = self.scanners.node_id();
+                    let Some(connection) = connection else {
+                        reply.send(task_reply(Err(protocol_error("query task requires an owner connection")), origin));
+                        continue;
+                    };
+                    if connection.is_closed() {
+                        reply.send(task_reply(Err(closed_error()), origin));
+                        continue;
+                    }
                     match request {
                         QueryTaskRequest::Install(request) => {
                             let key = (peer, request.id.clone());
-                            if tasks.contains_key(&key) {
+                            if tasks.contains_key(&key) || pending.contains_key(&key) {
                                 reply.send(task_reply(Err(protocol_error("query task is already installed")), origin));
                                 continue;
                             }
@@ -259,41 +397,62 @@ impl DistributedQueryServer {
                                 analyze: request.analyze.filter(|_| !self.tamper.lock().legacy),
                                 ..request
                             };
-                            // Installation builds state and decodes once, without polling storage.
-                            match InstalledTask::install(&self.env, &self.scanners, request).await {
-                                Ok(task) => {
-                                    let schema = task.plan.schema();
-                                    #[cfg(test)]
-                                    let schema = self.tamper.lock().installed_schema.clone().unwrap_or(schema);
-                                    let schema = encode_schema(&schema).into();
-                                    #[cfg(test)]
-                                    self.observations.lock().push(TaskObservation {
-                                        id: key.1.clone(), context: Arc::clone(&task.context), partitions: task.plan.output_partitioning().partition_count(),
-                                        owner: self.scanners.node_id(), plan: datafusion::physical_plan::displayable(task.plan.as_ref()).indent(true).to_string(), output: Arc::clone(&task.output),
-                                    });
-                                    let analyze = task.collector.as_ref().map(|_| QueryTaskAnalyze {});
+                            let install = Arc::new(PendingInstall {
+                                owner: owners.get(connection),
+                                cancel: CancellationToken::new(),
+                            });
+                            pending.insert(key.clone(), Arc::clone(&install));
+                            let env = self.env.clone();
+                            let scanners = self.scanners.clone();
+                            #[cfg(test)]
+                            let (observations, tamper) = (Arc::clone(&self.observations), Arc::clone(&self.tamper));
+                            // Keep liveness and other requests progressing while
+                            // decoding/setting up a task. Cancellation drops the
+                            // installation's upstream control-input guard.
+                            installations.push(async move {
+                                let work = async {
                                     #[cfg_attr(not(test), expect(unused_mut))]
-                                    let mut task = task;
+                                    let mut task = InstalledTask::install(&env, &scanners, request, Arc::clone(&install.owner)).await?;
                                     #[cfg(test)]
                                     {
-                                        task.tamper = Arc::clone(&self.tamper);
+                                        task.tamper = Arc::clone(&tamper);
                                         task.id = Some(key.1.clone());
+                                        observations.lock().push(TaskObservation {
+                                            id: key.1.clone(), context: Arc::clone(&task.context), partitions: task.plan.output_partitioning().partition_count(),
+                                            owner: scanners.node_id(), plan: datafusion::physical_plan::displayable(task.plan.as_ref()).indent(true).to_string(), output: Arc::clone(&task.output),
+                                        });
+                                        let hold = tamper.lock().install_hold.clone();
+                                        if let Some(hold) = hold {
+                                            let _ = hold.entered.send(key.1.clone());
+                                            hold.release.notified().await;
+                                        }
                                     }
-                                    tasks.insert(key, Arc::new(task));
-                                    reply.send(QueryTaskReplyBody::Installed(QueryTaskInstalled { schema, analyze }).into());
-                                }
-                                Err(error) => reply.send(task_reply(Err(error), origin)),
-                            }
+                                    Ok(task)
+                                };
+                                let task = tokio::select! {
+                                    biased;
+                                    () = install.cancel.cancelled() => Err(closed_error()),
+                                    task = work => task,
+                                };
+                                Installation { key, pending: install, task, reply }
+                            }.boxed());
                         }
                         QueryTaskRequest::Close(request) => {
                             #[cfg(test)]
                             record(&self.tamper, "close-received", &request.id, String::new());
                             let key = (peer, request.id);
-                            match tasks.remove(&key) {
+                            if pending.get(&key).is_some_and(|install| install.owner.connection == connection) {
+                                pending.remove(&key).expect("checked above").cancel.cancel();
+                            }
+                            let task = tasks.get(&key).filter(|task| task.owner.connection == connection).cloned();
+                            if task.is_some() { tasks.remove(&key); }
+                            match task {
                                 // Settling and building the report waits: not in this loop.
                                 Some(task) if task.collector.is_some() => {
+                                    let instance = Arc::downgrade(&task);
+                                    let owner = Arc::clone(&task.owner);
                                     let result = async move { task.close().await }.boxed().shared();
-                                    closing.insert(key.clone(), result.clone());
+                                    closing.insert(key.clone(), Closing { owner, instance: instance.clone(), result: result.clone() });
                                     #[cfg(test)]
                                     let tampered = self.tamper.lock().report.clone();
                                     #[cfg(test)]
@@ -308,7 +467,7 @@ impl DistributedQueryServer {
                                         #[cfg(test)]
                                         record_report(&tamper, "close", &key.1, outcome(&Ok(QueryTaskReplyBody::Closed(closed.clone()))), closed.report.as_ref().map(|bytes| bytes.to_vec()));
                                         reply.send(QueryTaskReplyBody::Closed(closed).into());
-                                        Some(key)
+                                        Some((key, instance))
                                     });
                                 }
                                 Some(task) => {
@@ -317,12 +476,12 @@ impl DistributedQueryServer {
                                     record(&self.tamper, "close", &key.1, "closed report=false".to_owned());
                                     reply.send(QueryTaskReplyBody::Closed(QueryTaskClosed::default()).into());
                                 }
-                                None => match closing.get(&key).cloned() {
-                                    Some(result) => {
+                                None => match closing.get(&key).filter(|close| close.owner.connection == connection).cloned() {
+                                    Some(close) => {
                                         #[cfg(test)]
                                         let tamper = Arc::clone(&self.tamper);
                                         requests.spawn(async move {
-                                            let closed = result.await;
+                                            let closed = close.result.await;
                                             #[cfg(test)]
                                             record_report(&tamper, "close-repeated", &key.1, outcome(&Ok(QueryTaskReplyBody::Closed(closed.clone()))), closed.report.as_ref().map(|bytes| bytes.to_vec()));
                                             reply.send(QueryTaskReplyBody::Closed(closed).into());
@@ -334,7 +493,7 @@ impl DistributedQueryServer {
                             }
                         }
                         QueryTaskRequest::Execute(request) => {
-                            let task = tasks.get(&(peer, request.id.clone())).cloned();
+                            let task = tasks.get(&(peer, request.id.clone())).filter(|task| task.owner.connection == connection).cloned();
                             // Mark the request in flight here, in the loop that also
                             // reaps, so that a task can't be reaped between dispatch
                             // and the request's first poll. It stays marked until the
@@ -371,7 +530,7 @@ impl DistributedQueryServer {
                             let (tamper, id) = (Arc::clone(&self.tamper), request.id.clone());
                             #[cfg(test)]
                             record(&tamper, "next-received", &id, String::new());
-                            let task = tasks.get(&(peer, request.id)).cloned();
+                            let task = tasks.get(&(peer, request.id)).filter(|task| task.owner.connection == connection).cloned();
                             let in_flight = task.as_ref().map(|task| task.activity.begin());
                             requests.spawn(async move {
                                 let result = match task {
@@ -390,6 +549,9 @@ impl DistributedQueryServer {
                 }
             }
         }
+        // Drop incomplete setups and their control-input guards before shutdown.
+        drop(installations);
+        pending.clear();
         for task in tasks.values() {
             close_unwaited(task, &mut requests);
         }
@@ -408,10 +570,8 @@ impl DistributedQueryServer {
 /// Closes `task` with nobody waiting for its report, as for an idle task or a
 /// shutdown: a task asked for a report closes the same way as for a Close, and
 /// its report is dropped.
-fn close_unwaited(
-    task: &Arc<InstalledTask>,
-    requests: &mut JoinSet<Option<(GenerationalNodeId, QueryTaskId)>>,
-) {
+fn close_unwaited(task: &Arc<InstalledTask>, requests: &mut JoinSet<Option<ClosingIdentity>>) {
+    task.cancel_work();
     if task.collector.is_some() {
         let task = Arc::clone(task);
         requests.spawn(async move {
@@ -571,6 +731,7 @@ impl Drop for InFlight {
 const SETTLE_DEADLINE: Duration = Duration::from_secs(1);
 
 struct InstalledTask {
+    owner: Arc<TaskOwner>,
     worker: Worker,
     key: TaskKey,
     context: Arc<TaskContext>,
@@ -608,6 +769,7 @@ impl InstalledTask {
         env: &DataFusionEnv,
         scanners: &SourceRegistry,
         request: QueryTaskInstall,
+        owner: Arc<TaskOwner>,
     ) -> Result<Self> {
         if request.id.session_id.is_empty()
             || request.id.task != 0
@@ -744,6 +906,7 @@ impl InstalledTask {
             .ok_or_else(|| exec_datafusion_err!("worker did not install a plan"))?;
         guard.disarm();
         Ok(Self {
+            owner,
             worker,
             key,
             context: channel.task_ctx,
@@ -855,6 +1018,14 @@ impl InstalledTask {
                 self.failed
                     .store(true, std::sync::atomic::Ordering::Relaxed);
             })?;
+        #[cfg(test)]
+        {
+            let hold = self.tamper.lock().publish_hold.clone();
+            if let (Some(hold), Some(id)) = (hold, &self.id) {
+                let _ = hold.entered.send(id.clone());
+                hold.release.notified().await;
+            }
+        }
         let mut lanes = self.lanes.lock();
         let Some(lanes) = lanes.as_mut() else {
             return Err(closed_error());
@@ -927,10 +1098,18 @@ impl InstalledTask {
 
     /// Stops the task's work and releases it, without a report.
     fn abort(&self) {
+        self.cancel_work();
+        self.control_end.cancel();
+    }
+
+    /// Invalidate publication before asynchronous settlement. In-flight pulls
+    /// own their taken lanes and discard them when cancellation wins.
+    fn cancel_work(&self) {
+        let lanes = self.lanes.lock().take();
         self.cancel.cancel();
+        drop(lanes);
         #[cfg(test)]
         self.event("cancelled", String::new());
-        self.control_end.cancel();
     }
 
     #[cfg(test)]
