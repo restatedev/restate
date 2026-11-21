@@ -1288,6 +1288,16 @@ async fn active_entries_read_through_the_status_index_match_the_scan() {
         ),
         // The index holds Finished entries too.
         format!("{select} WHERE stage IN ('inbox', 'finished') {newest} LIMIT 5"),
+        // Lanes that aren't every combination of their stages and statuses:
+        // (inbox, new) and every paused pair. The probe also finds keys of
+        // (inbox, backing-off), which no lane reads.
+        format!(
+            "{select} WHERE stage IN ('inbox', 'paused') AND status IN ('new', 'paused') \
+             {newest} LIMIT 5"
+        ),
+        // A stage and a status that rule each other out leave no lane: the
+        // read returns nothing, as the scan does.
+        format!("{select} WHERE stage = 'inbox' AND status = 'paused' {newest} LIMIT 5"),
     ];
     let scans = [
         // Status alone doesn't prove the stage.

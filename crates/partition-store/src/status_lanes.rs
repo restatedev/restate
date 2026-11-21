@@ -54,9 +54,15 @@ const LANE_RUN_FIELDS: usize = 4;
 const LANE_BUCKET_FIELDS: usize = 3;
 
 /// The selections of a status index read: each candidate lane's, in key order,
-/// and a probe of all of them at once.
+/// and a probe of every combination of their stages and statuses at once.
+///
+/// The probe can cover pairs that aren't lanes: the lanes (inbox, new) and
+/// (paused, started) make it cover (inbox, started) and (paused, new) too. The
+/// read skips the keys of those.
 pub(crate) struct StatusLanes<K> {
     probe: Arc<KeySelection<K>>,
+    /// How many pairs the probe covers: at most one prefix each.
+    probe_pairs: usize,
     lanes: Vec<(Stage, Status, Arc<KeySelection<K>>)>,
 }
 
@@ -82,7 +88,11 @@ impl<K> StatusLanes<K> {
             .into_iter()
             .map(|(stage, status)| Ok((stage, status, Arc::new(prepare(&[stage], &[status])?))))
             .collect::<Result<_>>()?;
-        Ok(Self { probe, lanes })
+        Ok(Self {
+            probe,
+            probe_pairs: stages.len() * statuses.len(),
+            lanes,
+        })
     }
 
     /// The bytes it holds: the shared probe and lane selections, each with its
@@ -138,11 +148,11 @@ where
         (memory, held): (&SharedMemory, &mut Held),
         discovered: &mut u64,
     ) -> Result<Option<Self>> {
-        // The lanes with keys, in key order, charged while the read holds them.
+        // The pairs with keys, in key order, charged while the read holds them.
         let Some((prefixes, charged)) = snapshot.distinct_prefixes::<T>(
             Arc::clone(&prepared.probe),
             2,
-            (prepared.lanes.len(), limits.max_discovery_keys),
+            (prepared.probe_pairs, limits.max_discovery_keys),
             Box::new(memory.clone()),
             discovered,
         )?
@@ -166,11 +176,14 @@ where
                 .ok_or(StorageError::DataIntegrityError)?;
             let stage = StageRankCodec::decode_encoded(StageRankCodec::take_encoded(&mut fields)?)?;
             let status = StatusCodec::decode_encoded(StatusCodec::take_encoded(&mut fields)?)?;
-            let (.., selection) = prepared
+            // A pair the probe covers but no lane reads.
+            let Some((.., selection)) = prepared
                 .lanes
                 .iter()
                 .find(|(s, t, _)| (*s, *t) == (stage, status))
-                .ok_or(StorageError::DataIntegrityError)?;
+            else {
+                continue;
+            };
             let opening = Opening {
                 runs: available,
                 examined: discovered,
