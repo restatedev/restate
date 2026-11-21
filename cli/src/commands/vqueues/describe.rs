@@ -55,9 +55,10 @@ pub struct Describe {
 #[derive(Debug, Deserialize)]
 struct VQueueEntryRow {
     entry_id: String,
-    entry_kind: String,
-    stage: String,
-    status: String,
+    // NULL from Restate 1.8.2 where the server doesn't recognize the value.
+    entry_kind: Option<String>,
+    stage: Option<String>,
+    status: Option<String>,
     has_lock: bool,
     created_at: DateTime<Local>,
     num_attempts: u32,
@@ -125,9 +126,9 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     let rows = entries.iter().map(|entry| {
         [
             Field::new(entry.entry_id.as_str()),
-            Field::new(entry.entry_kind.as_str()),
-            Field::new(entry.stage.as_str()),
-            Field::new(entry.status.as_str()),
+            optional_str(entry.entry_kind.as_deref()),
+            optional_str(entry.stage.as_deref()),
+            optional_str(entry.status.as_deref()),
             Field::new(entry.has_lock),
             Field::new(entry.num_attempts),
             time(entry.created_at),
@@ -149,7 +150,10 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         rows,
         IfEmpty::Say("No entries found."),
     );
-    if let Some(entry) = entries.iter().find(|e| e.entry_kind == "invocation") {
+    if let Some(entry) = entries
+        .iter()
+        .find(|e| e.entry_kind.as_deref() == Some("invocation"))
+    {
         f.next_step(
             &format!("restate invocations describe {}", entry.entry_id),
             "inspect the invocation's status, progress, and journal",

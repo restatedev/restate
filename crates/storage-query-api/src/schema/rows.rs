@@ -48,26 +48,30 @@ impl StringValue for String {
 }
 
 impl StringValue for EntryKind {
+    /// NULL for the `Unknown` sentinel, which is no value.
     fn string_value(&self) -> Option<&str> {
-        Some(self.as_str())
+        self.name()
     }
 }
 
 impl StringValue for Stage {
+    /// NULL for the `Unknown` sentinel, which is no value.
     fn string_value(&self) -> Option<&str> {
-        Some(self.as_str())
+        self.name()
     }
 }
 
 impl StringValue for Status {
+    /// NULL for the `Unknown` sentinel, which is no value.
     fn string_value(&self) -> Option<&str> {
-        Some(self.as_str())
+        self.name()
     }
 }
 
 impl StringValue for EffectiveStatus {
+    /// NULL for the `Unknown` sentinel, which is no value.
     fn string_value(&self) -> Option<&str> {
-        Some(self.as_str())
+        self.name()
     }
 }
 

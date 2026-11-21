@@ -60,6 +60,28 @@ pub enum Status {
 }
 
 impl Status {
+    /// Every stored status but the `Unknown` sentinel, which decoding produces
+    /// for a status this binary doesn't know: the statuses a query can name.
+    pub const VALUES: [Status; 9] = [
+        Status::New,
+        Status::Scheduled,
+        Status::Started,
+        Status::BackingOff,
+        Status::Yielded,
+        Status::Killed,
+        Status::Cancelled,
+        Status::Failed,
+        Status::Succeeded,
+    ];
+
+    /// Its name, or none for the `Unknown` sentinel, which is no value.
+    pub const fn name(self) -> Option<&'static str> {
+        match self {
+            Status::Unknown => None,
+            status => Some(status.as_str()),
+        }
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Status::Unknown => "unknown",
