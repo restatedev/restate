@@ -257,6 +257,24 @@ pub struct WorkerOptions {
     )]
     vqueue_metadata_cache_size: u32,
 
+    /// # VQueue inbox cache initial capacity
+    ///
+    /// The number of inbox entries the VQueue scheduler pre-allocates for every VQueue it starts
+    /// tracking on a partition leader. Lower values reduce the memory used by VQueues with few
+    /// waiting entries (e.g. when many VQueues hold a single entry each) at the cost of
+    /// re-allocating while their cache fills. Set to 0 to allocate lazily. Values above the
+    /// scheduler's per-VQueue cache size (24) have no further effect.
+    /// Changes take effect when a partition processor becomes leader.
+    ///
+    /// Default: 24
+    ///
+    /// Since v1.8.2
+    #[serde(
+        default = "serde_helpers::vqueue_inbox_cache_initial_capacity_default",
+        skip_serializing_if = "serde_helpers::is_vqueue_inbox_cache_initial_capacity_default"
+    )]
+    vqueue_inbox_cache_initial_capacity: u32,
+
     /// # Inline journal entry threshold
     ///
     /// On partition stores that enabled `experimental-enable-write-blob-table`, journal entries
@@ -312,6 +330,10 @@ impl WorkerOptions {
     pub const fn vqueue_metadata_cache_capacity(&self) -> usize {
         self.vqueue_metadata_cache_size as usize
     }
+
+    pub const fn vqueue_inbox_cache_initial_capacity(&self) -> usize {
+        self.vqueue_inbox_cache_initial_capacity as usize
+    }
 }
 
 impl Default for WorkerOptions {
@@ -355,6 +377,8 @@ impl Default for WorkerOptions {
                 NonZeroUsize::new(64 * 1024 * 1024).expect("non zero"),
             ),
             vqueue_metadata_cache_size: serde_helpers::vqueue_metadata_cache_size_default(),
+            vqueue_inbox_cache_initial_capacity:
+                serde_helpers::vqueue_inbox_cache_initial_capacity_default(),
             self_proposer_congestion_control: SelfProposerCongestionControl::default(),
             inline_journal_entry_threshold: serde_helpers::inline_journal_entry_threshold_default(),
         }
@@ -1662,6 +1686,14 @@ mod serde_helpers {
 
     pub const fn is_vqueue_metadata_cache_default(i: &u32) -> bool {
         *i == vqueue_metadata_cache_size_default()
+    }
+
+    pub const fn vqueue_inbox_cache_initial_capacity_default() -> u32 {
+        24
+    }
+
+    pub const fn is_vqueue_inbox_cache_initial_capacity_default(i: &u32) -> bool {
+        *i == vqueue_inbox_cache_initial_capacity_default()
     }
 
     pub const fn default_compact_on_deletions_window() -> NonZeroUsize {
