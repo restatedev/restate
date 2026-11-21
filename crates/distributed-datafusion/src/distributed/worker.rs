@@ -31,15 +31,16 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use restate_clock::UniqueTimestamp;
-use restate_core::cancellation_watcher;
 use restate_core::network::{
     BackPressureMode, MessageRouterBuilder, Oneshot, Reciprocal, ServiceMessage, ServiceReceiver,
     Verdict,
 };
+use restate_core::{TaskCenter, cancellation_watcher};
 use restate_platform::sync::Mutex;
 use restate_storage_api::StorageError;
 use restate_storage_query_api::QueryMetadata;
 use restate_types::GenerationalNodeId;
+use restate_types::config::Configuration;
 use restate_types::net::distributed_query::{
     DistributedQueryService, PartitionReadError, QueryFailureKind, QueryTaskAnalyze,
     QueryTaskClosed, QueryTaskError, QueryTaskExecute, QueryTaskId, QueryTaskInstall,
@@ -188,10 +189,21 @@ impl DistributedQueryServer {
         scanners: SourceRegistry,
         router: &mut MessageRouterBuilder,
     ) -> Self {
+        // The pool holds a request only until `run` takes it off the queue, and
+        // `run` waits for nothing but an installation, which doesn't wait for
+        // IO. So the pool stays nearly empty, and a request is never shed: a
+        // coordinator's Close reaches its task as long as their connection
+        // lives. Should the pool fill up, the connection waits; it is on the
+        // query engine's own lane, which carries nothing else.
+        let pool = TaskCenter::with_current(|tc| {
+            tc.memory_controller().create_pool("query-engine", || {
+                Configuration::pinned().networking.fabric_memory_limit()
+            })
+        });
         Self {
             env,
             scanners,
-            receiver: router.register_service(BackPressureMode::Lossy),
+            receiver: router.register_service_with_pool(pool, BackPressureMode::PushBack),
             #[cfg(test)]
             observations: Default::default(),
             #[cfg(test)]

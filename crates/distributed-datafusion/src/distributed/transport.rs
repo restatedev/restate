@@ -77,7 +77,7 @@ impl<N: NetworkSender> ChannelResolver for RestateChannelResolver<N> {
             .map_err(|err| exec_datafusion_err!("invalid query owner: {err}"))?;
         let connection = self
             .network
-            .get_connection(node, Swimlane::Datafusion)
+            .get_connection(node, Swimlane::QueryEngine)
             .in_tc_as_task(
                 &self.task_center,
                 TaskKind::InPlace,
