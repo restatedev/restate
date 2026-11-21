@@ -136,6 +136,7 @@ pub enum ServeError {
 impl ServeError {
     pub fn is_retryable(&self) -> bool {
         match self {
+            Self::StartError(StartError::BadStatus(status)) => status == "unavailable",
             Self::StartError(_) => false,
             Self::Hyper(_) => false,
             Self::Connection(_) => true,
@@ -629,5 +630,109 @@ mod tests {
             notifications[2].contains("/abc/desktop"),
             "{notifications:?}"
         );
+    }
+
+    async fn serve_with_status(
+        handler: Handler<
+            impl Fn(HandlerNotification) + Send + Sync + 'static,
+            impl hyper::service::Service<
+                Request<Incoming>,
+                Error = Infallible,
+                Future = std::future::Ready<Result<Response<Full<Bytes>>, Infallible>>,
+                Response = Response<Full<Bytes>>,
+            > + Send
+            + Sync
+            + 'static,
+        >,
+        status: &'static str,
+        include_ok_trailers: bool,
+    ) -> (
+        tokio::task::JoinHandle<ServeError>,
+        CancellationToken,
+        hyper::client::conn::http2::SendRequest<BoxBody<Bytes, Infallible>>,
+    ) {
+        let (tunnel_io, client_io) = tokio::io::duplex(64 * 1024);
+        let cancel = CancellationToken::new();
+        let serve = tokio::spawn(handler.serve(
+            TokioIo::new(client_io),
+            cancel.clone(),
+            CancellationToken::new(),
+        ));
+        let (mut tunnel, connection) =
+            hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tunnel_io))
+                .await
+                .unwrap();
+        tokio::spawn(connection);
+
+        let mut trailer_pairs = vec![("tunnel-status", status)];
+        if include_ok_trailers {
+            trailer_pairs.extend([
+                ("proxy-url", "https://tunnel.example.com:9080/abc/laptop"),
+                ("tunnel-url", "https://tunnel.example.com:9090"),
+                ("tunnel-name", "laptop"),
+            ]);
+        }
+        let trailers = HeaderMap::from_iter(
+            trailer_pairs
+                .into_iter()
+                .map(|(name, value)| (name.parse().unwrap(), HeaderValue::from_static(value))),
+        );
+        let start = Request::new(BoxBody::new(
+            Empty::<Bytes>::new().with_trailers(async { Some(Ok(trailers)) }),
+        ));
+        assert_eq!(
+            tunnel.send_request(start).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        (serve, cancel, tunnel)
+    }
+
+    #[tokio::test]
+    async fn unavailable_start_status_is_retryable_while_unauthorized_is_fatal() {
+        let notifications = Arc::new(Mutex::new(Vec::new()));
+        let handler = Handler::<(), ()>::new(
+            hyper::service::service_fn(|_: Request<Incoming>| {
+                std::future::ready(Ok::<_, Infallible>(Response::new(Full::<Bytes>::default())))
+            }),
+            TUNNEL.environment_id,
+            PUBLIC_KEY,
+            "bearer",
+            TUNNEL.tunnel_name.map(Into::into),
+            Some({
+                let notifications = notifications.clone();
+                move |notification| {
+                    if let HandlerNotification::Started { tunnel_name, .. } = notification {
+                        notifications.lock().unwrap().push(tunnel_name);
+                    }
+                }
+            }),
+        )
+        .unwrap();
+
+        let (serve_unavailable, _cancel_unavailable, _tunnel_unavailable) =
+            serve_with_status(handler.clone(), "unavailable", false).await;
+        let err = serve_unavailable.await.unwrap();
+        assert!(matches!(
+            &err,
+            ServeError::StartError(StartError::BadStatus(status)) if status == "unavailable"
+        ));
+        assert!(err.is_retryable());
+
+        let (serve_ok, cancel_ok, _tunnel_ok) =
+            serve_with_status(handler.clone(), "ok", true).await;
+        tokio::task::yield_now().await;
+        assert_eq!(notifications.lock().unwrap().as_slice(), ["laptop"]);
+        cancel_ok.cancel();
+        let _ = serve_ok.await;
+
+        let (serve_unauthorized, _cancel_unauthorized, _tunnel_unauthorized) =
+            serve_with_status(handler, "unauthorized", false).await;
+        let err = serve_unauthorized.await.unwrap();
+        assert!(matches!(
+            &err,
+            ServeError::StartError(StartError::BadStatus(status)) if status == "unauthorized"
+        ));
+        assert!(!err.is_retryable());
     }
 }
