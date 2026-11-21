@@ -59,6 +59,24 @@ impl Stage {
         std::mem::size_of::<Self>()
     }
 
+    /// Every stage but the `Unknown` sentinel, which decoding produces for a
+    /// stage this binary doesn't know: the stages a query can name.
+    pub const VALUES: [Stage; 5] = [
+        Stage::Inbox,
+        Stage::Running,
+        Stage::Suspended,
+        Stage::Paused,
+        Stage::Finished,
+    ];
+
+    /// Its name, or none for the `Unknown` sentinel, which is no value.
+    pub const fn name(self) -> Option<&'static str> {
+        match self {
+            Stage::Unknown => None,
+            stage => Some(stage.as_str()),
+        }
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Stage::Unknown => "unknown",

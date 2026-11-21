@@ -927,30 +927,32 @@ mod tests {
         const U: Option<bool> = None;
         #[rustfmt::skip]
         let stages = [
-            // SQL predicate                                          finished inbox paused running suspended unknown   clauses domains
-            ("stage < 'queued'",                                       [T, T, T, F, F, F], E, E),
-            ("'queued' > stage",                                       [T, T, T, F, F, F], E, E),
-            ("stage <= 'running'",                                     [T, T, T, T, F, F], E, E),
-            ("stage > 'queued'",                                       [F, F, F, T, T, T], E, E),
-            ("stage >= 'unknown'",                                     [F, F, F, F, F, T], E, E),
-            ("stage = 'unknown'",                                      [F, F, F, F, F, T], E, E),
-            ("stage = 'queued'",                                       [F, F, F, F, F, F], E, E),
-            ("stage != 'queued'",                                      [T, T, T, T, T, T], E, E),
-            ("stage = 'RUNNING'",                                      [F, F, F, F, F, F], E, E),
-            ("stage IN ('queued', 'running', 'running', NULL)",         [U, U, U, T, U, U], E, E),
-            ("stage NOT IN ('queued', 'running')",                     [T, T, T, F, T, T], E, E),
-            ("stage NOT IN ('queued', 'running', NULL)",               [U, U, U, F, U, U], E, E),
-            ("stage = 'queued' OR stage = 'running'",                   [F, F, F, T, F, F], E, E),
-            ("stage = 'queued' OR stage = 'running' OR NULL",           [U, U, U, T, U, U], E, E),
-            ("stage > 'running' AND stage < 'suspended'",               [F, F, F, F, F, F], E, E),
-            ("stage < NULL",                                           [U, U, U, U, U, U], E, E),
-            ("stage IS NULL",                                          [F, F, F, F, F, F], E, C),
-            ("stage LIKE 's%'",                                        [F, F, F, F, T, F], E, C),
-            ("starts_with(stage, 'in')",                               [F, T, F, F, F, F], E, C),
-            ("stage LIKE 'r_n%'",                                      [F, F, F, T, F, F], C, C),
-            ("stage ILIKE 'RUN%'",                                     [F, F, F, T, F, F], C, C),
+            // SQL predicate                                          finished inbox paused running suspended   clauses domains
+            ("stage < 'queued'",                                       [T, T, T, F, F], E, E),
+            ("'queued' > stage",                                       [T, T, T, F, F], E, E),
+            ("stage <= 'running'",                                     [T, T, T, T, F], E, E),
+            ("stage > 'queued'",                                       [F, F, F, T, T], E, E),
+            ("stage >= 'unknown'",                                     [F, F, F, F, F], E, E),
+            ("stage = 'unknown'",                                      [F, F, F, F, F], E, E),
+            ("stage = 'queued'",                                       [F, F, F, F, F], E, E),
+            ("stage != 'queued'",                                      [T, T, T, T, T], E, E),
+            // The `Unknown` sentinel is no value.
+            ("stage != 'unknown'",                                     [T, T, T, T, T], E, E),
+            ("stage = 'RUNNING'",                                      [F, F, F, F, F], E, E),
+            ("stage IN ('queued', 'running', 'running', NULL)",         [U, U, U, T, U], E, E),
+            ("stage NOT IN ('queued', 'running')",                     [T, T, T, F, T], E, E),
+            ("stage NOT IN ('queued', 'running', NULL)",               [U, U, U, F, U], E, E),
+            ("stage = 'queued' OR stage = 'running'",                   [F, F, F, T, F], E, E),
+            ("stage = 'queued' OR stage = 'running' OR NULL",           [U, U, U, T, U], E, E),
+            ("stage > 'running' AND stage < 'suspended'",               [F, F, F, F, F], E, E),
+            ("stage < NULL",                                           [U, U, U, U, U], E, E),
+            ("stage IS NULL",                                          [F, F, F, F, F], E, C),
+            ("stage LIKE 's%'",                                        [F, F, F, F, T], E, C),
+            ("starts_with(stage, 'in')",                               [F, T, F, F, F], E, C),
+            ("stage LIKE 'r_n%'",                                      [F, F, F, T, F], C, C),
+            ("stage ILIKE 'RUN%'",                                     [F, F, F, T, F], C, C),
         ];
-        check_enum_cases::<VqueueEntryStatus, _, 6>(
+        check_enum_cases::<VqueueEntryStatus, _, 5>(
             VqueueEntryStatus::arrow_schema(),
             "stage",
             [
@@ -959,7 +961,6 @@ mod tests {
                 Stage::Paused,
                 Stage::Running,
                 Stage::Suspended,
-                Stage::Unknown,
             ],
             [
                 Some("finished"),
@@ -967,7 +968,6 @@ mod tests {
                 Some("paused"),
                 Some("running"),
                 Some("suspended"),
-                Some("unknown"),
             ],
             &stages,
             |clause, value| match clause {
@@ -976,29 +976,30 @@ mod tests {
             },
             |domains| &domains.stage,
         );
-        // The effective status: the thirteen names in their order.
+        // The effective status: the twelve names in their order; `unknown`, the
+        // sentinel, is none of them.
         #[rustfmt::skip]
         let statuses = [
-            // SQL predicate                                   backing-off cancelled failed killed new paused ready running scheduled succeeded suspended unknown yielded
-            ("status < 'queued'",                              [T, T, T, T, T, T, F, F, F, F, F, F, F], E, E),
-            ("status >= 'started'",                            [F, F, F, F, F, F, F, F, F, T, T, T, T], E, E),
-            ("status BETWEEN 'ready' AND 'scheduled'",          [F, F, F, F, F, F, T, T, T, F, F, F, F], E, E),
+            // SQL predicate                                   backing-off cancelled failed killed new paused ready running scheduled succeeded suspended yielded
+            ("status < 'queued'",                              [T, T, T, T, T, T, F, F, F, F, F, F], E, E),
+            ("status >= 'started'",                            [F, F, F, F, F, F, F, F, F, T, T, T], E, E),
+            ("status BETWEEN 'ready' AND 'scheduled'",          [F, F, F, F, F, F, T, T, T, F, F, F], E, E),
             // The stored status `started` is no effective status.
-            ("status = 'started'",                             [F, F, F, F, F, F, F, F, F, F, F, F, F], E, E),
-            ("status = 'unknown'",                             [F, F, F, F, F, F, F, F, F, F, F, T, F], E, E),
-            ("status != 'queued'",                             [T, T, T, T, T, T, T, T, T, T, T, T, T], E, E),
-            ("status IN ('bogus', 'ready', NULL)",              [U, U, U, U, U, U, T, U, U, U, U, U, U], E, E),
-            ("status NOT IN ('new', 'ready', 'running')",        [T, T, T, T, F, T, F, F, T, T, T, T, T], E, E),
-            ("status NOT IN ('bogus', NULL)",                   [U, U, U, U, U, U, U, U, U, U, U, U, U], E, E),
-            ("status IS NULL",                                 [F, F, F, F, F, F, F, F, F, F, F, F, F], E, C),
+            ("status = 'started'",                             [F, F, F, F, F, F, F, F, F, F, F, F], E, E),
+            ("status = 'unknown'",                             [F, F, F, F, F, F, F, F, F, F, F, F], E, E),
+            ("status != 'queued'",                             [T, T, T, T, T, T, T, T, T, T, T, T], E, E),
+            ("status IN ('bogus', 'ready', NULL)",              [U, U, U, U, U, U, T, U, U, U, U, U], E, E),
+            ("status NOT IN ('new', 'ready', 'running')",        [T, T, T, T, F, T, F, F, T, T, T, T], E, E),
+            ("status NOT IN ('bogus', NULL)",                   [U, U, U, U, U, U, U, U, U, U, U, U], E, E),
+            ("status IS NULL",                                 [F, F, F, F, F, F, F, F, F, F, F, F], E, C),
             // This column deliberately does not declare prefix support.
-            ("status LIKE 's%'",                                [F, F, F, F, F, F, F, F, T, T, T, F, F], C, C),
+            ("status LIKE 's%'",                                [F, F, F, F, F, F, F, F, T, T, T, F], C, C),
         ];
-        check_enum_cases::<VqueueEntryStatus, _, 13>(
+        check_enum_cases::<VqueueEntryStatus, _, 12>(
             VqueueEntryStatus::arrow_schema(),
             "status",
-            EffectiveStatus::ALL,
-            EffectiveStatus::ALL.map(|status| Some(status.as_str())),
+            EffectiveStatus::VALUES,
+            EffectiveStatus::VALUES.map(|status| Some(status.as_str())),
             &statuses,
             |clause, value| match clause {
                 Clause::Status(predicate) => matches_value(predicate, value),
@@ -1023,19 +1024,19 @@ mod tests {
         const U: Option<bool> = None;
         #[rustfmt::skip]
         let cases = [
-            // SQL predicate                              NULL finished inbox paused running suspended unknown
-            ("stage < 'queued'",                           [U, T, T, T, F, F, F], E, E),
-            ("stage = 'queued'",                           [U, F, F, F, F, F, F], E, E),
-            ("stage != 'queued'",                          [U, T, T, T, T, T, T], E, E),
-            ("stage IN ('running', 'queued', NULL)",       [U, U, U, U, T, U, U], E, E),
-            ("stage NOT IN ('running', 'queued')",         [U, T, T, T, F, T, T], E, E),
-            ("stage NOT IN ('running', 'queued', NULL)",   [U, U, U, U, F, U, U], E, E),
-            ("stage = 'unknown'",                          [U, F, F, F, F, F, T], E, E),
-            ("stage IS NULL",                              [T, F, F, F, F, F, F], E, C),
-            ("stage LIKE '%'",                             [U, T, T, T, T, T, T], C, C),
-            ("starts_with(stage, 's')",                     [U, F, F, F, F, T, F], E, C),
+            // SQL predicate                              NULL finished inbox paused running suspended
+            ("stage < 'queued'",                           [U, T, T, T, F, F], E, E),
+            ("stage = 'queued'",                           [U, F, F, F, F, F], E, E),
+            ("stage != 'queued'",                          [U, T, T, T, T, T], E, E),
+            ("stage IN ('running', 'queued', NULL)",       [U, U, U, U, T, U], E, E),
+            ("stage NOT IN ('running', 'queued')",         [U, T, T, T, F, T], E, E),
+            ("stage NOT IN ('running', 'queued', NULL)",   [U, U, U, U, F, U], E, E),
+            ("stage = 'unknown'",                          [U, F, F, F, F, F], E, E),
+            ("stage IS NULL",                              [T, F, F, F, F, F], E, C),
+            ("stage LIKE '%'",                             [U, T, T, T, T, T], C, C),
+            ("starts_with(stage, 's')",                     [U, F, F, F, F, T], E, C),
         ];
-        check_enum_cases::<NullableEnum, _, 7>(
+        check_enum_cases::<NullableEnum, _, 6>(
             NullableEnum::arrow_schema(),
             "stage",
             [
@@ -1045,7 +1046,6 @@ mod tests {
                 Some(Stage::Paused),
                 Some(Stage::Running),
                 Some(Stage::Suspended),
-                Some(Stage::Unknown),
             ],
             [
                 None,
@@ -1054,7 +1054,6 @@ mod tests {
                 Some("paused"),
                 Some("running"),
                 Some("suspended"),
-                Some("unknown"),
             ],
             &cases,
             |clause, value| match clause {
@@ -1970,21 +1969,18 @@ mod tests {
                 matches!(fields.for_column(LogicalColumn::Handler), [Clause::Handler(ValuePredicate::In(values))] if values.is_empty())
             );
         }
-        // No stored row shows `timer`, while `unknown` is a kind that rows can show.
-        let Selection::Predicates(fields) = translate(col("kind").eq(string(Some("timer")))) else {
-            panic!("expected empty kind domain")
-        };
-        assert!(
-            matches!(fields.for_column(LogicalColumn::Kind), [Clause::Kind(ValuePredicate::In(values))] if values.is_empty())
-        );
-        let Selection::Predicates(fields) = translate(col("kind").eq(string(Some("unknown"))))
-        else {
-            panic!("expected the unknown kind")
-        };
-        assert!(matches!(
-            fields.for_column(LogicalColumn::Kind),
-            [Clause::Kind(ValuePredicate::Equal(EntryKind::Unknown))]
-        ));
+        // No kind is named `timer`, nor `unknown`: the `Unknown` sentinel is no
+        // value.
+        for name in ["timer", "unknown"] {
+            let Selection::Predicates(fields) = translate(col("kind").eq(string(Some(name))))
+            else {
+                panic!("expected empty kind domain")
+            };
+            assert!(
+                matches!(fields.for_column(LogicalColumn::Kind), [Clause::Kind(ValuePredicate::In(values))] if values.is_empty()),
+                "{name}"
+            );
+        }
 
         let Selection::Predicates(fields) = translate(
             col("service_name")

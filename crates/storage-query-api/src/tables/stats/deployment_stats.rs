@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use datafusion::arrow::datatypes::DataType;
-use strum::VariantArray;
 
 use restate_storage_api::vqueue_table::Stage;
 use restate_types::vqueues::EffectiveStatus;
@@ -32,13 +31,13 @@ define_schema! {
             /// The service name.
             #[starts_with]
             service_name: ReString => DataType::LargeUtf8,
-            /// VQueue stage, including unknown and finished entries.
-            #[values(Stage::VARIANTS.iter().copied())]
+            /// VQueue stage, including finished entries; NULL for a stage this version doesn't know.
+            #[values(Stage::VALUES)]
             stage: Stage => DataType::LargeUtf8,
             /// The entries' effective status, as in `sys_vqueue_entry_status`:
-            /// what they are doing now, which also tells their stage. `unknown`
-            /// for a stored stage and status this version doesn't know.
-            #[values(EffectiveStatus::ALL.iter().copied())]
+            /// what they are doing now, which also tells their stage. NULL for a
+            /// stored stage and status this version doesn't know.
+            #[values(EffectiveStatus::VALUES)]
             status: EffectiveStatus => DataType::LargeUtf8,
             /// Partition-local contribution; the public view sums contributions.
             num_entries: u64 => DataType::UInt64,

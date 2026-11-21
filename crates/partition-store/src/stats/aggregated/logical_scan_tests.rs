@@ -219,7 +219,8 @@ async fn deployment_and_object_schemas_expand_buckets_before_sql_residuals() {
         ("ORDER BY num_entries",                                              4),
         ("WHERE deployment_id = 'dp_a' AND num_entries > 2 ORDER BY num_entries",1),
         ("WHERE deployment_id LIKE 'dp_%' AND stage = 'running'",              1),
-        ("WHERE stage = 'unknown' AND status = 'unknown'",                     1),
+        // The `Unknown` sentinels show as NULL and are no value to select by.
+        ("WHERE stage = 'unknown' AND status = 'unknown'",                     0),
         ("WHERE deployment_id IS NULL",                                       0),
         ("WHERE stage = 'invalid' OR status = 'invalid'",                      0),
         ("WHERE stage <> 'inbox' ORDER BY num_entries DESC LIMIT 1",           1),
@@ -239,7 +240,8 @@ async fn deployment_and_object_schemas_expand_buckets_before_sql_residuals() {
         ("WHERE scope LIKE '%' ORDER BY num_entries",                          3),
         ("WHERE partition_key = 22 AND stage = 'finished'",                    1),
         ("WHERE kind = 'state-mutation'",                                      1),
-        ("WHERE stage = 'unknown' AND status = 'unknown'",                     1),
+        // The `Unknown` sentinels show as NULL and are no value to select by.
+        ("WHERE stage = 'unknown' AND status = 'unknown'",                     0),
         ("WHERE scope IS NULL OR (partition_key = 22 AND status = 'running') ORDER BY num_entries",2),
         ("WHERE kind = 'unknown'",                                             0),
         ("WHERE handler IS NOT NULL AND num_entries > 2 ORDER BY num_entries LIMIT 1",1),

@@ -110,14 +110,20 @@ pub(crate) fn append_status_key_row(builder: &mut SysVqueueEntryStatusBuilder, k
     if row.is_sequence_number_defined() {
         row.sequence_number(key.id.seq().as_u64());
     }
-    if row.is_entry_kind_defined() {
-        row.fmt_entry_kind(id.kind());
+    if row.is_entry_kind_defined()
+        && let Some(name) = id.kind().name()
+    {
+        row.entry_kind(name);
     }
-    if row.is_stage_defined() {
-        row.stage(key.stage.as_str());
+    if row.is_stage_defined()
+        && let Some(name) = key.stage.name()
+    {
+        row.stage(name);
     }
-    if row.is_status_defined() {
-        row.status(EffectiveStatus::new(key.stage, key.status).as_str());
+    if row.is_status_defined()
+        && let Some(name) = EffectiveStatus::new(key.stage, key.status).name()
+    {
+        row.status(name);
     }
     if row.is_created_at_defined()
         && let Some(at) = key.created_at
@@ -179,8 +185,10 @@ pub(crate) fn append_entry_row(
     if row.is_vqueue_id_defined() {
         row.fmt_vqueue_id(place.qid);
     }
-    if row.is_stage_defined() {
-        row.stage(place.stage.as_str());
+    if row.is_stage_defined()
+        && let Some(name) = place.stage.name()
+    {
+        row.stage(name);
     }
     if row.is_has_lock_defined() {
         row.has_lock(place.has_lock);
@@ -192,8 +200,10 @@ pub(crate) fn append_entry_row(
         row.sequence_number(place.seq.as_u64());
     }
 
-    if row.is_entry_kind_defined() {
-        row.fmt_entry_kind(id.kind());
+    if row.is_entry_kind_defined()
+        && let Some(name) = id.kind().name()
+    {
+        row.entry_kind(name);
     }
 
     let Some(EntryState {
@@ -205,8 +215,10 @@ pub(crate) fn append_entry_row(
         return;
     };
 
-    if row.is_status_defined() {
-        row.status(EffectiveStatus::new(place.stage, *status).as_str());
+    if row.is_status_defined()
+        && let Some(name) = EffectiveStatus::new(place.stage, *status).name()
+    {
+        row.status(name);
     }
 
     if row.is_created_at_defined() {

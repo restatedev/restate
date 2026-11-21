@@ -701,11 +701,20 @@ impl Keyed {
         stage: impl Fn(&T::Clause) -> Option<&ValuePredicate<Stage>>,
         status: impl Fn(&T::Clause) -> Option<&ValuePredicate<EffectiveStatus>>,
     ) -> impl Iterator<Item = (Stage, Status)> {
+        // A condition every value satisfies restricts nothing, as a column
+        // without one comes: it keeps the lanes of entries showing the
+        // `unknown` sentinel, which is no value, and leaves them to the
+        // caller's predicate.
         let conditions: Vec<_> = match selection {
             Selection::Predicates(predicates) => predicates
                 .iter()
                 .flat_map(|(_, clauses)| clauses.iter())
                 .filter_map(&status)
+                .filter(|condition| {
+                    !EffectiveStatus::VALUES
+                        .iter()
+                        .all(|value| condition.matches(value))
+                })
                 .cloned()
                 .collect(),
             Selection::All | Selection::Empty => Vec::new(),

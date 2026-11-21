@@ -21,8 +21,11 @@ the status alone didn't tell the stage.
 Every status now belongs to one stage: `status = 'backing-off'` returns only entries waiting in the
 inbox to retry, not paused or running ones that once backed off. `started` is no longer shown.
 
-`status` is `unknown` only for a stage or status the server doesn't recognize, which can happen
-after rolling back from a newer version.
+A stage, status or entry kind the server doesn't recognize, which can happen after rolling back from
+a newer version, shows as NULL in these tables and in the stats tables, instead of `unknown`. No
+condition selects such an entry: `'unknown'` names no value, like any other name these columns don't
+have, and the columns don't count as nullable, so `IS NULL` doesn't select it either. Unfiltered
+queries still show it.
 
 ### Impact on Users
 
@@ -33,8 +36,8 @@ after rolling back from a newer version.
 - Queries that ask for `started` return nothing: ask for `ready` in the inbox, or for the stage,
   instead.
 - Queries that filter on `status` without `stage` now return only entries in that status's stage.
-- Tools that read these tables need to accept the new values `ready`, `running`, `suspended`,
-  `paused` and `unknown`.
+- Tools that read these tables need to accept the new values `ready`, `running`, `suspended` and
+  `paused`, and a NULL stage, status or entry kind.
 - During a rolling upgrade, entries of partitions on nodes still running an older version show the
   statuses they stored until those nodes are upgraded.
 
