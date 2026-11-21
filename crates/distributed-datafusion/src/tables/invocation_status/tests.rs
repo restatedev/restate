@@ -106,6 +106,16 @@ async fn persisted_invocations_match_v1_for_scans_lookups_and_projections() {
         rows(new.as_ref(), "SELECT COUNT(*) FROM sys_invocation_status").await,
         [["32"]]
     );
+    // `sys_invocation` shows each invocation's `canonical_id` as its status does.
+    assert_eq!(
+        rows(
+            new.as_ref(),
+            "SELECT COUNT(*) FROM sys_invocation i JOIN sys_invocation_status s ON i.id = s.id \
+             WHERE i.canonical_id IS NOT DISTINCT FROM s.canonical_id"
+        )
+        .await,
+        [["32"]]
+    );
     assert_eq!(
         rows(
             new.as_ref(),

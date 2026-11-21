@@ -1,5 +1,6 @@
 CREATE VIEW restate.public.sys_invocation AS SELECT
     ss.id,
+    ss.canonical_id,
     ss.vqueue_id,
     ss.target,
     ss.target_service_name,

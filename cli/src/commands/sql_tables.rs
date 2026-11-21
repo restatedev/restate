@@ -224,6 +224,7 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
     ] },
     SqlTableDoc { name: "sys_invocation", description: "All invocations, whatever their status. One row per invocation, with its target and caller, lifecycle timestamps, and the retry and failure details of the current attempt.", columns: &[
         SqlColumnDoc { name: "id", ty: "Utf8", description: "[Invocation ID](/services/invocation/managing-invocations#invocation-id)." },
+        SqlColumnDoc { name: "canonical_id", ty: "Utf8", description: "Canonical invocation ID: the invocation ID followed by the sequence number of the record that created the invocation, e.g. `inv_..._42`. NULL if the sequence number is unknown. Since v1.8.2." },
         SqlColumnDoc { name: "vqueue_id", ty: "Utf8", description: "The VQueue assigned to the the invocation. NULL if invocation was not migrated to vqueues. Since v1.7.0." },
         SqlColumnDoc { name: "target", ty: "Utf8", description: "Invocation Target. Format for plain services: `ServiceName/HandlerName`, e.g. `Greeter/greet`. Format for virtual objects/workflows: `VirtualObjectName/Key/HandlerName`, e.g. `Greeter/Francesco/greet`." },
         SqlColumnDoc { name: "target_service_name", ty: "Utf8", description: "The name of the invoked service." },
