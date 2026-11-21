@@ -21,8 +21,9 @@
 //!    partitions (DataFusion partitions, not Restate partitions). Answer:
 //!    `Executing`.
 //! 3. **Next** asks for the next batch of one output partition. Answer: `Batch`,
-//!    one Arrow IPC-encoded record batch, or `End` once that partition has no
-//!    more.
+//!    the next record batch of that partition's Arrow IPC stream, or `End` once
+//!    the partition has no more. A partition's first `Batch` starts with the
+//!    stream's schema; a later one carries only the dictionaries that changed.
 //! 4. **Close** releases the task. Answer: `Closed`.
 //!
 //! For `EXPLAIN ANALYZE`, Install can ask for a report of what the task did,
@@ -172,6 +173,8 @@ pub enum QueryTaskReplyBody {
     Installed(QueryTaskInstalled),
     #[bilrost(2)]
     Executing(()),
+    /// The next part of an output partition's Arrow IPC stream: exactly one
+    /// record batch, after its dictionaries and, in the first reply, the schema.
     #[bilrost(3)]
     Batch(Bytes),
     #[bilrost(4)]

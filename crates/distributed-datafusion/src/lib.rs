@@ -40,8 +40,6 @@ pub use context::BuildError;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::ipc::convert::IpcSchemaEncoder;
 use datafusion::arrow::ipc::writer::DictionaryTracker;
-use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::error::DataFusionError;
 
 #[cfg(test)]
 pub(crate) mod mocks;
@@ -69,38 +67,8 @@ pub(crate) fn decode_schema(ipc_bytes: &[u8]) -> anyhow::Result<Schema> {
     Ok(schema)
 }
 
-pub(crate) fn encode_record_batch(
-    schema: &Schema,
-    record_batch: RecordBatch,
-) -> Result<Vec<u8>, DataFusionError> {
-    let mut buf: Vec<u8> = vec![];
-    let mut writer = datafusion::arrow::ipc::writer::StreamWriter::try_new(&mut buf, schema)?;
-    writer.write(&record_batch)?;
-    writer.finish()?;
-    writer.flush()?;
-    Ok(buf)
-}
-
-pub(crate) fn decode_record_batch(bytes: &[u8]) -> Result<RecordBatch, DataFusionError> {
-    let buffer = std::io::Cursor::new(bytes);
-    let mut stream = datafusion::arrow::ipc::reader::StreamReader::try_new(buffer, None)?;
-    if let Some(maybe_batch) = stream.next() {
-        let batch = maybe_batch?;
-        Ok(batch)
-    } else {
-        Err(DataFusionError::Internal(
-            "Failure parsing a record batch".to_string(),
-        ))
-    }
-}
-
 #[cfg(test)]
 mod serde_tests {
-    use std::sync::Arc;
-
-    use datafusion::arrow::array::{Int32Array, RecordBatch};
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-
     #[test]
     pub fn round_trip_schema() {
         let schema =
@@ -110,31 +78,5 @@ mod serde_tests {
         let got = super::decode_schema(&buf).expect("deserialization works");
 
         assert_eq!(*schema, got);
-    }
-
-    #[test]
-    pub fn round_trip_record_batch() {
-        let id = Int32Array::from(vec![0, 1, 2, 3, 4, 5]);
-        let batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
-            vec![Arc::new(id)],
-        )
-        .unwrap();
-
-        let buf = super::encode_record_batch(&batch.schema(), batch).expect("it to work");
-        let batch = super::decode_record_batch(&buf).expect("to work");
-
-        let int32array = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<Int32Array>()
-            .expect("Failed to downcast");
-
-        assert_eq!(int32array.value(0), 0);
-        assert_eq!(int32array.value(1), 1);
-        assert_eq!(int32array.value(2), 2);
-        assert_eq!(int32array.value(3), 3);
-        assert_eq!(int32array.value(4), 4);
-        assert_eq!(int32array.value(5), 5);
     }
 }
