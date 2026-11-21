@@ -19,7 +19,7 @@ publish = false
 adaptive-timeout = { version = "0.0.1-alpha.4", features = ["schemars", "serde", "sync", "tokio"] }
 ahash = { version = "0.8", features = ["serde"] }
 arrayvec = { version = "0.7" }
-arrow = { version = "59", features = ["canonical_extension_types", "chrono-tz", "prettyprint"] }
+arrow = { version = "59", features = ["canonical_extension_types", "chrono-tz", "ipc_compression", "prettyprint"] }
 arrow-array = { version = "59", default-features = false, features = ["chrono-tz"] }
 arrow-cast = { version = "59", default-features = false, features = ["prettyprint"] }
 arrow-ipc = { version = "59", features = ["lz4", "zstd"] }
