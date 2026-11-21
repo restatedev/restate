@@ -57,7 +57,7 @@ use restate_util_string::ReString;
 use crate::keys::codecs::DelimitedBytesCodec;
 use crate::keys::header::{KeyHeader, KeySchema};
 use crate::keys::{EncodeTableKey, FieldCodec, KeyKind};
-use crate::table::{BatchKey, KeyBatchCursor, PhysicalTable};
+use crate::table::{BatchKey, KeyBatchCursor, PhysicalTable, WithSnapshot};
 use crate::{ReadSnapshot, Result};
 
 /// A table whose records can be fetched by complete key.
@@ -88,8 +88,25 @@ pub trait LookupTable: PhysicalTable<Key: EncodeTableKey> {
     fn check_key(bytes: &[u8]) -> anyhow::Result<PartitionKey>;
 }
 
+/// A binding's table whose records a lookup fetches by the keys of [`Self::Keys`]:
+/// a [`LookupTable`] itself, or its records lent with their snapshot.
+pub trait LookupSource: Table {
+    type Keys: LookupTable;
+}
+
+impl<T: LookupTable> LookupSource for T {
+    type Keys = T;
+}
+
+impl<T: LookupTable> LookupSource for WithSnapshot<T> {
+    type Keys = T;
+}
+
+/// The keys a lookup of binding `B` fetches.
+pub type LookupKeysOf<B> = LookupKeys<<<B as SchemaBinding>::Table as LookupSource>::Keys>;
+
 /// A binding whose table can be read by complete key instead of scanned.
-pub trait LookupBinding: SchemaBinding<Table: LookupTable> {
+pub trait LookupBinding: SchemaBinding<Table: LookupSource> {
     /// The IDs one Boolean alternative of a selection can match, as a domain of
     /// the table's IDs. The engine looks the IDs up only when the union over all
     /// alternatives is a finite set ([`Domain::into_values`]) and every ID names a
@@ -97,7 +114,7 @@ pub trait LookupBinding: SchemaBinding<Table: LookupTable> {
     /// candidate cover: the query's predicate still applies to every record.
     fn lookup_ids(
         domains: &<Self::Schema as SelectionSchema>::Domains,
-    ) -> Domain<<Self::Table as LookupTable>::Id>;
+    ) -> Domain<<<Self::Table as LookupSource>::Keys as LookupTable>::Id>;
 }
 
 /// A stored key, with the partition key it's stored under.

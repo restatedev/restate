@@ -22,7 +22,7 @@ use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::{physical_exprs_bag_equal, split_conjunction};
 use datafusion::physical_plan::PhysicalExpr;
 
-use restate_partition_store::lookup::{LookupBinding, LookupCandidates, LookupTable};
+use restate_partition_store::lookup::{LookupBinding, LookupCandidates, LookupSource, LookupTable};
 use restate_storage_query_api::scan::ReadDirection;
 use restate_storage_query_api::schema::index::{IndexSchema, PrimarySchema, index_restriction};
 use restate_storage_query_api::selection::domain::Domain;
@@ -587,8 +587,10 @@ pub(crate) fn select_lookup<B: LookupBinding>(
     else {
         return Ok(None);
     };
-    Ok(LookupCandidates::<B::Table>::prepare(&ids)
-        .map(|keys| Box::new(KeyLookup(keys)) as Box<dyn PrimarySelection>))
+    Ok(
+        LookupCandidates::<<B::Table as LookupSource>::Keys>::prepare(&ids)
+            .map(|keys| Box::new(KeyLookup(keys)) as Box<dyn PrimarySelection>),
+    )
 }
 
 /// The stored keys of a lookup, prepared once; each partition is sent its own.

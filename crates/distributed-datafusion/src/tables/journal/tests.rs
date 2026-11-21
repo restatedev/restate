@@ -21,13 +21,16 @@ use restate_storage_api::Transaction;
 use restate_storage_api::journal_table::{JournalEntry, WriteJournalTable};
 use restate_storage_api::journal_table_v2::WriteJournalTable as WriteJournalTableV2;
 use restate_storage_query_api::{QueryOptions, QuerySession};
+use restate_types::config::Configuration;
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionId};
 use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use restate_types::journal::enriched::{
     CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
 };
 use restate_types::journal::{CompletionResult, Entry, InputEntry};
-use restate_types::journal_v2::{CallCommand, CallRequest, SleepCommand, SleepCompletion};
+use restate_types::journal_v2::{
+    CallCommand, CallRequest, OutputCommand, OutputResult, SleepCommand, SleepCompletion,
+};
 use restate_types::partition_table::Partition;
 use restate_types::service_protocol;
 use restate_types::sharding::KeyRange;
@@ -60,6 +63,13 @@ async fn journal_matches_v1_and_id_lookups_skip_other_invocations() {
     let manager = PartitionStoreManager::create(true).await.unwrap();
     let mut store = manager
         .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+        .await
+        .unwrap();
+    // Large V2 entries store their content in a blob.
+    let mut config = Configuration::pinned().as_ref().clone();
+    config.common.experimental.set_write_blob_table(true);
+    store
+        .verify_and_run_migrations(Default::default(), &config)
         .await
         .unwrap();
     // Invocations of one virtual-object key share a partition key. The neighbor's
@@ -157,6 +167,23 @@ async fn journal_matches_v1_and_id_lookups_skip_other_invocations() {
                 .unwrap();
         }
     }
+    let blob_entry = StoredRawEntry::new(
+        StoredRawEntryHeader::new(MillisSinceEpoch::new(1_700_000_000_100)),
+        restate_types::journal_v2::Entry::from(OutputCommand {
+            result: OutputResult::Success(Bytes::from(vec![
+                b'a';
+                config
+                    .worker
+                    .inline_journal_entry_threshold
+                    .as_usize()
+                    + 1
+            ])),
+            name: "large".into(),
+        })
+        .encode::<ServiceProtocolV4Codec>(),
+    );
+    let blob = WriteJournalTableV2::put_journal_entry(&mut tx, &current, 3, &blob_entry, &[]);
+    assert!(blob.unwrap().is_some(), "the content is stored in a blob");
     tx.commit().await.unwrap();
     drop(tx);
 
@@ -190,7 +217,7 @@ async fn journal_matches_v1_and_id_lookups_skip_other_invocations() {
     }
     assert_eq!(
         rows(new.as_ref(), "SELECT COUNT(*) FROM sys_journal").await,
-        [["13"]]
+        [["14"]]
     );
 
     // Complete entries are looked up: `keys=` is the number of entries each layout
@@ -204,6 +231,15 @@ async fn journal_matches_v1_and_id_lookups_skip_other_invocations() {
             Some(6),
             4,
         ),
+        // The content of an entry stored in a blob is read only when requested.
+        (
+            format!(
+                "SELECT name, raw, entry_json, entry_lite_json, raw_length FROM sys_journal \
+                 WHERE id = '{current}' AND index = 3"
+            ),
+            Some(1),
+            1,
+        ),
         (
             format!(
                 "SELECT index FROM sys_journal WHERE id = '{legacy}' AND index BETWEEN 1 AND 3 \
@@ -216,6 +252,10 @@ async fn journal_matches_v1_and_id_lookups_skip_other_invocations() {
         let actual = rows(new.as_ref(), &sql).await;
         assert_eq!(actual, rows(old.as_ref(), &sql).await, "{sql}");
         assert_eq!(actual.len(), count, "{sql}");
+        assert!(
+            actual.iter().flatten().all(|value| !value.is_empty()),
+            "{sql}: {actual:?}"
+        );
         let plan = rows(new.as_ref(), &format!("EXPLAIN {sql}"))
             .await
             .concat()
@@ -261,7 +301,7 @@ async fn journal_matches_v1_and_id_lookups_skip_other_invocations() {
         ),
         (
             format!("SELECT COUNT(*) FROM sys_journal WHERE id IN ('{legacy}', '{current}')"),
-            "9",
+            "10",
         ),
     ] {
         assert_eq!(rows(new.as_ref(), &sql).await, [[expected]], "{sql}");
