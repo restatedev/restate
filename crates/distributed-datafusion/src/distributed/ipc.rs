@@ -16,16 +16,35 @@
 //!
 //! Discard a lane's codec after any error: its dictionary state may have
 //! advanced. Neither codec supports replay.
+//!
+//! An encoder may compress its batches' buffers. Each batch says how it is
+//! compressed, so a decoder reads either kind without being told.
 
+use arrow::ipc::CompressionType;
+use arrow::ipc::reader::StreamDecoder;
+use arrow::ipc::writer::{IpcWriteOptions, StreamEncoder};
 use bytes::Bytes;
 use datafusion::arrow::buffer::Buffer;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::ipc::reader::StreamDecoder;
-use datafusion::arrow::ipc::writer::StreamEncoder;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::{Result, exec_err};
 
+use restate_types::config::{Configuration, QueryBatchCompression};
 use restate_types::net::distributed_query::QueryTaskBatch;
+
+/// How a worker compresses the batches of a task: as configured, but not for
+/// a task of its own node, whose batches don't leave it, and not while its
+/// connections compress their messages themselves.
+pub(super) fn compression(config: &Configuration, local: bool) -> Option<CompressionType> {
+    if local || !config.networking.disable_compression {
+        return None;
+    }
+    match config.admin.query_engine.batch_compression {
+        QueryBatchCompression::None => None,
+        QueryBatchCompression::Lz4 => Some(CompressionType::LZ4_FRAME),
+        QueryBatchCompression::Zstd => Some(CompressionType::ZSTD),
+    }
+}
 
 pub(super) struct Encoder {
     schema: SchemaRef,
@@ -33,9 +52,10 @@ pub(super) struct Encoder {
 }
 
 impl Encoder {
-    pub(super) fn new(schema: SchemaRef) -> Result<Self> {
+    pub(super) fn new(schema: SchemaRef, compression: Option<CompressionType>) -> Result<Self> {
+        let options = IpcWriteOptions::default().try_with_compression(compression)?;
         Ok(Self {
-            encoder: StreamEncoder::try_new(&schema)?,
+            encoder: StreamEncoder::try_new_with_options(&schema, options)?,
             schema,
         })
     }
@@ -126,8 +146,8 @@ mod tests {
             &schema,
             Arc::new(StringArray::from(vec!["replacement", "other"])),
         );
-        let mut left = Encoder::new(Arc::clone(&schema)).unwrap();
-        let mut right = Encoder::new(Arc::clone(&schema)).unwrap();
+        let mut left = Encoder::new(Arc::clone(&schema), None).unwrap();
+        let mut right = Encoder::new(Arc::clone(&schema), None).unwrap();
         let mut left_reader = Decoder::new(Arc::clone(&schema));
         let mut right_reader = Decoder::new(schema);
         let data = left.encode(&first).unwrap();
@@ -164,7 +184,7 @@ mod tests {
     fn a_reply_is_exactly_one_batch_of_the_installed_schema() {
         // A batch without columns, or without rows, is still a batch.
         let empty = Arc::new(Schema::empty());
-        let mut encoder = Encoder::new(Arc::clone(&empty)).unwrap();
+        let mut encoder = Encoder::new(Arc::clone(&empty), None).unwrap();
         let mut decoder = Decoder::new(Arc::clone(&empty));
         for rows in [7, 0] {
             let batch = RecordBatch::try_new_with_options(
@@ -199,7 +219,7 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1]))],
         )
         .unwrap();
-        let mut encoder = Encoder::new(Arc::clone(&schema)).unwrap();
+        let mut encoder = Encoder::new(Arc::clone(&schema), None).unwrap();
         assert!(encoder.encode(&wrong_batch).is_err());
         // As received: one buffer of the reply's bytes.
         let first = Bytes::copy_from_slice(&encoder.encode(&batch).unwrap().into_buffer());
@@ -220,5 +240,50 @@ mod tests {
         let mut decoder = Decoder::new(schema);
         assert_eq!(decoder.decode(first.clone().into()).unwrap(), batch);
         assert!(decoder.decode(first.into()).is_err());
+    }
+
+    #[test]
+    fn batches_are_compressed_as_configured_only_across_an_uncompressed_network() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            DataType::Int32,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(vec![7; 4096]))],
+        )
+        .unwrap();
+        let plain = Encoder::new(Arc::clone(&schema), None)
+            .unwrap()
+            .encode(&batch)
+            .unwrap()
+            .len();
+        let mut config = Configuration::default();
+        assert_eq!(compression(&config, false), None, "off by default");
+        for (setting, codec) in [
+            (QueryBatchCompression::Lz4, CompressionType::LZ4_FRAME),
+            (QueryBatchCompression::Zstd, CompressionType::ZSTD),
+        ] {
+            config.admin.query_engine.batch_compression = setting;
+            config.networking.disable_compression = true;
+            assert_eq!(compression(&config, false), Some(codec));
+            assert_eq!(compression(&config, true), None, "not to itself");
+            config.networking.disable_compression = false;
+            assert_eq!(compression(&config, false), None, "not twice");
+
+            // A decoder isn't told: the batch says how it is compressed.
+            let mut encoder = Encoder::new(Arc::clone(&schema), Some(codec)).unwrap();
+            let mut decoder = Decoder::new(Arc::clone(&schema));
+            for _ in 0..2 {
+                let data = encoder.encode(&batch).unwrap();
+                assert!(
+                    data.len() < plain / 4,
+                    "{codec:?}: {} of {plain}",
+                    data.len()
+                );
+                assert_eq!(decoder.decode(data).unwrap(), batch);
+            }
+        }
     }
 }
