@@ -343,8 +343,8 @@ async fn statistics_have_shared_shapes_and_sum_before_count_filters_and_limits()
         &[
             &[s("counter"), None, s("state-mutation"), s("inbox"), s("new"), s("2")],
             &[s("counter"), s("inc"), s("invocation"), s("finished"), s("succeeded"), s("1")],
-            &[s("counter"), s("inc"), s("invocation"), s("running"), s("started"), s("5")],
-            &[s("other"), s("inc"), s("invocation"), s("running"), s("started"), s("4")],
+            &[s("counter"), s("inc"), s("invocation"), s("running"), s("running"), s("5")],
+            &[s("other"), s("inc"), s("invocation"), s("running"), s("running"), s("4")],
         ]).await;
     assert_rows(
         session.as_ref(),
@@ -361,10 +361,10 @@ async fn statistics_have_shared_shapes_and_sum_before_count_filters_and_limits()
                 s("dp_one"),
                 s("counter"),
                 s("running"),
-                s("started"),
+                s("running"),
                 s("5"),
             ],
-            &[s("dp_two"), s("other"), s("running"), s("started"), s("4")],
+            &[s("dp_two"), s("other"), s("running"), s("running"), s("4")],
         ],
     )
     .await;
@@ -374,8 +374,8 @@ async fn statistics_have_shared_shapes_and_sum_before_count_filters_and_limits()
             &[s("counter"), None, s("object"), None, s("state-mutation"), s("inbox"), s("new"), s("1"), s("11")],
             &[s("counter"), s(""), s("object"), None, s("state-mutation"), s("inbox"), s("new"), s("1"), s("111")],
             &[s("counter"), s("tenant"), s("object"), s("inc"), s("invocation"), s("finished"), s("succeeded"), s("1"), s("10")],
-            &[s("counter"), s("tenant"), s("object"), s("inc"), s("invocation"), s("running"), s("started"), s("2"), s("10")],
-            &[s("counter"), s("tenant"), s("object"), s("inc"), s("invocation"), s("running"), s("started"), s("3"), s("110")],
+            &[s("counter"), s("tenant"), s("object"), s("inc"), s("invocation"), s("running"), s("running"), s("2"), s("10")],
+            &[s("counter"), s("tenant"), s("object"), s("inc"), s("invocation"), s("running"), s("running"), s("3"), s("110")],
         ]).await;
     for table in ["sys_service_stats", "sys_deployment_stats"] {
         for suffix in ["WHERE num_entries > 4", "ORDER BY num_entries DESC LIMIT 1"] {
