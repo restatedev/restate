@@ -38,11 +38,15 @@ pub(crate) fn append_vqueue_entry_status_row(
     if row.is_vqueue_id_defined() {
         row.fmt_vqueue_id(&header.qid);
     }
-    if row.is_stage_defined() {
-        row.fmt_stage(header.stage);
+    if row.is_stage_defined()
+        && let Some(name) = header.stage.name()
+    {
+        row.stage(name);
     }
-    if row.is_status_defined() {
-        row.status(EffectiveStatus::new(header.stage, header.status).as_str());
+    if row.is_status_defined()
+        && let Some(name) = EffectiveStatus::new(header.stage, header.status).name()
+    {
+        row.status(name);
     }
     if row.is_has_lock_defined() {
         row.has_lock(header.has_lock);
@@ -54,8 +58,10 @@ pub(crate) fn append_vqueue_entry_status_row(
         row.sequence_number(header.seq.as_u64());
     }
 
-    if row.is_entry_kind_defined() {
-        row.fmt_entry_kind(id.kind());
+    if row.is_entry_kind_defined()
+        && let Some(name) = id.kind().name()
+    {
+        row.entry_kind(name);
     }
 
     if row.is_created_at_defined() {

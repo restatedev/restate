@@ -905,8 +905,9 @@ fn invocation_conditions_select_the_lanes_their_entries_can_be_in() {
 /// A query on entries reads exactly the lanes whose entries have the effective
 /// statuses it asks for, as an effective status is a function of its stored
 /// stage and status: one lane for `ready`, every stored status of Paused for
-/// `paused`, the pairs no code path writes for `unknown`. Stage and status
-/// conditions intersect.
+/// `paused`. Stage and status conditions intersect. The pairs no code path
+/// writes make the `unknown` sentinel, which no status condition names: only a
+/// stage condition reads their lanes.
 #[test]
 fn entry_conditions_select_exactly_their_effective_lanes() {
     use restate_storage_query_api::tables::index::EntryStatusByStatusCreatedClause as Clause;
@@ -930,14 +931,15 @@ fn entry_conditions_select_exactly_their_effective_lanes() {
         lanes(Selection::All.and(named(&["paused"]))),
         KEYED_STATUSES.map(|status| (Stage::Paused, status))
     );
-    // `unknown`: an inbox entry with an outcome or none known, a Finished one
-    // without an outcome.
-    let unknown = lanes(Selection::All.and(named(&["unknown"])));
-    assert_eq!(unknown.len(), 11);
-    assert!(
-        unknown
-            .iter()
-            .all(|&(stage, status)| { EffectiveStatus::new(stage, status).as_str() == "unknown" })
+    assert!(lanes(Selection::All.and(inbox())).contains(&(Stage::Inbox, Status::Unknown)));
+    // A condition every value satisfies, as a column without one comes,
+    // restricts nothing: the sentinel's lanes stay for the caller to check.
+    assert_eq!(
+        lanes(Selection::All.and(Clause::Status(ValuePredicate::In(
+            EffectiveStatus::VALUES.to_vec()
+        ))))
+        .len(),
+        50
     );
     assert_eq!(
         lanes(Selection::All.and(inbox()).and(named(&["new", "running"]))),
@@ -947,7 +949,7 @@ fn entry_conditions_select_exactly_their_effective_lanes() {
     // A name no value has, such as `started`, converts to no value at all.
     assert!(lanes(Selection::All.and(Clause::Status(ValuePredicate::In(Vec::new())))).is_empty());
     // Every value reads exactly the lanes whose pairs make it.
-    for wanted in EffectiveStatus::ALL {
+    for wanted in EffectiveStatus::VALUES {
         let read = lanes(Selection::All.and(Clause::Status(ValuePredicate::Equal(wanted))));
         let expected: Vec<_> = KEYED_STAGES
             .into_iter()

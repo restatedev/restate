@@ -257,17 +257,16 @@ fn expected_batch() -> RecordBatch {
         ),
         (
             "stage",
+            // The `Unknown` sentinels are no value: NULL.
             Arc::new(LargeStringArray::from(vec![
-                "running", "unknown", "finished",
+                Some("running"),
+                None,
+                Some("finished"),
             ])),
         ),
         (
             "status",
-            Arc::new(LargeStringArray::from(vec![
-                Some("started"),
-                Some("unknown"),
-                None,
-            ])),
+            Arc::new(LargeStringArray::from(vec![Some("started"), None, None])),
         ),
     ];
     RecordBatch::try_from_iter_with_nullable(

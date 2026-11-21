@@ -21,7 +21,6 @@ use datafusion::physical_expr::utils::{collect_columns, split_conjunction};
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::metrics::Count;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use strum::VariantArray;
 
 use restate_partition_store::ReadSnapshot;
 use restate_partition_store::index::RegisteredIndex;
@@ -265,7 +264,7 @@ impl CompleteIndex for StageIndex {
         matches!(
             restriction.stage.to_predicate(),
             Some(ValuePredicate::In(stages))
-                if !stages.is_empty() && stages.len() < Stage::VARIANTS.len()
+                if !stages.is_empty() && stages.len() < Stage::VALUES.len()
         )
     }
 }

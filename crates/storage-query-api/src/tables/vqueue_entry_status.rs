@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use datafusion::arrow::datatypes::DataType;
-use strum::VariantArray;
 
 use restate_storage_api::vqueue_table::Stage;
 use restate_types::identifiers::{BaseEntryId, CanonicalEntryId, PartitionKey};
@@ -46,20 +45,21 @@ define_schema! {
             /// The VQueue Identifier (vq_...).
             vqueue_id: VQueueId => DataType::LargeUtf8,
             /// The stage this entry currently belongs to. Choices are 'inbox', 'running', 'paused',
-            /// 'suspended', and 'finished'.
-            #[values(Stage::VARIANTS.iter().copied())]
+            /// 'suspended', and 'finished'; NULL for a stage this version doesn't know.
+            #[values(Stage::VALUES)]
             #[starts_with]
             stage: Stage => DataType::LargeUtf8,
             /// What the entry is doing now, its effective status, which also tells
             /// its stage. In the inbox: `new`, `scheduled`, `backing-off`, `ready`
             /// or `yielded`; then `running`, `suspended` or `paused`; once
             /// finished, its outcome: `succeeded`, `failed`, `killed` or
-            /// `cancelled`; `unknown` if the stored stage and status are ones this
-            /// version doesn't know.
+            /// `cancelled`. NULL if this version can't tell from the stored stage
+            /// and status what the entry is doing; no status name selects such an
+            /// entry.
             ///
             /// Until v1.8.2, this showed the stored status, which can be
             /// `started` and doesn't tell the stage.
-            #[values(EffectiveStatus::ALL.iter().copied())]
+            #[values(EffectiveStatus::VALUES)]
             status: EffectiveStatus => DataType::LargeUtf8,
             /// Whether this entry currently holds a lock.
             has_lock: bool => DataType::Boolean,
@@ -67,8 +67,9 @@ define_schema! {
             next_at: MillisSinceEpoch => TimestampMillisecond,
             /// Sequence number encoded in the entry ordering key.
             sequence_number: u64 => DataType::UInt64,
-            /// Entry kind (`invocation` or `state-mutation`).
-            #[values(EntryKind::VARIANTS.iter().copied())]
+            /// Entry kind (`invocation` or `state-mutation`); NULL for a kind this version
+            /// doesn't know.
+            #[values(EntryKind::VALUES)]
             entry_kind: EntryKind => DataType::LargeUtf8,
             /// Creation timestamp of the entry.
             created_at: MillisSinceEpoch => TimestampMillisecond,

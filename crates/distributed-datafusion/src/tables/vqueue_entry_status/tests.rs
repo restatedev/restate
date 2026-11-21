@@ -498,17 +498,18 @@ async fn vqueues_view_matches_v1_stage_reads() {
         );
         // Each row shows its effective status, in both engines: the stage's own
         // for running, suspended and paused entries whatever they stored, and
-        // `unknown` for a Finished entry without an outcome; a status condition
-        // selects by it.
+        // NULL for a Finished entry without an outcome, the `unknown` sentinel,
+        // which no status name selects; a status condition selects by the rest.
         for session in [&old, &new] {
             assert_eq!(
                 rows(
                     session.as_ref(),
-                    "SELECT DISTINCT stage, status FROM sys_vqueues ORDER BY stage"
+                    "SELECT DISTINCT stage, COALESCE(status, 'NULL') FROM sys_vqueues \
+                     ORDER BY stage"
                 )
                 .await,
                 [
-                    ["finished", "unknown"],
+                    ["finished", "NULL"],
                     ["inbox", "new"],
                     ["paused", "paused"],
                     ["running", "running"],
@@ -523,7 +524,7 @@ async fn vqueues_view_matches_v1_stage_reads() {
                      WHERE status IN ('paused', 'yielded', 'unknown')"
                 )
                 .await,
-                [["4"]],
+                [["2"]],
                 "status_conditions_select_effective_statuses"
             );
         }
@@ -813,10 +814,6 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
              ORDER BY transitioned_at DESC NULLS LAST LIMIT 5 OFFSET 2"
         ),
         format!(
-            "{select} WHERE stage = 'finished' AND status = 'unknown' \
-             ORDER BY transitioned_at DESC NULLS LAST LIMIT 3"
-        ),
-        format!(
             "{select} WHERE stage = 'finished' AND transitioned_at < to_timestamp_millis({}) \
              ORDER BY transitioned_at DESC NULLS LAST LIMIT 4",
             BASE + 10_300
@@ -835,6 +832,11 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
             "{select} WHERE stage = 'finished' AND num_attempts + 1 = 1 \
              ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
         ),
+        // A status alone: the entries the index doesn't hold, those in a stage
+        // this binary doesn't know, show no status and match none.
+        format!(
+            "{select} WHERE status = 'failed' ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
+        ),
         // Two stages: both stages' lanes, merged.
         format!(
             "{select} WHERE stage IN ('finished', 'running') \
@@ -842,13 +844,15 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
         ),
     ];
     let scans = [
-        // Status alone doesn't prove the stage.
-        format!(
-            "{select} WHERE status = 'failed' ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
-        ),
+        // Alternatives that together restrict neither column.
         format!(
             "{select} WHERE stage = 'finished' OR status = 'new' \
              ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
+        ),
+        // `unknown` names no status: the query selects nothing before any read.
+        format!(
+            "{select} WHERE stage = 'finished' AND status = 'unknown' \
+             ORDER BY transitioned_at DESC NULLS LAST LIMIT 3"
         ),
         // Another order reads the creation index instead.
         format!("{select} WHERE stage = 'finished' ORDER BY created_at DESC NULLS LAST LIMIT 5"),
@@ -1298,11 +1302,14 @@ async fn active_entries_read_through_the_status_index_match_the_scan() {
         // A stage and a status that rule each other out leave no lane: the
         // read returns nothing, as the scan does.
         format!("{select} WHERE stage = 'inbox' AND status = 'paused' {newest} LIMIT 5"),
+        // A status alone: the only entries the index doesn't hold, those in a
+        // stage this binary doesn't know, show no status and match none.
+        format!("{select} WHERE status = 'new' {newest} LIMIT 5"),
     ];
     let scans = [
-        // Status alone doesn't prove the stage.
-        format!("{select} WHERE status = 'new' {newest} LIMIT 5"),
+        // Alternatives that together restrict neither column.
         format!("{select} WHERE stage = 'inbox' OR status = 'new' {newest} LIMIT 5"),
+        // `unknown` names no stage: the query selects nothing before any read.
         format!("{select} WHERE stage = 'unknown' {newest} LIMIT 5"),
         // The transition index's order.
         format!("{select} WHERE stage = 'inbox' ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"),
