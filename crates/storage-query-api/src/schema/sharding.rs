@@ -95,8 +95,9 @@
 //!   is mapped through its derivation, and the results are intersected, so
 //!   `id IN ('inv_1…')` yields `{0x9c3a…}`.
 //! - **Shard-local JOINs** are justified by it. When both sides of an equality are
-//!   sharding columns with the same derivation, matching rows have equal shard keys
-//!   and therefore share a shard under any topology.
+//!   sharding columns of one shard-key space, matching rows have equal shard keys
+//!   and therefore share a shard under any topology: `s.id = e.entry_id` joins an
+//!   invocation to its entry within the invocation's partition.
 //!
 //! Only declarations count. Native type, SQL type, column name, and primary-key
 //! status are never evidence: `invoked_by_id` also holds an invocation ID, but it
@@ -114,8 +115,19 @@ use crate::selection::domain::Domain;
 /// A sharding scheme at the type level: its shard-key space determines how
 /// candidate shard keys are represented.
 pub trait Sharding: Send + Sync + 'static {
+    /// Runtime identity of the shard-key space, comparable across schemas.
+    const SPACE: ShardKeySpace;
     /// Candidate shard keys of one predicate, in this scheme's key space.
     type Candidates: Candidates;
+}
+
+/// The runtime identity of a [`Sharding`] scheme's shard-key space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShardKeySpace {
+    PartitionId,
+    PartitionKey,
+    Node,
+    Unit,
 }
 
 /// A set of candidate shard keys.
@@ -182,7 +194,8 @@ pub mod shard_key {
     use restate_util_string::ReString;
 
     use super::{
-        NodeCandidates, NodeSharding, PartitionIdSharding, PartitionKeySharding, Sharding,
+        NodeCandidates, NodeSharding, PartitionIdSharding, PartitionKeySharding, ShardKeySpace,
+        Sharding,
     };
     use crate::selection::domain::Domain;
 
@@ -217,13 +230,32 @@ pub mod shard_key {
         ($($(#[doc = $doc:expr])* $name:ident: $value:ty, $sharding:ty, $shard_keys:expr;)+) => {
             /// The runtime identity of a [`Derivation`].
             ///
-            /// Columns of the same kind with equal non-NULL SQL values have equal
-            /// shard keys, in any schema. Distinct kinds never prove equality, even
-            /// where renderings could coincide, such as an invocation ID and the
-            /// entry ID of the same invocation.
+            /// Columns whose kinds share a [shard-key space](ShardKeyKind::space)
+            /// and have equal non-NULL SQL values have equal shard keys, in any
+            /// schema. See [`ShardKeyKind::space`].
             #[derive(Debug, Clone, Copy, PartialEq, Eq)]
             pub enum ShardKeyKind {
                 $($(#[doc = $doc])* $name,)+
+            }
+
+            impl ShardKeyKind {
+                /// The shard-key space of the derivation's scheme. Equal values of
+                /// two kinds in one space give equal shard keys:
+                ///
+                /// ```text
+                /// InvocationId('inv_1…') = BaseEntryId('inv_1…')   same ID, same encoded key
+                /// InvocationId('inv_1…') = VQueueId(…)             never equal: other prefix
+                /// Scope('tenant-a')      = InvocationId(…)          never equal: a scope is at
+                ///                                                   most 36 bytes, an ID longer
+                /// ```
+                ///
+                /// Across spaces shard keys don't compare: `scope = 'N1'` and a node
+                /// `N1` may live on different nodes.
+                pub const fn space(self) -> ShardKeySpace {
+                    match self {
+                        $(Self::$name => <$sharding as Sharding>::SPACE,)+
+                    }
+                }
             }
 
             $(
@@ -295,18 +327,22 @@ pub enum NodeSharding {}
 pub enum Unsharded {}
 
 impl Sharding for PartitionIdSharding {
+    const SPACE: ShardKeySpace = ShardKeySpace::PartitionId;
     type Candidates = Domain<PartitionId>;
 }
 
 impl Sharding for PartitionKeySharding {
+    const SPACE: ShardKeySpace = ShardKeySpace::PartitionKey;
     type Candidates = Domain<PartitionKey>;
 }
 
 impl Sharding for NodeSharding {
+    const SPACE: ShardKeySpace = ShardKeySpace::Node;
     type Candidates = NodeCandidates;
 }
 
 impl Sharding for Unsharded {
+    const SPACE: ShardKeySpace = ShardKeySpace::Unit;
     type Candidates = Domain<()>;
 }
 
@@ -449,5 +485,31 @@ mod tests {
             ]))
             .is_all()
         );
+    }
+
+    /// `ShardKeyKind::space` lets a scope equal an ID column in a JOIN because no ID
+    /// is a valid scope name: their shard keys differ (hash vs encoded key), so
+    /// equal values would split matching rows across shards.
+    #[test]
+    fn no_id_rendering_is_a_valid_scope() {
+        use restate_types::identifiers::{BaseEntryId, InvocationId, InvocationUuid};
+        use restate_types::vqueues::{EntryId, EntryKind, Seq, VQueueId};
+
+        let ids = [0, u64::MAX].into_iter().flat_map(|key| {
+            let invocation = InvocationId::from_parts(key, InvocationUuid::from_u128(0));
+            let mutation = BaseEntryId::new(key, EntryId::new(EntryKind::StateMutation, [0; 16]));
+            [
+                invocation.to_string(),
+                VQueueId::custom(key, "q").to_string(),
+                BaseEntryId::from(invocation).to_string(),
+                mutation.to_string(),
+                mutation.canonicalize(Seq::new(1)).to_string(),
+            ]
+        });
+        for id in ids {
+            assert!(restate_types::Scope::try_non_interned(&id).is_err(), "{id}");
+        }
+        assert_eq!(K::Scope.space(), K::InvocationId.space());
+        assert_ne!(K::Scope.space(), K::PlainNodeId.space());
     }
 }
