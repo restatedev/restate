@@ -29,6 +29,8 @@ enum Swimlane {
   BIFROST_READS = 4;
   /// Data pipe for performing remote datafusion scans
   DATAFUSION = 5;
+  /// Data pipe for the tasks of distributed queries (query engine V2)
+  QUERY_ENGINE = 6;
 }
 
 //
