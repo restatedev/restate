@@ -20,9 +20,9 @@
 //! 2. **Execute** starts the task over a half-open range of its plan's output
 //!    partitions (DataFusion partitions, not Restate partitions). Answer:
 //!    `Executing`.
-//! 3. **Next** asks for the next batch of one output partition. Answer: `Batch`,
-//!    one Arrow IPC-encoded record batch, or `End` once that partition has no
-//!    more.
+//! 3. **Next** asks for the next batch of one output partition. The answer is
+//!    `Ipc`: one persistent Arrow stream per output partition, with a separate
+//!    terminal reply carrying its EOS.
 //! 4. **Close** releases the task. Answer: `Closed`.
 //!
 //! For `EXPLAIN ANALYZE`, Install can ask for a report of what the task did,
@@ -37,7 +37,7 @@
 //!
 //! For example, a coordinator reading output partitions 0 and 1 from a worker
 //! installs the task, executes it over `0..2`, sends `Next` for each partition
-//! until it gets `End`, and closes it.
+//! until each gets terminal `Ipc`, and closes it.
 
 mod error;
 mod report;
@@ -157,10 +157,21 @@ pub struct QueryTaskInstalled {
     pub analyze: Option<QueryTaskAnalyze>,
 }
 
+/// One complete encode/finish result from an output partition's Arrow stream.
+/// Data carries exactly one batch, preceded by its dictionaries and, on the
+/// first reply, its schema. A terminal reply carries EOS (schema + EOS if empty).
+#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
+pub struct QueryTaskIpcChunk {
+    #[bilrost(1)]
+    pub data: Bytes,
+    #[bilrost(2)]
+    pub end: bool,
+}
+
 /// The answer to any task request.
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct QueryTaskReply {
-    #[bilrost(oneof(1, 2, 3, 4, 5, 6))]
+    #[bilrost(oneof(1, 2, 5, 6, 7))]
     pub body: QueryTaskReplyBody,
 }
 
@@ -172,14 +183,12 @@ pub enum QueryTaskReplyBody {
     Installed(QueryTaskInstalled),
     #[bilrost(2)]
     Executing(()),
-    #[bilrost(3)]
-    Batch(Bytes),
-    #[bilrost(4)]
-    End(()),
     #[bilrost(5)]
     Closed(QueryTaskClosed),
     #[bilrost(6)]
     Failure(QueryTaskError),
+    #[bilrost(7)]
+    Ipc(QueryTaskIpcChunk),
 }
 
 impl From<QueryTaskReplyBody> for QueryTaskReply {
@@ -285,6 +294,23 @@ mod tests {
             panic!("expected Installed reply")
         };
         assert_eq!(decoded.schema, Bytes::from_static(b"schema"));
+        for end in [false, true] {
+            let chunk = QueryTaskIpcChunk {
+                data: Bytes::from_static(b"ipc"),
+                end,
+            };
+            let bytes = QueryTaskReply::from(QueryTaskReplyBody::Ipc(chunk.clone()))
+                .encode_to_bytes(ProtocolVersion::V7)
+                .unwrap();
+            let QueryTaskReplyBody::Ipc(decoded) =
+                QueryTaskReply::try_decode(bytes, ProtocolVersion::V7)
+                    .unwrap()
+                    .body
+            else {
+                panic!("expected Ipc");
+            };
+            assert_eq!(decoded, chunk);
+        }
     }
 
     /// Reports are additive. Messages without them encode exactly as before;
