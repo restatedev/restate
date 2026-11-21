@@ -9194,6 +9194,7 @@ dependencies = [
  "ahash",
  "anyhow",
  "arc-swap",
+ "arrow-buffer",
  "base62",
  "base64 0.23.1",
  "bilrost",
