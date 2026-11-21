@@ -776,6 +776,13 @@ impl<O: RpcResponse + WireEncode> Reciprocal<Oneshot<O>> {
         self.reply_port.inner.0.is_closed()
     }
 
+    /// Resolves once the reply can no longer be delivered, because the connection that
+    /// carried the request has closed. A handler can await it alongside long work to stop
+    /// when nobody is left to answer.
+    pub async fn closed(&mut self) {
+        self.reply_port.inner.0.closed().await
+    }
+
     /// Sends a processing error to the caller
     ///
     /// Check documentation of [[Verdict]] for more details
