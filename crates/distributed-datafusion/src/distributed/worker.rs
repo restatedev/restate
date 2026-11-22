@@ -13,6 +13,7 @@ use std::error::Error;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use arrow::ipc::CompressionType;
 use datafusion::common::{DataFusionError, Result, exec_datafusion_err, exec_err};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
@@ -270,7 +271,8 @@ impl DistributedQueryServer {
                                 ..request
                             };
                             // Installation builds state and decodes once, without polling storage.
-                            match InstalledTask::install(&self.env, &self.scanners, request).await {
+                            let compression = ipc::compression(&Configuration::pinned(), peer == origin);
+                            match InstalledTask::install(&self.env, &self.scanners, request, compression).await {
                                 Ok(task) => {
                                     let schema = task.plan.schema();
                                     #[cfg(test)]
@@ -585,6 +587,8 @@ struct InstalledTask {
     key: TaskKey,
     context: Arc<TaskContext>,
     plan: Arc<dyn ExecutionPlan>,
+    /// How the task's batches are compressed, as configured when it was installed.
+    compression: Option<CompressionType>,
     /// Of the plan's bytes as installed, for the report.
     plan_digest: u64,
     /// The plan's shape as installed, for the report: only when asked for one.
@@ -618,6 +622,7 @@ impl InstalledTask {
         env: &DataFusionEnv,
         scanners: &SourceRegistry,
         request: QueryTaskInstall,
+        compression: Option<CompressionType>,
     ) -> Result<Self> {
         if request.id.session_id.is_empty()
             || request.id.task != 0
@@ -759,6 +764,7 @@ impl InstalledTask {
             context: channel.task_ctx,
             shape: collector.as_ref().and_then(|_| shape(&plan)),
             plan,
+            compression,
             plan_digest,
             started: Default::default(),
             lanes: Mutex::new(Some(HashMap::new())),
@@ -851,7 +857,7 @@ impl InstalledTask {
                         "task stream schema differs from its installed output schema"
                     );
                 }
-                let encoder = ipc::Encoder::new(Arc::clone(&schema))?;
+                let encoder = ipc::Encoder::new(Arc::clone(&schema), self.compression)?;
                 Ok((
                     partition,
                     Arc::new(tokio::sync::Mutex::new(Some(OutputLane {

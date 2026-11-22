@@ -8001,6 +8001,7 @@ version = "1.8.2-dev"
 dependencies = [
  "ahash",
  "anyhow",
+ "arrow",
  "async-trait",
  "bilrost",
  "bytes",
