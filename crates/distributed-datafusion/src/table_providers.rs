@@ -373,7 +373,7 @@ where
                 placement,
                 Arc::clone(&projected_schema),
                 Arc::new(self.statistics.clone().project(projection).to_inexact()),
-                source.ordering.clone(),
+                source.orders.clone(),
                 datafusion::physical_expr::conjunction_opt(filters.clone()),
                 limit,
                 local,

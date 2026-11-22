@@ -75,6 +75,8 @@ async fn primary_access_codec_validates_keys_scope_and_capability() {
         owner: Some(owner),
         ordering: vec![],
         limit: None,
+        ordered_id: None,
+        id_orders: Vec::new(),
         work: SourceWork::MultiGet(PartitionWork::from_reads(
             Default::default(),
             vec![PrimaryLookup {
@@ -121,6 +123,8 @@ async fn primary_access_codec_validates_keys_scope_and_capability() {
         owner: Some(owner),
         ordering: vec!["partition_key".into()],
         limit: Some(7),
+        ordered_id: None,
+        id_orders: Vec::new(),
         work: SourceWork::IndexScan(IndexWork {
             index: ReString::from_static("_idx_entry_by_queue"),
             work: PartitionWork::from_reads(
@@ -460,7 +464,7 @@ async fn compact_partition_templates_preserve_keys_statistics_and_codec() {
             Default::default(),
             Arc::clone(&schema),
             Arc::clone(&statistics),
-            vec![],
+            SourceOrders::default(),
             None,
             None,
             access,
@@ -587,6 +591,8 @@ fn partition_reads_keep_template_order_only_with_a_lane_per_partition() {
         owner: None,
         ordering: Vec::new(),
         limit: None,
+        ordered_id: None,
+        id_orders: Vec::new(),
         work: SourceWork::IndexScan(IndexWork {
             index: ReString::from_static("_idx_test"),
             work: PartitionWork::from_reads(
@@ -690,6 +696,8 @@ fn demands_follow_one_consumer_through_filters_and_projections() {
             owner: None,
             ordering: Vec::new(),
             limit: None,
+            ordered_id: None,
+            id_orders: Vec::new(),
             work: SourceWork::TableScan(PartitionWork::from_reads(
                 Default::default(),
                 vec![PartitionScan {
@@ -930,6 +938,8 @@ async fn partition_reads_filter_before_emitting_only_without_a_fetch() {
             ordering: Vec::new(),
             limit,
             work,
+            ordered_id: None,
+            id_orders: Vec::new(),
         };
         SourcePlan::new(
             descriptor,
@@ -1042,4 +1052,53 @@ async fn partition_reads_filter_before_emitting_only_without_a_fetch() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("Divide by zero"), "{error}");
+}
+
+/// A primary-key scan declares its columns' order, up to the first unprojected
+/// one, and each function of its ID; a lookup only the latter; both only while
+/// the ID is projected.
+#[test]
+fn key_ordered_reads_declare_their_id_orders() {
+    use datafusion::arrow::datatypes::{DataType, Field};
+
+    let orders = SourceOrders {
+        columns: vec!["partition_key".into()],
+        id: Some("id".into()),
+        functions: vec!["invocation_id".into(), "base_entry_id".into()],
+    };
+    let field = |name: &str| match name {
+        "partition_key" => Field::new(name, DataType::UInt64, false),
+        _ => Field::new(name, DataType::LargeUtf8, false),
+    };
+    let ids = ["invocation_id(id@1)", "base_entry_id(id@1)"];
+    for (columns, scan, declared) in [
+        (
+            &["partition_key", "id"][..],
+            true,
+            vec![vec!["partition_key@0"], vec![ids[0]], vec![ids[1]]],
+        ),
+        (
+            &["partition_key", "id"],
+            false,
+            vec![vec![ids[0]], vec![ids[1]]],
+        ),
+        (
+            &["created_at", "id"],
+            true,
+            vec![vec![ids[0]], vec![ids[1]]],
+        ),
+        (
+            &["partition_key", "created_at"],
+            true,
+            vec![vec!["partition_key@0"]],
+        ),
+        (&["partition_key", "created_at"], false, vec![]),
+    ] {
+        let schema = Schema::new(columns.iter().map(|name| field(name)).collect::<Vec<_>>());
+        let orderings: Vec<Vec<String>> = key_orderings(&orders, &schema, scan)
+            .iter()
+            .map(|ordering| ordering.iter().map(|sort| sort.expr.to_string()).collect())
+            .collect();
+        assert_eq!(orderings, declared, "{columns:?} scan={scan}");
+    }
 }

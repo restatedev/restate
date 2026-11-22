@@ -52,6 +52,8 @@ use std::task::Poll;
 use restate_storage_api::Result;
 use restate_storage_api::scan::{RowConsumer, ScanOutcome};
 
+use crate::ordering::OrderFunction;
+
 /// A physical table: the records it yields and the prepared request that
 /// describes one read of it.
 ///
@@ -64,6 +66,10 @@ pub trait Table: 'static {
     /// Immutable preparation shared by independent executions. Cursor state is
     /// local to each execution, so reusing a request never reuses its position.
     type Scan: Send + Sync + 'static;
+    /// Functions of the record's ID whose order the table's key-ordered reads
+    /// deliver within a partition: its primary-key scan and its lookups by ID.
+    /// Storage owns this claim, as it owns the keys it rests on.
+    const NATIVE_ORDERS: &'static [OrderFunction] = &[];
 }
 
 /// The records of `T`, requested by `R` instead of `T`'s own request: for

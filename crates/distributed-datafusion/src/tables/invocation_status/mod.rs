@@ -29,6 +29,7 @@ use restate_partition_store::vqueue_table::{
     EntryByCreated as StoredEntryIndex, EntryByStatusCreated as StoredStatusIndex,
     EntryByStatusCreatedKey,
 };
+use restate_storage_query_api::ordering::OrderFunction;
 use restate_storage_query_api::schema::index::index_restriction;
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
@@ -70,6 +71,10 @@ crate::tables::table_adapter!(pub(crate) SysInvocationStatusTable, InvocationSta
 
 impl PartitionSource for SysInvocationStatusTable {
     const ORDERING: &'static [InvocationStatusColumn] = &[InvocationStatusColumn::PartitionKey];
+    const ID_ORDERS: Option<(InvocationStatusColumn, &'static [OrderFunction])> = Some((
+        InvocationStatusColumn::Id,
+        <InvocationStatusRecords as restate_storage_query_api::Table>::NATIVE_ORDERS,
+    ));
     const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> = Some(select_primary);
     // A query whose statuses narrow the status index's lanes reads it; any
     // other, the creation index, which checks statuses on each candidate.

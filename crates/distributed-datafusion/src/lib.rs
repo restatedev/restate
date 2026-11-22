@@ -24,6 +24,7 @@ pub use sharding::QuerySource;
 
 mod catalog;
 pub mod node_fan_out;
+mod order_key;
 pub mod placement;
 mod schema_scan;
 mod selection;
@@ -34,7 +35,6 @@ pub mod table_docs;
 mod table_providers;
 pub mod tables;
 pub use table_providers::Scan;
-mod table_util;
 
 pub use context::BuildError;
 use datafusion::arrow::datatypes::Schema;
