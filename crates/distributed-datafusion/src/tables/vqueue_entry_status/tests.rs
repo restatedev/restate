@@ -1909,3 +1909,126 @@ async fn the_stage_index_covers_both_tables() {
         "{read:?} {scan:?}"
     );
 }
+
+/// Scans and lookups of invocations and of their entries come out in each order
+/// their tables declare, which isn't their IDs' text order; `ORDER BY` an ID still
+/// sorts the text.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn key_ordered_reads_come_out_in_their_id_orders() {
+    use restate_partition_store::invocation_status_table::InvocationStatusRecords;
+    use restate_partition_store::vqueue_table::EntryStatusRecords;
+    use restate_storage_api::invocation_status_table::{
+        InFlightInvocationMetadata, InvocationStatus, WriteInvocationStatusTable,
+    };
+    use restate_storage_query_api::Table;
+    use restate_types::identifiers::{InvocationId, InvocationUuid, WithPartitionKey};
+
+    RocksDbManager::init();
+    let manager = PartitionStoreManager::create(true).await.unwrap();
+    let mut store = manager
+        .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+        .await
+        .unwrap();
+    let at =
+        UniqueTimestamp::try_from_unix_millis(MillisSinceEpoch::new(1_744_010_000_000)).unwrap();
+    // Few partition keys, so several invocations share one and their uuids decide.
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next = || {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        seed
+    };
+    let mut tx = store.transaction();
+    for n in 0..48 {
+        let id = InvocationId::from_parts(
+            next() % 4,
+            InvocationUuid::from_u128(u128::from(next()) << 64 | u128::from(next())),
+        );
+        tx.put_invocation_status(
+            &id,
+            &InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
+        )
+        .unwrap();
+        let qid = VQueueId::custom(id.partition_key(), "q");
+        let key = EntryKey::new(false, at.to_unix_millis(), n + 1, EntryId::from(&id));
+        let stats = EntryStatistics::new(at, key.run_at());
+        tx.create_vqueue_entry_status(
+            &EntryContext {
+                qid: &qid,
+                target: &EntryTargetRef::Service {
+                    scope: None,
+                    service: "svc",
+                    handler: "run",
+                },
+            },
+            EntryStateRef {
+                stage: Stage::Inbox,
+                status: Status::New,
+                entry_key: &key,
+                metadata: &EntryMetadata::default(),
+                stats: &stats,
+            },
+        );
+    }
+    tx.commit().await.unwrap();
+    drop(tx);
+    // One lane, so that no repartition interleaves the reads' rows: a query
+    // without `ORDER BY` returns them in read order.
+    let new = v2_session(
+        &manager,
+        vec![(
+            PartitionId::MIN,
+            Partition::new(PartitionId::MIN, KeyRange::FULL),
+        )],
+        1,
+    )
+    .await;
+    let column = |sql: String| {
+        let session = Arc::clone(&new);
+        async move {
+            rows(session.as_ref(), &sql)
+                .await
+                .into_iter()
+                .map(|mut row| row.remove(0))
+                .collect::<Vec<String>>()
+        }
+    };
+    for (table, id, functions) in [
+        (
+            "sys_invocation_status",
+            "id",
+            InvocationStatusRecords::NATIVE_ORDERS,
+        ),
+        (
+            "sys_vqueue_entry_status",
+            "entry_id",
+            EntryStatusRecords::NATIVE_ORDERS,
+        ),
+    ] {
+        let ids = column(format!("SELECT {id} FROM {table}")).await;
+        let wanted = ids
+            .iter()
+            .step_by(2)
+            .map(|id| format!("'{id}'"))
+            .collect::<Vec<_>>();
+        let looked_up = column(format!(
+            "SELECT {id} FROM {table} WHERE {id} IN ({})",
+            wanted.join(", ")
+        ))
+        .await;
+        assert_eq!(looked_up.len(), wanted.len());
+        for read in [&ids, &looked_up] {
+            for function in functions {
+                let values: Vec<_> = read
+                    .iter()
+                    .map(|id| function.encode(id, <[u8]>::to_vec).unwrap())
+                    .collect();
+                assert!(values.is_sorted(), "{table} {function:?}");
+            }
+        }
+        let mut text = ids.clone();
+        text.sort();
+        assert_ne!(ids, text, "text_order_differs: {table}");
+        let sorted = column(format!("SELECT {id} FROM {table} ORDER BY {id}")).await;
+        assert_eq!(sorted, text, "order_by_sorts_text: {table}");
+    }
+}

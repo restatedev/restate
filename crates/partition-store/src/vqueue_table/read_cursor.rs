@@ -35,6 +35,7 @@ use restate_clock::UniqueTimestamp;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
 use restate_storage_api::vqueue_table::{RawStatusHeaderRef, Stage, Status};
+use restate_storage_query_api::ordering::OrderFunction;
 use restate_storage_query_api::scan::{CursorScan, CursorStep, ReadCursor, Table};
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
@@ -202,6 +203,9 @@ pub enum EntryStatusRecords {}
 impl Table for EntryStatusRecords {
     type Record<'a> = (BaseEntryId, RawStatusHeaderRef<'a>);
     type Scan = EntryStatusScan;
+    /// Keys are `partition key | entry kind | remainder`, and an ID set is
+    /// fetched in ID order, so both read in base entry ID order.
+    const NATIVE_ORDERS: &'static [OrderFunction] = &[OrderFunction::BaseEntryId];
 }
 
 /// A resumable scan or finite-key lookup over one admitted snapshot.
@@ -654,5 +658,98 @@ mod tests {
             128,
             "header_only_reads_every_neighbor"
         );
+    }
+
+    /// A key scan and lookups by ID both read in the table's native order, with
+    /// invocations and state mutations sharing partition keys.
+    #[restate_core::test]
+    async fn key_ordered_reads_deliver_native_orders() {
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        let mut store = manager
+            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+            .await
+            .unwrap();
+        let at = UniqueTimestamp::try_from_unix_millis(MillisSinceEpoch::new(1_744_010_000_000))
+            .unwrap();
+        let ids: std::collections::BTreeSet<_> = [7, 8, PartitionKey::MAX]
+            .into_iter()
+            .flat_map(|key| {
+                [EntryKind::Invocation, EntryKind::StateMutation]
+                    .into_iter()
+                    .flat_map(move |kind| {
+                        [1u128, 256, 1 << 64, u128::MAX - 1]
+                            .map(|n| EntryId::new(kind, n.to_be_bytes()).to_base_id(key))
+                    })
+            })
+            .collect();
+        let mut tx = store.transaction();
+        for (n, id) in ids.iter().enumerate() {
+            let qid = VQueueId::custom(id.partition_key(), "queue");
+            let entry_key =
+                EntryKey::new(false, at.to_unix_millis(), n as u64 + 1, *id.as_entry_id());
+            tx.create_vqueue_entry_status(
+                &EntryContext {
+                    qid: &qid,
+                    target: &EntryTargetRef::Service {
+                        scope: None,
+                        service: "svc",
+                        handler: "run",
+                    },
+                },
+                EntryStateRef {
+                    stage: Stage::Inbox,
+                    status: Status::New,
+                    entry_key: &entry_key,
+                    metadata: &EntryMetadata::default(),
+                    stats: &EntryStatistics::new(at, entry_key.run_at()),
+                },
+            );
+        }
+        tx.commit().await.unwrap();
+        drop(tx);
+        let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
+        let read = |request: EntryStatusScan| {
+            let mut cursor = <ReadSnapshot as CursorScan<EntryStatusRecords>>::scan_cursor(
+                &snapshot,
+                Arc::new(request),
+            )
+            .unwrap();
+            let mut found = Vec::new();
+            loop {
+                match cursor.advance().unwrap() {
+                    CursorStep::Record => found.push(cursor.current().unwrap().0.to_string()),
+                    CursorStep::Skipped => {}
+                    CursorStep::Done => return found,
+                }
+            }
+        };
+        let all = EntryStatusKeys::prepare(&Selection::All, Some(KeyRange::FULL)).unwrap();
+        let some: std::collections::BTreeSet<_> = ids.iter().copied().step_by(3).collect();
+        for (read, expected) in [
+            (read(EntryStatusScan::Keys(Arc::new(all))), ids.len()),
+            (
+                read(EntryStatusScan::Filter(ScanEntryIdFilter::EntryIdSet(
+                    ids.clone(),
+                ))),
+                ids.len(),
+            ),
+            (
+                read(EntryStatusScan::Filter(ScanEntryIdFilter::EntryIdSet(
+                    some.clone(),
+                ))),
+                some.len(),
+            ),
+        ] {
+            assert_eq!(read.len(), expected);
+            assert!(!read.is_sorted(), "text_order_differs");
+            for function in EntryStatusRecords::NATIVE_ORDERS {
+                let values: Vec<_> = read
+                    .iter()
+                    .map(|id| function.encode(id, <[u8]>::to_vec).unwrap())
+                    .collect();
+                assert!(values.is_sorted_by(|a, b| a < b), "{function:?}");
+            }
+        }
     }
 }

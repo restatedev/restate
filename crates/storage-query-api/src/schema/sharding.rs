@@ -95,8 +95,10 @@
 //!   is mapped through its derivation, and the results are intersected, so
 //!   `id IN ('inv_1…')` yields `{0x9c3a…}`.
 //! - **Shard-local JOINs** are justified by it. When both sides of an equality are
-//!   sharding columns with the same derivation, matching rows have equal shard keys
-//!   and therefore share a shard under any topology.
+//!   sharding columns whose values imply their shard keys the same way
+//!   ([`ShardKeyKind::colocates`]), matching rows have equal shard keys and
+//!   therefore share a shard under any topology: `s.id = e.entry_id` joins an
+//!   invocation to its entry within the invocation's partition.
 //!
 //! Only declarations count. Native type, SQL type, column name, and primary-key
 //! status are never evidence: `invoked_by_id` also holds an invocation ID, but it
@@ -114,8 +116,33 @@ use crate::selection::domain::Domain;
 /// A sharding scheme at the type level: its shard-key space determines how
 /// candidate shard keys are represented.
 pub trait Sharding: Send + Sync + 'static {
+    /// Runtime identity of the shard-key space, comparable across schemas.
+    const SPACE: ShardKeySpace;
     /// Candidate shard keys of one predicate, in this scheme's key space.
     type Candidates: Candidates;
+}
+
+/// The runtime identity of a [`Sharding`] scheme's shard-key space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShardKeySpace {
+    PartitionId,
+    PartitionKey,
+    Node,
+    Unit,
+}
+
+/// How a sharding column's value implies its row's shard key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShardKeyOrigin {
+    /// The value is the shard key: a partition key, a partition ID, a plain node.
+    Value,
+    /// The value encodes the shard key, which is read out of it: an invocation,
+    /// vqueue or entry ID, a generational node ID. Such a value names its type, and
+    /// each type reads the key from its own layout, so equal values are one ID
+    /// with one key.
+    Encoded,
+    /// The shard key is a hash of the value: a scope.
+    Hashed,
 }
 
 /// A set of candidate shard keys.
@@ -182,7 +209,8 @@ pub mod shard_key {
     use restate_util_string::ReString;
 
     use super::{
-        NodeCandidates, NodeSharding, PartitionIdSharding, PartitionKeySharding, Sharding,
+        NodeCandidates, NodeSharding, PartitionIdSharding, PartitionKeySharding, ShardKeySpace,
+        Sharding,
     };
     use crate::selection::domain::Domain;
 
@@ -215,15 +243,20 @@ pub mod shard_key {
 
     macro_rules! derivations {
         ($($(#[doc = $doc:expr])* $name:ident: $value:ty, $sharding:ty, $shard_keys:expr;)+) => {
-            /// The runtime identity of a [`Derivation`].
-            ///
-            /// Columns of the same kind with equal non-NULL SQL values have equal
-            /// shard keys, in any schema. Distinct kinds never prove equality, even
-            /// where renderings could coincide, such as an invocation ID and the
-            /// entry ID of the same invocation.
+            /// The runtime identity of a [`Derivation`], comparable across schemas.
+            /// See [`ShardKeyKind::colocates`].
             #[derive(Debug, Clone, Copy, PartialEq, Eq)]
             pub enum ShardKeyKind {
                 $($(#[doc = $doc])* $name,)+
+            }
+
+            impl ShardKeyKind {
+                /// The shard-key space of the derivation's scheme.
+                pub const fn space(self) -> ShardKeySpace {
+                    match self {
+                        $(Self::$name => <$sharding as Sharding>::SPACE,)+
+                    }
+                }
             }
 
             $(
@@ -279,6 +312,36 @@ pub mod shard_key {
     }
 }
 
+impl ShardKeyKind {
+    /// How a value of this kind implies its shard key.
+    pub const fn origin(self) -> ShardKeyOrigin {
+        match self {
+            Self::PartitionKey | Self::PartitionId | Self::PlainNodeId => ShardKeyOrigin::Value,
+            Self::InvocationId
+            | Self::VQueueId
+            | Self::BaseEntryId
+            | Self::CanonicalEntryId
+            | Self::GenerationalNodeId => ShardKeyOrigin::Encoded,
+            Self::Scope => ShardKeyOrigin::Hashed,
+        }
+    }
+
+    /// Whether rows whose columns of these kinds hold equal non-NULL values have
+    /// equal shard keys: both kinds imply shard keys of one space, the same way.
+    ///
+    /// ```text
+    /// s.id = e.entry_id   InvocationId, BaseEntryId: both read the ID's key   one shard
+    /// u.scope = s.scope   Scope, Scope: both hash the scope                   one shard
+    /// u.scope = s.id      Scope, InvocationId: a hash, an ID's key            may differ
+    /// ```
+    ///
+    /// Across spaces shard keys don't compare: `scope = 'N1'` and a node `N1` may
+    /// live on different nodes.
+    pub const fn colocates(self, other: Self) -> bool {
+        self.space() as u8 == other.space() as u8 && self.origin() as u8 == other.origin() as u8
+    }
+}
+
 /// Shard key: [`PartitionId`]. Each candidate ID is its own partition.
 #[derive(Debug)]
 pub enum PartitionIdSharding {}
@@ -295,18 +358,22 @@ pub enum NodeSharding {}
 pub enum Unsharded {}
 
 impl Sharding for PartitionIdSharding {
+    const SPACE: ShardKeySpace = ShardKeySpace::PartitionId;
     type Candidates = Domain<PartitionId>;
 }
 
 impl Sharding for PartitionKeySharding {
+    const SPACE: ShardKeySpace = ShardKeySpace::PartitionKey;
     type Candidates = Domain<PartitionKey>;
 }
 
 impl Sharding for NodeSharding {
+    const SPACE: ShardKeySpace = ShardKeySpace::Node;
     type Candidates = NodeCandidates;
 }
 
 impl Sharding for Unsharded {
+    const SPACE: ShardKeySpace = ShardKeySpace::Unit;
     type Candidates = Domain<()>;
 }
 
@@ -449,5 +516,24 @@ mod tests {
             ]))
             .is_all()
         );
+    }
+
+    /// Kinds colocate when they imply shard keys of one space the same way: IDs
+    /// with IDs, scopes with scopes, never a scope with an ID or across spaces.
+    #[test]
+    fn kinds_colocate_by_space_and_origin() {
+        for (left, right, colocated) in [
+            (K::InvocationId, K::BaseEntryId, true),
+            (K::BaseEntryId, K::CanonicalEntryId, true),
+            (K::Scope, K::Scope, true),
+            (K::PartitionKey, K::PartitionKey, true),
+            (K::Scope, K::InvocationId, false),
+            (K::PartitionKey, K::InvocationId, false),
+            (K::PlainNodeId, K::GenerationalNodeId, false),
+            (K::Scope, K::PlainNodeId, false),
+        ] {
+            assert_eq!(left.colocates(right), colocated, "{left:?} {right:?}");
+            assert_eq!(right.colocates(left), colocated, "{right:?} {left:?}");
+        }
     }
 }

@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use datafusion::physical_plan::PhysicalExpr;
 
+use restate_storage_query_api::ordering::OrderFunction;
 use restate_storage_query_api::schema::sharding::ShardingColumn;
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::{LogicalSchema, SelectionSchema, ShardingScheme};
@@ -47,6 +48,16 @@ pub(crate) trait PartitionSource: QuerySource {
     /// Complete indexes that can replace a scan of this source.
     const INDEXES: &'static [IndexAccess<Self::Schema>] = &[];
     const ORDERING: &'static [<Self::Schema as SelectionSchema>::Column] = &[];
+    /// The column rendering the physical record's ID, and the functions of the ID
+    /// whose order the record table's key-ordered reads deliver: its primary-key
+    /// scan and its lookups ([`Table::NATIVE_ORDERS`]). The column must be a
+    /// sharding column each function applies to.
+    ///
+    /// [`Table::NATIVE_ORDERS`]: restate_storage_query_api::Table::NATIVE_ORDERS
+    const ID_ORDERS: Option<(
+        <Self::Schema as SelectionSchema>::Column,
+        &'static [OrderFunction],
+    )> = None;
 
     fn requires_leader() -> bool {
         match Self::Schema::SHARDING {

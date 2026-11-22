@@ -1123,7 +1123,7 @@ async fn invalid_task_and_required_storage_fail_closed() {
         Default::default(),
         StateBuilder::schema(),
         Arc::new(Statistics::new_unknown(&StateBuilder::schema())),
-        vec![],
+        crate::source_registry::SourceOrders::default(),
         None,
         None,
         crate::access::Access::Scan,

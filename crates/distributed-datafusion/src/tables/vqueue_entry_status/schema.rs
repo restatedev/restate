@@ -28,4 +28,11 @@ impl crate::sharding::PartitionSource for SysVqueueEntryStatusTable {
     const ORDERING: &'static [restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatusColumn] = &[
         restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatusColumn::PartitionKey,
     ];
+    const ID_ORDERS: Option<(
+        restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatusColumn,
+        &'static [restate_storage_query_api::ordering::OrderFunction],
+    )> = Some((
+        restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatusColumn::EntryId,
+        <restate_partition_store::vqueue_table::EntryStatusRecords as restate_storage_query_api::Table>::NATIVE_ORDERS,
+    ));
 }

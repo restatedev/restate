@@ -20,7 +20,7 @@ use restate_core::partitions::PartitionRouting;
 use restate_partition_store::{PartitionStoreManager, QueryIoExecutor};
 use restate_platform::sync::Mutex;
 use restate_storage_query_api::schema::sharding::ShardingColumn;
-use restate_storage_query_api::{QueryMetadata, SelectionSchema};
+use restate_storage_query_api::{LogicalSchema, QueryMetadata, SelectionSchema};
 use restate_types::GenerationalNodeId;
 use restate_types::cluster_state::ClusterState;
 use restate_types::identifiers::PartitionId;
@@ -286,14 +286,7 @@ impl SourceRegistry {
                 .map(crate::access::IndexAccess::declared)
                 .collect(),
             can_read: T::can_read,
-            ordering: T::ORDERING
-                .iter()
-                .map(|&column| {
-                    T::Schema::sql_name(column)
-                        .expect("ordered column has a SQL representation")
-                        .to_owned()
-                })
-                .collect(),
+            orders: orders::<T>(),
         }
     }
 
@@ -372,6 +365,55 @@ impl SourceRegistry {
 
 type SourceEligibility = fn(&[Arc<dyn PhysicalExpr>]) -> anyhow::Result<bool>;
 
+/// The orders a source's reads deliver within a partition, by SQL names.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SourceOrders {
+    /// A primary-key scan's columns, in order.
+    pub(crate) columns: Vec<String>,
+    /// The column rendering the record's ID; key-ordered reads (primary-key
+    /// scans and lookups) are ordered by each of `functions` of it.
+    pub(crate) id: Option<String>,
+    pub(crate) functions: Vec<String>,
+}
+
+/// `T::ORDERING` and `T::ID_ORDERS`, by SQL names.
+fn orders<T: PartitionSource>() -> SourceOrders {
+    let name = |column| {
+        T::Schema::sql_name(column)
+            .expect("ordered column has a SQL representation")
+            .to_owned()
+    };
+    let (id, functions) = match T::ID_ORDERS {
+        None => (None, Vec::new()),
+        Some((column, functions)) => {
+            let kind = T::Schema::SHARDING_COLUMNS
+                .iter()
+                .find(|sharding| sharding.column == column)
+                .map(|sharding| sharding.kind);
+            for function in functions {
+                assert!(
+                    kind.is_some_and(|kind| function.applies_to(kind)),
+                    "{}: {} doesn't apply to its ID column",
+                    T::identity(),
+                    function.name()
+                );
+            }
+            (
+                Some(name(column)),
+                functions
+                    .iter()
+                    .map(|function| function.name().to_owned())
+                    .collect(),
+            )
+        }
+    };
+    SourceOrders {
+        columns: T::ORDERING.iter().map(|&column| name(column)).collect(),
+        id,
+        functions,
+    }
+}
+
 #[derive(Clone, derive_more::Debug)]
 pub(crate) struct PartitionSourceDescriptor {
     pub table: ReString,
@@ -379,7 +421,7 @@ pub(crate) struct PartitionSourceDescriptor {
     pub require_leader: bool,
     /// Sharding columns at ordinals of the source's (projected) Arrow schema.
     pub sharding_columns: Vec<ShardingColumn<usize>>,
-    pub ordering: Vec<String>,
+    pub orders: SourceOrders,
     #[debug(skip)]
     pub primary_access: Option<SelectPrimary>,
     #[debug(skip)]
