@@ -33,7 +33,12 @@ New options, all off by default:
   `X-Restate-Query-Level: operator` query the cluster tables, except
   `config`, in both engines;
 - `experimental-enable-query-index-tables` shows the index tables in V2, such
-  as `_idx_entry_by_queue`, so you can inspect them with SQL.
+  as `_idx_entry_by_queue`, so you can inspect them with SQL;
+- `admin.query-engine.batch-compression` compresses the rows V2 sends from
+  one node to another with `lz4` or `zstd`. Use it when the network between
+  your nodes is slow or billed by volume. Nodes with different settings work
+  together. It has no effect while `networking.disable-compression` is
+  `false`, because the connections compress everything already.
 
 ### Why This Matters
 V2 is for comparing the two engines on staging clusters: the same query, sent
