@@ -83,8 +83,9 @@ impl Decoder {
         }
     }
 
-    /// Decodes a reply. The batch's buffers borrow `data` where it is aligned
-    /// for them, and keep it alive.
+    /// Decodes a reply. The buffers of an uncompressed batch borrow `data`
+    /// where it is aligned for them, and keep it alive. Those of a compressed
+    /// batch are decompressed into memory of their own.
     pub(super) fn decode(&mut self, data: QueryTaskBatch) -> Result<RecordBatch> {
         let first = self.decoder.schema().is_none();
         let mut data = data.into_buffer();
