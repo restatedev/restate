@@ -13,15 +13,21 @@
 
 use restate_clock::{UniqueTimestamp, time::MillisSinceEpoch};
 use restate_limiter::{Level, LimitKey};
+use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, WriteInvocationStatusTable,
 };
+use restate_storage_api::journal_table::{JournalEntry, WriteJournalTable};
+use restate_storage_api::journal_table_v2::WriteJournalTable as WriteJournalTableV2;
 use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
 use restate_storage_api::vqueue_table::{
     EntryContext, EntryKey, EntryMetadata, EntryStateRef, EntryValue, Stage, Status,
     WriteVQueueTable, stats::EntryStatistics,
 };
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
+use restate_types::journal::CompletionResult;
+use restate_types::journal_v2::{Entry, SleepCommand};
+use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::vqueues::{EntryId, EntryTargetRef, VQueueId};
 use restate_types::{PlainNodeId, Scope, ServiceName};
 use restate_util_string::ReString;
@@ -36,6 +42,7 @@ use restate_worker_api::{
 use crate::UserTables;
 use crate::tables::invocation_state::SysInvocationStateTable;
 use crate::tables::invocation_status::SysInvocationStatusTable;
+use crate::tables::journal::SysJournalTable;
 
 use super::*;
 
@@ -183,6 +190,7 @@ async fn cross_schema_fixture_with(
             sources.register_declared_scanner::<SysInvocationStatusTable>(Arc::new(
                 SysInvocationStatusTable::create_local_scanner(),
             ));
+            SysJournalTable::register_scanners(sources);
             crate::local_scanners::register_live_scanners(sources);
             let (commands, mut receiver) = tokio::sync::mpsc::channel(32);
             sources.register_processor_reads(
@@ -1221,5 +1229,124 @@ async fn operators_below_the_partition_reads_report_every_copy() {
         total(1)
     );
         assert_eq!(count(format!("SELECT COUNT(*) {join}")).await, total(2));
+    }
+}
+
+/// Whether every hash JOIN of `plan`, an EXPLAIN's physical plan, runs inside a
+/// partition read: shard by shard.
+fn joins_in_partition_reads(plan: &str) -> bool {
+    let lines: Vec<&str> = plan.lines().collect();
+    let indent = |line: &str| line.len() - line.trim_start().len();
+    let joins: Vec<_> = (0..lines.len())
+        .filter(|&at| lines[at].contains("HashJoinExec"))
+        .collect();
+    !joins.is_empty()
+        && joins.iter().all(|&at| {
+            let mut depth = indent(lines[at]);
+            lines[..at].iter().rev().any(|line| {
+                let ancestor = indent(line) < depth;
+                if ancestor {
+                    depth = indent(line);
+                }
+                ancestor && line.contains("PartitionReadExec")
+            })
+        })
+}
+
+/// A JOIN input that unions a table's layouts, the journal's V1 and V2 tables, is
+/// shard-local when its column is the same sharding column in every layout: each
+/// shard reads both layouts' share of its partitions. Its rows are the global
+/// JOIN's. Each partition's first invocation has three entries in the V2 layout,
+/// and its second invocation two in the V1 layout; at the first one's partition
+/// key, two invocations without a status have entries too, one in each layout,
+/// so that the layouts' rows interleave under one key.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unions_of_a_tables_layouts_join_shard_locally() {
+    let (fixture, _captures) = cross_schema_fixture().await;
+    let now = MillisSinceEpoch::new(1_744_010_000_000);
+    for mut store in fixture.stores.iter().cloned() {
+        let start = store.partition_key_range().start();
+        let invocation =
+            |n: u64| InvocationId::from_parts(start + n, InvocationUuid::from_u128(n.into()));
+        // Uuids 5 and 9 at the first invocation's key: V2, V1, V2 in key order.
+        let at_first = |uuid| InvocationId::from_parts(start, InvocationUuid::from_u128(uuid));
+        let mut tx = store.transaction();
+        for id in [invocation(0), at_first(9)] {
+            for index in 0..3 {
+                let entry = StoredRawEntry::new(
+                    StoredRawEntryHeader::new(now),
+                    Entry::from(SleepCommand {
+                        wake_up_time: 1.into(),
+                        completion_id: index,
+                        name: "nap".into(),
+                    })
+                    .encode::<ServiceProtocolV4Codec>(),
+                );
+                WriteJournalTableV2::put_journal_entry(&mut tx, &id, index, &entry, &[]).unwrap();
+            }
+        }
+        for id in [invocation(1), at_first(5)] {
+            for index in 0..2 {
+                let entry = JournalEntry::Completion(CompletionResult::Empty);
+                WriteJournalTable::put_journal_entry(&mut tx, &id, index, &entry).unwrap();
+            }
+        }
+        tx.commit().await.unwrap();
+    }
+    let env = environment(4, 1).with_distributed_execution(fixture.network.clone());
+    env.register_tables(UserTables::new(
+        fixture.partitions.clone(),
+        fixture.scanners.clone(),
+    ))
+    .await
+    .unwrap();
+    let engine = DataFusionQueryEngine::from_env(env, None);
+    let session = engine.create_session(SessionOptions::default()).unwrap();
+    let explain = async |sql: &str| {
+        session
+            .execute(&format!("EXPLAIN {sql}"), QueryOptions {})
+            .await
+            .unwrap()
+            .stream
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .iter()
+            .flat_map(|batch| {
+                (0..batch.num_rows())
+                    .map(|row| array_value_to_string(batch.column(1), row).unwrap())
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    #[rustfmt::skip]
+    let joins = [
+        ("SELECT s.id, j.index FROM sys_invocation_status s JOIN sys_journal j ON {on}", "s.id", "j.id", 40),
+        ("SELECT s.id, j.index FROM sys_invocation_status s LEFT JOIN sys_journal j ON {on}", "s.id", "j.id", 56),
+        ("SELECT a.id, a.index FROM sys_journal a JOIN sys_journal b ON {on} AND a.index = b.index", "a.id", "b.id", 80),
+    ];
+    for (sql, left, right, count) in joins {
+        let local = sql.replace("{on}", &format!("{left} = {right}"));
+        // A cast hides the sharding columns: one global JOIN.
+        let global = sql.replace(
+            "{on}",
+            &format!("CAST({left} AS VARCHAR) = CAST({right} AS VARCHAR)"),
+        );
+        let plan = explain(&local).await;
+        assert!(
+            joins_in_partition_reads(&plan) && plan.contains("UnionExec"),
+            "shard_local: {plan}"
+        );
+        assert!(
+            !joins_in_partition_reads(&explain(&global).await),
+            "{global}"
+        );
+        let (rows, _) = rows_and_warnings(session.as_ref(), &local).await;
+        assert_eq!(rows.len(), count, "{local}");
+        assert_eq!(
+            rows,
+            rows_and_warnings(session.as_ref(), &global).await.0,
+            "same_rows_as_global: {local}"
+        );
     }
 }
