@@ -553,7 +553,7 @@ async fn ipc_preserves_interleaved_lanes_and_ends_on_connection_loss_without_rep
     );
     let connection = fixture
         .network
-        .get_connection(OWNER, Swimlane::Datafusion)
+        .get_connection(OWNER, Swimlane::QueryEngine)
         .in_tc_as_task(
             &TaskCenter::current(),
             TaskKind::InPlace,
@@ -664,7 +664,7 @@ async fn ipc_delivers_zero_body_batches_before_failure_and_discards_failed_lanes
     let id = fixture.observations.lock().last().unwrap().id.clone();
     let connection = fixture
         .network
-        .get_connection(OWNER, Swimlane::Datafusion)
+        .get_connection(OWNER, Swimlane::QueryEngine)
         .in_tc_as_task(
             &TaskCenter::current(),
             TaskKind::InPlace,
@@ -998,7 +998,7 @@ async fn older_fabric_rejects_query_tasks_and_keeps_ordinary_rpc_working() {
 
     let connection = fixture
         .network
-        .get_connection(OWNER, Swimlane::Datafusion)
+        .get_connection(OWNER, Swimlane::QueryEngine)
         .in_tc_as_task(
             &TaskCenter::current(),
             TaskKind::InPlace,
@@ -1055,7 +1055,7 @@ async fn invalid_task_and_required_storage_fail_closed() {
     let fixture = setup(false).await;
     let connection = fixture
         .network
-        .get_connection(OWNER, Swimlane::Datafusion)
+        .get_connection(OWNER, Swimlane::QueryEngine)
         .in_tc_as_task(
             &TaskCenter::current(),
             TaskKind::InPlace,
@@ -1605,7 +1605,7 @@ async fn a_close_ends_a_blocked_execute_or_next_once() {
     next_event("next-polling", &task, &mut seen, &mut taken).await;
     let connection = fixture
         .network
-        .get_connection(OWNER, Swimlane::Datafusion)
+        .get_connection(OWNER, Swimlane::QueryEngine)
         .in_tc_as_task(
             &TaskCenter::current(),
             TaskKind::InPlace,
@@ -1838,7 +1838,7 @@ async fn a_close_cancels_a_waiting_task_and_finalizes_it_once() {
         };
     let connection = fixture
         .network
-        .get_connection(OWNER, Swimlane::Datafusion)
+        .get_connection(OWNER, Swimlane::QueryEngine)
         .in_tc_as_task(
             &TaskCenter::current(),
             TaskKind::InPlace,
