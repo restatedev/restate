@@ -35,7 +35,16 @@
 //!
 //! Only scan/filter/projection inputs, plus the bounds below, are eligible:
 //! aggregates and other operators may depend on rows from multiple partitions and
-//! stay outside admission.
+//! stay outside admission. A union of such inputs is one too, such as the scans of
+//! a table's layouts, which a table that changed its layout reads together:
+//!
+//! ```text
+//! sys_invocation_status s JOIN sys_journal j ON s.id = j.id
+//!     j = Union(journal V1 scan, journal V2 scan): id is InvocationId in both -> shard-local
+//! ```
+//!
+//! Each shard then reads every layout's share of its partitions. A column of a
+//! union qualifies only as the same sharding column in each of its inputs.
 //!
 //! # Limits
 //!
@@ -114,6 +123,26 @@ fn column_lineage(plan: &Arc<dyn ExecutionPlan>, index: usize) -> Option<Shardin
     if let Some(limit) = plan.downcast_ref::<LocalLimitExec>() {
         return column_lineage(limit.input(), index);
     }
+    if let Some(union) = plan.downcast_ref::<UnionExec>() {
+        let mut inputs = union
+            .inputs()
+            .iter()
+            .map(|input| column_lineage(input, index));
+        let first = inputs.next()??;
+        let mut nullable = first.nullable;
+        for column in inputs {
+            let column = column?;
+            if column.kind != first.kind {
+                return None;
+            }
+            nullable |= column.nullable;
+        }
+        return Some(ShardingColumn {
+            column: index,
+            kind: first.kind,
+            nullable,
+        });
+    }
     let columns = match plan.downcast_ref::<TableScanExec>() {
         Some(scan) => &scan.0.planning.as_ref()?.source.sharding_columns,
         None => {
@@ -142,22 +171,21 @@ fn colocates(
         && (nulls == NullEquality::NullEqualsNothing || !(left.nullable && right.nullable))
 }
 
-/// The scan beneath a JOIN input, which may only filter and project its rows.
-#[derive(Clone, Copy)]
+/// The scans beneath a JOIN input, which may only filter and project its rows:
+/// one, or those of a union.
 enum ShardScan<'a> {
-    Partitions(&'a TableScanExec),
+    Partitions(Vec<&'a TableScanExec>),
     Nodes(&'a NodeFanOutExecutionPlan),
 }
 
-/// Whether two topology snapshots agree: each partition owns the same key range in
-/// both, and no key belongs to two partitions. A shard key then has one partition
-/// across both snapshots, even when they list different partitions.
-fn consistent_topologies(
-    left: &[(PartitionId, Partition)],
-    right: &[(PartitionId, Partition)],
+/// Whether topology snapshots agree: each partition owns the same key range in
+/// all of them, and no key belongs to two partitions. A shard key then has one
+/// partition across the snapshots, even when they list different partitions.
+fn consistent_topologies<'a>(
+    topologies: impl IntoIterator<Item = &'a [(PartitionId, Partition)]>,
 ) -> bool {
     let mut ranges = BTreeMap::new();
-    for (id, partition) in left.iter().chain(right) {
+    for (id, partition) in topologies.into_iter().flatten() {
         if *ranges.entry(*id).or_insert(partition.key_range) != partition.key_range {
             return false;
         }
@@ -184,7 +212,17 @@ fn shard_scan(plan: &Arc<dyn ExecutionPlan>, needed: Option<usize>) -> Option<Sh
     if let Some(scan) = plan.downcast_ref::<TableScanExec>() {
         let bound = scan.0.descriptor.limit.map(|limit| limit as usize);
         return (allowed(bound) && scan.0.planning.is_some())
-            .then_some(ShardScan::Partitions(scan));
+            .then(|| ShardScan::Partitions(vec![scan]));
+    }
+    if let Some(union) = plan.downcast_ref::<UnionExec>() {
+        let mut scans = Vec::new();
+        for input in union.inputs() {
+            let ShardScan::Partitions(inputs) = shard_scan(input, needed)? else {
+                return None;
+            };
+            scans.extend(inputs);
+        }
+        return Some(ShardScan::Partitions(scans));
     }
     if let Some(fan_out) = plan.downcast_ref::<NodeFanOutExecutionPlan>() {
         return fan_out
@@ -208,6 +246,52 @@ fn shard_scan(plan: &Arc<dyn ExecutionPlan>, needed: Option<usize>) -> Option<Sh
         return shard_scan(projection.input(), needed);
     }
     None
+}
+
+/// Replaces each scan beneath a JOIN input with its `leaves` entry, keeping the
+/// filters, projections and unions above them.
+fn with_scan_leaves(
+    input: &Arc<dyn ExecutionPlan>,
+    leaves: &[(&TableScanExec, Arc<dyn ExecutionPlan>)],
+) -> Result<Arc<dyn ExecutionPlan>> {
+    Ok(Arc::clone(input)
+        .transform_up(|node| {
+            let Some(scan) = node.downcast_ref::<TableScanExec>() else {
+                return Ok(Transformed::no(node));
+            };
+            match leaves.iter().find(|(known, _)| std::ptr::eq(*known, scan)) {
+                Some((_, leaf)) => Ok(Transformed::yes(Arc::clone(leaf))),
+                None => datafusion::common::plan_err!("a JOIN input's scan wasn't lowered"),
+            }
+        })?
+        .data)
+}
+
+/// `plan` without the inputs of its unions that read nothing, such as a layout
+/// without partitions on an owner: they add no rows, and a union of the rest keeps
+/// the orders they share. A union left with one input is that input.
+fn without_empty_inputs(plan: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
+    Ok(plan
+        .transform_up(|node| {
+            let Some(union) = node.downcast_ref::<UnionExec>() else {
+                return Ok(Transformed::no(node));
+            };
+            let inputs: Vec<_> = union
+                .inputs()
+                .iter()
+                .filter(|input| !input.is::<EmptyExec>())
+                .cloned()
+                .collect();
+            if inputs.len() == union.inputs().len() {
+                return Ok(Transformed::no(node));
+            }
+            Ok(Transformed::yes(if inputs.is_empty() {
+                Arc::new(EmptyExec::new(node.schema()))
+            } else {
+                UnionExec::try_new(inputs)?
+            }))
+        })?
+        .data)
 }
 
 /// Replaces the scan beneath a JOIN input with `leaf`, keeping its filters and
@@ -316,8 +400,8 @@ fn group(
         (ShardScan::Partitions(left), ShardScan::Partitions(right)) => group_partitions(
             plan,
             join,
-            left,
-            right,
+            &left,
+            &right,
             config.execution.target_partitions,
             needed,
         )?,
@@ -329,111 +413,130 @@ fn group(
 }
 
 /// Partitions: one native JOIN per owner, inside a [`PartitionReadExec`] that
-/// admits both inputs' partitions once. With `needed`, each of its scheduling lanes
-/// stops opening partitions once it produced that many rows, so several lanes may
-/// each produce them; the enclosing limit stays above and bounds the result.
-/// `None` keeps ordinary execution.
+/// admits all inputs' partitions once. Each side reads its scans' partitions on
+/// that owner: one scan's, or each scan's of a union. With `needed`, each of its
+/// scheduling lanes stops opening partitions once it produced that many rows, so
+/// several lanes may each produce them; the enclosing limit stays above and bounds
+/// the result. `None` keeps ordinary execution.
 fn group_partitions(
     plan: &Arc<dyn ExecutionPlan>,
     join: &HashJoinExec,
-    left: &TableScanExec,
-    right: &TableScanExec,
+    left: &[&TableScanExec],
+    right: &[&TableScanExec],
     parallelism: usize,
     needed: Option<usize>,
 ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-    let left_planning = left.0.planning.as_ref().unwrap();
-    let right_planning = right.0.planning.as_ref().unwrap();
-    if left_planning.local != right_planning.local {
-        return Ok(None);
-    }
-    let (SourceWork::TableScan(left_work), SourceWork::TableScan(right_work)) =
-        (&left.0.descriptor.work, &right.0.descriptor.work)
+    let scans = || left.iter().chain(right).copied();
+    let Some(local) = scans()
+        .next()
+        .map(|scan| scan.0.planning.as_ref().unwrap().local)
     else {
         return Ok(None);
     };
-    let mut placement = left_work.placement;
-    placement.require_leader |= right_work.placement.require_leader;
-    placement.options.require_leader |= right_work.placement.options.require_leader;
+    if scans().any(|scan| scan.0.planning.as_ref().unwrap().local != local) {
+        return Ok(None);
+    }
+    let mut placement = None;
+    for scan in scans() {
+        let SourceWork::TableScan(work) = &scan.0.descriptor.work else {
+            return Ok(None);
+        };
+        let placement = placement.get_or_insert(work.placement);
+        placement.require_leader |= work.placement.require_leader;
+        placement.options.require_leader |= work.placement.options.require_leader;
+    }
+    let placement = placement.expect("a JOIN input has a scan");
 
     // Each provider listed the partitions of its own source. Matching shard keys
-    // share a partition only if both lists agree wherever they overlap; a split
-    // between the two reads breaks that, so keep ordinary execution. The lists may
-    // still select different partitions, and each input keeps its own.
-    if !consistent_topologies(&left_planning.topology, &right_planning.topology) {
+    // share a partition only if all lists agree wherever they overlap; a split
+    // between the reads breaks that, so keep ordinary execution. The lists may
+    // still select different partitions, and each scan keeps its own.
+    if !consistent_topologies(scans().map(|scan| &scan.0.planning.as_ref().unwrap().topology[..])) {
         return Ok(None);
     }
     let mut owners = BTreeSet::new();
-    let mut inputs = Vec::new();
-    for (input, scan) in [(join.left(), left), (join.right(), right)] {
-        let planning = scan.0.planning.as_ref().unwrap();
-        let mut groups: BTreeMap<Option<GenerationalNodeId>, Vec<_>> = BTreeMap::new();
-        for (partition, metadata) in &planning.partitions {
-            let owner = if planning.local {
-                None
-            } else {
-                Some(
-                    planning
-                        .source
-                        .manager
-                        .partition_owner(*partition, placement)
-                        .map_err(external)?,
+    let mut sides = Vec::new();
+    for side in [left, right] {
+        // Each scan's partitions by owner, lowered to that owner's reads.
+        let mut reads: BTreeMap<Option<GenerationalNodeId>, Vec<_>> = BTreeMap::new();
+        for &scan in side {
+            let planning = scan.0.planning.as_ref().unwrap();
+            let mut groups: BTreeMap<Option<GenerationalNodeId>, Vec<_>> = BTreeMap::new();
+            for (partition, metadata) in &planning.partitions {
+                let owner = if planning.local {
+                    None
+                } else {
+                    Some(
+                        planning
+                            .source
+                            .manager
+                            .partition_owner(*partition, placement)
+                            .map_err(external)?,
+                    )
+                };
+                groups
+                    .entry(owner)
+                    .or_default()
+                    .push((*partition, metadata.clone()));
+                owners.insert(owner);
+            }
+            for (owner, partitions) in groups {
+                let access = select_access(
+                    &planning.source,
+                    scan.0.predicate.as_ref(),
+                    None,
+                    &scan.0.schema,
                 )
-            };
-            groups
-                .entry(owner)
-                .or_default()
-                .push((*partition, metadata.clone()));
-            owners.insert(owner);
+                .map_err(external)?;
+                let lowered = plan_partition_access(
+                    planning.source.table.clone(),
+                    &planning.source.manager,
+                    partitions,
+                    placement,
+                    Arc::clone(&scan.0.schema),
+                    Arc::clone(&scan.0.statistics),
+                    scan.0.descriptor.ordering.clone(),
+                    scan.0.predicate.clone(),
+                    // An accepted bound applies to each partition's rows.
+                    scan.0.descriptor.limit.map(|limit| limit as usize),
+                    access,
+                    planning.local,
+                    parallelism,
+                )?;
+                let lowered = if let Some(group) = lowered.downcast_ref::<PartitionReadExec>() {
+                    Arc::clone(group.input())
+                } else {
+                    // All primary keys may have been pruned for this owner.
+                    if !lowered.is::<EmptyExec>() {
+                        return datafusion::common::plan_err!(
+                            "partition join ownership changed during planning"
+                        );
+                    }
+                    lowered
+                };
+                reads.entry(owner).or_default().push((scan, lowered));
+            }
         }
-        let mut by_owner = BTreeMap::new();
-        for (owner, partitions) in groups {
-            let access = select_access(
-                &planning.source,
-                scan.0.predicate.as_ref(),
-                None,
-                &scan.0.schema,
-            )
-            .map_err(external)?;
-            let lowered = plan_partition_access(
-                planning.source.table.clone(),
-                &planning.source.manager,
-                partitions,
-                placement,
-                Arc::clone(&scan.0.schema),
-                Arc::clone(&scan.0.statistics),
-                scan.0.descriptor.ordering.clone(),
-                scan.0.predicate.clone(),
-                // An accepted bound applies to each partition's rows.
-                scan.0.descriptor.limit.map(|limit| limit as usize),
-                access,
-                planning.local,
-                parallelism,
-            )?;
-            let lowered = if let Some(group) = lowered.downcast_ref::<PartitionReadExec>() {
-                Arc::clone(group.input())
-            } else {
-                // All primary keys may have been pruned for this owner.
-                if !lowered.is::<EmptyExec>() {
-                    return datafusion::common::plan_err!(
-                        "partition join ownership changed during planning"
-                    );
-                }
-                lowered
-            };
-            by_owner.insert(owner, with_leaf(input, &lowered)?);
-        }
-        inputs.push(by_owner);
+        sides.push((side, reads));
     }
     let mut groups = Vec::new();
     for owner in owners {
-        let left = inputs[0]
-            .remove(&owner)
-            .unwrap_or_else(|| Arc::new(EmptyExec::new(join.left().schema())));
-        let right = inputs[1]
-            .remove(&owner)
-            .unwrap_or_else(|| Arc::new(EmptyExec::new(join.right().schema())));
+        let mut inputs = Vec::new();
+        for ((side, reads), input) in sides.iter_mut().zip([join.left(), join.right()]) {
+            let Some(mut leaves) = reads.remove(&owner) else {
+                inputs.push(Arc::new(EmptyExec::new(input.schema())) as Arc<dyn ExecutionPlan>);
+                continue;
+            };
+            // A scan of a union without partitions on this owner reads nothing here.
+            for &scan in side.iter() {
+                if !leaves.iter().any(|(read, _)| std::ptr::eq(*read, scan)) {
+                    leaves.push((scan, Arc::new(EmptyExec::new(Arc::clone(&scan.0.schema)))));
+                }
+            }
+            inputs.push(without_empty_inputs(with_scan_leaves(input, &leaves)?)?);
+        }
         let joined = Arc::clone(plan).replace_children(
-            vec![left, right],
+            inputs,
             ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
         )?;
         let mut has_source = false;
