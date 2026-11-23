@@ -57,7 +57,7 @@ use restate_types::partition_table::Partition;
 use restate_util_string::ReString;
 
 use crate::access::{Access, IndexRead, PrimaryKeys, PrimaryRead, SortedColumn, select_access};
-use crate::order_key::OrderKey;
+use crate::order_key::order_key;
 use crate::placement::PartitionPlacement;
 use crate::source_registry::{
     PartitionLocation, PartitionSourceDescriptor, SourceOrder, SourceOrders, SourceRegistry,
@@ -84,7 +84,8 @@ mod partition_read_tests;
 mod partition_reads;
 #[path = "shard_joins.rs"]
 mod shard_joins;
-use partition_reads::{PartitionReadExec, PartitionReadsProto};
+pub(crate) use partition_reads::PartitionReadExec;
+use partition_reads::PartitionReadsProto;
 
 #[derive(Debug, Clone, Copy, bilrost::Message)]
 struct PartitionScan {
@@ -993,7 +994,7 @@ fn key_orderings(orders: &SourceOrders, schema: &Schema) -> Vec<Vec<PhysicalSort
                     let expr: Arc<dyn PhysicalExpr> = match &term.function {
                         None => column,
                         Some(name) => {
-                            Arc::new(OrderKey::new(OrderFunction::from_name(name)?, column))
+                            order_key(OrderFunction::from_name(name)?, column, schema).ok()?
                         }
                     };
                     Some(PhysicalSortExpr::new_default(expr))

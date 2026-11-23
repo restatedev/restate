@@ -323,6 +323,12 @@ impl DataFusionEnv {
     pub fn build_session_state(&self) -> Result<SessionState, DataFusionError> {
         let mut physical_rules = PhysicalOptimizer::new().rules;
         physical_rules.insert(0, Arc::new(crate::distributed::source::PrimaryAccessRule));
+        // Partition reads' templates settle their requirements on one partition.
+        for rule in &mut physical_rules {
+            if rule.name() == "EnsureRequirements" {
+                *rule = Arc::new(crate::distributed::TemplateRequirements);
+            }
+        }
         // After the rules that create filters, before distribution ships them.
         physical_rules.push(Arc::new(FilterBatchSize));
         let builder = SessionStateBuilder::new()
@@ -354,6 +360,7 @@ impl DataFusionEnv {
         let mut state =
             apply_default_features(builder.with_runtime_env(Arc::clone(&self.runtime))).build();
         datafusion_functions_json::register_all(&mut state)?;
+        crate::order_key::register_on_worker(&mut state)?;
         Ok(state)
     }
 }

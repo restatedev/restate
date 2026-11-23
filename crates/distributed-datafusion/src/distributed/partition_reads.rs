@@ -49,7 +49,7 @@ use crate::table_providers::PartitionReadContext;
 use super::{LocalBinding, SourceWork, external, source_plan};
 
 #[derive(Clone, Debug)]
-pub(super) struct PartitionReadExec {
+pub(crate) struct PartitionReadExec {
     input: Arc<dyn ExecutionPlan>,
     partitions: Arc<[PartitionId]>,
     owner: Option<GenerationalNodeId>,
@@ -147,7 +147,7 @@ impl PartitionReadExec {
         self.owner
     }
 
-    pub(super) fn input(&self) -> &Arc<dyn ExecutionPlan> {
+    pub(crate) fn input(&self) -> &Arc<dyn ExecutionPlan> {
         &self.input
     }
 

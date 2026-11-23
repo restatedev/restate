@@ -19,6 +19,7 @@ mod ipc;
 mod pushdown;
 pub(crate) mod report;
 mod requirements;
+pub(crate) use requirements::TemplateRequirements;
 pub(crate) mod source;
 mod transport;
 mod worker;
