@@ -33,19 +33,21 @@ use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::prelude::SessionContext;
 use futures::{StreamExt, stream};
+use tokio_util::sync::CancellationToken;
 
 use restate_clock::MockClock;
 use restate_partition_store::keys::KeyKind;
-use restate_platform::sync::Mutex;
+use restate_partition_store::keys::selection::KeySelection;
+use restate_partition_store::state_table::{ScopedStateTable, StateTable as StoredStateTable};
 use restate_storage_api::Transaction;
-use restate_storage_api::state_table::{ScanStateTable, WriteStateTable};
+use restate_storage_api::state_table::WriteStateTable;
+use restate_storage_query_api::scan::BlockingScan;
 use restate_storage_query_api::{
     QueryEngine, QueryMetadata, QueryOptions, QueryResult, QueryStatus, SessionOptions,
 };
 use restate_types::Scope;
 use restate_types::config::Configuration;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
-use restate_types::sharding::KeyRange;
 use restate_util_string::RestateString;
 
 use crate::DataFusionEnv;
@@ -117,22 +119,38 @@ impl StateFixture {
         &self,
         store: &mut restate_partition_store::PartitionStore,
     ) -> Vec<StateRecord> {
-        let records = Arc::new(Mutex::new(Vec::new()));
-        let output = Arc::clone(&records);
-        store
-            .for_each_user_state(KeyRange::FULL, move |(service_id, key, value)| {
-                output.lock().push(StateRecord {
-                    service_id,
+        let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
+        let mut records = Vec::new();
+        BlockingScan::<StoredStateTable>::scan_blocking(
+            &snapshot,
+            Arc::new(KeySelection::all()),
+            |(key, value)| {
+                let (partition_key, service_name, service_key, key) =
+                    key.decode_all().unwrap().split();
+                records.push(StateRecord {
+                    service_id: ServiceId::from_parts(partition_key, service_name, service_key),
                     key,
                     value: Bytes::copy_from_slice(value),
                 });
                 ControlFlow::Continue(())
-            })
-            .unwrap()
-            .await
-            .unwrap();
-
-        records.lock().clone()
+            },
+        )
+        .unwrap();
+        BlockingScan::<ScopedStateTable>::scan_blocking(
+            &snapshot,
+            Arc::new(KeySelection::all()),
+            |(key, value)| {
+                let (_, scope, service_name, service_key, key) = key.decode_all().unwrap().split();
+                records.push(StateRecord {
+                    service_id: ServiceId::new(scope, service_name.as_str(), service_key.as_str()),
+                    key,
+                    value: Bytes::copy_from_slice(value),
+                });
+                ControlFlow::Continue(())
+            },
+        )
+        .unwrap();
+        records
     }
 
     fn describe(&self) -> String {

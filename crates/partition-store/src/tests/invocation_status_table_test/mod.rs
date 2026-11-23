@@ -21,11 +21,11 @@ use std::time::Duration;
 
 use bytestring::ByteString;
 
-use restate_storage_api::{StorageError, Transaction};
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, JournalMetadata, ReadInvocationStatusTable,
     ScanInvocationStatusTable, StatusTimestamps, WriteInvocationStatusTable,
 };
+use restate_storage_api::{StorageError, Transaction};
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::{
     InvocationTarget, ServiceInvocationSpanContext, Source, VirtualObjectHandlerType,

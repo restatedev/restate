@@ -18,18 +18,16 @@
 
 mod scan;
 
-use std::ops::ControlFlow;
-
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
 
-use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
+use restate_rocksdb::RocksDbReadPerfGuard;
+use restate_storage_api::Result;
 use restate_storage_api::inbox_table::{
-    InboxEntry, ReadInboxTable, ScanInboxTable, SequenceNumberInboxEntry, WriteInboxTable,
+    InboxEntry, ReadInboxTable, SequenceNumberInboxEntry, WriteInboxTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
-use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::message::MessageIndex;
 use restate_types::sharding::KeyRange;
@@ -37,8 +35,7 @@ use restate_types::sharding::KeyRange;
 use crate::TableKind::Inbox;
 use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
 use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
-    TableScanIterationDecision, break_on_err,
+    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
 };
 
 pub use scan::InboxTable;
@@ -115,33 +112,6 @@ impl ReadInboxTable for PartitionStore {
 
     async fn any_inbox_entry_in_range(&mut self, range: KeyRange) -> Result<bool> {
         any_inbox_entry_in_range(self, range)
-    }
-}
-
-impl ScanInboxTable for PartitionStore {
-    fn for_each_inbox<
-        F: FnMut(SequenceNumberInboxEntry) -> ControlFlow<()> + Send + Sync + 'static,
-    >(
-        &self,
-        range: KeyRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
-        self.iterator_for_each(
-            "df-inbox",
-            Priority::Low,
-            TableScan::ScanPartitionKeyRange::<InboxKey>(range),
-            move |(mut key, mut value)| {
-                let key = break_on_err(InboxKey::deserialize_from(&mut key))?;
-                let inbox_entry = break_on_err(InboxEntry::decode(&mut value))?;
-
-                f(SequenceNumberInboxEntry::new(
-                    key.sequence_number,
-                    inbox_entry,
-                ))
-                .map_break(Ok)
-            },
-        )
-        .map_err(|_| StorageError::OperationalError)
     }
 }
 

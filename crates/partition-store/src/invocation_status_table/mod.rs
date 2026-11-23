@@ -11,15 +11,14 @@
 use std::num::NonZeroUsize;
 use std::ops::ControlFlow;
 
-use futures::FutureExt;
 use rocksdb::ReadOptions;
 
 use restate_core::io::IoExecutor;
 use restate_rocksdb::reads::{IterationError, IterationOutcome, IteratorVisitor, ScopedReads};
-use restate_rocksdb::{IterAction, Priority, RocksDbReadPerfGuard};
+use restate_rocksdb::{IterAction, RocksDbReadPerfGuard};
 use restate_storage_api::invocation_status_table::{
     InvocationLite, InvocationStatus, InvocationStatusDiscriminants, ReadInvocationStatusTable,
-    ScanInvocationStatusTable, ScanInvocationStatusTableRange, WriteInvocationStatusTable,
+    ScanInvocationStatusTable, WriteInvocationStatusTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
@@ -34,7 +33,7 @@ use crate::offloaded_reads::get_value_proto_cached_or_offload;
 use crate::scan::{PhysicalScan, TableScan};
 use crate::{
     PartitionStore, PartitionStoreSnapshot, PartitionStoreTransaction, StorageAccess,
-    StorageIterator, StorageRead, TableKind, break_on_err,
+    StorageIterator, StorageRead, TableKind,
 };
 
 define_table_key!(
@@ -177,75 +176,6 @@ impl ReadInvocationStatusTable for PartitionStore {
 }
 
 impl ScanInvocationStatusTable for PartitionStore {
-    fn for_each_invocation_status_lazy<
-        E: Into<anyhow::Error> + 'static,
-        F: for<'a> FnMut(
-                (InvocationId, &'a InvocationStatusV2Lazy<'a>),
-            ) -> ControlFlow<std::result::Result<(), E>>
-            + Send
-            + Sync
-            + 'static,
-    >(
-        &self,
-        range: ScanInvocationStatusTableRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
-        if let ScanInvocationStatusTableRange::InvocationIdSet(ids) = range {
-            let fut = self.multi_get_for_each(
-                "df-for-each-invocation-status",
-                INVOCATION_STATUS_MULTI_GET_BATCH_SIZE,
-                ids,
-                create_invocation_status_key,
-                move |id, value| {
-                    let status = break_on_err(decode_invocation_status_lazy(value))?;
-                    f((*id, &status))
-                        .map_break(|result| result.map_err(|e| StorageError::Conversion(e.into())))
-                },
-            );
-            return Ok(fut.boxed());
-        }
-
-        let scan = match range {
-            ScanInvocationStatusTableRange::PartitionKey(partition_key) => {
-                TableScan::ScanPartitionKeyRange::<InvocationStatusKeyBuilder>(partition_key)
-            }
-            ScanInvocationStatusTableRange::InvocationId(invocation_id) => {
-                let start = InvocationStatusKey::builder()
-                    .partition_key(invocation_id.start().partition_key())
-                    .invocation_uuid(invocation_id.start().invocation_uuid());
-
-                let end = InvocationStatusKey::builder()
-                    .partition_key(invocation_id.end().partition_key())
-                    .invocation_uuid(invocation_id.end().invocation_uuid());
-
-                TableScan::RangeInclusive(start, end)
-            }
-            ScanInvocationStatusTableRange::InvocationIdSet(_) => unreachable!("handled above"),
-        };
-
-        let new_status_keys = self
-            .iterator_for_each("df-for-each-invocation-status", Priority::Low, scan, {
-                move |(mut key, value)| {
-                    let status_key = break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
-                    let inv_status_v2_lazy = break_on_err(decode_invocation_status_lazy(value))?;
-
-                    let (partition_key, invocation_uuid) = status_key.split();
-
-                    let result = f((
-                        InvocationId::from_parts(partition_key, invocation_uuid),
-                        &inv_status_v2_lazy,
-                    ));
-
-                    result.map_break(|result| {
-                        result.map_err(|err| StorageError::Conversion(err.into()))
-                    })
-                }
-            })
-            .map_err(|_| StorageError::OperationalError)?;
-
-        Ok(new_status_keys.boxed())
-    }
-
     fn fold_invocation_status_lazy<
         S: Send + 'static,
         E: Into<anyhow::Error>,

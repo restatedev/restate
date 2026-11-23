@@ -300,7 +300,6 @@ mod tests {
     use futures::FutureExt;
     use googletest::prelude::*;
     use prost::Message;
-    use restate_storage_api::invocation_status_table::ScanInvocationStatusTableRange;
     use restate_storage_api::{StorageError, protobuf_types};
     use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey};
     use restate_types::time::MillisSinceEpoch;
@@ -319,26 +318,6 @@ mod tests {
     struct MockInvocationStatusReader(Vec<MockCompletedInvocation>);
 
     impl ScanInvocationStatusTable for MockInvocationStatusReader {
-        fn for_each_invocation_status_lazy<
-            E: Into<anyhow::Error> + 'static,
-            F: for<'a> FnMut(
-                    (InvocationId, &'a InvocationStatusV2Lazy<'a>),
-                ) -> std::ops::ControlFlow<std::result::Result<(), E>>
-                + Send
-                + Sync
-                + 'static,
-        >(
-            &self,
-            _: ScanInvocationStatusTableRange,
-            _: F,
-        ) -> restate_storage_api::Result<impl Future<Output = restate_storage_api::Result<()>> + Send>
-        {
-            unimplemented!();
-
-            #[allow(unreachable_code)]
-            Ok(std::future::pending())
-        }
-
         fn fold_invocation_status_lazy<
             S: Send + 'static,
             E: Into<anyhow::Error>,

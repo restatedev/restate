@@ -13,7 +13,7 @@ use std::ops::ControlFlow;
 
 use rocksdb::ReadOptions;
 
-use restate_rocksdb::{Priority, RocksDbManager};
+use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::vqueue_table::{Stage, Status};
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
@@ -280,24 +280,12 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
     expected_upper.extend_from_slice(b"Largf");
     assert_eq!(upper.as_ref(), expected_upper);
 
-    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-    store
-        .iterator_for_each_physical(
-            "test-prefix-upper-bound",
-            Priority::Low,
-            ReadOptions::default(),
-            scan,
-            move |(key, _)| {
-                sender.send(key.to_vec()).unwrap();
-                ControlFlow::Continue(())
-            },
-        )
-        .unwrap()
-        .await
-        .unwrap();
+    let snapshot = store.partition_db().read_snapshot().unwrap();
+    let mut rows = snapshot.scan(scan, ReadOptions::default());
     let mut visited = Vec::new();
-    while let Some(key) = receiver.recv().await {
-        visited.push(key);
+    while let Some((key, _)) = rows.item().unwrap() {
+        visited.push(key.to_vec());
+        rows.next();
     }
     let expected: Vec<_> = ["Large", "LargeState"]
         .into_iter()
