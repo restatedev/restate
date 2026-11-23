@@ -18,9 +18,10 @@
 //! invocation in that hour), merged into creation order, and fetches the
 //! invocation of each entry, instead of reading every invocation status of the
 //! partition. The query's conditions on the handler are checked on each key's
-//! value, so an entry of another handler is never fetched; every condition,
-//! the handler's included, is checked again on the fetched status. For a query
-//! on `target_handler_name = 'run'`:
+//! value, and the partition keys it names on each entry's ID, so an entry of
+//! another handler, or of another virtual object, is never fetched; every
+//! condition, the handler's included, is checked again on the fetched status.
+//! For a query on `target_handler_name = 'run'`:
 //!
 //! ```text
 //! entry index runs: time, handler     invocation statuses, 25 per multi-get
@@ -86,7 +87,8 @@ use restate_storage_query_api::tables::index::{
     EntryByStatusCreatedClause as StatusIndexClause,
     EntryByStatusCreatedColumn as StatusIndexColumn,
 };
-use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey};
+use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::{CanonicalEntryId, Seq};
 use restate_util_string::ReString;
@@ -248,7 +250,7 @@ impl Drop for Held {
 /// predicate.
 pub struct EntryIndexRead {
     index: IndexRead,
-    handlers: Arc<HandlerConditions>,
+    conditions: Arc<EntryConditions>,
     direction: ReadDirection,
 }
 
@@ -264,7 +266,7 @@ impl EntryIndexRead {
     pub fn prepare(selection: &Selection<EntryIndex>, direction: ReadDirection) -> Result<Self> {
         Ok(Self {
             index: IndexRead::Created(Arc::new(EntryByCreatedKey::prepare_candidates(selection)?)),
-            handlers: Arc::new(HandlerConditions::of(
+            conditions: Arc::new(EntryConditions::of(
                 selection,
                 EntryIndexColumn::TargetHandlerName,
                 |clause| match clause {
@@ -288,7 +290,7 @@ impl EntryIndexRead {
         )?;
         Ok(Self {
             index: IndexRead::Status(lanes),
-            handlers: Arc::new(HandlerConditions::of(
+            conditions: Arc::new(EntryConditions::of(
                 selection,
                 StatusIndexColumn::TargetHandlerName,
                 |clause| match clause {
@@ -298,6 +300,17 @@ impl EntryIndexRead {
             )),
             direction,
         })
+    }
+
+    /// Restricts the read to invocations whose partition key is in `keys`:
+    /// sorted, disjoint ranges, such as the one key of a virtual object's
+    /// invocations. An entry of another key is skipped before its status is
+    /// fetched, so a page of one object reads the index keys of its service but
+    /// fetches only the object's statuses. The caller's predicate still checks
+    /// every fetched status.
+    pub fn with_partition_keys(mut self, keys: impl IntoIterator<Item = KeyRange>) -> Self {
+        Arc::make_mut(&mut self.conditions).partition_keys = Some(keys.into_iter().collect());
+        self
     }
 
     /// Why a read on `snapshot` can't go through the index, if it can't. It can,
@@ -323,7 +336,7 @@ impl EntryIndexRead {
 
     /// The bytes its selections hold, its handler conditions included.
     fn retained_bytes(&self) -> usize {
-        self.handlers.retained_bytes()
+        self.conditions.retained_bytes()
             + match &self.index {
                 IndexRead::Created(selection) => selection.shared_retained_bytes(),
                 IndexRead::Status(lanes) => lanes.retained_bytes(),
@@ -331,12 +344,20 @@ impl EntryIndexRead {
     }
 }
 
-/// The selection's conditions on the handler, which both indexes keep in each
-/// key's value: an entry that fails one is skipped before its status is
-/// fetched. The caller's predicate still checks the fetched status.
-struct HandlerConditions(Box<[ValuePredicate<ReString>]>);
+/// What an entry must meet before its status is fetched: the selection's
+/// conditions on the handler, which both indexes keep in each key's value, and
+/// the partition keys the read is restricted to
+/// ([`EntryIndexRead::with_partition_keys`]), which each entry's ID tells. An
+/// entry that fails one is skipped. The caller's predicate still checks the
+/// fetched status.
+#[derive(Clone)]
+struct EntryConditions {
+    handlers: Box<[ValuePredicate<ReString>]>,
+    /// Sorted, disjoint ranges; `None` admits every key.
+    partition_keys: Option<Box<[KeyRange]>>,
+}
 
-impl HandlerConditions {
+impl EntryConditions {
     /// The conditions of `selection` on `column`, the handler, which
     /// `handler` takes out of their clauses.
     fn of<'a, T: SelectionSchema>(
@@ -344,29 +365,38 @@ impl HandlerConditions {
         column: T::Column,
         handler: impl Fn(&'a T::Clause) -> Option<&'a ValuePredicate<ReString>>,
     ) -> Self {
-        let Selection::Predicates(predicates) = selection else {
-            return Self(Box::default());
-        };
-        Self(
-            predicates
+        let handlers = match selection {
+            Selection::Predicates(predicates) => predicates
                 .for_column(column)
                 .iter()
                 .filter_map(handler)
                 .cloned()
                 .collect(),
-        )
+            Selection::All | Selection::Empty => Box::default(),
+        };
+        Self {
+            handlers,
+            partition_keys: None,
+        }
     }
 
-    /// Whether the invocation entry whose key holds `value` meets every
+    /// Whether the entry of invocation `id`, whose key holds `value`, meets every
     /// condition. An invocation's entry always holds its handler.
-    fn admit(&self, value: &[u8]) -> Result<bool> {
-        if self.0.is_empty() {
+    fn admit(&self, id: &InvocationId, value: &[u8]) -> Result<bool> {
+        if let Some(ranges) = &self.partition_keys {
+            let key: PartitionKey = id.partition_key();
+            let at = ranges.partition_point(|range| range.end() < key);
+            if !ranges.get(at).is_some_and(|range| range.start() <= key) {
+                return Ok(false);
+            }
+        }
+        if self.handlers.is_empty() {
             return Ok(true);
         }
         let handler = EntryTargetValueRef::decode(value)?
             .handler
             .ok_or(StorageError::DataIntegrityError)?;
-        Ok(self.0.iter().all(|predicate| match predicate {
+        Ok(self.handlers.iter().all(|predicate| match predicate {
             ValuePredicate::Equal(expected) => expected.as_str() == handler,
             ValuePredicate::In(values) => values.iter().any(|value| value.as_str() == handler),
             ValuePredicate::Range { lower, upper } => RangeBounds::<str>::contains(
@@ -399,8 +429,12 @@ impl HandlerConditions {
         };
         std::mem::size_of::<Self>()
             + 2 * std::mem::size_of::<usize>()
-            + std::mem::size_of_val(&*self.0)
-            + self.0.iter().map(heap).sum::<usize>()
+            + std::mem::size_of_val(&*self.handlers)
+            + self.handlers.iter().map(heap).sum::<usize>()
+            + self
+                .partition_keys
+                .as_deref()
+                .map_or(0, std::mem::size_of_val)
     }
 }
 
@@ -489,7 +523,7 @@ pub(super) struct EntryIndexCursor {
     /// `None` once the read failed: it holds nothing then.
     source: Option<Source>,
     runs_done: bool,
-    handlers: Arc<HandlerConditions>,
+    conditions: Arc<EntryConditions>,
     /// The window's invocations in index order, with their entries' creation
     /// records and times.
     window: Vec<(InvocationId, Seq, MillisSinceEpoch)>,
@@ -584,7 +618,7 @@ impl EntryIndexCursor {
             Opened::Index(source, held) => Ok(Self::new(
                 snapshot,
                 source,
-                Arc::clone(&read.handlers),
+                Arc::clone(&read.conditions),
                 held,
                 fetched,
                 entries,
@@ -669,7 +703,7 @@ impl EntryIndexCursor {
     fn new(
         snapshot: &ReadSnapshot,
         source: Source,
-        handlers: Arc<HandlerConditions>,
+        conditions: Arc<EntryConditions>,
         held: Held,
         fetched: Box<dyn Fn(usize, u64) + Send>,
         entries: bool,
@@ -677,7 +711,7 @@ impl EntryIndexCursor {
         Self {
             source: Some(source),
             runs_done: false,
-            handlers,
+            conditions,
             window: Vec::with_capacity(WINDOW),
             next: None,
             entries: entries.then(|| Vec::with_capacity(WINDOW)),
@@ -776,7 +810,7 @@ impl EntryIndexCursor {
             CursorStep::Record => {
                 let (canonical_id, created_at, value, entry) = source.current()?;
                 if let Some(id) = canonical_id.to_base_entry_id().to_invocation_id()
-                    && self.handlers.admit(value)?
+                    && self.conditions.admit(&id, value)?
                 {
                     self.window.push((id, canonical_id.seq(), created_at));
                     if let Some(entries) = &mut self.entries {
@@ -1591,6 +1625,15 @@ mod tests {
         assert_eq!(created, expected(&failed, false));
         let (_, created, _) = records(&read(handler("other"), ReadDirection::Forward));
         assert!(created.is_empty());
+        // Partition keys are checked on each entry's ID: of the failed
+        // invocations, only those under the named keys are read. The n-th
+        // stored invocation has the partition key (n + 1) * 7919; the 5th is
+        // running, so its lane isn't read at all.
+        let key = |n: u64| KeyRange::new((n + 1) * 7919, (n + 1) * 7919);
+        let (_, created, _) = records(
+            &read(failure(), ReadDirection::Forward).with_partition_keys([key(1), key(2), key(4)]),
+        );
+        assert_eq!(created, vec![stored[2].0, stored[1].0]);
         // Nothing selected: every lane, each entry once.
         for backward in [false, true] {
             let direction = if backward {

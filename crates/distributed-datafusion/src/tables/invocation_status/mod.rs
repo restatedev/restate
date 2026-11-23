@@ -311,12 +311,12 @@ impl ScanPartition for StatusScanner {
         predicate: Option<Arc<dyn PhysicalExpr>>,
         limit: Option<usize>,
     ) -> anyhow::Result<Arc<dyn PreparedPartitionRead>> {
+        // The partition keys the predicate allows, such as one virtual object's.
+        let partition_keys = InvocationStatus::candidate_shard_keys(predicate.as_slice())?;
         let scan = || -> anyhow::Result<_> {
             Ok(Arc::new(InvocationStatusKeys::prepare(
                 &compile_selection::<InvocationStatus>(predicate.as_ref())?,
-                crate::selection::key_range(&InvocationStatus::candidate_shard_keys(
-                    predicate.as_slice(),
-                )?),
+                crate::selection::key_range(&partition_keys),
             )?))
         };
         let access = match access {
@@ -340,6 +340,16 @@ impl ScanPartition for StatusScanner {
                         index_restriction::<EntryByServiceCreated>(predicate.as_slice())?
                             .map_or(Selection::Empty, |domains| domains.to_selection());
                     EntryIndexRead::prepare(&selection, read.direction::<EntryIndex>()?)?
+                };
+                // An entry of another partition key is skipped before its status
+                // is fetched.
+                let index = if partition_keys.is_all() {
+                    index
+                } else {
+                    index.with_partition_keys(crate::selection::key_ranges(
+                        &partition_keys,
+                        KeyRange::FULL,
+                    ))
                 };
                 StatusAccess::EntryIndex {
                     index: Arc::new(index),

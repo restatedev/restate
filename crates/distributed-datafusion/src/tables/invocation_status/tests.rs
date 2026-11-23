@@ -34,7 +34,9 @@ use restate_storage_query_api::QuerySession;
 use restate_storage_query_api::tables::invocation_status::InvocationStatus as InvocationStatusSchema;
 use restate_types::config::Configuration;
 use restate_types::errors::KILLED_INVOCATION_ERROR;
-use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionId, WithPartitionKey};
+use restate_types::identifiers::{
+    InvocationId, InvocationUuid, PartitionId, ServiceId, WithPartitionKey,
+};
 use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType, WorkflowHandlerType};
 use restate_types::partition_table::Partition;
 use restate_types::partitions::features::PersistedFeatures;
@@ -1346,6 +1348,10 @@ async fn status_follows_the_entry() {
 /// matches that the query may need, 51 (55 with `OFFSET 45`). The other reads
 /// the index, emitting its 30 candidates. With one lane the plan sorts what the
 /// lane concatenates; either way the page is the newest of both partitions.
+///
+/// The migrated partition also holds one virtual object's page: its newest
+/// invocations, read through its service's run, fetch only the statuses of its
+/// own partition key.
 #[restate_core::test]
 async fn partitions_sharing_a_lane_bound_their_fallback() {
     RocksDbManager::init();
@@ -1375,23 +1381,15 @@ async fn partitions_sharing_a_lane_bound_their_fallback() {
             .unwrap();
         let start = partition.key_range.start();
         let mut tx = store.transaction();
-        for n in 0..count {
-            let id = InvocationId::from_parts(start + n, InvocationUuid::from_u128(n.into()));
-            let created = MillisSinceEpoch::new(BASE + 2 * n + u64::from(migrated));
-            let target = InvocationTarget::workflow(
-                "Promises",
-                format!("w{start}-{n}"),
-                "promise",
-                WorkflowHandlerType::Shared,
-            );
+        let mut put = |id: InvocationId, target: &InvocationTarget, created, seq| {
             let mut invoked = InFlightInvocationMetadata::mock();
             invoked.invocation_target = target.clone();
             invoked.timestamps = StatusTimestamps::init(created);
-            invoked.creation_seq = Some(Seq::new(n + 1));
+            invoked.creation_seq = Some(Seq::new(seq));
             tx.put_invocation_status(&id, &InvocationStatus::Invoked(invoked))
                 .unwrap();
             let unique = UniqueTimestamp::from_unix_millis_unchecked(created);
-            let key = EntryKey::new(false, unique.to_unix_millis(), n + 1, EntryId::from(id));
+            let key = EntryKey::new(false, unique.to_unix_millis(), seq, EntryId::from(id));
             tx.create_vqueue_entry_status(
                 &EntryContext {
                     qid: &VQueueId::custom(id.partition_key(), "q"),
@@ -1405,7 +1403,45 @@ async fn partitions_sharing_a_lane_bound_their_fallback() {
                     stats: &EntryStatistics::new(unique, key.run_at()),
                 },
             );
+        };
+        for n in 0..count {
+            let id = InvocationId::from_parts(start + n, InvocationUuid::from_u128(n.into()));
+            let created = MillisSinceEpoch::new(BASE + 2 * n + u64::from(migrated));
+            let target = InvocationTarget::workflow(
+                "Promises",
+                format!("w{start}-{n}"),
+                "promise",
+                WorkflowHandlerType::Shared,
+            );
+            put(id, &target, created, n + 1);
             page.push((created, id.to_string()));
+        }
+        if migrated {
+            // Counter's run: 3 invocations of the object "k", under its own
+            // partition key, and 40 of other objects under other keys.
+            for n in 0..43u64 {
+                let key = if n < 3 {
+                    "k".to_owned()
+                } else {
+                    format!("o{n}")
+                };
+                let partition_key = if n < 3 {
+                    ServiceId::new(None, "Counter", key.as_str()).partition_key()
+                } else {
+                    start + 100 + n
+                };
+                let id = InvocationId::from_parts(
+                    partition_key,
+                    InvocationUuid::from_u128((1000 + n).into()),
+                );
+                let target = InvocationTarget::virtual_object(
+                    "Counter",
+                    key,
+                    "add",
+                    VirtualObjectHandlerType::Exclusive,
+                );
+                put(id, &target, MillisSinceEpoch::new(BASE + n), 1000 + n);
+            }
         }
         tx.put_state_machine_features(&PersistedFeatures {
             vqueues: migrated,
@@ -1447,6 +1483,26 @@ async fn partitions_sharing_a_lane_bound_their_fallback() {
             // its first rows.
             assert_eq!(metric(source, "read_rows"), Some(61 + 30), "{source}");
         }
+        // The object's page reads Counter's run, and fetches only the statuses
+        // under the object's partition key: its 3, not the other 40.
+        let object = "SELECT id FROM sys_invocation_status \
+            WHERE target_service_name = 'Counter' AND target_service_key = 'k' \
+            AND scope IS NULL ORDER BY created_at DESC NULLS LAST LIMIT 51";
+        assert_eq!(rows(session.as_ref(), object).await.len(), 3);
+        let plan = rows(session.as_ref(), &format!("EXPLAIN ANALYZE {object}"))
+            .await
+            .concat()
+            .join("\n");
+        let source = plan
+            .lines()
+            .find(|line| line.contains("IndexScanExec"))
+            .unwrap();
+        assert!(source.contains("entry_index_reads=1"), "{source}");
+        assert_eq!(metric(source, "entry_index_statuses"), Some(3), "{source}");
+        assert!(
+            metric(source, "entry_index_keys_examined") >= Some(43),
+            "{source}"
+        );
     }
 }
 
