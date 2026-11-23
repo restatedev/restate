@@ -1187,4 +1187,34 @@ async fn query_state_with_service_key_filter() {
         null_scope_service_key,
         row!(0, { "service_name" => LargeStringArray: eq("unscoped") })
     );
+
+    // A scope or NULL reads both hash(scope) and hash(service_key), wherever the
+    // IS NULL sits in the OR.
+    for scopes in [
+        "scope = 'c' OR scope IS NULL",
+        "scope = 'c' OR scope IS NULL OR scope = 'd'",
+    ] {
+        let scope_or_null = engine
+            .execute(&format!(
+                "SELECT service_name FROM state \
+                 WHERE service_key = 'i1' AND ({scopes}) \
+                 ORDER BY service_name"
+            ))
+            .await
+            .unwrap()
+            .stream
+            .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+            .await
+            .remove(0)
+            .unwrap();
+
+        assert_eq!(scope_or_null.num_rows(), 2, "{scopes}");
+        assert_that!(
+            scope_or_null,
+            all!(
+                row!(0, { "service_name" => LargeStringArray: eq("scoped") }),
+                row!(1, { "service_name" => LargeStringArray: eq("unscoped") })
+            )
+        );
+    }
 }
