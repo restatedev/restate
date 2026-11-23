@@ -15,7 +15,6 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::Stream;
 
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::InvocationId;
@@ -968,22 +967,26 @@ pub trait ScanInvocationStatusTable {
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 
-    fn filter_map_invocation_status_lazy<
-        O: Send + 'static,
+    /// Calls `f` with each invocation status from `from` (inclusive), or from the start of the
+    /// partition key range if `None`, until `f` breaks or no statuses remain. `f` keeps what it
+    /// needs in `state`, which the returned future yields back.
+    ///
+    /// `f` runs on a storage thread while the scan holds its iterator open, so it must not block.
+    fn fold_invocation_status_lazy<
+        S: Send + 'static,
         E: Into<anyhow::Error>,
         F: for<'a> FnMut(
+                &mut S,
                 (InvocationId, &'a InvocationStatusV2Lazy<'a>),
-            ) -> std::result::Result<Option<O>, E>
+            ) -> ControlFlow<std::result::Result<(), E>>
             + Send
-            + Sync
             + 'static,
     >(
         &self,
-        // Invocation id to start the scan from (inclusive). If `None`, the scan starts from the
-        // beginning of the partition key range.
         from: Option<InvocationId>,
+        state: S,
         f: F,
-    ) -> Result<impl Stream<Item = Result<O>> + Send>;
+    ) -> Result<impl Future<Output = Result<S>> + Send>;
 }
 
 pub trait WriteInvocationStatusTable {

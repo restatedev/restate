@@ -15,14 +15,16 @@
 use super::storage_test_environment;
 
 use std::collections::HashSet;
+use std::ops::ControlFlow;
 use std::sync::LazyLock;
 use std::time::Duration;
 
 use bytestring::ByteString;
 
+use restate_storage_api::{StorageError, Transaction};
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, JournalMetadata, ReadInvocationStatusTable,
-    StatusTimestamps, WriteInvocationStatusTable,
+    ScanInvocationStatusTable, StatusTimestamps, WriteInvocationStatusTable,
 };
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::{
@@ -177,4 +179,58 @@ async fn invocation_status() {
             .expect("should not fail"),
         invoked_status(INVOCATION_TARGET_2)
     );
+}
+
+#[restate_core::test]
+async fn fold_invocation_status_lazy() {
+    let mut rocksdb = storage_test_environment().await;
+    let mut txn = rocksdb.transaction();
+    populate_data(&mut txn).await;
+    txn.commit().await.expect("should not fail");
+
+    // Collects the visited ids, stopping once `limit` are collected.
+    let collect = |from: Option<InvocationId>, limit: usize| {
+        rocksdb
+            .fold_invocation_status_lazy(from, Vec::new(), move |ids, (id, _)| {
+                ids.push(id);
+                if ids.len() == limit {
+                    ControlFlow::Break(Ok::<_, anyhow::Error>(()))
+                } else {
+                    ControlFlow::Continue(())
+                }
+            })
+            .expect("should not fail")
+    };
+
+    // A full scan visits every status in key order.
+    let all = collect(None, usize::MAX).await.expect("should not fail");
+    let mut expected = vec![
+        *INVOCATION_ID_1,
+        *INVOCATION_ID_2,
+        *INVOCATION_ID_3,
+        *INVOCATION_ID_4,
+    ];
+    expected.sort();
+    assert_eq!(all, expected);
+
+    // Stopping early returns the state accumulated so far.
+    assert_eq!(collect(None, 2).await.expect("should not fail"), all[..2]);
+
+    // `from` is inclusive.
+    assert_eq!(
+        collect(Some(all[1]), usize::MAX)
+            .await
+            .expect("should not fail"),
+        all[1..]
+    );
+
+    // An error from the closure surfaces as a conversion error.
+    let err = rocksdb
+        .fold_invocation_status_lazy(None, (), |_, _| {
+            ControlFlow::Break(Err(anyhow::anyhow!("boom")))
+        })
+        .expect("should not fail")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StorageError::Conversion(_)), "{err:?}");
 }
