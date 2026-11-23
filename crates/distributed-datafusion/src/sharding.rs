@@ -70,6 +70,15 @@ pub(crate) trait PartitionSource: QuerySource {
     fn can_read(_filters: &[Arc<dyn PhysicalExpr>]) -> anyhow::Result<bool> {
         Ok(true)
     }
+
+    /// Whether the predicate narrows a scan to so few records that no index can
+    /// read fewer, such as the partition keys of a few objects. Such a read
+    /// scans, whatever index would otherwise be chosen; complete primary keys
+    /// are still looked up ([`crate::access::select_access`]). A rule until
+    /// statistics estimate both reads.
+    fn narrow_scan(_filters: &[Arc<dyn PhysicalExpr>]) -> anyhow::Result<bool> {
+        Ok(false)
+    }
 }
 
 /// Sharding columns of `S` at their ordinals in `S::arrow_schema()`. Columns

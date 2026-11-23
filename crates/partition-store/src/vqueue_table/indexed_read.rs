@@ -784,7 +784,13 @@ mod tests {
     }
 
     fn scan_all() -> Arc<KeySelection<EntryStatusKey>> {
-        Arc::new(EntryStatusKeys::prepare(&Selection::All, Some(KeyRange::FULL)).unwrap())
+        Arc::new(
+            EntryStatusKeys::prepare(
+                &Selection::All,
+                &restate_storage_query_api::selection::domain::Domain::all(),
+            )
+            .unwrap(),
+        )
     }
 
     fn run_scan(

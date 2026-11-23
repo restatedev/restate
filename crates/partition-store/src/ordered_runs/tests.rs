@@ -885,8 +885,13 @@ async fn bucketed_reads_refuse_several_headers() {
 
     let store = store_with_entries().await;
     let (snapshot, _closed) = store.query_read(CancellationToken::new()).unwrap();
-    let request =
-        Arc::new(EntryStatusKeys::prepare(&Selection::All, Some(KeyRange::FULL)).unwrap());
+    let request = Arc::new(
+        EntryStatusKeys::prepare(
+            &Selection::All,
+            &restate_storage_query_api::selection::domain::Domain::all(),
+        )
+        .unwrap(),
+    );
     let refused = snapshot
         .ordered_runs::<EntryStatusKeys>(
             request,
