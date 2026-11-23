@@ -980,26 +980,44 @@ fn filtered(
 
 /// The orders of a key-ordered read, a primary-key scan or a lookup: each of its
 /// source's orders, up to the first term it doesn't project (or whose function it
-/// doesn't know).
+/// doesn't know). A function of the ID is declared on its key field where the read
+/// emits it, for a JOIN that merges on it, and otherwise on the function of the ID
+/// where the read projects the ID. Never both: an order that ties neither, such as
+/// the key field's then the function's, would make a merge evaluate the function.
 fn key_orderings(orders: &SourceOrders, schema: &Schema) -> Vec<Vec<PhysicalSortExpr>> {
+    let ordering = |order: &SourceOrder, key_fields: bool| -> Vec<PhysicalSortExpr> {
+        order
+            .terms
+            .iter()
+            .map_while(|term| {
+                let expr = match &term.function {
+                    None => col(&term.column, schema).ok()?,
+                    Some(name) => {
+                        let function = OrderFunction::from_name(name)?;
+                        if key_fields {
+                            col(&function.key_field(&term.column), schema).ok()?
+                        } else {
+                            order_key(function, col(&term.column, schema).ok()?, schema).ok()?
+                        }
+                    }
+                };
+                Some(PhysicalSortExpr::new_default(expr))
+            })
+            .collect()
+    };
     orders
         .0
         .iter()
         .map(|order| {
-            order
-                .terms
-                .iter()
-                .map_while(|term| {
-                    let column = col(&term.column, schema).ok()?;
-                    let expr: Arc<dyn PhysicalExpr> = match &term.function {
-                        None => column,
-                        Some(name) => {
-                            order_key(OrderFunction::from_name(name)?, column, schema).ok()?
-                        }
-                    };
-                    Some(PhysicalSortExpr::new_default(expr))
-                })
-                .collect::<Vec<_>>()
+            let key_fields = order.terms.iter().any(|term| {
+                term.function
+                    .as_deref()
+                    .and_then(OrderFunction::from_name)
+                    .is_some_and(|function| {
+                        schema.index_of(&function.key_field(&term.column)).is_ok()
+                    })
+            });
+            ordering(order, key_fields)
         })
         .filter(|ordering| !ordering.is_empty())
         .collect()

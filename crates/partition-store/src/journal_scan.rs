@@ -26,7 +26,7 @@ use std::num::NonZeroUsize;
 
 use anyhow::Context;
 
-use restate_storage_query_api::ordering::{NativeOrder, OrderFunction, OrderTerm};
+use restate_storage_query_api::ordering::{NativeOrder, OrderFunction, OrderInput, OrderTerm};
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, SelectionPrecision, ValuePredicate};
 use restate_storage_query_api::tables::journal::{Journal, JournalClause, JournalColumn};
@@ -60,6 +60,16 @@ macro_rules! journal_table {
             type Record<'a> = (KeyDecoder<'a, $key>, &'a [u8]);
             type Scan = KeySelection<$key>;
             const NATIVE_ORDERS: &'static [NativeOrder] = $orders;
+
+            fn order_key<R>(
+                (key, _): &Self::Record<'_>,
+                function: OrderFunction,
+                with: impl FnOnce(&[u8]) -> R,
+            ) -> Option<R> {
+                let key = key.decode_all().ok()?;
+                InvocationId::from_parts(key.partition_key, key.invocation_uuid)
+                    .order_key(function, with)
+            }
         }
 
         impl PhysicalTable for $table {

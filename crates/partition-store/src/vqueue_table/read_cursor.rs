@@ -35,7 +35,7 @@ use restate_clock::UniqueTimestamp;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
 use restate_storage_api::vqueue_table::{RawStatusHeaderRef, Stage, Status};
-use restate_storage_query_api::ordering::{NativeOrder, OrderFunction, OrderTerm};
+use restate_storage_query_api::ordering::{NativeOrder, OrderFunction, OrderInput, OrderTerm};
 use restate_storage_query_api::scan::{CursorScan, CursorStep, ReadCursor, Table};
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
@@ -210,6 +210,14 @@ impl Table for EntryStatusRecords {
         &[OrderTerm::Column("partition_key")],
         &[OrderTerm::Function(OrderFunction::BaseEntryId)],
     ];
+
+    fn order_key<R>(
+        (id, _): &Self::Record<'_>,
+        function: OrderFunction,
+        with: impl FnOnce(&[u8]) -> R,
+    ) -> Option<R> {
+        id.order_key(function, with)
+    }
 }
 
 /// A resumable scan or finite-key lookup over one admitted snapshot.
