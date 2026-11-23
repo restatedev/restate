@@ -343,14 +343,8 @@ impl ScanPartition for StatusScanner {
                 };
                 // An entry of another partition key is skipped before its status
                 // is fetched.
-                let index = if partition_keys.is_all() {
-                    index
-                } else {
-                    index.with_partition_keys(crate::selection::key_ranges(
-                        &partition_keys,
-                        KeyRange::FULL,
-                    ))
-                };
+                let index = index
+                    .with_partition_keys(crate::selection::partition_key_filter(&partition_keys));
                 StatusAccess::EntryIndex {
                     index: Arc::new(index),
                     fallback: scan()?,
