@@ -128,6 +128,10 @@ impl<B: Builder> BatchSender<B> {
         }
     }
 
+    pub(crate) fn builder(&self) -> &B {
+        &self.builder
+    }
+
     pub(crate) fn builder_mut(&mut self) -> &mut B {
         &mut self.builder
     }

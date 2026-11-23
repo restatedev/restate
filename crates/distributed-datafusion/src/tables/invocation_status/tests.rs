@@ -30,6 +30,7 @@ use restate_storage_api::vqueue_table::stats::EntryStatistics;
 use restate_storage_api::vqueue_table::{
     EntryContext, EntryKey, EntryMetadata, EntryStateRef, Stage, Status, WriteVQueueTable,
 };
+use restate_storage_query_api::QuerySession;
 use restate_storage_query_api::tables::invocation_status::InvocationStatus as InvocationStatusSchema;
 use restate_types::config::Configuration;
 use restate_types::errors::KILLED_INVOCATION_ERROR;
@@ -100,30 +101,25 @@ async fn persisted_invocations_match_v1_for_scans_lookups_and_projections() {
         "SELECT id, status FROM sys_invocation_status WHERE partition_key >= 3 ORDER BY id LIMIT 3 OFFSET 2".into(),
         "SELECT scheduled_start_at FROM sys_invocation_status ORDER BY id".into(),
     ] {
-        let mut actual = rows(new.as_ref(), &sql).await;
-        // V2 also shows each invocation's entry, in its last three columns.
-        if sql.starts_with("SELECT *") {
-            for row in &mut actual {
-                row.truncate(row.len() - 3);
-            }
-        }
-        assert_eq!(actual, rows(old.as_ref(), &sql).await, "{sql}");
+        assert_eq!(rows(new.as_ref(), &sql).await, rows(old.as_ref(), &sql).await, "{sql}");
     }
     assert_eq!(
         rows(new.as_ref(), "SELECT COUNT(*) FROM sys_invocation_status").await,
         [["32"]]
     );
     // Without entries, no invocation has a stage or effective status, and
-    // whether it `completed` comes from its status: one in six did.
-    assert_eq!(
-        rows(
-            new.as_ref(),
-            "SELECT stage, effective_status, completed, COUNT(*) FROM sys_invocation \
-             GROUP BY stage, effective_status, completed ORDER BY completed"
-        )
-        .await,
-        [["", "", "false", "26"], ["", "", "true", "6"]]
-    );
+    // whether it `completed` comes from its status: one in six did. V1 agrees.
+    for engine in [new.as_ref(), old.as_ref()] {
+        assert_eq!(
+            rows(
+                engine,
+                "SELECT stage, effective_status, completed, COUNT(*) FROM sys_invocation \
+                 GROUP BY stage, effective_status, completed ORDER BY completed"
+            )
+            .await,
+            [["", "", "false", "26"], ["", "", "true", "6"]]
+        );
+    }
     // `sys_invocation` shows each invocation's `canonical_id` as its status does.
     assert_eq!(
         rows(
@@ -476,8 +472,7 @@ async fn invocations_read_through_the_entry_index_match_v1() {
          WHERE target_service_name IN ('Promises', 'Utils', 'Missing') \
          GROUP BY target_service_name ORDER BY target_service_name"
             .into(),
-        // V1's view still derives `status` from the live state.
-        "SELECT id, target FROM sys_invocation WHERE target_service_name = 'Promises' \
+        "SELECT id, status, target FROM sys_invocation WHERE target_service_name = 'Promises' \
          AND target_handler_name = 'promise' ORDER BY created_at DESC NULLS LAST LIMIT 9"
             .into(),
     ];
@@ -631,6 +626,12 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         "false".into(),
     ];
     assert!(scanned.contains(&orphan_row), "{scanned:?}");
+    // V1 reads the entries through the same cursor.
+    assert_eq!(
+        sorted(rows(old.as_ref(), &promises_by("", ", id")).await),
+        scanned,
+        "v1 scan"
+    );
     for (condition, index) in [
         ("", "_idx_entry_by_service_created"),
         ("AND status = 'completed'", "_idx_entry_by_status_created"),
@@ -647,62 +648,55 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         .iter()
         .map(|row| format!("'{}'", row[0]))
         .collect::<Vec<_>>();
-    assert_eq!(
-        sorted(
-            rows(
-                new.as_ref(),
-                &format!("{columns} WHERE id IN ({})", listed.join(","))
-            )
-            .await
-        ),
-        some.into_iter().cloned().collect::<Vec<_>>(),
-        "lookups"
-    );
+    let lookups = format!("{columns} WHERE id IN ({})", listed.join(","));
+    let some: Vec<_> = some.into_iter().cloned().collect();
+    for engine in [new.as_ref(), old.as_ref()] {
+        assert_eq!(sorted(rows(engine, &lookups).await), some, "lookups");
+    }
     // Entries agree with statuses: completed invocations are finished, killed
     // ones failed and running ones invoked, apart from the orphan. The same
-    // conditions select the same invocations through the view.
-    let v1_count = async |condition: &str| -> u64 {
+    // conditions select the same invocations through the view, in both engines.
+    let count = async |engine: &dyn QuerySession, table: &str, condition: &str| -> u64 {
         rows(
-            old.as_ref(),
-            &format!("SELECT COUNT(*) FROM sys_invocation_status WHERE {condition}"),
+            engine,
+            &format!("SELECT COUNT(*) FROM {table} WHERE {condition}"),
         )
         .await[0][0]
             .parse()
             .unwrap()
     };
-    let killed = v1_count("completion_result = 'failure'").await;
-    let running = v1_count("status = 'invoked'").await - 1;
+    let killed = count(
+        old.as_ref(),
+        "sys_invocation_status",
+        "completion_result = 'failure'",
+    )
+    .await;
+    let running = count(old.as_ref(), "sys_invocation_status", "status = 'invoked'").await - 1;
     assert!(killed > 0 && running > 0);
-    for table in ["sys_invocation_status", "sys_invocation"] {
-        let v2_count = async |condition: &str| -> u64 {
-            rows(
-                new.as_ref(),
-                &format!("SELECT COUNT(*) FROM {table} WHERE {condition}"),
-            )
-            .await[0][0]
-                .parse()
-                .unwrap()
-        };
+    for (engine, table) in [new.as_ref(), old.as_ref()]
+        .into_iter()
+        .flat_map(|engine| ["sys_invocation_status", "sys_invocation"].map(|table| (engine, table)))
+    {
         assert_eq!(
-            v2_count("effective_status = 'killed'").await,
+            count(engine, table, "effective_status = 'killed'").await,
             killed,
             "{table}"
         );
         assert_eq!(
-            v2_count("effective_status = 'running'").await,
+            count(engine, table, "effective_status = 'running'").await,
             running,
             "{table}"
         );
         assert_eq!(
-            v2_count("completed <> (status = 'completed')").await,
+            count(engine, table, "completed <> (status = 'completed')").await,
             0,
             "{table}"
         );
-        // As for a stage this version doesn't know, the logical columns are
-        // never NULL: `IS NULL` selects nothing, though the orphan shows NULLs.
+        // The orphan shows NULLs. In V2, as for a stage this version doesn't
+        // know, the logical columns are never NULL, so `IS NULL` selects nothing.
         assert_eq!(
             rows(
-                new.as_ref(),
+                engine,
                 &format!(
                     "SELECT stage, effective_status, completed FROM {table} WHERE id = '{orphan}'"
                 )
@@ -1054,8 +1048,9 @@ async fn invocations_read_through_the_entry_index_match_v1() {
 /// table and in the view, whatever the invocation stored: each effective
 /// status maps to one of each. Without an entry, or with a stored pair that
 /// makes no effective status, the stored ones show, `inboxed` as `pending`
-/// and `invoked` as `ready` in the view's status. Reads of the status index
-/// return exactly the invocations a scan finds with that status or result.
+/// and `invoked` as `ready` in the view's status. V1 shows the same. Reads of
+/// the status index return exactly the invocations a scan finds with that
+/// status or result.
 #[restate_core::test]
 async fn status_follows_the_entry() {
     RocksDbManager::init();
@@ -1251,7 +1246,7 @@ async fn status_follows_the_entry() {
     .unwrap();
     tx.commit().await.unwrap();
     drop(tx);
-    let [_old, new] = differential_sessions(&manager).await;
+    let [old, new] = differential_sessions(&manager).await;
 
     let shown = |view: bool| {
         let mut rows: Vec<Vec<String>> = expected
@@ -1278,6 +1273,7 @@ async fn status_follows_the_entry() {
              FROM {table} ORDER BY id"
         );
         assert_eq!(rows(new.as_ref(), &sql).await, shown(view), "{sql}");
+        assert_eq!(rows(old.as_ref(), &sql).await, shown(view), "V1: {sql}");
     }
     // `status` or `completion_result` alone reads the entries too.
     let sql = "SELECT id, status, completion_result FROM sys_invocation_status ORDER BY id";
@@ -1286,6 +1282,7 @@ async fn status_follows_the_entry() {
         .map(|row| row[..3].to_vec())
         .collect();
     assert_eq!(rows(new.as_ref(), sql).await, statuses, "{sql}");
+    assert_eq!(rows(old.as_ref(), sql).await, statuses, "V1: {sql}");
 
     // Each status and result through the status index: the invocations a scan
     // finds with it, but the orphans, which the index can't find.
