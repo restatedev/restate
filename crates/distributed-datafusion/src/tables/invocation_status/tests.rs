@@ -100,11 +100,29 @@ async fn persisted_invocations_match_v1_for_scans_lookups_and_projections() {
         "SELECT id, status FROM sys_invocation_status WHERE partition_key >= 3 ORDER BY id LIMIT 3 OFFSET 2".into(),
         "SELECT scheduled_start_at FROM sys_invocation_status ORDER BY id".into(),
     ] {
-        assert_eq!(rows(new.as_ref(), &sql).await, rows(old.as_ref(), &sql).await, "{sql}");
+        let mut actual = rows(new.as_ref(), &sql).await;
+        // V2 also shows each invocation's entry, in its last three columns.
+        if sql.starts_with("SELECT *") {
+            for row in &mut actual {
+                row.truncate(row.len() - 3);
+            }
+        }
+        assert_eq!(actual, rows(old.as_ref(), &sql).await, "{sql}");
     }
     assert_eq!(
         rows(new.as_ref(), "SELECT COUNT(*) FROM sys_invocation_status").await,
         [["32"]]
+    );
+    // Without entries, no invocation has a stage or effective status, and
+    // whether it `completed` comes from its status: one in six did.
+    assert_eq!(
+        rows(
+            new.as_ref(),
+            "SELECT stage, effective_status, completed, COUNT(*) FROM sys_invocation \
+             GROUP BY stage, effective_status, completed ORDER BY completed"
+        )
+        .await,
+        [["", "", "false", "26"], ["", "", "true", "6"]]
     );
     // `sys_invocation` shows each invocation's `canonical_id` as its status does.
     assert_eq!(
@@ -393,9 +411,11 @@ async fn invocations_read_through_the_entry_index_match_v1() {
     let not_completed = status_page("status != 'completed'", "DESC", 20);
     let not_completed_or_paused = status_page("status NOT IN ('completed', 'paused')", "DESC", 10);
     // Statuses whose entries can be in every lane: the creation index,
-    // checking them. Only the creation times: rows of both statuses share them.
+    // checking them. Only the creation times: rows of several statuses share
+    // them.
     let every_lane = "SELECT created_at FROM sys_invocation_status \
-        WHERE status IN ('invoked', 'completed') ORDER BY created_at DESC NULLS LAST LIMIT 20";
+        WHERE status IN ('inboxed', 'scheduled', 'invoked', 'suspended', 'paused', 'completed') \
+        ORDER BY created_at DESC NULLS LAST LIMIT 20";
     // A range of handlers, checked on the index's values.
     let handler_range = page.replace(
         "target_handler_name = 'promise'",
@@ -456,7 +476,8 @@ async fn invocations_read_through_the_entry_index_match_v1() {
          WHERE target_service_name IN ('Promises', 'Utils', 'Missing') \
          GROUP BY target_service_name ORDER BY target_service_name"
             .into(),
-        "SELECT id, status, target FROM sys_invocation WHERE target_service_name = 'Promises' \
+        // V1's view still derives `status` from the live state.
+        "SELECT id, target FROM sys_invocation WHERE target_service_name = 'Promises' \
          AND target_handler_name = 'promise' ORDER BY created_at DESC NULLS LAST LIMIT 9"
             .into(),
     ];
@@ -590,6 +611,107 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         matches_v1(sql, false).await;
     }
     assert!(!orphaned().await);
+
+    // Each invocation shows its entry's stage and effective status, whether a
+    // scan reads the entries in step, lookups fetch them, an index window
+    // fetches them, or a status lane's keys tell them. The orphan has none, so
+    // neither, and whether it `completed` comes from its status.
+    let columns = "SELECT id, stage, effective_status, completed FROM sys_invocation_status";
+    let promises_by = |condition: &str, order: &str| {
+        format!(
+            "{columns} WHERE target_service_name = 'Promises' {condition} \
+             ORDER BY created_at DESC NULLS LAST{order} LIMIT 1000"
+        )
+    };
+    let scanned = sorted(rows(new.as_ref(), &promises_by("", ", id")).await);
+    let orphan_row = vec![
+        orphan.to_string(),
+        String::new(),
+        String::new(),
+        "false".into(),
+    ];
+    assert!(scanned.contains(&orphan_row), "{scanned:?}");
+    for (condition, index) in [
+        ("", "_idx_entry_by_service_created"),
+        ("AND status = 'completed'", "_idx_entry_by_status_created"),
+    ] {
+        let sql = promises_by(condition, "");
+        let plan = explained(&sql).await;
+        assert!(plan.contains(&format!("index={index}")), "{sql}: {plan}");
+        let mut expected = sorted(rows(new.as_ref(), &promises_by(condition, ", id")).await);
+        expected.retain(|row| *row != orphan_row);
+        assert_eq!(sorted(rows(new.as_ref(), &sql).await), expected, "{sql}");
+    }
+    let some: Vec<_> = scanned.iter().step_by(7).collect();
+    let listed = some
+        .iter()
+        .map(|row| format!("'{}'", row[0]))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sorted(
+            rows(
+                new.as_ref(),
+                &format!("{columns} WHERE id IN ({})", listed.join(","))
+            )
+            .await
+        ),
+        some.into_iter().cloned().collect::<Vec<_>>(),
+        "lookups"
+    );
+    // Entries agree with statuses: completed invocations are finished, killed
+    // ones failed and running ones invoked, apart from the orphan. The same
+    // conditions select the same invocations through the view.
+    let v1_count = async |condition: &str| -> u64 {
+        rows(
+            old.as_ref(),
+            &format!("SELECT COUNT(*) FROM sys_invocation_status WHERE {condition}"),
+        )
+        .await[0][0]
+            .parse()
+            .unwrap()
+    };
+    let killed = v1_count("completion_result = 'failure'").await;
+    let running = v1_count("status = 'invoked'").await - 1;
+    assert!(killed > 0 && running > 0);
+    for table in ["sys_invocation_status", "sys_invocation"] {
+        let v2_count = async |condition: &str| -> u64 {
+            rows(
+                new.as_ref(),
+                &format!("SELECT COUNT(*) FROM {table} WHERE {condition}"),
+            )
+            .await[0][0]
+                .parse()
+                .unwrap()
+        };
+        assert_eq!(
+            v2_count("effective_status = 'killed'").await,
+            killed,
+            "{table}"
+        );
+        assert_eq!(
+            v2_count("effective_status = 'running'").await,
+            running,
+            "{table}"
+        );
+        assert_eq!(
+            v2_count("completed <> (status = 'completed')").await,
+            0,
+            "{table}"
+        );
+        // As for a stage this version doesn't know, the logical columns are
+        // never NULL: `IS NULL` selects nothing, though the orphan shows NULLs.
+        assert_eq!(
+            rows(
+                new.as_ref(),
+                &format!(
+                    "SELECT stage, effective_status, completed FROM {table} WHERE id = '{orphan}'"
+                )
+            )
+            .await,
+            [["", "", "false"]],
+            "{table}"
+        );
+    }
     // A LIMIT without an ORDER BY, as the UI's lists send, reads an index and
     // stops: any rows meeting the conditions will do, so each page holds the
     // LIMIT's count of them, all matches.
@@ -671,8 +793,10 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         assert!(!plan.contains("IndexScanExec"), "{sql}: {plan}");
     }
     // The service's scheduled invocations, none yet, through the status index:
-    // it fetches the statuses of Counter's active invocations only, not the
-    // partition's every status. The newest failures read only failed keys.
+    // the scheduled lanes hold none of Counter's running invocations, so it
+    // fetches no status. Its invoked ones are all of its active invocations,
+    // and the read fetches their statuses only, not the partition's every
+    // status. The newest failures read only failed keys.
     let count = async |condition: &str| -> u64 {
         rows(
             old.as_ref(),
@@ -693,6 +817,9 @@ async fn invocations_read_through_the_entry_index_match_v1() {
     };
     let source = status_source(&analyzed(scheduled).await);
     assert_eq!(metric(&source, "output_rows"), Some(0), "{source}");
+    assert_eq!(metric(&source, "entry_index_statuses"), Some(0), "{source}");
+    let invoked = scheduled.replace("'scheduled'", "'invoked'");
+    let source = status_source(&analyzed(&invoked).await);
     assert_eq!(
         metric(&source, "entry_index_statuses"),
         Some(counter_active),
@@ -920,6 +1047,292 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         drop(tx);
         let message = error(promises).await;
         assert!(message.contains(expected), "{message}");
+    }
+}
+
+/// The entry tells an invocation's `status` and `completion_result`, in the
+/// table and in the view, whatever the invocation stored: each effective
+/// status maps to one of each. Without an entry, or with a stored pair that
+/// makes no effective status, the stored ones show, `inboxed` as `pending`
+/// and `invoked` as `ready` in the view's status. Reads of the status index
+/// return exactly the invocations a scan finds with that status or result.
+#[restate_core::test]
+async fn status_follows_the_entry() {
+    RocksDbManager::init();
+    let manager = PartitionStoreManager::create(true).await.unwrap();
+    let mut store = manager
+        .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+        .await
+        .unwrap();
+    let mut config = Configuration::default();
+    config.common.experimental.set_track_entry_indexes(true);
+    store
+        .verify_and_run_migrations(CancellationToken::new(), &config)
+        .await
+        .unwrap();
+    Configuration::set(config.clone());
+
+    const BASE: u64 = 1_744_020_000_000;
+    let inboxed = || {
+        InvocationStatus::Inboxed(InboxedInvocation {
+            inbox_sequence_number: 1,
+            metadata: PreFlightInvocationMetadata::mock(),
+        })
+    };
+    let invoked = || InvocationStatus::Invoked(InFlightInvocationMetadata::mock());
+    let completed = || InvocationStatus::Completed(CompletedInvocation::mock_neo());
+    // (entry, stored status, [status, view's status, stage, effective status,
+    // completion result]); the stored completed invocations succeeded.
+    let cases = vec![
+        (
+            Some((Stage::Inbox, Status::New)),
+            inboxed(),
+            ["inboxed", "pending", "inbox", "new", ""],
+        ),
+        (
+            Some((Stage::Inbox, Status::Scheduled)),
+            InvocationStatus::Scheduled(ScheduledInvocation {
+                metadata: PreFlightInvocationMetadata::mock(),
+            }),
+            ["scheduled", "scheduled", "inbox", "scheduled", ""],
+        ),
+        (
+            Some((Stage::Inbox, Status::Started)),
+            invoked(),
+            ["invoked", "ready", "inbox", "ready", ""],
+        ),
+        (
+            Some((Stage::Inbox, Status::Yielded)),
+            invoked(),
+            ["invoked", "ready", "inbox", "yielded", ""],
+        ),
+        (
+            Some((Stage::Inbox, Status::BackingOff)),
+            invoked(),
+            ["invoked", "backing-off", "inbox", "backing-off", ""],
+        ),
+        (
+            Some((Stage::Running, Status::BackingOff)),
+            invoked(),
+            ["invoked", "running", "running", "running", ""],
+        ),
+        (
+            Some((Stage::Suspended, Status::Started)),
+            InvocationStatus::Suspended {
+                metadata: InFlightInvocationMetadata::mock(),
+                awaiting_on: restate_types::journal_v2::UnresolvedFuture::unknown_from_iter([
+                    restate_types::journal_v2::NotificationId::for_completion(1),
+                ]),
+            },
+            ["suspended", "suspended", "suspended", "suspended", ""],
+        ),
+        (
+            Some((Stage::Paused, Status::BackingOff)),
+            InvocationStatus::Paused(InFlightInvocationMetadata::mock()),
+            ["paused", "paused", "paused", "paused", ""],
+        ),
+        (
+            Some((Stage::Finished, Status::Succeeded)),
+            completed(),
+            ["completed", "completed", "finished", "succeeded", "success"],
+        ),
+        (
+            Some((Stage::Finished, Status::Failed)),
+            completed(),
+            ["completed", "completed", "finished", "failed", "failure"],
+        ),
+        (
+            Some((Stage::Finished, Status::Killed)),
+            completed(),
+            ["completed", "completed", "finished", "killed", "failure"],
+        ),
+        (
+            Some((Stage::Finished, Status::Cancelled)),
+            completed(),
+            ["completed", "completed", "finished", "cancelled", "failure"],
+        ),
+        // The entry wins over a stored status that says otherwise.
+        (
+            Some((Stage::Inbox, Status::New)),
+            invoked(),
+            ["inboxed", "pending", "inbox", "new", ""],
+        ),
+        (
+            Some((Stage::Running, Status::Started)),
+            inboxed(),
+            ["invoked", "running", "running", "running", ""],
+        ),
+        // A stored success shows as nothing while the entry runs.
+        (
+            Some((Stage::Running, Status::Started)),
+            completed(),
+            ["invoked", "running", "running", "running", ""],
+        ),
+        // A pair no code path writes: the stored status shows.
+        (
+            Some((Stage::Inbox, Status::Succeeded)),
+            invoked(),
+            ["invoked", "ready", "inbox", "", ""],
+        ),
+        // No entry: the stored status shows.
+        (None, inboxed(), ["inboxed", "pending", "", "", ""]),
+        (None, invoked(), ["invoked", "ready", "", "", ""]),
+        (
+            None,
+            completed(),
+            ["completed", "completed", "", "", "success"],
+        ),
+    ];
+    let mut expected = Vec::new();
+    let mut orphans = HashSet::new();
+    let mut tx = store.transaction();
+    for (index, (entry, status, shown)) in cases.into_iter().enumerate() {
+        let index = index as u64;
+        let id = InvocationId::from_parts(index * 997, InvocationUuid::from_u128(index.into()));
+        let created = MillisSinceEpoch::new(BASE + index * 1000);
+        let mut status = status;
+        match &mut status {
+            InvocationStatus::Inboxed(inboxed) => {
+                inboxed.metadata.timestamps = StatusTimestamps::init(created)
+            }
+            InvocationStatus::Scheduled(scheduled) => {
+                scheduled.metadata.timestamps = StatusTimestamps::init(created)
+            }
+            InvocationStatus::Invoked(metadata)
+            | InvocationStatus::Paused(metadata)
+            | InvocationStatus::Suspended { metadata, .. } => {
+                metadata.timestamps = StatusTimestamps::init(created)
+            }
+            InvocationStatus::Completed(completed) => {
+                completed.timestamps = StatusTimestamps::init(created)
+            }
+            InvocationStatus::Free => unreachable!(),
+        }
+        let target = status.invocation_target().unwrap().clone();
+        tx.put_invocation_status(&id, &status).unwrap();
+        match entry {
+            Some((stage, entry_status)) => {
+                let qid = VQueueId::custom(id.partition_key(), "q");
+                let created = UniqueTimestamp::from_unix_millis_unchecked(created);
+                let key = EntryKey::new(false, created.to_unix_millis(), index, EntryId::from(id));
+                tx.create_vqueue_entry_status(
+                    &EntryContext {
+                        qid: &qid,
+                        target: &target.entry_target_ref(),
+                    },
+                    EntryStateRef {
+                        stage,
+                        status: entry_status,
+                        entry_key: &key,
+                        metadata: &EntryMetadata::default(),
+                        stats: &EntryStatistics::new(created, key.run_at()),
+                    },
+                );
+            }
+            None => {
+                orphans.insert(id.to_string());
+            }
+        }
+        let [table, view, stage, effective, result] = shown;
+        expected.push((
+            id.to_string(),
+            table,
+            view,
+            stage,
+            effective,
+            result,
+            table == "completed",
+        ));
+    }
+    tx.put_state_machine_features(&PersistedFeatures {
+        vqueues: true,
+        ..Default::default()
+    })
+    .unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+    let [_old, new] = differential_sessions(&manager).await;
+
+    let shown = |view: bool| {
+        let mut rows: Vec<Vec<String>> = expected
+            .iter()
+            .map(
+                |(id, table, in_view, stage, effective, result, completed)| {
+                    vec![
+                        id.clone(),
+                        if view { in_view } else { table }.to_string(),
+                        result.to_string(),
+                        stage.to_string(),
+                        effective.to_string(),
+                        completed.to_string(),
+                    ]
+                },
+            )
+            .collect();
+        rows.sort();
+        rows
+    };
+    for (table, view) in [("sys_invocation_status", false), ("sys_invocation", true)] {
+        let sql = format!(
+            "SELECT id, status, completion_result, stage, effective_status, completed \
+             FROM {table} ORDER BY id"
+        );
+        assert_eq!(rows(new.as_ref(), &sql).await, shown(view), "{sql}");
+    }
+    // `status` or `completion_result` alone reads the entries too.
+    let sql = "SELECT id, status, completion_result FROM sys_invocation_status ORDER BY id";
+    let statuses: Vec<_> = shown(false)
+        .into_iter()
+        .map(|row| row[..3].to_vec())
+        .collect();
+    assert_eq!(rows(new.as_ref(), sql).await, statuses, "{sql}");
+
+    // Each status and result through the status index: the invocations a scan
+    // finds with it, but the orphans, which the index can't find.
+    let conditions = [
+        "inboxed",
+        "scheduled",
+        "invoked",
+        "suspended",
+        "paused",
+        "completed",
+    ]
+    .map(|status| format!("status = '{status}'"))
+    .into_iter()
+    .chain([
+        "completion_result = 'success'".to_owned(),
+        "completion_result = 'failure'".to_owned(),
+        "completion_result IS NULL AND status = 'invoked'".to_owned(),
+    ]);
+    for condition in conditions {
+        let page = format!(
+            "SELECT id FROM sys_invocation_status WHERE {condition} \
+             ORDER BY created_at DESC NULLS LAST LIMIT 100"
+        );
+        let plan = rows(new.as_ref(), &format!("EXPLAIN {page}"))
+            .await
+            .concat()
+            .join("\n");
+        assert!(
+            plan.contains("index=_idx_entry_by_status_created"),
+            "{page}: {plan}"
+        );
+        let mut scanned: Vec<_> = rows(
+            new.as_ref(),
+            &format!(
+                "SELECT id FROM sys_invocation_status WHERE {condition} \
+                 ORDER BY created_at DESC NULLS LAST, id"
+            ),
+        )
+        .await
+        .into_iter()
+        .filter(|row| !orphans.contains(&row[0]))
+        .collect();
+        let mut read = rows(new.as_ref(), &page).await;
+        scanned.sort();
+        read.sort();
+        assert!(!read.is_empty(), "{page}");
+        assert_eq!(read, scanned, "{page}");
     }
 }
 

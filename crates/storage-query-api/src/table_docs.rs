@@ -169,11 +169,19 @@ pub fn sys_invocation_table_docs() -> TableDocs {
             name: "status",
             column_type: "Utf8",
             description: "Either `pending` or `scheduled` or `ready` or `running` or `paused` or \
-                          `backing-off` or `suspended` or `completed`."
+                          `backing-off` or `suspended` or `completed`. Since v1.8.2, it follows \
+                          the invocation's `effective_status`: `new` is `pending`, `yielded` is \
+                          `ready`, a finished outcome is `completed`, the others keep their \
+                          name. An invocation without one shows its stored status, with \
+                          `inboxed` as `pending` and `invoked` as `ready`. Deprecated since \
+                          v1.8.2: use `effective_status`, `stage` and `completed`."
                 .to_owned(),
         },
         status("completion_result"),
         status("completion_failure"),
+        status("stage"),
+        status("effective_status"),
+        status("completed"),
     ];
     TableDocs {
         name: "sys_invocation",

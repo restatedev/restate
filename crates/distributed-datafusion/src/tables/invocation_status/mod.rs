@@ -21,7 +21,8 @@ use datafusion::physical_plan::{PhysicalExpr, SendableRecordBatchStream};
 
 use restate_partition_store::index::RegisteredIndex;
 use restate_partition_store::invocation_status_table::{
-    EntryIndexExecution, EntryIndexPath, EntryIndexRead, InvocationStatusKey, InvocationStatusKeys,
+    EntryIndexExecution, EntryIndexPath, EntryIndexRead, InvocationEntry,
+    InvocationStatusEntryRecords, InvocationStatusKey, InvocationStatusKeys,
     InvocationStatusRecords, InvocationStatusScan, ScanReason,
 };
 use restate_partition_store::keys::selection::KeySelection;
@@ -29,6 +30,7 @@ use restate_partition_store::vqueue_table::{
     EntryByCreated as StoredEntryIndex, EntryByStatusCreated as StoredStatusIndex,
     EntryByStatusCreatedKey,
 };
+use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use restate_storage_query_api::ordering::NativeOrder;
 use restate_storage_query_api::schema::index::index_restriction;
 use restate_storage_query_api::selection::domain::Domain;
@@ -158,8 +160,10 @@ impl CompleteIndex for EntryIndex {
 /// The entry index `entry_by_status_created/1`, read for the invocations of
 /// some statuses or outcomes. The public `status` and `completion_result`
 /// select the stages and stored statuses their entries can be in, the
-/// index's **lanes**: completed invocations are Finished, failed ones in any
-/// stored status but Succeeded, the others in any other stage. Each partition
+/// index's **lanes**: each status the pairs whose effective status tells it
+/// (`invoked` is the inbox's `ready`, `yielded` and `backing-off` and all of
+/// Running), failed invocations Finished in any stored status but Succeeded
+/// (see `EntryByStatusCreatedKey::lanes`). Each partition
 /// reads the lanes with keys, like `entry_by_created/1`, and merges them into
 /// creation order; until the index is Complete it scans instead. Its policy:
 /// the newest or oldest invocations of some statuses, of all services or a
@@ -172,8 +176,8 @@ impl CompleteIndex for EntryIndex {
 /// LIMIT 250
 /// ```
 ///
-/// A status condition that doesn't narrow the lanes, such as
-/// `status IN ('invoked', 'completed')`, leaves it unused.
+/// A status condition that doesn't narrow the lanes, such as one naming
+/// every status, leaves it unused.
 struct StatusIndex;
 
 impl CompleteIndex for StatusIndex {
@@ -522,33 +526,58 @@ impl StatusRead {
                     }
                 }
             };
-            scan_rows_into::<InvocationStatusRecords, InvocationStatus, _>(
-                store,
-                &executor,
-                Arc::new(filter),
-                BatchSink::new(
-                    Batches::<InvocationStatus>::new(
-                        projection,
-                        batch_size,
-                        limit,
-                        metrics.elapsed_compute,
-                    ),
-                    tx.clone(),
+            let entries = row::reads_entries(&projection);
+            let sink = BatchSink::new(
+                Batches::<InvocationStatus>::new(
+                    projection,
+                    batch_size,
+                    limit,
+                    metrics.elapsed_compute,
                 ),
-                |(id, status), batches: &mut Batches<InvocationStatus>| {
-                    batches.set_record(&id);
-                    if let ControlFlow::Break(result) = batches.append_with(|builder| {
-                        row::append_row(builder, id, &status).map_err(|error| {
-                            restate_storage_api::StorageError::Conversion(error.into())
-                        })
-                    }) {
-                        result?;
-                    }
-                    Ok(())
-                },
-            )
-            .await
+                tx.clone(),
+            );
+            // Only a read that shows or filters on an entry's column reads the
+            // entries, in step with the statuses.
+            if entries {
+                scan_rows_into::<InvocationStatusEntryRecords, InvocationStatus, _>(
+                    store,
+                    &executor,
+                    Arc::new(filter),
+                    sink,
+                    |(id, status, entry), batches: &mut Batches<InvocationStatus>| {
+                        append_status(batches, id, &status, entry)
+                    },
+                )
+                .await
+            } else {
+                scan_rows_into::<InvocationStatusRecords, InvocationStatus, _>(
+                    store,
+                    &executor,
+                    Arc::new(filter),
+                    sink,
+                    |(id, status), batches: &mut Batches<InvocationStatus>| {
+                        append_status(batches, id, &status, None)
+                    },
+                )
+                .await
+            }
         });
         Ok(stream.build())
     }
+}
+
+fn append_status(
+    batches: &mut Batches<InvocationStatus>,
+    id: InvocationId,
+    status: &InvocationStatusV2Lazy<'_>,
+    entry: Option<InvocationEntry>,
+) -> restate_storage_api::Result<()> {
+    batches.set_record(&id);
+    if let ControlFlow::Break(result) = batches.append_with(|builder| {
+        row::append_row(builder, id, status, entry)
+            .map_err(|error| restate_storage_api::StorageError::Conversion(error.into()))
+    }) {
+        result?;
+    }
+    Ok(())
 }

@@ -65,7 +65,9 @@ pub(crate) mod entry_index_read;
 mod read_cursor;
 pub use entry_index_read::{EntryIndexExecution, EntryIndexPath, EntryIndexRead, ScanReason};
 pub use read_cursor::{
-    InvocationStatusCursor, InvocationStatusKeys, InvocationStatusRecords, InvocationStatusScan,
+    InvocationEntry, InvocationStatusCursor, InvocationStatusEntryCursor,
+    InvocationStatusEntryRecords, InvocationStatusKeys, InvocationStatusRecords,
+    InvocationStatusScan,
 };
 
 #[inline]
