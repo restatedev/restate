@@ -368,8 +368,9 @@ pub async fn invocation_status_filter(
 #[derive(Deserialize)]
 struct VqueueEntryStatusRow {
     entry_id: String,
-    stage: String,
-    status: String,
+    // NULL from Restate 1.8.2 where the server doesn't recognize the value.
+    stage: Option<String>,
+    status: Option<String>,
     next_at: Option<DateTime<Local>>,
     latest_attempt_at: Option<DateTime<Local>>,
     retry_count_since_last_stored_command: Option<u64>,
@@ -377,7 +378,7 @@ struct VqueueEntryStatusRow {
 
 impl VqueueEntryStatusRow {
     fn is_backing_off(&self) -> bool {
-        self.stage == "inbox" && self.status == "backing-off"
+        self.stage.as_deref() == Some("inbox") && self.status.as_deref() == Some("backing-off")
     }
 }
 

@@ -13,15 +13,21 @@
 //! See the [identifier module](crate::identifiers) for the relationship between
 //! [`EntryId`], [`BaseEntryId`](crate::identifiers::BaseEntryId), and [`CanonicalEntryId`].
 
+mod effective_status;
 mod entry_id;
 mod entry_target;
 mod seq;
+mod stage;
+mod status;
 mod vqueue_id;
 
 pub use crate::identifiers::CanonicalEntryId;
+pub use effective_status::EffectiveStatus;
 pub use entry_id::{EntryId, EntryIdDisplay, EntryKind};
 pub use entry_target::{EntryTargetExt, EntryTargetRef, HandlerRef};
 pub use seq::Seq;
+pub use stage::Stage;
+pub use status::Status;
 pub use vqueue_id::{VQueueId, VQueueIdRef};
 
 /// Errors returned when parsing encoded vqueue entry identifiers or entry kinds.
@@ -36,4 +42,7 @@ pub enum ParseError {
     /// A string other than `"invocation"` or `"state-mutation"`.
     #[error("unknown entry kind string")]
     UnknownEntryKindString,
+    /// A string that names no [`EffectiveStatus`].
+    #[error("unknown effective status")]
+    UnknownEffectiveStatus,
 }

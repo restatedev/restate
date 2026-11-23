@@ -40,6 +40,8 @@ pub(crate) mod locks;
 pub mod loglet_workers;
 pub(crate) mod logs;
 pub(crate) mod migration_records;
+#[cfg(test)]
+mod native_order_tests;
 pub(crate) mod nodes;
 pub(crate) mod partition_replica_set;
 pub(crate) mod partition_state;

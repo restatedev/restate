@@ -13,16 +13,25 @@
 
 use restate_clock::{UniqueTimestamp, time::MillisSinceEpoch};
 use restate_limiter::{Level, LimitKey};
+use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, WriteInvocationStatusTable,
 };
+use restate_storage_api::journal_events::{EventView, WriteJournalEventsTable};
+use restate_storage_api::journal_table::{JournalEntry, WriteJournalTable};
+use restate_storage_api::journal_table_v2::WriteJournalTable as WriteJournalTableV2;
 use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
 use restate_storage_api::vqueue_table::{
     EntryContext, EntryKey, EntryMetadata, EntryStateRef, EntryValue, Stage, Status,
     WriteVQueueTable, stats::EntryStatistics,
 };
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
-use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, VQueueId};
+use restate_types::journal::CompletionResult;
+use restate_types::journal_events::raw::RawEvent;
+use restate_types::journal_events::{Event, PausedEvent};
+use restate_types::journal_v2::{Entry, SleepCommand};
+use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
+use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, HandlerRef, VQueueId};
 use restate_types::{PlainNodeId, Scope, ServiceName};
 use restate_util_string::ReString;
 use restate_worker_api::invoker::InvocationStatusReport;
@@ -36,6 +45,9 @@ use restate_worker_api::{
 use crate::UserTables;
 use crate::tables::invocation_state::SysInvocationStateTable;
 use crate::tables::invocation_status::SysInvocationStatusTable;
+use crate::tables::journal::SysJournalTable;
+use crate::tables::journal_events::SysJournalEventsTable;
+use crate::tables::vqueue_meta::SysVqueueMetaTable;
 
 use super::*;
 
@@ -183,6 +195,13 @@ async fn cross_schema_fixture_with(
             sources.register_declared_scanner::<SysInvocationStatusTable>(Arc::new(
                 SysInvocationStatusTable::create_local_scanner(),
             ));
+            SysJournalTable::register_scanners(sources);
+            sources.register_declared_scanner::<SysJournalEventsTable>(Arc::new(
+                SysJournalEventsTable::create_local_scanner(),
+            ));
+            sources.register_declared_scanner::<SysVqueueMetaTable>(Arc::new(
+                SysVqueueMetaTable::create_local_scanner(),
+            ));
             crate::local_scanners::register_live_scanners(sources);
             let (commands, mut receiver) = tokio::sync::mpsc::channel(32);
             sources.register_processor_reads(
@@ -283,7 +302,8 @@ async fn cross_schema_fixture_with(
             &InvocationStatus::Invoked(scoped),
         )
         .unwrap();
-        // One entry, in the first of the partition's two scheduled vqueues.
+        // One entry, the first invocation's, in the first of the partition's two
+        // scheduled vqueues.
         let qid = VQueueId::custom(start, "join");
         tx.create_vqueue(
             &qid,
@@ -294,7 +314,8 @@ async fn cross_schema_fixture_with(
                 VQueueLink::Service(ServiceName::new("join")),
             ),
         );
-        let key = EntryKey::new(false, now, 1, EntryId::new(EntryKind::Invocation, [1; 16]));
+        let first = InvocationId::from_parts(start, InvocationUuid::from_u128(0));
+        let key = EntryKey::new(false, now, 1, EntryId::from(&first));
         // Its stage key, as the scheduler writes it, for index access.
         tx.put_vqueue_inbox(
             &qid,
@@ -370,6 +391,8 @@ async fn sharding_columns_colocate_cross_schema_joins_with_shared_admission() {
         ("SELECT COUNT(*) FROM sys_invocation_status s JOIN sys_invocation_state l ON s.id = l.id", "16", Some(invoker)),
         // Vqueue IDs across the scheduler and vqueue entries.
         ("SELECT COUNT(*) FROM sys_scheduler q JOIN sys_vqueue_entry_status e ON q.id = e.vqueue_id", "8", Some(scheduler)),
+        // Different derivations of one shard-key space: an invocation and its entry.
+        ("SELECT COUNT(*) FROM sys_invocation_status s JOIN sys_vqueue_entry_status e ON s.id = e.entry_id", "8", Some(storage_and(Default::default()))),
         // Scope-derived counters and scoped invocations.
         ("SELECT COUNT(*) FROM sys_user_limits u JOIN sys_invocation_status s ON u.scope = s.scope", "8", Some(user_limits)),
         // Lineage follows aliases and reordered projections: `partition_key` here is an invocation ID.
@@ -466,6 +489,8 @@ async fn sharding_columns_colocate_cross_schema_joins_with_shared_admission() {
         // NULL scopes match each other but determine no shard.
         ("SELECT COUNT(*) FROM sys_invocation_status a JOIN sys_invocation_status b \
           ON a.scope IS NOT DISTINCT FROM b.scope", "584"),
+        // A scope's shard key is its hash, an ID's is the key it encodes.
+        ("SELECT COUNT(*) FROM sys_user_limits u JOIN sys_invocation_status s ON u.scope = s.id", "0"),
     ];
     for (sql, expected) in global {
         captures.lock().clear();
@@ -1215,5 +1240,510 @@ async fn operators_below_the_partition_reads_report_every_copy() {
         total(1)
     );
         assert_eq!(count(format!("SELECT COUNT(*) {join}")).await, total(2));
+    }
+}
+
+/// The ancestors of the operator at line `at` of `plan`, an EXPLAIN's physical
+/// plan, nearest first.
+fn ancestors<'a>(lines: &[&'a str], at: usize) -> Vec<&'a str> {
+    let indent = |line: &str| line.len() - line.trim_start().len();
+    let mut depth = indent(lines[at]);
+    let mut ancestors = Vec::new();
+    for line in lines[..at].iter().rev() {
+        if indent(line) < depth {
+            depth = indent(line);
+            ancestors.push(*line);
+        }
+    }
+    ancestors
+}
+
+fn is_join(line: &str) -> bool {
+    line.contains("HashJoinExec") || line.contains("SortMergeJoinExec")
+}
+
+/// Whether every JOIN of `plan`, an EXPLAIN's physical plan, runs inside a
+/// partition read: shard by shard.
+fn joins_in_partition_reads(plan: &str) -> bool {
+    let lines: Vec<&str> = plan.lines().collect();
+    let joins: Vec<_> = (0..lines.len()).filter(|&at| is_join(lines[at])).collect();
+    !joins.is_empty()
+        && joins.iter().all(|&at| {
+            ancestors(&lines, at)
+                .iter()
+                .any(|line| line.contains("PartitionReadExec"))
+        })
+}
+
+/// Whether a union in `plan`, an EXPLAIN's physical plan, is a JOIN's input
+/// inside a partition read: read shard by shard, not above the shards.
+fn union_in_shard_join(plan: &str) -> bool {
+    let lines: Vec<&str> = plan.lines().collect();
+    (0..lines.len())
+        .filter(|&at| lines[at].contains("UnionExec"))
+        .any(|at| {
+            let ancestors = ancestors(&lines, at);
+            ancestors
+                .iter()
+                .position(|line| is_join(line))
+                .is_some_and(|join| {
+                    ancestors[join..]
+                        .iter()
+                        .any(|line| line.contains("PartitionReadExec"))
+                })
+        })
+}
+
+/// A JOIN input that unions a table's layouts, the journal's V1 and V2 tables, is
+/// shard-local when its column is the same sharding column in every layout: each
+/// shard reads both layouts' share of its partitions. Its rows are the global
+/// JOIN's. Each partition's first invocation has three entries in the V2 layout,
+/// and its second invocation two in the V1 layout; at the first one's partition
+/// key, two invocations without a status have entries too, one in each layout,
+/// so that the layouts' rows interleave under one key.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unions_of_a_tables_layouts_join_shard_locally() {
+    let (fixture, _captures) = cross_schema_fixture().await;
+    let now = MillisSinceEpoch::new(1_744_010_000_000);
+    for mut store in fixture.stores.iter().cloned() {
+        let start = store.partition_key_range().start();
+        let invocation =
+            |n: u64| InvocationId::from_parts(start + n, InvocationUuid::from_u128(n.into()));
+        // Uuids 5 and 9 at the first invocation's key: V2, V1, V2 in key order.
+        let at_first = |uuid| InvocationId::from_parts(start, InvocationUuid::from_u128(uuid));
+        let mut tx = store.transaction();
+        for id in [invocation(0), at_first(9)] {
+            for index in 0..3 {
+                let entry = StoredRawEntry::new(
+                    StoredRawEntryHeader::new(now),
+                    Entry::from(SleepCommand {
+                        wake_up_time: 1.into(),
+                        completion_id: index,
+                        name: "nap".into(),
+                    })
+                    .encode::<ServiceProtocolV4Codec>(),
+                );
+                WriteJournalTableV2::put_journal_entry(&mut tx, &id, index, &entry, &[]).unwrap();
+            }
+        }
+        for id in [invocation(1), at_first(5)] {
+            for index in 0..2 {
+                let entry = JournalEntry::Completion(CompletionResult::Empty);
+                WriteJournalTable::put_journal_entry(&mut tx, &id, index, &entry).unwrap();
+            }
+        }
+        tx.commit().await.unwrap();
+    }
+    let env = environment(4, 1).with_distributed_execution(fixture.network.clone());
+    env.register_tables(UserTables::new(
+        fixture.partitions.clone(),
+        fixture.scanners.clone(),
+    ))
+    .await
+    .unwrap();
+    let engine = DataFusionQueryEngine::from_env(env, None);
+    let session = engine.create_session(SessionOptions::default()).unwrap();
+    let explain = async |sql: &str| {
+        session
+            .execute(&format!("EXPLAIN {sql}"), QueryOptions {})
+            .await
+            .unwrap()
+            .stream
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .iter()
+            .flat_map(|batch| {
+                (0..batch.num_rows())
+                    .map(|row| array_value_to_string(batch.column(1), row).unwrap())
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    #[rustfmt::skip]
+    let joins = [
+        ("SELECT s.id, j.index FROM sys_invocation_status s JOIN sys_journal j ON {on}", "s.id", "j.id", 40),
+        ("SELECT s.id, j.index FROM sys_invocation_status s LEFT JOIN sys_journal j ON {on}", "s.id", "j.id", 56),
+        ("SELECT a.id, a.index FROM sys_journal a JOIN sys_journal b ON {on} AND a.index = b.index", "a.id", "b.id", 80),
+    ];
+    // Journal entries come by invocation, then index: the merge's key takes both.
+    let plan = explain(
+        "SELECT a.id FROM sys_journal a JOIN sys_journal b ON a.id = b.id AND a.index = b.index",
+    )
+    .await;
+    assert!(
+        plan.contains("on=[(invocation_id(id)@2, invocation_id(id)@2), (index@1, index@1)]")
+            && !plan.contains("filter="),
+        "merges_on_both_terms: {plan}"
+    );
+    for (sql, left, right, count) in joins {
+        let local = sql.replace("{on}", &format!("{left} = {right}"));
+        // A cast hides the sharding columns: one global JOIN.
+        let global = sql.replace(
+            "{on}",
+            &format!("CAST({left} AS VARCHAR) = CAST({right} AS VARCHAR)"),
+        );
+        let plan = explain(&local).await;
+        assert!(
+            joins_in_partition_reads(&plan) && union_in_shard_join(&plan),
+            "shard_local: {plan}"
+        );
+        // Both layouts' rows come in the ID's order: combined, they still merge.
+        assert!(
+            plan.contains("SortMergeJoinExec") && !plan.contains("SortExec:"),
+            "merges_in_order: {plan}"
+        );
+        assert!(
+            !plan.contains("invocation_id(id@"),
+            "no_text_parsing: {plan}"
+        );
+        let global_plan = explain(&global).await;
+        assert!(
+            !joins_in_partition_reads(&global_plan) && !union_in_shard_join(&global_plan),
+            "global: {global_plan}"
+        );
+        let (rows, _) = rows_and_warnings(session.as_ref(), &local).await;
+        assert_eq!(rows.len(), count, "{local}");
+        assert_eq!(
+            rows,
+            rows_and_warnings(session.as_ref(), &global).await.0,
+            "same_rows_as_global: {local}"
+        );
+    }
+}
+
+/// Shard-local JOINs on ID columns whose reads come in a common native order merge
+/// them on that order's function: no hash table, no split of a partition's rows,
+/// no sort, and the rows a hash JOIN gives. Other JOINs keep hashing. Each
+/// partition holds four invocations, the first with an entry, until the last
+/// part adds more of both.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
+async fn id_joins_merge_on_native_orders() {
+    let (fixture, _captures) = cross_schema_fixture().await;
+    let env = environment(4, 1).with_distributed_execution(fixture.network.clone());
+    env.register_tables(UserTables::new(
+        fixture.partitions.clone(),
+        fixture.scanners.clone(),
+    ))
+    .await
+    .unwrap();
+    let engine = DataFusionQueryEngine::from_env(env, None);
+    let session = engine.create_session(SessionOptions::default()).unwrap();
+    let explain = async |sql: &str| {
+        session
+            .execute(&format!("EXPLAIN {sql}"), QueryOptions {})
+            .await
+            .unwrap()
+            .stream
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .iter()
+            .flat_map(|batch| {
+                (0..batch.num_rows())
+                    .map(|row| array_value_to_string(batch.column(1), row).unwrap())
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    const STATUS_ENTRY: &str =
+        "FROM sys_invocation_status s LEFT JOIN sys_vqueue_entry_status e ON s.id = e.entry_id";
+    #[rustfmt::skip]
+    let merged = [
+        ("SELECT COUNT(*) FROM sys_invocation_status s JOIN sys_vqueue_entry_status e ON s.id = e.entry_id", "8", "base_entry_id"),
+        (&format!("SELECT COUNT(*) {STATUS_ENTRY}"), "32", "base_entry_id"),
+        (&format!("SELECT COUNT(*) FROM (SELECT s.id {STATUS_ENTRY} LIMIT 5)"), "5", "base_entry_id"),
+        ("SELECT COUNT(*) FROM sys_invocation_status s WHERE EXISTS \
+          (SELECT 1 FROM sys_vqueue_entry_status e WHERE e.entry_id = s.id)", "8", "base_entry_id"),
+        // A filter on an input keeps its order.
+        ("SELECT COUNT(*) FROM sys_invocation_status s JOIN sys_vqueue_entry_status e \
+          ON s.id = e.entry_id WHERE e.status = 'new'", "8", "base_entry_id"),
+        // The partition keys' equality holds for every merged pair.
+        ("SELECT COUNT(*) FROM sys_invocation_status s JOIN sys_vqueue_entry_status e \
+          ON s.partition_key = e.partition_key AND s.id = e.entry_id", "8", "base_entry_id"),
+        // A table ordered by both functions joins itself on the first.
+        ("SELECT COUNT(*) FROM sys_invocation_status a JOIN sys_invocation_status b ON a.id = b.id", "32", "invocation_id"),
+    ];
+    for (sql, expected, function) in merged {
+        let plan = explain(sql).await;
+        // On key fields the reads emit, not on a function of the IDs' text.
+        assert!(
+            plan.contains("SortMergeJoinExec") && plan.contains(&format!("{function}(id)@")),
+            "merges_on_{function}: {plan}"
+        );
+        assert!(
+            !plan.contains(&format!("{function}(id@")),
+            "no_text_parsing: {plan}"
+        );
+        assert!(!plan.contains("HashJoinExec"), "no_hash_join: {plan}");
+        assert!(!plan.contains("SortExec:"), "no_sort: {plan}");
+        assert!(!plan.contains("filter="), "no_checked_equality: {plan}");
+        assert_sql(session.as_ref(), "merged_join_results", sql, &[&[expected]]).await;
+    }
+    // Key fields never reach a query's output.
+    let batches = session
+        .execute(
+            "SELECT * FROM sys_invocation_status s JOIN sys_vqueue_entry_status e ON s.id = e.entry_id",
+            QueryOptions {},
+        )
+        .await
+        .unwrap()
+        .stream
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
+    let schema = batches[0].schema();
+    assert!(
+        schema
+            .fields()
+            .iter()
+            .all(|field| !field.name().contains("base_entry_id(")),
+        "no_key_fields_in_output: {schema:?}"
+    );
+    // Another equality is checked on merged pairs.
+    let sql = format!("SELECT COUNT(*) {STATUS_ENTRY} AND e.vqueue_id = s.target_service_name");
+    let plan = explain(&sql).await;
+    assert!(
+        plan.contains("SortMergeJoinExec") && plan.contains("filter="),
+        "{plan}"
+    );
+    assert_sql(
+        session.as_ref(),
+        "checked_equality_results",
+        &sql,
+        &[&["32"]],
+    )
+    .await;
+    // No common order: scopes have no ordering function, `NOT IN` needs the whole
+    // subquery, and the live invoker state declares no order.
+    #[rustfmt::skip]
+    let hashed = [
+        ("SELECT COUNT(*) FROM sys_user_limits u JOIN sys_invocation_status s ON u.scope = s.scope", "8"),
+        ("SELECT COUNT(*) FROM sys_invocation_status s WHERE s.id NOT IN \
+          (SELECT entry_id FROM sys_vqueue_entry_status)", "24"),
+        ("SELECT COUNT(*) FROM sys_invocation_status s JOIN sys_invocation_state l ON s.id = l.id", "16"),
+    ];
+    for (sql, expected) in hashed {
+        let plan = explain(sql).await;
+        assert!(
+            plan.contains("HashJoinExec") && !plan.contains("SortMergeJoinExec"),
+            "hashes: {plan}"
+        );
+        assert_sql(session.as_ref(), "hashed_join_results", sql, &[&[expected]]).await;
+    }
+    // A filter that fixes an ID makes any order on it hold trivially; the live
+    // invoker state still declares none, writes no key fields, and hashes.
+    let fixed = InvocationId::from_parts(
+        fixture.partitions.0[0].1.key_range.start(),
+        InvocationUuid::from_u128(0),
+    );
+    let sql = format!(
+        "SELECT COUNT(*) FROM sys_invocation_status s JOIN sys_invocation_state l \
+         ON s.id = l.id WHERE l.id = '{fixed}'"
+    );
+    let plan = explain(&sql).await;
+    assert!(
+        plan.contains("HashJoinExec") && !plan.contains("SortMergeJoinExec"),
+        "undeclared_orders_hash: {plan}"
+    );
+    assert_sql(session.as_ref(), "fixed_id_join_results", &sql, &[&["1"]]).await;
+    // An owner whose entry read uses the stage index hashes: index reads come in
+    // index order.
+    let qid = VQueueId::custom(fixture.partitions.0[0].1.key_range.start(), "join");
+    let sql = format!(
+        "SELECT COUNT(*) FROM sys_invocation_status s JOIN sys_vqueue_entry_status e \
+         ON s.id = e.entry_id WHERE e.vqueue_id = '{qid}'"
+    );
+    let plan = explain(&sql).await;
+    assert!(
+        plan.contains("IndexScanExec") && plan.contains("HashJoinExec"),
+        "index_reads_hash: {plan}"
+    );
+    assert!(
+        !plan.contains("SortMergeJoinExec"),
+        "index_reads_hash: {plan}"
+    );
+    assert_sql(session.as_ref(), "index_join_results", &sql, &[&["1"]]).await;
+    // Merges united on one owner keep their templates on one partition.
+    let plan = explain(
+        "SELECT s.id FROM sys_invocation_status s WHERE EXISTS \
+         (SELECT 1 FROM sys_vqueue_entry_status e WHERE e.entry_id = s.id) UNION ALL \
+         SELECT a.id FROM sys_invocation_status a WHERE EXISTS \
+         (SELECT 1 FROM sys_invocation_status b WHERE b.id = a.id)",
+    )
+    .await;
+    assert!(
+        plan.matches("SortMergeJoinExec").count() >= 2 && !plan.contains("RepartitionExec"),
+        "united_merges_keep_one_partition: {plan}"
+    );
+
+    // Merges match the rows hash JOINs do. Each partition gets two more
+    // invocations at its first key, uuids 1 and 256, whose IDs' text sorts the
+    // other way, and three more entries at that key: uuid 256's, one of an
+    // invocation that doesn't exist, and a state mutation's.
+    let now = MillisSinceEpoch::new(1_744_010_000_000);
+    let at = UniqueTimestamp::try_from_unix_millis(now).unwrap();
+    for mut store in fixture.stores.iter().cloned() {
+        let start = store.partition_key_range().start();
+        let qid = VQueueId::custom(start, "join");
+        let invocation = |uuid| InvocationId::from_parts(start, InvocationUuid::from_u128(uuid));
+        let mut tx = store.transaction();
+        for uuid in [1, 256] {
+            tx.put_invocation_status(
+                &invocation(uuid),
+                &InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
+            )
+            .unwrap();
+        }
+        let entries = [
+            EntryId::from(&invocation(256)),
+            EntryId::from(&invocation(512)),
+            EntryId::new(EntryKind::StateMutation, [1; 16]),
+        ];
+        for (seq, entry) in (2..).zip(entries) {
+            let target = if entry.kind() == EntryKind::StateMutation {
+                EntryTargetRef::VirtualObject {
+                    scope: None,
+                    service: "join",
+                    key: "k",
+                    handler: HandlerRef::StateMutation,
+                }
+            } else {
+                EntryTargetRef::Service {
+                    scope: None,
+                    service: "join",
+                    handler: "run",
+                }
+            };
+            let key = EntryKey::new(false, now, seq, entry);
+            tx.create_vqueue_entry_status(
+                &EntryContext {
+                    qid: &qid,
+                    target: &target,
+                },
+                EntryStateRef {
+                    stage: Stage::Inbox,
+                    status: Status::New,
+                    entry_key: &key,
+                    metadata: &EntryMetadata::default(),
+                    stats: &EntryStatistics::new(at, key.run_at()),
+                },
+            );
+        }
+        // Events of both new invocations.
+        for uuid in [1, 256] {
+            for lsn in 0..2 {
+                let event = RawEvent::from(Event::Paused(PausedEvent { last_failure: None }));
+                tx.put_journal_event(
+                    &invocation(uuid),
+                    EventView::new(now, lsn as u32, event),
+                    lsn,
+                )
+                .unwrap();
+            }
+        }
+        tx.commit().await.unwrap();
+    }
+    const FROM_STATUS: &str = "FROM sys_invocation_status s";
+    // The new invocations of the first two partitions.
+    let looked_up = fixture.partitions.0[..2]
+        .iter()
+        .flat_map(|(_, partition)| {
+            [1, 256].map(|uuid| {
+                format!(
+                    "'{}'",
+                    InvocationId::from_parts(
+                        partition.key_range.start(),
+                        InvocationUuid::from_u128(uuid)
+                    )
+                )
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    #[rustfmt::skip]
+    let joins = [
+        (format!("SELECT s.id, e.entry_id {FROM_STATUS} JOIN sys_vqueue_entry_status e ON {{on}}"), "s.id", "e.entry_id"),
+        (format!("SELECT s.id, e.entry_id {FROM_STATUS} LEFT JOIN sys_vqueue_entry_status e ON {{on}}"), "s.id", "e.entry_id"),
+        (format!("SELECT s.id, e.entry_id {FROM_STATUS} RIGHT JOIN sys_vqueue_entry_status e ON {{on}}"), "s.id", "e.entry_id"),
+        (format!("SELECT s.id, e.entry_id {FROM_STATUS} FULL JOIN sys_vqueue_entry_status e ON {{on}}"), "s.id", "e.entry_id"),
+        (format!("SELECT s.id {FROM_STATUS} WHERE EXISTS (SELECT 1 FROM sys_vqueue_entry_status e WHERE {{on}})"), "e.entry_id", "s.id"),
+        (format!("SELECT s.id {FROM_STATUS} WHERE NOT EXISTS (SELECT 1 FROM sys_vqueue_entry_status e WHERE {{on}})"), "e.entry_id", "s.id"),
+        ("SELECT a.id, b.id FROM sys_invocation_status a JOIN sys_invocation_status b ON {on}".to_owned(), "a.id", "b.id"),
+        // A checked equality that holds for the scoped invocations only, NULL for
+        // the others: their rows come padded.
+        ("SELECT a.id, b.id FROM sys_invocation_status a RIGHT JOIN sys_invocation_status b ON {on} AND a.scope = b.scope".to_owned(), "a.id", "b.id"),
+        ("SELECT a.id, b.id FROM sys_invocation_status a FULL JOIN sys_invocation_status b ON {on} AND a.scope = b.scope".to_owned(), "a.id", "b.id"),
+        // Invocations looked up by ID.
+        (format!("SELECT s.id, e.entry_id {FROM_STATUS} LEFT JOIN sys_vqueue_entry_status e ON {{on}} WHERE s.id IN ({looked_up})"), "s.id", "e.entry_id"),
+        // Every source's reads write the key fields of their records.
+        (format!("SELECT s.id, e.id {FROM_STATUS} JOIN sys_journal_events e ON {{on}}"), "s.id", "e.id"),
+        ("SELECT a.id, b.id FROM sys_vqueue_meta a JOIN sys_vqueue_meta b ON {on}".to_owned(), "a.id", "b.id"),
+    ];
+    let plan = explain(&format!(
+        "SELECT s.id {FROM_STATUS} JOIN sys_vqueue_entry_status e ON s.id = e.entry_id \
+         WHERE s.id IN ({looked_up})"
+    ))
+    .await;
+    assert!(
+        plan.contains("MultiGetExec") && plan.contains("SortMergeJoinExec"),
+        "lookups_merge: {plan}"
+    );
+    for (sql, function) in [
+        (
+            format!("SELECT COUNT(*) {FROM_STATUS} JOIN sys_journal_events e ON s.id = e.id"),
+            "invocation_id",
+        ),
+        (
+            "SELECT COUNT(*) FROM sys_vqueue_meta a JOIN sys_vqueue_meta b ON a.id = b.id"
+                .to_owned(),
+            "vqueue_id",
+        ),
+    ] {
+        let plan = explain(&sql).await;
+        assert!(
+            plan.contains(&format!("on=[({function}(id)@1, {function}(id)@1)]")),
+            "key_fields_on_both_sides: {plan}"
+        );
+        assert!(
+            !plan.contains(&format!("{function}(id@")),
+            "no_text_parsing: {plan}"
+        );
+    }
+    // A column named like a key field is none: the merge still compares the key
+    // fields the reads emit.
+    let keyed = |value: &str| {
+        format!(
+            "SELECT s.id, s.\"base_entry_id(id)\", e.entry_id FROM (SELECT id, {value} AS \"base_entry_id(id)\" \
+             FROM sys_invocation_status) s JOIN sys_vqueue_entry_status e ON {{on}}"
+        )
+    };
+    let named_like_keys = [
+        format!("arrow_cast(X'{}', 'FixedSizeBinary(25)')", "00".repeat(25)),
+        "'x'".to_owned(),
+        "id".to_owned(),
+    ]
+    .map(|value| (keyed(&value), "s.id", "e.entry_id"));
+    let joins = joins.into_iter().chain(named_like_keys);
+    for (sql, left, right) in joins {
+        let merged = sql.replace("{on}", &format!("{left} = {right}"));
+        // A cast hides the sharding columns: one global hash JOIN.
+        let hashed = sql.replace(
+            "{on}",
+            &format!("CAST({left} AS VARCHAR) = CAST({right} AS VARCHAR)"),
+        );
+        let plan = explain(&merged).await;
+        assert!(
+            plan.contains("SortMergeJoinExec") && !plan.contains("HashJoinExec"),
+            "merges: {plan}"
+        );
+        assert!(explain(&hashed).await.contains("HashJoinExec"), "{hashed}");
+        let (rows, _) = rows_and_warnings(session.as_ref(), &merged).await;
+        assert!(!rows.is_empty(), "{merged}");
+        assert_eq!(
+            rows,
+            rows_and_warnings(session.as_ref(), &hashed).await.0,
+            "same_rows_as_hashed: {merged}"
+        );
     }
 }

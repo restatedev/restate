@@ -41,6 +41,7 @@ adaptive-timeout = { workspace = true, features = ["serde"] }
 ahash = {workspace = true }
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
+arrow-buffer = { workspace = true }
 base62 = { version = "2.2.4" }
 base64 = { workspace = true }
 bitflags = { workspace = true }

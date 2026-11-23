@@ -111,6 +111,13 @@ pub fn sys_invocation_table_docs() -> TableDocs {
     let state = |name| column(invocation_state::InvocationState::COLUMN_DOCS, name);
     let columns = vec![
         status("id"),
+        // The view shows the column one release after its table did.
+        ColumnDocs {
+            description: status("canonical_id")
+                .description
+                .replace("Since v1.8.1.", "Since v1.8.2."),
+            ..status("canonical_id")
+        },
         status("vqueue_id"),
         status("target"),
         status("target_service_name"),
@@ -187,13 +194,13 @@ pub fn sys_vqueues_table_docs() -> TableDocs {
         columns: vec![
             ColumnDocs { name: "partition_key", column_type: "UInt64", description: " Internal column that is used for partitioning. Can be ignored.".to_owned() },
             ColumnDocs { name: "id", column_type: "Utf8", description: " The VQueue Identifier (vq_...).".to_owned() },
-            ColumnDocs { name: "stage", column_type: "Utf8", description: " The stage this entry currently belongs to. Choices are 'inbox', 'running', 'paused', 'suspended', and 'finished'.".to_owned() },
-            ColumnDocs { name: "status", column_type: "Utf8", description: " The entry processing status. Examples are `new`, `scheduled`, `started`, `backing-off`, `yielded`, `killed`, `cancelled`, `failed`, and `succeeded`. Note that in stages some cases, the status will reflect the old status prior to transitioning into the current stage. We preserve the last known status because it will be useful to know when the entry transitions out of the current stage.".to_owned() },
+            ColumnDocs { name: "stage", column_type: "Utf8", description: " The stage this entry currently belongs to. Choices are 'inbox', 'running', 'paused', 'suspended', and 'finished'; NULL for a stage this version doesn't know.".to_owned() },
+            ColumnDocs { name: "status", column_type: "Utf8", description: " What the entry is doing now, its effective status, which also tells its stage. In the inbox: `new`, `scheduled`, `backing-off`, `ready` or `yielded`; then `running`, `suspended` or `paused`; once finished, its outcome: `succeeded`, `failed`, `killed` or `cancelled`. NULL if this version can't tell from the stored stage and status what the entry is doing; no status name selects such an entry. Until v1.8.2, this showed the stored status, which can be `started` and doesn't tell the stage.".to_owned() },
             ColumnDocs { name: "has_lock", column_type: "Boolean", description: " Whether this entry currently holds a lock.".to_owned() },
             ColumnDocs { name: "run_at", column_type: "TimestampMillisecond", description: " The entry will be eligible to run after this timestamp. Only present for entries that are in the stage=inbox.".to_owned() },
             ColumnDocs { name: "sequence_number", column_type: "UInt64", description: " Sequence number encoded in the queue ordering key.".to_owned() },
             ColumnDocs { name: "entry_id", column_type: "Utf8", description: " Resource identifier of the entry: an invocation ID or a state mutation ID, without its sequence number. Use `canonical_id` to distinguish incarnations of the same resource. Due to quirks in DataFusion, this should remain `LargeUtf8` to match `id` in `sys_invocation_status` for dynamic filter pushdown.".to_owned() },
-            ColumnDocs { name: "entry_kind", column_type: "Utf8", description: " Entry kind (`invocation` or `state-mutation`).".to_owned() },
+            ColumnDocs { name: "entry_kind", column_type: "Utf8", description: " Entry kind (`invocation` or `state-mutation`); NULL for a kind this version doesn't know.".to_owned() },
             ColumnDocs { name: "created_at", column_type: "TimestampMillisecond", description: " Creation timestamp of the entry.".to_owned() },
             ColumnDocs { name: "transitioned_at", column_type: "TimestampMillisecond", description: " Timestamp of the latest stage transition.".to_owned() },
             ColumnDocs { name: "num_attempts", column_type: "UInt32", description: " Number of times this entry has been moved to the run queue.".to_owned() },

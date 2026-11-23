@@ -55,6 +55,43 @@ pub struct QueryEngineOptions {
     /// Since v1.7.1
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_limiting: Option<ThrottlingOptions>,
+
+    /// # Batch compression
+    ///
+    /// Compression of the record batches that the experimental query engine V2 sends from one
+    /// node to another: `none`, `lz4` or `zstd`. A node compresses the batches it sends and
+    /// reads batches compressed either way, so nodes with different settings can talk to each
+    /// other. Lz4 uses little CPU; Zstd sends fewer bytes at a higher CPU cost.
+    ///
+    /// Batches a node sends to itself are never compressed. Nor are any batches while
+    /// `networking.disable-compression` is `false`, since the connection compresses them
+    /// already.
+    ///
+    /// Default: `none`
+    ///
+    /// Applies to the query tasks installed after a change.
+    ///
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "is_default_batch_compression")]
+    pub batch_compression: QueryBatchCompression,
+}
+
+fn is_default_batch_compression(compression: &QueryBatchCompression) -> bool {
+    *compression == QueryBatchCompression::default()
+}
+
+/// # Query batch compression
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum QueryBatchCompression {
+    /// No compression.
+    #[default]
+    None,
+    /// LZ4: fast, with a moderate compression ratio.
+    Lz4,
+    /// Zstandard: slower, with a higher compression ratio.
+    Zstd,
 }
 
 impl QueryEngineOptions {
@@ -72,6 +109,7 @@ impl Default for QueryEngineOptions {
             query_parallelism: None,
             datafusion_options: HashMap::new(),
             rate_limiting: None,
+            batch_compression: QueryBatchCompression::default(),
         }
     }
 }

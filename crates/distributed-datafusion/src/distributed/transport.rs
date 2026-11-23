@@ -37,12 +37,13 @@ use restate_types::GenerationalNodeId;
 use restate_types::net::ProtocolVersion;
 use restate_types::net::distributed_query::{
     QueryTaskAnalyze, QueryTaskClose, QueryTaskClosed, QueryTaskExecute, QueryTaskId,
-    QueryTaskInstall, QueryTaskInstalled, QueryTaskNext, QueryTaskReplyBody, QueryTaskRequest,
+    QueryTaskInstall, QueryTaskNext, QueryTaskReplyBody, QueryTaskRequest,
 };
 
-use crate::{decode_record_batch, decode_schema};
+use crate::decode_schema;
 
 use super::analyze::{Arrival, ReportRegistry};
+use super::ipc;
 use super::report::{digest, read_report};
 
 type Tasks = Arc<Mutex<HashMap<TaskKey, RemoteTask>>>;
@@ -76,7 +77,7 @@ impl<N: NetworkSender> ChannelResolver for RestateChannelResolver<N> {
             .map_err(|err| exec_datafusion_err!("invalid query owner: {err}"))?;
         let connection = self
             .network
-            .get_connection(node, Swimlane::Datafusion)
+            .get_connection(node, Swimlane::QueryEngine)
             .in_tc_as_task(
                 &self.task_center,
                 TaskKind::InPlace,
@@ -246,11 +247,9 @@ impl WorkerChannel for RestateWorkerChannel {
         let reply = rpc(&self.connection, QueryTaskRequest::Install(install)).await?;
         // The registry waits for the task's report only if its worker will send one.
         let registry = match reply {
-            QueryTaskReplyBody::Installed(QueryTaskInstalled {
-                schema: actual,
-                analyze,
-            }) => {
-                if decode_schema(&actual).map_err(|err| DataFusionError::External(err.into()))?
+            QueryTaskReplyBody::Installed(installed) => {
+                if decode_schema(&installed.schema)
+                    .map_err(|err| DataFusionError::External(err.into()))?
                     != *schema
                 {
                     return exec_err!(
@@ -258,10 +257,13 @@ impl WorkerChannel for RestateWorkerChannel {
                     );
                 }
                 registry.filter(|registry| {
-                    registry.installed(report_key, analyze.is_some(), plan_digest);
+                    registry.installed(report_key, installed.analyze.is_some(), plan_digest);
                     #[cfg(test)]
-                    telemetry(&id, format!("installed report={}", analyze.is_some()));
-                    analyze.is_some()
+                    telemetry(
+                        &id,
+                        format!("installed report={}", installed.analyze.is_some()),
+                    );
+                    installed.analyze.is_some()
                 })
             }
             _ => return exec_err!("worker did not acknowledge task installation"),
@@ -366,29 +368,27 @@ impl WorkerChannel for RestateWorkerChannel {
         Ok(
             (request.target_partition_start..request.target_partition_end)
                 .map(|partition| {
-                    stream::try_unfold(task.clone(), move |task| async move {
-                        let reply = rpc(
-                            &task.connection,
-                            QueryTaskRequest::Next(QueryTaskNext {
-                                id: task.id.clone(),
-                                partition: partition as u64,
-                            }),
-                        )
-                        .await?;
-                        match reply {
-                            QueryTaskReplyBody::End(()) => Ok(None),
-                            QueryTaskReplyBody::Batch(bytes) => {
-                                let batch = decode_record_batch(&bytes)?;
-                                if batch.schema() != task.schema {
-                                    return exec_err!(
-                                        "remote task returned a different output schema"
-                                    );
+                    let decoder = ipc::Decoder::new(Arc::clone(&task.schema));
+                    stream::try_unfold(
+                        (task.clone(), decoder),
+                        move |(task, mut decoder)| async move {
+                            let reply = rpc(
+                                &task.connection,
+                                QueryTaskRequest::Next(QueryTaskNext {
+                                    id: task.id.clone(),
+                                    partition: partition as u64,
+                                }),
+                            )
+                            .await?;
+                            match reply {
+                                QueryTaskReplyBody::End(()) => Ok(None),
+                                QueryTaskReplyBody::Batch(data) => {
+                                    Ok(Some((decoder.decode(data)?, (task, decoder))))
                                 }
-                                Ok(Some((batch, task)))
+                                _ => exec_err!("unexpected task output response"),
                             }
-                            _ => exec_err!("unexpected task output response"),
-                        }
-                    })
+                        },
+                    )
                     .boxed()
                 })
                 .collect(),

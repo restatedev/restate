@@ -213,6 +213,7 @@ pub trait LiveSelection<T: SelectionSchema>: Send {
 /// [`SelectionValue::finite_strings`] and select matching native variants. For
 /// example, `stage < 'queued'` becomes `In([Finished, Inbox, Paused])`, independent
 /// of native enum order and without requiring `"queued"` to name a variant.
+#[derive(Clone)]
 pub enum ValuePredicate<V> {
     /// Matches values equal to the specified value.
     Equal(V),

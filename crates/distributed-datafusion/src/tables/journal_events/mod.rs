@@ -39,7 +39,8 @@ mod tests;
 crate::tables::table_adapter!(pub(crate) SysJournalEventsTable, JournalEvents);
 
 impl PartitionSource for SysJournalEventsTable {
-    const ORDERING: &'static [JournalEventsColumn] = &[JournalEventsColumn::PartitionKey];
+    const ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] = <<JournalEventsBinding as restate_storage_query_api::SchemaBinding>::Table as restate_storage_query_api::Table>::NATIVE_ORDERS;
+    const ID_COLUMN: Option<JournalEventsColumn> = Some(JournalEventsColumn::Id);
 }
 
 impl SysJournalEventsTable {

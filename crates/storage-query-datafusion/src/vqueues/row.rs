@@ -12,7 +12,7 @@ use std::fmt::Display;
 
 use restate_storage_api::vqueue_table::stats::EntryStatistics;
 use restate_storage_api::vqueue_table::{EntryKey, EntryValue, RawStatusHeaderRef, Stage, Status};
-use restate_types::vqueues::{CanonicalEntryId, VQueueId};
+use restate_types::vqueues::{CanonicalEntryId, EffectiveStatus, VQueueId};
 
 use super::schema::SysVqueuesBuilder;
 
@@ -75,11 +75,15 @@ fn append_vqueues_row_inner(
     if row.is_id_defined() {
         row.fmt_id(qid);
     }
-    if row.is_stage_defined() {
-        row.fmt_stage(stage);
+    if row.is_stage_defined()
+        && let Some(name) = stage.name()
+    {
+        row.stage(name);
     }
-    if row.is_status_defined() {
-        row.fmt_status(status);
+    if row.is_status_defined()
+        && let Some(name) = EffectiveStatus::new(stage, status).name()
+    {
+        row.status(name);
     }
 
     if row.is_has_lock_defined() {
@@ -100,8 +104,10 @@ fn append_vqueues_row_inner(
         row.fmt_canonical_id(id);
     }
 
-    if row.is_entry_kind_defined() {
-        row.fmt_entry_kind(id.kind());
+    if row.is_entry_kind_defined()
+        && let Some(name) = id.kind().name()
+    {
+        row.entry_kind(name);
     }
 
     if row.is_created_at_defined() {

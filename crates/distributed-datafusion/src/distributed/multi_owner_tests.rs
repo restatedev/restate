@@ -1084,11 +1084,12 @@ async fn stage_budgets_cover_sorts_aggregates_and_joins() {
             "TableScanExec",
         ),
         (
-            // Entry IDs are sharding columns: the join runs at each owner.
+            // Entry IDs are sharding columns: the join runs at each owner, merging
+            // both reads in their native order.
             "SELECT a.entry_id FROM sys_vqueue_entry_status a JOIN sys_vqueue_entry_status b ON a.entry_id = b.entry_id",
             3,
             8,
-            "HashJoinExec",
+            "SortMergeJoinExec",
         ),
         (
             "SELECT status, COUNT(*) AS n FROM sys_vqueue_entry_status GROUP BY status UNION ALL SELECT status, COUNT(*) AS n FROM sys_vqueue_entry_status GROUP BY status",

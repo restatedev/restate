@@ -14,16 +14,22 @@ crate::tables::table_adapter!(pub(crate) SysVqueueEntryStatusTable, SysVqueueEnt
 
 impl crate::sharding::PartitionSource for SysVqueueEntryStatusTable {
     const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> = Some(super::read::select_primary);
-    // The first that fits: a few queues read the stage tables; finished
-    // entries newest finished first, or active ones newest created first, read
-    // their index; a few active stages otherwise read the stage tables.
+    // The first that fits: a few queues read the stage tables; entries of some
+    // stages and statuses, active ones newest created first and finished ones
+    // newest finished first included, read a status index, in its order or,
+    // for a query its keys hold and bound in time, its keys alone; a few stages
+    // otherwise read the stage tables.
     const INDEXES: &'static [crate::access::IndexAccess<Self::Schema>] = &[
         crate::access::IndexAccess::of::<super::read::QueueIndex>(),
-        crate::access::IndexAccess::of::<super::read::FinishedIndex>(),
-        crate::access::IndexAccess::of::<super::read::ActiveIndex>(),
+        crate::access::IndexAccess::of::<super::read::StatusCreatedIndex>(),
+        crate::access::IndexAccess::of::<super::read::StatusTransitionedIndex>(),
         crate::access::IndexAccess::of::<super::read::StageIndex>(),
     ];
-    const ORDERING: &'static [restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatusColumn] = &[
-        restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatusColumn::PartitionKey,
-    ];
+    const ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] =
+        <restate_partition_store::vqueue_table::EntryStatusRecords as restate_storage_query_api::Table>::NATIVE_ORDERS;
+    const ID_COLUMN: Option<
+        restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatusColumn,
+    > = Some(
+        restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatusColumn::EntryId,
+    );
 }

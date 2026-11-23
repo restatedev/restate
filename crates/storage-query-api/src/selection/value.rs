@@ -8,12 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use strum::VariantArray;
-
 use restate_storage_api::vqueue_table::{Stage, Status};
 use restate_types::identifiers::{BaseEntryId, CanonicalEntryId, InvocationId};
 use restate_types::time::MillisSinceEpoch;
-use restate_types::vqueues::EntryKind;
+use restate_types::vqueues::{EffectiveStatus, EntryKind};
 use restate_util_string::ReString;
 
 /// Borrowed logical literals understood by selection value types.
@@ -65,8 +63,8 @@ pub enum LiteralConversionError {
 /// | `u32`, `u64`, `i32`, `i64` | `Unsigned` or `Signed`, if the value fits | Yes |
 /// | `bool` | `Bool` | Yes |
 /// | [`MillisSinceEpoch`] | Non-negative `TimestampMillis` | Yes |
-/// | [`EntryKind`] | `String`: `"invocation"`, `"state-mutation"` or `"unknown"` | No |
-/// | [`Stage`], [`Status`] | `String`, matched against the variant's SQL name | Finite sets via [`Self::finite_strings`] |
+/// | [`EntryKind`] | `String`: `"invocation"` or `"state-mutation"` | No |
+/// | [`Stage`], [`Status`], [`EffectiveStatus`] | `String`, matched against the variant's SQL name | Finite sets via [`Self::finite_strings`] |
 /// | [`BaseEntryId`] | `String`, parsed as a base entry ID | No |
 /// | [`CanonicalEntryId`] | `String`, parsed as a canonical entry ID | No |
 /// | [`VQueueId`](restate_types::vqueues::VQueueId) | `String`, parsed as a queue ID | No |
@@ -117,8 +115,8 @@ pub trait SelectionValue: Sized {
     /// For example, `stage < 'queued'` selects `Finished`, `Inbox`, and `Paused`
     /// by their names, even though `"queued"` cannot be parsed into a `Stage`.
     /// `stage = 'queued'` selects nothing, while `stage != 'queued'` selects all
-    /// non-NULL stages. The real `Unknown` variant is named `"unknown"` and must
-    /// not be confused with an unsupported literal.
+    /// non-NULL stages. No name is the `Unknown` sentinel's: `stage = 'unknown'`
+    /// selects nothing too.
     ///
     /// Nullable wrappers enumerate only `Some` values. SQL comparisons exclude
     /// NULL; `IS NULL` is handled separately through [`Self::from_literal`].
@@ -184,11 +182,10 @@ impl<V> SelectionValue for Vec<V> {
 impl SelectionValue for EntryKind {
     fn from_literal(literal: SelectionLiteral<'_>) -> Result<Self, LiteralConversionError> {
         match literal {
-            // Every kind a row can show, `unknown` included: decoding maps unrecognized
-            // kinds to `Unknown`.
-            SelectionLiteral::String(value) => Self::VARIANTS
-                .iter()
-                .copied()
+            // A kind's name; `"unknown"` names none: the `Unknown` sentinel, which
+            // decoding produces for a kind this binary doesn't know, is no value.
+            SelectionLiteral::String(value) => Self::VALUES
+                .into_iter()
                 .find(|kind| kind.as_str() == value)
                 .ok_or(LiteralConversionError::Unrepresentable),
             SelectionLiteral::Null => Err(LiteralConversionError::Unrepresentable),
@@ -197,15 +194,37 @@ impl SelectionValue for EntryKind {
     }
 }
 
+// The values a query can name: none is the `Unknown` sentinel, which decoding
+// produces for a value this binary doesn't know and rows show as NULL. So
+// `stage = 'unknown'` selects nothing, as `stage = 'queued'` does.
+
 impl SelectionValue for Stage {
     fn finite_strings() -> Option<impl Iterator<Item = (&'static str, Self)>> {
-        Some(Self::VARIANTS.iter().map(|&value| (value.as_str(), value)))
+        Some(
+            Self::VALUES
+                .into_iter()
+                .map(|value| (value.as_str(), value)),
+        )
     }
 }
 
 impl SelectionValue for Status {
     fn finite_strings() -> Option<impl Iterator<Item = (&'static str, Self)>> {
-        Some(Self::VARIANTS.iter().map(|&value| (value.as_str(), value)))
+        Some(
+            Self::VALUES
+                .into_iter()
+                .map(|value| (value.as_str(), value)),
+        )
+    }
+}
+
+impl SelectionValue for EffectiveStatus {
+    fn finite_strings() -> Option<impl Iterator<Item = (&'static str, Self)>> {
+        Some(
+            Self::VALUES
+                .into_iter()
+                .map(|value| (value.as_str(), value)),
+        )
     }
 }
 

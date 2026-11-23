@@ -524,7 +524,7 @@ async fn schema_statistics_preserve_sql_pruning_and_owner_execution() {
          "SELECT service_name FROM sys_service_stats WHERE handler IS NULL AND upper(status) = 'NEW'",
          &[&["alpha"]]),
         ("residuals_filter_expanded_buckets",
-         "SELECT COUNT(*) FROM sys_virtual_object_stats WHERE upper(status) = 'STARTED'",
+         "SELECT COUNT(*) FROM sys_virtual_object_stats WHERE upper(status) = 'RUNNING'",
          &[&["16"]]),
         ("null_dimensions_are_not_empty_strings",
          "SELECT COUNT(*) FROM sys_virtual_object_stats WHERE scope IS NULL OR scope = ''",
@@ -669,11 +669,11 @@ async fn schema_statistics_preserve_sql_pruning_and_owner_execution() {
         ("sys_service_stats",         "stage != 'queued'",                              "40", 40),
         ("sys_service_stats",         "stage IN ('running', 'queued', NULL)",           "16", 40),
         ("sys_service_stats",         "stage NOT IN ('running', 'queued', NULL)",        "0",  0),
-        ("sys_service_stats",         "status = 'yielded'",                               "8", 40),
-        ("sys_service_stats",         "status < 'queued'",                              "16", 40),
-        ("sys_service_stats",         "status IN ('started', 'queued')",                "16", 40),
-        ("sys_service_stats",         "status NOT IN ('started', 'queued')",            "24", 40),
-        ("sys_service_stats",         "status NOT IN ('started', 'queued', NULL)",       "0",  0),
+        ("sys_service_stats",         "status = 'paused'",                                "8", 40),
+        ("sys_service_stats",         "status < 'queued'",                              "24", 40),
+        ("sys_service_stats",         "status IN ('running', 'queued')",                "16", 40),
+        ("sys_service_stats",         "status NOT IN ('running', 'queued')",            "24", 40),
+        ("sys_service_stats",         "status NOT IN ('running', 'queued', NULL)",       "0",  0),
         ("sys_service_stats",         "num_entries > 4",                                "40", 40),
         ("sys_service_stats",         "service_name ILIKE 'ALP%'",                       "24", 40),
         ("sys_deployment_stats",      "service_name LIKE 'alp%'",                        "16", 16),
@@ -724,7 +724,7 @@ async fn schema_statistics_preserve_sql_pruning_and_owner_execution() {
         );
     }
     let metadata = assert_sql(session, "native_owner_filter_and_partial_sum",
-        "SELECT num_entries FROM sys_service_stats WHERE service_name = 'alpha' AND handler = 'run' AND upper(status) = 'STARTED' AND num_entries > 4",
+        "SELECT num_entries FROM sys_service_stats WHERE service_name = 'alpha' AND handler = 'run' AND upper(status) = 'RUNNING' AND num_entries > 4",
         &[&["8"]]).await;
     {
         let tasks = fixture.tasks.lock();
@@ -759,7 +759,7 @@ async fn schema_statistics_preserve_sql_pruning_and_owner_execution() {
     let target = &fixture.stores[1];
     let pk = target.partition_key_range().start() + 1;
     let metadata = assert_sql(session, "object_routing_deduplicates_selected_keys",
-        &format!("SELECT service_name FROM sys_virtual_object_stats WHERE partition_key IN ({pk}, {pk}) AND upper(status) = 'STARTED' ORDER BY service_name LIMIT 1"),
+        &format!("SELECT service_name FROM sys_virtual_object_stats WHERE partition_key IN ({pk}, {pk}) AND upper(status) = 'RUNNING' ORDER BY service_name LIMIT 1"),
         &[&["alpha"]]).await;
     {
         let tasks = fixture.tasks.lock();

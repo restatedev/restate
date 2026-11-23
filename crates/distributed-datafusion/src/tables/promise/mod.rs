@@ -18,7 +18,7 @@ use datafusion::physical_plan::PhysicalExpr;
 
 use restate_partition_store::promise_table::{PromiseBinding, ScopedPromiseBinding};
 use restate_storage_query_api::SelectionSchema;
-use restate_storage_query_api::tables::promise::{Promise, PromiseColumn};
+use restate_storage_query_api::tables::promise::Promise;
 use restate_util_string::ReString;
 
 use crate::QuerySource;
@@ -55,7 +55,7 @@ impl QuerySource for ScopedPromiseSource {
     }
 }
 impl PartitionSource for LegacyPromiseSource {
-    const ORDERING: &'static [PromiseColumn] = &[PromiseColumn::PartitionKey];
+    const ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] = <<PromiseBinding as restate_storage_query_api::SchemaBinding>::Table as restate_storage_query_api::Table>::NATIVE_ORDERS;
     /// A finite set of complete promise keys is looked up instead of read.
     const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> =
         Some(crate::access::select_lookup::<PromiseBinding>);
@@ -68,7 +68,7 @@ impl PartitionSource for LegacyPromiseSource {
     }
 }
 impl PartitionSource for ScopedPromiseSource {
-    const ORDERING: &'static [PromiseColumn] = &[PromiseColumn::PartitionKey];
+    const ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] = <<ScopedPromiseBinding as restate_storage_query_api::SchemaBinding>::Table as restate_storage_query_api::Table>::NATIVE_ORDERS;
     /// A finite set of complete promise keys is looked up instead of read.
     const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> =
         Some(crate::access::select_lookup::<ScopedPromiseBinding>);

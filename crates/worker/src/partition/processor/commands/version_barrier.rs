@@ -196,6 +196,9 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
                     PartitionFeatureChange::EnableByteOffsets => {
                         self.processor.start_byte_offsets(self.txn, lsn)?;
                     }
+                    // Only affects transitions applied after this point; entries keep what they
+                    // recorded before.
+                    PartitionFeatureChange::EnableVqLifecycleRefined => {}
                     // Replicas could store state mutations enqueued before v1.8.0 under different
                     // ids (#5416). Removing all pending ones at this log position leaves every
                     // replica with the same entries. The cleanup commits the removals itself; the

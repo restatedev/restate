@@ -58,6 +58,18 @@ impl EntryKind {
         std::mem::size_of::<Self>()
     }
 
+    /// Every kind but the `Unknown` sentinel, which decoding produces for a
+    /// kind this binary doesn't know: the kinds a query can name.
+    pub const VALUES: [EntryKind; 2] = [EntryKind::Invocation, EntryKind::StateMutation];
+
+    /// Its name, or none for the `Unknown` sentinel, which is no value.
+    pub const fn name(self) -> Option<&'static str> {
+        match self {
+            EntryKind::Unknown => None,
+            kind => Some(kind.as_str()),
+        }
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Unknown => "unknown",

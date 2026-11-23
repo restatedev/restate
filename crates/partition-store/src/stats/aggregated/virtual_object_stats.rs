@@ -17,13 +17,14 @@ use restate_storage_query_api::tables::stats::virtual_object_stats::{
     VirtualObjectStats as VirtualObjectStatsSchema, VirtualObjectStatsRow,
 };
 use restate_storage_query_api::{LogicalSchema, PreparedRead, RowSink, SchemaBinding, Table};
+use restate_types::vqueues::EffectiveStatus;
 
 use crate::keys::codecs::{EntryKindCodec, ServiceNameCodec, StringCodec, U64Codec};
 use crate::stats::macros::define_aggregated_stat;
 use crate::{Result, break_on_err};
 
 use super::StageStatusGauge;
-use super::binding;
+use super::binding::{self, GaugeRow};
 
 define_aggregated_stat!(
     /// Key for current virtual-object entry counts, including external state mutations.
@@ -46,6 +47,12 @@ define_aggregated_stat!(
         kind: EntryKindCodec,
         partition_key: U64Codec,
     ),
+    orders: &[&[
+        restate_storage_query_api::ordering::OrderTerm::Column("service_name"),
+        restate_storage_query_api::ordering::OrderTerm::Column("scope"),
+        restate_storage_query_api::ordering::OrderTerm::Column("key"),
+        restate_storage_query_api::ordering::OrderTerm::Column("handler"),
+    ]],
 );
 
 pub enum VirtualObjectStatsBinding {}
@@ -60,7 +67,13 @@ impl SchemaBinding for VirtualObjectStatsBinding {
         state: &mut Self::Materializer,
         emit: &mut impl RowSink<Self::Schema>,
     ) -> Result<RecordProgress> {
-        let Some((row, bucket, count, done)) = state.next(|| {
+        let Some(GaugeRow {
+            row,
+            stage,
+            status,
+            count,
+            last,
+        }) = state.next(|| {
             let Some(counts) = binding::decode::<Self::Table>(payload)? else {
                 return Ok(None);
             };
@@ -74,7 +87,7 @@ impl SchemaBinding for VirtualObjectStatsBinding {
                     kind: key.kind,
                     partition_key: key.partition_key,
                     stage: Stage::Unknown,
-                    status: Status::Unknown,
+                    status: EffectiveStatus::new(Stage::Unknown, Status::Unknown),
                     num_entries: 0,
                 },
                 counts,
@@ -83,11 +96,11 @@ impl SchemaBinding for VirtualObjectStatsBinding {
         else {
             return Ok(RecordProgress::Done);
         };
-        row.stage = bucket.stage;
-        row.status = bucket.status;
+        row.stage = stage;
+        row.status = status;
         row.num_entries = count;
         row_written(emit.append(row))?;
-        Ok(if done {
+        Ok(if last {
             RecordProgress::Done
         } else {
             RecordProgress::More
@@ -116,12 +129,12 @@ impl SchemaBinding for VirtualObjectStatsBinding {
             kind: key.kind,
             partition_key: key.partition_key,
             stage: Stage::Unknown,
-            status: Status::Unknown,
+            status: EffectiveStatus::new(Stage::Unknown, Status::Unknown),
             num_entries: 0,
         };
-        for (bucket, num_entries) in counts.iter() {
-            row.stage = bucket.stage;
-            row.status = bucket.status;
+        for (stage, status, num_entries) in binding::effective_counts(counts) {
+            row.stage = stage;
+            row.status = status;
             row.num_entries = num_entries;
             emit(&row)?;
         }

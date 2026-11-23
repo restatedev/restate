@@ -618,17 +618,34 @@ where
 
             // On by default from v1.9.0, including development and release-candidate builds, once
             // every worker runs it: until then, the cluster can still roll back to any v1.8.x.
-            let byte_offsets_by_default = SemanticRestateVersion::current()
+            let on_by_default_from_1_9 = SemanticRestateVersion::current()
                 .release_is_equal_or_newer_than(&RESTATE_VERSION_1_9_0)
                 && Metadata::with_current(|m| {
                     m.nodes_config_ref()
                         .all_workers_run_at_least(&RESTATE_VERSION_1_9_0)
                 });
-            if (byte_offsets_by_default || config.common.experimental.is_byte_offsets_enabled())
+            if (on_by_default_from_1_9 || config.common.experimental.is_byte_offsets_enabled())
                 && !processor.fsm().features().is_byte_offsets_enabled()
             {
                 feature_changes.push(PartitionFeatureChange::EnableByteOffsets);
             }
+            if (on_by_default_from_1_9
+                || config.common.experimental.is_vq_lifecycle_refined_enabled())
+                && !processor.fsm().features().is_vq_lifecycle_refined_enabled()
+            {
+                feature_changes.push(PartitionFeatureChange::EnableVqLifecycleRefined);
+            }
+
+            // Changes that cost no rollback ride along once every replica is held to their
+            // minimum version: by the changes enabled before, or by the barrier this round
+            // proposes anyway, which also holds the replicas to the partition's current minimum.
+            let barrier_version = (!feature_changes.is_empty())
+                .then(|| processor.fsm().min_restate_version().clone());
+            let riding = processor
+                .fsm()
+                .features()
+                .riding_along(&feature_changes, barrier_version.as_ref());
+            feature_changes.extend(riding);
 
             if !feature_changes.is_empty() {
                 // Smallest version that supports every listed feature, but never below
@@ -1129,7 +1146,7 @@ mod tests {
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_types::sharding::KeyRange;
     use restate_types::{GenerationalNodeId, Version};
-    use restate_wal_protocol::control::AnnounceLeaderCommand;
+    use restate_wal_protocol::control::{AnnounceLeaderCommand, VersionBarrierCommand};
     use restate_wal_protocol::invocation::PauseInvocationCommand;
     use restate_wal_protocol::v2::{CommandKind, Envelope, Raw, commands};
     use restate_worker_api::invoker::capacity::InvokerCapacity;
@@ -1279,6 +1296,103 @@ mod tests {
         Ok(())
     }
 
+    /// A partition that turned byte offsets on already holds every replica to v1.8.2, so its next
+    /// leader proposes the refined vqueue lifecycle along, which costs no rollback: before taking
+    /// over, it proposes a barrier carrying exactly that change, at v1.8.2.
+    #[test(restate_core::test)]
+    async fn refined_vqueue_lifecycle_rides_along_with_byte_offsets() -> googletest::Result<()> {
+        let env = TestCoreEnv::create_with_single_node(0, 0).await;
+
+        RocksDbManager::init();
+        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
+        let replica_set_states = PartitionReplicaSetStates::default();
+        let partition_store_manager = PartitionStoreManager::create(true).await?;
+        let ingress = IngestionClient::new(
+            env.networking.clone(),
+            env.metadata.updateable_partition_table(),
+            PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
+            NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
+            SessionOptions::default(),
+        );
+        let mut node_ctx = NodeContext::new(
+            NODE_ID,
+            Configuration::live(),
+            replica_set_states,
+            RuleBookCacheHandle::detached(),
+            bifrost.clone(),
+            InvokerCapacity::new_unlimited(),
+            PartitionLeaderHandlesRegistry::default(),
+        );
+        let mut partition_store = partition_store_manager.open(&PARTITION, None).await?;
+        let mut ctx = ProcessorRawContext::new(
+            Arc::new(PARTITION),
+            PersistedFeatures {
+                vq_lifecycle_refined: false,
+                ..PersistedFeatures::from_iter([
+                    PartitionFeatureChange::EnableJournalV2,
+                    PartitionFeatureChange::EnableVqueues,
+                    PartitionFeatureChange::EnableUniqueRandomSeeds,
+                    PartitionFeatureChange::EnablePreflightInvocationTerminationRetention,
+                    PartitionFeatureChange::EnableInconsistentStateMutationCleanup,
+                    PartitionFeatureChange::EnablePreflightSignalRecording,
+                    PartitionFeatureChange::EnableByteOffsets,
+                ])
+            },
+        );
+        let (leader_query_tx, _leader_query_rx) = restate_worker_api::channel();
+        let mut state = LeadershipState::new(PARTITION_ID, ingress, leader_query_tx);
+        state
+            .run_for_leader(
+                &mut ctx,
+                &node_ctx,
+                Box::new(LeadershipInfo {
+                    version: Version::MIN,
+                    leader_epoch: LeaderEpoch::from(1),
+                    current_config: PartitionConfiguration::default().into(),
+                    next_config: None,
+                }),
+            )
+            .await?;
+
+        let mut reader = bifrost
+            .create_reader(PARTITION_ID.into(), KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)
+            .expect("valid reader");
+        let announce_leader: commands::AnnounceLeaderCommand = reader
+            .next()
+            .await
+            .unwrap()?
+            .try_decode::<Envelope<Raw>>()
+            .unwrap()?
+            .into_typed::<AnnounceLeaderCommand>()
+            .into_inner()
+            .unwrap();
+        state
+            .on_announce_leader(
+                &mut node_ctx,
+                &mut ctx,
+                &mut partition_store,
+                announce_leader.leader_epoch,
+            )
+            .await?;
+
+        assert!(matches!(state.state, State::BecomingLeader { .. }));
+        let barrier = reader
+            .next()
+            .await
+            .unwrap()?
+            .try_decode::<Envelope<Raw>>()
+            .unwrap()?
+            .into_typed::<VersionBarrierCommand>()
+            .into_inner()
+            .unwrap();
+        assert_eq!(
+            barrier.feature_changes,
+            [PartitionFeatureChange::EnableVqLifecycleRefined.id()]
+        );
+        assert_eq!(barrier.version, *restate_types::RESTATE_VERSION_1_8_2);
+        Ok(())
+    }
+
     /// Pausing a vqueue invocation fences invoker activity: after the leader appends the pause
     /// command and clears the fencing token, effects carrying the paused attempt's token are
     /// dropped at write time while the resumed attempt's effects are accepted.
@@ -1319,6 +1433,7 @@ mod tests {
                 inconsistent_state_mutation_cleanup: true,
                 preflight_signal_recording: true,
                 byte_offsets: true,
+                vq_lifecycle_refined: true,
             },
         );
         let (leader_query_tx, _leader_query_rx) = restate_worker_api::channel();

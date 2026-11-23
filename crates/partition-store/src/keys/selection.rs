@@ -613,6 +613,13 @@ impl<K> KeySelection<K> {
             + self.scope.as_ref().map_or(0, |scope| scope.0.bound_bytes())
     }
 
+    /// [`Self::retained_bytes`], plus the selection's own fields and the two
+    /// reference counts of the `Arc` it is shared behind: everything a
+    /// prepared, shared selection holds.
+    pub fn shared_retained_bytes(&self) -> usize {
+        size_of::<Self>() + 2 * size_of::<usize>() + self.retained_bytes()
+    }
+
     /// A selection that matches no key; its scan is `None`.
     pub fn empty() -> Self {
         Self {
@@ -714,14 +721,19 @@ impl<K> KeySelection<K> {
             empty: matches!(selection, Selection::Empty),
             ..Self::all()
         };
-        let Selection::Predicates(predicates) = selection else {
-            return Ok(result);
+        // A selection without clauses still takes the restrictions `derive`
+        // gives, such as a status index lane's pinned stage and status.
+        let predicates = match selection {
+            Selection::Empty => return Ok(result),
+            Selection::Predicates(predicates) if !predicates.is_unconstrained() => Some(predicates),
+            _ => None,
         };
-        if predicates.is_unconstrained() {
-            return Ok(result);
-        }
         let mut has_key_clauses = false;
-        for (column, _) in predicates.iter().filter(|(_, clauses)| !clauses.is_empty()) {
+        for (column, _) in predicates
+            .into_iter()
+            .flat_map(|predicates| predicates.iter())
+            .filter(|(_, clauses)| !clauses.is_empty())
+        {
             if K::FIELDS
                 .iter()
                 .any(|field| T::column_from_tag(field.tag()) == Some(column))
@@ -752,7 +764,8 @@ impl<K> KeySelection<K> {
                 }
                 _ => {}
             }
-            if let Some(column) = T::column_from_tag(schema.tag()) {
+            if let (Some(predicates), Some(column)) = (predicates, T::column_from_tag(schema.tag()))
+            {
                 for clause in predicates.for_column(column) {
                     match prepare(clause, &mut literals)? {
                         // A terminal field accepts only finite predicates.
@@ -1117,6 +1130,12 @@ pub(crate) struct KeySelectionCursor<K> {
 }
 
 impl<K> KeySelectionCursor<K> {
+    /// Whether every key the cursor visits has one header, as an index's keys
+    /// have: a bucket of a read's keys is then one range of them.
+    pub(crate) fn fixed_header(&self) -> bool {
+        matches!(self.position.header, CursorHeader::Fixed(_))
+    }
+
     /// The static bounds the caller must enforce while iterating and seeking.
     pub(crate) fn scan(&self) -> &PhysicalScan<Bytes> {
         &self.position.scan

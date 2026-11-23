@@ -26,6 +26,7 @@ use std::num::NonZeroUsize;
 
 use anyhow::Context;
 
+use restate_storage_query_api::ordering::{NativeOrder, OrderFunction, OrderInput, OrderTerm};
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, SelectionPrecision, ValuePredicate};
 use restate_storage_query_api::tables::journal::{Journal, JournalClause, JournalColumn};
@@ -49,7 +50,8 @@ use crate::table::PhysicalTable;
 macro_rules! journal_table {
     (
         $(#[$meta:meta])* $table:ident, $key:ty, $schema:ty, $prepare:path,
-        fields [$($tag:literal: $codec:ty),+ $(,)?]
+        fields [$($tag:literal: $codec:ty),+ $(,)?],
+        orders $orders:expr
     ) => {
         $(#[$meta])*
         pub enum $table {}
@@ -57,6 +59,17 @@ macro_rules! journal_table {
         impl Table for $table {
             type Record<'a> = (KeyDecoder<'a, $key>, &'a [u8]);
             type Scan = KeySelection<$key>;
+            const NATIVE_ORDERS: &'static [NativeOrder] = $orders;
+
+            fn order_key<R>(
+                (key, _): &Self::Record<'_>,
+                function: OrderFunction,
+                with: impl FnOnce(&[u8]) -> R,
+            ) -> Option<R> {
+                let key = key.decode_all().ok()?;
+                InvocationId::from_parts(key.partition_key, key.invocation_uuid)
+                    .order_key(function, with)
+            }
         }
 
         impl PhysicalTable for $table {
@@ -95,25 +108,43 @@ macro_rules! journal_table {
     };
 }
 
+/// Journal entries, keyed `partition key | uuid | index`: by partition key, and by
+/// invocation, then index.
+const JOURNAL_ORDERS: &[NativeOrder] = &[
+    &[OrderTerm::Column("partition_key")],
+    &[
+        OrderTerm::Function(OrderFunction::InvocationId),
+        OrderTerm::Column("index"),
+    ],
+];
+
 journal_table!(
     /// Journal entries of service protocol versions below 4.
     JournalTable, crate::journal_table::JournalKey, Journal, prepare_journal,
-    fields ["id": InvocationUuidCodec, "index": U32Codec]
+    fields ["id": InvocationUuidCodec, "index": U32Codec],
+    orders JOURNAL_ORDERS
 );
 journal_table!(
     /// Journal entries of service protocol version 4 and later.
     JournalV2Table, crate::journal_table_v2::JournalKey, Journal, prepare_journal,
-    fields ["id": InvocationUuidCodec, "index": U32Codec]
+    fields ["id": InvocationUuidCodec, "index": U32Codec],
+    orders JOURNAL_ORDERS
 );
 journal_table!(
     /// Invocation events. Only `id` binds a logical column; the remaining fields
-    /// are declared so key evaluation can find their boundaries.
+    /// are declared so key evaluation can find their boundaries. By partition key,
+    /// and by invocation: the event type after it shows as a name, which doesn't
+    /// sort like its code.
     JournalEventsTable, crate::journal_events::JournalEventKey, JournalEvents, prepare_events,
     fields [
         "id": InvocationUuidCodec,
         "event_type_code": U8Codec,
         "timestamp": U64Codec,
         "lsn": U64Codec,
+    ],
+    orders &[
+        &[OrderTerm::Column("partition_key")],
+        &[OrderTerm::Function(OrderFunction::InvocationId)],
     ]
 );
 

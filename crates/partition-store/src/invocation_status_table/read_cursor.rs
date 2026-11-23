@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use restate_storage_api::StorageError;
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
+use restate_storage_query_api::ordering::{NativeOrder, OrderFunction, OrderInput, OrderTerm};
 use restate_storage_query_api::scan::{CursorScan, CursorStep, ReadCursor, Table};
 use restate_storage_query_api::selection::Selection;
 use restate_storage_query_api::tables::invocation_status::{
@@ -145,6 +146,22 @@ pub enum InvocationStatusRecords {}
 impl Table for InvocationStatusRecords {
     type Record<'a> = (InvocationId, InvocationStatusV2Lazy<'a>);
     type Scan = InvocationStatusScan;
+    /// Keys are `partition key | uuid`, and an ID set is fetched in ID order, so
+    /// both read in partition key order and in invocation ID order; with the entry
+    /// kind fixed, that is also base entry ID order.
+    const NATIVE_ORDERS: &'static [NativeOrder] = &[
+        &[OrderTerm::Column("partition_key")],
+        &[OrderTerm::Function(OrderFunction::InvocationId)],
+        &[OrderTerm::Function(OrderFunction::BaseEntryId)],
+    ];
+
+    fn order_key<R>(
+        (id, _): &Self::Record<'_>,
+        function: OrderFunction,
+        with: impl FnOnce(&[u8]) -> R,
+    ) -> Option<R> {
+        id.order_key(function, with)
+    }
 }
 
 /// A resumable scan or batched lookup of invocation statuses over one admitted
@@ -246,6 +263,23 @@ mod tests {
 
     use super::*;
 
+    /// `order`'s sort key for the record with ID `InvocationId` text `id`.
+    fn order_key(order: NativeOrder, id: &str) -> Vec<Vec<u8>> {
+        order
+            .iter()
+            .map(|term| match term {
+                OrderTerm::Column("partition_key") => id
+                    .parse::<InvocationId>()
+                    .unwrap()
+                    .partition_key()
+                    .to_be_bytes()
+                    .to_vec(),
+                OrderTerm::Function(function) => function.encode(id, <[u8]>::to_vec).unwrap(),
+                term => panic!("no {term:?} in an ID"),
+            })
+            .collect()
+    }
+
     #[restate_core::test]
     async fn ids_position_invocation_status_scans() {
         RocksDbManager::init();
@@ -338,6 +372,62 @@ mod tests {
                 }
             }
             assert_eq!(found, expected, "shared_requests_have_independent_cursors");
+        }
+    }
+
+    /// A key scan and lookups by ID both read in each of the table's native
+    /// orders, which the IDs' text doesn't sort like.
+    #[restate_core::test]
+    async fn key_ordered_reads_deliver_native_orders() {
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        let mut store = manager
+            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+            .await
+            .unwrap();
+        let uuids = [1, 2, 256, 1 << 64, (1 << 64) + 1, u128::MAX - 1];
+        let ids: BTreeSet<_> = [0, 7, 8, PartitionKey::MAX]
+            .into_iter()
+            .flat_map(|key| {
+                uuids.map(|uuid| InvocationId::from_parts(key, InvocationUuid::from_u128(uuid)))
+            })
+            .collect();
+        let mut tx = store.transaction();
+        for id in &ids {
+            let status = StoredStatus::Completed(CompletedInvocation::mock_neo());
+            tx.put_invocation_status(id, &status).unwrap();
+        }
+        tx.commit().await.unwrap();
+        drop(tx);
+        let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
+        let read = |request: InvocationStatusScan| {
+            let mut cursor = <ReadSnapshot as CursorScan<InvocationStatusRecords>>::scan_cursor(
+                &snapshot,
+                Arc::new(request),
+            )
+            .unwrap();
+            let mut found = Vec::new();
+            loop {
+                match cursor.advance().unwrap() {
+                    CursorStep::Record => found.push(cursor.current().unwrap().0.to_string()),
+                    CursorStep::Skipped => {}
+                    CursorStep::Done => return found,
+                }
+            }
+        };
+        let all = InvocationStatusKeys::prepare(&Selection::All, Some(KeyRange::FULL)).unwrap();
+        let some: BTreeSet<_> = ids.iter().copied().step_by(3).collect();
+        for (read, expected) in [
+            (read(InvocationStatusScan::Keys(Arc::new(all))), ids.len()),
+            (read(InvocationStatusScan::Ids(ids.clone())), ids.len()),
+            (read(InvocationStatusScan::Ids(some.clone())), some.len()),
+        ] {
+            assert_eq!(read.len(), expected);
+            assert!(!read.is_sorted(), "text_order_differs");
+            for order in InvocationStatusRecords::NATIVE_ORDERS {
+                let values: Vec<_> = read.iter().map(|id| order_key(order, id)).collect();
+                assert!(values.is_sorted(), "{order:?}");
+            }
         }
     }
 }

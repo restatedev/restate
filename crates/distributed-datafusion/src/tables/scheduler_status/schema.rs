@@ -13,6 +13,8 @@ use restate_storage_query_api::tables::scheduler::Scheduler;
 crate::tables::table_adapter!(pub(crate) SysSchedulerTable, SysSchedulerBuilder, Scheduler);
 
 impl crate::sharding::PartitionSource for SysSchedulerTable {
-    const ORDERING: &'static [restate_storage_query_api::tables::scheduler::SchedulerColumn] =
-        &[restate_storage_query_api::tables::scheduler::SchedulerColumn::PartitionKey];
+    const ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] =
+        &[&[restate_storage_query_api::ordering::OrderTerm::Column(
+            "partition_key",
+        )]];
 }

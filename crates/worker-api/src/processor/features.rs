@@ -8,6 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use strum::VariantArray;
+
+use restate_types::SemanticRestateVersion;
 use restate_types::partitions::{PartitionFeatureChange, PersistedFeatures};
 
 /// Read-only view of the state-machine features currently enabled for a partition.
@@ -73,6 +76,55 @@ pub trait PartitionFeatures {
     fn is_byte_offsets_enabled(&self) -> bool {
         self.has_feature(PartitionFeatureChange::EnableByteOffsets)
     }
+
+    /// Whether vqueue entries record their lifecycle more precisely: every run of an entry
+    /// records `started`, and an invocation's entry enters Finished at the invocation's
+    /// completion time.
+    ///
+    /// *Since v1.8.2*
+    fn is_vq_lifecycle_refined_enabled(&self) -> bool {
+        self.has_feature(PartitionFeatureChange::EnableVqLifecycleRefined)
+    }
+
+    /// The newest Restate version the enabled changes require. Changes are enabled only by
+    /// version barriers, so every replica of the partition is held to it, unlike the stored
+    /// minimum version, which storage features raise on each replica on its own.
+    fn required_version(&self) -> Option<&'static SemanticRestateVersion> {
+        PartitionFeatureChange::VARIANTS
+            .iter()
+            .filter(|change| self.has_feature(**change))
+            .map(|change| change.min_required_version())
+            .max()
+    }
+
+    /// The changes that ride along ([`PartitionFeatureChange::rides_along`]) with a barrier
+    /// proposing `queued`, at least `barrier_version`, or, with neither, on a barrier of their
+    /// own: those not enabled yet whose minimum version every replica is held to by then.
+    fn riding_along(
+        &self,
+        queued: &[PartitionFeatureChange],
+        barrier_version: Option<&SemanticRestateVersion>,
+    ) -> Vec<PartitionFeatureChange> {
+        let held_to = queued
+            .iter()
+            .map(|change| change.min_required_version())
+            .chain(self.required_version())
+            .chain(barrier_version)
+            .max();
+        let Some(held_to) = held_to else {
+            return Vec::new();
+        };
+        PartitionFeatureChange::VARIANTS
+            .iter()
+            .copied()
+            .filter(|change| {
+                change.rides_along()
+                    && !self.has_feature(*change)
+                    && !queued.contains(change)
+                    && change.min_required_version() <= held_to
+            })
+            .collect()
+    }
 }
 
 impl PartitionFeatures for PersistedFeatures {
@@ -93,6 +145,7 @@ impl PartitionFeatures for PersistedFeatures {
                 self.preflight_signal_recording
             }
             PartitionFeatureChange::EnableByteOffsets => self.byte_offsets,
+            PartitionFeatureChange::EnableVqLifecycleRefined => self.vq_lifecycle_refined,
         }
     }
 
@@ -173,5 +226,55 @@ impl<T: PartitionFeatures> PartitionFeatures for &mut T {
 
     fn is_preflight_invocation_termination_retention_enabled(&self) -> bool {
         (**self).is_preflight_invocation_termination_retention_enabled()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use restate_types::{RESTATE_VERSION_1_8_1, RESTATE_VERSION_1_8_2};
+
+    use super::*;
+
+    /// A change that rides along joins a barrier once every replica is held to its minimum
+    /// version: by an earlier barrier's changes, by changes queued for this one, or by this
+    /// barrier's own version, a pure bump included. Below it, or once enabled or queued, it
+    /// doesn't.
+    #[test]
+    fn changes_ride_along_once_replicas_are_held_to_their_version() {
+        use PartitionFeatureChange::*;
+
+        let features = |changes: &[PartitionFeatureChange]| {
+            PersistedFeatures::from_iter(changes.iter().copied())
+        };
+        let before_1_8_2 = features(&[EnableJournalV2, EnableVqueues]);
+        let with_byte_offsets = features(&[EnableVqueues, EnableByteOffsets]);
+        assert_eq!(
+            with_byte_offsets.required_version(),
+            Some(&*RESTATE_VERSION_1_8_2)
+        );
+
+        // Nothing holds the replicas to v1.8.2 yet.
+        assert!(before_1_8_2.riding_along(&[], None).is_empty());
+        assert!(
+            before_1_8_2
+                .riding_along(&[], Some(&RESTATE_VERSION_1_8_1))
+                .is_empty()
+        );
+        // An earlier barrier, this barrier's changes, or this barrier's own version.
+        for riding in [
+            with_byte_offsets.riding_along(&[], None),
+            before_1_8_2.riding_along(&[EnableByteOffsets], None),
+            before_1_8_2.riding_along(&[], Some(&RESTATE_VERSION_1_8_2)),
+        ] {
+            assert_eq!(riding, [EnableVqLifecycleRefined]);
+        }
+        // Not twice.
+        assert!(
+            with_byte_offsets
+                .riding_along(&[EnableVqLifecycleRefined], None)
+                .is_empty()
+        );
+        let refined = features(&[EnableByteOffsets, EnableVqLifecycleRefined]);
+        assert!(refined.riding_along(&[], None).is_empty());
     }
 }

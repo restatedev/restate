@@ -31,16 +31,18 @@
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use restate_clock::UniqueTimestamp;
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::RawStatusHeaderRef;
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
+use restate_storage_api::vqueue_table::{RawStatusHeaderRef, Stage, Status};
+use restate_storage_query_api::ordering::{NativeOrder, OrderFunction, OrderInput, OrderTerm};
 use restate_storage_query_api::scan::{CursorScan, CursorStep, ReadCursor, Table};
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
 use restate_storage_query_api::tables::vqueue_entry_status::{
     VqueueEntryStatus, VqueueEntryStatusClause, VqueueEntryStatusColumn,
 };
-use restate_types::identifiers::{BaseEntryId, PartitionKey};
+use restate_types::identifiers::{BaseEntryId, CanonicalEntryId, PartitionKey};
 use restate_types::sharding::KeyRange;
 
 use crate::invocation_status_table::EntryIndexExecution;
@@ -54,7 +56,9 @@ use crate::scan::{PhysicalScan, TableScan};
 use crate::table::{MultiGetCursor, MultiGetTable, PhysicalTable, TableCursor};
 use crate::{ReadSnapshot, Result};
 
-use super::indexed_read::{ActiveRead, EntryIndex, FinishedRead, IndexedCursor};
+use super::indexed_read::{
+    EntryIndex, IndexedCursor, KeySteps, StatusCreatedRead, StatusTransitionedRead,
+};
 use super::stage_reads::{StageReadCounters, StageReads, StagesCursor};
 use super::{ENTRY_STATUS_MULTI_GET_BATCH_SIZE, EntryStatusKey};
 
@@ -166,23 +170,20 @@ pub enum EntryStatusScan {
     /// Statuses referenced by the scheduler's stage tables, navigated by the
     /// prepared stage reads. See [`StageReads`].
     Stages(Arc<StageReads>),
-    /// Finished entries through their index, newest finished first (or oldest
-    /// first, as the [`FinishedRead`] says), or the
-    /// `fallback` iteration if the index can't stand in for it on the snapshot.
-    /// `execution` is charged for the index read and learns which path it took.
-    /// See [`FinishedRead`].
-    Finished {
-        read: Arc<FinishedRead>,
+    /// Entries of some stages and statuses through `entry_by_status_created/1`,
+    /// newest created first (or oldest first, as the [`StatusCreatedRead`]
+    /// says), or the `fallback` iteration if the index can't stand in for it
+    /// on the snapshot. `execution` is charged for the index read and learns
+    /// which path it took.
+    StatusCreated {
+        read: Arc<StatusCreatedRead>,
         fallback: Arc<KeySelection<EntryStatusKey>>,
         execution: Arc<EntryIndexExecution>,
     },
-    /// Active entries, in Inbox, Running, Suspended or Paused, through their
-    /// index, newest created first (or oldest first, as the [`ActiveRead`]
-    /// says), or the `fallback` iteration if the index
-    /// can't stand in for it on the snapshot. `execution` is charged for the
-    /// index read and learns which path it took. See [`ActiveRead`].
-    Active {
-        read: Arc<ActiveRead>,
+    /// As [`Self::StatusCreated`], through `entry_by_status_transitioned/1`,
+    /// newest transitioned first.
+    StatusTransitioned {
+        read: Arc<StatusTransitionedRead>,
         fallback: Arc<KeySelection<EntryStatusKey>>,
         execution: Arc<EntryIndexExecution>,
     },
@@ -202,6 +203,21 @@ pub enum EntryStatusRecords {}
 impl Table for EntryStatusRecords {
     type Record<'a> = (BaseEntryId, RawStatusHeaderRef<'a>);
     type Scan = EntryStatusScan;
+    /// Keys are `partition key | entry kind | remainder`, and an ID set is
+    /// fetched in ID order, so both read in partition key order and in base entry
+    /// ID order.
+    const NATIVE_ORDERS: &'static [NativeOrder] = &[
+        &[OrderTerm::Column("partition_key")],
+        &[OrderTerm::Function(OrderFunction::BaseEntryId)],
+    ];
+
+    fn order_key<R>(
+        (id, _): &Self::Record<'_>,
+        function: OrderFunction,
+        with: impl FnOnce(&[u8]) -> R,
+    ) -> Option<R> {
+        id.order_key(function, with)
+    }
 }
 
 /// A resumable scan or finite-key lookup over one admitted snapshot.
@@ -257,20 +273,21 @@ impl ReadSnapshot {
                     first: true,
                 });
             }
-            EntryStatusScan::Finished {
+            EntryStatusScan::StatusCreated {
                 read,
                 fallback,
                 execution,
             } => {
-                let cursor = IndexedCursor::finished(self, &read, &execution, window)?;
+                let cursor = IndexedCursor::status_created(self, &read, &execution, window, false)?;
                 return self.indexed_or(cursor, fallback);
             }
-            EntryStatusScan::Active {
+            EntryStatusScan::StatusTransitioned {
                 read,
                 fallback,
                 execution,
             } => {
-                let cursor = IndexedCursor::active(self, &read, &execution, window)?;
+                let cursor =
+                    IndexedCursor::status_transitioned(self, &read, &execution, window, false)?;
                 return self.indexed_or(cursor, fallback);
             }
         };
@@ -403,6 +420,130 @@ impl ReadCursor<EntryStatusRecords> for EntryStatusCursor {
     }
 }
 
+/// An entry as a status index's key holds it, for a query that needs no other
+/// column: its incarnation, stage and status, and the index's time. A read that
+/// scans instead has both times.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EntryKeyRow {
+    pub id: CanonicalEntryId,
+    pub stage: Stage,
+    pub status: Status,
+    pub created_at: Option<UniqueTimestamp>,
+    pub transitioned_at: Option<UniqueTimestamp>,
+}
+
+/// A keys-only read of a status index, in the order of the index's time
+/// ([`StatusCreatedRead`], [`StatusTransitionedRead`]), or the `fallback`
+/// iteration of entry statuses if the index can't stand in for it on the
+/// snapshot. `execution` is charged for the index read and learns which path
+/// it took.
+#[derive(Clone)]
+pub enum EntryKeyScan {
+    StatusCreated {
+        read: Arc<StatusCreatedRead>,
+        fallback: Arc<KeySelection<EntryStatusKey>>,
+        execution: Arc<EntryIndexExecution>,
+    },
+    StatusTransitioned {
+        read: Arc<StatusTransitionedRead>,
+        fallback: Arc<KeySelection<EntryStatusKey>>,
+        execution: Arc<EntryIndexExecution>,
+    },
+}
+
+/// Entries read through a status index's keys alone ([`EntryKeyScan`]).
+pub enum EntryKeyRecords {}
+
+impl Table for EntryKeyRecords {
+    type Record<'a> = EntryKeyRow;
+    type Scan = EntryKeyScan;
+}
+
+/// A keys-only read's cursor: the index's keys, or the fallback's statuses.
+pub struct EntryKeyCursor {
+    mode: KeyMode,
+}
+
+enum KeyMode {
+    Empty,
+    Indexed(Box<dyn KeySteps>),
+    Navigate(Box<TableCursor<EntryStatusKeys>>),
+}
+
+impl CursorScan<EntryKeyRecords> for ReadSnapshot {
+    type Cursor = EntryKeyCursor;
+
+    fn scan_cursor(&self, request: Arc<EntryKeyScan>) -> Result<Self::Cursor> {
+        self.check_active()?;
+        let (cursor, fallback) = match Arc::unwrap_or_clone(request) {
+            EntryKeyScan::StatusCreated {
+                read,
+                fallback,
+                execution,
+            } => (
+                IndexedCursor::status_created(self, &read, &execution, NonZeroUsize::MIN, true)?
+                    .map(|cursor| Box::new(cursor) as Box<dyn KeySteps>),
+                fallback,
+            ),
+            EntryKeyScan::StatusTransitioned {
+                read,
+                fallback,
+                execution,
+            } => (
+                IndexedCursor::status_transitioned(
+                    self,
+                    &read,
+                    &execution,
+                    NonZeroUsize::MIN,
+                    true,
+                )?
+                .map(|cursor| Box::new(cursor) as Box<dyn KeySteps>),
+                fallback,
+            ),
+        };
+        let mode = match cursor {
+            Some(cursor) => KeyMode::Indexed(cursor),
+            None => KeyMode::Navigate(Box::new(
+                <Self as CursorScan<EntryStatusKeys>>::scan_cursor(self, fallback)?,
+            )),
+        };
+        Ok(EntryKeyCursor { mode })
+    }
+}
+
+impl ReadCursor<EntryKeyRecords> for EntryKeyCursor {
+    fn advance(&mut self) -> Result<CursorStep> {
+        let step = match &mut self.mode {
+            KeyMode::Empty => CursorStep::Done,
+            KeyMode::Indexed(cursor) => cursor.advance()?,
+            KeyMode::Navigate(cursor) => cursor.advance()?,
+        };
+        if step == CursorStep::Done {
+            self.mode = KeyMode::Empty;
+        }
+        Ok(step)
+    }
+
+    fn current(&self) -> Result<EntryKeyRow> {
+        match &self.mode {
+            KeyMode::Indexed(cursor) => cursor.current(),
+            KeyMode::Navigate(cursor) => {
+                let (key, mut value) = cursor.current()?;
+                let (id,) = key.decode_all()?.split();
+                let header = RawStatusHeaderRef::decode_stored(&mut value)?;
+                Ok(EntryKeyRow {
+                    id: id.canonicalize(header.seq),
+                    stage: header.stage,
+                    status: header.status,
+                    created_at: Some(header.stats.created_at),
+                    transitioned_at: Some(header.stats.transitioned_at),
+                })
+            }
+            KeyMode::Empty => Err(StorageError::DataIntegrityError),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tokio_util::sync::CancellationToken;
@@ -421,6 +562,23 @@ mod tests {
     use crate::PartitionStoreManager;
 
     use super::*;
+
+    /// `order`'s sort key for the record with ID `BaseEntryId` text `id`.
+    fn order_key(order: NativeOrder, id: &str) -> Vec<Vec<u8>> {
+        order
+            .iter()
+            .map(|term| match term {
+                OrderTerm::Column("partition_key") => id
+                    .parse::<BaseEntryId>()
+                    .unwrap()
+                    .partition_key()
+                    .to_be_bytes()
+                    .to_vec(),
+                OrderTerm::Function(function) => function.encode(id, <[u8]>::to_vec).unwrap(),
+                term => panic!("no {term:?} in an ID"),
+            })
+            .collect()
+    }
 
     #[restate_core::test]
     async fn ids_position_entry_status_scans() {
@@ -529,5 +687,95 @@ mod tests {
             128,
             "header_only_reads_every_neighbor"
         );
+    }
+
+    /// A key scan and lookups by ID both read in the table's native order, with
+    /// invocations and state mutations sharing partition keys.
+    #[restate_core::test]
+    async fn key_ordered_reads_deliver_native_orders() {
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        let mut store = manager
+            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+            .await
+            .unwrap();
+        let at = UniqueTimestamp::try_from_unix_millis(MillisSinceEpoch::new(1_744_010_000_000))
+            .unwrap();
+        let ids: std::collections::BTreeSet<_> = [7, 8, PartitionKey::MAX]
+            .into_iter()
+            .flat_map(|key| {
+                [EntryKind::Invocation, EntryKind::StateMutation]
+                    .into_iter()
+                    .flat_map(move |kind| {
+                        [1u128, 256, 1 << 64, u128::MAX - 1]
+                            .map(|n| EntryId::new(kind, n.to_be_bytes()).to_base_id(key))
+                    })
+            })
+            .collect();
+        let mut tx = store.transaction();
+        for (n, id) in ids.iter().enumerate() {
+            let qid = VQueueId::custom(id.partition_key(), "queue");
+            let entry_key =
+                EntryKey::new(false, at.to_unix_millis(), n as u64 + 1, *id.as_entry_id());
+            tx.create_vqueue_entry_status(
+                &EntryContext {
+                    qid: &qid,
+                    target: &EntryTargetRef::Service {
+                        scope: None,
+                        service: "svc",
+                        handler: "run",
+                    },
+                },
+                EntryStateRef {
+                    stage: Stage::Inbox,
+                    status: Status::New,
+                    entry_key: &entry_key,
+                    metadata: &EntryMetadata::default(),
+                    stats: &EntryStatistics::new(at, entry_key.run_at()),
+                },
+            );
+        }
+        tx.commit().await.unwrap();
+        drop(tx);
+        let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
+        let read = |request: EntryStatusScan| {
+            let mut cursor = <ReadSnapshot as CursorScan<EntryStatusRecords>>::scan_cursor(
+                &snapshot,
+                Arc::new(request),
+            )
+            .unwrap();
+            let mut found = Vec::new();
+            loop {
+                match cursor.advance().unwrap() {
+                    CursorStep::Record => found.push(cursor.current().unwrap().0.to_string()),
+                    CursorStep::Skipped => {}
+                    CursorStep::Done => return found,
+                }
+            }
+        };
+        let all = EntryStatusKeys::prepare(&Selection::All, Some(KeyRange::FULL)).unwrap();
+        let some: std::collections::BTreeSet<_> = ids.iter().copied().step_by(3).collect();
+        for (read, expected) in [
+            (read(EntryStatusScan::Keys(Arc::new(all))), ids.len()),
+            (
+                read(EntryStatusScan::Filter(ScanEntryIdFilter::EntryIdSet(
+                    ids.clone(),
+                ))),
+                ids.len(),
+            ),
+            (
+                read(EntryStatusScan::Filter(ScanEntryIdFilter::EntryIdSet(
+                    some.clone(),
+                ))),
+                some.len(),
+            ),
+        ] {
+            assert_eq!(read.len(), expected);
+            assert!(!read.is_sorted(), "text_order_differs");
+            for order in EntryStatusRecords::NATIVE_ORDERS {
+                let values: Vec<_> = read.iter().map(|id| order_key(order, id)).collect();
+                assert!(values.is_sorted(), "{order:?}");
+            }
+        }
     }
 }

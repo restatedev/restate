@@ -27,6 +27,7 @@ use restate_rocksdb::RocksDbManager;
 use restate_storage_api::scan::{RowConsumer, ScanOutcome};
 use restate_storage_api::vqueue_table::{Stage, Status};
 use restate_storage_api::{StorageError, Transaction};
+use restate_storage_query_api::ordering::OrderTerm;
 use restate_storage_query_api::scan::{CursorScan, Scan};
 use restate_storage_query_api::selection::{Selection, SelectionPrecision, ValuePredicate};
 use restate_storage_query_api::tables::stats::deployment_stats::{
@@ -46,7 +47,7 @@ use restate_storage_query_api::test_util::datafusion::prelude::SessionContext;
 use restate_storage_query_api::{AsyncRowSink, LogicalSchema, RowSink, SchemaBinding, Table};
 use restate_types::partitions::Partition;
 use restate_types::sharding::{KeyRange, PartitionId};
-use restate_types::vqueues::EntryKind;
+use restate_types::vqueues::{EffectiveStatus, EntryKind};
 use restate_util_string::ReString;
 
 use crate::keys::header::IndexScope;
@@ -65,7 +66,9 @@ use super::{
 
 /// Runs each SQL case and compares its rows and its row count with the expected
 /// ones. Some cases filter on a column they don't select, to check that the
-/// filter still applies. Then compares every column of every row once.
+/// filter still applies. Then compares every column of every row once, and checks
+/// that a scan comes out in each order the table claims ([`Table::NATIVE_ORDERS`]):
+/// as sorting its columns as text, NULL first, would put them.
 async fn assert_sql_cases<B: SchemaBinding>(
     snapshot: Arc<ReadSnapshot>,
     executor: Arc<QueryIoExecutor>,
@@ -135,6 +138,34 @@ async fn assert_sql_cases<B: SchemaBinding>(
         "every column matches: {}",
         B::Schema::NAME
     );
+
+    assert!(!<B::Table as Table>::NATIVE_ORDERS.is_empty());
+    for order in <B::Table as Table>::NATIVE_ORDERS {
+        let columns: Vec<_> = order
+            .iter()
+            .map(|term| match term {
+                OrderTerm::Column(column) => *column,
+                OrderTerm::Function(function) => panic!("no ID for {function:?}"),
+            })
+            .collect();
+        let scan = format!("SELECT {} FROM candidate", columns.join(", "));
+        let sorted = format!(
+            "{scan} ORDER BY {} NULLS FIRST",
+            columns.join(" NULLS FIRST, ")
+        );
+        let read = context.sql(&scan).await.unwrap().collect().await.unwrap();
+        let schema = read[0].schema();
+        assert_eq!(
+            concat_batches(&schema, &read).unwrap(),
+            concat_batches(
+                &schema,
+                &context.sql(&sorted).await.unwrap().collect().await.unwrap()
+            )
+            .unwrap(),
+            "scans_in_native_order: {}: {order:?}",
+            B::Schema::NAME
+        );
+    }
 }
 
 #[restate_core::test]
@@ -194,7 +225,7 @@ async fn deployment_and_object_schemas_expand_buckets_before_sql_residuals() {
             deployment_id: deployment.into(),
             service_name: service.into(),
             stage,
-            status,
+            status: EffectiveStatus::new(stage, status),
             num_entries: count,
         });
         objects.append(&VirtualObjectStatsRow {
@@ -205,7 +236,7 @@ async fn deployment_and_object_schemas_expand_buckets_before_sql_residuals() {
             kind,
             partition_key,
             stage,
-            status,
+            status: EffectiveStatus::new(stage, status),
             num_entries: count,
         });
     }
@@ -219,7 +250,8 @@ async fn deployment_and_object_schemas_expand_buckets_before_sql_residuals() {
         ("ORDER BY num_entries",                                              4),
         ("WHERE deployment_id = 'dp_a' AND num_entries > 2 ORDER BY num_entries",1),
         ("WHERE deployment_id LIKE 'dp_%' AND stage = 'running'",              1),
-        ("WHERE stage = 'unknown' AND status = 'unknown'",                     1),
+        // The `Unknown` sentinels show as NULL and are no value to select by.
+        ("WHERE stage = 'unknown' AND status = 'unknown'",                     0),
         ("WHERE deployment_id IS NULL",                                       0),
         ("WHERE stage = 'invalid' OR status = 'invalid'",                      0),
         ("WHERE stage <> 'inbox' ORDER BY num_entries DESC LIMIT 1",           1),
@@ -239,8 +271,9 @@ async fn deployment_and_object_schemas_expand_buckets_before_sql_residuals() {
         ("WHERE scope LIKE '%' ORDER BY num_entries",                          3),
         ("WHERE partition_key = 22 AND stage = 'finished'",                    1),
         ("WHERE kind = 'state-mutation'",                                      1),
-        ("WHERE stage = 'unknown' AND status = 'unknown'",                     1),
-        ("WHERE scope IS NULL OR (partition_key = 22 AND status = 'started') ORDER BY num_entries",2),
+        // The `Unknown` sentinels show as NULL and are no value to select by.
+        ("WHERE stage = 'unknown' AND status = 'unknown'",                     0),
+        ("WHERE scope IS NULL OR (partition_key = 22 AND status = 'running') ORDER BY num_entries",2),
         ("WHERE kind = 'unknown'",                                             0),
         ("WHERE handler IS NOT NULL AND num_entries > 2 ORDER BY num_entries LIMIT 1",1),
     ];
@@ -318,7 +351,7 @@ async fn seed(store: &mut PartitionStore) -> Vec<ServiceStatsRow> {
                 handler: handler.map(ReString::from),
                 kind,
                 stage,
-                status,
+                status: EffectiveStatus::new(stage, status),
                 num_entries: count,
             });
         }

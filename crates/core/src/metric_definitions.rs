@@ -10,11 +10,13 @@
 
 #![allow(unused)]
 
-use metrics::{Unit, describe_counter};
+use metrics::{Unit, describe_counter, describe_gauge};
 
 // value of label `kind` in TC_SPAWN are defined in [`crate::TaskKind`].
 pub const TC_SPAWN: &str = "restate.task_center.spawned.total";
 pub const TC_FINISHED: &str = "restate.task_center.finished.total";
+
+pub const SCHEMA_SIZE_BYTES: &str = "restate.schema.size.bytes";
 
 // values of label `status` in METRICS
 pub const STATUS_COMPLETED: &str = "completed";
@@ -31,5 +33,11 @@ pub fn describe_metrics() {
         TC_FINISHED,
         Unit::Count,
         "Number of tasks that finished with 'status'"
+    );
+
+    describe_gauge!(
+        SCHEMA_SIZE_BYTES,
+        Unit::Bytes,
+        "Size of the latest schema this node decoded, after decompression. Decoding cost grows with this size"
     );
 }

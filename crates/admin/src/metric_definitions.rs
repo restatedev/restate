@@ -31,6 +31,11 @@ pub(crate) const CLUSTER_SAFETY_AT_RISK_PARTITIONS: &str =
     "restate.cluster_safety.at_risk_partitions";
 pub(crate) const CLUSTER_SAFETY_UNCHECKED_PARTITIONS: &str =
     "restate.cluster_safety.unchecked_partitions";
+pub(crate) const CLUSTER_SAFETY_METADATA_UNAVAILABLE: &str =
+    "restate.cluster_safety.metadata_unavailable";
+pub(crate) const CLUSTER_SAFETY_METADATA_AT_RISK: &str = "restate.cluster_safety.metadata_at_risk";
+pub(crate) const CLUSTER_SAFETY_METADATA_UNCHECKED: &str =
+    "restate.cluster_safety.metadata_unchecked";
 pub(crate) const CLUSTER_SAFETY_LAST_CHECK_TIMESTAMP_SECONDS: &str =
     "restate.cluster_safety.last_check_timestamp_seconds";
 
@@ -94,6 +99,21 @@ pub(crate) fn describe_metrics() {
         CLUSTER_SAFETY_UNCHECKED_PARTITIONS,
         Unit::Count,
         "Number of partitions whose placement is not yet known to the cluster controller"
+    );
+    describe_gauge!(
+        CLUSTER_SAFETY_METADATA_UNAVAILABLE,
+        Unit::Count,
+        "1 if the replicated metadata store lacks a majority of alive members, 0 otherwise"
+    );
+    describe_gauge!(
+        CLUSTER_SAFETY_METADATA_AT_RISK,
+        Unit::Count,
+        "1 if the replicated metadata store would lose its majority if a single failure domain failed, 0 otherwise"
+    );
+    describe_gauge!(
+        CLUSTER_SAFETY_METADATA_UNCHECKED,
+        Unit::Count,
+        "1 if the cluster uses the replicated metadata store but none of its members are known, 0 otherwise"
     );
     describe_gauge!(
         CLUSTER_SAFETY_LAST_CHECK_TIMESTAMP_SECONDS,

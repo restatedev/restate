@@ -70,11 +70,13 @@ pub trait CompleteIndex: 'static {
     /// record: a covered read ([`covers`]).
     const COVERS: &'static [PrimaryColumn<Self>] = &[];
 
-    /// Whether a covered read pays off for `restriction`: as [`Self::useful`]
-    /// says, unless the whole index costs less to read than the primary's scan,
-    /// so that any restriction does.
+    /// Whether a covered read pays off for `restriction`. One that does is
+    /// chosen without a demand, in no order ([`IndexUse::Unordered`]), even for
+    /// an index that otherwise needs one ([`Self::NEEDS_ORDERED_DEMAND`]); such
+    /// an index opts in by overriding this, and by default doesn't. Any other
+    /// index, by default, as [`Self::useful`] says.
     fn useful_covered(restriction: &<Self::Index as SelectionSchema>::Domains) -> bool {
-        Self::useful(restriction)
+        !Self::NEEDS_ORDERED_DEMAND && Self::useful(restriction)
     }
 
     /// Whether the index holds every row the query can return. An index of
@@ -92,17 +94,28 @@ pub trait CompleteIndex: 'static {
     /// included where a column can be NULL ([`IndexOrder::never_null`]). The
     /// read, forward or backward, then stops early. Without such a demand,
     /// reading every candidate and its primary record can cost more than the
-    /// scan it replaces.
+    /// scan it replaces. Two reads are chosen without one, in no order, where
+    /// the index says so: a LIMIT without an ORDER BY that the index narrows
+    /// ([`Self::useful_unordered`]), and a covered read
+    /// ([`Self::useful_covered`]).
+    ///
+    /// The query's other conditions, whatever they are, are checked on every
+    /// row the read returns, as on a scan's. Whether they reject most
+    /// candidates is not judged: a read that visits many in vain is still
+    /// chosen. A condition fails the query where it fails on a row the read
+    /// evaluates; a row outside the index's restriction is never evaluated,
+    /// so nothing is promised about errors another plan, such as a scan,
+    /// might meet there.
     const NEEDS_ORDERED_DEMAND: bool = false;
 
-    /// Whether the index's policy admits a condition the query applies to the
-    /// rows beyond the index's restriction. A selective condition the index
-    /// can't navigate makes the read visit many candidates in vain, so a policy
-    /// admits only the shapes it chooses to trust: a syntactic choice, not a
-    /// proof that the read pays off. Consulted only with
-    /// [`Self::NEEDS_ORDERED_DEMAND`].
-    fn residual_allowed(_conjunct: &Arc<dyn PhysicalExpr>) -> bool {
-        true
+    /// Whether the index also pays off for a query that wants any first rows in
+    /// no order, a LIMIT without an ORDER BY: only where `restriction` narrows
+    /// what the read visits, since a scan stops after the LIMIT's rows too.
+    /// Consulted only with [`Self::NEEDS_ORDERED_DEMAND`]. Such a read ships no
+    /// order ([`ordering`]), so a partition that can't read the index scans
+    /// without sorting and stops at the LIMIT as before.
+    fn useful_unordered(_restriction: &<Self::Index as SelectionSchema>::Domains) -> bool {
+        false
     }
 }
 
@@ -232,40 +245,53 @@ impl<P> IndexAccess<P> {
     }
 }
 
+/// Why the planner reads an index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IndexUse {
+    /// For what a bounded sort or a LIMIT above the source asks of its rows
+    /// ([`CompleteIndex::NEEDS_ORDERED_DEMAND`]): the read ships the index's
+    /// order and stops early.
+    Demand,
+    /// In no order: an index that pays off without a demand, a LIMIT without
+    /// an ORDER BY that the index narrows ([`CompleteIndex::useful_unordered`]),
+    /// or a covered read whose restriction pays off
+    /// ([`CompleteIndex::useful_covered`]). Nothing above the source relies on
+    /// an order, so a partition that can't read the index scans without
+    /// sorting.
+    Unordered,
+}
+
 fn select<B: CompleteIndex>(
     filters: &[Arc<dyn PhysicalExpr>],
     demand: Option<&Demand>,
     projection: &Schema,
-) -> anyhow::Result<bool> {
-    let covered = covers::<B>(projection);
-    if !index_restriction::<B::Index>(filters)?.is_some_and(|restriction| {
-        if covered {
-            B::useful_covered(&restriction)
-        } else {
-            B::useful(&restriction)
-        }
-    }) {
-        return Ok(false);
+) -> anyhow::Result<Option<IndexUse>> {
+    let Some(restriction) = index_restriction::<B::Index>(filters)? else {
+        return Ok(None);
+    };
+    let covered = covers::<B>(projection) && B::useful_covered(&restriction);
+    let useful = B::useful(&restriction);
+    if !covered && !useful {
+        return Ok(None);
     }
     let alternatives = <PrimaryOf<B> as SelectionSchema>::analyze(
         &static_conjuncts(filters),
         NonZeroUsize::new(16).unwrap(),
     )?;
     if !B::admits(&alternatives) {
-        return Ok(false);
+        return Ok(None);
     }
     if !B::NEEDS_ORDERED_DEMAND {
-        return Ok(true);
+        return Ok(Some(IndexUse::Unordered));
     }
-    // Every condition, whether the source or a filter above applies it.
-    Ok(demand.is_some_and(|demand| {
-        orders::<B>(demand).is_some()
-            && filters
-                .iter()
-                .flat_map(split_conjunction)
-                .chain(demand.residual.iter())
-                .all(B::residual_allowed)
-    }))
+    let served = demand.filter(|_| useful).and_then(|demand| {
+        if demand.ordering.is_empty() {
+            B::useful_unordered(&restriction).then_some(IndexUse::Unordered)
+        } else {
+            orders::<B>(demand).map(|_| IndexUse::Demand)
+        }
+    });
+    Ok(served.or_else(|| covered.then_some(IndexUse::Unordered)))
 }
 
 /// Whether `projection`, a scan's columns, its conditions' included, lies in
@@ -286,6 +312,10 @@ pub(crate) fn covers<B: CompleteIndex>(projection: &Schema) -> bool {
 fn orders<B: CompleteIndex>(demand: &Demand) -> Option<ReadDirection> {
     if B::ORDERING.is_empty() {
         return None;
+    }
+    // Any order will do: read forward.
+    if demand.ordering.is_empty() {
+        return Some(ReadDirection::Forward);
     }
     let mut columns = Vec::with_capacity(demand.ordering.len());
     for sort in demand.ordering.iter() {
@@ -333,7 +363,8 @@ fn introduced<B: CompleteIndex>() -> SemanticRestateVersion {
 /// The order of the index's read for `demand`: its declared order, or the
 /// exact reverse where `demand` asks for that ([`orders`]). NULLs go where
 /// `demand` puts them if a column is never NULL: the same rows in the same
-/// order, so that the planner adds no sort for the query's own spelling.
+/// order, so that the planner adds no sort for the query's own spelling. A
+/// read in no order ships none ([`IndexUse::Unordered`]).
 fn ordering<B: CompleteIndex>(demand: Option<&Demand>) -> Vec<SortedColumn> {
     let asked = demand.and_then(|demand| Some((&demand.ordering, orders::<B>(demand)?)));
     let backward = matches!(asked, Some((_, ReadDirection::Backward)));
@@ -345,8 +376,8 @@ fn ordering<B: CompleteIndex>(demand: Option<&Demand>) -> Vec<SortedColumn> {
                 .expect("an ordered column has a SQL name")
                 .to_owned(),
             descending: order.options.descending != backward,
-            nulls_first: match asked {
-                Some((asked, _)) if order.never_null => asked[at].options.nulls_first,
+            nulls_first: match asked.and_then(|(asked, _)| asked.get(at)) {
+                Some(asked) if order.never_null => asked.options.nulls_first,
                 _ => order.options.nulls_first != backward,
             },
         })
@@ -356,7 +387,11 @@ fn ordering<B: CompleteIndex>(demand: Option<&Demand>) -> Vec<SortedColumn> {
 /// Which way to read `B` for work shipped with `ordering`: the order the
 /// coordinator planned for, and declared to DataFusion. Any other order fails
 /// the read: nothing downstream checks that rows come in the declared order.
+/// Without an order ([`IndexUse::Unordered`]), forward.
 fn shipped_direction<B: CompleteIndex>(ordering: &[SortedColumn]) -> anyhow::Result<ReadDirection> {
+    if ordering.is_empty() {
+        return Ok(ReadDirection::Forward);
+    }
     let columns: Vec<_> = ordering
         .iter()
         .map(|column| {
@@ -377,8 +412,10 @@ fn shipped_direction<B: CompleteIndex>(ordering: &[SortedColumn]) -> anyhow::Res
     })
 }
 
-/// Whether the planner reads an index for a source's filters, under a demand.
-type SelectIndex = fn(&[Arc<dyn PhysicalExpr>], Option<&Demand>, &Schema) -> anyhow::Result<bool>;
+/// Whether, and why, the planner reads an index for a source's filters, under a
+/// demand.
+type SelectIndex =
+    fn(&[Arc<dyn PhysicalExpr>], Option<&Demand>, &Schema) -> anyhow::Result<Option<IndexUse>>;
 
 /// A declared index of a registered source.
 #[derive(Clone, Copy)]
@@ -396,14 +433,14 @@ impl DeclaredIndex {
         self.identity
     }
 
-    /// Whether the planner reads the index for `filters` under `demand`, for a
-    /// scan of `projection`.
+    /// Whether, and why, the planner reads the index for `filters` under
+    /// `demand`, for a scan of `projection`.
     pub(crate) fn select(
         &self,
         filters: &[Arc<dyn PhysicalExpr>],
         demand: Option<&Demand>,
         projection: &Schema,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<Option<IndexUse>> {
         (self.select)(filters, demand, projection)
     }
 
@@ -454,11 +491,12 @@ pub(crate) enum Access {
 ///
 /// `demand` is what a bounded sort above the source asks of its rows, if any
 /// ([`crate::distributed::demand`]). An index that needs one
-/// ([`CompleteIndex::NEEDS_ORDERED_DEMAND`]) is chosen only for it. Its fallback
-/// bound is the sort's fetch when the source's predicate is exactly every
-/// condition between the sort and the source: a partition that scans instead
-/// applies that predicate before keeping its first rows, so none of the rows the
-/// sort needs is lost.
+/// ([`CompleteIndex::NEEDS_ORDERED_DEMAND`]) is chosen for it, in its order, or
+/// for a covered read whose restriction pays off without one, in no order
+/// ([`IndexUse`]). An ordered read's fallback bound is the sort's fetch when the
+/// source's predicate is exactly every condition between the sort and the
+/// source: a partition that scans instead applies that predicate before keeping
+/// its first rows, so none of the rows the sort needs is lost.
 pub(crate) fn select_access(
     source: &PartitionSourceDescriptor,
     predicate: Option<&Arc<dyn PhysicalExpr>>,
@@ -473,24 +511,32 @@ pub(crate) fn select_access(
     }
     let nodes = source.manager.metadata().nodes_config_ref();
     for index in &source.indexes {
-        if index.select(filters, demand, projection)? && workers_know(&nodes, &index.introduced()) {
-            let conditions = filters
-                .iter()
-                .flat_map(split_conjunction)
-                .cloned()
-                .collect::<Vec<_>>();
-            let bound = demand
-                .filter(|demand| {
-                    index.orders(demand).is_some()
-                        && physical_exprs_bag_equal(&demand.residual, &conditions)
-                })
-                .map(|demand| demand.fetch);
-            return Ok(Access::Index {
-                index: ReString::from_static(index.identity()),
-                ordering: index.ordering(demand),
-                bound,
-            });
+        let Some(chosen) = index.select(filters, demand, projection)? else {
+            continue;
+        };
+        if !workers_know(&nodes, &index.introduced()) {
+            continue;
         }
+        let demand = demand.filter(|_| chosen == IndexUse::Demand);
+        let conditions = filters
+            .iter()
+            .flat_map(split_conjunction)
+            .cloned()
+            .collect::<Vec<_>>();
+        let bound = demand
+            .filter(|demand| {
+                index.orders(demand).is_some()
+                    && physical_exprs_bag_equal(&demand.residual, &conditions)
+            })
+            .map(|demand| demand.fetch);
+        return Ok(Access::Index {
+            index: ReString::from_static(index.identity()),
+            ordering: match chosen {
+                IndexUse::Demand => index.ordering(demand),
+                IndexUse::Unordered => Vec::new(),
+            },
+            bound,
+        });
     }
     Ok(Access::Scan)
 }
@@ -633,7 +679,7 @@ mod tests {
     #[restate_core::test]
     async fn registered_index_declarations_carry_their_versions() {
         use restate_partition_store::index::RegisteredIndex;
-        use restate_partition_store::vqueue_table::EntryByServiceCreated;
+        use restate_partition_store::vqueue_table::{EntryByCreated, EntryByStatusCreated};
 
         use crate::source_registry::SourceRegistry;
         use crate::tables::invocation_status::SysInvocationStatusTable;
@@ -653,10 +699,13 @@ mod tests {
                     .create_declared_source::<SysInvocationStatusTable>()
                     .indexes
             ),
-            [(
-                "_idx_entry_by_service_created",
-                EntryByServiceCreated::INTRODUCED
-            )]
+            [
+                (
+                    "_idx_entry_by_status_created",
+                    EntryByStatusCreated::INTRODUCED
+                ),
+                ("_idx_entry_by_service_created", EntryByCreated::INTRODUCED)
+            ]
         );
         assert_eq!(
             declared(
@@ -667,12 +716,12 @@ mod tests {
             [
                 ("_idx_entry_by_queue", SemanticRestateVersion::new(1, 8, 2)),
                 (
-                    "_idx_finished_entry_by_outcome",
-                    restate_partition_store::vqueue_table::FinishedEntryByOutcome::INTRODUCED
+                    "_idx_entry_status_by_status_created",
+                    restate_partition_store::vqueue_table::EntryByStatusCreated::INTRODUCED
                 ),
                 (
-                    "_idx_active_entry_by_stage",
-                    restate_partition_store::vqueue_table::ActiveEntryByStage::INTRODUCED
+                    "_idx_entry_status_by_status_transitioned",
+                    restate_partition_store::vqueue_table::EntryByStatusTransitioned::INTRODUCED
                 ),
                 ("_idx_entry_by_queue", SemanticRestateVersion::new(1, 8, 2)),
             ]
@@ -830,9 +879,9 @@ mod tests {
         ] {
             assert_eq!(plan_with(nodes, &service).await, expected, "{nodes:?}");
         }
-        // The index pays off only for its own order, or its exact reverse, and
-        // conditions that keep most candidates; the fallback bound needs every
-        // condition above the source in its predicate.
+        // The index pays off only for its own order, or its exact reverse,
+        // whatever the conditions; the fallback bound needs every condition
+        // above the source in its predicate.
         let condition = |column: &str, value: &str| {
             predicate(col(column).eq(lit(ScalarValue::LargeUtf8(Some(value.into())))))
         };
@@ -865,7 +914,7 @@ mod tests {
         };
         assert_eq!(chosen(None), "scan");
         assert_eq!(chosen(Some(&oldest)), "index Some(51)");
-        assert_eq!(chosen(Some(&scheduled)), "scan");
+        assert_eq!(chosen(Some(&scheduled)), "index None");
         assert_eq!(chosen(Some(&typed)), "index None");
         assert_eq!(chosen(Some(&newest(&service))), "index Some(51)");
         // `created_at` is never NULL: `DESC`, which puts NULLs first, reads the
@@ -973,6 +1022,82 @@ mod tests {
         ));
     }
 
+    /// A LIMIT without an ORDER BY reads the creation index only where the
+    /// query names its services: the read then ships no order and no bound, so
+    /// a partition that can't read the index scans without sorting. A condition
+    /// the index doesn't narrow scans, as the scan stops at the LIMIT too. A
+    /// page in the index's order ships the order and its bound.
+    #[restate_core::test]
+    async fn unordered_limits_read_an_index_only_where_it_narrows() {
+        use datafusion::common::{DFSchema, ScalarValue};
+        use datafusion::physical_expr::PhysicalSortExpr;
+        use datafusion::physical_expr::expressions::col as predicate_col;
+        use datafusion::prelude::{Expr, SessionContext, col, lit};
+        use restate_core::test_env::TestCoreEnv;
+        use restate_storage_query_api::tables::invocation_status::InvocationStatus;
+        use restate_types::config::Configuration;
+
+        use crate::source_registry::SourceRegistry;
+        use crate::tables::invocation_status::SysInvocationStatusTable;
+
+        let env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let mut config = Configuration::default();
+        config.common.experimental.set_track_entry_indexes(true);
+        Configuration::set(config);
+        let sources = SourceRegistry::local_only(env.metadata);
+        let source = sources.create_declared_source::<SysInvocationStatusTable>();
+        let arrow = InvocationStatus::arrow_schema();
+        let schema = DFSchema::try_from(arrow.as_ref().clone()).unwrap();
+        let predicate = |condition: Expr| {
+            SessionContext::new()
+                .create_physical_expr(condition, &schema)
+                .unwrap()
+        };
+        let projection = Schema::new(
+            ["id", "created_at"]
+                .map(|name| arrow.field_with_name(name).unwrap().clone())
+                .to_vec(),
+        );
+        // `LIMIT 25` right above the source, in no order or newest first.
+        let demand = |predicate: &Arc<dyn PhysicalExpr>, ordered: bool| Demand {
+            ordering: ordered
+                .then(|| PhysicalSortExpr {
+                    expr: predicate_col("created_at", &arrow).unwrap(),
+                    options: SortOptions {
+                        descending: true,
+                        nulls_first: false,
+                    },
+                })
+                .into_iter()
+                .collect(),
+            fetch: 25,
+            residual: split_conjunction(predicate).into_iter().cloned().collect(),
+        };
+        let chosen = |predicate: Arc<dyn PhysicalExpr>, ordered: bool| {
+            let demand = demand(&predicate, ordered);
+            match select_access(&source, Some(&predicate), Some(&demand), &projection).unwrap() {
+                Access::Index {
+                    index,
+                    ordering,
+                    bound,
+                } => (index.to_string(), ordering.len(), bound),
+                other => (format!("{other:?}"), 0, None),
+            }
+        };
+        let utils = || {
+            predicate(
+                col("target_service_name").eq(lit(ScalarValue::LargeUtf8(Some("Utils".into())))),
+            )
+        };
+        let creation = "_idx_entry_by_service_created".to_owned();
+        assert_eq!(chosen(utils(), false), (creation.clone(), 0, None));
+        assert_eq!(chosen(utils(), true), (creation, 1, Some(25)));
+        assert_eq!(
+            chosen(predicate(col("idempotency_key").is_not_null()), false),
+            ("Scan".to_owned(), 0, None)
+        );
+    }
+
     /// Each partition is sent its own keys and nothing else, a partition without
     /// keys is sent nothing, and duplicate IDs give one key.
     #[test]
@@ -995,5 +1120,130 @@ mod tests {
         let twice: Vec<_> = ids.iter().chain(&ids).cloned().collect();
         let deduplicated = LookupCandidates::<VQueueMetaTable>::prepare(&twice).unwrap();
         assert_eq!(deduplicated.within(KeyRange::FULL).unwrap().0, 3);
+    }
+
+    /// A covered read of a status index without a demand ships no order and
+    /// no bound, so a partition that can't read the index scans without
+    /// sorting, and a worker reads a work without an order forward. With an
+    /// ordered demand it ships the index's order; a column the keys don't hold
+    /// leaves it to the ordered path only.
+    #[restate_core::test]
+    async fn covered_reads_ship_no_order_without_a_demand() {
+        use datafusion::arrow::compute::SortOptions;
+        use datafusion::arrow::datatypes::{DataType, Field};
+        use datafusion::common::{DFSchema, ScalarValue};
+        use datafusion::physical_expr::PhysicalSortExpr;
+        use datafusion::physical_expr::expressions::col as predicate_col;
+        use datafusion::prelude::{SessionContext, col, lit};
+        use restate_core::test_env::TestCoreEnv;
+        use restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatus;
+        use restate_types::config::Configuration;
+
+        use crate::source_registry::SourceRegistry;
+        use crate::tables::vqueue_entry_status::read::StatusTransitionedIndex;
+        use crate::tables::vqueue_entry_status::schema::SysVqueueEntryStatusTable;
+
+        let env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let mut config = Configuration::default();
+        config.common.experimental.set_track_entry_indexes(true);
+        Configuration::set(config);
+        let sources = SourceRegistry::local_only(env.metadata);
+        let source = sources.create_declared_source::<SysVqueueEntryStatusTable>();
+        let arrow = VqueueEntryStatus::arrow_schema();
+        let schema = DFSchema::try_from(arrow.as_ref().clone()).unwrap();
+        let DataType::Timestamp(_, zone) = arrow
+            .field_with_name("transitioned_at")
+            .unwrap()
+            .data_type()
+            .clone()
+        else {
+            panic!("a timestamp column");
+        };
+        // Entries of a stage that transitioned since a time, or until it.
+        let window = |stage: &str, since: bool| {
+            let time = col("transitioned_at");
+            let at = lit(ScalarValue::TimestampMillisecond(
+                Some(1_744_010_000_000),
+                zone.clone(),
+            ));
+            SessionContext::new()
+                .create_physical_expr(
+                    col("stage")
+                        .eq(lit(ScalarValue::LargeUtf8(Some(stage.into()))))
+                        .and(if since {
+                            time.gt_eq(at)
+                        } else {
+                            time.lt_eq(at)
+                        }),
+                    &schema,
+                )
+                .unwrap()
+        };
+        let since = |stage: &str| window(stage, true);
+        let projection = |names: &[&str]| {
+            Schema::new(
+                names
+                    .iter()
+                    .map(|name| arrow.field_with_name(name).unwrap().clone())
+                    .collect::<Vec<Field>>(),
+            )
+        };
+        // `ORDER BY transitioned_at DESC LIMIT 9` right above the source.
+        let newest = |predicate: &Arc<dyn PhysicalExpr>| Demand {
+            ordering: vec![PhysicalSortExpr {
+                expr: predicate_col("transitioned_at", &arrow).unwrap(),
+                options: SortOptions {
+                    descending: true,
+                    nulls_first: false,
+                },
+            }],
+            fetch: 9,
+            residual: split_conjunction(predicate).into_iter().cloned().collect(),
+        };
+        let chosen = |predicate: Arc<dyn PhysicalExpr>, ordered: bool, names: &[&str]| {
+            let demand = ordered.then(|| newest(&predicate));
+            match select_access(
+                &source,
+                Some(&predicate),
+                demand.as_ref(),
+                &projection(names),
+            )
+            .unwrap()
+            {
+                Access::Index {
+                    index,
+                    ordering,
+                    bound,
+                } => (index.to_string(), ordering.len(), bound),
+                other => (format!("{other:?}"), 0, None),
+            }
+        };
+        let transitioned = "_idx_entry_status_by_status_transitioned".to_owned();
+        let covered = ["stage", "status", "transitioned_at"];
+        let queues = ["vqueue_id", "stage", "status", "transitioned_at"];
+        // A count of finished entries since a time: no demand, no order, no
+        // bound. Until a time, most of the history: not the status index.
+        assert_eq!(
+            chosen(since("finished"), false, &covered),
+            (transitioned.clone(), 0, None)
+        );
+        assert_ne!(
+            chosen(window("finished", false), false, &covered).0,
+            transitioned
+        );
+        assert_ne!(chosen(since("finished"), false, &queues).0, transitioned);
+        // Running entries newest first, covered or not: the index's order.
+        for names in [&covered[..], &queues] {
+            assert_eq!(
+                chosen(since("running"), true, names),
+                (transitioned.clone(), 1, Some(9))
+            );
+        }
+        // The worker's side of a work without an order.
+        let unordered = IndexRead::new(ReString::from_static("i"), Vec::new().into());
+        assert_eq!(
+            unordered.direction::<StatusTransitionedIndex>().unwrap(),
+            ReadDirection::Forward
+        );
     }
 }

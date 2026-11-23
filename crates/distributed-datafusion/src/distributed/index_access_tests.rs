@@ -311,10 +311,9 @@ async fn stage_index_access_matches_scans_across_windows_and_owners() {
 
 /// The workflow page through the entry index, across eight partitions on three
 /// owners: the same rows as a scan, newest created first, with the query's other
-/// conditions applied before its LIMIT and OFFSET. Another order, a tie-breaker
-/// or a condition outside the index's allowlist scans every partition instead,
-/// with the same rows. Each partition takes its own path, shown by
-/// invocations the index lacks:
+/// conditions applied before its LIMIT and OFFSET, whatever they are. Another
+/// order or a tie-breaker scans every partition instead, with the same rows.
+/// Each partition takes its own path, shown by invocations the index lacks:
 /// - most read the index;
 /// - one hasn't fully migrated to vqueues, and one has no Complete index: they
 ///   scan, filter, and keep the newest rows the query needs; the first holds
@@ -601,12 +600,29 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
             );
         }
         assert_eq!(run(exact).await.0.len(), 51);
+        // A condition on the status reads the status index on every owner,
+        // with the scan's rows.
+        let running = exact.replace("target_service_key IS NOT NULL", "status = 'invoked'");
+        let (rows, accesses) = run(&running).await;
+        assert_eq!(accesses.len(), fixture.stores.len(), "{running}");
+        assert!(
+            accesses.iter().all(|(_, access)| matches!(
+                access,
+                PrimaryRead::Index(index) if index.name() == "_idx_entry_by_status_created"
+            )),
+            "{running}: {accesses:?}"
+        );
+        assert!(!rows.is_empty(), "{running}");
+        assert_eq!(
+            rows,
+            scanned(&running).await,
+            "parallelism {parallelism}: {running}"
+        );
         for sql in [
             // Ties with another key, which the query orders by.
             "SELECT id, created_at FROM sys_invocation_status WHERE target_service_name = 'Promises' \
              AND target_handler_name = 'promise' ORDER BY created_at DESC NULLS LAST, id LIMIT 40"
                 .to_owned(),
-            exact.replace("target_service_key IS NOT NULL", "status = 'invoked'"),
         ] {
             let (rows, accesses) = run(&sql).await;
             assert_eq!(accesses.len(), fixture.stores.len(), "{sql}");
@@ -751,10 +767,11 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
         }
     }
 
-    // The newest finished entries, through `finished_entry_by_outcome/1` on
-    // every owner, except the partition whose index was reset, which scans
-    // and sorts: the same rows as a scan, each owner's read shown. Then the
-    // newest active entries, through `active_entry_by_stage/1`, the same way.
+    // The newest finished entries, through `entry_by_status_transitioned/1`'s
+    // Finished lanes on every owner, except the partition whose index was
+    // reset, which scans and sorts: the same rows as a scan, each owner's read
+    // shown. Then the newest active entries, through
+    // `entry_by_status_created/1`'s lanes, the same way.
     // Neither ordered column is ever NULL, so each query reads the same with
     // NULLs placed last, first, or by default (first, for DESC): in the same
     // plan, but for the spelling.
@@ -769,8 +786,8 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
     };
     let unspelled = |plan: String| plan.replace(" NULLS FIRST", "").replace(" NULLS LAST", "");
     for (sql, index) in [
-        (finished, "_idx_finished_entry_by_outcome"),
-        (active, "_idx_active_entry_by_stage"),
+        (finished, "_idx_entry_status_by_status_transitioned"),
+        (active, "_idx_entry_status_by_status_created"),
     ] {
         let explained = async |sql: &str| {
             let plan = crate::mocks::rows(session.as_ref(), &format!("EXPLAIN {sql}"))

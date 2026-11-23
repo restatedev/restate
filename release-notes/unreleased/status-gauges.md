@@ -4,9 +4,10 @@
 
 ### What Changed
 Each partition can keep statistics of its VQueue entries: how many entries are in each stage and
-status, counted by service, by deployment, and by virtual object. The counts include invocations
-and state mutations, and keep completed entries until they are deleted. Two experimental options
-control them:
+status, counted by service, by deployment, and by virtual object. The status is the one
+`sys_vqueue_entry_status` shows: what the entries are doing now, such as `ready` in the inbox or
+`running`. The counts include invocations and state mutations, and keep completed entries until they
+are deleted. Two experimental options control them:
 
 - `experimental-enable-track-status-gauges` registers the statistics on each partition and keeps
   them up to date with every entry write. Entries that existed before are added by a background

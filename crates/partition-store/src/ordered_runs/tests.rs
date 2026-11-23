@@ -37,7 +37,9 @@ use restate_util_string::ReString;
 use crate::keys::FieldCodec;
 use crate::keys::codecs::CanonicalEntryIdCodec;
 use crate::keys::selection::PrepareKeySelection;
-use crate::vqueue_table::{EntryByServiceCreated, EntryByServiceCreatedKey};
+use crate::vqueue_table::{
+    ENTRY_BY_SERVICE_CREATED, EntryByServiceCreated, EntryByServiceCreatedKey,
+};
 use crate::walk::engine;
 use crate::{PartitionStore, PartitionStoreManager};
 
@@ -86,6 +88,9 @@ async fn store_with_entries() -> PartitionStore {
         .verify_and_run_migrations(CancellationToken::new(), &config)
         .await
         .unwrap();
+    // The retired `entry_by_service_created/1`: its runs, a service and
+    // handler each, are this merge's fixture.
+    store.maintain_only(&[&ENTRY_BY_SERVICE_CREATED]).await;
     engine::run_all(&mut store, 3).await.unwrap();
 
     let qid = VQueueId::custom(7, "q");
@@ -142,6 +147,7 @@ fn limits(max_runs: usize, buffer: usize) -> OrderedRunsLimits {
         max_discovery_keys: 1_000,
         buffer: NonZeroUsize::new(buffer).unwrap(),
         step_budget: NonZeroUsize::new(64).unwrap(),
+        bucket_fields: 0,
     }
 }
 
@@ -701,4 +707,351 @@ async fn merges_release_the_snapshot_and_stop_on_cancellation() {
         "the failed step releases the snapshot"
     );
     assert_eq!(runs.retained_bytes(), 0);
+}
+
+/// A store whose entries are `(service, millis after BASE, id byte)`, each an
+/// invocation of handler `h`, with the entry indexes tracked.
+async fn store_with(entries: &[(&str, u64, u8)]) -> PartitionStore {
+    RocksDbManager::init();
+    let manager = PartitionStoreManager::create(true).await.unwrap();
+    let mut store = manager
+        .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+        .await
+        .unwrap();
+    let mut config = Configuration::default();
+    config.common.experimental.set_track_entry_indexes(true);
+    store
+        .verify_and_run_migrations(CancellationToken::new(), &config)
+        .await
+        .unwrap();
+    engine::run_all(&mut store, 3).await.unwrap();
+    let qid = VQueueId::custom(7, "q");
+    let mut tx = store.transaction();
+    for &(service, millis, byte) in entries {
+        let target = EntryTargetRef::Service {
+            scope: None,
+            service,
+            handler: "h",
+        };
+        let created =
+            UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::new(BASE + millis));
+        let key = EntryKey::new(
+            false,
+            created.to_unix_millis(),
+            u64::from(byte),
+            EntryId::new(EntryKind::Invocation, [byte; 16]),
+        );
+        tx.create_vqueue_entry_status(
+            &EntryContext {
+                qid: &qid,
+                target: &target,
+            },
+            EntryStateRef {
+                stage: Stage::Inbox,
+                status: Status::New,
+                entry_key: &key,
+                metadata: &EntryMetadata::default(),
+                stats: &EntryStatistics::new(created, key.run_at()),
+            },
+        );
+    }
+    tx.commit().await.unwrap();
+    store
+}
+
+/// `entry_by_created/1` read with its hour as a bucket and runs of an hour and a
+/// service: `(service, millis after BASE)` in merge order, or the error the read
+/// ended with.
+fn bucketed(
+    snapshot: &ReadSnapshot,
+    direction: ReadDirection,
+    limits: OrderedRunsLimits,
+) -> Option<std::result::Result<Vec<(String, u64)>, StorageError>> {
+    bucketed_with(snapshot, KeySelection::all(), direction, limits)
+}
+
+/// [`bucketed`] with `selection`.
+fn bucketed_with(
+    snapshot: &ReadSnapshot,
+    selection: KeySelection<crate::vqueue_table::EntryByCreatedKey>,
+    direction: ReadDirection,
+    limits: OrderedRunsLimits,
+) -> Option<std::result::Result<Vec<(String, u64)>, StorageError>> {
+    let OrderedRunsDiscovery::Ready(mut runs) = snapshot
+        .ordered_runs::<crate::vqueue_table::EntryByCreated>(
+            Arc::new(selection),
+            2,
+            direction,
+            limits,
+            Box::new(()),
+        )
+        .unwrap()
+    else {
+        return None;
+    };
+    let mut rows = Vec::new();
+    loop {
+        match runs.advance() {
+            Ok(CursorStep::Record) => {
+                let key = runs.current().unwrap().0.decode_all().unwrap();
+                let millis = key.created_at.0.to_unix_millis().as_u64() - BASE;
+                rows.push((key.target_service_name.to_string(), millis));
+            }
+            Ok(CursorStep::Skipped) => {}
+            Ok(CursorStep::Done) => return Some(Ok(rows)),
+            Err(error) => return Some(Err(error)),
+        }
+    }
+}
+
+/// With the hour as a bucket, a read discovers one hour's runs at a time: three
+/// services over four hours and a fourth in one of them are thirteen runs, too
+/// many for a read that merges four, yet bucket by bucket it returns every entry
+/// newest first, or oldest first backwards. A read that merges three still
+/// merges the later hour with four: it has returned other hours' rows already,
+/// so it can't read another way. Only the first hour's runs are limited: a read
+/// that merges two stops there, before reading anything.
+#[restate_core::test]
+async fn bucketed_reads_discover_one_bucket_at_a_time() {
+    const HOUR: u64 = 3_600_000;
+    let mut entries = Vec::new();
+    let mut byte = 0;
+    for hour in 0..4 {
+        for (offset, service) in [(10, "A"), (30, "B"), (20, "C"), (40, "A")] {
+            byte += 1;
+            entries.push((service, hour * HOUR + offset, byte));
+        }
+    }
+    entries.push(("D", HOUR + 50, 99));
+    let store = store_with(&entries).await;
+    let (snapshot, _closed) = store.query_read(CancellationToken::new()).unwrap();
+    let four = OrderedRunsLimits {
+        bucket_fields: 1,
+        ..limits(4, 2)
+    };
+    let mut expected: Vec<_> = entries
+        .iter()
+        .map(|&(service, millis, _)| (service.to_owned(), millis))
+        .collect();
+    expected.sort_by_key(|&(_, millis)| Reverse(millis));
+    let unbucketed = OrderedRunsLimits {
+        bucket_fields: 0,
+        ..four
+    };
+    let three = OrderedRunsLimits {
+        max_runs: 3,
+        ..four
+    };
+    let two = OrderedRunsLimits {
+        max_runs: 2,
+        ..four
+    };
+    for direction in [ReadDirection::Forward, ReadDirection::Backward] {
+        let rows = bucketed(&snapshot, direction, four).unwrap().unwrap();
+        assert_eq!(
+            rows,
+            expected_in_order(&expected, direction),
+            "{direction:?}"
+        );
+        // Without buckets, the thirteen runs are too many to discover.
+        assert!(bucketed(&snapshot, direction, unbucketed).is_none());
+        // The first hour fits three runs; the later hour with D merges four.
+        let rows = bucketed(&snapshot, direction, three).unwrap().unwrap();
+        assert_eq!(
+            rows,
+            expected_in_order(&expected, direction),
+            "{direction:?}"
+        );
+        assert!(bucketed(&snapshot, direction, two).is_none());
+    }
+}
+
+fn expected_in_order(
+    newest_first: &[(String, u64)],
+    direction: ReadDirection,
+) -> Vec<(String, u64)> {
+    let mut rows = newest_first.to_vec();
+    if direction == ReadDirection::Backward {
+        rows.reverse();
+    }
+    rows
+}
+
+/// A bucketed read must cover one key header: buckets of entry statuses, whose
+/// keys lead with their partition key, would sort by partition key first.
+#[restate_core::test]
+async fn bucketed_reads_refuse_several_headers() {
+    use crate::vqueue_table::EntryStatusKeys;
+
+    let store = store_with_entries().await;
+    let (snapshot, _closed) = store.query_read(CancellationToken::new()).unwrap();
+    let request =
+        Arc::new(EntryStatusKeys::prepare(&Selection::All, Some(KeyRange::FULL)).unwrap());
+    let refused = snapshot
+        .ordered_runs::<EntryStatusKeys>(
+            request,
+            1,
+            ReadDirection::Forward,
+            OrderedRunsLimits {
+                bucket_fields: 1,
+                ..limits(4, 2)
+            },
+            Box::new(()),
+        )
+        .err()
+        .unwrap();
+    assert!(refused.to_string().contains("one key header"), "{refused}");
+}
+
+/// Backwards, a bucket without a match stays a bucket: oldest first, service
+/// A in hours 0 and 2 and only B in hour 1, the read of A returns each of its
+/// entries once, without reading from hour 1 into the hour it returned.
+#[restate_core::test]
+async fn buckets_without_a_match_are_skipped_in_both_directions() {
+    use crate::vqueue_table::EntryByCreatedKey;
+
+    const HOUR: u64 = 3_600_000;
+    let store = store_with(&[("A", 10, 1), ("B", HOUR + 10, 2), ("A", 2 * HOUR + 10, 3)]).await;
+    let (snapshot, _closed) = store.query_read(CancellationToken::new()).unwrap();
+    let only_a = || {
+        EntryByCreatedKey::prepare_candidates(&Selection::All.and(IndexClause::TargetServiceName(
+            ValuePredicate::Equal("A".into()),
+        )))
+        .unwrap()
+    };
+    let limits = OrderedRunsLimits {
+        bucket_fields: 1,
+        ..limits(4, 2)
+    };
+    let newest_first = vec![("A".to_owned(), 2 * HOUR + 10), ("A".to_owned(), 10)];
+    // A budget of one key a step pauses the later buckets' discovery, which
+    // continues in the next steps with the same rows.
+    let one_key = OrderedRunsLimits {
+        step_budget: NonZeroUsize::MIN,
+        ..limits
+    };
+    for direction in [ReadDirection::Forward, ReadDirection::Backward] {
+        for limits in [limits, one_key] {
+            let rows = bucketed_with(&snapshot, only_a(), direction, limits)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                rows,
+                expected_in_order(&newest_first, direction),
+                "{direction:?}"
+            );
+        }
+        assert!(
+            skipped_steps(&snapshot, only_a(), direction, one_key) > 0,
+            "{direction:?}"
+        );
+    }
+}
+
+/// How many steps of the bucketed read report [`CursorStep::Skipped`].
+fn skipped_steps(
+    snapshot: &ReadSnapshot,
+    selection: KeySelection<crate::vqueue_table::EntryByCreatedKey>,
+    direction: ReadDirection,
+    limits: OrderedRunsLimits,
+) -> usize {
+    let OrderedRunsDiscovery::Ready(mut runs) = snapshot
+        .ordered_runs::<crate::vqueue_table::EntryByCreated>(
+            Arc::new(selection),
+            2,
+            direction,
+            limits,
+            Box::new(()),
+        )
+        .unwrap()
+    else {
+        panic!("too many runs");
+    };
+    let mut skipped = 0;
+    loop {
+        match runs.advance().unwrap() {
+            CursorStep::Record => {}
+            CursorStep::Skipped => skipped += 1,
+            CursorStep::Done => return skipped,
+        }
+    }
+}
+
+/// Bucketed reads charge what they hold and release all of it: when done, when
+/// a later bucket is refused memory, which fails the read after it returned the
+/// first bucket's rows, and when cancelled between buckets.
+#[restate_core::test]
+async fn bucketed_reads_charge_refuse_and_cancel_like_others() {
+    const HOUR: u64 = 3_600_000;
+    let store = store_with(&[
+        ("A", 2 * HOUR + 10, 1),
+        ("A", HOUR + 10, 2),
+        ("B", HOUR + 20, 3),
+        ("C", HOUR + 30, 4),
+        ("D", HOUR + 40, 5),
+    ])
+    .await;
+    let limits = OrderedRunsLimits {
+        bucket_fields: 1,
+        ..limits(8, 2)
+    };
+    let open = |snapshot: &ReadSnapshot, direction, charged: &Charged| {
+        let OrderedRunsDiscovery::Ready(runs) = snapshot
+            .ordered_runs::<crate::vqueue_table::EntryByCreated>(
+                Arc::new(KeySelection::all()),
+                2,
+                direction,
+                limits,
+                Box::new(charged.clone()),
+            )
+            .unwrap()
+        else {
+            panic!("the first bucket's runs are within the limit");
+        };
+        runs
+    };
+    let (snapshot, _closed) = store.query_read(CancellationToken::new()).unwrap();
+
+    // Done: all five rows, and everything charged released.
+    let mut peak = 0;
+    for direction in [ReadDirection::Forward, ReadDirection::Backward] {
+        let charged = Charged::default();
+        let mut runs = open(&snapshot, direction, &charged);
+        let mut rows = 0;
+        while let step = runs.advance().unwrap()
+            && step != CursorStep::Done
+        {
+            rows += usize::from(step == CursorStep::Record);
+        }
+        assert_eq!((rows, charged.now_and_peak().0), (5, 0), "{direction:?}");
+        if direction == ReadDirection::Forward {
+            peak = charged.now_and_peak().1;
+        }
+    }
+
+    // Refused: newest first, the first hour's one run fits and returns its
+    // row; the next hour's four runs don't, which fails the read.
+    let charged = Charged::with_limit(peak - 1);
+    let mut runs = open(&snapshot, ReadDirection::Forward, &charged);
+    let mut rows = 0;
+    let failed = loop {
+        match runs.advance() {
+            Ok(CursorStep::Record) => rows += 1,
+            Ok(CursorStep::Skipped) => {}
+            Ok(CursorStep::Done) => break false,
+            Err(_) => break true,
+        }
+    };
+    assert!(failed && rows == 1, "failed: {failed}, rows: {rows}");
+    assert_eq!((runs.retained_bytes(), charged.now_and_peak().0), (0, 0));
+
+    // Cancelled between buckets: the next step fails and releases everything.
+    let cancel = CancellationToken::new();
+    let (snapshot, _closed) = store.query_read(cancel.clone()).unwrap();
+    let charged = Charged::default();
+    let mut runs = open(&snapshot, ReadDirection::Forward, &charged);
+    assert_eq!(runs.advance().unwrap(), CursorStep::Record);
+    cancel.cancel();
+    assert!(runs.advance().is_err());
+    assert_eq!((runs.retained_bytes(), charged.now_and_peak().0), (0, 0));
 }

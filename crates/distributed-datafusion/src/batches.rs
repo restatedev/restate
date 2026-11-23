@@ -17,8 +17,9 @@ use std::marker::PhantomData;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::arrow::array::{ArrayRef, FixedSizeBinaryBuilder};
+use datafusion::arrow::datatypes::{Schema, SchemaRef};
+use datafusion::arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use datafusion::common::{DataFusionError, Result};
 use datafusion::physical_plan::metrics::Time;
 use tokio::sync::mpsc;
@@ -27,13 +28,22 @@ use restate_partition_store::lookup::{LookupBinding, LookupKeys};
 use restate_partition_store::{QueryIoExecutor, ReadSnapshot};
 use restate_storage_api::StorageError;
 use restate_storage_api::scan::{RowConsumer, ScanOutcome};
+use restate_storage_query_api::ordering::{OrderFunction, OrderInput};
 use restate_storage_query_api::scan::{CursorScan, Scan, Table};
 use restate_storage_query_api::{
     AsyncRowSink, LogicalSchema, PreparedRead, RecordsOf, RowBuilder, RowSink, SchemaBinding,
 };
 
+/// The rows of a read, in batches of its projection. The projection's last fields
+/// may be key fields ([`OrderFunction::key_field`]): a JOIN that merges on an
+/// order of the read's ID asks for them, and the read fills them from the ID of
+/// each record ([`RowSink::set_record`]), never from the ID's text.
 pub(crate) struct Batches<S: LogicalSchema> {
     builder: S::RowBuilder,
+    schema: SchemaRef,
+    keys: Vec<KeyField>,
+    /// Whether a record set the keys of the rows to come.
+    identified: bool,
     batch_size: usize,
     remaining: usize,
     elapsed_compute: Time,
@@ -46,8 +56,34 @@ impl<S: LogicalSchema> Batches<S> {
         limit: Option<usize>,
         elapsed_compute: Time,
     ) -> Self {
+        let fields = schema.fields();
+        let (columns, keys) = match fields
+            .iter()
+            .position(|field| OrderFunction::of_key_field(field.name()).is_some())
+        {
+            None => (Arc::clone(&schema), Vec::new()),
+            Some(split) => (
+                Arc::new(Schema::new(fields[..split].to_vec())),
+                fields[split..]
+                    .iter()
+                    .map(|field| {
+                        let (function, _) = OrderFunction::of_key_field(field.name())
+                            .expect("key fields come after the schema's columns");
+                        KeyField {
+                            function,
+                            builder: FixedSizeBinaryBuilder::new(function.width() as i32),
+                            value: Vec::with_capacity(function.width()),
+                            present: false,
+                        }
+                    })
+                    .collect(),
+            ),
+        };
         Self {
-            builder: S::RowBuilder::new(schema),
+            builder: S::RowBuilder::new(columns),
+            schema,
+            keys,
+            identified: false,
             batch_size,
             remaining: limit.unwrap_or(usize::MAX),
             elapsed_compute,
@@ -59,14 +95,28 @@ impl<S: LogicalSchema> Batches<S> {
     }
 
     fn take(&mut self) -> Result<Option<RecordBatch>> {
-        (self.builder.num_rows() != 0)
-            .then(|| self.builder.finish())
-            .transpose()
+        let rows = self.builder.num_rows();
+        if rows == 0 {
+            return Ok(None);
+        }
+        let batch = self.builder.finish()?;
+        if self.keys.is_empty() {
+            return Ok(Some(batch));
+        }
+        let mut columns = batch.columns().to_vec();
+        columns.extend(
+            self.keys
+                .iter_mut()
+                .map(|key| Arc::new(key.builder.finish()) as ArrayRef),
+        );
+        Ok(Some(RecordBatch::try_new_with_options(
+            Arc::clone(&self.schema),
+            columns,
+            &RecordBatchOptions::new().with_row_count(Some(rows)),
+        )?))
     }
-}
 
-impl<S: LogicalSchema> RowSink<S> for Batches<S> {
-    fn append_with(
+    fn append_row(
         &mut self,
         write: impl FnOnce(&mut S::RowBuilder) -> restate_storage_api::Result<()>,
     ) -> ControlFlow<restate_storage_api::Result<()>> {
@@ -82,6 +132,58 @@ impl<S: LogicalSchema> RowSink<S> for Batches<S> {
         self.remaining -= 1;
         ControlFlow::Continue(())
     }
+}
+
+impl<S: LogicalSchema> RowSink<S> for Batches<S> {
+    /// Appends the row and, after it, the key fields of the record set last. A row
+    /// without its record's ID can't fill key fields.
+    fn append_with(
+        &mut self,
+        write: impl FnOnce(&mut S::RowBuilder) -> restate_storage_api::Result<()>,
+    ) -> ControlFlow<restate_storage_api::Result<()>> {
+        if !self.keys.is_empty() && !self.identified {
+            return ControlFlow::Break(Err(StorageError::Generic(anyhow::anyhow!(
+                "key fields need the record's ID"
+            ))));
+        }
+        if let flow @ ControlFlow::Break(_) = self.append_row(write) {
+            return flow;
+        }
+        for key in &mut self.keys {
+            if !key.present {
+                return ControlFlow::Break(Err(StorageError::Generic(anyhow::anyhow!(
+                    "no {} for the record",
+                    key.function.name()
+                ))));
+            }
+            if let Err(error) = key.builder.append_value(&key.value) {
+                return ControlFlow::Break(Err(StorageError::Generic(error.into())));
+            }
+        }
+        ControlFlow::Continue(())
+    }
+
+    /// Takes the record's key fields, which its rows then carry.
+    fn set_record(&mut self, id: &impl OrderInput) {
+        if self.keys.is_empty() {
+            return;
+        }
+        self.identified = true;
+        for key in &mut self.keys {
+            key.value.clear();
+            key.present = id
+                .order_key(key.function, |value| key.value.extend_from_slice(value))
+                .is_some();
+        }
+    }
+}
+
+/// A key field of [`Batches`], and its value for the current record.
+struct KeyField {
+    function: OrderFunction,
+    builder: FixedSizeBinaryBuilder,
+    value: Vec<u8>,
+    present: bool,
 }
 
 /// Where a partition read sends its batches. It sends each batch to `tx` as soon
@@ -141,6 +243,10 @@ impl<S: LogicalSchema> RowSink<S> for BatchSink<S> {
         write: impl FnOnce(&mut S::RowBuilder) -> restate_storage_api::Result<()>,
     ) -> ControlFlow<restate_storage_api::Result<()>> {
         self.batches.append_with(write)
+    }
+
+    fn set_record(&mut self, id: &impl OrderInput) {
+        self.batches.set_record(id);
     }
 }
 

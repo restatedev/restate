@@ -9,11 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use restate_clock::RoughTimestamp;
+use restate_partition_store::vqueue_table::EntryKeyRow;
 use restate_storage_api::vqueue_table::stats::EntryStatistics;
 use restate_storage_api::vqueue_table::{EntryMetadataRef, RawStatusHeaderRef, Stage, Status};
 use restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatusRow;
 use restate_types::identifiers::BaseEntryId;
-use restate_types::vqueues::{Seq, VQueueId, VQueueIdRef};
+use restate_types::vqueues::{EffectiveStatus, Seq, VQueueId, VQueueIdRef};
 
 use super::schema::SysVqueueEntryStatusBuilder;
 
@@ -49,7 +50,7 @@ pub(crate) fn covered_row(
         entry_id: *id,
         vqueue_id: VQueueId::from_raw_bytes(&mut place.qid.as_raw_bytes()),
         stage: place.stage,
-        status: state.status,
+        status: EffectiveStatus::new(place.stage, state.status),
         has_lock: place.has_lock,
         next_at: place.next_run_at.as_unix_millis(),
         sequence_number: place.seq.as_u64(),
@@ -87,6 +88,52 @@ pub(crate) fn covered_row(
         total_blocked_on_lock: total.blocked_on_lock_ms as i64,
         total_blocked_on_deployment_concurrency: total.blocked_on_deployment_concurrency_ms as i64,
         canonical_id: id.canonicalize(place.seq),
+    }
+}
+
+/// Appends the row of an entry as a status index's key holds it: only the
+/// columns the key holds, written as [`append_entry_row`] writes them from an
+/// entry status. The caller projects no other column.
+#[inline]
+pub(crate) fn append_status_key_row(builder: &mut SysVqueueEntryStatusBuilder, key: &EntryKeyRow) {
+    let mut row = builder.row();
+    let id = key.id.to_base_entry_id();
+    if row.is_partition_key_defined() {
+        row.partition_key(id.partition_key());
+    }
+    if row.is_entry_id_defined() {
+        row.fmt_entry_id(id);
+    }
+    if row.is_canonical_id_defined() {
+        row.fmt_canonical_id(key.id);
+    }
+    if row.is_sequence_number_defined() {
+        row.sequence_number(key.id.seq().as_u64());
+    }
+    if row.is_entry_kind_defined()
+        && let Some(name) = id.kind().name()
+    {
+        row.entry_kind(name);
+    }
+    if row.is_stage_defined()
+        && let Some(name) = key.stage.name()
+    {
+        row.stage(name);
+    }
+    if row.is_status_defined()
+        && let Some(name) = EffectiveStatus::new(key.stage, key.status).name()
+    {
+        row.status(name);
+    }
+    if row.is_created_at_defined()
+        && let Some(at) = key.created_at
+    {
+        row.created_at(at.to_unix_millis().as_u64() as i64);
+    }
+    if row.is_transitioned_at_defined()
+        && let Some(at) = key.transitioned_at
+    {
+        row.transitioned_at(at.to_unix_millis().as_u64() as i64);
     }
 }
 
@@ -138,8 +185,10 @@ pub(crate) fn append_entry_row(
     if row.is_vqueue_id_defined() {
         row.fmt_vqueue_id(place.qid);
     }
-    if row.is_stage_defined() {
-        row.stage(place.stage.as_str());
+    if row.is_stage_defined()
+        && let Some(name) = place.stage.name()
+    {
+        row.stage(name);
     }
     if row.is_has_lock_defined() {
         row.has_lock(place.has_lock);
@@ -151,8 +200,10 @@ pub(crate) fn append_entry_row(
         row.sequence_number(place.seq.as_u64());
     }
 
-    if row.is_entry_kind_defined() {
-        row.fmt_entry_kind(id.kind());
+    if row.is_entry_kind_defined()
+        && let Some(name) = id.kind().name()
+    {
+        row.entry_kind(name);
     }
 
     let Some(EntryState {
@@ -164,8 +215,10 @@ pub(crate) fn append_entry_row(
         return;
     };
 
-    if row.is_status_defined() {
-        row.status(status.as_str());
+    if row.is_status_defined()
+        && let Some(name) = EffectiveStatus::new(place.stage, *status).name()
+    {
+        row.status(name);
     }
 
     if row.is_created_at_defined() {

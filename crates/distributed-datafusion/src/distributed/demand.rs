@@ -23,6 +23,18 @@
 //! source's own columns. Anything else in between, or a sort without a fetch,
 //! demands nothing.
 //!
+//! A LIMIT without an ORDER BY demands any `fetch` rows that meet the
+//! conditions, in no order: an **unordered** demand, with an empty ordering.
+//! Repartitioning and coalescing may also separate it from the source, as
+//! they keep every row. A sort's ordered demand on a source takes precedence:
+//!
+//! ```text
+//! CoalescePartitionsExec: fetch=250                              ← fetch
+//!   FilterExec: status = suspended AND …, fetch=250              ← residual
+//!     RepartitionExec: partitioning=RoundRobinBatch(2)
+//!       TableScanExec: sys_invocation_status
+//! ```
+//!
 //! A demand belongs to one consumer of the source. A plan may reach the same
 //! source node more than once, such as from both inputs of a union; then
 //! nothing is demanded of it, as another consumer may need other rows:
@@ -44,8 +56,11 @@ use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr, split_conjunction};
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::filter::FilterExec;
+use datafusion::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
 use datafusion::physical_plan::projection::ProjectionExec;
+use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 
 use super::source::TableScanExec;
@@ -109,10 +124,33 @@ fn visit(
         if let Some((scan, demand)) = follow(sort.input(), demand) {
             found.insert(address(&scan), (scan, demand));
         }
+    } else if let Some((fetch, input)) = unordered_limit(plan) {
+        let demand = Demand {
+            ordering: Vec::new(),
+            fetch,
+            residual: Vec::new(),
+        };
+        // An ordered demand above, found first, takes precedence.
+        if let Some((scan, demand)) = follow(input, demand) {
+            found.entry(address(&scan)).or_insert((scan, demand));
+        }
     }
     for child in plan.children() {
         visit(child, found, reached);
     }
+}
+
+/// A LIMIT's rows, its OFFSET included, and its input, for a node that keeps
+/// the first rows its input gives.
+fn unordered_limit(plan: &Arc<dyn ExecutionPlan>) -> Option<(usize, &Arc<dyn ExecutionPlan>)> {
+    if let Some(limit) = plan.downcast_ref::<GlobalLimitExec>() {
+        // A sum past `usize` demands nothing: the scan reads as it would.
+        return Some((limit.skip().checked_add(limit.fetch()?)?, limit.input()));
+    }
+    if let Some(coalesce) = plan.downcast_ref::<CoalescePartitionsExec>() {
+        return Some((coalesce.fetch()?, coalesce.input()));
+    }
+    None
 }
 
 /// Carries `demand`, in the columns of `plan`'s output, down to a table scan.
@@ -144,6 +182,19 @@ fn follow(
             .residual
             .extend(split_conjunction(filter.predicate()).into_iter().cloned());
         return follow(filter.input(), demand);
+    }
+    // Without an order, nodes that keep every row in its columns, or the
+    // first of them per partition, change nothing the demand needs.
+    if demand.ordering.is_empty() {
+        if let Some(repartition) = plan.downcast_ref::<RepartitionExec>() {
+            return follow(repartition.input(), demand);
+        }
+        if let Some(coalesce) = plan.downcast_ref::<CoalescePartitionsExec>() {
+            return follow(coalesce.input(), demand);
+        }
+        if let Some(limit) = plan.downcast_ref::<LocalLimitExec>() {
+            return follow(limit.input(), demand);
+        }
     }
     None
 }

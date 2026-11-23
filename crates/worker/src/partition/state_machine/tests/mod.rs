@@ -186,13 +186,20 @@ impl TestEnv {
 
     /// Once the partition has fully migrated to vqueues, every invocation has its
     /// entry and every invocation entry its invocation, after every command:
-    /// reads that find invocations through their entries depend on it.
+    /// reads that find invocations through their entries depend on it. Each
+    /// entry is also in a lane of the status index that its invocation's public
+    /// status and completion result select, which status pages depend on.
     fn assert_invocations_match_entries(&self) {
         if self.checks_invocation_entries() {
             let mismatches = self.storage.invocation_entry_mismatches().unwrap();
             std::assert!(
                 mismatches.is_empty(),
                 "invocations and their vqueue entries differ: {mismatches:?}"
+            );
+            let outside = self.storage.invocation_lane_mismatches().unwrap();
+            std::assert!(
+                outside.is_empty(),
+                "entries outside their invocations' status lanes: {outside:?}"
             );
         }
     }
@@ -347,6 +354,14 @@ impl TestEnv {
     pub fn set_enabled_features(&mut self, features: PersistedFeatures) {
         self.processor.set_enabled_features_in_memory(features);
         self.migrated = false;
+    }
+
+    /// Enables `change` from the next record on, as a version barrier does, for a change that
+    /// needs no migration.
+    pub fn enable_feature(&mut self, change: PartitionFeatureChange) {
+        let mut features = *self.processor.enabled_features();
+        change.apply_to(&mut features);
+        self.processor.set_enabled_features_in_memory(features);
     }
 }
 
@@ -984,6 +999,214 @@ async fn invocations_keep_their_vqueue_entries_through_their_lifecycle() -> Test
         ])
         .await;
 
+    test_env.shutdown().await;
+    Ok(())
+}
+
+/// The features of a partition with vqueues, before its vqueue lifecycle is refined.
+fn vqueue_features() -> PersistedFeatures {
+    PersistedFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+        PartitionFeatureChange::EnableVqueues,
+        PartitionFeatureChange::EnablePreflightInvocationTerminationRetention,
+    ])
+}
+
+/// Records come from different nodes' clocks, so the record that completes an invocation can be
+/// older than the one that created it. Ending, killing while inboxed and cancelling while
+/// scheduled each complete the invocation no earlier than its creation. With a refined vqueue
+/// lifecycle, its vqueue entry enters Finished at exactly that completion time; before, at the
+/// completing record's time.
+#[test(restate_core::test)]
+async fn finished_entries_transition_at_the_invocation_completion_time() -> TestResult {
+    let mut test_env = TestEnv::create_with_features(vqueue_features()).await;
+    for lifecycle_refined in [false, true] {
+        if lifecycle_refined {
+            test_env.enable_feature(PartitionFeatureChange::EnableVqLifecycleRefined);
+        }
+        let created_at = MillisSinceEpoch::now();
+        // The clock of the node writing the later records is five seconds behind.
+        let behind = MillisSinceEpoch::new(created_at.as_u64() - 5_000);
+        let later = MillisSinceEpoch::new(created_at.as_u64() + 3_600_000);
+        let invoke = |invocation_id, execution_time| {
+            commands::InvokeCommand::test_envelope(ServiceInvocation {
+                invocation_id,
+                invocation_target: InvocationTarget::mock_service(),
+                completion_retention_duration: Duration::from_secs(120),
+                execution_time,
+                ..ServiceInvocation::mock()
+            })
+        };
+        let terminate = |invocation_id, flavor| {
+            commands::TerminateInvocationCommand::test_envelope(InvocationTermination {
+                invocation_id,
+                flavor,
+                response_sink: None,
+            })
+        };
+
+        let [ended, inboxed, scheduled] = [(); 3].map(|_| InvocationId::mock_random());
+        for (invocation_id, execution_time) in
+            [(ended, None), (inboxed, None), (scheduled, Some(later))]
+        {
+            test_env
+                .apply_at(
+                    invoke(invocation_id, execution_time),
+                    created_at,
+                    Lsn::OLDEST,
+                )
+                .await;
+        }
+        let (_, qid, key) = invocation_entry(&mut test_env, &ended).await;
+        for envelope in [
+            run_decision(&qid, key),
+            fixtures::pinned_deployment(ended, ServiceProtocolVersion::V6),
+            fixtures::invoker_entry_effect(
+                ended,
+                OutputCommand {
+                    result: OutputResult::Success(Default::default()),
+                    name: Default::default(),
+                },
+            ),
+            fixtures::invoker_end_effect(ended),
+            terminate(inboxed, TerminationFlavor::Kill),
+            terminate(scheduled, TerminationFlavor::Cancel),
+        ] {
+            test_env.apply_at(envelope, behind, Lsn::OLDEST).await;
+        }
+
+        let finished_at = if lifecycle_refined {
+            created_at
+        } else {
+            behind
+        };
+        for invocation_id in [ended, inboxed, scheduled] {
+            let InvocationStatus::Completed(completed) = test_env
+                .storage
+                .get_invocation_status(&invocation_id)
+                .await?
+            else {
+                panic!("{invocation_id} is completed and retained");
+            };
+            assert_eq!(
+                completed.timestamps.completed_transition_time(),
+                Some(created_at)
+            );
+            let entry = test_env
+                .storage
+                .transaction()
+                .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
+                .await?
+                .unwrap();
+            assert_eq!(entry.stage(), Stage::Finished);
+            assert_eq!(
+                entry.stats().transitioned_at,
+                UniqueTimestamp::from_unix_millis_unchecked(finished_at),
+                "{invocation_id}, refined: {lifecycle_refined}"
+            );
+        }
+    }
+    test_env.shutdown().await;
+    Ok(())
+}
+
+/// Paused and suspended entries carry their status, and resuming or waking them up restores it.
+/// An entry yielded by a leader change records `yielded` in the inbox. With a refined vqueue
+/// lifecycle, its next run records `started`, so pausing or suspending it carries `started` and
+/// it comes back ready to run. Before, a later run kept `yielded`, and so did pausing and
+/// suspending.
+#[test(restate_core::test)]
+async fn parked_entries_carry_their_latest_run_status() -> TestResult {
+    let mut test_env = TestEnv::create_with_features(vqueue_features()).await;
+    for lifecycle_refined in [false, true] {
+        if lifecycle_refined {
+            test_env.enable_feature(PartitionFeatureChange::EnableVqLifecycleRefined);
+        }
+        let invocation_target = InvocationTarget::mock_service();
+        let invocation_id = InvocationId::generate(&invocation_target, None);
+        let entry = async |test_env: &mut TestEnv| {
+            let header = test_env
+                .storage
+                .transaction()
+                .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
+                .await
+                .unwrap()
+                .unwrap();
+            (header.stage(), header.status())
+        };
+        let run = async |test_env: &mut TestEnv| {
+            let (_, qid, key) = invocation_entry(test_env, &invocation_id).await;
+            test_env.apply(run_decision(&qid, key)).await;
+        };
+        let resume = || {
+            commands::ResumeInvocationCommand::test_envelope(ResumeInvocationRequest {
+                invocation_id,
+                update_deployment_id: None,
+                update_pinned_deployment_id: None,
+                run_at: None,
+                response_sink: None,
+            })
+        };
+
+        test_env
+            .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
+                invocation_id,
+                invocation_target: invocation_target.clone(),
+                completion_retention_duration: Duration::from_secs(120),
+                journal_retention_duration: Duration::from_secs(120),
+                ..ServiceInvocation::mock()
+            }))
+            .await;
+        run(&mut test_env).await;
+        fixtures::mock_pinned_deployment_v7(&mut test_env, invocation_id).await;
+        test_env
+            .apply(commands::InvokerEffectCommand::test_envelope(Effect {
+                invocation_id,
+                kind: InvokerEffectKind::Yield {
+                    reason: YieldReason::PartitionLeaderChange,
+                    error_event: None,
+                    resume_at: None,
+                },
+            }))
+            .await;
+        assert_eq!(
+            entry(&mut test_env).await,
+            (Stage::Inbox, vqueue_table::Status::Yielded)
+        );
+
+        let ran = if lifecycle_refined {
+            vqueue_table::Status::Started
+        } else {
+            vqueue_table::Status::Yielded
+        };
+
+        // Run again, pause, resume.
+        run(&mut test_env).await;
+        assert_eq!(entry(&mut test_env).await, (Stage::Running, ran));
+        test_env
+            .apply(commands::PauseInvocationCommand::test_envelope(
+                commands::PauseInvocationCommand {
+                    invocation_id,
+                    request_id: Some(PartitionProcessorRpcRequestId::new()),
+                },
+            ))
+            .await;
+        assert_eq!(entry(&mut test_env).await, (Stage::Paused, ran));
+        test_env.apply(resume()).await;
+        assert_eq!(entry(&mut test_env).await, (Stage::Inbox, ran));
+
+        // Run again, suspend, wake up.
+        run(&mut test_env).await;
+        test_env
+            .apply(fixtures::invoker_suspended(
+                invocation_id,
+                NotificationId::for_completion(1),
+            ))
+            .await;
+        assert_eq!(entry(&mut test_env).await, (Stage::Suspended, ran));
+        test_env.apply(resume()).await;
+        assert_eq!(entry(&mut test_env).await, (Stage::Inbox, ran));
+    }
     test_env.shutdown().await;
     Ok(())
 }

@@ -3455,3 +3455,49 @@ mod lite {
         }
     }
 }
+
+#[test]
+fn uncompressed_size_is_tracked_on_decode_and_cleared_on_update() {
+    use bilrost::Message;
+    use bytes::BytesMut;
+
+    use crate::storage::StorageCodec;
+
+    let schema = SchemaUpdater::update(Schema::default(), |updater| {
+        updater
+            .add_deployment(add_deployment_request(vec![greeter_service()]))
+            .map(|_| ())
+    })
+    .unwrap();
+    assert_eq!(schema.uncompressed_size(), None);
+
+    for bilrost_encoded in [false, true] {
+        let mut schema = schema.clone();
+        schema.set_bilrost_encoded(bilrost_encoded);
+
+        let mut buf = BytesMut::new();
+        StorageCodec::encode(&schema, &mut buf).unwrap();
+        let stored_len = buf.len();
+        let decoded: Schema = StorageCodec::decode(&mut buf.freeze()).unwrap();
+
+        let size = decoded
+            .uncompressed_size()
+            .expect("decoded schema has a size");
+        if bilrost_encoded {
+            assert_eq!(size, schema.deref().encoded_len());
+        } else {
+            // StorageCodec prefixes the uncompressed value with a one-byte codec header
+            assert_eq!(size, stored_len - 1);
+        }
+
+        let version = decoded.version();
+        let updated = SchemaUpdater::update(decoded, |updater| {
+            let mut request = add_deployment_request(vec![another_greeter_service()]);
+            request.deployment_address = DeploymentAddress::mock_uri("http://other:9080");
+            updater.add_deployment(request).map(|_| ())
+        })
+        .unwrap();
+        assert!(updated.version() > version);
+        assert_eq!(updated.uncompressed_size(), None);
+    }
+}

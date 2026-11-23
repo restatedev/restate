@@ -51,7 +51,8 @@ macro_rules! define_aggregated_stat {
         value: $kind:ty,
         key: $key:ident(
             $($field:ident: $codec:ty $(=> $borrowed:ty)?),+ $(,)?
-        ) $(,)?
+        ),
+        orders: $orders:expr $(,)?
     ) => {
         #[derive(Debug)]
         pub enum $stat {}
@@ -72,6 +73,7 @@ macro_rules! define_aggregated_stat {
         impl restate_storage_query_api::Table for $stat {
             type Record<'a> = (crate::keys::KeyDecoder<'a, <Self as crate::stats::Stat>::OwnedKey>, &'a [u8]);
             type Scan = crate::keys::selection::KeySelection<<Self as crate::stats::Stat>::OwnedKey>;
+            const NATIVE_ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] = $orders;
         }
 
         impl crate::table::PhysicalTable for $stat {

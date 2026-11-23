@@ -58,7 +58,8 @@ use std::sync::Arc;
 use restate_storage_api::scan::{RowConsumer, ScanOutcome};
 use restate_storage_api::{Result, StorageError};
 
-use crate::scan::{CursorScan, RecordsOf, SCAN_SLICE, Scan, Table, yield_now};
+use crate::ordering::OrderInput;
+use crate::scan::{CursorScan, RecordKeys, RecordsOf, SCAN_SLICE, Scan, Table, yield_now};
 use crate::selection::{Selection, SelectionPrecision};
 
 use super::{LogicalSchema, RowBuilder};
@@ -88,6 +89,13 @@ pub trait RowSink<S: LogicalSchema> {
         &mut self,
         write: impl FnOnce(&mut S::RowBuilder) -> Result<()>,
     ) -> ControlFlow<Result<()>>;
+
+    /// Called with each physical record's ID before the record's rows, so that a
+    /// sink writing key fields ([`OrderFunction::key_field`]) takes them from the
+    /// ID rather than from its text. The default ignores it.
+    ///
+    /// [`OrderFunction::key_field`]: crate::ordering::OrderFunction::key_field
+    fn set_record(&mut self, _id: &impl OrderInput) {}
 }
 
 /// A projected sink that can await capacity before a materialization call.
@@ -266,6 +274,7 @@ where
 
     async fn consume(&mut self, record: Self::Item<'_>) -> Result<ControlFlow<()>> {
         let mut state = B::Materializer::default();
+        self.sink.set_record(&RecordKeys::<B::Table>(&record));
         loop {
             if self.sink.reserve().await?.is_break() {
                 return Ok(ControlFlow::Break(()));

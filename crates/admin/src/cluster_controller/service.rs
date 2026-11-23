@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod cluster_controller_state;
+mod leader_handover;
 mod scheduler;
 mod scheduler_task;
 

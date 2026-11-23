@@ -243,67 +243,91 @@ crate::define_schema! {
 }
 
 crate::define_schema! {
-    /// Finished vqueue entries by stored status, service and handler, newest
-    /// finished first: the entry index `finished_entry_by_outcome/1`, read
-    /// instead of scanning `sys_vqueue_entry_status` for its Finished entries.
-    /// Status and transition time are the entry table's columns; service and
-    /// handler are the index's own, which the entry table doesn't show. Not
-    /// shown as a table.
-    finished_entry_by_outcome {
-        name: "_idx_finished_entry_by_outcome",
-        primary: vqueue_entry_status::VqueueEntryStatus,
-        reference: canonical_id => |id| id.to_base_entry_id(),
+    /// Vqueue entries by stored stage and status, creation hour and service,
+    /// newest created first: the entry index `entry_by_status_created/1`, read
+    /// instead of scanning `sys_invocation_status` for the invocations of some
+    /// statuses or outcomes. Its columns are the invocation columns that
+    /// restrict it: `status` and `completion_result` select the stored stages
+    /// and statuses their invocations' entries can have. The stage and status
+    /// lead the key, so no column orders it as a whole; each stage and status
+    /// is newest created first. The index also holds state mutations, which
+    /// name no invocation; reads skip them. Not shown as a table.
+    entry_by_status_created {
+        name: "_idx_entry_by_status_created",
+        primary: invocation_status::InvocationStatus,
+        // A locator only: a state mutation's names no invocation.
+        reference: canonical_id => |id| InvocationId::from_parts(
+            id.partition_key(),
+            InvocationUuid::from_bytes(*id.as_entry_id().remainder_bytes()),
+        ),
         columns {
-            /// The entry's stored status.
+            /// The invocation's status.
             status => DataType::LargeUtf8,
-            /// The service the entry targets.
-            target_service_name: ReString => DataType::LargeUtf8,
-            /// The handler the entry targets; NULL for a state mutation.
-            target_handler_name: Option<ReString> => DataType::LargeUtf8,
-            /// When the entry entered Finished. The index keeps its full
+            /// Whether a completed invocation succeeded or failed.
+            completion_result => DataType::LargeUtf8,
+            /// The invoked service.
+            target_service_name => DataType::LargeUtf8,
+            /// The invoked handler, held in each key's value.
+            target_handler_name => DataType::LargeUtf8,
+            /// When the invocation was created. The index keeps its full
             /// timestamp; this column compares at millisecond precision.
-            transitioned_at => TimestampMillisecond,
+            created_at => TimestampMillisecond,
             /// The complete indexed entry incarnation.
-            canonical_id => DataType::LargeUtf8,
+            canonical_id: CanonicalEntryId => DataType::LargeUtf8,
         }
-        key {
-            status: asc nulls_last,
-            target_service_name: asc nulls_last,
-            target_handler_name: asc nulls_first,
-            transitioned_at: desc nulls_last,
-        }
+        key {}
     }
 }
 
 crate::define_schema! {
-    /// Active vqueue entries, those in Inbox, Running, Suspended or Paused, by
-    /// stage, service and handler, newest created first: the entry index
-    /// `active_entry_by_stage/1`, read instead of scanning
-    /// `sys_vqueue_entry_status` for its active entries. Stage and creation time
-    /// are the entry table's columns; service and handler are the index's own,
-    /// which the entry table doesn't show. Not shown as a table.
-    active_entry_by_stage {
-        name: "_idx_active_entry_by_stage",
+    /// Vqueue entries in a known stage by stage, status, creation hour and
+    /// service, newest created first: the entry index
+    /// `entry_by_status_created/1`, read instead of scanning
+    /// `sys_vqueue_entry_status` for the entries of some stages and statuses.
+    /// Each stage and status is newest created first; no column orders the
+    /// index as a whole. Not shown as a table.
+    entry_status_by_status_created {
+        name: "_idx_entry_status_by_status_created",
         primary: vqueue_entry_status::VqueueEntryStatus,
         reference: canonical_id => |id| id.to_base_entry_id(),
         columns {
             /// The entry's stored stage.
             stage => DataType::LargeUtf8,
-            /// The service the entry targets.
-            target_service_name: ReString => DataType::LargeUtf8,
-            /// The handler the entry targets; NULL for a state mutation.
-            target_handler_name: Option<ReString> => DataType::LargeUtf8,
+            /// The entry's stored status.
+            status => DataType::LargeUtf8,
             /// When the entry was created. The index keeps its full timestamp;
             /// this column compares at millisecond precision.
             created_at => TimestampMillisecond,
             /// The complete indexed entry incarnation.
             canonical_id => DataType::LargeUtf8,
         }
-        key {
-            stage: asc nulls_last,
-            target_service_name: asc nulls_last,
-            target_handler_name: asc nulls_first,
-            created_at: desc nulls_last,
+        key {}
+    }
+}
+
+crate::define_schema! {
+    /// Vqueue entries in a known stage by stage, status, transition hour and
+    /// service, newest transitioned first: the entry index
+    /// `entry_by_status_transitioned/1`, read instead of scanning
+    /// `sys_vqueue_entry_status` for the entries of some stages and statuses
+    /// in a window of transition times. Each stage and status is newest
+    /// transitioned first; no column orders the index as a whole. Not shown as
+    /// a table.
+    entry_status_by_status_transitioned {
+        name: "_idx_entry_status_by_status_transitioned",
+        primary: vqueue_entry_status::VqueueEntryStatus,
+        reference: canonical_id => |id| id.to_base_entry_id(),
+        columns {
+            /// The entry's stored stage.
+            stage => DataType::LargeUtf8,
+            /// The entry's stored status.
+            status => DataType::LargeUtf8,
+            /// When the entry entered its stage. The index keeps its full
+            /// timestamp; this column compares at millisecond precision.
+            transitioned_at => TimestampMillisecond,
+            /// The complete indexed entry incarnation.
+            canonical_id => DataType::LargeUtf8,
         }
+        key {}
     }
 }

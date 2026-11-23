@@ -40,6 +40,8 @@ use super::PreparedFieldPredicate;
 
 mod timestamp;
 
+pub(crate) use timestamp::prepare_hour_buckets;
+
 #[cfg(test)]
 mod tests;
 
@@ -237,7 +239,9 @@ where
 /// Prepares a predicate on a column that is never NULL for a field that may
 /// store NULL, such as an index field that only some of its records fill: the
 /// predicate matches the field's present values only. Everything else goes to
-/// the `Option` codec unchanged.
+/// the `Option` codec unchanged. Only a test index binds a field this way
+/// since `entry_by_service_created/1` was retired.
+#[cfg(test)]
 pub(crate) fn prepare_present<C: FieldPredicateCodec>(
     predicate: &ValuePredicate<C::Literal>,
     literals: &mut Vec<u8>,
@@ -268,10 +272,12 @@ where
 }
 
 /// The codec of a nullable field's present values.
+#[cfg(test)]
 pub(crate) trait NullableFieldCodec {
     type Present: FieldPredicateCodec;
 }
 
+#[cfg(test)]
 impl<C: FieldPredicateCodec> NullableFieldCodec for Option<C> {
     type Present = C;
 }

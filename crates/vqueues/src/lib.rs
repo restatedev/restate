@@ -363,12 +363,17 @@ where
     /// in the the Inbox stage.
     ///
     /// Otherwise, this will panic.
+    ///
+    /// The entry records `new_status` while it runs: `Started` for its first run. A
+    /// later run either records `Started` too, or keeps the status it had in the
+    /// inbox, as runs did before a partition refines its vqueue lifecycle.
     pub fn run_entry(
         &mut self,
         at: UniqueTimestamp,
         header: &impl EntryStatusHeader,
         target: &EntryTargetRef<'_>,
         wait_stats: WaitStats,
+        new_status: Status,
     ) -> EntryKey {
         let vqueue_id = header.vqueue_id();
         assert_eq!(vqueue_id, self.cache.get(self.handle).unwrap().vqueue_id());
@@ -414,12 +419,6 @@ where
             header.entry_key().acquire_lock()
         } else {
             *header.entry_key()
-        };
-
-        let new_status = if !header.has_started() {
-            Status::Started
-        } else {
-            header.status()
         };
 
         debug!(
@@ -1420,8 +1419,6 @@ where
 
         let created_at =
             UniqueTimestamp::from_unix_millis_unchecked(completed.timestamps.creation_time());
-        let modified_at =
-            UniqueTimestamp::from_unix_millis_unchecked(completed.timestamps.modification_time());
         let completed_at = UniqueTimestamp::from_unix_millis_unchecked(
             completed
                 .timestamps
@@ -1454,7 +1451,9 @@ where
         // truth for this information.
         // This needs to be > 0 because this is how we denote that an entry "has_started" in stats.
         stats.num_attempts = 1;
-        stats.transitioned_at = modified_at;
+        // The entry entered Finished when the invocation completed: its stored
+        // completion time, or its modification time when that is absent.
+        stats.transitioned_at = completed_at;
         stats.latest_attempt_at = completed
             .timestamps
             .running_transition_time()

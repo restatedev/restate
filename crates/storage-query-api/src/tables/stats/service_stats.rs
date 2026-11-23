@@ -9,10 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use datafusion::arrow::datatypes::DataType;
-use strum::VariantArray;
 
-use restate_storage_api::vqueue_table::{Stage, Status};
-use restate_types::vqueues::EntryKind;
+use restate_storage_api::vqueue_table::Stage;
+use restate_types::vqueues::{EffectiveStatus, EntryKind};
 use restate_util_string::ReString;
 
 use crate::{ShardingScheme, define_schema};
@@ -35,12 +34,15 @@ define_schema! {
             /// The kind of the entry or operation.
             #[values([EntryKind::Invocation, EntryKind::StateMutation])]
             kind: EntryKind => DataType::LargeUtf8,
-            /// VQueue stage, including unknown, inbox, running, suspended, paused, and finished.
-            #[values(Stage::VARIANTS.iter().copied())]
+            /// VQueue stage: inbox, running, suspended, paused, or finished; NULL for a stage this
+            /// version doesn't know.
+            #[values(Stage::VALUES)]
             stage: Stage => DataType::LargeUtf8,
-            /// Entry processing status, including unknown and terminal statuses.
-            #[values(Status::VARIANTS.iter().copied())]
-            status: Status => DataType::LargeUtf8,
+            /// The entries' effective status, as in `sys_vqueue_entry_status`:
+            /// what they are doing now, which also tells their stage. NULL if this
+            /// version can't tell it from their stored stage and status.
+            #[values(EffectiveStatus::VALUES)]
+            status: EffectiveStatus => DataType::LargeUtf8,
             /// Number of entries. Partition-local contributions are summed by the public SQL view.
             num_entries: u64 => DataType::UInt64,
         }

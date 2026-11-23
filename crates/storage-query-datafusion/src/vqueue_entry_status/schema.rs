@@ -34,11 +34,18 @@ define_table!(
     vqueue_id: DataType::LargeUtf8,
 
     /// The stage this entry currently belongs to. Choices are 'inbox', 'running', 'paused',
-    /// 'suspended', and 'finished'.
+    /// 'suspended', and 'finished'; NULL for a stage this version doesn't know.
     stage: DataType::LargeUtf8,
 
-    /// The entry processing status. Examples are `new`, `scheduled`, `started`,
-    /// `backing-off`, `yielded`, `killed`, `cancelled`, `failed`, and `succeeded`.
+    /// What the entry is doing now, its effective status, which also tells its
+    /// stage. In the inbox: `new`, `scheduled`, `backing-off`, `ready` or
+    /// `yielded`; then `running`, `suspended` or `paused`; once finished, its
+    /// outcome: `succeeded`, `failed`, `killed` or `cancelled`. NULL if this
+    /// version can't tell from the stored stage and status what the entry is
+    /// doing; no status name selects such an entry.
+    ///
+    /// Until v1.8.2, this showed the stored status, which can be `started` and
+    /// doesn't tell the stage.
     status: DataType::LargeUtf8,
 
     /// Whether this entry currently holds a lock.
@@ -50,7 +57,8 @@ define_table!(
     /// Sequence number encoded in the entry ordering key.
     sequence_number: DataType::UInt64,
 
-    /// Entry kind (`invocation` or `state-mutation`).
+    /// Entry kind (`invocation` or `state-mutation`); NULL for a kind this version
+    /// doesn't know.
     entry_kind: DataType::LargeUtf8,
 
     /// Creation timestamp of the entry.

@@ -16,10 +16,6 @@ use bilrost::{Message, OwnedMessage};
 use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::TableProvider;
-use datafusion::logical_expr::Operator;
-use datafusion::physical_expr::expressions::{
-    BinaryExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr, Literal,
-};
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::{PhysicalExpr, SendableRecordBatchStream};
 
@@ -29,12 +25,17 @@ use restate_partition_store::invocation_status_table::{
     InvocationStatusRecords, InvocationStatusScan, ScanReason,
 };
 use restate_partition_store::keys::selection::KeySelection;
-use restate_partition_store::vqueue_table::EntryByServiceCreated as StoredEntryIndex;
+use restate_partition_store::vqueue_table::{
+    EntryByCreated as StoredEntryIndex, EntryByStatusCreated as StoredStatusIndex,
+    EntryByStatusCreatedKey,
+};
+use restate_storage_query_api::ordering::NativeOrder;
 use restate_storage_query_api::schema::index::index_restriction;
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
 use restate_storage_query_api::tables::index::{
-    EntryByServiceCreated, EntryByServiceCreatedDomains,
+    EntryByServiceCreated, EntryByServiceCreatedDomains, EntryByStatusCreated,
+    EntryByStatusCreatedDomains,
 };
 use restate_storage_query_api::tables::invocation_status::{
     InvocationStatus, InvocationStatusColumn,
@@ -69,31 +70,36 @@ mod tests;
 crate::tables::table_adapter!(pub(crate) SysInvocationStatusTable, InvocationStatus);
 
 impl PartitionSource for SysInvocationStatusTable {
-    const ORDERING: &'static [InvocationStatusColumn] = &[InvocationStatusColumn::PartitionKey];
+    const ORDERS: &'static [NativeOrder] =
+        <InvocationStatusRecords as restate_storage_query_api::Table>::NATIVE_ORDERS;
+    const ID_COLUMN: Option<InvocationStatusColumn> = Some(InvocationStatusColumn::Id);
     const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> = Some(select_primary);
-    const INDEXES: &'static [IndexAccess<InvocationStatus>] = &[IndexAccess::of::<EntryIndex>()];
+    // A query whose statuses narrow the status index's lanes reads it; any
+    // other, the creation index, which checks statuses on each candidate.
+    const INDEXES: &'static [IndexAccess<InvocationStatus>] = &[
+        IndexAccess::of::<StatusIndex>(),
+        IndexAccess::of::<EntryIndex>(),
+    ];
 }
 
-/// The most services a query may name to read them through the entry index.
-const MAX_INDEXED_SERVICES: usize = 64;
-
-/// The entry index, read for the invocations it finds. It holds every
-/// invocation once its partition has fully migrated to vqueues and the index is
-/// Ready; until then, each partition's read scans instead, before returning
-/// anything. Its policy: the query names its services, so the read merges only
-/// their runs, and asks for the newest of them, or the oldest, so the read
-/// stops early:
+/// The entry index `entry_by_created/1`, read for the invocations it finds. It
+/// holds every invocation once its partition has fully migrated to vqueues and
+/// the index is Complete; until then, each partition's read scans instead,
+/// before returning anything. Its policy: the query asks for the newest
+/// invocations, or the oldest, of all services or a few, so the read merges one
+/// creation hour's runs at a time, a run per service, and stops early:
 ///
 /// ```sql
 /// SELECT id FROM sys_invocation_status
-/// WHERE target_service_name = 'Promises' AND target_service_key IS NOT NULL
+/// [WHERE target_service_name = 'Promises' AND target_service_key IS NOT NULL]
 /// ORDER BY created_at DESC [NULLS FIRST | NULLS LAST]
 /// LIMIT 51
 /// ```
 ///
 /// Oldest first (`ORDER BY created_at ASC … LIMIT 250`) reads each run from
-/// its oldest end. Another order, or a condition outside the allowlist below,
-/// such as `status = 'scheduled'`, scans instead.
+/// its oldest end. Another order scans instead. Other conditions, such as
+/// `status = 'scheduled'`, are checked on each candidate
+/// ([`CompleteIndex::NEEDS_ORDERED_DEMAND`]).
 struct EntryIndex;
 
 impl CompleteIndex for EntryIndex {
@@ -115,9 +121,10 @@ impl CompleteIndex for EntryIndex {
         never_null: true,
     }];
 
-    /// A few services, each with a few handlers, stay within the runs one read
-    /// merges. Where the index isn't maintained, every partition would scan
-    /// and sort instead, so the planner then scans.
+    /// The read merges one creation hour's runs at a time, one per service
+    /// with an invocation in that hour, so pages of all services qualify, as
+    /// do pages of any number of named ones. Where the index isn't maintained, every
+    /// partition would scan and sort instead, so the planner then scans.
     fn useful(restriction: &EntryByServiceCreatedDomains) -> bool {
         if !Configuration::pinned()
             .common
@@ -126,94 +133,79 @@ impl CompleteIndex for EntryIndex {
         {
             return false;
         }
-        match restriction.target_service_name.to_predicate() {
-            Some(ValuePredicate::Equal(_)) => true,
-            Some(ValuePredicate::In(names)) => (1..=MAX_INDEXED_SERVICES).contains(&names.len()),
-            _ => false,
-        }
+        // An empty list of services selects nothing.
+        !matches!(
+            restriction.target_service_name.to_predicate(),
+            Some(ValuePredicate::In(names)) if names.is_empty()
+        )
     }
 
     const NEEDS_ORDERED_DEMAND: bool = true;
 
-    /// The allowlist: conditions on what the read navigates (service, handler,
-    /// creation time), on the service's type and on the key's presence.
-    /// Alternatives of these qualify too, except for creation times: the read
-    /// would visit the gaps between them. A service has one type and keys or
-    /// not, so a type or key condition keeps all of a named service's
-    /// invocations or none of them. A syntactic choice, not a selectivity
-    /// proof: such a condition can still reject every candidate.
-    fn residual_allowed(conjunct: &Arc<dyn PhysicalExpr>) -> bool {
-        allowed_condition(conjunct, true)
+    /// A LIMIT without an ORDER BY, such as the UI's
+    /// `WHERE target_service_name IN ('Doss') LIMIT 250`, reads the newest
+    /// matches and stops, where the query names its services or bounds the
+    /// creation time: the read visits only their runs or hours. Without either,
+    /// it would visit every service's runs, and the scan, which stops at the
+    /// LIMIT too, reads instead.
+    fn useful_unordered(restriction: &EntryByServiceCreatedDomains) -> bool {
+        (restriction.target_service_name.to_predicate().is_some()
+            || restriction.created_at.to_predicate().is_some())
+            && Self::useful(restriction)
     }
 }
 
-/// See [`EntryIndex::residual_allowed`]. `times` admits creation-time
-/// comparisons.
-fn allowed_condition(condition: &Arc<dyn PhysicalExpr>, times: bool) -> bool {
-    use InvocationStatusColumn::{
-        CreatedAt, TargetHandlerName, TargetServiceKey, TargetServiceName, TargetServiceTy,
-    };
-    let column = |expr: &Arc<dyn PhysicalExpr>| {
-        let name = expr.downcast_ref::<Column>()?.name();
-        [
-            CreatedAt,
-            TargetHandlerName,
-            TargetServiceKey,
-            TargetServiceName,
-            TargetServiceTy,
-        ]
-        .into_iter()
-        .find(|column| InvocationStatus::sql_name(*column) == Some(name))
-    };
-    let literal = |expr: &Arc<dyn PhysicalExpr>| expr.downcast_ref::<Literal>().is_some();
-    if let Some(binary) = condition.downcast_ref::<BinaryExpr>() {
-        if *binary.op() == Operator::Or {
-            // A small IN list arrives as alternatives.
-            return allowed_condition(binary.left(), false)
-                && allowed_condition(binary.right(), false);
-        }
-        let (column, op) = if literal(binary.right()) {
-            (column(binary.left()), Some(*binary.op()))
-        } else if literal(binary.left()) {
-            (column(binary.right()), binary.op().swap())
-        } else {
+/// The entry index `entry_by_status_created/1`, read for the invocations of
+/// some statuses or outcomes. The public `status` and `completion_result`
+/// select the stages and stored statuses their entries can be in, the
+/// index's **lanes**: completed invocations are Finished, failed ones in any
+/// stored status but Succeeded, the others in any other stage. Each partition
+/// reads the lanes with keys, like `entry_by_created/1`, and merges them into
+/// creation order; until the index is Complete it scans instead. Its policy:
+/// the newest or oldest invocations of some statuses, of all services or a
+/// few, under the creation index's other conditions:
+///
+/// ```sql
+/// SELECT id FROM sys_invocation_status
+/// WHERE status = 'scheduled' [AND target_service_name IN ('Counter')]
+/// ORDER BY created_at DESC NULLS LAST
+/// LIMIT 250
+/// ```
+///
+/// A status condition that doesn't narrow the lanes, such as
+/// `status IN ('invoked', 'completed')`, leaves it unused.
+struct StatusIndex;
+
+impl CompleteIndex for StatusIndex {
+    type Index = EntryByStatusCreated;
+    const INTRODUCED: SemanticRestateVersion = <StoredStatusIndex as RegisteredIndex>::INTRODUCED;
+    /// As [`EntryIndex::ORDERING`]: the lanes merge by creation time.
+    const ORDERING: &'static [IndexOrder<InvocationStatusColumn>] = EntryIndex::ORDERING;
+
+    fn useful(restriction: &EntryByStatusCreatedDomains) -> bool {
+        if !Configuration::pinned()
+            .common
+            .experimental
+            .is_track_entry_indexes_enabled()
+        {
             return false;
-        };
-        return match (column, op) {
-            (Some(TargetServiceName | TargetHandlerName | TargetServiceTy), Some(op)) => {
-                op == Operator::Eq
-            }
-            (Some(CreatedAt), Some(op)) => {
-                times
-                    && matches!(
-                        op,
-                        Operator::Eq
-                            | Operator::Lt
-                            | Operator::LtEq
-                            | Operator::Gt
-                            | Operator::GtEq
-                    )
-            }
-            _ => false,
-        };
+        }
+        // An empty list of services selects nothing.
+        if let Some(ValuePredicate::In(names)) = restriction.target_service_name.to_predicate()
+            && names.is_empty()
+        {
+            return false;
+        }
+        let all = EntryByStatusCreatedKey::lanes(&Selection::All).count();
+        EntryByStatusCreatedKey::lanes(&restriction.to_selection()).count() < all
     }
-    if let Some(list) = condition.downcast_ref::<InListExpr>() {
-        return !list.negated()
-            && matches!(
-                column(list.expr()),
-                Some(TargetServiceName | TargetHandlerName)
-            )
-            && list.list().iter().all(literal);
+
+    const NEEDS_ORDERED_DEMAND: bool = true;
+
+    /// The statuses always narrow the read to fewer lanes ([`Self::useful`]).
+    fn useful_unordered(restriction: &EntryByStatusCreatedDomains) -> bool {
+        Self::useful(restriction)
     }
-    let presence = condition
-        .downcast_ref::<IsNullExpr>()
-        .map(IsNullExpr::arg)
-        .or_else(|| {
-            condition
-                .downcast_ref::<IsNotNullExpr>()
-                .map(IsNotNullExpr::arg)
-        });
-    presence.is_some_and(|arg| column(arg) == Some(TargetServiceKey))
 }
 
 impl SysInvocationStatusTable {
@@ -305,7 +297,7 @@ impl ScanPartition for StatusScanner {
     }
 
     fn supports_index(&self, index: &str) -> bool {
-        index == EntryByServiceCreated::NAME
+        index == EntryByServiceCreated::NAME || index == EntryByStatusCreated::NAME
     }
 
     fn prepare_read(
@@ -334,13 +326,19 @@ impl ScanPartition for StatusScanner {
                 // The planner's choice is fixed, its order too; the restriction is
                 // derived again from the shipped predicate, and the predicate stays
                 // residual.
-                let selection = index_restriction::<EntryByServiceCreated>(predicate.as_slice())?
-                    .map_or(Selection::Empty, |domains| domains.to_selection());
+                let index = if read.name() == EntryByStatusCreated::NAME {
+                    let selection =
+                        index_restriction::<EntryByStatusCreated>(predicate.as_slice())?
+                            .map_or(Selection::Empty, |domains| domains.to_selection());
+                    EntryIndexRead::prepare_by_status(&selection, read.direction::<StatusIndex>()?)?
+                } else {
+                    let selection =
+                        index_restriction::<EntryByServiceCreated>(predicate.as_slice())?
+                            .map_or(Selection::Empty, |domains| domains.to_selection());
+                    EntryIndexRead::prepare(&selection, read.direction::<EntryIndex>()?)?
+                };
                 StatusAccess::EntryIndex {
-                    index: Arc::new(EntryIndexRead::prepare(
-                        &selection,
-                        read.direction::<EntryIndex>()?,
-                    )?),
+                    index: Arc::new(index),
                     fallback: scan()?,
                 }
             }
@@ -538,6 +536,7 @@ impl StatusRead {
                     tx.clone(),
                 ),
                 |(id, status), batches: &mut Batches<InvocationStatus>| {
+                    batches.set_record(&id);
                     if let ControlFlow::Break(result) = batches.append_with(|builder| {
                         row::append_row(builder, id, &status).map_err(|error| {
                             restate_storage_api::StorageError::Conversion(error.into())

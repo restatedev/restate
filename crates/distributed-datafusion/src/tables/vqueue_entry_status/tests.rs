@@ -314,7 +314,7 @@ async fn get_vqueue_entry_status_header_fields() {
                 "canonical_id" => LargeStringArray: eq(key.to_canonical_entry_id(qid.partition_key()).to_string()),
                 "vqueue_id" => LargeStringArray: eq(qid.to_string()),
                 "stage" => LargeStringArray: eq("running"),
-                "status" => LargeStringArray: eq("started"),
+                "status" => LargeStringArray: eq("running"),
                 "has_lock" => BooleanArray: eq(true),
                 "next_at" => TimestampMillisecondArray: eq(key.run_at().as_unix_millis().as_u64() as i64),
                 "sequence_number" => UInt64Array: eq(42),
@@ -496,6 +496,38 @@ async fn vqueues_view_matches_v1_stage_reads() {
             [["10", "2"]],
             "run_at_is_present_only_for_inbox_entries"
         );
+        // Each row shows its effective status, in both engines: the stage's own
+        // for running, suspended and paused entries whatever they stored, and
+        // NULL for a Finished entry without an outcome, the `unknown` sentinel,
+        // which no status name selects; a status condition selects by the rest.
+        for session in [&old, &new] {
+            assert_eq!(
+                rows(
+                    session.as_ref(),
+                    "SELECT DISTINCT stage, COALESCE(status, 'NULL') FROM sys_vqueues \
+                     ORDER BY stage"
+                )
+                .await,
+                [
+                    ["finished", "NULL"],
+                    ["inbox", "new"],
+                    ["paused", "paused"],
+                    ["running", "running"],
+                    ["suspended", "suspended"],
+                ],
+                "effective_status"
+            );
+            assert_eq!(
+                rows(
+                    session.as_ref(),
+                    "SELECT COUNT(*) FROM sys_vqueue_entry_status \
+                     WHERE status IN ('paused', 'yielded', 'unknown')"
+                )
+                .await,
+                [["2"]],
+                "status_conditions_select_effective_statuses"
+            );
+        }
 
         // Queue and active-stage restrictions read the stage tables; finished-only,
         // unrestricted and entry-ID reads keep their access paths.
@@ -651,13 +683,13 @@ async fn vqueues_view_matches_v1_stage_reads() {
     );
 }
 
-/// Finished entries newest finished first, through `finished_entry_by_outcome/1`
-/// when every alternative fixes the stage to `finished`: the same rows as the
-/// current-status scan, ties included, with the read's path and work shown. A
-/// query that doesn't prove its rows are Finished, or wants another order,
-/// reads as before.
+/// Finished entries newest finished first, through the Finished lanes of
+/// `entry_by_status_transitioned/1` when every alternative fixes the stage to
+/// stages the index holds: the same rows as the current-status scan, ties
+/// included, with the read's path and work shown. A query that doesn't fix its
+/// stages, or wants another order, reads another way.
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn finished_entries_read_through_their_index_match_the_scan() {
+async fn finished_entries_read_through_the_transition_index_match_the_scan() {
     use restate_types::vqueues::HandlerRef;
 
     RocksDbManager::init();
@@ -687,54 +719,62 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
         (Stage::Running, Status::Started),
         (Stage::Inbox, Status::New),
     ];
-    let mut tx = store.transaction();
-    for n in 0..140u64 {
-        let (stage, status) = statuses[(n % 7) as usize];
-        let created = UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::new(BASE + n));
-        // Pairs share their transition time: ties for the LIMIT to split.
-        let transitioned = UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::new(
-            BASE + 10_000 + (n / 2) * 10,
-        ));
-        let kind = if n % 5 == 0 {
-            EntryKind::StateMutation
-        } else {
-            EntryKind::Invocation
-        };
-        let key = EntryKey::new(
-            false,
-            created.to_unix_millis(),
-            n + 1,
-            EntryId::new(kind, [n as u8; 16]),
-        );
-        let mut stats = EntryStatistics::new(created, key.run_at());
-        stats.transitioned_at = transitioned;
-        let service = ["Utils", "Promises", "Counter"][(n % 3) as usize];
-        let handler = if kind == EntryKind::StateMutation {
-            HandlerRef::StateMutation
-        } else {
-            HandlerRef::UserHandler(["call", "run"][(n % 2) as usize])
-        };
-        tx.create_vqueue_entry_status(
-            &EntryContext {
-                qid: &qid,
-                target: &EntryTargetRef::VirtualObject {
-                    scope: None,
-                    service,
-                    key: "k",
-                    handler,
+    // The same entries in a partition that doesn't maintain the indexes.
+    let mut unready = manager
+        .open(&Partition::new(PartitionId::from(1), KeyRange::FULL), None)
+        .await
+        .unwrap();
+    for store in [&mut store, &mut unready] {
+        let mut tx = store.transaction();
+        for n in 0..140u64 {
+            let (stage, status) = statuses[(n % 7) as usize];
+            let created =
+                UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::new(BASE + n));
+            // Pairs share their transition time: ties for the LIMIT to split.
+            let transitioned = UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::new(
+                BASE + 10_000 + (n / 2) * 10,
+            ));
+            let kind = if n % 5 == 0 {
+                EntryKind::StateMutation
+            } else {
+                EntryKind::Invocation
+            };
+            let key = EntryKey::new(
+                false,
+                created.to_unix_millis(),
+                n + 1,
+                EntryId::new(kind, [n as u8; 16]),
+            );
+            let mut stats = EntryStatistics::new(created, key.run_at());
+            stats.transitioned_at = transitioned;
+            let service = ["Utils", "Promises", "Counter"][(n % 3) as usize];
+            let handler = if kind == EntryKind::StateMutation {
+                HandlerRef::StateMutation
+            } else {
+                HandlerRef::UserHandler(["call", "run"][(n % 2) as usize])
+            };
+            tx.create_vqueue_entry_status(
+                &EntryContext {
+                    qid: &qid,
+                    target: &EntryTargetRef::VirtualObject {
+                        scope: None,
+                        service,
+                        key: "k",
+                        handler,
+                    },
                 },
-            },
-            EntryStateRef {
-                stage,
-                status,
-                entry_key: &key,
-                metadata: &EntryMetadata::default(),
-                stats: &stats,
-            },
-        );
+                EntryStateRef {
+                    stage,
+                    status,
+                    entry_key: &key,
+                    metadata: &EntryMetadata::default(),
+                    stats: &stats,
+                },
+            );
+        }
+        tx.commit().await.unwrap();
+        drop(tx);
     }
-    tx.commit().await.unwrap();
-    drop(tx);
 
     let session = crate::mocks::v2_session(
         &manager,
@@ -763,7 +803,7 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
         ))
         .await
     };
-    const INDEX: &str = "_idx_finished_entry_by_outcome";
+    const INDEX: &str = "_idx_entry_status_by_status_transitioned";
     let select = "SELECT entry_id, status, transitioned_at FROM sys_vqueue_entry_status";
     let indexed = [
         format!(
@@ -774,10 +814,6 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
              ORDER BY transitioned_at DESC NULLS LAST LIMIT 5 OFFSET 2"
         ),
         format!(
-            "{select} WHERE stage = 'finished' AND status = 'started' \
-             ORDER BY transitioned_at DESC NULLS LAST LIMIT 3"
-        ),
-        format!(
             "{select} WHERE stage = 'finished' AND transitioned_at < to_timestamp_millis({}) \
              ORDER BY transitioned_at DESC NULLS LAST LIMIT 4",
             BASE + 10_300
@@ -786,26 +822,40 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
         "SELECT entry_id, status, transitioned_at AS finished FROM sys_vqueue_entry_status \
          WHERE stage = 'finished' ORDER BY finished DESC NULLS LAST LIMIT 6"
             .into(),
-    ];
-    let scans = [
-        // Status alone doesn't prove the stage.
-        format!(
-            "{select} WHERE status = 'failed' ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
-        ),
-        format!(
-            "{select} WHERE stage = 'finished' OR status = 'new' \
-             ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
-        ),
-        format!(
-            "{select} WHERE stage IN ('finished', 'running') \
-             ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
-        ),
-        format!("{select} WHERE stage = 'finished' ORDER BY created_at DESC NULLS LAST LIMIT 5"),
-        // A condition outside the allowlist.
+        // Any other condition is checked on each candidate: a column the
+        // index doesn't hold, arithmetic.
         format!(
             "{select} WHERE stage = 'finished' AND num_attempts = 0 \
              ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
         ),
+        format!(
+            "{select} WHERE stage = 'finished' AND num_attempts + 1 = 1 \
+             ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
+        ),
+        // A status alone: the entries the index doesn't hold, those in a stage
+        // this binary doesn't know, show no status and match none.
+        format!(
+            "{select} WHERE status = 'failed' ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
+        ),
+        // Two stages: both stages' lanes, merged.
+        format!(
+            "{select} WHERE stage IN ('finished', 'running') \
+             ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
+        ),
+    ];
+    let scans = [
+        // Alternatives that together restrict neither column.
+        format!(
+            "{select} WHERE stage = 'finished' OR status = 'new' \
+             ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"
+        ),
+        // `unknown` names no status: the query selects nothing before any read.
+        format!(
+            "{select} WHERE stage = 'finished' AND status = 'unknown' \
+             ORDER BY transitioned_at DESC NULLS LAST LIMIT 3"
+        ),
+        // Another order reads the creation index instead.
+        format!("{select} WHERE stage = 'finished' ORDER BY created_at DESC NULLS LAST LIMIT 5"),
         // An outer join can add NULLs: nothing is asked of the source.
         "SELECT e.entry_id, e.status, e.transitioned_at FROM (SELECT 1 AS one) AS o \
          LEFT JOIN sys_vqueue_entry_status AS e ON e.stage = 'finished' \
@@ -851,6 +901,159 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
         let explained = plan(sql, false).await;
         assert!(!explained.contains(INDEX), "{sql}: {explained}");
     }
+    // Entries of some stages and statuses by creation time, as the UI's
+    // invocation list asks, read the status index: one lane per stage and
+    // status, merged into creation order. By transition time, a running page
+    // reads the transition index, as finished pages do above.
+    // Creation times are distinct here, as are running entries' transition
+    // times, so the rows equal the scan's in order.
+    let by_created = "SELECT entry_id, status, created_at FROM sys_vqueue_entry_status \
+        WHERE stage = 'finished' AND status IN ('succeeded', 'failed', 'cancelled', 'killed') \
+        ORDER BY created_at DESC NULLS LAST LIMIT 9";
+    let running = "SELECT entry_id, status, transitioned_at FROM sys_vqueue_entry_status \
+        WHERE stage = 'running' ORDER BY transitioned_at DESC NULLS LAST LIMIT 5";
+    for (sql, index) in [
+        (by_created, "_idx_entry_status_by_status_created"),
+        (running, "_idx_entry_status_by_status_transitioned"),
+    ] {
+        let explained = plan(sql, false).await;
+        assert!(
+            explained.contains(&format!("index={index}")),
+            "{sql}: {explained}"
+        );
+        assert_eq!(rows(sql).await, scanned(sql).await, "{sql}");
+    }
+    // The UI's own query, through the `sys_vqueues` view.
+    let ui = include_str!("../../ui_queries/vqueues_finished_newest.sql");
+    let explained = plan(ui, false).await;
+    assert!(
+        explained.contains("index=_idx_entry_status_by_status_created"),
+        "{explained}"
+    );
+    let ui_scanned = ui.replacen(
+        "FROM sys_vqueues v",
+        "FROM (SELECT * FROM sys_vqueues LIMIT 1000000) AS v",
+        1,
+    );
+    assert_eq!(rows(ui).await, rows(&ui_scanned).await);
+    // A LIMIT without an ORDER BY whose stages and statuses leave fewer lanes
+    // than all reads those lanes too, as the UI's failed entries of a
+    // deployment, byte for byte: the Failed lane, the deployment checked on
+    // each fetched status; and Finished entries alone. Any matches will do: a
+    // page holds the LIMIT's count of distinct matches.
+    let failed = include_str!("../../ui_queries/vqueues_failed_by_deployment.sql");
+    let undeployed = "SELECT entry_id FROM sys_vqueue_entry_status \
+        WHERE stage = 'finished' AND status = 'failed' AND deployment IS NULL LIMIT 3";
+    let finished = "SELECT entry_id FROM sys_vqueue_entry_status WHERE stage = 'finished' LIMIT 3";
+    for sql in [failed, undeployed, finished] {
+        let explained = plan(sql, false).await;
+        assert!(
+            explained.contains("index=_idx_entry_status_by_status_created"),
+            "{sql}: {explained}"
+        );
+    }
+    assert_eq!(
+        rows(failed).await,
+        rows(&failed.replacen(
+            "FROM sys_vqueues v",
+            "FROM (SELECT * FROM sys_vqueues LIMIT 1000000) AS v",
+            1,
+        ))
+        .await
+    );
+    let page = rows(undeployed).await;
+    let all: HashSet<_> = scanned(&undeployed.replace(" LIMIT 3", ""))
+        .await
+        .into_iter()
+        .collect();
+    assert_eq!(page.len(), 3.min(all.len()));
+    assert!(page.len() > 1 && page.iter().all(|row| all.contains(row)));
+    assert_eq!(page.iter().collect::<HashSet<_>>().len(), page.len());
+    // Queries that need only a status index's key columns read its keys alone,
+    // fetching no status: the UI's page, in creation order, and a count of
+    // finished entries by status since a transition time, in no order. Without
+    // a time bound, such a count reads the stage tables as before; a column
+    // the keys don't hold, the queue, fetches the statuses.
+    let fetches_nothing = |analyzed: &str| {
+        analyzed.contains("entry_index_reads=1") && analyzed.contains("entry_index_statuses=0")
+    };
+    let analyzed = plan(ui, true).await;
+    assert!(fetches_nothing(&analyzed), "{analyzed}");
+    let count = format!(
+        "SELECT status, COUNT(1) AS count FROM sys_vqueues WHERE stage = 'finished' \
+         AND transitioned_at >= to_timestamp_millis({}) GROUP BY status ORDER BY status",
+        BASE + 10_300
+    );
+    let explained = plan(&count, false).await;
+    assert!(
+        explained.contains("index=_idx_entry_status_by_status_transitioned"),
+        "{explained}"
+    );
+    let counted = rows(&count).await;
+    assert!(counted.len() > 1, "{counted:?}");
+    let count_scanned = count.replacen(
+        "FROM sys_vqueues",
+        "FROM (SELECT * FROM sys_vqueues LIMIT 1000000) AS sys_vqueues",
+        1,
+    );
+    assert_eq!(counted, rows(&count_scanned).await);
+    let analyzed = plan(&count, true).await;
+    assert!(fetches_nothing(&analyzed), "{analyzed}");
+    // A column the keys don't hold only in a condition: the count fetches the
+    // statuses. (Neither do the stage tables hold it.)
+    let conditioned = count
+        .replace("FROM sys_vqueues", "FROM sys_vqueue_entry_status")
+        .replace("GROUP BY", "AND needed_memory IS NULL GROUP BY");
+    let explained = plan(&conditioned, false).await;
+    assert!(
+        !explained.contains("_idx_entry_status") && !explained.contains("_idx_entry_by_queue"),
+        "{explained}"
+    );
+    assert_eq!(rows(&conditioned).await, counted);
+    // Where the index isn't Complete, the count scans the entry statuses
+    // instead, with the same counts.
+    let unready = crate::mocks::v2_session(
+        &manager,
+        vec![(
+            PartitionId::from(1),
+            Partition::new(PartitionId::from(1), KeyRange::FULL),
+        )],
+        2,
+    )
+    .await;
+    let unready = async |sql: &str| crate::mocks::rows(unready.as_ref(), sql).await;
+    assert_eq!(unready(&count).await, counted);
+    let analyzed = unready(&format!("EXPLAIN ANALYZE {count}"))
+        .await
+        .concat()
+        .join("\n");
+    assert!(
+        analyzed.contains("index=_idx_entry_status_by_status_transitioned")
+            && analyzed.contains("entry_index_scans_not_complete=1"),
+        "{analyzed}"
+    );
+    // Without a time bound, or until a time only, which leaves most of the
+    // history, such a read keeps the stage tables: a count, and a page with a
+    // tie-breaker, which asks for no order the index has.
+    let unbounded =
+        "SELECT status, COUNT(1) FROM sys_vqueues WHERE stage = 'finished' GROUP BY status";
+    let until = format!(
+        "SELECT entry_id, created_at FROM sys_vqueue_entry_status WHERE stage = 'finished' \
+         AND created_at <= to_timestamp_millis({}) ORDER BY created_at, entry_id LIMIT 9",
+        BASE + 100
+    );
+    for sql in [unbounded, until.as_str()] {
+        let explained = plan(sql, false).await;
+        assert!(!explained.contains("_idx_entry_status"), "{explained}");
+    }
+    let fetched = by_created.replace("entry_id, status", "entry_id, vqueue_id, status");
+    assert_eq!(rows(&fetched).await, scanned(&fetched).await, "{fetched}");
+    let analyzed = plan(&fetched, true).await;
+    assert!(
+        analyzed.contains("index=_idx_entry_status_by_status_created")
+            && !analyzed.contains("entry_index_statuses=0"),
+        "{analyzed}"
+    );
     // The read went through the index, merging its runs, and fetched only
     // Finished statuses.
     let analyzed = plan(&indexed[0], true).await;
@@ -870,23 +1073,24 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
         "{analyzed}"
     );
 
-    // More runs than one read merges: the partition scans and sorts instead,
-    // before returning anything, and says why and what discovery examined.
+    // More runs than one read merges in its first hour, 260 services in one
+    // lane: the partition scans and sorts instead, before returning anything,
+    // and says why and what discovery examined.
     let mut tx = store.transaction();
-    for handler in 0..260u64 {
+    for service in 0..260u64 {
         let created = UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::new(
-            BASE + 1_000 + handler,
+            BASE + 1_000 + service,
         ));
         let key = EntryKey::new(
             false,
             created.to_unix_millis(),
-            1_000 + handler,
+            1_000 + service,
             EntryId::new(
                 EntryKind::Invocation,
                 [
                     200,
-                    handler as u8,
-                    (handler >> 8) as u8,
+                    service as u8,
+                    (service >> 8) as u8,
                     0,
                     0,
                     0,
@@ -903,14 +1107,14 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
                 ],
             ),
         );
-        let name = format!("h{handler}");
+        let name = format!("s{service}");
         tx.create_vqueue_entry_status(
             &EntryContext {
                 qid: &qid,
                 target: &EntryTargetRef::Service {
                     scope: None,
-                    service: "Many",
-                    handler: &name,
+                    service: &name,
+                    handler: "h",
                 },
             },
             EntryStateRef {
@@ -942,14 +1146,14 @@ async fn finished_entries_read_through_their_index_match_the_scan() {
     );
 }
 
-/// Active entries newest created first, through `active_entry_by_stage/1` when
-/// every alternative fixes the stage to some of Inbox, Running, Suspended and
-/// Paused: the same rows as the current-status scan, ties included, with the
-/// read's path and work shown. A query that doesn't prove its rows active, or
-/// wants another order, reads as before; so does one on a few queues, which
-/// reads the stage tables first, and one without the order.
+/// Active entries newest created first, through the lanes of
+/// `entry_by_status_created/1` when every alternative fixes the stage to known
+/// stages: the same rows as the current-status scan, ties included, with the
+/// read's path and work shown. A query that doesn't prove its stages, or wants
+/// another order, reads another way; so does one on a few queues, which reads
+/// the stage tables first, and one without the order.
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn active_entries_read_through_their_index_match_the_scan() {
+async fn active_entries_read_through_the_status_index_match_the_scan() {
     use restate_types::vqueues::HandlerRef;
 
     RocksDbManager::init();
@@ -1050,7 +1254,7 @@ async fn active_entries_read_through_their_index_match_the_scan() {
         .await
     };
     let queue = rows("SELECT vqueue_id FROM sys_vqueue_entry_status LIMIT 1").await[0][0].clone();
-    const INDEX: &str = "_idx_active_entry_by_stage";
+    const INDEX: &str = "_idx_entry_status_by_status_created";
     const STAGES: &str = "_idx_entry_by_queue";
     let select = "SELECT entry_id, status, created_at FROM sys_vqueue_entry_status";
     let newest = "ORDER BY created_at DESC NULLS LAST";
@@ -1078,22 +1282,37 @@ async fn active_entries_read_through_their_index_match_the_scan() {
         ),
         // Alternatives, each of active stages.
         format!("{select} WHERE stage = 'inbox' OR stage = 'suspended' {newest} LIMIT 6"),
-    ];
-    let scans = [
-        // Status alone doesn't prove the stage.
-        format!("{select} WHERE status = 'new' {newest} LIMIT 5"),
-        format!("{select} WHERE stage = 'inbox' OR status = 'new' {newest} LIMIT 5"),
-        format!("{select} WHERE stage IN ('inbox', 'finished') {newest} LIMIT 5"),
-        format!("{select} WHERE stage = 'finished' {newest} LIMIT 5"),
-        format!("{select} WHERE stage = 'unknown' {newest} LIMIT 5"),
-        format!("{select} WHERE stage = 'inbox' ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"),
-        // Conditions outside the allowlist: another column, and alternatives
-        // that aren't each a single stage or status condition.
+        // Any other conditions are checked on each candidate: another column,
+        // arithmetic, and alternatives of several conditions.
         format!("{select} WHERE stage = 'inbox' AND num_attempts = 0 {newest} LIMIT 5"),
+        format!("{select} WHERE stage = 'inbox' AND num_attempts + 1 = 1 {newest} LIMIT 5"),
         format!(
             "{select} WHERE (stage = 'inbox' AND status = 'new') OR stage = 'suspended' \
              {newest} LIMIT 6"
         ),
+        // The index holds Finished entries too.
+        format!("{select} WHERE stage IN ('inbox', 'finished') {newest} LIMIT 5"),
+        // Lanes that aren't every combination of their stages and statuses:
+        // (inbox, new) and every paused pair. The probe also finds keys of
+        // (inbox, backing-off), which no lane reads.
+        format!(
+            "{select} WHERE stage IN ('inbox', 'paused') AND status IN ('new', 'paused') \
+             {newest} LIMIT 5"
+        ),
+        // A stage and a status that rule each other out leave no lane: the
+        // read returns nothing, as the scan does.
+        format!("{select} WHERE stage = 'inbox' AND status = 'paused' {newest} LIMIT 5"),
+        // A status alone: the only entries the index doesn't hold, those in a
+        // stage this binary doesn't know, show no status and match none.
+        format!("{select} WHERE status = 'new' {newest} LIMIT 5"),
+    ];
+    let scans = [
+        // Alternatives that together restrict neither column.
+        format!("{select} WHERE stage = 'inbox' OR status = 'new' {newest} LIMIT 5"),
+        // `unknown` names no stage: the query selects nothing before any read.
+        format!("{select} WHERE stage = 'unknown' {newest} LIMIT 5"),
+        // The transition index's order.
+        format!("{select} WHERE stage = 'inbox' ORDER BY transitioned_at DESC NULLS LAST LIMIT 5"),
     ];
     // Tie-aware: the creation times in order, and every row a qualifying one.
     let same =
@@ -1135,17 +1354,19 @@ async fn active_entries_read_through_their_index_match_the_scan() {
         assert!(!explained.contains(INDEX), "{sql}: {explained}");
     }
     // A few queues read the stage tables first; without the order, a few
-    // active stages read them too.
-    for sql in [
-        format!("{select} WHERE vqueue_id = '{queue}' AND stage = 'inbox' {newest} LIMIT 5"),
-        format!("{select} WHERE stage IN ('inbox', 'paused') LIMIT 5"),
-    ] {
-        let explained = plan(&sql, false).await;
-        assert!(
-            explained.contains(STAGES) && !explained.contains(INDEX),
-            "{sql}: {explained}"
-        );
-    }
+    // active stages read the status index's lanes.
+    let sql = format!("{select} WHERE vqueue_id = '{queue}' AND stage = 'inbox' {newest} LIMIT 5");
+    let explained = plan(&sql, false).await;
+    assert!(
+        explained.contains(STAGES) && !explained.contains(INDEX),
+        "{sql}: {explained}"
+    );
+    let sql = format!("{select} WHERE stage IN ('inbox', 'paused') LIMIT 5");
+    let explained = plan(&sql, false).await;
+    assert!(
+        explained.contains("index=_idx_entry_status_by_status_created"),
+        "{sql}: {explained}"
+    );
     // The read went through the index and skipped nothing.
     let analyzed = plan(&indexed[0], true).await;
     assert!(
@@ -1164,27 +1385,28 @@ async fn active_entries_read_through_their_index_match_the_scan() {
         "{analyzed}"
     );
 
-    // More runs than one read merges: the partition scans and sorts instead,
-    // before returning anything, and says why and what discovery examined.
+    // More runs than one read merges in its first hour, 260 services in one
+    // lane: the partition scans and sorts instead, before returning anything,
+    // and says why and what discovery examined.
     let mut tx = store.transaction();
-    for handler in 0..260u64 {
-        let created = UniqueTimestamp::from_parts_unchecked(BASE + 1_000 + handler, 0);
+    for service in 0..260u64 {
+        let created = UniqueTimestamp::from_parts_unchecked(BASE + 1_000 + service, 0);
         let mut remainder = [0; 16];
-        remainder[..3].copy_from_slice(&[200, handler as u8, (handler >> 8) as u8]);
+        remainder[..3].copy_from_slice(&[200, service as u8, (service >> 8) as u8]);
         let key = EntryKey::new(
             false,
             created.to_unix_millis(),
-            1_000 + handler,
+            1_000 + service,
             EntryId::new(EntryKind::Invocation, remainder),
         );
-        let name = format!("h{handler}");
+        let name = format!("s{service}");
         tx.create_vqueue_entry_status(
             &EntryContext {
                 qid: &qid,
                 target: &EntryTargetRef::Service {
                     scope: None,
-                    service: "Many",
-                    handler: &name,
+                    service: &name,
+                    handler: "h",
                 },
             },
             EntryStateRef {
