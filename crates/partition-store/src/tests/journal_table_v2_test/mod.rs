@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
 use std::pin::pin;
 use std::time::Duration;
 
@@ -15,14 +16,16 @@ use super::{low_pri_executor, storage_test_environment};
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::StreamExt;
-use restate_memory::{LendableMemoryPool, LocalMemoryPool};
+use restate_memory::{
+    ByteCount, LendableMemoryPool, LocalMemoryPool, MemoryPool, NonZeroByteCount, OutOfMemoryKind,
+};
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
-use restate_storage_api::Transaction;
 use restate_storage_api::blob_table::{RawParts, ReadBlobTable};
 use restate_storage_api::journal_table_v2::{
     NotificationEntryIndex, ReadJournalTable, WriteJournalTable,
 };
-use restate_types::config::Configuration;
+use restate_storage_api::{BudgetedReadError, Transaction};
+use restate_types::config::{Configuration, InvokerOptionsBuilder};
 use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use restate_types::journal_v2::raw::{RawCommandSpecificMetadata, RawNotificationResultVariant};
@@ -465,4 +468,84 @@ async fn journal_entry_content_blob() {
             .unwrap()
             .is_none()
     );
+}
+
+/// Every entry the invoker accepts from a service must be readable within the per-invocation
+/// memory limit, including the envelope added when storing it.
+#[restate_core::test]
+async fn largest_accepted_entry_fits_per_invocation_memory_limit() {
+    let mut rocksdb = storage_test_environment().await;
+    let options = InvokerOptionsBuilder::default()
+        .message_size_limit(Some(NonZeroByteCount::new(
+            NonZeroUsize::new(1024 * 1024).unwrap(),
+        )))
+        .build()
+        .unwrap();
+    // The service protocol decoder rejects messages of `message_size_limit()` bytes or more.
+    let largest_message = options.message_size_limit().get() - 1;
+    let input = |payload_len| {
+        Entry::from(InputCommand {
+            headers: vec![],
+            payload: Bytes::from(vec![7; payload_len]),
+            name: Default::default(),
+        })
+        .encode::<ServiceProtocolV4Codec>()
+    };
+    let framing = input(largest_message).serialized_length() - largest_message;
+    let entry = StoredRawEntry::new(
+        StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+        input(largest_message - framing),
+    );
+    assert_eq!(entry.inner.serialized_length(), largest_message);
+
+    let mut txn = rocksdb.transaction();
+    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 0, &entry, &[])
+        .unwrap();
+    txn.commit().await.unwrap();
+    drop(txn);
+
+    let executor = low_pri_executor(&rocksdb);
+    let pool = MemoryPool::with_capacity(NonZeroByteCount::new(
+        NonZeroUsize::new(16 * 1024 * 1024).unwrap(),
+    ));
+    let budget = |upper_bound| {
+        LocalMemoryPool::new(
+            pool.clone(),
+            pool.empty_lease(),
+            ByteCount::ZERO,
+            upper_bound,
+        )
+    };
+
+    // The stored envelope makes the entry larger than the accepted message.
+    let result = rocksdb
+        .get_journal_v2_entry_budgeted(
+            MOCK_INVOCATION_ID_1,
+            0,
+            &mut budget(NonZeroByteCount::new(options.message_size_limit())),
+            &executor,
+        )
+        .await;
+    assert!(
+        matches!(
+            result,
+            Err(BudgetedReadError::OutOfMemory {
+                kind: OutOfMemoryKind::UpperBoundExceeded,
+                ..
+            })
+        ),
+        "{result:?}"
+    );
+
+    let (read, _lease) = rocksdb
+        .get_journal_v2_entry_budgeted(
+            MOCK_INVOCATION_ID_1,
+            0,
+            &mut budget(options.per_invocation_memory_limit()),
+            &executor,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read, entry);
 }

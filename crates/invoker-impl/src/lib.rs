@@ -1491,9 +1491,9 @@ where
     ///
     /// Creates the outbound memory budget for an invocation.
     ///
-    /// The upper bound caps how much memory a single invocation may use.
-    /// Defaults to `per_invocation_memory_limit` (which itself defaults to
-    /// `message_size_limit`).
+    /// The upper bound caps how much memory a single invocation may use. It is
+    /// `per_invocation_memory_limit`, which always covers the largest entry the invoker
+    /// accepts from a service.
     fn create_outbound_budget(
         &self,
         options: &InvokerOptions,
