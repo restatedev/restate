@@ -373,6 +373,11 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         include_str!("../../ui_queries/service_outcomes_newest.sql").replace("'State'", "'Utils'");
     // Diagnostic: the same service, newest first, through the index.
     let newest_counter = oldest.replace("ASC", "DESC");
+    // A page of the view, whose JOIN keeps every status.
+    let view_page = "SELECT id, status, target FROM sys_invocation \
+        WHERE target_service_name = 'Promises' AND target_handler_name = 'promise' \
+        ORDER BY created_at DESC NULLS LAST LIMIT 9"
+        .to_owned();
     // Every invocation of a service, newest first: the orphan is the oldest.
     let promises = "SELECT id FROM sys_invocation_status WHERE target_service_name = 'Promises' \
         ORDER BY created_at DESC NULLS LAST LIMIT 1000";
@@ -465,17 +470,37 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         outcomes.clone(),
         every_lane.into(),
         handler_range.clone(),
+        // Through the view: its JOIN keeps every status, and the order and the
+        // conditions read only statuses, so the index serves its pages too.
+        view_page.clone(),
+        // Oldest first, read backwards, past the orphan, which no index finds.
+        view_page.replace("DESC", "ASC").replace(
+            "ORDER BY",
+            &format!("AND created_at >= to_timestamp_millis({BASE}) ORDER BY"),
+        ),
+        // Every service's, newest first: pairs share a creation time, so only
+        // the times, which ties don't reorder.
+        "SELECT created_at FROM sys_invocation ORDER BY created_at DESC NULLS LAST LIMIT 9".into(),
     ];
-    // Scanned: another order, a tie-breaker, no LIMIT, or a view above the
-    // table.
+    // Scanned: another order, a tie-breaker, no LIMIT, a JOIN that keeps no
+    // side, or an order of the side a JOIN may drop.
     let scans = [
         page.replace("NULLS LAST", "NULLS LAST, id"),
         "SELECT target_service_name, COUNT(*) FROM sys_invocation_status \
          WHERE target_service_name IN ('Promises', 'Utils', 'Missing') \
          GROUP BY target_service_name ORDER BY target_service_name"
             .into(),
-        "SELECT id, status, target FROM sys_invocation WHERE target_service_name = 'Promises' \
-         AND target_handler_name = 'promise' ORDER BY created_at DESC NULLS LAST LIMIT 9"
+        "SELECT ss.created_at FROM sys_vqueue_entry_status e JOIN sys_invocation_status ss \
+         ON ss.id = e.entry_id ORDER BY ss.created_at DESC NULLS LAST LIMIT 9"
+            .into(),
+        "SELECT ss.id FROM sys_invocation_status ss LEFT JOIN sys_invocation_state sis \
+         ON ss.id = sis.id ORDER BY sis.last_start_at DESC NULLS LAST, ss.id LIMIT 9"
+            .into(),
+        // A second JOIN above the view's, as the CLI's list joins deployments:
+        // it is evaluated as usual and keeps no order.
+        "SELECT inv.created_at FROM sys_invocation inv \
+         LEFT JOIN sys_vqueue_entry_status e ON e.entry_id = inv.id \
+         ORDER BY inv.created_at DESC NULLS LAST LIMIT 9"
             .into(),
     ];
     let sorted = |mut rows: Vec<Vec<String>>| {
@@ -608,6 +633,31 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         matches_v1(sql, false).await;
     }
     assert!(!orphaned().await);
+    // The view's page reads the index on each partition, and its JOIN keeps the
+    // index's order, hashing the invoker's state: nothing sorts, and the read
+    // stops after the window holding the page's 9 rows.
+    let plan = analyzed(&view_page).await;
+    assert!(
+        plan.contains("HashJoinExec")
+            && !plan.contains("SortMergeJoinExec")
+            && !plan.contains("SortExec:"),
+        "{plan}"
+    );
+    let source = plan
+        .lines()
+        .find(|line| line.contains("IndexScanExec"))
+        .unwrap();
+    assert!(source.contains("entry_index_reads=1"), "{source}");
+    assert!(
+        metric(source, "entry_index_statuses") <= Some(25),
+        "{source}"
+    );
+    // Lookups by ID still merge the view's JOIN.
+    let lookup = format!(
+        "SELECT id, status FROM sys_invocation WHERE id IN ('{orphan}', '{}')",
+        scheduled_id(0)
+    );
+    assert!(explained(&lookup).await.contains("SortMergeJoinExec"));
 
     // Each invocation shows its entry's stage and effective status, whether a
     // scan reads the entries in step, lookups fetch them, an index window
