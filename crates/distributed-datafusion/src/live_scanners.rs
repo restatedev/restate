@@ -15,12 +15,17 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::{PhysicalExpr, SendableRecordBatchStream};
 
-use restate_storage_query_api::{LogicalSchema, RowBuilder};
+use restate_storage_api::StorageError;
+use restate_storage_api::scan::ScanOutcome;
+use restate_storage_query_api::ordering::{OrderFunction, OrderInput};
+use restate_storage_query_api::schema::row_written;
+use restate_storage_query_api::{AsyncRowSink, LogicalSchema, RowSink};
 use restate_types::identifiers::PartitionKey;
 use restate_types::sharding::KeyRange;
 use restate_worker_api::{CapturedPartitionState, PartitionCaptureRequirements};
 
 use crate::access::PrimaryRead;
+use crate::batches::{BatchSink, Batches};
 use crate::selection::Domain;
 use crate::table_providers::{
     PartitionReadContext, PreparedPartitionRead, ReadMetrics, ScanPartition,
@@ -40,6 +45,34 @@ pub(crate) struct LivePartitionScanner<S: LogicalSchema, R> {
     read: fn(&CapturedPartitionState) -> Option<&Arc<[R]>>,
     partition_key: fn(&R) -> PartitionKey,
     append: fn(&mut S::RowBuilder, &R),
+    order: Option<LiveOrder<R>>,
+}
+
+/// For a source whose reads declare an order of their rows' IDs: a row's values
+/// of the ordering functions, written as its key fields, and whether two rows
+/// come in that order. A read whose rows don't fails, rather than letting a plan
+/// trust the order.
+struct LiveOrder<R> {
+    key: OrderKeyOf<R>,
+    in_order: fn(&R, &R) -> bool,
+}
+
+/// Calls `with` on the byte form of a function's value of a row's ID; `false` if
+/// the row has none.
+type OrderKeyOf<R> = fn(&R, OrderFunction, &mut dyn FnMut(&[u8])) -> bool;
+
+/// A live row as the input of the ordering functions.
+struct LiveRecord<'a, R>(&'a R, OrderKeyOf<R>);
+
+impl<R> OrderInput for LiveRecord<'_, R> {
+    fn order_key<T>(&self, function: OrderFunction, with: impl FnOnce(&[u8]) -> T) -> Option<T> {
+        let mut with = Some(with);
+        let mut value = None;
+        (self.1)(self.0, function, &mut |bytes| {
+            value = with.take().map(|with| with(bytes));
+        });
+        value
+    }
 }
 
 impl<S: LogicalSchema, R> LivePartitionScanner<S, R> {
@@ -56,7 +89,16 @@ impl<S: LogicalSchema, R> LivePartitionScanner<S, R> {
             read,
             partition_key,
             append,
+            order: None,
         }
+    }
+
+    /// Declares that rows come in the order of their IDs: `key` gives a row's
+    /// values of the ordering functions, and `in_order` whether two rows come in
+    /// order. See [`LiveOrder`].
+    pub(crate) fn ordered_by(mut self, key: OrderKeyOf<R>, in_order: fn(&R, &R) -> bool) -> Self {
+        self.order = Some(LiveOrder { key, in_order });
+        self
     }
 }
 
@@ -104,7 +146,7 @@ impl<S: LogicalSchema, R: Send + Sync + 'static> PreparedPartitionRead for Prepa
         &self,
         context: PartitionReadContext,
         batch_size: usize,
-        _metrics: ReadMetrics,
+        metrics: ReadMetrics,
     ) -> anyhow::Result<SendableRecordBatchStream> {
         let projection = Arc::clone(&self.projection);
         let range = self.range;
@@ -115,35 +157,48 @@ impl<S: LogicalSchema, R: Send + Sync + 'static> PreparedPartitionRead for Prepa
         )?);
         let partition_key = self.scanner.partition_key;
         let append = self.scanner.append;
-        let mut remaining = self.limit.unwrap_or(usize::MAX);
+        let order = self
+            .scanner
+            .order
+            .as_ref()
+            .map(|order| (order.key, order.in_order));
+        let limit = self.limit;
         stream.spawn(async move {
-            if remaining == 0 {
-                return Ok(());
-            }
             let Some(range) = range else {
                 return Ok(());
             };
-            let mut builder = S::RowBuilder::new(projection);
-            for row in rows
-                .iter()
-                .filter(|row| range.contains(&partition_key(row)))
-            {
-                if remaining == 0 || tx.is_closed() {
-                    break;
-                }
-                append(&mut builder, row);
-                remaining -= 1;
-                if builder.num_rows() >= batch_size {
-                    let batch = builder.finish()?;
-                    if tx.send(Ok(batch)).await.is_err() {
-                        return Ok(());
+            let mut sink = BatchSink::new(
+                Batches::<S>::new(projection, batch_size, limit, metrics.elapsed_compute),
+                tx,
+            );
+            let outcome = async {
+                let mut previous = None;
+                for row in rows
+                    .iter()
+                    .filter(|row| range.contains(&partition_key(row)))
+                {
+                    // A read that is done stops before checking a row it won't write.
+                    if sink.reserve().await?.is_break() {
+                        return Ok(ScanOutcome::Stopped(()));
                     }
+                    if let Some((key, in_order)) = order {
+                        if previous.is_some_and(|previous| !in_order(previous, row)) {
+                            return Err(StorageError::Generic(anyhow::anyhow!(
+                                "live rows came out of the order their source declares"
+                            )));
+                        }
+                        previous = Some(row);
+                        sink.set_record(&LiveRecord(row, key));
+                    }
+                    row_written(sink.append_with(|builder| {
+                        append(builder, row);
+                        Ok(())
+                    }))?;
                 }
+                Ok(ScanOutcome::Exhausted(()))
             }
-            if builder.num_rows() > 0 {
-                let batch = builder.into_batch()?;
-                let _ = tx.send(Ok(batch)).await;
-            }
+            .await;
+            sink.finish(outcome).await;
             Ok(())
         });
         Ok(stream.build())

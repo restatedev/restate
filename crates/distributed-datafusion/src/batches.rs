@@ -226,7 +226,7 @@ impl<S: LogicalSchema> BatchSink<S> {
     }
 
     /// Sends the last, partly filled batch, or the scan's failure.
-    async fn finish(mut self, outcome: restate_storage_api::Result<ScanOutcome<()>>) {
+    pub(crate) async fn finish(mut self, outcome: restate_storage_api::Result<ScanOutcome<()>>) {
         let result = match outcome {
             Ok(_) => self.flush().await.map(|_| ()),
             Err(error) => Err(error),
