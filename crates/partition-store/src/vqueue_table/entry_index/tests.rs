@@ -811,10 +811,11 @@ async fn stage_and_status_keys_follow_each_entry() {
 
 /// The status indexes' stages and statuses are listed in their codecs' byte
 /// order, every stage they hold and every status. An invocation query reads
-/// the lanes its entries can be in: completed ones are Finished in any stored
-/// status, failed ones in any but Succeeded, the others in any other stage.
-/// Conditions intersect, alternatives unite, ranges and unknown values don't
-/// widen past what they can match.
+/// the lanes its entries can be in: each public status the pairs whose
+/// effective status tells it, plus the pairs no code path writes that may show
+/// it as their stored status; failed ones Finished in any stored status but
+/// Succeeded. Conditions intersect, alternatives unite, ranges and unknown
+/// values don't widen past what they can match.
 #[test]
 fn invocation_conditions_select_the_lanes_their_entries_can_be_in() {
     use restate_storage_query_api::tables::index::EntryByStatusCreatedClause::{
@@ -877,15 +878,112 @@ fn invocation_conditions_select_the_lanes_their_entries_can_be_in() {
         ),
         failed
     );
+    // Each status's lanes, written out: what its effective statuses come from,
+    // and the inbox pairs no code path writes, which show their stored status.
+    let every = |stage| KEYED_STATUSES.map(|status| (stage, status)).to_vec();
+    let inbox = |statuses: &[Status]| {
+        let unwritten = [
+            Status::Cancelled,
+            Status::Failed,
+            Status::Killed,
+            Status::Succeeded,
+            Status::Unknown,
+        ];
+        let mut pairs: Vec<_> = statuses
+            .iter()
+            .chain(&unwritten)
+            .map(|status| (Stage::Inbox, *status))
+            .collect();
+        pairs.sort_by_key(|&(_, status)| status_bit(status));
+        pairs
+    };
+    let expected = [
+        ("inboxed", inbox(&[Status::New])),
+        ("scheduled", inbox(&[Status::Scheduled])),
+        (
+            "invoked",
+            [
+                inbox(&[Status::BackingOff, Status::Started, Status::Yielded]),
+                every(Stage::Running),
+            ]
+            .concat(),
+        ),
+        ("suspended", [inbox(&[]), every(Stage::Suspended)].concat()),
+        ("paused", [inbox(&[]), every(Stage::Paused)].concat()),
+        ("completed", finished(&[])),
+    ];
+    for (status, pairs) in &expected {
+        assert_eq!(
+            &lanes(Selection::All.and(public(&[status]))),
+            pairs,
+            "{status}"
+        );
+    }
+    // Each result's lanes: a success is only a succeeded entry, a failure a
+    // failed, killed or cancelled one, and an invocation without a result any
+    // that hasn't finished; Finished pairs no code path writes may show either
+    // stored result.
+    let results = [
+        (
+            Some("success"),
+            finished(&[Status::Cancelled, Status::Failed, Status::Killed]),
+        ),
+        (Some("failure"), finished(&[Status::Succeeded])),
+        (
+            None,
+            [
+                inbox(&[
+                    Status::BackingOff,
+                    Status::New,
+                    Status::Scheduled,
+                    Status::Started,
+                    Status::Yielded,
+                ]),
+                every(Stage::Paused),
+                every(Stage::Running),
+                every(Stage::Suspended),
+            ]
+            .concat(),
+        ),
+    ];
+    for (value, pairs) in &results {
+        assert_eq!(
+            &lanes(Selection::All.and(result(*value))),
+            pairs,
+            "{value:?}"
+        );
+    }
+    // The same as the shared mapping: a written pair is in the lanes of the
+    // status and the result its effective status tells, and of no other.
+    for (stage, stored) in lanes(Selection::All) {
+        let effective = EffectiveStatus::new(stage, stored);
+        let Some(shown) = effective.invocation_status() else {
+            continue;
+        };
+        for (status, pairs) in &expected {
+            assert_eq!(
+                pairs.contains(&(stage, stored)),
+                *status == shown,
+                "{stage:?} {stored:?} in {status}"
+            );
+        }
+        for (value, pairs) in &results {
+            assert_eq!(
+                pairs.contains(&(stage, stored)),
+                *value == effective.completion_result(),
+                "{stage:?} {stored:?} in {value:?}"
+            );
+        }
+    }
     let active = lanes(Selection::All.and(public(&["invoked", "suspended"])));
-    assert_eq!(active.len(), 40);
+    assert_eq!(active.len(), 28);
     assert_eq!(active[0], (Stage::Inbox, Status::BackingOff));
     assert!(active.iter().all(|(stage, _)| *stage != Stage::Finished));
-    assert_eq!(lanes(Selection::All.and(result(None))), active);
+    assert_eq!(lanes(Selection::All.and(result(None))).len(), 40);
     // Either: every lane of either.
     assert_eq!(
         lanes(Selection::All.and(public(&["completed", "paused"]))).len(),
-        50
+        25
     );
     // Contradictions and values no invocation has select nothing.
     assert!(lanes(Selection::All.and(public(&["completed"])).and(result(None))).is_empty());
