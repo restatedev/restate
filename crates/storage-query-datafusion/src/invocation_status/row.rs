@@ -8,20 +8,28 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_partition_store::invocation_status_table::InvocationEntry;
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use restate_storage_api::protobuf_types::v1::source::Source;
 use restate_types::errors::ConversionError;
 use restate_types::identifiers::{BaseEntryId, InvocationId, WithPartitionKey};
 use restate_types::invocation::{ServiceType, TraceId};
-use restate_types::vqueues::Seq;
+use restate_types::vqueues::{EffectiveStatus, Seq};
 
 use crate::invocation_status::schema::{SysInvocationStatusBuilder, SysInvocationStatusRowBuilder};
 
+/// Writes one invocation. The `stage`, `effective_status` and `completed` columns,
+/// and `status` and `completion_result`, come from its vqueue `entry`, read with
+/// its status when the scan shows one of them
+/// ([`SysInvocationStatusBuilder::reads_entries`]), as in V2: NULL stage and
+/// effective status without an entry, and the others falling back to the stored
+/// ones without an effective status ([`EffectiveStatus::invocation_status`]).
 #[inline]
 pub(crate) fn append_invocation_status_row<'a>(
     builder: &mut SysInvocationStatusBuilder,
     invocation_id: InvocationId,
     invocation_status: &'a InvocationStatusV2Lazy<'a>,
+    entry: Option<InvocationEntry>,
 ) -> Result<(), ConversionError> {
     let mut row = builder.row();
 
@@ -102,9 +110,46 @@ pub(crate) fn append_invocation_status_row<'a>(
 
     // Additional invocation metadata
     use restate_storage_api::protobuf_types::v1::invocation_status_v2::Status;
-    match invocation_status.inner.status() {
+    let state = invocation_status.inner.status();
+    let effective = entry.map(|entry| EffectiveStatus::new(entry.stage, entry.status));
+    if row.is_stage_defined()
+        && let Some(name) = entry.and_then(|entry| entry.stage.name())
+    {
+        row.stage(name);
+    }
+    if row.is_effective_status_defined()
+        && let Some(name) = effective.and_then(EffectiveStatus::name)
+    {
+        row.effective_status(name);
+    }
+    // The entry tells the status and the result; the stored ones show only
+    // without it. The failure itself is only stored.
+    let told = effective.filter(|effective| effective.invocation_status().is_some());
+    let stored = match state {
+        Status::Scheduled => "scheduled",
+        Status::Inboxed => "inboxed",
+        Status::Invoked => "invoked",
+        Status::Paused => "paused",
+        Status::Suspended => "suspended",
+        Status::Completed => "completed",
+        Status::UnknownStatus => return Err(ConversionError::invalid_data_static("status")),
+    };
+    let public = told
+        .and_then(EffectiveStatus::invocation_status)
+        .unwrap_or(stored);
+    row.status(public);
+    if row.is_completed_defined() {
+        row.completed(public == "completed");
+    }
+    if let Some(effective) = told
+        && row.is_completion_result_defined()
+        && let Some(result) = effective.completion_result()
+    {
+        row.completion_result(result);
+    }
+    let stored_result = told.is_none() && row.is_completion_result_defined();
+    match state {
         Status::Scheduled => {
-            row.status("scheduled");
             fill_pinned_deployment(&mut row, invocation_status)?;
             if row.is_created_using_restate_version_defined() {
                 row.created_using_restate_version(
@@ -130,7 +175,6 @@ pub(crate) fn append_invocation_status_row<'a>(
             }
         }
         Status::Inboxed => {
-            row.status("inboxed");
             fill_pinned_deployment(&mut row, invocation_status)?;
             if row.is_created_using_restate_version_defined() {
                 row.created_using_restate_version(
@@ -156,18 +200,14 @@ pub(crate) fn append_invocation_status_row<'a>(
             }
         }
         Status::Invoked => {
-            row.status("invoked");
             fill_journal_metadata(&mut row, invocation_status)?;
             fill_in_flight_invocation_metadata(&mut row, invocation_status)?;
         }
         Status::Paused => {
-            row.status("paused");
             fill_journal_metadata(&mut row, invocation_status)?;
             fill_in_flight_invocation_metadata(&mut row, invocation_status)?;
         }
         Status::Suspended => {
-            row.status("suspended");
-
             if row.is_suspended_waiting_for_completions_defined() {
                 row.suspended_waiting_for_completions(
                     invocation_status
@@ -199,7 +239,6 @@ pub(crate) fn append_invocation_status_row<'a>(
             fill_in_flight_invocation_metadata(&mut row, invocation_status)?;
         }
         Status::Completed => {
-            row.status("completed");
             fill_journal_metadata(&mut row, invocation_status)?;
             fill_pinned_deployment(&mut row, invocation_status)?;
 
@@ -226,11 +265,13 @@ pub(crate) fn append_invocation_status_row<'a>(
                 );
             }
 
-            if row.is_completion_result_defined() || row.is_completion_failure_defined() {
+            if stored_result || row.is_completion_failure_defined() {
                 use restate_storage_api::protobuf_types::v1::response_result::ResponseResult;
                 match invocation_status.response_result()? {
                     ResponseResult::ResponseSuccess(_) => {
-                        row.completion_result("success");
+                        if stored_result {
+                            row.completion_result("success");
+                        }
                     }
                     ResponseResult::ResponseFailure(
                         restate_storage_api::protobuf_types::v1::response_result::ResponseFailure {
@@ -239,7 +280,9 @@ pub(crate) fn append_invocation_status_row<'a>(
                             ..
                         },
                     ) => {
-                        row.completion_result("failure");
+                        if stored_result {
+                            row.completion_result("failure");
+                        }
                         if row.is_completion_failure_defined() {
                             let message =
                                 str::from_utf8(failure_message.as_ref()).map_err(|_| {
