@@ -88,14 +88,10 @@ impl FirstMatchingPartitionKeyExtractor {
     pub fn with_scope(self, column_name: impl Into<String>) -> Self {
         // we only use the scope value if it's not empty, otherwise we cannot
         // rely on it to get the partition key.
-        let e = MatchingColumnExtractor::new(column_name, |value: &ScalarValue| {
-            let value = value
-                .try_as_str()
-                .context("expected scope")?
-                .context("null scopes cannot be used for partition-key matching")?;
-            Ok(HashPartitioner::compute_partition_key(value))
-        });
-        self.append(e)
+        self.append(MatchingColumnExtractor::new(
+            column_name,
+            scope_partition_key,
+        ))
     }
 
     pub fn with_partitioned_resource_id<T>(self, column_name: impl Into<String>) -> Self
@@ -159,24 +155,28 @@ impl FirstMatchingPartitionKeyExtractor {
     /// For tables sharded by `scope_column` when scoped and by `service_key_column` when
     /// unscoped (i.e. `scope_column IS NULL`). Extracts a partition key from either:
     /// - `scope = '...'` / `scope IN (...)` (sharded under `hash(scope)`), or
-    /// - `scope IS NULL AND service_key = '...'` / `IN (...)` (sharded under `hash(service_key)`).
+    /// - `scope IS NULL AND service_key = '...'` / `IN (...)` (sharded under `hash(service_key)`),
+    /// - or both: `(scope IN (...) OR scope IS NULL) AND service_key IN (...)`.
     pub fn with_scope_or_service_key(
         self,
         scope_column: impl Into<String>,
         service_key_column: impl Into<String>,
     ) -> Self {
         let scope_column: String = scope_column.into();
-        let by_scope = MatchingColumnExtractor::new(scope_column.clone(), |value: &ScalarValue| {
-            let value = value
-                .try_as_str()
-                .context("expected scope")?
-                .context("null scopes cannot be used for partition-key matching")?;
-            Ok(HashPartitioner::compute_partition_key(value))
-        });
-        self.append(by_scope).append(WhenNullExtractor::new(
-            scope_column,
-            Self::create_service_key_partition_key_extractor(service_key_column),
+        let service_key_column: String = service_key_column.into();
+        self.append(MatchingColumnExtractor::new(
+            scope_column.clone(),
+            scope_partition_key,
         ))
+        .append(WhenNullExtractor::new(
+            scope_column.clone(),
+            Self::create_service_key_partition_key_extractor(service_key_column.clone()),
+        ))
+        .append(NullOrListExtractor {
+            column_name: scope_column,
+            by_value: scope_partition_key,
+            when_null: Self::create_service_key_partition_key_extractor(service_key_column),
+        })
     }
 
     pub fn with_invocation_id(self, column_name: impl Into<String>) -> Self {
@@ -400,6 +400,77 @@ where
 
         self.inner.try_extract(filters)
     }
+}
+
+/// Matches a top-level `<column> IN (...) OR <column> IS NULL` conjunct, the IS NULL on
+/// either side, for tables sharded like [`WhenNullExtractor`]'s: rows with a listed
+/// value live under the keys `by_value` maps them to, and rows with a NULL under the
+/// keys `when_null` extracts from the other conjuncts. Without the latter, the NULL
+/// rows could be anywhere and the scan is not narrowed.
+pub(crate) struct NullOrListExtractor<F, E> {
+    column_name: String,
+    by_value: F,
+    when_null: E,
+}
+
+impl<F, E> Debug for NullOrListExtractor<F, E> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("NullOrListExtractor({:?})", self.column_name))
+    }
+}
+
+impl<F, E> PartitionKeyExtractor for NullOrListExtractor<F, E>
+where
+    F: Fn(&ScalarValue) -> anyhow::Result<PartitionKey> + Send + Sync + 'static,
+    E: PartitionKeyExtractor,
+{
+    fn try_extract(
+        &self,
+        filters: &[Arc<dyn PhysicalExpr>],
+    ) -> anyhow::Result<Option<BTreeSet<PartitionKey>>> {
+        let is_null = |expr: &Arc<dyn PhysicalExpr>| {
+            expr.downcast_ref::<IsNullExpr>()
+                .and_then(|is_null| is_null.arg().downcast_ref::<Column>())
+                .is_some_and(|column| column.name() == self.column_name)
+        };
+        for filter in filters {
+            let Some(or) = filter
+                .downcast_ref::<BinaryExpr>()
+                .filter(|binary| *binary.op() == Operator::Or)
+            else {
+                continue;
+            };
+            let other = match (is_null(or.left()), is_null(or.right())) {
+                (true, _) => or.right(),
+                (_, true) => or.left(),
+                _ => continue,
+            };
+            let Some(list) = InList::parse(other, 5) else {
+                continue;
+            };
+            if list.col.name() != self.column_name || list.negated {
+                continue;
+            }
+            let Some(mut keys) = self.when_null.try_extract(filters)? else {
+                return Ok(None);
+            };
+            // A NULL in the list matches nothing; NULL rows are `when_null`'s.
+            for value in list.list.into_iter().filter(|value| !value.is_null()) {
+                keys.insert((self.by_value)(value)?);
+            }
+            return Ok(Some(keys));
+        }
+        Ok(None)
+    }
+}
+
+/// The partition key of a scoped row: the hash of its scope.
+fn scope_partition_key(value: &ScalarValue) -> anyhow::Result<PartitionKey> {
+    let value = value
+        .try_as_str()
+        .context("expected scope")?
+        .context("null scopes cannot be used for partition-key matching")?;
+    Ok(HashPartitioner::compute_partition_key(value))
 }
 
 /// A normalized representation of predicates that compare a column to literal values.
@@ -735,6 +806,7 @@ mod tests {
     };
 
     use restate_storage_api::vqueue_table::Stage;
+    use restate_types::identifiers::partitioner::HashPartitioner;
     use restate_types::identifiers::{
         BaseEntryId, InvocationId, ServiceId, StateMutationId, WithPartitionKey,
     };
@@ -1139,6 +1211,49 @@ mod tests {
             .expect("extract");
 
         assert_eq!(None, got);
+    }
+
+    #[test]
+    fn listed_scopes_or_null_scope_extract_both_partition_keys() {
+        let scope = HashPartitioner::compute_partition_key;
+        let unscoped = |key| ServiceId::new(None, "svc", key).partition_key();
+        let expected = BTreeSet::from([scope("t1"), scope("t2"), unscoped("a"), unscoped("b")]);
+        let null = || Arc::new(Literal::new(ScalarValue::LargeUtf8(None))) as Arc<dyn PhysicalExpr>;
+        let service_keys = || in_list("service_key", vec![utf8_lit("a"), utf8_lit("b")]);
+
+        // `scope IN ('t1', 't2', NULL) OR scope IS NULL`: the NULL literal matches nothing.
+        let listed = or(
+            in_list("scope", vec![utf8_lit("t1"), utf8_lit("t2"), null()]),
+            is_null("scope"),
+        );
+        // DataFusion writes short IN lists as ORs of equalities.
+        let expanded = or(
+            is_null("scope"),
+            or(
+                eq(col("scope"), utf8_lit("t1")),
+                eq(col("scope"), utf8_lit("t2")),
+            ),
+        );
+        for scopes in [listed, expanded] {
+            let extract = |filters: &[_]| {
+                scope_or_service_key_extractor()
+                    .try_extract(filters)
+                    .unwrap()
+            };
+            assert_eq!(
+                extract(&[Arc::clone(&scopes), service_keys()]),
+                Some(expected.clone())
+            );
+            // Unscoped rows could be under any key without their service keys.
+            assert_eq!(extract(&[scopes]), None);
+        }
+        let excluded = or(is_null("scope"), not_in_list("scope", vec![utf8_lit("t1")]));
+        assert_eq!(
+            scope_or_service_key_extractor()
+                .try_extract(&[excluded, service_keys()])
+                .unwrap(),
+            None
+        );
     }
 
     #[test]
