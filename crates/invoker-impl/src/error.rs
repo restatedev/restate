@@ -17,6 +17,7 @@ use http::{HeaderName, HeaderValue};
 
 use restate_memory::OutOfMemoryKind;
 use restate_service_client::ServiceClientError;
+use restate_service_protocol_v4::message_codec::EncodingError;
 use restate_types::errors::{IdDecodeError, InvocationError, InvocationErrorCode, codes};
 use restate_types::identifiers::DeploymentId;
 use restate_types::journal::raw::RawEntryCodecError;
@@ -66,7 +67,7 @@ pub(crate) enum InvokerError {
     Encoder(
         #[from]
         #[code]
-        restate_service_protocol_v4::message_codec::EncodingError,
+        EncodingError,
     ),
     #[error("cannot decode entry: {0}")]
     #[code(restate_errors::RT0012)]
@@ -234,6 +235,8 @@ impl InvokerError {
         match self {
             InvokerError::NotInvoked => false,
             InvokerError::OutOfMemory(oom) => oom.kind != OutOfMemoryKind::UpperBoundExceeded,
+            // The service sends the same message again on retry.
+            InvokerError::Encoder(EncodingError::MessageSizeLimit(..)) => false,
             _ => true,
         }
     }
@@ -631,5 +634,32 @@ fn specialized_restate_error_code_for_invocation_error(
         codes::JOURNAL_MISMATCH => &restate_errors::RT0016,
         codes::PROTOCOL_VIOLATION => &restate_errors::RT0012,
         _ => &restate_errors::RT0007,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroUsize;
+
+    use super::*;
+
+    #[test]
+    fn size_limit_errors_are_not_transient() {
+        let message_size_limit = InvokerError::Encoder(EncodingError::MessageSizeLimit(
+            2,
+            NonZeroUsize::new(1).unwrap(),
+        ));
+        assert!(!message_size_limit.is_transient());
+
+        let memory = |kind| {
+            InvokerError::OutOfMemory(InvocationMemoryExhausted {
+                needed: NonZeroByteCount::new(NonZeroUsize::new(1).unwrap()),
+                kind,
+                context: "test",
+            })
+        };
+        assert!(!memory(OutOfMemoryKind::UpperBoundExceeded).is_transient());
+        assert!(memory(OutOfMemoryKind::PoolExhausted).is_transient());
+        assert!(InvokerError::ContentTooLarge.is_transient());
     }
 }

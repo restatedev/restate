@@ -43,6 +43,15 @@ const MAX_OBJECT_STORE_SINGLE_PUT_SIZE: u64 = 5 * 1024 * 1024 * 1024;
 const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
     NonZeroByteCount::new(NonZeroUsize::new(32 * 1024 * 1024).unwrap());
 
+/// Room the invoker accepts on top of the configured message size limit for the service
+/// protocol framing around a payload, so that a payload of the configured size still fits.
+const SERVICE_PROTOCOL_FRAMING_OVERHEAD: usize = MESSAGE_SIZE_OVERHEAD.div_ceil(4);
+
+/// Room the per-invocation memory limit keeps on top of the invoker's message size limit for
+/// the envelope added when an accepted message is stored (stored journal entry, completion
+/// notification carrying a stored value).
+const STORED_ENTRY_OVERHEAD: usize = MESSAGE_SIZE_OVERHEAD.div_ceil(4);
+
 const X_RESTATE_CLUSTER_NAME: http::HeaderName =
     http::HeaderName::from_static("x-restate-cluster-name");
 
@@ -559,8 +568,13 @@ pub struct InvokerOptions {
     /// outbound). Once an invocation's directional budget reaches this ceiling it must
     /// wait for in-flight data to be consumed or yield back to the scheduler.
     ///
-    /// If unset, defaults to `message-size-limit`. If set, it will be clamped at
-    /// the value of `message-size-limit`.
+    /// A single journal entry or state value larger than this limit cannot be sent to the
+    /// service, and the invocation is paused or killed according to its retry policy.
+    ///
+    /// Defaults to, and is never smaller than, the largest message the invoker accepts
+    /// from a service (`message-size-limit` plus room for internal framing). It can be
+    /// raised independently of `message-size-limit`; values above `memory-limit` have no
+    /// additional effect.
     ///
     /// Since v1.7.0
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -613,6 +627,7 @@ impl InvokerOptions {
         self.concurrent_invocations_limit
     }
 
+    /// Maximum size of a message the invoker accepts from a service deployment.
     pub fn message_size_limit(&self) -> NonZeroUsize {
         let limit = self
             .message_size_limit
@@ -623,18 +638,28 @@ impl InvokerOptions {
             // In tests, we don't want to leave overhead
             limit
         } else {
-            // We only add 1/4 of the overhead to leave room for outer envelope/messages
-            limit.saturating_add(MESSAGE_SIZE_OVERHEAD.div_ceil(4))
+            limit.saturating_add(SERVICE_PROTOCOL_FRAMING_OVERHEAD)
         }
     }
 
     /// Resolved per-invocation per-direction memory upper bound.
-    /// Falls back to `message_size_limit()` when unset.
+    ///
+    /// Never smaller than [`Self::min_per_invocation_memory_limit`], so that every journal
+    /// entry and state value the invoker accepted can be read back.
     pub fn per_invocation_memory_limit(&self) -> NonZeroByteCount {
-        self.per_invocation_memory_limit
-            .and_then(|v| NonZeroUsize::new(v.as_usize()))
-            .map(NonZeroByteCount::new)
-            .unwrap_or_else(|| NonZeroByteCount::new(self.message_size_limit()))
+        let min = self.min_per_invocation_memory_limit();
+        NonZeroByteCount::new(
+            self.per_invocation_memory_limit
+                .and_then(|limit| NonZeroUsize::new(limit.as_usize()))
+                .map_or(min, |limit| min.max(limit)),
+        )
+    }
+
+    /// Derived from [`Self::message_size_limit`] so that the read budget always covers what
+    /// the invoker accepts on the write path, plus the envelope added when storing it.
+    fn min_per_invocation_memory_limit(&self) -> NonZeroUsize {
+        self.message_size_limit()
+            .saturating_add(STORED_ENTRY_OVERHEAD)
     }
 
     /// Resolved eager state size limit in bytes. After `merge()`, this is guaranteed
@@ -673,12 +698,17 @@ impl InvokerOptions {
                 .unwrap_or(opts.message_size_limit),
         );
 
-        // Resolve per_invocation_memory_limit, clamped to message_size_limit
-        self.per_invocation_memory_limit = Some(
-            self.per_invocation_memory_limit
-                .map(|limit| limit.min(opts.message_size_limit.into()))
-                .unwrap_or_else(|| opts.message_size_limit.into()),
-        );
+        let min_per_invocation_memory_limit = self.min_per_invocation_memory_limit();
+        if let Some(limit) = self.per_invocation_memory_limit
+            && limit.as_usize() < min_per_invocation_memory_limit.get()
+        {
+            warn!(
+                "'worker.invoker.per-invocation-memory-limit' ({limit}) is smaller than the \
+                 largest journal entry or state value the invoker accepts; raising it to {}.",
+                ByteCount::from(min_per_invocation_memory_limit.get())
+            );
+        }
+        self.per_invocation_memory_limit = Some(self.per_invocation_memory_limit().into());
 
         // Fuse deprecated disable_eager_state into eager_state_size_limit
         if self.disable_eager_state {
@@ -703,7 +733,7 @@ impl InvokerOptions {
         .map(|limit| {
             limit
                 .min(opts.message_size_limit.into())
-                .min(self.per_invocation_memory_limit.unwrap_or(ByteCount::MAX))
+                .min(self.per_invocation_memory_limit().into())
         });
     }
 }
@@ -1903,7 +1933,53 @@ mod tests {
         );
     }
     #[test]
+    fn per_invocation_memory_limit_covers_message_size_limit() {
+        const MIB: usize = 1024 * 1024;
+        let mut networking = NetworkingOptions::default();
+        networking.message_size_limit = NonZeroByteCount::new(NonZeroUsize::new(32 * MIB).unwrap());
+        let merged = |message_size_limit: Option<usize>, per_invocation: Option<usize>| {
+            let mut options = InvokerOptions {
+                message_size_limit: message_size_limit
+                    .map(|v| NonZeroByteCount::new(NonZeroUsize::new(v).unwrap())),
+                per_invocation_memory_limit: per_invocation.map(ByteCount::from),
+                ..Default::default()
+            };
+            options.merge(&CommonOptions::default(), &networking);
+            options
+        };
+        let floor =
+            |options: &InvokerOptions| options.message_size_limit().get() + STORED_ENTRY_OVERHEAD;
 
+        // Default and too small values resolve to the floor above the accepted message size.
+        for per_invocation in [None, Some(MIB), Some(32 * MIB)] {
+            let options = merged(None, per_invocation);
+            assert_eq!(options.message_size_limit().get(), 32 * MIB);
+            assert_eq!(
+                options.per_invocation_memory_limit().as_usize(),
+                floor(&options)
+            );
+        }
+
+        // It can be raised beyond the networking message size limit.
+        let options = merged(None, Some(128 * MIB));
+        assert_eq!(options.per_invocation_memory_limit().as_usize(), 128 * MIB);
+        assert_eq!(options.eager_state_size_limit(), 32 * MIB);
+
+        // The floor follows a lower invoker message size limit, and merging is idempotent.
+        let mut options = merged(Some(8 * MIB), None);
+        assert_eq!(options.message_size_limit().get(), 8 * MIB);
+        assert_eq!(
+            options.per_invocation_memory_limit().as_usize(),
+            floor(&options)
+        );
+        options.merge(&CommonOptions::default(), &networking);
+        assert_eq!(
+            options.per_invocation_memory_limit().as_usize(),
+            floor(&options)
+        );
+    }
+
+    #[test]
     fn sanitize_rocksdb_max_sub_compactions() {
         let mut options = StorageOptions::default();
         assert_eq!(options.rocksdb_max_sub_compactions(), 1);
