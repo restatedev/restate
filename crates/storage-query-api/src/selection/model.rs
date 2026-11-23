@@ -208,6 +208,7 @@ pub trait LiveSelection<T: SelectionSchema>: Send {
 /// | `col = x` | `Equal(Some(x))` |
 /// | `col < x` | `Range { lower: Excluded(None), upper: Excluded(Some(x)) }` |
 /// | `col = NULL` | `In(vec![])`, because the comparison is never true |
+/// | `col IN (x, y) OR col IS NULL` | `In(vec![Some(x), Some(y), None])` |
 ///
 /// Finite string enums instead enumerate names through
 /// [`SelectionValue::finite_strings`] and select matching native variants. For
