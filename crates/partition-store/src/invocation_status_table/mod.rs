@@ -11,10 +11,12 @@
 use std::num::NonZeroUsize;
 use std::ops::ControlFlow;
 
-use futures::{FutureExt, Stream};
+use futures::FutureExt;
+use rocksdb::ReadOptions;
 
 use restate_core::io::IoExecutor;
-use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
+use restate_rocksdb::reads::{IterationError, IterationOutcome, IteratorVisitor, ScopedReads};
+use restate_rocksdb::{IterAction, Priority, RocksDbReadPerfGuard};
 use restate_storage_api::invocation_status_table::{
     InvocationLite, InvocationStatus, InvocationStatusDiscriminants, ReadInvocationStatusTable,
     ScanInvocationStatusTable, ScanInvocationStatusTableRange, WriteInvocationStatusTable,
@@ -29,7 +31,7 @@ use restate_util_string::format_restring;
 
 use crate::keys::{DecodeTableKey, FixedLengthTableKey, KeyKind, define_table_key};
 use crate::offloaded_reads::get_value_proto_cached_or_offload;
-use crate::scan::TableScan;
+use crate::scan::{PhysicalScan, TableScan};
 use crate::{
     PartitionStore, PartitionStoreSnapshot, PartitionStoreTransaction, StorageAccess,
     StorageIterator, StorageRead, TableKind, break_on_err,
@@ -244,21 +246,22 @@ impl ScanInvocationStatusTable for PartitionStore {
         Ok(new_status_keys.boxed())
     }
 
-    fn filter_map_invocation_status_lazy<
-        O: Send + 'static,
+    fn fold_invocation_status_lazy<
+        S: Send + 'static,
         E: Into<anyhow::Error>,
         F: for<'a> FnMut(
+                &mut S,
                 (InvocationId, &'a InvocationStatusV2Lazy<'a>),
-            ) -> std::result::Result<Option<O>, E>
+            ) -> ControlFlow<std::result::Result<(), E>>
             + Send
-            + Sync
             + 'static,
     >(
         &self,
         from: Option<InvocationId>,
-        mut f: F,
-    ) -> Result<impl Stream<Item = Result<O>> + Send> {
-        let scan = match from {
+        state: S,
+        f: F,
+    ) -> Result<impl Future<Output = Result<S>> + Send> {
+        let scan = PhysicalScan::from(match from {
             None => TableScan::ScanPartitionKeyRange::<InvocationStatusKeyBuilder>(
                 self.partition_key_range(),
             ),
@@ -268,26 +271,75 @@ impl ScanInvocationStatusTable for PartitionStore {
                     .invocation_uuid(from.invocation_uuid()),
                 InvocationStatusKey::builder().partition_key(self.partition_key_range().end()),
             ),
+        });
+        let key_kind = scan.key_kind();
+        let start = IterAction::Seek(scan.start().clone());
+        let options = move || {
+            let mut options = ReadOptions::default();
+            options.set_async_io(true);
+            scan.configure(&mut options);
+            options
         };
+        let visitor = Fold { state, f };
 
-        let new_status_keys = self
-            .iterator_filter_map("df-filter-map-invocation-status", Priority::Low, scan, {
-                move |(mut key, value)| {
-                    let status_key = InvocationStatusKey::deserialize_from(&mut key)?;
-                    let inv_status_v2_lazy = decode_invocation_status_lazy(value)?;
-
-                    let (partition_key, invocation_uuid) = status_key.split();
-
-                    f((
-                        InvocationId::from_parts(partition_key, invocation_uuid),
-                        &inv_status_v2_lazy,
-                    ))
-                    .map_err(|err| StorageError::Conversion(err.into()))
-                }
-            })
+        let db = self.partition_db();
+        // Dropping the returned future cancels the scan.
+        let scan = db
+            .physical_scope()
+            .prepare_iteration(db.gate(), key_kind, options, start, visitor)
+            .with_read_perf("fold-invocation-status");
+        let scan = db
+            .rocksdb()
+            .executor()
+            .low_pri()
+            .spawn_cancellable(scan)
             .map_err(|_| StorageError::OperationalError)?;
 
-        Ok(new_status_keys)
+        Ok(async move {
+            match scan.await.map_err(|_| StorageError::OperationalError)? {
+                Ok(outcome) => match outcome {
+                    IterationOutcome::Exhausted(fold) | IterationOutcome::Stopped(fold) => {
+                        Ok(fold.state)
+                    }
+                },
+                Err(IterationError::Visitor(err)) => Err(err),
+                Err(IterationError::RocksDb(err)) => Err(StorageError::Generic(err.into())),
+                Err(IterationError::Cancelled) => Err(StorageError::OperationalError),
+            }
+        })
+    }
+}
+
+/// Folds the invocation statuses that an iteration visits into `state`.
+struct Fold<S, F> {
+    state: S,
+    f: F,
+}
+
+impl<S, E, F> IteratorVisitor for Fold<S, F>
+where
+    S: Send + 'static,
+    E: Into<anyhow::Error>,
+    F: for<'a> FnMut(
+            &mut S,
+            (InvocationId, &'a InvocationStatusV2Lazy<'a>),
+        ) -> ControlFlow<std::result::Result<(), E>>
+        + Send
+        + 'static,
+{
+    type Error = StorageError;
+
+    async fn visit(&mut self, mut key: &[u8], value: &[u8]) -> Result<IterAction> {
+        let (partition_key, invocation_uuid) =
+            InvocationStatusKey::deserialize_from(&mut key)?.split();
+        let status = decode_invocation_status_lazy(value)?;
+        let invocation_id = InvocationId::from_parts(partition_key, invocation_uuid);
+        match (self.f)(&mut self.state, (invocation_id, &status)) {
+            ControlFlow::Continue(()) => Ok(IterAction::Next),
+            ControlFlow::Break(result) => result
+                .map(|()| IterAction::Stop)
+                .map_err(|err| StorageError::Conversion(err.into())),
+        }
     }
 }
 
