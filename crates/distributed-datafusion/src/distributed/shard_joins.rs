@@ -124,6 +124,7 @@ use restate_types::partition_table::Partition;
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
 use crate::access::{Access, select_access};
+use crate::distributed::demand::Demands;
 use crate::node_fan_out::{NodeFanOutExecutionPlan, TargetNode};
 use crate::order_key::order_key;
 
@@ -345,14 +346,17 @@ fn with_leaf(
         .data)
 }
 
+/// Groups `plan`, if it is a JOIN that qualifies. Its inputs' scans read what
+/// `demands` asks of them through it ([`Demands::on_join_input`]).
 pub(super) fn group_join(
     plan: Arc<dyn ExecutionPlan>,
     config: &ConfigOptions,
+    demands: &Demands,
 ) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
     // A limit above a JOIN states how many of its rows are needed.
     let grouped = match plan.downcast_ref::<GlobalLimitExec>() {
         Some(limit) => match limit.fetch() {
-            Some(fetch) => group_under_limit(limit.input(), limit.skip() + fetch, config)?
+            Some(fetch) => group_under_limit(limit.input(), limit.skip() + fetch, config, demands)?
                 .map(|input| {
                     Arc::clone(&plan).replace_children(
                         vec![input],
@@ -362,7 +366,7 @@ pub(super) fn group_join(
                 .transpose()?,
             None => None,
         },
-        None => group(&plan, None, config)?,
+        None => group(&plan, None, config, demands)?,
     };
     Ok(match grouped {
         Some(grouped) => Transformed::yes(grouped),
@@ -376,9 +380,10 @@ fn group_under_limit(
     plan: &Arc<dyn ExecutionPlan>,
     needed: usize,
     config: &ConfigOptions,
+    demands: &Demands,
 ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
     if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
-        return group_under_limit(projection.input(), needed, config)?
+        return group_under_limit(projection.input(), needed, config, demands)?
             .map(|input| {
                 Arc::clone(plan).replace_children(
                     vec![input],
@@ -387,7 +392,7 @@ fn group_under_limit(
             })
             .transpose();
     }
-    group(plan, Some(needed), config)
+    group(plan, Some(needed), config, demands)
 }
 
 /// Groups a JOIN by shard. `needed` is how many of its rows an enclosing limit
@@ -396,6 +401,7 @@ fn group(
     plan: &Arc<dyn ExecutionPlan>,
     needed: Option<usize>,
     config: &ConfigOptions,
+    demands: &Demands,
 ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
     if plan.fetch().is_some() {
         return Ok(None);
@@ -438,6 +444,7 @@ fn group(
             &right,
             config.execution.target_partitions,
             needed,
+            demands,
         )?,
         (ShardScan::Nodes(left), ShardScan::Nodes(right)) => {
             group_nodes(join, left, right, config)?
@@ -459,6 +466,7 @@ fn group_partitions(
     right: &[&TableScanExec],
     parallelism: usize,
     needed: Option<usize>,
+    demands: &Demands,
 ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
     let scans = || left.iter().chain(right).copied();
     let Some(local) = scans()
@@ -516,10 +524,12 @@ fn group_partitions(
                 owners.insert(owner);
             }
             for (owner, partitions) in groups {
+                // An ordered demand on the JOIN's output may reach the side it
+                // keeps, which an index can then serve in that order.
                 let access = select_access(
                     &planning.source,
                     scan.0.predicate.as_ref(),
-                    None,
+                    demands.on_join_input(scan),
                     &scan.0.schema,
                 )
                 .map_err(external)?;

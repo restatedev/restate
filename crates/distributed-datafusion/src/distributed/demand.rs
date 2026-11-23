@@ -25,6 +25,26 @@
 //! the projection's other columns may be anything. Anything else in between, or
 //! a sort without a fetch, demands nothing.
 //!
+//! An outer JOIN may separate them too, for an ordered demand on the side it
+//! keeps, `ss` below. The JOIN outputs every row of that side at least once,
+//! with that side's values, so if the order and the conditions only read that
+//! side's columns, the first `fetch` output rows come from the joined rows of
+//! that side's first `fetch` rows:
+//!
+//! ```text
+//! SortExec: TopK(fetch=50), expr=[created_at DESC NULLS LAST]   ← ss's column
+//!   ProjectionExec: …, CASE … END AS status, …
+//!     HashJoinExec: join_type=Right, on=[(id, id)]
+//!       TableScanExec: sys_invocation_state sis
+//!       TableScanExec: sys_invocation_status ss                  ← 50 rows
+//! ```
+//!
+//! Only a JOIN evaluated shard by shard keeps the order its kept side is read in
+//! ([`super::shard_joins`]), so only its lowering reads such a demand
+//! ([`Demands::on_join_input`]); any other scan beneath a JOIN reads as before.
+//! A demand crosses one JOIN at most: a second one, evaluated as usual above the
+//! first, would lose the order again.
+//!
 //! A LIMIT without an ORDER BY demands any `fetch` rows that meet the
 //! conditions, in no order: an **unordered** demand, with an empty ordering.
 //! Repartitioning and coalescing may also separate it from the source, as
@@ -53,13 +73,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use datafusion::common::Result;
 use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::{JoinSide, JoinType, Result};
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr, split_conjunction};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::filter::FilterExec;
+use datafusion::physical_plan::joins::HashJoinExec;
+use datafusion::physical_plan::joins::utils::{ColumnIndex, build_join_schema};
 use datafusion::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
@@ -81,8 +103,9 @@ pub(crate) struct Demand {
 /// The demand on each table scan that a plan reaches once.
 pub(crate) struct Demands(
     /// By the scan's address. Each scan is kept, so that no other plan node
-    /// takes over its address while the plan is rewritten.
-    HashMap<*const (), (Arc<dyn ExecutionPlan>, Demand)>,
+    /// takes over its address while the plan is rewritten. With whether the
+    /// demand crossed an outer JOIN.
+    HashMap<*const (), (Arc<dyn ExecutionPlan>, Demand, bool)>,
 );
 
 impl Demands {
@@ -94,9 +117,22 @@ impl Demands {
         Self(found)
     }
 
-    /// The demand on `scan`, a table scan of the plan, if any.
+    /// The demand on `scan`, a table scan of the plan, if any and if no JOIN
+    /// separates the scan from the demand.
     pub(crate) fn on(&self, scan: &Arc<dyn ExecutionPlan>) -> Option<&Demand> {
-        self.0.get(&address(scan)).map(|(_, demand)| demand)
+        self.0
+            .get(&address(scan))
+            .filter(|(_, _, through_join)| !through_join)
+            .map(|(_, demand, _)| demand)
+    }
+
+    /// The demand on `scan`, the scan of a JOIN's input, if any, also through
+    /// the JOIN: for a JOIN evaluated shard by shard, which keeps the order its
+    /// kept side is read in.
+    pub(crate) fn on_join_input(&self, scan: &TableScanExec) -> Option<&Demand> {
+        self.0
+            .get(&(std::ptr::from_ref(scan) as *const ()))
+            .map(|(_, demand, _)| demand)
     }
 }
 
@@ -104,7 +140,7 @@ fn address(plan: &Arc<dyn ExecutionPlan>) -> *const () {
     Arc::as_ptr(plan) as *const ()
 }
 
-type Found = HashMap<*const (), (Arc<dyn ExecutionPlan>, Demand)>;
+type Found = HashMap<*const (), (Arc<dyn ExecutionPlan>, Demand, bool)>;
 
 /// Finds the demands under `plan`, counting how often it reaches each scan.
 fn visit(
@@ -123,8 +159,8 @@ fn visit(
             fetch,
             residual: Vec::new(),
         };
-        if let Some((scan, demand)) = follow(sort.input(), demand) {
-            found.insert(address(&scan), (scan, demand));
+        if let Some(followed) = follow(sort.input(), demand, false) {
+            found.insert(address(&followed.0), followed);
         }
     } else if let Some((fetch, input)) = unordered_limit(plan) {
         let demand = Demand {
@@ -133,8 +169,8 @@ fn visit(
             residual: Vec::new(),
         };
         // An ordered demand above, found first, takes precedence.
-        if let Some((scan, demand)) = follow(input, demand) {
-            found.entry(address(&scan)).or_insert((scan, demand));
+        if let Some(followed) = follow(input, demand, false) {
+            found.entry(address(&followed.0)).or_insert(followed);
         }
     }
     for child in plan.children() {
@@ -155,13 +191,15 @@ fn unordered_limit(plan: &Arc<dyn ExecutionPlan>) -> Option<(usize, &Arc<dyn Exe
     None
 }
 
-/// Carries `demand`, in the columns of `plan`'s output, down to a table scan.
+/// Carries `demand`, in the columns of `plan`'s output, down to a table scan,
+/// and tells whether it crossed an outer JOIN (`through_join`) on the way.
 fn follow(
     plan: &Arc<dyn ExecutionPlan>,
     mut demand: Demand,
-) -> Option<(Arc<dyn ExecutionPlan>, Demand)> {
+    through_join: bool,
+) -> Option<(Arc<dyn ExecutionPlan>, Demand, bool)> {
     if plan.downcast_ref::<TableScanExec>().is_some() {
-        return Some((Arc::clone(plan), demand));
+        return Some((Arc::clone(plan), demand, through_join));
     }
     if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
         // A computed column is no input column: a demand that needs one stops.
@@ -171,7 +209,7 @@ fn follow(
             .map(|expr| expr.expr.downcast_ref::<Column>().cloned())
             .collect();
         demand = remap(demand, |index| inputs.get(index).cloned().flatten())?;
-        return follow(projection.input(), demand);
+        return follow(projection.input(), demand, through_join);
     }
     if let Some(filter) = plan.downcast_ref::<FilterExec>() {
         if let Some(projection) = filter.projection() {
@@ -184,22 +222,61 @@ fn follow(
         demand
             .residual
             .extend(split_conjunction(filter.predicate()).into_iter().cloned());
-        return follow(filter.input(), demand);
+        return follow(filter.input(), demand, through_join);
+    }
+    if !demand.ordering.is_empty()
+        && !through_join
+        && let Some(join) = plan.downcast_ref::<HashJoinExec>()
+    {
+        return through_outer_join(join, demand);
     }
     // Without an order, nodes that keep every row in its columns, or the
     // first of them per partition, change nothing the demand needs.
     if demand.ordering.is_empty() {
         if let Some(repartition) = plan.downcast_ref::<RepartitionExec>() {
-            return follow(repartition.input(), demand);
+            return follow(repartition.input(), demand, through_join);
         }
         if let Some(coalesce) = plan.downcast_ref::<CoalescePartitionsExec>() {
-            return follow(coalesce.input(), demand);
+            return follow(coalesce.input(), demand, through_join);
         }
         if let Some(limit) = plan.downcast_ref::<LocalLimitExec>() {
-            return follow(limit.input(), demand);
+            return follow(limit.input(), demand, through_join);
         }
     }
     None
+}
+
+/// Carries an ordered `demand` on `join`'s output to the side an outer JOIN
+/// keeps, if its order and conditions only read that side's columns (see the
+/// module docs). Any other JOIN, or a demand on the other side's columns,
+/// demands nothing.
+fn through_outer_join(
+    join: &HashJoinExec,
+    demand: Demand,
+) -> Option<(Arc<dyn ExecutionPlan>, Demand, bool)> {
+    let (kept, input) = match join.join_type() {
+        JoinType::Left => (JoinSide::Left, join.left()),
+        JoinType::Right => (JoinSide::Right, join.right()),
+        _ => return None,
+    };
+    let (_, columns) = build_join_schema(
+        &join.left().schema(),
+        &join.right().schema(),
+        join.join_type(),
+    );
+    let columns: Vec<ColumnIndex> = match &join.projection {
+        Some(projection) => projection
+            .iter()
+            .map(|&index| columns.get(index).cloned())
+            .collect::<Option<_>>()?,
+        None => columns,
+    };
+    let schema = input.schema();
+    let demand = remap(demand, |index| {
+        let column = columns.get(index)?;
+        (column.side == kept).then(|| Column::new(schema.field(column.index).name(), column.index))
+    })?;
+    follow(input, demand, true)
 }
 
 /// Rewrites every column of `demand` to the column `input` gives for its index.
