@@ -1181,7 +1181,13 @@ async fn operators_below_the_partition_reads_report_every_copy() {
                     .unwrap_or_else(|| panic!("{prefix}: {plan}"))
             };
             let reads = find("PartitionReadExec");
-            let hash_join = find("HashJoinExec");
+            let joined_at = stage
+                .iter()
+                .position(|line| {
+                    let line = line.trim_start();
+                    line.starts_with("HashJoinExec") || line.starts_with("SortMergeJoinExec")
+                })
+                .unwrap_or_else(|| panic!("JOIN: {plan}"));
             let filter = find("FilterExec: upper(target_service_name");
             let scan = stage
                 .iter()
@@ -1189,7 +1195,7 @@ async fn operators_below_the_partition_reads_report_every_copy() {
                 .unwrap();
             // Below the partition reads, on this stage's owner.
             assert!(
-                reads < hash_join && hash_join < filter && filter < scan,
+                reads < joined_at && joined_at < filter && filter < scan,
                 "{plan}"
             );
             let owner = *expected
@@ -1209,7 +1215,7 @@ async fn operators_below_the_partition_reads_report_every_copy() {
                 (
                     metric(stage[scan], "output_rows"),
                     metric(stage[filter], "output_rows"),
-                    metric(stage[hash_join], "output_rows"),
+                    metric(stage[joined_at], "output_rows"),
                     metric(stage[reads], "output_rows"),
                 ),
                 (scanned, kept, joined, joined),
@@ -1463,6 +1469,10 @@ async fn id_joins_merge_on_native_orders() {
           ON s.partition_key = e.partition_key AND s.id = e.entry_id", "8", "base_entry_id"),
         // A table ordered by both functions joins itself on the first.
         ("SELECT COUNT(*) FROM sys_invocation_status a JOIN sys_invocation_status b ON a.id = b.id", "32", "invocation_id"),
+        // The live invoker state reports its invocations in ID order.
+        ("SELECT COUNT(*) FROM sys_invocation_status s JOIN sys_invocation_state l ON s.id = l.id", "16", "invocation_id"),
+        // The view most queries read, which joins them on ID and partition key.
+        ("SELECT COUNT(*) FROM sys_invocation WHERE status <> 'x'", "32", "invocation_id"),
     ];
     for (sql, expected, function) in merged {
         let plan = explain(sql).await;
@@ -1514,14 +1524,13 @@ async fn id_joins_merge_on_native_orders() {
         &[&["32"]],
     )
     .await;
-    // No common order: scopes have no ordering function, `NOT IN` needs the whole
-    // subquery, and the live invoker state declares no order.
+    // No common order: scopes have no ordering function, and `NOT IN` needs the
+    // whole subquery.
     #[rustfmt::skip]
     let hashed = [
         ("SELECT COUNT(*) FROM sys_user_limits u JOIN sys_invocation_status s ON u.scope = s.scope", "8"),
         ("SELECT COUNT(*) FROM sys_invocation_status s WHERE s.id NOT IN \
           (SELECT entry_id FROM sys_vqueue_entry_status)", "24"),
-        ("SELECT COUNT(*) FROM sys_invocation_status s JOIN sys_invocation_state l ON s.id = l.id", "16"),
     ];
     for (sql, expected) in hashed {
         let plan = explain(sql).await;
@@ -1532,14 +1541,11 @@ async fn id_joins_merge_on_native_orders() {
         assert_sql(session.as_ref(), "hashed_join_results", sql, &[&[expected]]).await;
     }
     // A filter that fixes an ID makes any order on it hold trivially; the live
-    // invoker state still declares none, writes no key fields, and hashes.
-    let fixed = InvocationId::from_parts(
-        fixture.partitions.0[0].1.key_range.start(),
-        InvocationUuid::from_u128(0),
-    );
+    // scheduler still declares none, writes no key fields, and hashes.
+    let fixed = VQueueId::custom(fixture.partitions.0[0].1.key_range.start(), "join");
     let sql = format!(
-        "SELECT COUNT(*) FROM sys_invocation_status s JOIN sys_invocation_state l \
-         ON s.id = l.id WHERE l.id = '{fixed}'"
+        "SELECT COUNT(*) FROM sys_vqueue_meta m JOIN sys_scheduler q \
+         ON m.id = q.id WHERE q.id = '{fixed}'"
     );
     let plan = explain(&sql).await;
     assert!(
@@ -1679,6 +1685,7 @@ async fn id_joins_merge_on_native_orders() {
         // Every source's reads write the key fields of their records.
         (format!("SELECT s.id, e.id {FROM_STATUS} JOIN sys_journal_events e ON {{on}}"), "s.id", "e.id"),
         ("SELECT a.id, b.id FROM sys_vqueue_meta a JOIN sys_vqueue_meta b ON {on}".to_owned(), "a.id", "b.id"),
+        (format!("SELECT s.id, l.id {FROM_STATUS} LEFT JOIN sys_invocation_state l ON {{on}}"), "s.id", "l.id"),
     ];
     let plan = explain(&format!(
         "SELECT s.id {FROM_STATUS} JOIN sys_vqueue_entry_status e ON s.id = e.entry_id \

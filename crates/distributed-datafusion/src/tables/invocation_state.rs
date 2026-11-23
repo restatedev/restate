@@ -13,6 +13,7 @@ use std::sync::Arc;
 use datafusion::catalog::TableProvider;
 
 use restate_storage_query_api::LogicalSchema;
+use restate_storage_query_api::ordering::{NativeOrder, OrderFunction, OrderInput, OrderTerm};
 use restate_storage_query_api::tables::invocation_state::{InvocationState, InvocationStateColumn};
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::service_protocol::ServiceProtocolVersion;
@@ -29,10 +30,14 @@ use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 crate::tables::table_adapter!(pub(crate) SysInvocationStateTable, SysInvocationStateBuilder, InvocationState);
 
 impl crate::sharding::PartitionSource for SysInvocationStateTable {
-    const ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] =
-        &[&[restate_storage_query_api::ordering::OrderTerm::Column(
-            "partition_key",
-        )]];
+    /// The invoker reports its in-flight invocations sorted by ID
+    /// (`ChannelStatusReader::try_read_status`), and a read keeps that order; its
+    /// scanner fails a read that doesn't come in it.
+    const ORDERS: &'static [NativeOrder] = &[
+        &[OrderTerm::Column("partition_key")],
+        &[OrderTerm::Function(OrderFunction::InvocationId)],
+    ];
+    const ID_COLUMN: Option<InvocationStateColumn> = Some(InvocationStateColumn::Id);
 }
 
 impl SysInvocationStateTable {
@@ -60,6 +65,15 @@ impl SysInvocationStateTable {
             |captured| captured.invoker.as_ref(),
             |report| report.invocation_id().partition_key(),
             append_row,
+        )
+        .ordered_by(
+            |report, function, with| {
+                report
+                    .invocation_id()
+                    .order_key(function, |bytes| with(bytes))
+                    .is_some()
+            },
+            |previous, report| previous.invocation_id() <= report.invocation_id(),
         )
     }
 }
@@ -154,6 +168,72 @@ mod tests {
     use crate::table_providers::{PartitionReadContext, ReadMetrics};
 
     use super::*;
+
+    /// Captured rows come in ID order, each with its key field; rows that don't
+    /// fail the read instead of passing for ordered.
+    #[restate_core::test]
+    async fn captured_invoker_rows_carry_key_fields_in_id_order() {
+        use datafusion::arrow::array::{Array, FixedSizeBinaryArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+
+        let ids = [(7, 1), (7, 256), (8, 0)]
+            .map(|(key, uuid)| InvocationId::from_parts(key, InvocationUuid::from_u128(uuid)));
+        let function = OrderFunction::InvocationId;
+        let field = function.key_field("id");
+        let schema = Arc::new(Schema::new(
+            InvocationState::arrow_schema()
+                .fields()
+                .iter()
+                .cloned()
+                .chain([Arc::new(Field::new(
+                    &field,
+                    DataType::FixedSizeBinary(function.width() as i32),
+                    false,
+                ))])
+                .collect::<Vec<_>>(),
+        ));
+        let scanner = Arc::new(SysInvocationStateTable::create_local_scanner());
+        let read = async |ids: &[InvocationId]| {
+            let reports: Vec<_> = ids
+                .iter()
+                .map(|id| InvocationStatusReport::new(*id, InvocationStatusReportInner::default()))
+                .collect();
+            let context = PartitionReadContext::from_capture(CapturedPartitionRead {
+                partition: PartitionId::MIN,
+                storage: None,
+                live: CapturedPartitionState {
+                    invoker: Some(reports.into()),
+                    ..Default::default()
+                },
+                timing: restate_worker_api::CaptureTiming::admitted_at(tokio::time::Instant::now()),
+            });
+            Arc::clone(&scanner)
+                .prepare_read(PrimaryRead::Scan, Arc::clone(&schema), None, None)
+                .unwrap()
+                .execute(context, 8, ReadMetrics::default())
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+        };
+        let batches = read(&ids).await.unwrap();
+        let keys = batches[0]
+            .column_by_name(&field)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<FixedSizeBinaryArray>()
+            .unwrap();
+        assert_eq!(keys.len(), ids.len());
+        for (at, id) in ids.iter().enumerate() {
+            assert_eq!(keys.value(at), id.to_bytes());
+        }
+        let mut reversed = ids;
+        reversed.reverse();
+        let error = read(&reversed).await.unwrap_err();
+        assert!(
+            error.to_string().contains("came out of the order"),
+            "{error}"
+        );
+    }
 
     #[restate_core::test]
     async fn captured_invoker_rows_preserve_protocol_columns_and_projection() {
