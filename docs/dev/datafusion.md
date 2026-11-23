@@ -287,7 +287,7 @@ match self.manager.get_partition_target_node(partition_id)? {
 When the partition is local, `LocalPartitionsScanner` coordinates the scan:
 
 1. Get `PartitionStore` from `PartitionStoreManager`
-2. Call the table's `ScanLocalPartition::for_each_row` implementation (e.g., `for_each_invocation_status_lazy`)
+2. Call the table's `ScanLocalPartition::scan` implementation, which reads the partition's `ReadSnapshot`
 3. Deserialize rows, build Arrow record batches
 4. Send batches back via channel to DataFusion
 
@@ -372,9 +372,9 @@ As the top-k operator accumulates results, it updates the minimum `modified_at` 
 RocksDB iteration and protobuf deserialization happen on background storage threads, not the tokio runtime. This prevents blocking async tasks.
 
 The mechanism works as follows:
-1. Each table implements the `ScanLocalPartition` trait, defining a `for_each_row` method
-2. These implementations call iterator methods on `PartitionStore` (e.g., `for_each_invocation_status_lazy`)
-3. Under the hood, these use `iterator_for_each` which offloads execution to a background storage task via `run_background_iterator` in the `restate-rocksdb` crate
+1. Each table implements the `ScanLocalPartition` trait, defining a `scan` method
+2. These implementations read the partition's `ReadSnapshot` (e.g., `Rows::read::<PromiseTable>(snapshot, ...)`)
+3. The snapshot reads run on a `QueryIoExecutor` (`restate-partition-store`), a dedicated pool of storage threads for query IO
 4. Batches are sent back to tokio-land via channels, with scheduling overhead only at batch boundaries
 
 ## Current Limitations and Future Improvements

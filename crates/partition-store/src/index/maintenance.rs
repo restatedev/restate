@@ -122,13 +122,12 @@ impl PartitionStoreTransaction<'_> {
 #[cfg(test)]
 mod tests {
     use std::cmp::Reverse;
-    use std::ops::ControlFlow;
 
     use bytes::BufMut;
     use rocksdb::ReadOptions;
 
     use restate_clock::UniqueTimestamp;
-    use restate_rocksdb::{Priority, RocksDbManager};
+    use restate_rocksdb::RocksDbManager;
     use restate_storage_api::vqueue_table::Stage;
     use restate_storage_api::{StorageError, Transaction};
     use restate_types::identifiers::{BaseEntryId, InvocationId, InvocationUuid};
@@ -205,24 +204,15 @@ mod tests {
             },
             &mut prefix,
         );
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        store
-            .iterator_for_each_physical(
-                "test-secondary-index-maintenance",
-                Priority::Low,
-                ReadOptions::default(),
-                PhysicalScan::Prefix(KeyKind::SecondaryIndex, prefix.into()),
-                move |(key, value)| {
-                    sender.send((key.to_vec(), value.to_vec())).unwrap();
-                    ControlFlow::Continue(())
-                },
-            )
-            .unwrap()
-            .await
-            .unwrap();
+        let snapshot = store.partition_db().read_snapshot().unwrap();
+        let mut rows = snapshot.scan(
+            PhysicalScan::Prefix(KeyKind::SecondaryIndex, prefix),
+            ReadOptions::default(),
+        );
         let mut entries = Vec::new();
-        while let Some(entry) = receiver.recv().await {
-            entries.push(entry);
+        while let Some((key, value)) = rows.item().unwrap() {
+            entries.push((key.to_vec(), value.to_vec()));
+            rows.next();
         }
         entries
     }

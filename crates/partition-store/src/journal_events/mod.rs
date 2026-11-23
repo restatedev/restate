@@ -11,21 +11,19 @@
 use futures::Stream;
 use futures_util::stream;
 
-use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
+use restate_rocksdb::RocksDbReadPerfGuard;
+use restate_storage_api::Result;
 use restate_storage_api::journal_events::{
-    EventView, ReadJournalEventsTable, ScanJournalEventsTable, ScanJournalEventsTableRange,
-    WriteJournalEventsTable,
+    EventView, ReadJournalEventsTable, WriteJournalEventsTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::protobuf_types::v1::Event as PbEvent;
-use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
 use restate_types::journal_events::EventType;
 use restate_types::journal_events::raw::RawEvent;
 use restate_types::time::MillisSinceEpoch;
 
 use crate::TableKind::{JournalEvent, State};
-use crate::error::break_on_err;
 use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
 use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
@@ -179,44 +177,6 @@ pub fn decode_event(key: JournalEventKey, value: &mut &[u8]) -> Result<(Invocati
             append_time: MillisSinceEpoch::new(timestamp),
         },
     ))
-}
-
-impl ScanJournalEventsTable for PartitionStore {
-    fn for_each_journal_event<
-        F: FnMut((InvocationId, EventView)) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
-    >(
-        &self,
-        range: ScanJournalEventsTableRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
-        let scan = match range {
-            ScanJournalEventsTableRange::PartitionKey(partition_key) => {
-                TableScan::ScanPartitionKeyRange::<JournalEventKeyBuilder>(partition_key)
-            }
-            ScanJournalEventsTableRange::InvocationId(invocation_id) => {
-                let start = JournalEventKey::builder()
-                    .partition_key(invocation_id.start().partition_key())
-                    .invocation_uuid(invocation_id.start().invocation_uuid());
-
-                let end = JournalEventKey::builder()
-                    .partition_key(invocation_id.end().partition_key())
-                    .invocation_uuid(invocation_id.end().invocation_uuid());
-
-                TableScan::RangeInclusive(start, end)
-            }
-        };
-
-        self.iterator_for_each(
-            "df-journal-events",
-            Priority::Low,
-            scan,
-            move |(mut key, mut value)| {
-                let event_key = break_on_err(JournalEventKey::deserialize_from(&mut key))?;
-                f(break_on_err(decode_event(event_key, &mut value))?).map_break(Ok)
-            },
-        )
-        .map_err(|_| StorageError::OperationalError)
-    }
 }
 
 impl ReadJournalEventsTable for PartitionStoreTransaction<'_> {

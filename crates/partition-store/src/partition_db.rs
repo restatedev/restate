@@ -27,9 +27,11 @@ use restate_core::io::{AdmissionClosed, Gate, IdleTracker, IoExecutor, IoOp};
 use restate_rocksdb::configuration::{CfConfigurator, DbConfigurator};
 use restate_rocksdb::reads::ColumnFamilies;
 use restate_rocksdb::{
-    CfHandles, DbName, Gated, Guarded, RawRocksDb, RocksAccess, RocksDb, RocksDbManager,
-    RocksDbReadPerfGuard, RocksError, SinglePoolExecutor, StorageOp, StorageTaskKind,
+    CfHandles, DbName, RocksAccess, RocksDb, RocksDbManager, RocksError, SinglePoolExecutor,
+    StorageOp, StorageTaskKind,
 };
+#[cfg(test)]
+use restate_rocksdb::{Gated, Guarded, RawRocksDb, RocksDbReadPerfGuard};
 use restate_storage_api::StorageError;
 use restate_types::config::{Configuration, RocksDbCompaction};
 use restate_types::logs::{Lsn, SequenceNumber};
@@ -100,6 +102,7 @@ type Session = Scope<Scope<PhysicalPartition>>;
 /// A read of a partition prepared with [`PartitionDb::prepare_read`]: an
 /// operation on the partition's physical scope, `F`, measured by the perf guard
 /// that `G` creates.
+#[cfg(test)]
 pub(crate) type PreparedRead<'a, F, G> =
     StorageOp<&'a Scope<PhysicalPartition>, Guarded<F, G>, Gated<'a>>;
 
@@ -390,6 +393,7 @@ impl PartitionDb {
     /// read's context: it is cloned only if the read moves to a background
     /// thread, and the clone keeps the column families alive until the read is
     /// done. `name` labels the read's perf metrics.
+    #[cfg(test)]
     pub(crate) fn prepare_read<R, OP>(
         &self,
         name: &'static str,

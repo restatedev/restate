@@ -24,6 +24,7 @@ use datafusion::arrow::util::display::array_value_to_string;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::PhysicalExpr;
 use futures::{FutureExt, TryStreamExt};
+use tokio_util::sync::CancellationToken;
 
 use restate_clock::MockClock;
 use restate_core::network::NetworkSender;
@@ -35,8 +36,8 @@ use restate_platform::sync::Mutex;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::vqueue_table::{
-    EntryContext, EntryKey, EntryMetadata, EntryStateRef, ScanVQueueEntryStatusTable, Stage,
-    Status, WriteVQueueTable, filters::ScanEntryIdFilter, stats::EntryStatistics,
+    EntryContext, EntryKey, EntryMetadata, EntryStateRef, Stage, Status, WriteVQueueTable,
+    filters::ScanEntryIdFilter, stats::EntryStatistics,
 };
 use restate_storage_query_api::{QueryEngine, QueryOptions, SessionOptions};
 use restate_storage_query_datafusion as v1;
@@ -462,7 +463,7 @@ impl<N: NetworkSender> Fixture<N> {
 
     async fn populate(&mut self, layout: Layout) -> (Vec<Option<i64>>, Vec<Option<i64>>) {
         let mut fixture = Vec::new();
-        let primary = Arc::new(Mutex::new(Vec::new()));
+        let mut primary = Vec::new();
         for (index, store) in self.stores.iter_mut().enumerate() {
             let key = store.partition_key_range().start();
             let qid = VQueueId::custom(key, "sparse-min-max");
@@ -505,12 +506,12 @@ impl<N: NetworkSender> Fixture<N> {
             }
             tx.commit().await.unwrap();
             drop(tx);
-            let output = Arc::clone(&primary);
-            store
-                .for_each_vqueue_entry_status(
+            let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
+            snapshot
+                .for_each_vqueue_entry_status_blocking(
                     ScanEntryIdFilter::PartitionKey(KeyRange::FULL),
-                    move |_, header| {
-                        output.lock().push(
+                    |_, header| {
+                        primary.push(
                             header
                                 .stats
                                 .first_attempt_at
@@ -519,11 +520,8 @@ impl<N: NetworkSender> Fixture<N> {
                         ControlFlow::Continue(())
                     },
                 )
-                .unwrap()
-                .await
                 .unwrap();
         }
-        let primary = primary.lock().clone();
         assert_eq!(
             primary, fixture,
             "broad primary scan must match fixture values before SQL"
