@@ -18,10 +18,12 @@
 //! depend on that. [`PartitionStore::invocation_entry_mismatches`] checks it for
 //! one store by reading both tables in full, for tests and diagnostics.
 //!
-//! Reads of the status index find an invocation through the lanes its public
-//! status and completion result select ([`EntryByStatusCreatedKey::lanes`]):
-//! they depend on each entry's stage and status being in one of them.
-//! [`PartitionStore::invocation_lane_mismatches`] checks that the same way.
+//! An invocation's public status is the one its entry's effective status tells,
+//! and the status index finds it through the lanes of that status
+//! ([`EntryByStatusCreatedKey::lanes`]). The lifecycle keeps the stored status
+//! in step, and it shows where an entry tells none:
+//! [`PartitionStore::invocation_lane_mismatches`] checks that each entry is in
+//! a lane its invocation's stored status and completion result select.
 
 use std::collections::BTreeSet;
 
@@ -57,8 +59,9 @@ impl InvocationEntryMismatches {
     }
 }
 
-/// An invocation whose entry isn't in any lane its public status and
-/// completion result select: a read of the status index would miss it.
+/// An invocation whose entry isn't in any lane its stored status and
+/// completion result select: the status its entry tells differs from the
+/// stored one.
 #[derive(Debug, PartialEq, Eq)]
 pub struct LaneMismatch {
     /// Displayed like the invocation ID.
@@ -70,7 +73,7 @@ pub struct LaneMismatch {
 }
 
 impl PartitionStore {
-    /// The stored invocations whose entries aren't in a lane their public
+    /// The stored invocations whose entries aren't in a lane their stored
     /// status and completion result select ([`EntryByStatusCreatedKey::lanes`]),
     /// from the latest committed state. Invocations without an entry are
     /// [`Self::invocation_entry_mismatches`]' concern.

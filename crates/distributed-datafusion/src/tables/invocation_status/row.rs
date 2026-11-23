@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_partition_store::invocation_status_table::InvocationEntry;
 use restate_storage_api::protobuf_types::v1::invocation_status_v2::Status;
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use restate_storage_api::protobuf_types::v1::source::Source;
@@ -17,12 +18,19 @@ use restate_storage_query_api::tables::invocation_status::{
 use restate_types::errors::ConversionError;
 use restate_types::identifiers::{BaseEntryId, InvocationId, WithPartitionKey};
 use restate_types::invocation::{ServiceType, TraceId};
-use restate_types::vqueues::Seq;
+use restate_types::vqueues::{EffectiveStatus, Seq};
 
+/// The columns read from the invocation's vqueue entry, the `entry` read with
+/// its status if the read asked for them ([`reads_entries`]): its stage and
+/// effective status, NULL without one, and the `status` and `completion_result`
+/// the effective status tells ([`EffectiveStatus::invocation_status`]) with
+/// `completed`, which fall back to the stored ones without an entry or without
+/// an effective status.
 pub(super) fn append_row(
     builder: &mut InvocationStatusBatchBuilder,
     id: InvocationId,
     status: &InvocationStatusV2Lazy<'_>,
+    entry: Option<InvocationEntry>,
 ) -> Result<(), ConversionError> {
     let mut row = builder.row();
     row.partition_key(id.partition_key());
@@ -109,15 +117,34 @@ pub(super) fn append_row(
     }
 
     let state = status.inner.status();
-    row.status(match state {
-        Status::Scheduled => "scheduled",
-        Status::Inboxed => "inboxed",
-        Status::Invoked => "invoked",
-        Status::Paused => "paused",
-        Status::Suspended => "suspended",
-        Status::Completed => "completed",
-        Status::UnknownStatus => return Err(ConversionError::invalid_data_static("status")),
-    });
+    let effective = entry.map(|entry| EffectiveStatus::new(entry.stage, entry.status));
+    if row.is_stage_defined()
+        && let Some(name) = entry.and_then(|entry| entry.stage.name())
+    {
+        row.stage(name);
+    }
+    if row.is_effective_status_defined()
+        && let Some(name) = effective.and_then(EffectiveStatus::name)
+    {
+        row.effective_status(name);
+    }
+    // The entry tells the status; the stored one shows only without it.
+    let public = match effective.and_then(EffectiveStatus::invocation_status) {
+        Some(name) => name,
+        None => match state {
+            Status::Scheduled => "scheduled",
+            Status::Inboxed => "inboxed",
+            Status::Invoked => "invoked",
+            Status::Paused => "paused",
+            Status::Suspended => "suspended",
+            Status::Completed => "completed",
+            Status::UnknownStatus => return Err(ConversionError::invalid_data_static("status")),
+        },
+    };
+    if row.is_completed_defined() {
+        row.completed(public == "completed");
+    }
+    row.status(public);
     if row.is_pinned_deployment_id_defined()
         && let Some(deployment) = status.deployment_id()?
     {
@@ -189,16 +216,28 @@ pub(super) fn append_row(
             );
         }
     }
-    if state == Status::Completed
-        && (row.is_completion_result_defined() || row.is_completion_failure_defined())
+    // The entry tells the result too, if it tells the status; the failure
+    // itself is only stored.
+    let told = effective.filter(|effective| effective.invocation_status().is_some());
+    if let Some(effective) = told
+        && row.is_completion_result_defined()
+        && let Some(result) = effective.completion_result()
     {
+        row.completion_result(result);
+    }
+    let stored_result = told.is_none() && row.is_completion_result_defined();
+    if state == Status::Completed && (stored_result || row.is_completion_failure_defined()) {
         use restate_storage_api::protobuf_types::v1::response_result::ResponseResult;
         match status.response_result()? {
             ResponseResult::ResponseSuccess(_) => {
-                row.completion_result("success");
+                if stored_result {
+                    row.completion_result("success");
+                }
             }
             ResponseResult::ResponseFailure(failure) => {
-                row.completion_result("failure");
+                if stored_result {
+                    row.completion_result("failure");
+                }
                 if row.is_completion_failure_defined() {
                     let message = str::from_utf8(failure.failure_message.as_ref())
                         .map_err(|_| ConversionError::invalid_data_static("failure_message"))?;
@@ -211,6 +250,21 @@ pub(super) fn append_row(
         }
     }
     Ok(())
+}
+
+/// Whether a read with `projection` needs each invocation's entry: it shows,
+/// or filters on, a column read from it. Filters above a read keep their
+/// columns in its projection.
+pub(super) fn reads_entries(projection: &datafusion::arrow::datatypes::Schema) -> bool {
+    [
+        "status",
+        "completion_result",
+        "stage",
+        "effective_status",
+        "completed",
+    ]
+    .iter()
+    .any(|name| projection.column_with_name(name).is_some())
 }
 
 fn fill_source(

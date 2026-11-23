@@ -77,7 +77,6 @@ use std::sync::{Arc, Mutex};
 
 use restate_rocksdb::reads::{OwnedPinnedBatch, ReadSnapshot as RocksReadSnapshot};
 use restate_storage_api::StorageError;
-use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use restate_storage_query_api::SelectionSchema;
 use restate_storage_query_api::scan::{CursorStep, ReadDirection};
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
@@ -101,10 +100,11 @@ use crate::registry::IndexKind;
 use crate::status_lanes::{Lanes, StatusLanes};
 use crate::vqueue_table::{
     EntryByCreated, EntryByCreatedKey, EntryByStatusCreated, EntryByStatusCreatedKey,
-    EntryTargetValueRef,
+    EntryStatusKey, EntryTargetValueRef,
 };
 use crate::{ReadSnapshot, Result};
 
+use super::read_cursor::{InvocationEntry, decode_entry};
 use super::{
     INVOCATION_STATUS_MULTI_GET_BATCH_SIZE, InvocationStatusKey, create_invocation_status_key,
 };
@@ -419,18 +419,40 @@ impl Source {
     }
 
     /// The entry of the key the last step produced: its canonical ID, when it
-    /// was created, and the key's value.
-    fn current(&self) -> Result<(CanonicalEntryId, MillisSinceEpoch, &[u8])> {
+    /// was created, the key's value and, for a status lane, the entry's stage
+    /// and stored status, which the lane's keys lead with.
+    fn current(
+        &self,
+    ) -> Result<(
+        CanonicalEntryId,
+        MillisSinceEpoch,
+        &[u8],
+        Option<InvocationEntry>,
+    )> {
         Ok(match self {
             Self::Created(runs) => {
                 let (key, value) = runs.current()?;
                 let key = key.decode_all()?;
-                (key.canonical_id, key.created_at.0.to_unix_millis(), value)
+                (
+                    key.canonical_id,
+                    key.created_at.0.to_unix_millis(),
+                    value,
+                    None,
+                )
             }
             Self::Lanes(lanes) => {
                 let (key, value) = lanes.current()?;
                 let key = key.decode_all()?;
-                (key.canonical_id, key.created_at.0.to_unix_millis(), value)
+                let entry = InvocationEntry {
+                    stage: key.stage,
+                    status: key.status,
+                };
+                (
+                    key.canonical_id,
+                    key.created_at.0.to_unix_millis(),
+                    value,
+                    Some(entry),
+                )
             }
         })
     }
@@ -473,6 +495,9 @@ pub(super) struct EntryIndexCursor {
     window: Vec<(InvocationId, Seq, MillisSinceEpoch)>,
     /// Next window position to hand out, once the window is fetched.
     next: Option<usize>,
+    /// The window's entries, if the read asked for them: a status lane's from
+    /// its keys, any other's fetched with the statuses.
+    entries: Option<Vec<Option<InvocationEntry>>>,
     key_buf: Vec<u8>,
     results: Option<OwnedPinnedBatch<RocksReadSnapshot<PhysicalPartition>>>,
     /// The bytes of the fetched statuses, charged while they're held.
@@ -519,10 +544,22 @@ impl EntryIndexCursor {
     /// for a scan on this snapshot ([`EntryIndexRead::unusable`]), or finding its
     /// runs takes more than one read allows. Nothing is held then. Either way,
     /// `execution` learns the path before this returns.
+    #[cfg(test)]
     pub(super) fn open(
         snapshot: &ReadSnapshot,
         read: &EntryIndexRead,
         execution: &EntryIndexExecution,
+    ) -> Result<Option<Self>> {
+        Self::open_with(snapshot, read, execution, false)
+    }
+
+    /// [`Self::open`], also reading each invocation's entry if `entries`
+    /// ([`Self::entry`]).
+    pub(super) fn open_with(
+        snapshot: &ReadSnapshot,
+        read: &EntryIndexRead,
+        execution: &EntryIndexExecution,
+        entries: bool,
     ) -> Result<Option<Self>> {
         let Execution {
             memory,
@@ -533,7 +570,7 @@ impl EntryIndexCursor {
         let memory = SharedMemory(Arc::new(Mutex::new(memory)));
         // Discovery's work counts even if it fails: the error stays the read's.
         let mut discovered = 0;
-        let opened = Self::try_open(snapshot, read, memory, &mut discovered);
+        let opened = Self::try_open(snapshot, read, memory, entries, &mut discovered);
         let opened = match opened {
             Ok(opened) => opened,
             Err(error) => {
@@ -550,6 +587,7 @@ impl EntryIndexCursor {
                 Arc::clone(&read.handlers),
                 held,
                 fetched,
+                entries,
             )),
             Opened::Scan(reason, examined) => {
                 // What discovery examined before it gave up is work done too.
@@ -572,6 +610,7 @@ impl EntryIndexCursor {
         snapshot: &ReadSnapshot,
         read: &EntryIndexRead,
         memory: SharedMemory,
+        entries: bool,
         discovered: &mut u64,
     ) -> Result<Opened> {
         if let Some(reason) = read.unusable(snapshot)? {
@@ -586,7 +625,12 @@ impl EntryIndexCursor {
         held.grow(
             read.retained_bytes()
                 + WINDOW * std::mem::size_of::<(InvocationId, Seq, MillisSinceEpoch)>()
-                + WINDOW * KEY_LEN,
+                + WINDOW * KEY_LEN
+                + if entries {
+                    WINDOW * std::mem::size_of::<Option<InvocationEntry>>()
+                } else {
+                    0
+                },
         )?;
         let lanes = match &read.index {
             IndexRead::Created(selection) => {
@@ -628,6 +672,7 @@ impl EntryIndexCursor {
         handlers: Arc<HandlerConditions>,
         held: Held,
         fetched: Box<dyn Fn(usize, u64) + Send>,
+        entries: bool,
     ) -> Self {
         Self {
             source: Some(source),
@@ -635,6 +680,7 @@ impl EntryIndexCursor {
             handlers,
             window: Vec::with_capacity(WINDOW),
             next: None,
+            entries: entries.then(|| Vec::with_capacity(WINDOW)),
             key_buf: Vec::with_capacity(WINDOW * KEY_LEN),
             results: None,
             results_bytes: 0,
@@ -678,6 +724,7 @@ impl EntryIndexCursor {
         self.results = None;
         self.results_bytes = 0;
         self.window = Vec::new();
+        self.entries = self.entries.as_ref().map(|_| Vec::new());
         self.key_buf = Vec::new();
         self.next = None;
         self.current = None;
@@ -709,6 +756,9 @@ impl EntryIndexCursor {
             }
             self.next = None;
             self.window.clear();
+            if let Some(entries) = &mut self.entries {
+                entries.clear();
+            }
             self.results = None;
             self.held.shrink(std::mem::take(&mut self.results_bytes));
         }
@@ -724,11 +774,14 @@ impl EntryIndexCursor {
             CursorStep::Done => self.runs_done = true,
             CursorStep::Skipped => {}
             CursorStep::Record => {
-                let (canonical_id, created_at, value) = source.current()?;
+                let (canonical_id, created_at, value, entry) = source.current()?;
                 if let Some(id) = canonical_id.to_base_entry_id().to_invocation_id()
                     && self.handlers.admit(value)?
                 {
                     self.window.push((id, canonical_id.seq(), created_at));
+                    if let Some(entries) = &mut self.entries {
+                        entries.push(entry);
+                    }
                 }
             }
         }
@@ -765,6 +818,39 @@ impl EntryIndexCursor {
         self.held.grow(bytes)?;
         self.results = Some(fetched);
         self.results_bytes = bytes;
+        self.fetch_entries()
+    }
+
+    /// Fetches the window's entries with one multi-get, if the read asked for
+    /// them and its index keys didn't tell them (`entry_by_created/1`'s don't).
+    fn fetch_entries(&mut self) -> Result<()> {
+        const ENTRY_KEY_LEN: usize = EntryStatusKey::serialized_length_fixed();
+        let Some(entries) = &mut self.entries else {
+            return Ok(());
+        };
+        if entries.iter().all(Option::is_some) {
+            return Ok(());
+        }
+        self.key_buf.clear();
+        for (id, ..) in &self.window {
+            EntryStatusKey::from(*id).serialize_to(&mut self.key_buf);
+        }
+        let (keys, remainder) = self.key_buf.as_chunks::<ENTRY_KEY_LEN>();
+        debug_assert!(remainder.is_empty());
+        let snapshot = self
+            .snapshot
+            .as_ref()
+            .ok_or(StorageError::DataIntegrityError)?;
+        let reader = snapshot.storage_snapshot().reader();
+        let values = reader
+            .multi_get_pinned(KeyKind::VQueueEntryStatus, keys, false)
+            .map_err(|error| StorageError::Generic(error.into()))?;
+        for (slot, entry) in entries.iter_mut().enumerate() {
+            let value = values
+                .get(slot)
+                .map_err(|error| StorageError::Generic(error.into()))?;
+            *entry = value.map(decode_entry).transpose()?;
+        }
         Ok(())
     }
 
@@ -817,7 +903,19 @@ impl EntryIndexCursor {
     }
 
     /// The status the step positioned on, already checked against its entry.
-    pub(super) fn current(&self) -> Result<(InvocationId, InvocationStatusV2Lazy<'_>)> {
+    #[cfg(test)]
+    pub(super) fn current(
+        &self,
+    ) -> Result<(
+        InvocationId,
+        restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy<'_>,
+    )> {
+        let (id, value) = self.current_raw()?;
+        Ok((id, super::decode_invocation_status_lazy(value)?))
+    }
+
+    /// [`Self::current`], with the status's stored bytes.
+    pub(super) fn current_raw(&self) -> Result<(InvocationId, &[u8])> {
         self.snapshot
             .as_ref()
             .ok_or(StorageError::DataIntegrityError)?
@@ -825,7 +923,17 @@ impl EntryIndexCursor {
         let slot = self.current.ok_or(StorageError::DataIntegrityError)?;
         let (id, ..) = self.window[slot];
         let value = self.value(slot)?.ok_or(StorageError::DataIntegrityError)?;
-        Ok((id, super::decode_invocation_status_lazy(value)?))
+        Ok((id, value))
+    }
+
+    /// The entry of the invocation the step positioned on, if the read asked
+    /// for entries.
+    pub(super) fn entry(&self) -> Result<Option<InvocationEntry>> {
+        let slot = self.current.ok_or(StorageError::DataIntegrityError)?;
+        Ok(self
+            .entries
+            .as_ref()
+            .and_then(|entries| entries.get(slot).copied().flatten()))
     }
 }
 
