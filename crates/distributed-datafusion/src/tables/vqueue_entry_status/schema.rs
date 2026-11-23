@@ -25,7 +25,11 @@ impl crate::sharding::PartitionSource for SysVqueueEntryStatusTable {
         crate::access::IndexAccess::of::<super::read::StatusTransitionedIndex>(),
         crate::access::IndexAccess::of::<super::read::StageIndex>(),
     ];
-    const ORDERING: &'static [restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatusColumn] = &[
-        restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatusColumn::PartitionKey,
-    ];
+    const ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] =
+        <restate_partition_store::vqueue_table::EntryStatusRecords as restate_storage_query_api::Table>::NATIVE_ORDERS;
+    const ID_COLUMN: Option<
+        restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatusColumn,
+    > = Some(
+        restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatusColumn::EntryId,
+    );
 }

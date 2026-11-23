@@ -16,7 +16,7 @@ use datafusion::physical_plan::PhysicalExpr;
 
 use restate_partition_store::state_table::{ScopedStateBinding, StateBinding};
 use restate_storage_query_api::SelectionSchema;
-use restate_storage_query_api::tables::state::{State, StateColumn};
+use restate_storage_query_api::tables::state::State;
 use restate_util_string::ReString;
 
 use crate::QuerySource;
@@ -51,7 +51,7 @@ impl QuerySource for ScopedStateSource {
     }
 }
 impl PartitionSource for LegacyStateSource {
-    const ORDERING: &'static [StateColumn] = &[StateColumn::PartitionKey];
+    const ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] = <<StateBinding as restate_storage_query_api::SchemaBinding>::Table as restate_storage_query_api::Table>::NATIVE_ORDERS;
     /// A finite set of complete state keys is looked up instead of read.
     const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> =
         Some(crate::access::select_lookup::<StateBinding>);
@@ -63,7 +63,7 @@ impl PartitionSource for LegacyStateSource {
     }
 }
 impl PartitionSource for ScopedStateSource {
-    const ORDERING: &'static [StateColumn] = &[StateColumn::PartitionKey];
+    const ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] = <<ScopedStateBinding as restate_storage_query_api::SchemaBinding>::Table as restate_storage_query_api::Table>::NATIVE_ORDERS;
     /// A finite set of complete state keys is looked up instead of read.
     const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> =
         Some(crate::access::select_lookup::<ScopedStateBinding>);

@@ -27,6 +27,7 @@ use restate_rocksdb::RocksDbManager;
 use restate_storage_api::scan::{RowConsumer, ScanOutcome};
 use restate_storage_api::vqueue_table::{Stage, Status};
 use restate_storage_api::{StorageError, Transaction};
+use restate_storage_query_api::ordering::OrderTerm;
 use restate_storage_query_api::scan::{CursorScan, Scan};
 use restate_storage_query_api::selection::{Selection, SelectionPrecision, ValuePredicate};
 use restate_storage_query_api::tables::stats::deployment_stats::{
@@ -65,7 +66,9 @@ use super::{
 
 /// Runs each SQL case and compares its rows and its row count with the expected
 /// ones. Some cases filter on a column they don't select, to check that the
-/// filter still applies. Then compares every column of every row once.
+/// filter still applies. Then compares every column of every row once, and checks
+/// that a scan comes out in each order the table claims ([`Table::NATIVE_ORDERS`]):
+/// as sorting its columns as text, NULL first, would put them.
 async fn assert_sql_cases<B: SchemaBinding>(
     snapshot: Arc<ReadSnapshot>,
     executor: Arc<QueryIoExecutor>,
@@ -135,6 +138,34 @@ async fn assert_sql_cases<B: SchemaBinding>(
         "every column matches: {}",
         B::Schema::NAME
     );
+
+    assert!(!<B::Table as Table>::NATIVE_ORDERS.is_empty());
+    for order in <B::Table as Table>::NATIVE_ORDERS {
+        let columns: Vec<_> = order
+            .iter()
+            .map(|term| match term {
+                OrderTerm::Column(column) => *column,
+                OrderTerm::Function(function) => panic!("no ID for {function:?}"),
+            })
+            .collect();
+        let scan = format!("SELECT {} FROM candidate", columns.join(", "));
+        let sorted = format!(
+            "{scan} ORDER BY {} NULLS FIRST",
+            columns.join(" NULLS FIRST, ")
+        );
+        let read = context.sql(&scan).await.unwrap().collect().await.unwrap();
+        let schema = read[0].schema();
+        assert_eq!(
+            concat_batches(&schema, &read).unwrap(),
+            concat_batches(
+                &schema,
+                &context.sql(&sorted).await.unwrap().collect().await.unwrap()
+            )
+            .unwrap(),
+            "scans_in_native_order: {}: {order:?}",
+            B::Schema::NAME
+        );
+    }
 }
 
 #[restate_core::test]

@@ -66,13 +66,15 @@ impl QuerySource for JournalV2Source {
     }
 }
 impl PartitionSource for JournalV1Source {
-    const ORDERING: &'static [JournalColumn] = &[JournalColumn::PartitionKey];
+    const ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] = <<JournalV1Binding as restate_storage_query_api::SchemaBinding>::Table as restate_storage_query_api::Table>::NATIVE_ORDERS;
+    const ID_COLUMN: Option<JournalColumn> = Some(JournalColumn::Id);
     /// A finite set of invocation IDs and indexes is looked up instead of read.
     const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> =
         Some(crate::access::select_lookup::<JournalV1Binding>);
 }
 impl PartitionSource for JournalV2Source {
-    const ORDERING: &'static [JournalColumn] = &[JournalColumn::PartitionKey];
+    const ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] = <<JournalV2Binding as restate_storage_query_api::SchemaBinding>::Table as restate_storage_query_api::Table>::NATIVE_ORDERS;
+    const ID_COLUMN: Option<JournalColumn> = Some(JournalColumn::Id);
     /// A finite set of invocation IDs and indexes is looked up instead of read.
     const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> =
         Some(crate::access::select_lookup::<JournalV2Binding>);

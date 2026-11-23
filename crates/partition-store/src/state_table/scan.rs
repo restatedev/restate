@@ -17,6 +17,7 @@
 //! residual.
 
 use restate_storage_query_api::Table;
+use restate_storage_query_api::ordering::{NativeOrder, OrderTerm};
 
 use crate::Result;
 use crate::keys::codecs::{DelimitedBytesCodec, OptionalScopeCodec};
@@ -38,6 +39,9 @@ macro_rules! state_table {
         impl Table for $table {
             type Record<'a> = (KeyDecoder<'a, $key>, &'a [u8]);
             type Scan = KeySelection<$key>;
+            /// Their keys start with the partition key; their other fields are
+            /// length-prefixed and don't sort like the columns showing them.
+            const NATIVE_ORDERS: &'static [NativeOrder] = &[&[OrderTerm::Column("partition_key")]];
         }
 
         impl PhysicalTable for $table {

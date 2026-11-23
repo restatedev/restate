@@ -42,6 +42,10 @@ define_aggregated_stat!(
         deployment_id: StringCodec => str,
         service_name: ServiceNameCodec => str,
     ),
+    orders: &[&[
+        restate_storage_query_api::ordering::OrderTerm::Column("deployment_id"),
+        restate_storage_query_api::ordering::OrderTerm::Column("service_name"),
+    ]],
 );
 
 pub enum DeploymentStatsBinding {}

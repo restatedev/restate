@@ -22,6 +22,7 @@ use bilrost::OwnedMessage;
 
 use restate_storage_api::StorageError;
 use restate_storage_api::lock_table::LockState;
+use restate_storage_query_api::ordering::{NativeOrder, OrderTerm};
 use restate_storage_query_api::schema::{RecordProgress, row_written};
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, SelectionPrecision};
@@ -50,6 +51,9 @@ pub enum LocksTable {}
 impl Table for LocksTable {
     type Record<'a> = (KeyDecoder<'a, LockKey>, &'a [u8]);
     type Scan = KeySelection<LockKey>;
+    /// Keys start with the partition key; the scope and lock name after it don't
+    /// sort like the columns showing them.
+    const NATIVE_ORDERS: &'static [NativeOrder] = &[&[OrderTerm::Column("partition_key")]];
 }
 
 impl PhysicalTable for LocksTable {

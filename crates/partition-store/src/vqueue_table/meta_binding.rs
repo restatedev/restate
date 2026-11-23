@@ -22,6 +22,7 @@ use bilrost::BorrowedMessage;
 
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::metadata::VQueueMetaRef;
+use restate_storage_query_api::ordering::{NativeOrder, OrderFunction, OrderTerm};
 use restate_storage_query_api::schema::{RecordProgress, row_written};
 use restate_storage_query_api::selection::Selection;
 use restate_storage_query_api::selection::domain::Domain;
@@ -49,6 +50,11 @@ pub enum VQueueMetaTable {}
 impl Table for VQueueMetaTable {
     type Record<'a> = (KeyDecoder<'a, MetaKey>, &'a [u8]);
     type Scan = KeySelection<MetaKey>;
+    /// Keys are the queue ID's bytes, which start with its partition key.
+    const NATIVE_ORDERS: &'static [NativeOrder] = &[
+        &[OrderTerm::Column("partition_key")],
+        &[OrderTerm::Function(OrderFunction::VQueueId)],
+    ];
 }
 
 impl PhysicalTable for VQueueMetaTable {

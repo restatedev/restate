@@ -18,7 +18,7 @@ use std::sync::Arc;
 use bilrost::{Message as _, OwnedMessage};
 use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::compute::filter_record_batch;
-use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::common::cast::as_boolean_array;
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
@@ -50,19 +50,23 @@ use datafusion_proto::protobuf::PhysicalExprNode;
 use futures::{TryStreamExt, stream};
 use prost::Message;
 
+use restate_storage_query_api::ordering::OrderFunction;
 use restate_types::GenerationalNodeId;
 use restate_types::identifiers::PartitionId;
 use restate_types::partition_table::Partition;
 use restate_util_string::ReString;
 
 use crate::access::{Access, IndexRead, PrimaryKeys, PrimaryRead, SortedColumn, select_access};
+use crate::order_key::OrderKey;
 use crate::placement::PartitionPlacement;
-use crate::source_registry::{PartitionLocation, PartitionSourceDescriptor, SourceRegistry};
+use crate::source_registry::{
+    PartitionLocation, PartitionSourceDescriptor, SourceOrder, SourceOrders, SourceRegistry,
+    SourceTerm,
+};
 use crate::statistics::estimate_source_statistics;
 use crate::table_providers::{
     PartitionReadContext, PreparedPartitionRead, ProjectedColumns, ReadMetrics, Scan,
 };
-use crate::table_util::{find_sort_columns, make_ordering};
 use crate::{decode_schema, encode_schema};
 
 use super::demand::Demands;
@@ -188,10 +192,33 @@ struct SourceDescriptor {
     owner: Option<GenerationalNodeId>,
     #[bilrost(3)]
     work: SourceWork,
+    /// A primary-key scan's columns, in order, for workers that predate
+    /// `orders` ([`SourceOrders::columns`]).
     #[bilrost(4)]
     ordering: Vec<String>,
     #[bilrost(5)]
     limit: Option<u64>,
+    /// The orders of key-ordered reads ([`SourceOrders`]). A worker that predates
+    /// them ignores them; rows come in key order either way.
+    #[bilrost(6)]
+    orders: Vec<SourceOrder>,
+}
+
+impl SourceDescriptor {
+    /// The orders of key-ordered reads; from a coordinator that predates them, the
+    /// plain column order it sent.
+    fn orders(&self) -> SourceOrders {
+        if self.orders.is_empty() && !self.ordering.is_empty() {
+            let terms = self.ordering.iter().map(|column| SourceTerm {
+                column: column.clone(),
+                function: None,
+            });
+            return SourceOrders(vec![SourceOrder {
+                terms: terms.collect(),
+            }]);
+        }
+        SourceOrders(self.orders.clone())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -263,7 +290,7 @@ impl TableScanExec {
         placement: PartitionPlacement,
         schema: SchemaRef,
         statistics: Arc<Statistics>,
-        ordering: Vec<String>,
+        orders: SourceOrders,
         predicate: Option<Arc<dyn PhysicalExpr>>,
         limit: Option<usize>,
         local: bool,
@@ -283,8 +310,9 @@ impl TableScanExec {
             table: source.table.clone(),
             owner: None,
             work: SourceWork::TableScan(work),
-            ordering,
+            ordering: orders.columns(),
             limit: limit.map(|l| l as u64),
+            orders: orders.0,
         };
         let mut plan = SourcePlan::new(descriptor, schema, predicate, None, Some(statistics))?;
         plan.planning = Some(ScanPlanning {
@@ -345,7 +373,7 @@ impl PhysicalOptimizerRule for PrimaryAccessRule {
                 work.placement,
                 Arc::clone(&scan.0.schema),
                 Arc::clone(&scan.0.statistics),
-                scan.0.descriptor.ordering.clone(),
+                scan.0.descriptor.orders(),
                 scan.0.predicate.clone(),
                 scan.0.descriptor.limit.map(|l| l as usize),
                 access,
@@ -372,7 +400,7 @@ pub(crate) fn plan_partition_access(
     placement: PartitionPlacement,
     schema: SchemaRef,
     statistics: Arc<Statistics>,
-    ordering: Vec<String>,
+    orders: SourceOrders,
     predicate: Option<Arc<dyn PhysicalExpr>>,
     limit: Option<usize>,
     access: Access,
@@ -455,8 +483,9 @@ pub(crate) fn plan_partition_access(
                 table: table.clone(),
                 owner,
                 work,
-                ordering: ordering.clone(),
+                ordering: orders.columns(),
                 limit: limit.map(|l| l as u64),
+                orders: orders.0.clone(),
             };
             let source = SourcePlan::new(
                 descriptor,
@@ -494,8 +523,9 @@ impl NodeScanExec {
                 table,
                 owner: Some(owner),
                 work: SourceWork::Node(()),
-                ordering: vec![],
+                ordering: Vec::new(),
                 limit: limit.map(|l| l as u64),
+                orders: Vec::new(),
             },
             schema,
             None,
@@ -569,30 +599,34 @@ impl SourcePlan {
                 }
             })
             .transpose()?;
-        // Point lookups do not automatically inherit the table iterator's SQL
-        // ordering (notably string IDs versus their physical key representation).
-        let ordering = match &descriptor.work {
-            SourceWork::TableScan(_) => {
-                make_ordering(find_sort_columns(&descriptor.ordering, &schema))
+        // Key-ordered reads (scans and lookups) declare every order they deliver;
+        // they always keep them, so they never need the fallback sort below, which
+        // sorts by the first order only. Index reads declare their single index
+        // order.
+        let orderings = match &descriptor.work {
+            SourceWork::TableScan(_) | SourceWork::MultiGet(_) => {
+                key_orderings(&descriptor.orders(), &schema)
             }
             // An index read's order is its own, up to the first unprojected column.
-            SourceWork::IndexScan(IndexWork { ordering, .. }) => ordering
-                .iter()
-                .map_while(|column| {
-                    Some(PhysicalSortExpr {
-                        expr: col(&column.name, &schema).ok()?,
-                        options: SortOptions {
-                            descending: column.descending,
-                            nulls_first: column.nulls_first,
-                        },
+            SourceWork::IndexScan(IndexWork { ordering, .. }) => vec![
+                ordering
+                    .iter()
+                    .map_while(|column| {
+                        Some(PhysicalSortExpr {
+                            expr: col(&column.name, &schema).ok()?,
+                            options: SortOptions {
+                                descending: column.descending,
+                                nulls_first: column.nulls_first,
+                            },
+                        })
                     })
-                })
-                .collect(),
-            _ => make_ordering(vec![]),
+                    .collect(),
+            ],
+            _ => vec![],
         };
         let properties = Arc::new(
             PlanProperties::new(
-                EquivalenceProperties::new_with_orderings(Arc::clone(&schema), [ordering]),
+                EquivalenceProperties::new_with_orderings(Arc::clone(&schema), orderings),
                 // Concrete sources are single-partition templates. The enclosing
                 // PartitionReadExec supplies partition identity and resources.
                 Partitioning::UnknownPartitioning(1),
@@ -844,6 +878,8 @@ impl SourcePlan {
         let requests = MetricBuilder::new(&self.metrics).counter("storage_requests", lane);
         let requested_keys = MetricBuilder::new(&self.metrics).counter("requested_keys", lane);
         let ordering = self.properties.output_ordering().cloned();
+        // The fallback sort below restores the first order only.
+        let orders = self.properties.equivalence_properties().oeq_class().len();
         let predicate = self.predicate.clone();
         let emission = self.emission_filter();
         let read_rows = MetricBuilder::new(&self.metrics).counter("read_rows", lane);
@@ -879,8 +915,12 @@ impl SourcePlan {
             let rows = counted(rows, read_rows);
             // A read that can't keep its declared order on this snapshot, such as
             // an index read that scans instead, is sorted before it's emitted.
+            // Sorting restores one order: a read that declares several must keep
+            // them, or the plan would trust the others wrongly.
             if in_order.await {
                 Ok(rows)
+            } else if orders > 1 {
+                exec_err!("a read declaring several orders came out of order")
             } else {
                 sorted(rows, predicate, ordering, bound, context)
             }
@@ -935,6 +975,33 @@ fn filtered(
         std::future::ready(kept)
     });
     Box::pin(RecordBatchStreamAdapter::new(schema, kept))
+}
+
+/// The orders of a key-ordered read, a primary-key scan or a lookup: each of its
+/// source's orders, up to the first term it doesn't project (or whose function it
+/// doesn't know).
+fn key_orderings(orders: &SourceOrders, schema: &Schema) -> Vec<Vec<PhysicalSortExpr>> {
+    orders
+        .0
+        .iter()
+        .map(|order| {
+            order
+                .terms
+                .iter()
+                .map_while(|term| {
+                    let column = col(&term.column, schema).ok()?;
+                    let expr: Arc<dyn PhysicalExpr> = match &term.function {
+                        None => column,
+                        Some(name) => {
+                            Arc::new(OrderKey::new(OrderFunction::from_name(name)?, column))
+                        }
+                    };
+                    Some(PhysicalSortExpr::new_default(expr))
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|ordering| !ordering.is_empty())
+        .collect()
 }
 
 /// Sorts the `rows` that match `predicate` with the query's memory pool. The
