@@ -20,6 +20,7 @@ use tower_http::trace::TraceLayer;
 use tracing::{Span, debug, info, info_span};
 
 use restate_admin_rest_model::version::AdminApiVersion;
+use restate_core::network::misdirected_requests::MisdirectedRequestsLayer;
 use restate_core::network::{TransportConnect, net_util};
 use restate_core::{MetadataWriter, TaskCenter};
 use restate_ingestion_client::IngestionClient;
@@ -28,7 +29,7 @@ use restate_metadata_store::MetadataStoreClient;
 use restate_service_client::HttpClient;
 use restate_service_protocol_v4::discovery::ServiceDiscovery;
 use restate_service_protocol_v4::serdes::SerdesClient;
-use restate_types::config::AdminOptions;
+use restate_types::config::{AdminOptions, Configuration};
 use restate_types::invocation::client::InvocationClient;
 use restate_types::live::LiveLoad;
 use restate_types::net::address::AdminPort;
@@ -110,6 +111,13 @@ where
         mut updateable_config: impl LiveLoad<Live = AdminOptions>,
     ) -> anyhow::Result<()> {
         let opts = updateable_config.live_load();
+        let misdirected_requests = {
+            let config = Configuration::pinned();
+            config
+                .common
+                .reject_misdirected_requests
+                .then(|| MisdirectedRequestsLayer::new(config.common.cluster_name()))
+        };
 
         let rest_state = state::AdminServiceState::new(
             self.schema_registry,
@@ -220,7 +228,10 @@ where
                     )),
             );
 
-        let service = hyper_util::service::TowerToHyperService::new(router.into_service());
+        let router = ServiceBuilder::new()
+            .option_layer(misdirected_requests)
+            .service(router.into_service());
+        let service = hyper_util::service::TowerToHyperService::new(router);
 
         info!(
             "Admin API starting on: {}",
