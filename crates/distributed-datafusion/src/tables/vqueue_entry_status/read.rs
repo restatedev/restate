@@ -966,6 +966,7 @@ impl EntryStatusRead {
                     tx.clone(),
                 ),
                 move |(id, header), batches: &mut Batches<VqueueEntryStatus>| {
+                    batches.set_record(&id);
                     if let ControlFlow::Break(result) = batches.append_with(|builder| {
                         append_vqueue_entry_status_row(builder, &id, &header);
                         Ok(())

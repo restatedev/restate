@@ -120,7 +120,8 @@ impl OrderFunction {
     }
 
     /// Calls `with` on the byte form of the function's value for the ID `text`;
-    /// byte order is value order.
+    /// byte order is value order. A reader that holds the ID itself uses
+    /// [`OrderInput`] instead, without the text.
     pub fn encode<R>(self, text: &str, with: impl FnOnce(&[u8]) -> R) -> Result<R, NotAnId> {
         Ok(match self {
             Self::InvocationId => with(&text.parse::<InvocationId>()?.to_bytes()),
@@ -133,6 +134,56 @@ impl OrderFunction {
                 with(&bytes)
             }
         })
+    }
+
+    /// The name of the field that carries the function's value of `column`, as a
+    /// read emits it next to the column: `base_entry_id(id)`.
+    pub fn key_field(self, column: &str) -> String {
+        format!("{}({column})", self.name())
+    }
+
+    /// The function and column of a [`Self::key_field`] name.
+    pub fn of_key_field(name: &str) -> Option<(Self, &str)> {
+        let (function, column) = name.strip_suffix(')')?.split_once('(')?;
+        Some((Self::from_name(function)?, column))
+    }
+}
+
+/// An ID the ordering functions take as is, so a reader that holds it writes its
+/// key without rendering and parsing its text.
+pub trait OrderInput {
+    /// Calls `with` on the byte form of `function`'s value of this ID, or returns
+    /// `None` if the function has none for it.
+    fn order_key<R>(&self, function: OrderFunction, with: impl FnOnce(&[u8]) -> R) -> Option<R>;
+}
+
+impl OrderInput for InvocationId {
+    fn order_key<R>(&self, function: OrderFunction, with: impl FnOnce(&[u8]) -> R) -> Option<R> {
+        match function {
+            OrderFunction::InvocationId => Some(with(&self.to_bytes())),
+            OrderFunction::BaseEntryId => Some(with(BaseEntryId::from(self).as_bytes())),
+            // No incarnation: an invocation ID has no sequence number, nor a queue.
+            OrderFunction::CanonicalEntryId | OrderFunction::VQueueId => None,
+        }
+    }
+}
+
+impl OrderInput for BaseEntryId {
+    fn order_key<R>(&self, function: OrderFunction, with: impl FnOnce(&[u8]) -> R) -> Option<R> {
+        match function {
+            OrderFunction::InvocationId => Some(with(&self.to_invocation_id()?.to_bytes())),
+            OrderFunction::BaseEntryId => Some(with(self.as_bytes())),
+            OrderFunction::CanonicalEntryId | OrderFunction::VQueueId => None,
+        }
+    }
+}
+
+impl OrderInput for CanonicalEntryId {
+    fn order_key<R>(&self, function: OrderFunction, with: impl FnOnce(&[u8]) -> R) -> Option<R> {
+        match function {
+            OrderFunction::CanonicalEntryId => Some(with(self.as_bytes())),
+            function => self.to_base_entry_id().order_key(function, with),
+        }
     }
 }
 
@@ -151,6 +202,19 @@ pub enum OrderTerm {
 /// One order of a table's key-ordered reads: its rows sort by the first term,
 /// then by the next where that one ties, and so on. See the [module](self).
 pub type NativeOrder = &'static [OrderTerm];
+
+impl OrderInput for VQueueId {
+    fn order_key<R>(&self, function: OrderFunction, with: impl FnOnce(&[u8]) -> R) -> Option<R> {
+        match function {
+            OrderFunction::VQueueId => {
+                let mut bytes = [0; <VQueueId as ResourceId>::RAW_BYTES_LEN];
+                self.encode_raw_bytes(&mut bytes.as_mut_slice());
+                Some(with(&bytes))
+            }
+            _ => None,
+        }
+    }
+}
 
 /// Text that isn't an ID a function takes.
 #[derive(Debug, thiserror::Error)]
@@ -193,6 +257,22 @@ mod tests {
                 .unwrap(),
             BaseEntryId::from(ids[0]).as_bytes()
         );
+        // A held ID gives the same bytes as its text, without parsing it.
+        for function in [OrderFunction::InvocationId, OrderFunction::BaseEntryId] {
+            for id in ids {
+                assert_eq!(
+                    id.order_key(function, <[u8]>::to_vec),
+                    function.encode(&id.to_string(), <[u8]>::to_vec).ok()
+                );
+                assert_eq!(
+                    BaseEntryId::from(id).order_key(function, <[u8]>::to_vec),
+                    id.order_key(function, <[u8]>::to_vec)
+                );
+            }
+            let field = function.key_field("id");
+            assert_eq!(OrderFunction::of_key_field(&field), Some((function, "id")));
+        }
+        assert_eq!(OrderFunction::of_key_field("id"), None);
         // A state mutation has a base entry ID but no invocation ID.
         let mutation = BaseEntryId::new(7, EntryId::new(EntryKind::StateMutation, [0; 16]));
         assert!(
@@ -204,6 +284,11 @@ mod tests {
             OrderFunction::InvocationId
                 .encode(&mutation.to_string(), |_| ())
                 .is_err()
+        );
+        assert!(
+            mutation
+                .order_key(OrderFunction::InvocationId, |_| ())
+                .is_none()
         );
         // Canonical IDs sort by partition key, then sequence number, where their
         // text doesn't; a base ID has none.
@@ -250,5 +335,25 @@ mod tests {
         assert_eq!(values[0], raw);
         assert_eq!(raw.len(), OrderFunction::VQueueId.width());
         assert!(OrderFunction::VQueueId.applies_to(ShardKeyKind::VQueueId));
+        // A held canonical ID gives its own bytes, and its base ID's for the
+        // others; an ID without an incarnation has none.
+        for id in canonical {
+            assert_eq!(
+                id.order_key(OrderFunction::CanonicalEntryId, <[u8]>::to_vec),
+                OrderFunction::CanonicalEntryId
+                    .encode(&id.to_string(), <[u8]>::to_vec)
+                    .ok()
+            );
+            assert_eq!(
+                id.order_key(OrderFunction::BaseEntryId, <[u8]>::to_vec),
+                id.to_base_entry_id()
+                    .order_key(OrderFunction::BaseEntryId, <[u8]>::to_vec)
+            );
+        }
+        assert!(
+            ids[0]
+                .order_key(OrderFunction::CanonicalEntryId, |_| ())
+                .is_none()
+        );
     }
 }

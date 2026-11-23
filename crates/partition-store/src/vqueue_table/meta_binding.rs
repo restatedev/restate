@@ -22,7 +22,7 @@ use bilrost::BorrowedMessage;
 
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::metadata::VQueueMetaRef;
-use restate_storage_query_api::ordering::{NativeOrder, OrderFunction, OrderTerm};
+use restate_storage_query_api::ordering::{NativeOrder, OrderFunction, OrderInput, OrderTerm};
 use restate_storage_query_api::schema::{RecordProgress, row_written};
 use restate_storage_query_api::selection::Selection;
 use restate_storage_query_api::selection::domain::Domain;
@@ -55,6 +55,15 @@ impl Table for VQueueMetaTable {
         &[OrderTerm::Column("partition_key")],
         &[OrderTerm::Function(OrderFunction::VQueueId)],
     ];
+
+    fn order_key<R>(
+        (key, _): &Self::Record<'_>,
+        function: OrderFunction,
+        with: impl FnOnce(&[u8]) -> R,
+    ) -> Option<R> {
+        let (id,) = key.decode_all().ok()?.split();
+        id.order_key(function, with)
+    }
 }
 
 impl PhysicalTable for VQueueMetaTable {

@@ -536,6 +536,7 @@ impl StatusRead {
                     tx.clone(),
                 ),
                 |(id, status), batches: &mut Batches<InvocationStatus>| {
+                    batches.set_record(&id);
                     if let ControlFlow::Break(result) = batches.append_with(|builder| {
                         row::append_row(builder, id, &status).map_err(|error| {
                             restate_storage_api::StorageError::Conversion(error.into())

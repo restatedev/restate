@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use restate_storage_api::StorageError;
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
-use restate_storage_query_api::ordering::{NativeOrder, OrderFunction, OrderTerm};
+use restate_storage_query_api::ordering::{NativeOrder, OrderFunction, OrderInput, OrderTerm};
 use restate_storage_query_api::scan::{CursorScan, CursorStep, ReadCursor, Table};
 use restate_storage_query_api::selection::Selection;
 use restate_storage_query_api::tables::invocation_status::{
@@ -154,6 +154,14 @@ impl Table for InvocationStatusRecords {
         &[OrderTerm::Function(OrderFunction::InvocationId)],
         &[OrderTerm::Function(OrderFunction::BaseEntryId)],
     ];
+
+    fn order_key<R>(
+        (id, _): &Self::Record<'_>,
+        function: OrderFunction,
+        with: impl FnOnce(&[u8]) -> R,
+    ) -> Option<R> {
+        id.order_key(function, with)
+    }
 }
 
 /// A resumable scan or batched lookup of invocation statuses over one admitted
