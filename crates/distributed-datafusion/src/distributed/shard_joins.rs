@@ -67,31 +67,61 @@
 //!
 //! Bounds anywhere else (the other side, inputs of an inner JOIN, an OFFSET on an
 //! input) select rows globally and keep ordinary execution.
+//!
+//! # Merges
+//!
+//! Within a shard, both inputs of an ID JOIN often come in the same order already:
+//! scans and lookups of invocations and of their vqueue entries both read in
+//! `base_entry_id` order ([`OrderFunction`]). Such a JOIN merges its inputs instead
+//! of hashing one of them, stepping through both in that order:
+//!
+//! ```text
+//! SELECT … FROM sys_invocation_status s LEFT JOIN sys_vqueue_entry_status e
+//!   ON s.id = e.entry_id
+//!
+//! s, by base_entry_id(id)          e, by base_entry_id(entry_id)
+//! 07 | invocation | uuid 1         07 | invocation | uuid 1        match
+//! 07 | invocation | uuid 256                                       no entry: padded
+//! 08 | invocation | uuid 3         08 | invocation | uuid 3        match
+//! ```
+//!
+//! Equal values of a function mean equal IDs, so the merge matches the rows the
+//! hash JOIN would. It builds no hash table and sorts nothing, and a LIMIT stops
+//! both reads early. JOINs without a common order keep hashing
+//! ([`merge_on_native_order`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use datafusion::arrow::compute::SortOptions;
+use datafusion::arrow::datatypes::Schema;
 use datafusion::common::JoinType;
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::tree_node::{Transformed, TreeNode};
-use datafusion::common::{NullEquality, Result};
-use datafusion::physical_expr::expressions::Column;
+use datafusion::common::{DataFusionError, JoinSide, NullEquality, Result};
+use datafusion::logical_expr::Operator;
+use datafusion::physical_expr::expressions::{BinaryExpr, Column};
+use datafusion::physical_expr::{PhysicalSortExpr, conjunction};
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::execution_plan::{ChildrenPropertiesMode, ReplaceChildrenOptions};
 use datafusion::physical_plan::filter::FilterExec;
-use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
+use datafusion::physical_plan::joins::utils::{ColumnIndex, JoinFilter, JoinOnRef};
+use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode, SortMergeJoinExec};
 use datafusion::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
-use datafusion::physical_plan::projection::ProjectionExec;
+use datafusion::physical_plan::projection::{ProjectionExec, ProjectionExpr};
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{ExecutionPlan, PhysicalExpr, displayable};
+use strum::VariantArray;
 
-use restate_storage_query_api::schema::sharding::ShardingColumn;
+use restate_storage_query_api::ordering::OrderFunction;
+use restate_storage_query_api::schema::sharding::{ShardKeyKind, ShardingColumn};
 use restate_types::identifiers::PartitionId;
 use restate_types::partition_table::Partition;
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
 use crate::access::select_access;
 use crate::node_fan_out::{NodeFanOutExecutionPlan, TargetNode};
+use crate::order_key::order_key;
 
 use super::{PartitionReadExec, SourceWork, TableScanExec, external, plan_partition_access};
 
@@ -535,9 +565,12 @@ fn group_partitions(
             }
             inputs.push(without_empty_inputs(with_scan_leaves(input, &leaves)?)?);
         }
-        let joined = Arc::clone(plan).replace_children(
-            inputs,
-            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        let joined = merge_on_native_order(
+            Arc::clone(plan).replace_children(
+                inputs,
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )?,
+            join,
         )?;
         let mut has_source = false;
         joined.apply(|node| {
@@ -556,6 +589,192 @@ fn group_partitions(
         return Ok(Some(Arc::new(EmptyExec::new(plan.schema()))));
     }
     Ok(Some(UnionExec::try_new(groups)?))
+}
+
+/// A shard's JOIN whose inputs both come in the order of one function of an
+/// equality's keys ([`OrderFunction`]) merges them on that function, instead of
+/// building a hash table: `ON s.id = e.entry_id` merges on
+/// `base_entry_id(s.id) = base_entry_id(e.entry_id)`. Equal values of a function
+/// mean equal keys, so the merge matches the same rows. Further equalities extend
+/// the merge's key while both inputs come in its order, as journal entries come
+/// by invocation, then index: `ON a.id = b.id AND a.index = b.index` merges on
+/// `(invocation_id(id), index)` of both. Of the other equalities, one between
+/// partition keys holds for every merged pair, as both IDs carry it; the rest are
+/// checked on merged pairs. An input of several partitions in that order, such as
+/// a union of a table's layouts, is combined into one in the same order when the
+/// template's requirements are settled ([`super::requirements`]). A JOIN that also
+/// has another condition, or none of whose equalities qualifies, is returned
+/// unchanged. `planned` is the JOIN before its inputs were lowered to one owner's
+/// reads: its scans still know their sharding columns.
+fn merge_on_native_order(
+    joined: Arc<dyn ExecutionPlan>,
+    planned: &HashJoinExec,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let Some(join) = joined.downcast_ref::<HashJoinExec>() else {
+        return Ok(joined);
+    };
+    let ordered = |input: &Arc<dyn ExecutionPlan>, key: &Arc<dyn PhysicalExpr>, function| {
+        let key = order_key(function, Arc::clone(key), &input.schema())?;
+        let satisfied = input
+            .properties()
+            .equivalence_properties()
+            .ordering_satisfy([PhysicalSortExpr::new_default(Arc::clone(&key))])?;
+        Ok::<_, DataFusionError>(satisfied.then_some(key))
+    };
+    // Only on ID columns the function applies to: an order on a function of a
+    // column that a filter fixed holds trivially, whatever the column holds.
+    let applies = |plan, expr, function: OrderFunction| {
+        sharding_column(plan, expr).is_some_and(|column| function.applies_to(column.kind))
+    };
+    let mut merge = None;
+    'pairs: for (at, (left, right)) in join.on().iter().enumerate() {
+        for &function in OrderFunction::VARIANTS {
+            if !applies(planned.left(), left, function)
+                || !applies(planned.right(), right, function)
+            {
+                continue;
+            }
+            if let (Some(left), Some(right)) = (
+                ordered(join.left(), left, function)?,
+                ordered(join.right(), right, function)?,
+            ) {
+                merge = Some((at, left, right));
+                break 'pairs;
+            }
+        }
+    }
+    let Some((at, left, right)) = merge else {
+        return Ok(joined);
+    };
+    let (merged_left, merged_right) = &join.on()[at];
+    let shard_keys = |plan, expr| sharding_column(plan, expr).map(|column| column.kind.space());
+    let space = shard_keys(planned.left(), merged_left)
+        .filter(|space| shard_keys(planned.right(), merged_right) == Some(*space));
+    let partition_keys = |left, right| {
+        let is_key = |plan, expr| {
+            sharding_column(plan, expr).is_some_and(|column| {
+                column.kind == ShardKeyKind::PartitionKey && Some(column.kind.space()) == space
+            })
+        };
+        is_key(planned.left(), left) && is_key(planned.right(), right)
+    };
+    // Extend the key along both inputs' order.
+    let (mut left_keys, mut right_keys) = (vec![left], vec![right]);
+    let mut merged = vec![at];
+    let extends = |input: &Arc<dyn ExecutionPlan>,
+                   keys: &[Arc<dyn PhysicalExpr>],
+                   next: &Arc<dyn PhysicalExpr>| {
+        input
+            .properties()
+            .equivalence_properties()
+            .ordering_satisfy(
+                keys.iter()
+                    .chain([next])
+                    .map(|key| PhysicalSortExpr::new_default(Arc::clone(key))),
+            )
+    };
+    'extend: loop {
+        for (index, (left, right)) in join.on().iter().enumerate() {
+            if merged.contains(&index) || partition_keys(left, right) {
+                continue;
+            }
+            if extends(join.left(), &left_keys, left)? && extends(join.right(), &right_keys, right)?
+            {
+                left_keys.push(Arc::clone(left));
+                right_keys.push(Arc::clone(right));
+                merged.push(index);
+                continue 'extend;
+            }
+        }
+        break;
+    }
+    let checked: Vec<_> = join
+        .on()
+        .iter()
+        .enumerate()
+        .filter(|&(index, (left, right))| !merged.contains(&index) && !partition_keys(left, right))
+        .map(|(_, pair)| pair.clone())
+        .collect();
+    let filter = match (join.filter(), checked.is_empty()) {
+        (filter, true) => filter.cloned(),
+        (None, false) => Some(equalities(
+            &checked,
+            &join.left().schema(),
+            &join.right().schema(),
+            join.null_equality(),
+        )),
+        (Some(_), false) => return Ok(joined),
+    };
+    let sort_options = vec![SortOptions::default(); left_keys.len()];
+    let merged: Arc<dyn ExecutionPlan> = Arc::new(SortMergeJoinExec::try_new(
+        Arc::clone(join.left()),
+        Arc::clone(join.right()),
+        left_keys.into_iter().zip(right_keys).collect(),
+        filter,
+        *join.join_type(),
+        sort_options,
+        join.null_equality(),
+    )?);
+    let Some(projection) = &join.projection else {
+        return Ok(merged);
+    };
+    let schema = merged.schema();
+    Ok(Arc::new(ProjectionExec::try_new(
+        projection.iter().map(|&index| {
+            let name = schema.field(index).name();
+            ProjectionExpr::new(Arc::new(Column::new(name, index)), name)
+        }),
+        merged,
+    )?))
+}
+
+/// The JOIN condition `left = right` for each pair, over a schema of just the
+/// columns they read.
+fn equalities(
+    pairs: JoinOnRef<'_>,
+    left: &Schema,
+    right: &Schema,
+    nulls: NullEquality,
+) -> JoinFilter {
+    let mut indices: Vec<ColumnIndex> = Vec::new();
+    let mut fields = Vec::new();
+    let mut read = |expr: &Arc<dyn PhysicalExpr>, side: JoinSide, schema: &Schema| {
+        Arc::clone(expr)
+            .transform(|node| {
+                let Some(column) = node.downcast_ref::<Column>() else {
+                    return Ok(Transformed::no(node));
+                };
+                let at = match indices
+                    .iter()
+                    .position(|read| read.index == column.index() && read.side == side)
+                {
+                    Some(at) => at,
+                    None => {
+                        indices.push(ColumnIndex {
+                            index: column.index(),
+                            side,
+                        });
+                        fields.push(schema.field(column.index()).clone());
+                        indices.len() - 1
+                    }
+                };
+                Ok(Transformed::yes(
+                    Arc::new(Column::new(column.name(), at)) as Arc<dyn PhysicalExpr>
+                ))
+            })
+            .expect("column remapping is infallible")
+            .data
+    };
+    let operator = match nulls {
+        NullEquality::NullEqualsNothing => Operator::Eq,
+        NullEquality::NullEqualsNull => Operator::IsNotDistinctFrom,
+    };
+    let condition = conjunction(pairs.iter().map(|(left_key, right_key)| {
+        let left_key = read(left_key, JoinSide::Left, left);
+        let right_key = read(right_key, JoinSide::Right, right);
+        Arc::new(BinaryExpr::new(left_key, operator, right_key)) as Arc<dyn PhysicalExpr>
+    }));
+    JoinFilter::new(condition, indices, Arc::new(Schema::new(fields)))
 }
 
 /// Nodes: one fan-out task per node runs the whole JOIN on that node. A failing
