@@ -366,6 +366,25 @@ impl<N: NetworkSender> Fixture<N> {
         .unwrap();
         Arc::new(DataFusionQueryEngine::from_env(env, None))
     }
+
+    /// A Close reply cancels the runtime's control input, but its detached
+    /// cleanup task can still own the task context and, through the worker's
+    /// source registry, our partition store manager. Wait until only our
+    /// observations retain the contexts before tearing storage down.
+    async fn wait_for_task_cleanup(&self) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while self
+                .observations
+                .lock()
+                .iter()
+                .any(|task| Arc::strong_count(&task.context) > 1)
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("finished query tasks must be removed from the owner");
+    }
 }
 
 /// A real worker channel over the fixture's native RPC connection. An EmptyExec
@@ -953,23 +972,11 @@ async fn finished_query_tasks_are_removed_from_the_owner() {
         .await
         .unwrap();
     result.stream.try_collect::<Vec<_>>().await.unwrap();
-    let installed = std::mem::take(&mut *fixture.observations.lock());
     assert!(
-        !installed.is_empty(),
+        !fixture.observations.lock().is_empty(),
         "the query must install a remote task"
     );
-    // Closing a finished task drops it on the owner, so only the observation's
-    // reference to the task context remains.
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while installed
-            .iter()
-            .any(|task| Arc::strong_count(&task.context) > 1)
-        {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("finished query tasks must be removed from the owner");
+    fixture.wait_for_task_cleanup().await;
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1175,6 +1182,7 @@ async fn invalid_task_and_required_storage_fail_closed() {
         error.to_string().contains("doesn't exist on this node"),
         "{error}"
     );
+    fixture.wait_for_task_cleanup().await;
 }
 
 fn remote_error(error: &DataFusionError) -> &QueryTaskError {
