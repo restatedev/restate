@@ -8,14 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
-
 use futures::Stream;
 
-use restate_types::identifiers::{EntryIndex, InvocationId, JournalEntryId};
+use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::{CompletionResult, EntryType};
-use restate_types::sharding::KeyRange;
 
 use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
@@ -69,22 +66,6 @@ pub trait ReadJournalTable {
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
     ) -> Result<impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send + 'a>;
-}
-
-#[derive(Debug, Clone)]
-pub enum ScanJournalTableRange {
-    PartitionKey(KeyRange),
-    InvocationId(RangeInclusive<InvocationId>),
-}
-
-pub trait ScanJournalTable {
-    fn for_each_journal<
-        F: FnMut((JournalEntryId, JournalEntry)) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
-    >(
-        &self,
-        range: ScanJournalTableRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
 pub trait WriteJournalTable {

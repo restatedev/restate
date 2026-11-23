@@ -8,9 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::future::Future;
-use std::ops::{ControlFlow, RangeInclusive};
+use std::ops::ControlFlow;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -945,28 +945,7 @@ pub trait ReadInvocationStatusTable {
     ) -> impl Future<Output = Result<bool>> + Send;
 }
 
-#[derive(Debug, Clone)]
-pub enum ScanInvocationStatusTableRange {
-    PartitionKey(KeyRange),
-    InvocationId(RangeInclusive<InvocationId>),
-    InvocationIdSet(BTreeSet<InvocationId>),
-}
-
 pub trait ScanInvocationStatusTable {
-    fn for_each_invocation_status_lazy<
-        E: Into<anyhow::Error> + 'static,
-        F: for<'a> FnMut(
-                (InvocationId, &'a InvocationStatusV2Lazy<'a>),
-            ) -> ControlFlow<std::result::Result<(), E>>
-            + Send
-            + Sync
-            + 'static,
-    >(
-        &self,
-        range: ScanInvocationStatusTableRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
-
     /// Calls `f` with each invocation status from `from` (inclusive), or from the start of the
     /// partition key range if `None`, until `f` breaks or no statuses remain. `f` keeps what it
     /// needs in `state`, which the returned future yields back.

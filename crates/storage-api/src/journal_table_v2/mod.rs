@@ -10,7 +10,6 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::ops::RangeInclusive;
 
 use bytes::Bytes;
 use futures::Stream;
@@ -24,7 +23,6 @@ use restate_types::journal_v2::raw::{
 use restate_types::journal_v2::{
     CommandType, CompletionId, EntryMetadata, EntryType, NotificationId, NotificationType,
 };
-use restate_types::sharding::KeyRange;
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_util_bytecount::ByteCount;
 
@@ -263,30 +261,6 @@ pub trait ReadJournalTable {
         invocation_id: InvocationId,
         completion_id: CompletionId,
     ) -> impl Future<Output = Result<bool>> + Send;
-}
-
-#[derive(Debug, Clone)]
-pub enum ScanJournalTableRange {
-    PartitionKey(KeyRange),
-    InvocationId(RangeInclusive<InvocationId>),
-}
-
-pub trait ScanJournalTable {
-    fn for_each_journal<
-        F: FnMut(
-                (
-                    restate_types::identifiers::JournalEntryId,
-                    StoredUnhydratedRawEntry,
-                ),
-            ) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
-    >(
-        &self,
-        range: ScanJournalTableRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
 pub trait WriteJournalTable {

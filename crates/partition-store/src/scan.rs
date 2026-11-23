@@ -122,14 +122,6 @@ impl<B: AsRef<[u8]>> PhysicalScan<B> {
         }
     }
 
-    /// Like [`Self::start`], but takes the scan apart.
-    pub(crate) fn into_start(self) -> B {
-        match self {
-            Self::Prefix(_, prefix) => prefix,
-            Self::RangeExclusive(_, _, start, _) => start,
-        }
-    }
-
     /// Sets the iteration bounds this scan needs on `opts`. It also decides whether
     /// seeks can use the column family's prefix extractor or must use total order,
     /// replacing whatever `opts` said about either.
