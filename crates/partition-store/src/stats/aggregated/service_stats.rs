@@ -48,6 +48,10 @@ define_aggregated_stat!(
         handler: Option<StringCodec> => str,
         kind: EntryKindCodec,
     ),
+    orders: &[&[
+        restate_storage_query_api::ordering::OrderTerm::Column("service_name"),
+        restate_storage_query_api::ordering::OrderTerm::Column("handler"),
+    ]],
 );
 
 pub enum ServiceStatsBinding {}

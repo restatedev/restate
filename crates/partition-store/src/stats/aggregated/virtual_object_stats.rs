@@ -47,6 +47,12 @@ define_aggregated_stat!(
         kind: EntryKindCodec,
         partition_key: U64Codec,
     ),
+    orders: &[&[
+        restate_storage_query_api::ordering::OrderTerm::Column("service_name"),
+        restate_storage_query_api::ordering::OrderTerm::Column("scope"),
+        restate_storage_query_api::ordering::OrderTerm::Column("key"),
+        restate_storage_query_api::ordering::OrderTerm::Column("handler"),
+    ]],
 );
 
 pub enum VirtualObjectStatsBinding {}

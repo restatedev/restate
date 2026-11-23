@@ -24,4 +24,7 @@ impl crate::QuerySource for DeploymentStatsSource {
     }
 }
 
-impl crate::sharding::PartitionSource for DeploymentStatsSource {}
+impl crate::sharding::PartitionSource for DeploymentStatsSource {
+    const ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] =
+        <<restate_partition_store::stats::aggregated::DeploymentStatsBinding as restate_storage_query_api::SchemaBinding>::Table as restate_storage_query_api::Table>::NATIVE_ORDERS;
+}

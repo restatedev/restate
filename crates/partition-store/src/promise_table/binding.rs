@@ -23,6 +23,7 @@ use bytestring::ByteString;
 use restate_storage_api::StorageError;
 use restate_storage_api::promise_table::Promise as StoredPromise;
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
+use restate_storage_query_api::ordering::{NativeOrder, OrderTerm};
 use restate_storage_query_api::schema::{RecordProgress, row_written};
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, SelectionPrecision};
@@ -58,6 +59,9 @@ macro_rules! promise_table {
         impl Table for $table {
             type Record<'a> = (KeyDecoder<'a, $key>, &'a [u8]);
             type Scan = KeySelection<$key>;
+            /// Their keys start with the partition key; their other fields are
+            /// length-prefixed and don't sort like the columns showing them.
+            const NATIVE_ORDERS: &'static [NativeOrder] = &[&[OrderTerm::Column("partition_key")]];
         }
 
         impl PhysicalTable for $table {

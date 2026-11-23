@@ -495,7 +495,7 @@ fn group_partitions(
                     placement,
                     Arc::clone(&scan.0.schema),
                     Arc::clone(&scan.0.statistics),
-                    scan.0.descriptor.ordering.clone(),
+                    scan.0.descriptor.orders(),
                     scan.0.predicate.clone(),
                     // An accepted bound applies to each partition's rows.
                     scan.0.descriptor.limit.map(|limit| limit as usize),

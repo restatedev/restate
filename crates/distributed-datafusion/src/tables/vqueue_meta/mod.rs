@@ -29,7 +29,8 @@ mod tests;
 crate::tables::table_adapter!(pub(crate) SysVqueueMetaTable, VqueueMeta);
 
 impl PartitionSource for SysVqueueMetaTable {
-    const ORDERING: &'static [VqueueMetaColumn] = &[VqueueMetaColumn::PartitionKey];
+    const ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] = <<VQueueMetaBinding as restate_storage_query_api::SchemaBinding>::Table as restate_storage_query_api::Table>::NATIVE_ORDERS;
+    const ID_COLUMN: Option<VqueueMetaColumn> = Some(VqueueMetaColumn::Id);
     /// A finite set of queue IDs is looked up instead of scanned.
     const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> =
         Some(crate::access::select_lookup::<VQueueMetaBinding>);

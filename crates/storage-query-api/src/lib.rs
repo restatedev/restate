@@ -26,6 +26,7 @@
 mod diagnostics;
 mod engine;
 pub mod errors;
+pub mod ordering;
 pub mod scan;
 pub mod schema;
 pub mod selection;

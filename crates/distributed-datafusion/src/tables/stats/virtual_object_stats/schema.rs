@@ -24,4 +24,7 @@ impl crate::QuerySource for VirtualObjectStatsSource {
     }
 }
 
-impl crate::sharding::PartitionSource for VirtualObjectStatsSource {}
+impl crate::sharding::PartitionSource for VirtualObjectStatsSource {
+    const ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] =
+        <<restate_partition_store::stats::aggregated::VirtualObjectStatsBinding as restate_storage_query_api::SchemaBinding>::Table as restate_storage_query_api::Table>::NATIVE_ORDERS;
+}

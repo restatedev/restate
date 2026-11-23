@@ -19,7 +19,7 @@ use std::sync::Arc;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Result, Statistics, exec_err, plan_err};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::{EquivalenceProperties, PhysicalSortExpr};
+use datafusion::physical_expr::{EquivalenceProperties, LexOrdering};
 use datafusion::physical_plan::execution_plan::{
     Boundedness, EmissionType, SchedulingType, reset_plan_states,
 };
@@ -55,8 +55,8 @@ pub(super) struct PartitionReadExec {
     owner: Option<GenerationalNodeId>,
     parallelism: usize,
     fetch: Option<usize>,
-    /// The order of each lane's rows ([`Self::lane_ordering`]).
-    ordering: Vec<PhysicalSortExpr>,
+    /// The orders of each lane's rows ([`Self::lane_orderings`]).
+    orderings: Vec<LexOrdering>,
     properties: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
 }
@@ -94,15 +94,15 @@ impl PartitionReadExec {
             return plan_err!("partition read has no storage partitions");
         }
         let parallelism = parallelism.max(1).min(partitions.len());
-        let ordering = Self::lane_ordering(&input, parallelism, partitions.len());
+        let orderings = Self::lane_orderings(&input, parallelism, partitions.len());
         Ok(Self {
-            properties: Self::properties(&input, &ordering, parallelism),
+            properties: Self::properties(&input, &orderings, parallelism),
             input,
             partitions: partitions.into_iter().collect(),
             owner: owner.flatten(),
             parallelism,
             fetch,
-            ordering,
+            orderings,
             metrics: Default::default(),
         })
     }
@@ -112,29 +112,29 @@ impl PartitionReadExec {
     /// partition, not across the partitions a lane concatenates, so lanes that
     /// concatenate keep none. The configured lanes still bound how many partitions
     /// are read at once.
-    fn lane_ordering(
+    fn lane_orderings(
         input: &Arc<dyn ExecutionPlan>,
         lanes: usize,
         partitions: usize,
-    ) -> Vec<PhysicalSortExpr> {
+    ) -> Vec<LexOrdering> {
         let properties = input.properties();
         if lanes != partitions || properties.output_partitioning().partition_count() != 1 {
             return Vec::new();
         }
-        properties
-            .output_ordering()
-            .map(|ordering| ordering.iter().cloned().collect())
-            .unwrap_or_default()
+        properties.equivalence_properties().oeq_class().to_vec()
     }
 
     fn properties(
         input: &Arc<dyn ExecutionPlan>,
-        ordering: &[PhysicalSortExpr],
+        orderings: &[LexOrdering],
         parallelism: usize,
     ) -> Arc<PlanProperties> {
         Arc::new(
             PlanProperties::new(
-                EquivalenceProperties::new_with_orderings(input.schema(), [ordering.to_vec()]),
+                EquivalenceProperties::new_with_orderings(
+                    input.schema(),
+                    orderings.iter().cloned(),
+                ),
                 Partitioning::UnknownPartitioning(parallelism),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
@@ -314,8 +314,8 @@ impl ExecutionPlan for PartitionReadExec {
         // planning inputs. Preserve the selected partition universe across these
         // native rewrites rather than rediscovering it through those wrappers.
         let mut plan = self.as_ref().clone();
-        plan.ordering = Self::lane_ordering(&input, self.parallelism, self.partitions.len());
-        plan.properties = Self::properties(&input, &plan.ordering, self.parallelism);
+        plan.orderings = Self::lane_orderings(&input, self.parallelism, self.partitions.len());
+        plan.properties = Self::properties(&input, &plan.orderings, self.parallelism);
         plan.input = input;
         Ok(Arc::new(plan))
     }
