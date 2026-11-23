@@ -32,11 +32,11 @@ use restate_core::protobuf::cluster_ctrl_svc::{
     DescribeLogRequest, DescribeLogResponse, DomainImpact, DropPartitionStoreRequest,
     DropPartitionStoreResponse, FailureDomain, FindTailRequest, FindTailResponse,
     GetClusterConfigurationRequest, GetClusterConfigurationResponse, ListLogsRequest,
-    ListLogsResponse, MigrateMetadataRequest, MigrateMetadataResponse, QueryRequest, QueryResponse,
-    QueryWarning, SealAndExtendChainRequest, SealAndExtendChainResponse, SealChainRequest,
-    SealChainResponse, SealedSegment, SetClusterConfigurationRequest,
-    SetClusterConfigurationResponse, SyncEpochMetadataRequest, SyncEpochMetadataResponse,
-    TailState, TrimLogRequest,
+    ListLogsResponse, MetadataAvailability, MigrateMetadataRequest, MigrateMetadataResponse,
+    QueryRequest, QueryResponse, QueryWarning, SealAndExtendChainRequest,
+    SealAndExtendChainResponse, SealChainRequest, SealChainResponse, SealedSegment,
+    SetClusterConfigurationRequest, SetClusterConfigurationResponse, SyncEpochMetadataRequest,
+    SyncEpochMetadataResponse, TailState, TrimLogRequest,
     cluster_ctrl_svc_server::{ClusterCtrlSvc, ClusterCtrlSvcServer},
 };
 use restate_core::{Metadata, MetadataWriter};
@@ -785,12 +785,16 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
                     write_unavailable_logs: convert_all(impact.write_unavailable_logs),
                     read_unavailable_logs: convert_all(impact.read_unavailable_logs),
                     unavailable_partitions: convert_all(impact.unavailable_partitions),
+                    metadata_unavailable: impact.metadata_unavailable,
                 })
                 .collect(),
             scope: report.scope.map(scope_name),
             dead_nodes: convert_all(report.dead_nodes),
             num_logs: report.num_logs as u32,
             num_partitions: report.num_partitions as u32,
+            metadata_availability: report
+                .metadata_store
+                .map(|status| MetadataAvailability::from(status).into()),
         }))
     }
 }
@@ -801,6 +805,18 @@ fn convert_all<T: Into<U>, U>(items: impl IntoIterator<Item = T>) -> Vec<U> {
 
 fn scope_name(scope: LocationScope) -> String {
     scope.to_string().to_lowercase()
+}
+
+impl From<safety_checker::MetadataStatus> for MetadataAvailability {
+    fn from(status: safety_checker::MetadataStatus) -> Self {
+        use safety_checker::{Availability, MetadataStatus};
+        match status {
+            MetadataStatus::Checked(Availability::Available) => Self::Available,
+            MetadataStatus::Checked(Availability::AtRisk) => Self::AtRisk,
+            MetadataStatus::Checked(Availability::Unavailable) => Self::Unavailable,
+            MetadataStatus::Unchecked => Self::Unchecked,
+        }
+    }
 }
 
 impl From<safety_checker::FailureDomain> for FailureDomain {
