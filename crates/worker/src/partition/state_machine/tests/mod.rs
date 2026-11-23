@@ -187,8 +187,9 @@ impl TestEnv {
     /// Once the partition has fully migrated to vqueues, every invocation has its
     /// entry and every invocation entry its invocation, after every command:
     /// reads that find invocations through their entries depend on it. Each
-    /// entry is also in a lane of the status index that its invocation's public
-    /// status and completion result select, which status pages depend on.
+    /// entry is also in a lane of the status index that its invocation's stored
+    /// status and completion result select: the status the entry tells, which
+    /// queries show, agrees with the stored one.
     fn assert_invocations_match_entries(&self) {
         if self.checks_invocation_entries() {
             let mismatches = self.storage.invocation_entry_mismatches().unwrap();

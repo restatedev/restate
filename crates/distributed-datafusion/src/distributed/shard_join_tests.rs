@@ -481,9 +481,11 @@ async fn sharding_columns_colocate_cross_schema_joins_with_shared_admission() {
     let global = [
         // `invoked_by_id` holds invocation IDs too, but names the caller.
         ("SELECT COUNT(*) FROM sys_invocation_status s JOIN sys_invocation_state l ON s.invoked_by_id = l.id", "0"),
-        // A column literally named `partition_key` proves nothing.
+        // A column literally named `partition_key` proves nothing. The 8
+        // invocations with an inboxed entry show `inboxed`, the other 24
+        // their stored `invoked`.
         ("SELECT COUNT(*) FROM (SELECT status AS partition_key FROM sys_invocation_status) a \
-          JOIN (SELECT status AS partition_key FROM sys_invocation_status) b ON a.partition_key = b.partition_key", "1024"),
+          JOIN (SELECT status AS partition_key FROM sys_invocation_status) b ON a.partition_key = b.partition_key", "640"),
         // Expressions may change which values compare equal.
         ("SELECT COUNT(*) FROM sys_invocation_status s JOIN sys_invocation_state l ON trim(s.id) = l.id", "16"),
         // NULL scopes match each other but determine no shard.

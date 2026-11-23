@@ -10,8 +10,10 @@
 
 use datafusion::arrow::datatypes::DataType;
 
+use restate_storage_api::vqueue_table::Stage;
 use restate_types::identifiers::{InvocationId, PartitionKey};
 use restate_types::time::MillisSinceEpoch;
+use restate_types::vqueues::EffectiveStatus;
 use restate_util_string::ReString;
 
 use crate::selection::domain::Domain;
@@ -46,13 +48,23 @@ define_schema! {
             /// The VQueue assigned to the the invocation. NULL if invocation was not migrated to vqueues.
             /// Since v1.7.0.
             vqueue_id: Option<ReString> => DataType::LargeUtf8,
-            /// Either `inboxed` or `scheduled` or `invoked` or `suspended` or `paused` or `completed`
+            /// Either `inboxed` or `scheduled` or `invoked` or `suspended` or `paused` or `completed`.
+            /// Since v1.8.2, it follows the invocation's `effective_status`: `new` is `inboxed`;
+            /// `ready`, `yielded`, `backing-off` and `running` are `invoked`; a finished outcome is
+            /// `completed`; the others keep their name. An invocation without a vqueue entry, or
+            /// whose effective status is NULL, shows its stored status.
+            /// Deprecated since v1.8.2: use `effective_status`, `stage` and `completed`.
             #[values(
                 ["inboxed", "scheduled", "invoked", "suspended", "paused", "completed"]
                     .map(ReString::from_static)
             )]
             status: ReString => DataType::LargeUtf8,
-            /// If `status = 'completed'`, this contains either `success` or `failure`
+            /// If `status = 'completed'`, this contains either `success` or `failure`.
+            /// Since v1.8.2, it follows the invocation's `effective_status`: `success` for
+            /// `succeeded`, `failure` for `failed`, `killed` and `cancelled`, NULL otherwise. An
+            /// invocation without a vqueue entry, or whose effective status is NULL, shows its
+            /// stored result.
+            /// Deprecated since v1.8.2: use `effective_status`.
             #[values([
                 None,
                 Some(ReString::from_static("success")),
@@ -142,6 +154,25 @@ define_schema! {
             suspended_waiting_for_signals: Option<Vec<u32>> => UInt32List,
             /// Future tree the invocation is suspended on, if `status = suspended`.
             suspended_waiting_future_json: Option<ReString> => DataType::LargeUtf8,
+            /// The stage of the invocation's vqueue entry. Choices are 'inbox', 'running',
+            /// 'paused', 'suspended', and 'finished'; NULL for a stage this version doesn't know,
+            /// or for an invocation without an entry.
+            /// Since v1.8.2.
+            #[values(Stage::VALUES)]
+            stage: Stage => DataType::LargeUtf8,
+            /// What the invocation is doing now, the effective status of its vqueue entry, which
+            /// also tells its stage. In the inbox: `new`, `scheduled`, `backing-off`, `ready` or
+            /// `yielded`; then `running`, `suspended` or `paused`; once finished, its outcome:
+            /// `succeeded`, `failed`, `killed` or `cancelled`. NULL if this version can't tell
+            /// from the entry's stored stage and status what it is doing, or for an invocation
+            /// without an entry; no status name selects such an invocation.
+            /// Since v1.8.2.
+            #[values(EffectiveStatus::VALUES)]
+            effective_status: EffectiveStatus => DataType::LargeUtf8,
+            /// Whether the invocation has finished: `status = 'completed'`, which follows its
+            /// effective status, or for an invocation without one, its stored status.
+            /// Since v1.8.2.
+            completed: bool => DataType::Boolean,
         }
     }
 }

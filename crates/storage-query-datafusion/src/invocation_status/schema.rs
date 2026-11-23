@@ -31,10 +31,20 @@ define_table!(sys_invocation_status(
     /// Since v1.7.0.
     vqueue_id: DataType::LargeUtf8,
 
-    /// Either `inboxed` or `scheduled` or `invoked` or `suspended` or `paused` or `completed`
+    /// Either `inboxed` or `scheduled` or `invoked` or `suspended` or `paused` or `completed`.
+    /// Since v1.8.2, it follows the invocation's `effective_status`: `new` is `inboxed`;
+    /// `ready`, `yielded`, `backing-off` and `running` are `invoked`; a finished outcome is
+    /// `completed`; the others keep their name. An invocation without a vqueue entry, or
+    /// whose effective status is NULL, shows its stored status.
+    /// Deprecated since v1.8.2: use `effective_status`, `stage` and `completed`.
     status: DataType::LargeUtf8,
 
-    /// If `status = 'completed'`, this contains either `success` or `failure`
+    /// If `status = 'completed'`, this contains either `success` or `failure`.
+    /// Since v1.8.2, it follows the invocation's `effective_status`: `success` for
+    /// `succeeded`, `failure` for `failed`, `killed` and `cancelled`, NULL otherwise. An
+    /// invocation without a vqueue entry, or whose effective status is NULL, shows its
+    /// stored result.
+    /// Deprecated since v1.8.2: use `effective_status`.
     completion_result: DataType::LargeUtf8,
 
     /// If `status = 'completed' AND completion_result = 'failure'`, this contains the error cause
@@ -152,4 +162,38 @@ define_table!(sys_invocation_status(
 
     /// Future tree the invocation is suspended on, if `status = suspended`.
     suspended_waiting_future_json: DataType::LargeUtf8,
+
+    /// The stage of the invocation's vqueue entry. Choices are 'inbox', 'running',
+    /// 'paused', 'suspended', and 'finished'; NULL for a stage this version doesn't know,
+    /// or for an invocation without an entry.
+    /// Since v1.8.2.
+    stage: DataType::LargeUtf8,
+
+    /// What the invocation is doing now, the effective status of its vqueue entry, which
+    /// also tells its stage. In the inbox: `new`, `scheduled`, `backing-off`, `ready` or
+    /// `yielded`; then `running`, `suspended` or `paused`; once finished, its outcome:
+    /// `succeeded`, `failed`, `killed` or `cancelled`. NULL if this version can't tell
+    /// from the entry's stored stage and status what it is doing, or for an invocation
+    /// without an entry; no status name selects such an invocation.
+    /// Since v1.8.2.
+    effective_status: DataType::LargeUtf8,
+
+    /// Whether the invocation has finished: `status = 'completed'`, which follows its
+    /// effective status, or for an invocation without one, its stored status.
+    /// Since v1.8.2.
+    completed: DataType::Boolean,
 ));
+
+impl SysInvocationStatusBuilder {
+    /// Whether the scan shows a column read from each invocation's vqueue entry, so
+    /// it must read the entries with the statuses: `status` and
+    /// `completion_result` follow the entry too. Filters stay above the scan
+    /// (inexact), so a filter's columns are shown too.
+    pub(crate) fn reads_entries(&self) -> bool {
+        self.arrays.status.is_some()
+            || self.arrays.completion_result.is_some()
+            || self.arrays.stage.is_some()
+            || self.arrays.effective_status.is_some()
+            || self.arrays.completed.is_some()
+    }
+}

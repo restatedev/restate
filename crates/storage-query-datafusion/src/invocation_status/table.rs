@@ -14,7 +14,7 @@ use std::sync::Arc;
 use datafusion::catalog::TableProvider;
 
 use restate_partition_store::invocation_status_table::{
-    InvocationStatusRecords, InvocationStatusScan,
+    InvocationStatusEntryRecords, InvocationStatusRecords, InvocationStatusScan,
 };
 use restate_partition_store::keys::selection::KeySelection;
 use restate_partition_store::{PartitionStoreManager, QueryIoExecutor, ReadSnapshot};
@@ -83,21 +83,37 @@ impl ScanLocalPartition for StatusScanner {
         filter: InvocationIdFilter,
         rows: Rows<Self::Builder>,
     ) -> restate_storage_api::Result<ScanOutcome<Rows<Self::Builder>>> {
-        rows.read::<InvocationStatusRecords>(
-            snapshot,
-            executor,
-            "df-invocation-status",
-            Arc::new(match filter.invocation_ids {
-                Some(ids) => InvocationStatusScan::Ids(ids.ids),
-                None => InvocationStatusScan::Keys(Arc::new(
-                    KeySelection::all().restrict_scope(filter.partition_keys),
-                )),
-            }),
-            |builder, (id, status)| {
-                append_invocation_status_row(builder, id, &status)
-                    .map_err(|err| StorageError::Conversion(err.into()))
-            },
-        )
-        .await
+        let request = Arc::new(match filter.invocation_ids {
+            Some(ids) => InvocationStatusScan::Ids(ids.ids),
+            None => InvocationStatusScan::Keys(Arc::new(
+                KeySelection::all().restrict_scope(filter.partition_keys),
+            )),
+        });
+        // Only a scan that shows an entry column reads the entries.
+        if rows.builder().reads_entries() {
+            rows.read::<InvocationStatusEntryRecords>(
+                snapshot,
+                executor,
+                "df-invocation-status",
+                request,
+                |builder, (id, status, entry)| {
+                    append_invocation_status_row(builder, id, &status, entry)
+                        .map_err(|err| StorageError::Conversion(err.into()))
+                },
+            )
+            .await
+        } else {
+            rows.read::<InvocationStatusRecords>(
+                snapshot,
+                executor,
+                "df-invocation-status",
+                request,
+                |builder, (id, status)| {
+                    append_invocation_status_row(builder, id, &status, None)
+                        .map_err(|err| StorageError::Conversion(err.into()))
+                },
+            )
+            .await
+        }
     }
 }

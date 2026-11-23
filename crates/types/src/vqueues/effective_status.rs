@@ -180,6 +180,52 @@ impl EffectiveStatus {
         }
     }
 
+    /// The `status` an invocation with this effective status shows in
+    /// `sys_invocation_status`, whose values predate vqueues; none for the
+    /// `unknown` sentinel, for which the invocation's stored status shows:
+    ///
+    /// | effective status                               | `status`    |
+    /// |------------------------------------------------|-------------|
+    /// | `new`                                          | `inboxed`   |
+    /// | `scheduled`                                    | `scheduled` |
+    /// | `ready`, `yielded`, `backing-off`, `running`   | `invoked`   |
+    /// | `suspended`                                    | `suspended` |
+    /// | `paused`                                       | `paused`    |
+    /// | `succeeded`, `failed`, `killed`, `cancelled`   | `completed` |
+    pub const fn invocation_status(self) -> Option<&'static str> {
+        Some(match self.0 {
+            Inner::New => "inboxed",
+            Inner::Scheduled => "scheduled",
+            Inner::Ready | Inner::Yielded | Inner::BackingOff | Inner::Running => "invoked",
+            Inner::Suspended => "suspended",
+            Inner::Paused => "paused",
+            Inner::Succeeded | Inner::Failed | Inner::Killed | Inner::Cancelled => "completed",
+            Inner::Unknown => return None,
+        })
+    }
+
+    /// The `completion_result` an invocation with this effective status shows in
+    /// `sys_invocation_status`: `success` for `succeeded`, `failure` for
+    /// `failed`, `killed` and `cancelled`, and none (NULL) for a value that
+    /// hasn't finished. For the `unknown` sentinel, which tells no status
+    /// ([`Self::invocation_status`]), the invocation's stored result shows
+    /// instead.
+    pub const fn completion_result(self) -> Option<&'static str> {
+        match self.0 {
+            Inner::Succeeded => Some("success"),
+            Inner::Failed | Inner::Killed | Inner::Cancelled => Some("failure"),
+            Inner::New
+            | Inner::Scheduled
+            | Inner::Ready
+            | Inner::Yielded
+            | Inner::BackingOff
+            | Inner::Running
+            | Inner::Suspended
+            | Inner::Paused
+            | Inner::Unknown => None,
+        }
+    }
+
     /// Whether the entry is done: it finished with an outcome.
     pub const fn is_completed(self) -> bool {
         matches!(self.stage(), Stage::Finished)
@@ -283,7 +329,13 @@ mod tests {
             assert_ne!(status.to_byte(), 0);
             assert_eq!(EffectiveStatus::from_byte(status.to_byte()), Some(status));
             assert_eq!(status.is_completed(), status.stage() == Stage::Finished);
+            assert_eq!(
+                status.invocation_status() == Some("completed"),
+                status.is_completed()
+            );
+            assert_eq!(status.completion_result().is_some(), status.is_completed());
         }
+        assert_eq!(UNKNOWN.invocation_status(), None);
         assert_eq!((UNKNOWN.to_byte(), UNKNOWN.as_str()), (0, "unknown"));
         assert!(by_name.iter().all(|status| UNKNOWN < *status));
         assert!("unknown".parse::<EffectiveStatus>().is_err());

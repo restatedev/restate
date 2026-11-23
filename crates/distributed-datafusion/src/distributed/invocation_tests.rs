@@ -8,10 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_clock::UniqueTimestamp;
+use restate_clock::time::MillisSinceEpoch;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, WriteInvocationStatusTable,
 };
-use restate_types::identifiers::{InvocationId, InvocationUuid};
+use restate_storage_api::vqueue_table::stats::EntryStatistics;
+use restate_storage_api::vqueue_table::{
+    EntryContext, EntryKey, EntryMetadata, EntryStateRef, Stage, Status, WriteVQueueTable,
+};
+use restate_types::identifiers::{InvocationId, InvocationUuid, WithPartitionKey};
+use restate_types::vqueues::{EntryId, EntryTargetExt, VQueueId};
 use restate_worker_api::invoker::InvocationStatusReport;
 use restate_worker_api::invoker::status_handle::InvocationStatusReportInner;
 use restate_worker_api::{
@@ -90,15 +97,44 @@ async fn invocation_view_combines_storage_and_live_admission_on_remote_leaders()
     for mut store in fixture.stores.iter().cloned() {
         let start = store.partition_key_range().start();
         let mut tx = store.transaction();
-        for index in 0..3 {
-            tx.put_invocation_status(
-                &InvocationId::from_parts(
-                    start + index,
-                    InvocationUuid::from_u128((index + 1).into()),
-                ),
-                &InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
-            )
-            .unwrap();
+        // The entries tell the status, not the invoker: the in-flight first
+        // invocation backs off, the second, which the invoker reports idle,
+        // runs, and the third, without an entry, shows its stored `invoked`
+        // as `ready`.
+        let entries = [
+            Some((Stage::Inbox, Status::BackingOff)),
+            Some((Stage::Running, Status::Started)),
+            None,
+        ];
+        for (index, entry) in (0..3).zip(entries) {
+            let id = InvocationId::from_parts(
+                start + index,
+                InvocationUuid::from_u128((index + 1).into()),
+            );
+            let metadata = InFlightInvocationMetadata::mock();
+            let target = metadata.invocation_target.clone();
+            tx.put_invocation_status(&id, &InvocationStatus::Invoked(metadata))
+                .unwrap();
+            if let Some((stage, status)) = entry {
+                let qid = VQueueId::custom(id.partition_key(), "q");
+                let created = UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::new(
+                    1_744_000_000_000 + index,
+                ));
+                let key = EntryKey::new(false, created.to_unix_millis(), index, EntryId::from(id));
+                tx.create_vqueue_entry_status(
+                    &EntryContext {
+                        qid: &qid,
+                        target: &target.entry_target_ref(),
+                    },
+                    EntryStateRef {
+                        stage,
+                        status,
+                        entry_key: &key,
+                        metadata: &EntryMetadata::default(),
+                        stats: &EntryStatistics::new(created, key.run_at()),
+                    },
+                );
+            }
         }
         tx.commit().await.unwrap();
     }
@@ -113,7 +149,7 @@ async fn invocation_view_combines_storage_and_live_admission_on_remote_leaders()
     let session = engine.create_session(SessionOptions::default()).unwrap();
     assert_sql(
         session.as_ref(),
-        "live_status_derivation_and_unmatched_storage_rows",
+        "status_from_entries_not_live_state_and_unmatched_storage_rows",
         "SELECT status, COUNT(*) FROM sys_invocation GROUP BY status ORDER BY status",
         &[&["backing-off", "8"], &["ready", "8"], &["running", "8"]],
     )
@@ -157,7 +193,7 @@ async fn invocation_view_combines_storage_and_live_admission_on_remote_leaders()
     admissions.lock().clear();
     assert_sql(session.as_ref(), "id_lookup_keeps_shared_admission",
         &format!("SELECT id, status, retry_count, last_attempt_server FROM sys_invocation WHERE id = '{id}'"),
-        &[&[&id.to_string(), "running", "2", "test-sdk"]]).await;
+        &[&[&id.to_string(), "backing-off", "2", "test-sdk"]]).await;
     assert_eq!(*admissions.lock(), [(owner(*partition), *partition)]);
 }
 
