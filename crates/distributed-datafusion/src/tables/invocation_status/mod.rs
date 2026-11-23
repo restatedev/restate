@@ -82,6 +82,38 @@ impl PartitionSource for SysInvocationStatusTable {
         IndexAccess::of::<StatusIndex>(),
         IndexAccess::of::<EntryIndex>(),
     ];
+
+    /// Pages of a few unscoped virtual objects, such as one object's newest
+    /// invocations: an unscoped object's invocations are all those of its
+    /// partition key, so the scan reads only them, where an index reads its whole
+    /// service. Every alternative must name its objects' keys, none of them NULL
+    /// (a NULL key names no partition key), with a NULL scope. Scoped ones read
+    /// an index still: a scope's partition key holds every invocation of the
+    /// scope. So does a page that an index restricts too, by `status`,
+    /// `completion_result` or a `created_at` range: for an object with a long
+    /// history, the index's lanes or hours, checked against the object's
+    /// partition key, can read less than the object's whole history.
+    fn narrow_scan(filters: &[Arc<dyn PhysicalExpr>]) -> anyhow::Result<bool> {
+        // A Top-K's dynamic filter is no restriction the planner can rely on.
+        let filters = restate_storage_query_api::selection::static_conjuncts(filters);
+        let branches = InvocationStatus::analyze(&filters, NonZeroUsize::new(16).unwrap())?;
+        // What no condition restricts: a column with listed values spans all of them.
+        let Some(open) = InvocationStatus::analyze(&[], NonZeroUsize::MIN)?.pop() else {
+            return Ok(false);
+        };
+        Ok(!branches.is_empty()
+            && branches.iter().all(|branch| {
+                branch.scope.clone().into_values() == Some(vec![None])
+                    && branch
+                        .target_service_key
+                        .clone()
+                        .into_values()
+                        .is_some_and(|keys| keys.iter().all(Option::is_some))
+                    && branch.status == open.status
+                    && branch.completion_result == open.completion_result
+                    && branch.created_at == open.created_at
+            }))
+    }
 }
 
 /// The entry index `entry_by_created/1`, read for the invocations it finds. It

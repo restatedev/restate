@@ -287,6 +287,7 @@ impl SourceRegistry {
                 .map(crate::access::IndexAccess::declared)
                 .collect(),
             can_read: T::can_read,
+            narrow_scan: T::narrow_scan,
             orders: orders::<T>(),
         }
     }
@@ -465,6 +466,10 @@ pub(crate) struct PartitionSourceDescriptor {
     pub indexes: Vec<DeclaredIndex>,
     #[debug(skip)]
     pub can_read: SourceEligibility,
+    /// Whether a predicate narrows a scan below any index read
+    /// ([`PartitionSource::narrow_scan`]).
+    #[debug(skip)]
+    pub narrow_scan: SourceEligibility,
 }
 
 impl PartitionSourceDescriptor {
