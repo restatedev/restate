@@ -645,6 +645,7 @@ mod tests {
     use std::task::{Context, Wake, Waker};
     use std::time::Duration;
 
+    use anyhow::Context as _;
     use parking_lot::Mutex;
     use rocksdb::AsColumnFamilyRef;
     use tokio::sync::{Semaphore, oneshot};
@@ -1605,6 +1606,8 @@ mod tests {
 
     #[restate_core::test]
     async fn durable_notifications_follow_physical_database_opens() -> anyhow::Result<()> {
+        const DEADLINE: Duration = Duration::from_secs(10);
+
         RocksDbManager::init();
         let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
         let other_partition = Partition::new(PartitionId::from(1), KeyRange::FULL);
@@ -1633,27 +1636,39 @@ mod tests {
                 drop(other_database);
             }
 
-            let old_watch = store.get_durable_lsn().await?;
+            let mut old_watch = store.get_durable_lsn().await?;
             let old_cf_id = store.cf_for_key_kind(KeyKind::Fsm).id();
             write_applied_lsn(&mut store, 100).await?;
+            // A flush can return before its completion listener publishes the LSN.
             store.partition_db().flush_memtables(true).await?;
-            assert_eq!(*old_watch.borrow(), Lsn::new(100));
+            drop(
+                timeout(DEADLINE, old_watch.wait_for(|lsn| *lsn == Lsn::new(100)))
+                    .await
+                    .context("waiting for durable LSN 100 before reopening")??,
+            );
             let old_notifications = database.notifications;
             drop(database.rocksdb);
             drop(store);
             manager.close_partition_store(partition.partition_id).await;
-            assert_eq!(*old_watch.borrow(), Lsn::INVALID);
+            let retired_lsn = *old_watch.borrow();
+            assert_eq!(retired_lsn, Lsn::INVALID);
 
             let mut store = manager.open(&partition, None).await?;
             let database = manager.open_rocksdb(&partition).await?;
             assert!(!Arc::ptr_eq(&old_notifications, &database.notifications));
             assert_eq!(store.cf_for_key_kind(KeyKind::Fsm).id(), old_cf_id);
-            let new_watch = store.get_durable_lsn().await?;
-            assert_eq!(*new_watch.borrow(), Lsn::new(100));
+            let mut new_watch = store.get_durable_lsn().await?;
+            let recovered_lsn = *new_watch.borrow();
+            assert_eq!(recovered_lsn, Lsn::new(100));
             write_applied_lsn(&mut store, 200).await?;
             store.partition_db().flush_memtables(true).await?;
-            assert_eq!(*new_watch.borrow(), Lsn::new(200));
-            assert_eq!(*old_watch.borrow(), Lsn::INVALID);
+            drop(
+                timeout(DEADLINE, new_watch.wait_for(|lsn| *lsn == Lsn::new(200)))
+                    .await
+                    .context("waiting for durable LSN 200 after reopening")??,
+            );
+            let retired_lsn = *old_watch.borrow();
+            assert_eq!(retired_lsn, Lsn::INVALID);
             drop(store);
             drop(manager);
             database
