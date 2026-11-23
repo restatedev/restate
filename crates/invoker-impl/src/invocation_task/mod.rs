@@ -556,6 +556,7 @@ where
                 abort_timeout: None,
                 inactivity_timeout: None,
                 state_preload_policy: StatePreloadPolicy::All,
+                preemptable: true,
             });
 
         // Override the inactivity timeout and abort timeout, if available

@@ -3,7 +3,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "title": "Endpoint",
-  "description": "Restate endpoint manifest v5",
+  "description": "Restate endpoint manifest v6",
   "properties": {
     "protocolMode": {
       "title": "ProtocolMode",
@@ -185,6 +185,10 @@
                   "type": "boolean",
                   "description": "If true, the service cannot be invoked from the HTTP nor Kafka ingress."
                 },
+                "preemptable":  {
+                  "type": "boolean",
+                  "description": "If false, the runtime never preempts invocations of this handler, i.e. it doesn't eagerly suspend them while they are waiting on an await point to free up concurrency capacity for other invocations. Invocations still suspend when the inactivity timeout fires. If unset, the service-level setting applies. Available since discovery protocol V6."
+                },
                 "retryPolicyInitialInterval":  {
                   "type": "integer",
                   "minimum": 0,
@@ -258,6 +262,10 @@
           "ingressPrivate":  {
             "type": "boolean",
             "description": "If true, the service cannot be invoked from the HTTP nor Kafka ingress."
+          },
+          "preemptable":  {
+            "type": "boolean",
+            "description": "If false, the runtime never preempts invocations of this service, i.e. it doesn't eagerly suspend them while they are waiting on an await point to free up concurrency capacity for other invocations. Invocations still suspend when the inactivity timeout fires. Defaults to true. Available since discovery protocol V6."
           },
           "retryPolicyInitialInterval":  {
             "type": "integer",
