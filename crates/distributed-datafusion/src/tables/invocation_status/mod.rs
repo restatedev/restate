@@ -316,7 +316,7 @@ impl ScanPartition for StatusScanner {
         let scan = || -> anyhow::Result<_> {
             Ok(Arc::new(InvocationStatusKeys::prepare(
                 &compile_selection::<InvocationStatus>(predicate.as_ref())?,
-                crate::selection::key_range(&partition_keys),
+                &partition_keys,
             )?))
         };
         let access = match access {

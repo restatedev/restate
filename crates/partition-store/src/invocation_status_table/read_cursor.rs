@@ -46,14 +46,14 @@ use restate_storage_api::vqueue_table::{RawStatusHeaderRef, Stage, Status};
 use restate_storage_query_api::ordering::{NativeOrder, OrderFunction, OrderInput, OrderTerm};
 use restate_storage_query_api::scan::{CursorScan, CursorStep, ReadCursor, Table};
 use restate_storage_query_api::selection::Selection;
+use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::tables::invocation_status::{
     InvocationStatus, InvocationStatusClause,
 };
 use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey};
-use restate_types::sharding::KeyRange;
 
 use crate::keys::codecs::InvocationUuidCodec;
-use crate::keys::header::{KeyHeader, KeySchema, PartitionKeyHeader};
+use crate::keys::header::{KeyHeader, KeySchema, PartitionKeyHeader, restrict_partition_keys};
 use crate::keys::selection::codec::FieldPredicateCodec;
 use crate::keys::selection::{KeySelection, OrderedKeyField, OrderedKeySchema};
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyDecode, KeyDecoder, KeyKind};
@@ -97,14 +97,16 @@ impl MultiGetTable for InvocationStatusKeys {
 }
 
 impl InvocationStatusKeys {
-    /// Prepares a key iteration over the `header` partition keys, which the caller
-    /// derives from the selection's sharding rules. Selected IDs position the
-    /// iterator at their UUIDs under each header partition key: another partition
-    /// key's invocation with a requested UUID is a candidate, so callers retain the
-    /// ID filter as a residual, like every unsupported predicate.
+    /// Prepares a key iteration over `partition_keys`, which the caller derives
+    /// from the selection's sharding rules. A finite set, such as the keys of a
+    /// few virtual objects, is read key by key, seeking from one to the next,
+    /// rather than as the range spanning them; other sets read that range.
+    /// Selected IDs position the iterator at their UUIDs under each partition key:
+    /// another partition key's invocation with a requested UUID is a candidate, so
+    /// callers retain the ID filter as a residual, like every unsupported predicate.
     pub fn prepare(
         selection: &Selection<InvocationStatus>,
-        header: Option<KeyRange>,
+        partition_keys: &Domain<PartitionKey>,
     ) -> Result<KeySelection<InvocationStatusKey>> {
         let request = KeySelection::for_key_fields(selection, |clause, literals| match clause {
             InvocationStatusClause::Id(predicate) => {
@@ -112,10 +114,7 @@ impl InvocationStatusKeys {
             }
             _ => Ok(None),
         })?;
-        Ok(match header {
-            Some(range) => request.restrict_scope(range),
-            None => KeySelection::empty(),
-        })
+        Ok(restrict_partition_keys(request, partition_keys))
     }
 }
 
@@ -551,6 +550,7 @@ mod tests {
     use restate_storage_query_api::selection::ValuePredicate;
     use restate_types::identifiers::{InvocationUuid, PartitionId, PartitionKey};
     use restate_types::partition_table::Partition;
+    use restate_types::sharding::KeyRange;
     use tokio_util::sync::CancellationToken;
 
     use crate::PartitionStoreManager;
@@ -597,9 +597,10 @@ mod tests {
         tx.commit().await.unwrap();
         drop(tx);
         let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
-        // Returns the records read and the cursor steps taken to read them.
-        let read = |selection: Selection<InvocationStatus>, header: KeyRange| {
-            let request = InvocationStatusKeys::prepare(&selection, Some(header)).unwrap();
+        // Returns the records read and the cursor steps taken to read them, over
+        // the partition keys `keys`.
+        let read_keys = |selection: Selection<InvocationStatus>, keys: Domain<PartitionKey>| {
+            let request = InvocationStatusKeys::prepare(&selection, &keys).unwrap();
             let mut cursor = <ReadSnapshot as CursorScan<InvocationStatusRecords>>::scan_cursor(
                 &snapshot,
                 Arc::new(InvocationStatusScan::Keys(Arc::new(request))),
@@ -616,6 +617,16 @@ mod tests {
                     }
                 }
             }
+        };
+        // Over the partition keys of `header`.
+        let read = |selection, header: KeyRange| {
+            read_keys(
+                selection,
+                Domain::from(ValuePredicate::Range {
+                    lower: std::ops::Bound::Included(header.start()),
+                    upper: std::ops::Bound::Included(header.end()),
+                }),
+            )
         };
         let ids = |ids: &[InvocationId]| {
             Selection::All.and(InvocationStatusClause::Id(ValuePredicate::In(ids.to_vec())))
@@ -646,6 +657,15 @@ mod tests {
             read(Selection::All, KeyRange::new(7, 7)).1,
             128,
             "header_only_reads_every_neighbor"
+        );
+        // Listed partition keys, such as a few objects' keys, read each key and
+        // seek to the next, one step: not the 256 invocations under 7 and 8
+        // between them, which the range spanning them would read.
+        let (found, steps) = read_keys(Selection::All, Domain::values([0, PartitionKey::MAX]));
+        assert_eq!(
+            (found.len(), steps),
+            (256, 257),
+            "listed_keys_skip_the_keys_between_them"
         );
 
         // Two cursors from one ID request must not affect each other: open both,
@@ -838,8 +858,7 @@ mod tests {
                 |_, _| {},
             ))
         };
-        let all =
-            Arc::new(InvocationStatusKeys::prepare(&Selection::All, Some(KeyRange::FULL)).unwrap());
+        let all = Arc::new(InvocationStatusKeys::prepare(&Selection::All, &Domain::all()).unwrap());
         assert_eq!(
             read(InvocationStatusScan::Keys(Arc::clone(&all))),
             expected,
@@ -917,7 +936,7 @@ mod tests {
                 }
             }
         };
-        let all = InvocationStatusKeys::prepare(&Selection::All, Some(KeyRange::FULL)).unwrap();
+        let all = InvocationStatusKeys::prepare(&Selection::All, &Domain::all()).unwrap();
         let some: BTreeSet<_> = ids.iter().copied().step_by(3).collect();
         for (read, expected) in [
             (read(InvocationStatusScan::Keys(Arc::new(all))), ids.len()),
