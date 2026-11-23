@@ -87,13 +87,12 @@ use restate_storage_query_api::tables::index::{
     EntryByStatusCreatedClause as StatusIndexClause,
     EntryByStatusCreatedColumn as StatusIndexColumn,
 };
-use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey};
-use restate_types::sharding::KeyRange;
+use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::{CanonicalEntryId, Seq};
 use restate_util_string::ReString;
 
-use crate::index::{IndexValueRef, RegisteredIndex};
+use crate::index::{IndexValueRef, PartitionKeyFilter, RegisteredIndex};
 use crate::keys::selection::{KeySelection, PrepareKeySelection};
 use crate::keys::{EncodeTableKey, KeyKind};
 use crate::ordered_runs::{OrderedRuns, OrderedRunsDiscovery, OrderedRunsLimits, RetainedMemory};
@@ -302,14 +301,13 @@ impl EntryIndexRead {
         })
     }
 
-    /// Restricts the read to invocations whose partition key is in `keys`:
-    /// sorted, disjoint ranges, such as the one key of a virtual object's
-    /// invocations. An entry of another key is skipped before its status is
-    /// fetched, so a page of one object reads the index keys of its service but
-    /// fetches only the object's statuses. The caller's predicate still checks
-    /// every fetched status.
-    pub fn with_partition_keys(mut self, keys: impl IntoIterator<Item = KeyRange>) -> Self {
-        Arc::make_mut(&mut self.conditions).partition_keys = Some(keys.into_iter().collect());
+    /// Restricts the read to invocations under the partition keys `keys`
+    /// admits, such as the one key of a virtual object's invocations. An entry
+    /// of another key is skipped before its status is fetched, so a page of one
+    /// object reads the index keys of its service but fetches only the object's
+    /// statuses. The caller's predicate still checks every fetched status.
+    pub fn with_partition_keys(mut self, keys: PartitionKeyFilter) -> Self {
+        Arc::make_mut(&mut self.conditions).partition_keys = keys;
         self
     }
 
@@ -353,8 +351,7 @@ impl EntryIndexRead {
 #[derive(Clone)]
 struct EntryConditions {
     handlers: Box<[ValuePredicate<ReString>]>,
-    /// Sorted, disjoint ranges; `None` admits every key.
-    partition_keys: Option<Box<[KeyRange]>>,
+    partition_keys: PartitionKeyFilter,
 }
 
 impl EntryConditions {
@@ -376,19 +373,15 @@ impl EntryConditions {
         };
         Self {
             handlers,
-            partition_keys: None,
+            partition_keys: PartitionKeyFilter::ALL,
         }
     }
 
     /// Whether the entry of invocation `id`, whose key holds `value`, meets every
     /// condition. An invocation's entry always holds its handler.
     fn admit(&self, id: &InvocationId, value: &[u8]) -> Result<bool> {
-        if let Some(ranges) = &self.partition_keys {
-            let key: PartitionKey = id.partition_key();
-            let at = ranges.partition_point(|range| range.end() < key);
-            if !ranges.get(at).is_some_and(|range| range.start() <= key) {
-                return Ok(false);
-            }
+        if !self.partition_keys.admits(id.partition_key()) {
+            return Ok(false);
         }
         if self.handlers.is_empty() {
             return Ok(true);
@@ -431,10 +424,7 @@ impl EntryConditions {
             + 2 * std::mem::size_of::<usize>()
             + std::mem::size_of_val(&*self.handlers)
             + self.handlers.iter().map(heap).sum::<usize>()
-            + self
-                .partition_keys
-                .as_deref()
-                .map_or(0, std::mem::size_of_val)
+            + self.partition_keys.heap_bytes()
     }
 }
 
@@ -1631,7 +1621,8 @@ mod tests {
         // running, so its lane isn't read at all.
         let key = |n: u64| KeyRange::new((n + 1) * 7919, (n + 1) * 7919);
         let (_, created, _) = records(
-            &read(failure(), ReadDirection::Forward).with_partition_keys([key(1), key(2), key(4)]),
+            &read(failure(), ReadDirection::Forward)
+                .with_partition_keys(PartitionKeyFilter::new([key(1), key(2), key(4)])),
         );
         assert_eq!(created, vec![stored[2].0, stored[1].0]);
         // Nothing selected: every lane, each entry once.

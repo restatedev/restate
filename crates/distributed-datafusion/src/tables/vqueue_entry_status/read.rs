@@ -533,14 +533,15 @@ impl ScanPartition for EntryStatusScanner {
         predicate: Option<Arc<dyn PhysicalExpr>>,
         limit: Option<usize>,
     ) -> anyhow::Result<Arc<dyn PreparedPartitionRead>> {
+        // The partition keys the predicate allows, such as those of the entry or
+        // queue IDs it names.
+        let partition_keys = VqueueEntryStatus::candidate_shard_keys(predicate.as_slice())?;
         // The scan of the predicate's keys: a scan's access, and an index read's
         // fallback, which reads the same rows.
         let scan = || -> anyhow::Result<_> {
             Ok(Arc::new(EntryStatusKeys::prepare(
                 &compile_selection::<VqueueEntryStatus>(predicate.as_ref())?,
-                crate::selection::key_range(&VqueueEntryStatus::candidate_shard_keys(
-                    predicate.as_slice(),
-                )?),
+                crate::selection::key_range(&partition_keys),
             )?))
         };
         let access = match access {
@@ -552,10 +553,15 @@ impl ScanPartition for EntryStatusScanner {
                 let selection =
                     index_restriction::<EntryStatusByStatusCreated>(predicate.as_slice())?
                         .map_or(Selection::Empty, |domains| domains.to_selection());
-                let read = Arc::new(StatusCreatedRead::prepare(
-                    &selection,
-                    index.direction::<StatusCreatedIndex>()?,
-                )?);
+                // An index key of another partition key is skipped before its
+                // entry status is fetched.
+                let read = Arc::new(
+                    StatusCreatedRead::prepare(
+                        &selection,
+                        index.direction::<StatusCreatedIndex>()?,
+                    )?
+                    .with_partition_keys(crate::selection::partition_key_filter(&partition_keys)),
+                );
                 let fallback = scan()?;
                 // The coordinator and the worker read the same projection, so
                 // they agree on a keys-only read.
@@ -570,10 +576,15 @@ impl ScanPartition for EntryStatusScanner {
                 let selection =
                     index_restriction::<EntryStatusByStatusTransitioned>(predicate.as_slice())?
                         .map_or(Selection::Empty, |domains| domains.to_selection());
-                let read = Arc::new(StatusTransitionedRead::prepare(
-                    &selection,
-                    index.direction::<StatusTransitionedIndex>()?,
-                )?);
+                // An index key of another partition key is skipped before its
+                // entry status is fetched.
+                let read = Arc::new(
+                    StatusTransitionedRead::prepare(
+                        &selection,
+                        index.direction::<StatusTransitionedIndex>()?,
+                    )?
+                    .with_partition_keys(crate::selection::partition_key_filter(&partition_keys)),
+                );
                 let fallback = scan()?;
                 if covers::<StatusTransitionedIndex>(&projection) {
                     EntryStatusAccess::Keys(Keys::StatusTransitioned { read, fallback })
