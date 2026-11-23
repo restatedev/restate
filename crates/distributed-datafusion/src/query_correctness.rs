@@ -395,6 +395,44 @@ const CASES: &[Case] = &[
         anchor: Anchor::None,
         outcome: ExpectedOutcome::Success,
     },
+    // Listed scopes or NULL: unscoped rows live under their service key's hash,
+    // scoped rows under their scope's. `alpha` and `beta` exist both scoped and
+    // unscoped, and `tenant-b` lies outside the lists, so losing the NULL
+    // alternative or a tenant, or ignoring the scope, changes the rows.
+    // Keep these last: distributed tests find earlier cases by position.
+    Case {
+        name: "scope-list-or-null-with-service-keys",
+        sql: "SELECT service_key, scope, key, value_length, value FROM state \
+              WHERE service_name = 'service' \
+              AND service_key IN ('alpha', 'beta', 'gamma', 'delta') \
+              AND (scope IN ('tenant-a', 'tenant-c', 'tenant-d', 'tenant-e') OR scope IS NULL) \
+              AND value_length <= 2 LIMIT 1500",
+        comparison: Comparison::Bag,
+        expected_rows: 2,
+        anchor: Anchor::None,
+        outcome: ExpectedOutcome::Success,
+    },
+    Case {
+        name: "scope-null-between-equalities",
+        sql: "SELECT scope, service_key, key, value FROM state \
+              WHERE (scope = 'tenant-a' OR scope IS NULL OR scope = 'tenant-c') \
+              AND service_key IN ('alpha', 'gamma')",
+        comparison: Comparison::Bag,
+        expected_rows: 5,
+        anchor: Anchor::None,
+        outcome: ExpectedOutcome::Success,
+    },
+    Case {
+        // DataFusion expands an IN list of up to three values into ORs.
+        name: "scope-null-first-in-short-list",
+        sql: "SELECT scope, service_name, service_key, key FROM state \
+              WHERE (scope IS NULL OR scope IN ('tenant-b', 'tenant-z')) \
+              AND service_key IN ('alpha', 'beta', 'gamma')",
+        comparison: Comparison::Bag,
+        expected_rows: 4,
+        anchor: Anchor::None,
+        outcome: ExpectedOutcome::Success,
+    },
 ];
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
