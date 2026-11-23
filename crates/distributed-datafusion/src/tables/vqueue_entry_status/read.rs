@@ -541,7 +541,7 @@ impl ScanPartition for EntryStatusScanner {
         let scan = || -> anyhow::Result<_> {
             Ok(Arc::new(EntryStatusKeys::prepare(
                 &compile_selection::<VqueueEntryStatus>(predicate.as_ref())?,
-                crate::selection::key_range(&partition_keys),
+                &partition_keys,
             )?))
         };
         let access = match access {

@@ -43,11 +43,10 @@ use restate_storage_query_api::tables::vqueue_entry_status::{
     VqueueEntryStatus, VqueueEntryStatusClause, VqueueEntryStatusColumn,
 };
 use restate_types::identifiers::{BaseEntryId, CanonicalEntryId, PartitionKey};
-use restate_types::sharding::KeyRange;
 
 use crate::invocation_status_table::EntryIndexExecution;
 use crate::keys::codecs::EntryIdCodec;
-use crate::keys::header::{KeySchema, PartitionKeyHeader};
+use crate::keys::header::{KeySchema, PartitionKeyHeader, restrict_partition_keys};
 use crate::keys::selection::codec::FieldPredicateCodec;
 use crate::keys::selection::{KeySelection, OrderedKeyField, OrderedKeySchema};
 use crate::keys::{DecodeTableKey, KeyDecode, KeyDecoder, KeyKind};
@@ -92,21 +91,22 @@ impl MultiGetTable for EntryStatusKeys {
 }
 
 impl EntryStatusKeys {
-    /// Prepares a key iteration over the `header` partition keys, which the caller
-    /// derives from the selection's sharding rules. Selected entry IDs, and the
+    /// Prepares a key iteration over `partition_keys`, which the caller derives
+    /// from the selection's sharding rules: a finite set is read key by key,
+    /// seeking from one to the next, other sets the range spanning them. Selected
+    /// entry IDs, and the
     /// base IDs of selected canonical IDs, position the iterator at each entry
     /// under each header partition key. Callers retain the ID filters as
     /// residuals: they reject other partition keys' entries with a requested
     /// suffix and check canonical incarnations.
     pub fn prepare(
         selection: &Selection<VqueueEntryStatus>,
-        header: Option<KeyRange>,
+        partition_keys: &Domain<PartitionKey>,
     ) -> Result<KeySelection<EntryStatusKey>> {
-        let Some(header) = header else {
-            return Ok(KeySelection::empty());
-        };
         let columns = match selection {
-            Selection::All => return Ok(KeySelection::all().restrict_scope(header)),
+            Selection::All => {
+                return Ok(restrict_partition_keys(KeySelection::all(), partition_keys));
+            }
             Selection::Empty => return Ok(KeySelection::empty()),
             Selection::Predicates(columns) => columns,
         };
@@ -136,7 +136,7 @@ impl EntryStatusKeys {
             }
             _ => Ok(None),
         })?;
-        Ok(request.restrict_scope(header))
+        Ok(restrict_partition_keys(request, partition_keys))
     }
 }
 
@@ -557,6 +557,7 @@ mod tests {
     };
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::partitions::Partition;
+    use restate_types::sharding::KeyRange;
     use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, Seq, VQueueId};
 
     use crate::PartitionStoreManager;
@@ -625,7 +626,14 @@ mod tests {
         let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
         // Returns the records read and the cursor steps taken to read them.
         let read = |selection: Selection<VqueueEntryStatus>, header: KeyRange| {
-            let request = EntryStatusKeys::prepare(&selection, Some(header)).unwrap();
+            let request = EntryStatusKeys::prepare(
+                &selection,
+                &Domain::from(ValuePredicate::Range {
+                    lower: std::ops::Bound::Included(header.start()),
+                    upper: std::ops::Bound::Included(header.end()),
+                }),
+            )
+            .unwrap();
             let mut cursor = <ReadSnapshot as CursorScan<EntryStatusRecords>>::scan_cursor(
                 &snapshot,
                 Arc::new(EntryStatusScan::Keys(Arc::new(request))),
@@ -753,7 +761,7 @@ mod tests {
                 }
             }
         };
-        let all = EntryStatusKeys::prepare(&Selection::All, Some(KeyRange::FULL)).unwrap();
+        let all = EntryStatusKeys::prepare(&Selection::All, &Domain::all()).unwrap();
         let some: std::collections::BTreeSet<_> = ids.iter().copied().step_by(3).collect();
         for (read, expected) in [
             (read(EntryStatusScan::Keys(Arc::new(all))), ids.len()),
