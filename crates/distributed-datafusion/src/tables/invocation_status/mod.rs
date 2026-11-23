@@ -82,6 +82,20 @@ impl PartitionSource for SysInvocationStatusTable {
         IndexAccess::of::<StatusIndex>(),
         IndexAccess::of::<EntryIndex>(),
     ];
+
+    /// Pages of a few unscoped virtual objects, such as one object's newest
+    /// invocations: an unscoped object's invocations are all those of its
+    /// partition key, so the scan reads only them, where an index reads its whole
+    /// service. Scoped ones read an index still: a scope's partition key holds
+    /// every invocation of the scope.
+    fn narrow_scan(filters: &[Arc<dyn PhysicalExpr>]) -> anyhow::Result<bool> {
+        let branches = InvocationStatus::analyze(filters, NonZeroUsize::new(16).unwrap())?;
+        Ok(!branches.is_empty()
+            && branches.iter().all(|branch| {
+                branch.scope.clone().into_values() == Some(vec![None])
+                    && branch.target_service_key.clone().into_values().is_some()
+            }))
+    }
 }
 
 /// The entry index `entry_by_created/1`, read for the invocations it finds. It

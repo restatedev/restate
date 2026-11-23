@@ -480,6 +480,8 @@ pub(crate) enum Access {
 }
 
 /// One selector for ordinary and shard-JOIN inputs: complete primary keys first,
+/// then a scan the predicate narrows below any index read
+/// ([`PartitionSource::narrow_scan`](crate::sharding::PartitionSource::narrow_scan)),
 /// then the first declared index whose restriction is useful and that every
 /// worker knows (see [`workers_know`]), else a scan.
 ///
@@ -508,6 +510,9 @@ pub(crate) fn select_access(
         && let Some(keys) = select(filters)?
     {
         return Ok(Access::Primary(keys));
+    }
+    if (source.narrow_scan)(filters)? {
+        return Ok(Access::Scan);
     }
     let nodes = source.manager.metadata().nodes_config_ref();
     for index in &source.indexes {

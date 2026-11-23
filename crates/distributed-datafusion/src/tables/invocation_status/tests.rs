@@ -1349,9 +1349,10 @@ async fn status_follows_the_entry() {
 /// the index, emitting its 30 candidates. With one lane the plan sorts what the
 /// lane concatenates; either way the page is the newest of both partitions.
 ///
-/// The migrated partition also holds one virtual object's page: its newest
-/// invocations, read through its service's run, fetch only the statuses of its
-/// own partition key.
+/// The migrated partition also holds a virtual object's invocations among
+/// other Counter ones. The object's page scans its partition key alone. Read
+/// through Counter's run instead, as a query naming the partition key does,
+/// it fetches only the statuses under that key.
 #[restate_core::test]
 async fn partitions_sharing_a_lane_bound_their_fallback() {
     RocksDbManager::init();
@@ -1483,16 +1484,29 @@ async fn partitions_sharing_a_lane_bound_their_fallback() {
             // its first rows.
             assert_eq!(metric(source, "read_rows"), Some(61 + 30), "{source}");
         }
-        // The object's page reads Counter's run, and fetches only the statuses
-        // under the object's partition key: its 3, not the other 40.
+        // The object's page scans the object's partition key: its 3 statuses,
+        // not Counter's run of 43.
         let object = "SELECT id FROM sys_invocation_status \
             WHERE target_service_name = 'Counter' AND target_service_key = 'k' \
             AND scope IS NULL ORDER BY created_at DESC NULLS LAST LIMIT 51";
         assert_eq!(rows(session.as_ref(), object).await.len(), 3);
-        let plan = rows(session.as_ref(), &format!("EXPLAIN ANALYZE {object}"))
-            .await
-            .concat()
-            .join("\n");
+        let plan = analyzed_plan(session.as_ref(), object).await;
+        assert!(!plan.contains("IndexScanExec"), "{plan}");
+        let scan = plan
+            .lines()
+            .find(|line| line.contains("TableScanExec") && line.contains("partitions=[1]"))
+            .unwrap();
+        assert_eq!(metric(scan, "read_rows"), Some(3), "{scan}");
+        // Naming the partition key instead reads Counter's run, and fetches only
+        // the statuses under the key: the same 3, not the other 40.
+        let keyed = format!(
+            "SELECT id FROM sys_invocation_status \
+             WHERE target_service_name = 'Counter' AND partition_key = {} \
+             ORDER BY created_at DESC NULLS LAST LIMIT 51",
+            ServiceId::new(None, "Counter", "k").partition_key()
+        );
+        assert_eq!(rows(session.as_ref(), &keyed).await.len(), 3);
+        let plan = analyzed_plan(session.as_ref(), &keyed).await;
         let source = plan
             .lines()
             .find(|line| line.contains("IndexScanExec"))
@@ -1504,6 +1518,14 @@ async fn partitions_sharing_a_lane_bound_their_fallback() {
             "{source}"
         );
     }
+}
+
+/// The plan of `sql` with its metrics, one operator per line.
+async fn analyzed_plan(session: &dyn QuerySession, sql: &str) -> String {
+    rows(session, &format!("EXPLAIN ANALYZE {sql}"))
+        .await
+        .concat()
+        .join("\n")
 }
 
 /// The value of the first counter called `name` in an EXPLAIN ANALYZE plan.
