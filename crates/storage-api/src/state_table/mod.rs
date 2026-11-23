@@ -12,7 +12,6 @@ use bytes::Bytes;
 use futures::Stream;
 
 use restate_types::identifiers::ServiceId;
-use restate_types::sharding::KeyRange;
 
 use crate::Result;
 
@@ -29,16 +28,6 @@ pub trait ReadStateTable {
         &'a self,
         service_id: &ServiceId,
     ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send + 'a>;
-}
-
-pub trait ScanStateTable {
-    fn for_each_user_state<
-        F: FnMut((ServiceId, Bytes, &[u8])) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
-    >(
-        &self,
-        range: KeyRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
 pub trait WriteStateTable {

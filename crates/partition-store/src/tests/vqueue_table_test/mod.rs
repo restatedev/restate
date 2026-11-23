@@ -26,10 +26,14 @@
 //!   a fresh cursor to observe them.
 
 use std::collections::BTreeSet;
+use std::ops::ControlFlow;
+
+use tokio_util::sync::CancellationToken;
 
 use restate_clock::time::MillisSinceEpoch;
 use restate_limiter::LimitKey;
 use restate_storage_api::Transaction;
+use restate_storage_api::vqueue_table::ScanVQueueTable;
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
 use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
 use restate_storage_api::vqueue_table::{
@@ -37,13 +41,9 @@ use restate_storage_api::vqueue_table::{
     ReadVQueueTable, Stage, Status, StoredEntryRef, VQueueCursor, VQueueRunningCursor, VQueueStore,
     WriteVQueueTable, stats::EntryStatistics,
 };
-use restate_storage_api::vqueue_table::{
-    ScanVQueueEntries, ScanVQueueEntryStatusTable, ScanVQueueTable,
-};
 use restate_types::clock::UniqueTimestamp;
 use restate_types::config::{Configuration, set_current_config};
 use restate_types::identifiers::PartitionKey;
-use restate_types::sharding::KeyRange;
 use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, VQueueId};
 
 use crate::PartitionStore;
@@ -546,67 +546,6 @@ async fn existing_reader_does_not_see_post_snapshot_writes(rocksdb: &mut Partiti
     assert_eq!(collect_ids(&items), vec![entry_id(1), entry_id(2)]);
 }
 
-/// Test: Stage scan reads only the requested stage key kind.
-///
-/// This validates the datafusion-oriented scan API and ensures stage-specific
-/// scans do not leak rows from adjacent stage key kinds or partition keys.
-async fn stage_scan_is_filtered_by_stage(rocksdb: &mut PartitionStore) {
-    let target_partition_key = PartitionKey::from(9_300u64);
-    let other_partition_key = PartitionKey::from(9_301u64);
-    let target_qid = VQueueId::custom(target_partition_key, "scan-target");
-    let other_qid = VQueueId::custom(other_partition_key, "scan-target");
-
-    let stages = [
-        Stage::Inbox,
-        Stage::Running,
-        Stage::Suspended,
-        Stage::Paused,
-        Stage::Finished,
-    ];
-
-    {
-        let mut txn = rocksdb.transaction();
-        for (index, stage) in stages.into_iter().enumerate() {
-            let entry_id = 100 + index as u8;
-            let target_entry = default_entry(entry_id);
-            let other_entry = default_entry(entry_id + 10);
-
-            txn.put_vqueue_inbox(&target_qid, stage, &target_entry.0, &target_entry.1);
-            txn.put_vqueue_inbox(&other_qid, stage, &other_entry.0, &other_entry.1);
-        }
-        txn.commit().await.expect("commit should succeed");
-    }
-
-    let range = KeyRange::from(target_partition_key..=target_partition_key);
-
-    for (index, stage) in stages.into_iter().enumerate() {
-        let expected_key = default_entry(100 + index as u8).0;
-        let rows = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let rows_for_scan = rows.clone();
-
-        rocksdb
-            .for_each_vqueue_entry(range, vec![stage], move |(qid, got_stage, key, _)| {
-                rows_for_scan
-                    .lock()
-                    .expect("stage scan lock should not be poisoned")
-                    .push((qid.clone(), got_stage, *key));
-                std::ops::ControlFlow::Continue(())
-            })
-            .expect("stage scan setup should succeed")
-            .await
-            .expect("stage scan should succeed");
-
-        let rows = rows
-            .lock()
-            .expect("stage scan lock should not be poisoned")
-            .clone();
-        assert_eq!(rows.len(), 1, "stage {stage} should return one row");
-        assert_eq!(rows[0].0, target_qid, "stage {stage} returned wrong qid");
-        assert_eq!(rows[0].1, stage, "stage {stage} returned wrong stage");
-        assert_eq!(rows[0].2, expected_key, "stage {stage} returned wrong key");
-    }
-}
-
 /// Test: Entry-status exact-ID scans stay exact when they cross the multi-get batch size.
 async fn entry_status_scan_batches_large_id_set(rocksdb: &mut PartitionStore) {
     const NUM_PRESENT_IDS: u64 = 501;
@@ -653,32 +592,24 @@ async fn entry_status_scan_batches_large_id_set(rocksdb: &mut PartitionStore) {
     let missing_entry_id = entry_id_from_u64(10_000);
     requested_ids.insert(missing_entry_id.to_base_id(partition_key));
 
-    let rows = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let rows_for_scan = rows.clone();
-    rocksdb
-        .for_each_vqueue_entry_status(
+    let (snapshot, _completed) = rocksdb
+        .query_read(CancellationToken::new())
+        .expect("query read should be admitted");
+    let mut rows = Vec::new();
+    snapshot
+        .for_each_vqueue_entry_status_blocking(
             ScanEntryIdFilter::EntryIdSet(requested_ids),
-            move |id, header| {
-                rows_for_scan
-                    .lock()
-                    .expect("entry-status scan lock should not be poisoned")
-                    .push((
-                        id.partition_key(),
-                        id.to_entry_id(),
-                        header.stage,
-                        header.status,
-                    ));
-                std::ops::ControlFlow::Continue(())
+            |id, header| {
+                rows.push((
+                    id.partition_key(),
+                    id.to_entry_id(),
+                    header.stage,
+                    header.status,
+                ));
+                ControlFlow::Continue(())
             },
         )
-        .expect("entry-status scan setup should succeed")
-        .await
         .expect("entry-status scan should succeed");
-
-    let rows = rows
-        .lock()
-        .expect("entry-status scan lock should not be poisoned")
-        .clone();
     let got_ids = rows
         .iter()
         .map(|(_, entry_id, _, _)| *entry_id)
@@ -781,7 +712,6 @@ pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     verify_waiting_cursor_boundary_is_respected(db);
     verify_waiting_cursor_partition_prefix_boundary_is_respected(db);
 
-    stage_scan_is_filtered_by_stage(&mut rocksdb).await;
     entry_status_scan_batches_large_id_set(&mut rocksdb).await;
     entry_lifecycle_preserves_identity_and_transactional_state(&mut rocksdb).await;
     // Snapshot-iterator tests — exercise the contract that a fresh reader

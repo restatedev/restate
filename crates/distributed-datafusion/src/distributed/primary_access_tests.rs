@@ -13,10 +13,11 @@
 use std::ops::ControlFlow;
 
 use datafusion::arrow::array::LargeStringArray;
+use tokio_util::sync::CancellationToken;
 
 use restate_storage_api::vqueue_table::{
-    EntryContext, EntryKey, EntryMetadata, EntryStateRef, ScanVQueueEntryStatusTable, Stage,
-    Status, WriteVQueueTable, filters::ScanEntryIdFilter, stats::EntryStatistics,
+    EntryContext, EntryKey, EntryMetadata, EntryStateRef, Stage, Status, WriteVQueueTable,
+    filters::ScanEntryIdFilter, stats::EntryStatistics,
 };
 use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::BaseEntryId;
@@ -45,7 +46,7 @@ struct AccessCase {
 async fn primary_access_rewrite_preserves_keys_residuals_and_owner_coverage() {
     let mut fixture = setup().await;
     let mut ids = Vec::new();
-    let primary = Arc::new(Mutex::new(Vec::new()));
+    let mut primary = Vec::new();
     for store in &mut fixture.stores {
         let key = store.partition_key_range().start();
         let qid = VQueueId::custom(key, "primary-access");
@@ -97,22 +98,19 @@ async fn primary_access_rewrite_preserves_keys_residuals_and_owner_coverage() {
         }
         tx.commit().await.unwrap();
         drop(tx);
-        let primary = Arc::clone(&primary);
-        store
-            .for_each_vqueue_entry_status(
+        let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
+        snapshot
+            .for_each_vqueue_entry_status_blocking(
                 ScanEntryIdFilter::PartitionKey(KeyRange::FULL),
-                move |id, _| {
-                    primary.lock().push(*id);
+                |id, _| {
+                    primary.push(*id);
                     ControlFlow::Continue(())
                 },
             )
-            .unwrap()
-            .await
             .unwrap();
     }
     assert_eq!(
-        *primary.lock(),
-        ids,
+        primary, ids,
         "unfiltered primary scan independently anchors the fixture"
     );
     let selected: Vec<_> = ids

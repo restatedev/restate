@@ -25,18 +25,17 @@ use futures_util::stream;
 
 use restate_core::io::IoExecutor;
 use restate_memory::{ClaimedMemoryPool, LocalMemoryLease, LocalMemoryPool};
-use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
+use restate_rocksdb::RocksDbReadPerfGuard;
 use restate_storage_api::blob_table::{BlobBuilder, WriteBlobTable};
 use restate_storage_api::journal_table_v2::{
-    BudgetedJournalItem, JournalEntryIndex, NotificationEntryIndex, ReadJournalTable,
-    ScanJournalTable, ScanJournalTableRange, StoredEntry, StoredEntryLite,
-    StoredUnhydratedRawEntry, WriteJournalTable,
+    BudgetedJournalItem, JournalEntryIndex, NotificationEntryIndex, ReadJournalTable, StoredEntry,
+    StoredEntryLite, StoredUnhydratedRawEntry, WriteJournalTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{BudgetedReadError, Result, StorageError};
 use restate_types::blob::{BlobId, BlobKind, RelatedBlob};
 use restate_types::identifiers::{
-    EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
+    EntryIndex, InvocationId, InvocationUuid, PartitionKey, WithPartitionKey,
 };
 use restate_types::journal_v2::{CompletionId, EntryMetadata, EntryType, NotificationId};
 use restate_types::storage::StoredRawEntry;
@@ -50,7 +49,7 @@ use crate::owned_iter::OwnedIterator;
 use crate::scan::PhysicalScan;
 use crate::{
     PartitionStore, PartitionStoreSnapshot, PartitionStoreTransaction, StorageAccess,
-    StorageIterator, StorageRead, TableScan, TableScanIterationDecision, break_on_err,
+    StorageIterator, StorageRead, TableScan, TableScanIterationDecision,
 };
 
 define_table_key!(
@@ -632,66 +631,6 @@ impl ReadJournalTable for PartitionStore {
         completion_id: CompletionId,
     ) -> Result<bool> {
         has_completion(self, invocation_id, completion_id)
-    }
-}
-
-impl ScanJournalTable for PartitionStore {
-    fn for_each_journal<
-        F: FnMut(
-                (
-                    restate_types::identifiers::JournalEntryId,
-                    StoredUnhydratedRawEntry,
-                ),
-            ) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
-    >(
-        &self,
-        range: ScanJournalTableRange,
-        mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send> {
-        let scan = match range {
-            ScanJournalTableRange::PartitionKey(partition_key) => {
-                TableScan::ScanPartitionKeyRange::<JournalKeyBuilder>(partition_key)
-            }
-            ScanJournalTableRange::InvocationId(invocation_id) => {
-                let start_partition_key = invocation_id.start().partition_key();
-                let end_partition_key = invocation_id.end().partition_key();
-                let start = JournalKey::builder()
-                    .partition_key(start_partition_key)
-                    .invocation_uuid(invocation_id.start().invocation_uuid());
-
-                let end = JournalKey::builder()
-                    .partition_key(end_partition_key)
-                    .invocation_uuid(invocation_id.end().invocation_uuid());
-
-                TableScan::RangeInclusive(start, end)
-            }
-        };
-
-        self.iterator_for_each(
-            "df-v2-journal",
-            Priority::Low,
-            scan,
-            move |(mut key, mut value)| {
-                let journal_key = break_on_err(JournalKey::deserialize_from(&mut key))?;
-                let journal_entry = break_on_err(
-                    StoredEntry::decode(&mut value)
-                        .map_err(|err| StorageError::Conversion(err.into())),
-                )?;
-
-                let (partition_key, invocation_uuid, entry_index) = journal_key.split();
-
-                let journal_entry_id = JournalEntryId::from_parts(
-                    InvocationId::from_parts(partition_key, invocation_uuid),
-                    entry_index,
-                );
-
-                f((journal_entry_id, journal_entry.0)).map_break(Ok)
-            },
-        )
-        .map_err(|_| StorageError::OperationalError)
     }
 }
 

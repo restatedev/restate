@@ -9,8 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_clock::UniqueTimestamp;
-use restate_types::identifiers::{BaseEntryId, InvocationId, PartitionKey, StateMutationId};
-use restate_types::sharding::KeyRange;
+use restate_types::identifiers::{BaseEntryId, InvocationId, StateMutationId};
 use restate_types::vqueues::EntryKind;
 use restate_types::{LockName, Scope};
 use restate_util_string::ReString;
@@ -52,20 +51,6 @@ pub trait LoadLocks {
     /// Iterate over all locks without deserializing their state as we only care about
     /// their presence.
     fn scan_all_locked(&self, on_item: impl FnMut(Option<Scope>, LockName)) -> Result<()>;
-}
-
-pub trait ScanLocksTable {
-    /// Used for data-fusion queries
-    fn for_each_lock<
-        F: FnMut((PartitionKey, Option<Scope>, LockName, LockState)) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
-    >(
-        &self,
-        range: KeyRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
 /// The Lock table will fully replace the ServiceStatus table after a migration process
