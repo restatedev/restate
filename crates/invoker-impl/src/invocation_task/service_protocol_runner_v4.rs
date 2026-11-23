@@ -11,6 +11,7 @@
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
@@ -28,7 +29,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
 
 use restate_errors::warn_it;
-use restate_memory::{LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
+use restate_memory::{LendableMemoryPool, LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
 use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
@@ -145,7 +146,7 @@ where
         state_read: Option<StatePreloadPolicy>,
         deployment: Deployment,
         invocation_reader: IR,
-        outbound_budget: &mut LocalMemoryPool,
+        outbound_budget: &mut LendableMemoryPool,
     ) -> TerminalLoopState<()>
     where
         Txn: InvocationReaderTransaction,
@@ -312,7 +313,7 @@ where
         mut http_stream_tx: InvokerBodySender,
         decoder_stream: &mut S,
         mut invocation_reader: IR,
-        outbound_budget: &mut LocalMemoryPool,
+        outbound_budget: &mut LendableMemoryPool,
         attempt_span: &mut ServiceSpan,
     ) -> TerminalLoopState<()>
     where
@@ -333,8 +334,9 @@ where
                 && let Some(service_id) =
                     self.invocation_task.invocation_target.as_keyed_service_id()
             {
+                let budget = outbound_budget.claim().await;
                 Some(shortcircuit!(
-                    txn.read_state_budgeted(&service_id, policy, outbound_budget)
+                    txn.read_state_budgeted(&service_id, policy, budget)
                         .map_err(InvokerError::from_state_reader)
                 ))
             } else {
@@ -355,13 +357,15 @@ where
             );
 
             // Read journal stream from storage and execute the replay.
-            // LocalMemoryPool-gated: each entry acquires a lease before it's sent.
+            // Budget-gated: each entry acquires a lease before it's sent.
+            // Claimed first: the transaction can't be borrowed across the wait.
+            let budget = outbound_budget.claim().await;
             let journal_stream = shortcircuit!(
                 txn.read_journal_budgeted(
                     &self.invocation_task.invocation_id,
                     journal_size,
                     journal_metadata.journal_kind,
-                    outbound_budget,
+                    budget,
                 )
                 .map_err(InvokerError::from_journal_reader)
             );
@@ -379,6 +383,9 @@ where
 
         // Transaction dropped - RocksDB snapshot released!
         drop(txn);
+
+        // Nothing lends the budget after the replay phase.
+        let outbound_budget = outbound_budget.claim().await.into_mut();
 
         // Release excess local capacity accumulated during replay back to the
         // global pool before entering the bidi stream phase.
@@ -1228,7 +1235,7 @@ where
                 self.handle_new_command(
                     mh,
                     RawCommand::new(CommandType::OneWayCall, raw).with_command_specific_metadata(
-                        RawCommandSpecificMetadata::CallOrSend(Box::new(CallOrSendMetadata {
+                        RawCommandSpecificMetadata::CallOrSend(Arc::new(CallOrSendMetadata {
                             invocation_id: request.invocation_id,
                             invocation_target: request.invocation_target,
                             span_context: request.span_context,
@@ -1277,7 +1284,7 @@ where
                 self.handle_new_command(
                     mh,
                     RawCommand::new(CommandType::Call, raw).with_command_specific_metadata(
-                        RawCommandSpecificMetadata::CallOrSend(Box::new(CallOrSendMetadata {
+                        RawCommandSpecificMetadata::CallOrSend(Arc::new(CallOrSendMetadata {
                             invocation_id: request.invocation_id,
                             invocation_target: request.invocation_target,
                             span_context: request.span_context,

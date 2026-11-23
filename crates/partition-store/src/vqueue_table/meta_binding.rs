@@ -22,20 +22,23 @@ use bilrost::BorrowedMessage;
 
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::metadata::VQueueMetaRef;
+use restate_storage_query_api::ordering::{NativeOrder, OrderFunction, OrderInput, OrderTerm};
 use restate_storage_query_api::schema::{RecordProgress, row_written};
 use restate_storage_query_api::selection::Selection;
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::tables::vqueue_meta::{
-    VQueueMetaView, VqueueMeta, VqueueMetaClause, VqueueMetaColumn,
+    VQueueMetaView, VqueueMeta, VqueueMetaClause, VqueueMetaColumn, VqueueMetaDomains,
 };
 use restate_storage_query_api::{PreparedRead, RowSink, SchemaBinding, Table};
 use restate_types::identifiers::partitioner::HashPartitioner;
+use restate_types::vqueues::VQueueId;
 
 use crate::keys::codecs::VQueueIdSuffixCodec;
 use crate::keys::header::{KeySchema, PartitionKeyHeader, prepare_partition_keyed};
 use crate::keys::selection::codec::FieldPredicateCodec;
 use crate::keys::selection::{KeySelection, OrderedKeyField, OrderedKeySchema};
 use crate::keys::{DecodeTableKey, KeyDecode, KeyDecoder, KeyKind};
+use crate::lookup::LookupBinding;
 use crate::table::PhysicalTable;
 use crate::{Result, break_on_err};
 
@@ -47,6 +50,20 @@ pub enum VQueueMetaTable {}
 impl Table for VQueueMetaTable {
     type Record<'a> = (KeyDecoder<'a, MetaKey>, &'a [u8]);
     type Scan = KeySelection<MetaKey>;
+    /// Keys are the queue ID's bytes, which start with its partition key.
+    const NATIVE_ORDERS: &'static [NativeOrder] = &[
+        &[OrderTerm::Column("partition_key")],
+        &[OrderTerm::Function(OrderFunction::VQueueId)],
+    ];
+
+    fn order_key<R>(
+        (key, _): &Self::Record<'_>,
+        function: OrderFunction,
+        with: impl FnOnce(&[u8]) -> R,
+    ) -> Option<R> {
+        let (id,) = key.decode_all().ok()?.split();
+        id.order_key(function, with)
+    }
 }
 
 impl PhysicalTable for VQueueMetaTable {
@@ -74,6 +91,13 @@ impl KeyDecode for MetaKey {
 }
 
 pub enum VQueueMetaBinding {}
+
+/// A queue's ID is the metadata table's complete key.
+impl LookupBinding for VQueueMetaBinding {
+    fn lookup_ids(domains: &VqueueMetaDomains) -> Domain<VQueueId> {
+        domains.id.clone()
+    }
+}
 
 impl SchemaBinding for VQueueMetaBinding {
     type Schema = VqueueMeta;
@@ -179,15 +203,16 @@ mod tests {
         assert_eq!(precision, SelectionPrecision::Inexact);
         assert_eq!(visited, 1, "id_bounds_read_to_one_key");
 
-        // IDs on two partition keys: the header covers 7..=8 and both suffixes are
-        // sought under each, so residuals reject the crossed records.
+        // IDs on partition keys 6 and 9: the read lists those two headers, seeks
+        // from one to the other without visiting the 256 queues on 7 and 8, and
+        // seeks both suffixes under each, so residuals reject the crossed records.
         let (matches, visited, _) = read(VqueueMetaClause::Id(ValuePredicate::In(vec![
-            id(7, 5),
-            id(8, 9),
+            id(6, 5),
+            id(9, 9),
         ])));
-        let mut crossed = [id(7, 5), id(7, 9), id(8, 5), id(8, 9)];
+        let mut crossed = [id(6, 5), id(6, 9), id(9, 5), id(9, 9)];
         crossed.sort();
         assert_eq!(matches, crossed.iter().collect::<Vec<_>>());
-        assert_eq!(visited, 10, "ids_seek_within_and_between_partition_keys");
+        assert_eq!(visited, 9, "ids_seek_between_listed_partition_keys");
     }
 }

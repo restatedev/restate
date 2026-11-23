@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use restate_storage_api::StorageError;
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
+use restate_storage_query_api::ordering::{NativeOrder, OrderFunction, OrderInput, OrderTerm};
 use restate_storage_query_api::scan::{CursorScan, CursorStep, ReadCursor, Table};
 use restate_storage_query_api::selection::Selection;
 use restate_storage_query_api::tables::invocation_status::{
@@ -40,6 +41,7 @@ use crate::keys::{DecodeTableKey, KeyDecode, KeyDecoder, KeyKind};
 use crate::table::{MultiGetCursor, MultiGetTable, PhysicalTable, TableCursor};
 use crate::{ReadSnapshot, Result};
 
+use super::entry_index_read::{EntryIndexCursor, EntryIndexExecution, EntryIndexRead};
 use super::{
     INVOCATION_STATUS_MULTI_GET_BATCH_SIZE, InvocationStatusKey, create_invocation_status_key,
 };
@@ -123,6 +125,17 @@ pub enum InvocationStatusScan {
     Ids(BTreeSet<InvocationId>),
     /// Iteration over stored keys, navigated by the prepared selection.
     Keys(Arc<KeySelection<InvocationStatusKey>>),
+    /// The invocations the entry index finds, newest created first (or oldest
+    /// first, as the [`EntryIndexRead`] says), or the
+    /// `fallback` iteration if the index can't stand in for it on the snapshot.
+    /// `execution` is charged for the index read and learns which path it took.
+    /// It serves one cursor: a request holds the execution of one partition
+    /// read, and opening a second cursor from it, or from a clone, fails.
+    EntryIndex {
+        index: Arc<EntryIndexRead>,
+        fallback: Arc<KeySelection<InvocationStatusKey>>,
+        execution: Arc<EntryIndexExecution>,
+    },
 }
 
 /// Invocation-status records. A caller can step through them with a cursor, or
@@ -133,6 +146,22 @@ pub enum InvocationStatusRecords {}
 impl Table for InvocationStatusRecords {
     type Record<'a> = (InvocationId, InvocationStatusV2Lazy<'a>);
     type Scan = InvocationStatusScan;
+    /// Keys are `partition key | uuid`, and an ID set is fetched in ID order, so
+    /// both read in partition key order and in invocation ID order; with the entry
+    /// kind fixed, that is also base entry ID order.
+    const NATIVE_ORDERS: &'static [NativeOrder] = &[
+        &[OrderTerm::Column("partition_key")],
+        &[OrderTerm::Function(OrderFunction::InvocationId)],
+        &[OrderTerm::Function(OrderFunction::BaseEntryId)],
+    ];
+
+    fn order_key<R>(
+        (id, _): &Self::Record<'_>,
+        function: OrderFunction,
+        with: impl FnOnce(&[u8]) -> R,
+    ) -> Option<R> {
+        id.order_key(function, with)
+    }
 }
 
 /// A resumable scan or batched lookup of invocation statuses over one admitted
@@ -144,7 +173,8 @@ pub struct InvocationStatusCursor {
 enum Mode {
     Empty,
     Scan(Box<TableCursor<InvocationStatusKeys>>),
-    Keys(MultiGetCursor<InvocationStatusKeys>),
+    Keys(Box<MultiGetCursor<InvocationStatusKeys>>),
+    EntryIndex(Box<EntryIndexCursor>),
 }
 
 impl ReadSnapshot {
@@ -153,14 +183,25 @@ impl ReadSnapshot {
         scan: InvocationStatusScan,
     ) -> Result<InvocationStatusCursor> {
         self.check_active()?;
-        let mode = match scan {
-            InvocationStatusScan::Ids(ids) => Mode::Keys(MultiGetCursor::new(self.clone(), ids)),
-            InvocationStatusScan::Keys(request) => {
-                Mode::Scan(Box::new(
+        let mode =
+            match scan {
+                InvocationStatusScan::Ids(ids) => {
+                    Mode::Keys(Box::new(MultiGetCursor::new(self.clone(), ids)))
+                }
+                InvocationStatusScan::Keys(request) => Mode::Scan(Box::new(
                     <Self as CursorScan<InvocationStatusKeys>>::scan_cursor(self, request)?,
-                ))
-            }
-        };
+                )),
+                InvocationStatusScan::EntryIndex {
+                    index,
+                    fallback,
+                    execution,
+                } => match EntryIndexCursor::open(self, &index, &execution)? {
+                    Some(cursor) => Mode::EntryIndex(Box::new(cursor)),
+                    None => Mode::Scan(Box::new(
+                        <Self as CursorScan<InvocationStatusKeys>>::scan_cursor(self, fallback)?,
+                    )),
+                },
+            };
         Ok(InvocationStatusCursor { mode })
     }
 }
@@ -170,8 +211,9 @@ impl CursorScan<InvocationStatusRecords> for ReadSnapshot {
 
     fn scan_cursor(&self, request: Arc<InvocationStatusScan>) -> Result<Self::Cursor> {
         // If the caller hands over the last reference to the request, the cursor
-        // takes its ID list; otherwise it copies the list. Either way, cursors
-        // opened from one request don't affect each other.
+        // takes its ID list; otherwise it copies the list. Cursors opened from
+        // one request don't affect each other, except an entry-index request's,
+        // whose execution serves one cursor: a second fails to open.
         self.invocation_status_cursor(Arc::unwrap_or_clone(request))
     }
 }
@@ -182,6 +224,7 @@ impl ReadCursor<InvocationStatusRecords> for InvocationStatusCursor {
             Mode::Empty => CursorStep::Done,
             Mode::Scan(cursor) => cursor.advance()?,
             Mode::Keys(cursor) => cursor.advance()?,
+            Mode::EntryIndex(cursor) => cursor.advance()?,
         };
         if step == CursorStep::Done {
             self.mode = Mode::Empty;
@@ -197,6 +240,7 @@ impl ReadCursor<InvocationStatusRecords> for InvocationStatusCursor {
                 (InvocationId::from_parts(partition, uuid), value)
             }
             Mode::Keys(cursor) => cursor.current()?,
+            Mode::EntryIndex(cursor) => return cursor.current(),
             Mode::Empty => return Err(StorageError::DataIntegrityError),
         };
         Ok((id, super::decode_invocation_status_lazy(value)?))
@@ -218,6 +262,23 @@ mod tests {
     use crate::PartitionStoreManager;
 
     use super::*;
+
+    /// `order`'s sort key for the record with ID `InvocationId` text `id`.
+    fn order_key(order: NativeOrder, id: &str) -> Vec<Vec<u8>> {
+        order
+            .iter()
+            .map(|term| match term {
+                OrderTerm::Column("partition_key") => id
+                    .parse::<InvocationId>()
+                    .unwrap()
+                    .partition_key()
+                    .to_be_bytes()
+                    .to_vec(),
+                OrderTerm::Function(function) => function.encode(id, <[u8]>::to_vec).unwrap(),
+                term => panic!("no {term:?} in an ID"),
+            })
+            .collect()
+    }
 
     #[restate_core::test]
     async fn ids_position_invocation_status_scans() {
@@ -311,6 +372,62 @@ mod tests {
                 }
             }
             assert_eq!(found, expected, "shared_requests_have_independent_cursors");
+        }
+    }
+
+    /// A key scan and lookups by ID both read in each of the table's native
+    /// orders, which the IDs' text doesn't sort like.
+    #[restate_core::test]
+    async fn key_ordered_reads_deliver_native_orders() {
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        let mut store = manager
+            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+            .await
+            .unwrap();
+        let uuids = [1, 2, 256, 1 << 64, (1 << 64) + 1, u128::MAX - 1];
+        let ids: BTreeSet<_> = [0, 7, 8, PartitionKey::MAX]
+            .into_iter()
+            .flat_map(|key| {
+                uuids.map(|uuid| InvocationId::from_parts(key, InvocationUuid::from_u128(uuid)))
+            })
+            .collect();
+        let mut tx = store.transaction();
+        for id in &ids {
+            let status = StoredStatus::Completed(CompletedInvocation::mock_neo());
+            tx.put_invocation_status(id, &status).unwrap();
+        }
+        tx.commit().await.unwrap();
+        drop(tx);
+        let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
+        let read = |request: InvocationStatusScan| {
+            let mut cursor = <ReadSnapshot as CursorScan<InvocationStatusRecords>>::scan_cursor(
+                &snapshot,
+                Arc::new(request),
+            )
+            .unwrap();
+            let mut found = Vec::new();
+            loop {
+                match cursor.advance().unwrap() {
+                    CursorStep::Record => found.push(cursor.current().unwrap().0.to_string()),
+                    CursorStep::Skipped => {}
+                    CursorStep::Done => return found,
+                }
+            }
+        };
+        let all = InvocationStatusKeys::prepare(&Selection::All, Some(KeyRange::FULL)).unwrap();
+        let some: BTreeSet<_> = ids.iter().copied().step_by(3).collect();
+        for (read, expected) in [
+            (read(InvocationStatusScan::Keys(Arc::new(all))), ids.len()),
+            (read(InvocationStatusScan::Ids(ids.clone())), ids.len()),
+            (read(InvocationStatusScan::Ids(some.clone())), some.len()),
+        ] {
+            assert_eq!(read.len(), expected);
+            assert!(!read.is_sorted(), "text_order_differs");
+            for order in InvocationStatusRecords::NATIVE_ORDERS {
+                let values: Vec<_> = read.iter().map(|id| order_key(order, id)).collect();
+                assert!(values.is_sorted(), "{order:?}");
+            }
         }
     }
 }

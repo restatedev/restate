@@ -96,7 +96,7 @@ impl Topology {
                     .region_nodes
                     .push(node_entry),
                 (Some(r), Some(z)) => region_build
-                    .entry(r.clone())
+                    .entry(r)
                     .or_default()
                     .zones
                     .entry(z)

@@ -109,7 +109,7 @@ async fn finishing_preserves_cleanup_events_and_queue_metrics() {
                 .await
                 .unwrap()
                 .unwrap()
-                .run_entry(at(2), &header, &target, waits);
+                .run_entry(at(2), &header, &target, waits, Status::Started);
             let header = tx.get_vqueue_entry_status(&id).await.unwrap().unwrap();
             let mut queue = VQueue::<VQueueEvent, _>::get(&qid, &mut tx, &mut cache, None)
                 .await

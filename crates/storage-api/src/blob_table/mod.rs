@@ -8,14 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::BTreeSet;
-use std::num::NonZeroU16;
-use std::ops::RangeInclusive;
+use std::num::NonZeroU64;
 
 use bytes::{BufMut, BytesMut};
 use restate_types::blob::{BlobId, BlobKind};
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
-use restate_types::time::MillisSinceEpoch;
 
 use crate::{Result, StorageError};
 
@@ -27,7 +24,8 @@ pub trait ReadBlobTable {
 }
 
 pub trait WriteBlobTable {
-    fn put_blob<B: BlobEncode>(&mut self, blob_id: BlobId, blob: Blob<B>) -> Result<()>;
+    /// Returns the size in bytes of the stored blob payload, excluding the blob header.
+    fn put_blob<B: BlobEncode>(&mut self, blob_id: BlobId, blob: Blob<B>) -> Result<u64>;
 
     /// Once a blob's ref count reaches 0 it is marked for deletion and later
     /// ref count updates on it are no-ops.
@@ -39,18 +37,18 @@ pub trait WriteBlobTable {
 #[derive(Debug)]
 pub struct BlobBuilder {
     kind: BlobKind,
-    ref_count: NonZeroU16,
+    ref_count: NonZeroU64,
 }
 
 impl BlobBuilder {
     pub fn new(kind: BlobKind) -> Self {
         Self {
             kind,
-            ref_count: NonZeroU16::MIN,
+            ref_count: NonZeroU64::MIN,
         }
     }
 
-    pub fn with_ref_count(mut self, count: NonZeroU16) -> Self {
+    pub fn with_ref_count(mut self, count: NonZeroU64) -> Self {
         self.ref_count = count;
         self
     }
@@ -103,7 +101,7 @@ impl<T: StorageDecode> BlobDecoder for T {
 
 pub struct Blob<B> {
     kind: BlobKind,
-    ref_count: NonZeroU16,
+    ref_count: NonZeroU64,
     inner: B,
 }
 
@@ -122,49 +120,23 @@ impl<B> Header for Blob<B> {
         self.kind
     }
 
-    fn ref_count(&self) -> u16 {
+    fn ref_count(&self) -> u64 {
         self.ref_count.get()
     }
 }
 
 pub trait Header {
     fn kind(&self) -> BlobKind;
-    fn ref_count(&self) -> u16;
+    fn ref_count(&self) -> u64;
 }
 
 // A decoder that return raw parts of the blob including kind, ref_count, and raw payload
 pub struct RawParts;
 
 impl BlobDecoder for RawParts {
-    type Type = (BlobKind, u16, Vec<u8>);
+    type Type = (BlobKind, u64, Vec<u8>);
 
     fn decode_blob(header: impl Header, raw: &[u8]) -> Result<Self::Type> {
         Ok((header.kind(), header.ref_count(), raw.to_vec()))
     }
-}
-
-/// A raw blob as stored, returned by [`ScanBlobTable`].
-#[derive(Debug, Clone, Copy)]
-pub struct BlobEntry<'a> {
-    pub id: BlobId,
-    pub kind: BlobKind,
-    pub ref_count: u16,
-    pub payload: &'a [u8],
-}
-
-#[derive(Debug, Clone)]
-pub enum ScanBlobTableRange {
-    /// Every blob of the partition created within this inclusive range.
-    CreatedAt(RangeInclusive<MillisSinceEpoch>),
-    BlobIdSet(BTreeSet<BlobId>),
-}
-
-pub trait ScanBlobTable {
-    fn for_each_blob<
-        F: for<'a> FnMut(BlobEntry<'a>) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
-    >(
-        &self,
-        range: ScanBlobTableRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
 }

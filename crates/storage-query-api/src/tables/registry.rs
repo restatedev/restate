@@ -17,13 +17,13 @@ use restate_util_string::ReString;
 use crate::{ShardingScheme, define_schema};
 
 define_schema! {
-    /// The indexes and statistics of each partition replica on the worker nodes,
-    /// with their status. Each replica keeps its own: two replicas of a partition
-    /// can be at different points. A replica's rows come from one snapshot of it,
-    /// separate from the one `migration_jobs` reads, except `approx_size_bytes`,
-    /// estimated over the replica's current data.
-    indexes {
-        name: "indexes",
+    /// The registry of each partition replica on the worker nodes: its indexes and
+    /// statistics, and its one-time migrations, with their status. Each replica
+    /// keeps its own: two replicas of a partition can be at different points. A replica's rows come from one snapshot
+    /// of it, separate from the one `migration_jobs` reads, except
+    /// `approx_size_bytes`, estimated over the replica's current data.
+    registry {
+        name: "registry",
         sharding: ShardingScheme::ByNode(Some(Role::Worker)),
         sharding_columns { plain_node_id: PlainNodeId, gen_node_id: GenerationalNodeId },
         columns {
@@ -33,24 +33,32 @@ define_schema! {
             gen_node_id: ReString => DataType::Utf8,
             /// The partition the replica belongs to.
             partition_id: u32 => DataType::UInt32,
-            /// The definition the index builds, with its version, for example
-            /// `service_stats/1`.
+            /// The definition the index builds or the migration runs, with its
+            /// version, for example `service_stats/1`.
             definition: ReString => DataType::Utf8,
-            /// `secondary` (one key per entry) or `aggregate` (counters, a statistic).
+            /// `secondary` (one key per entry) or `aggregate` (counters, a
+            /// statistic) for an index; `migration` for a one-time migration.
             kind: ReString => DataType::Utf8,
-            /// The index's ID in this replica, the prefix of its keys.
-            index_id: u32 => DataType::UInt32,
-            /// `backfilling` (maintained but incomplete: queries don't read it),
-            /// `ready` or `dropped`.
+            /// The entry's ID in this replica; for an index, the prefix of its keys.
+            id: u32 => DataType::UInt32,
+            /// For an index, `backfilling` (maintained but incomplete: queries
+            /// don't read it), `complete` (queries read it) or `dropped`; for a
+            /// migration, `in_progress` or `complete`.
             status: ReString => DataType::Utf8,
-            /// The build job, while the index is backfilling; see `migration_jobs`.
+            /// The job, while the index is backfilling or the migration in
+            /// progress; see `migration_jobs`.
             job_id: Option<u32> => DataType::UInt32,
-            /// When the index was registered; NULL if unknown.
+            /// When the entry was registered; NULL if unknown.
             registered_at: Option<MillisSinceEpoch> => TimestampMillisecond,
             /// The Restate version that registered it; NULL if unknown.
             registered_by_version: Option<ReString> => DataType::Utf8,
-            /// When it became Ready; NULL until then, or if unknown.
-            ready_at: Option<MillisSinceEpoch> => TimestampMillisecond,
+            /// When the index or the migration completed; NULL until then, or if
+            /// unknown.
+            completed_at: Option<MillisSinceEpoch> => TimestampMillisecond,
+            /// When a release that doesn't know the migration last set it back to
+            /// in progress, so that a release that knows it runs it again; NULL if
+            /// that never happened, and for an index.
+            reset_at: Option<MillisSinceEpoch> => TimestampMillisecond,
             /// When it was dropped; NULL unless dropped, or if unknown.
             dropped_at: Option<MillisSinceEpoch> => TimestampMillisecond,
             /// Why it was dropped: `reset`, `unknown-definition`, or `unknown(N)` for a
@@ -60,8 +68,8 @@ define_schema! {
             /// replica, including writes not flushed yet, over the replica's current
             /// data rather than the rows' snapshot. Approximate: small indexes can
             /// show 0, and a dropped index may still show bytes until compaction
-            /// removes its keys. NULL for an index of unknown kind, or when
-            /// RocksDB's estimate returns an error.
+            /// removes its keys. NULL for a migration, an index of unknown kind, or
+            /// when RocksDB's estimate returns an error.
             approx_size_bytes: Option<u64> => DataType::UInt64,
         }
     }

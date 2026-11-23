@@ -14,7 +14,7 @@ use std::ops::ControlFlow;
 use bytes::{Bytes, BytesMut};
 use rocksdb::ReadOptions;
 
-use restate_rocksdb::{Priority, RocksDbManager};
+use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::vqueue_table::{Stage, Status};
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
@@ -32,7 +32,7 @@ use crate::keys::selection::KeyMatch;
 use crate::scan::PhysicalScan;
 use crate::stats::aggregated::test_util::read_stats;
 use crate::stats::aggregated::{
-    AggregatedStatsMut, StageStatus, complete_gauges, ready_index_scope,
+    AggregatedStatsMut, StageStatus, complete_gauges, complete_index_scope,
 };
 use crate::stats::{Stat, encode_header};
 use crate::{PartitionStore, PartitionStoreManager};
@@ -259,12 +259,10 @@ fn compiled_bounds_and_key_checks_agree_with_logical_filters() {
             }
             match cursor.as_mut().unwrap().evaluate(key).unwrap() {
                 KeyMatch::Match => actual.push(*row),
-                KeyMatch::Seek(target) => {
-                    assert!(
-                        target.as_ref() > key.as_slice() && in_bounds(&target),
-                        "case {case}"
-                    );
-                    seek_to = Some(target);
+                KeyMatch::Seek => {
+                    let target = cursor.as_ref().unwrap().seek_target();
+                    assert!(target > key.as_slice() && in_bounds(target), "case {case}");
+                    seek_to = Some(Bytes::copy_from_slice(target));
                 }
                 KeyMatch::Done => break,
                 KeyMatch::Skip => panic!("fixed_header_uses_ordered_seeks"),
@@ -371,7 +369,7 @@ async fn service_stats_filters_run_before_value_materialization() {
         .await
         .unwrap();
     complete_gauges(&mut store).await;
-    let scope = ready_index_scope::<ServiceStats>(&store);
+    let scope = complete_index_scope::<ServiceStats>(&store);
     let mut tx = store.transaction();
     for row in ROWS {
         AggregatedStatsMut::new(&mut tx, scope.index).increment_stage_status::<ServiceStats, _>(
@@ -413,24 +411,12 @@ async fn service_stats_filters_run_before_value_materialization() {
     ) {
         let prepared = ServiceStatsKey::prepare_selection(&filter).unwrap();
         let scan = prepared.scan(&prefix(scope)).unwrap().unwrap();
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        store
-            .iterator_for_each_physical(
-                "test-stat-bounds",
-                Priority::Low,
-                ReadOptions::default(),
-                scan,
-                move |(key, _)| {
-                    sender.send(key.to_vec()).unwrap();
-                    ControlFlow::Continue(())
-                },
-            )
-            .unwrap()
-            .await
-            .unwrap();
+        let snapshot = store.partition_db().read_snapshot().unwrap();
+        let mut rows = snapshot.scan(scan, ReadOptions::default());
         let mut visited = Vec::new();
-        while let Some(key) = receiver.recv().await {
-            visited.push(key);
+        while let Some((key, _)) = rows.item().unwrap() {
+            visited.push(key.to_vec());
+            rows.next();
         }
         assert_eq!(visited, scan_keys(&store, scope, &filter).await.unwrap());
     }
@@ -489,7 +475,7 @@ async fn service_stats_filters_run_before_value_materialization() {
             KeyMatch::Match => raw.advance().unwrap(),
             KeyMatch::Skip => panic!("fixed_header_uses_ordered_seeks"),
             KeyMatch::Done => break,
-            KeyMatch::Seek(target) => raw.seek_forward(target).unwrap(),
+            KeyMatch::Seek => raw.seek_forward(cursor.seek_target()).unwrap(),
         }
     }
     let mut expected_visits = expected;
@@ -503,7 +489,7 @@ async fn service_stats_filters_run_before_value_materialization() {
     };
     for target in [visited[0].clone(), fixed.to_vec(), upper.to_vec()] {
         let mut raw = snapshot.physical_cursor(scan.clone()).unwrap();
-        let error = raw.seek_forward(target.into()).unwrap_err();
+        let error = raw.seek_forward(&target).unwrap_err();
         assert!(error.to_string().contains("must advance"));
     }
 }

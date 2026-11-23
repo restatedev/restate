@@ -40,6 +40,8 @@ use super::PreparedFieldPredicate;
 
 mod timestamp;
 
+pub(crate) use timestamp::prepare_hour_buckets;
+
 #[cfg(test)]
 mod tests;
 
@@ -232,6 +234,52 @@ where
         }
     };
     C::try_prepare_value(&predicate, literals)
+}
+
+/// Prepares a predicate on a column that is never NULL for a field that may
+/// store NULL, such as an index field that only some of its records fill: the
+/// predicate matches the field's present values only. Everything else goes to
+/// the `Option` codec unchanged. Only a test index binds a field this way
+/// since `entry_by_service_created/1` was retired.
+#[cfg(test)]
+pub(crate) fn prepare_present<C: FieldPredicateCodec>(
+    predicate: &ValuePredicate<C::Literal>,
+    literals: &mut Vec<u8>,
+) -> crate::Result<Option<PreparedFieldPredicate>>
+where
+    C::Literal: Clone,
+{
+    let some = |bound: &Bound<C::Literal>| match bound {
+        Bound::Included(value) => Bound::Included(Some(value.clone())),
+        Bound::Excluded(value) => Bound::Excluded(Some(value.clone())),
+        Bound::Unbounded => Bound::Unbounded,
+    };
+    let predicate = match predicate {
+        ValuePredicate::Equal(value) => ValuePredicate::Equal(Some(value.clone())),
+        ValuePredicate::In(values) => {
+            ValuePredicate::In(values.iter().cloned().map(Some).collect())
+        }
+        ValuePredicate::Range { lower, upper } => ValuePredicate::Range {
+            // NULL sorts first: an open lower end starts after it.
+            lower: match lower {
+                Bound::Unbounded => Bound::Excluded(None),
+                bound => some(bound),
+            },
+            upper: some(upper),
+        },
+    };
+    Option::<C>::try_prepare_value(&predicate, literals)
+}
+
+/// The codec of a nullable field's present values.
+#[cfg(test)]
+pub(crate) trait NullableFieldCodec {
+    type Present: FieldPredicateCodec;
+}
+
+#[cfg(test)]
+impl<C: FieldPredicateCodec> NullableFieldCodec for Option<C> {
+    type Present = C;
 }
 
 impl FieldPredicateCodec for StringCodec {

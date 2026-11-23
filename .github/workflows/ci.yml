@@ -46,28 +46,6 @@ jobs:
         run: cargo hakari generate --diff
       - name: Check all crates depend on workspace-hack
         run: cargo hakari manage-deps --dry-run
-  cli-sql-tables-check:
-    name: Check CLI SQL tables reference
-    runs-on: warp-ubuntu-latest-x64-4x
-    steps:
-      - uses: actions/checkout@v4.4.0
-      - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
-        with:
-          rustflags: ""
-          cache: false
-      - name: Setup Rust Caching
-        uses: WarpBuilds/rust-cache@v2.9.1 # a fork of Swatinem/rust-cache@v2 that uses warpbuild cache
-        with:
-          prefix-key: "v1-rust-xtask"
-          cache-on-failure: "true"
-      - name: Install protoc
-        uses: $/.github/actions/install-protoc
-      - name: Check cli/src/commands/sql_tables.rs is up-to-date
-        run: |
-          cargo xtask generate-cli-sql-tables > cli/src/commands/sql_tables.rs
-          git diff --exit-code cli/src/commands/sql_tables.rs || \
-            (echo "::error::cli/src/commands/sql_tables.rs is stale, run: cargo xtask generate-cli-sql-tables > cli/src/commands/sql_tables.rs" && exit 1)
   build-and-test:
     name: Build and test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -134,7 +112,11 @@ jobs:
         run: cargo update -w --locked
 
       - name: Run lint
+        id: lint
         run: just lint
+        env:
+          # Also fail on Cargo's own lints (e.g. cargo::unused_dependencies)
+          CARGO_BUILD_WARNINGS: deny
 
       - name: Disk usage after lint
         run: df -h / && du -sh target/ 2>/dev/null || true
@@ -176,6 +158,15 @@ jobs:
       - name: Run doctest
         run: just doctest
 
+      # Runs here to reuse the build cache. It also runs when tests fail, so a
+      # stale file is reported in the same CI run.
+      - name: Check cli/src/commands/sql_tables.rs is up-to-date
+        if: ${{ !cancelled() && steps.lint.outcome == 'success' }}
+        run: |
+          cargo xtask generate-cli-sql-tables > cli/src/commands/sql_tables.rs
+          git diff --exit-code cli/src/commands/sql_tables.rs || \
+            (echo "::error::cli/src/commands/sql_tables.rs is stale, run: cargo xtask generate-cli-sql-tables > cli/src/commands/sql_tables.rs" && exit 1)
+
       - uses: actions/upload-artifact@v4.6.2
         if: always()
         with:
@@ -195,6 +186,9 @@ jobs:
     uses: ./.github/workflows/docker.yml
     with:
       uploadImageAsTarball: "restate.tar"
+      # Test jobs restore the tarball from the WarpBuild cache, which is much faster than the
+      # artifact download. The artifact stays as a fallback and for Jepsen and manual SDK runs.
+      cacheImageTarball: true
       platforms: linux/amd64
       # additional features added for CI validation builds only
       features: metadata-api
@@ -234,28 +228,8 @@ jobs:
     uses: restatedev/sdk-java/.github/workflows/integration.yaml@main
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+      restateImageCacheKey: ${{ needs.docker.outputs.tarballCacheKey }}
       serviceImage: "ghcr.io/restatedev/test-services-java:main"
-
-  sdk-java-vqueues:
-    name: Vqueues Run SDK-Java integration tests
-    # for the time being we don't expect all tests to pass
-    permissions:
-      contents: read
-      issues: read
-      checks: write
-      pull-requests: write
-      actions: read
-    secrets: inherit
-    needs: docker
-    uses: restatedev/sdk-java/.github/workflows/integration.yaml@main
-    with:
-      restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
-      serviceImage: "ghcr.io/restatedev/test-services-java:main"
-      testArtifactOutput: sdk-java-integration-vqueues-test-report
-      envVars: |
-        RESTATE_EXPERIMENTAL_ENABLE_VQUEUES=true
-      # we don't expect all tests to pass, that's why we continue on error
-      continueOnError: true
 
   sdk-python:
     name: Run SDK-Python integration tests
@@ -270,25 +244,8 @@ jobs:
     uses: restatedev/sdk-python/.github/workflows/integration.yaml@main
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+      restateImageCacheKey: ${{ needs.docker.outputs.tarballCacheKey }}
       serviceImage: "ghcr.io/restatedev/test-services-python:main"
-
-  sdk-python-protocol-v7:
-    name: Run SDK-Python integration tests with Protocol V7
-    permissions:
-      contents: read
-      issues: read
-      checks: write
-      pull-requests: write
-      actions: read
-    secrets: inherit
-    needs: docker
-    uses: restatedev/sdk-python/.github/workflows/integration.yaml@main
-    with:
-      restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
-      serviceImage: "ghcr.io/restatedev/test-services-python:main"
-      envVars: |
-        RESTATE_experimental_enable_protocol_v7=true
-      testArtifactOutput: sdk-python-protocol-v7-test-report
 
   sdk-go:
     name: Run SDK-Go integration tests
@@ -303,6 +260,7 @@ jobs:
     uses: restatedev/sdk-go/.github/workflows/integration.yaml@main
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+      restateImageCacheKey: ${{ needs.docker.outputs.tarballCacheKey }}
 
   sdk-typescript:
     name: Run SDK-Typescript integration tests
@@ -317,24 +275,8 @@ jobs:
     uses: restatedev/sdk-typescript/.github/workflows/integration.yaml@main
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+      restateImageCacheKey: ${{ needs.docker.outputs.tarballCacheKey }}
       serviceImage: "ghcr.io/restatedev/test-services-node:main"
-
-  sdk-typescript-protocol-v7:
-    name: Run SDK-Typescript integration tests with Protocol V7
-    permissions:
-      contents: read
-      issues: read
-      checks: write
-      pull-requests: write
-      actions: read
-    secrets: inherit
-    needs: docker
-    uses: restatedev/sdk-typescript/.github/workflows/integration.yaml@main
-    with:
-      restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
-      envVars: |
-        RESTATE_experimental_enable_protocol_v7=true
-      testArtifactOutput: sdk-typescript-protocol-v7-test-report
 
   sdk-typescript-protocol-v8:
     name: Run SDK-Typescript integration tests with Protocol V8
@@ -349,9 +291,11 @@ jobs:
     uses: restatedev/sdk-typescript/.github/workflows/integration.yaml@main
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+      restateImageCacheKey: ${{ needs.docker.outputs.tarballCacheKey }}
       envVars: |
         RESTATE_experimental_enable_protocol_v8=true
       testArtifactOutput: sdk-typescript-protocol-v8-test-report
+      serviceImage: "ghcr.io/restatedev/test-services-node:main"
 
   sdk-typescript-bilrost-schema:
     name: Run SDK-Typescript integration tests with Bilrost schema encoding
@@ -366,9 +310,11 @@ jobs:
     uses: restatedev/sdk-typescript/.github/workflows/integration.yaml@main
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+      restateImageCacheKey: ${{ needs.docker.outputs.tarballCacheKey }}
       envVars: |
         RESTATE_experimental_enable_schema_bilrost_encoding=true
       testArtifactOutput: sdk-typescript-bilrost-schema-test-report
+      serviceImage: "ghcr.io/restatedev/test-services-node:main"
 
   sdk-rust:
     name: Run SDK-Rust integration tests
@@ -383,6 +329,7 @@ jobs:
     uses: restatedev/sdk-rust/.github/workflows/integration.yaml@main
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+      restateImageCacheKey: ${{ needs.docker.outputs.tarballCacheKey }}
       serviceImage: "ghcr.io/restatedev/test-services-rust:main"
 
   e2e:
@@ -408,8 +355,16 @@ jobs:
               }
             }
 
-      ### Download the Restate container image, if needed
+      ### Get the Restate container image: from the WarpBuild cache, or the artifact as a fallback
+      - name: Restore restate snapshot from the WarpBuild cache
+        id: restate-image-cache
+        if: ${{ needs.docker.outputs.tarballCacheKey != '' }}
+        uses: WarpBuilds/cache/restore@v1.4.13
+        with:
+          path: restate.tar
+          key: ${{ needs.docker.outputs.tarballCacheKey }}
       - name: Download restate snapshot from in-progress workflow
+        if: ${{ steps.restate-image-cache.outputs.cache-hit != 'true' }}
         uses: actions/download-artifact@v8.0.2
         with:
           name: restate.tar
@@ -453,8 +408,16 @@ jobs:
               }
             }
 
-      ### Download the Restate container image, if needed
+      ### Get the Restate container image: from the WarpBuild cache, or the artifact as a fallback
+      - name: Restore restate snapshot from the WarpBuild cache
+        id: restate-image-cache
+        if: ${{ needs.docker.outputs.tarballCacheKey != '' }}
+        uses: WarpBuilds/cache/restore@v1.4.13
+        with:
+          path: restate.tar
+          key: ${{ needs.docker.outputs.tarballCacheKey }}
       - name: Download restate snapshot from in-progress workflow
+        if: ${{ steps.restate-image-cache.outputs.cache-hit != 'true' }}
         uses: actions/download-artifact@v8.0.2
         with:
           name: restate.tar
@@ -474,60 +437,6 @@ jobs:
           restateContainerImage: localhost/restatedev/restate-commit-download:latest
           envVars: |
             RESTATE_experimental_enable_schema_bilrost_encoding=true
-          exclusions: |
-            exclusions:
-              "versionCompat":
-                - "dev.restate.sdktesting.tests.ForwardCompatibilityTest.*"
-                - "dev.restate.sdktesting.tests.BackwardCompatibilityTest.*"
-
-  e2e-vqueues:
-    name: Run E2E tests with vqueues
-    runs-on: warp-ubuntu-latest-x64-4x
-    # we don't expect all tests to pass, that's why we continue on error
-    continue-on-error: true
-    permissions:
-      contents: read
-      issues: read
-      checks: write
-      pull-requests: write
-      actions: read
-    needs: docker
-    steps:
-      - name: Set up Docker containerd snapshotter
-        uses: docker/setup-docker-action@v4.7.0
-        with:
-          version: "v28.5.2"
-          set-host: true
-          daemon-config: |
-            {
-              "features": {
-                "containerd-snapshotter": true
-              }
-            }
-
-      ### Download the Restate container image, if needed
-      - name: Download restate snapshot from in-progress workflow
-        uses: actions/download-artifact@v8.0.2
-        with:
-          name: restate.tar
-      - name: Install restate snapshot
-        run: |
-          output=$(docker load --input restate.tar | head -n 1)
-          docker tag "${output#*: }" "localhost/restatedev/restate-commit-download:latest"
-          docker image ls -a
-
-      ### Run e2e tests with vqueues enabled.
-      - name: Run E2E tests
-        # Pinned to a commit in actions.lock. To pick up the latest e2e main, run:
-        #   gh actions-lock --relock .github/workflows/ci.yml
-        uses: restatedev/e2e/e2e-tests@main
-        with:
-          testArtifactOutput: e2e-test-vqueues-report
-          restateContainerImage: localhost/restatedev/restate-commit-download:latest
-          envVars: |
-            RESTATE_EXPERIMENTAL_ENABLE_VQUEUES=true
-          # We will never support the forward compatibility tests for v1.5 when using vqueues.
-          # The backward compatibility tests are temporarily disabled until we support migration from v1.5 -> v1.6
           exclusions: |
             exclusions:
               "versionCompat":

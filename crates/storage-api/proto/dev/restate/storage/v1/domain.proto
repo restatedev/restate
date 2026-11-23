@@ -631,8 +631,12 @@ message Entry {
 
   EntryType ty = 3;
 
-  // The content depends on the RawEntry Encoder/Decoder.
-  bytes content = 4;
+  oneof payload {
+    // The content depends on the RawEntry Encoder/Decoder.
+    bytes content = 4;
+    // The content is stored in this blob instead.
+    RelatedBlob content_blob = 13;
+  }
 
   // Additional metadata for all entries
   uint64 append_time = 5;
@@ -648,6 +652,20 @@ message Entry {
   }
 
   NotificationResultVariant notification_result_variant = 12;
+}
+
+// Blob referenced by a journal entry.
+message RelatedBlob {
+  // Raw BlobId bytes
+  bytes id = 1;
+  // Size of the blob payload in bytes
+  uint64 size = 2;
+}
+
+// Projection of `Entry` that only decodes the content blob, skipping the
+// entry content. Field numbers MUST match the ones of `Entry`.
+message EntryLite {
+  RelatedBlob content_blob = 13;
 }
 
 message ResponseResult {

@@ -21,7 +21,8 @@
 //!
 //! Some tables use a layout of their own. Statistics, for example, start with a
 //! compact header that carries the partition ID rather than a partition key
-//! (`stats::AggregateKeyPrefix`). The key kind always comes first.
+//! (`stats::AggregateKeyPrefix`), and so do the registry's records
+//! (`registry::records::RecordKey`). The key kind always comes first.
 //!
 //! RocksDB sorts keys by their bytes, so how each field is encoded decides the
 //! order a scan sees and which lookups are possible. There are two ways to encode
@@ -190,9 +191,9 @@ pub mod codecs {
     pub use super::legacy_codec::{DelimitedBytesCodec, LockNameCodec, OptionalScopeCodec};
     pub use super::ordered_key_codec::{
         CanonicalEntryIdCodec, EntryIdCodec, EntryKindCodec, InvocationUuidCodec,
-        RestateEpochMillisCodec, ReverseBoolCodec, ReverseU64Codec, ReverseUniqueTimestampCodec,
-        RoughTimestampCodec, SeqCodec, StageRankCodec, StatusCodec, VQueueIdCodec,
-        VQueueIdSuffixCodec,
+        RestateEpochMillisCodec, ReverseBoolCodec, ReverseRoughTimestampCodec, ReverseU64Codec,
+        ReverseUniqueTimestampCodec, RoughTimestampCodec, SeqCodec, StageRankCodec, StatusCodec,
+        VQueueIdCodec, VQueueIdSuffixCodec,
     };
 }
 
@@ -288,14 +289,18 @@ pub enum KeyKind {
     /// All secondary indexes are stored under a single key kind.
     SecondaryIndex,
 
-    /// Partition-level statistics: aggregate indexes keyed by the index registry's
-    /// `u32` index ID (see `crate::stats`).
+    /// Partition-level statistics: aggregate indexes keyed by the registry's `u32`
+    /// index ID (see `crate::stats`).
     Stats,
     /// Retired. A pre-release build kept statistics under this kind with a
     /// different layout. Nothing decodes or writes them, a later commit deletes
     /// them when a store opens, and the bytes are never reused.
     #[deprecated(note = "statistics of a pre-release build; deleted at open, never read")]
     LegacyStats,
+
+    /// The partition's registry records: the registry, its walks and its
+    /// migration jobs, one key each (see `crate::registry::records`).
+    Registry,
 }
 
 impl KeyKind {
@@ -367,6 +372,9 @@ impl KeyKind {
             // Partition-level statistics; they are rebuilt on partition split.
             KeyKind::Stats => b"zR",
             KeyKind::LegacyStats => b"zS",
+
+            // The registry, its walks and its migration jobs.
+            KeyKind::Registry => b"rg",
         }
     }
 
@@ -414,6 +422,7 @@ impl KeyKind {
             b"xI" => Some(KeyKind::SecondaryIndex),
             b"zR" => Some(KeyKind::Stats),
             b"zS" => Some(KeyKind::LegacyStats),
+            b"rg" => Some(KeyKind::Registry),
             _ => None,
         }
     }
@@ -498,6 +507,7 @@ impl KeyKind {
         match kind {
             KeyKind::Blob => blob_table::merge::compaction_filter(key, value),
             KeyKind::Stats => crate::stats::compaction_filter(key, value),
+            KeyKind::Registry => crate::registry::records::compaction_filter(key, value),
             _ => CompactionDecision::Keep,
         }
     }
@@ -1599,7 +1609,11 @@ mod tests {
         assert_eq!(uuid, got);
     }
 
-    define_table_key!(TableKind::Deduplication, KeyKind::Deduplication, DeduplicationTestKey(value: u64));
+    define_table_key!(
+        TableKind::Deduplication,
+        KeyKind::Deduplication,
+        DeduplicationTestKey(value: u64)
+    );
 
     #[test]
     fn key_prefix_mismatch() {

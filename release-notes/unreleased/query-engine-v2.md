@@ -33,7 +33,12 @@ New options, all off by default:
   `X-Restate-Query-Level: operator` query the cluster tables, except
   `config`, in both engines;
 - `experimental-enable-query-index-tables` shows the index tables in V2, such
-  as `_idx_entry_by_queue`, so you can inspect them with SQL.
+  as `_idx_entry_by_queue`, so you can inspect them with SQL;
+- `admin.query-engine.batch-compression` compresses the rows V2 sends from
+  one node to another with `lz4` or `zstd`. Use it when the network between
+  your nodes is slow or billed by volume. Nodes with different settings work
+  together. It has no effect while `networking.disable-compression` is
+  `false`, because the connections compress everything already.
 
 ### Why This Matters
 V2 is for comparing the two engines on staging clusters: the same query, sent
@@ -48,10 +53,17 @@ once with `v1` and once with `v2`, should return the same rows.
 - V2 uses indexes on its own, with or without
   `experimental-enable-query-index-tables`: for example, `sys_vqueues` filtered
   by a queue reads only that queue's entries.
+- A query that names specific queues, such as
+  `SELECT * FROM sys_vqueue_meta WHERE id IN (…)`, makes V2 read those queues'
+  metadata directly instead of scanning the metadata stored between them.
+  The same goes for `sys_locks` when a query names both the scope and the
+  lock name, such as `WHERE scope IS NULL AND lock_name IN (…)` for unscoped
+  locks. Naming only the lock name, or more than 10,000 scope and lock name
+  combinations, still scans.
 - V2 doesn't serve every table yet. It has no `sys_inbox`, and in the
   operator-level `cluster` schema it serves only `nodes`, `partitions`,
   `partition_replica_set`, `partition_state`, `logs`, `logs_tail_segments`,
-  `loglet_workers`, `bifrost_read_streams`, `indexes` and `migration_jobs`.
+  `loglet_workers`, `bifrost_read_streams`, `registry` and `migration_jobs`.
   Query the others with `v1`.
 - Both engines serve `config`, each node's running configuration with
   secret-looking values redacted, to `restatectl sql` only. The admin `/query`

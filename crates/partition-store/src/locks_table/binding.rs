@@ -14,25 +14,32 @@
 //! lock name therefore position the iterator, with the lock name declared as a
 //! terminal field; ranges and prefixes remain residual.
 
+use std::num::NonZeroUsize;
 use std::ops::ControlFlow;
 
+use anyhow::{Context, ensure};
 use bilrost::OwnedMessage;
 
 use restate_storage_api::StorageError;
 use restate_storage_api::lock_table::LockState;
+use restate_storage_query_api::ordering::{NativeOrder, OrderTerm};
 use restate_storage_query_api::schema::{RecordProgress, row_written};
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, SelectionPrecision};
 use restate_storage_query_api::tables::locks::{
-    LockView, Locks, LocksClause, LocksColumn, partition_keys,
+    LockView, Locks, LocksClause, LocksColumn, LocksDomains, MAX_LOOKUP_PAIRS, partition_keys,
 };
 use restate_storage_query_api::{PreparedRead, RowSink, SchemaBinding, Table};
+use restate_types::identifiers::{PartitionKey, WithPartitionKey};
+use restate_types::{CanonicalLockId, LockName, Scope};
+use restate_util_string::ReString;
 
 use crate::keys::codecs::{LockNameCodec, OptionalScopeCodec};
-use crate::keys::header::{KeySchema, PartitionKeyHeader, partition_key_envelope};
+use crate::keys::header::{KeySchema, PartitionKeyHeader, restrict_partition_keys};
 use crate::keys::selection::codec::prepare_members;
 use crate::keys::selection::{KeySelection, OrderedKeyField, OrderedKeySchema};
-use crate::keys::{DecodeTableKey, KeyDecode, KeyDecoder, KeyKind};
+use crate::keys::{DecodeTableKey, EncodeTableKey, FieldCodec, KeyDecode, KeyDecoder, KeyKind};
+use crate::lookup::{LookupBinding, LookupTable};
 use crate::table::PhysicalTable;
 use crate::{Result, break_on_err};
 
@@ -44,10 +51,78 @@ pub enum LocksTable {}
 impl Table for LocksTable {
     type Record<'a> = (KeyDecoder<'a, LockKey>, &'a [u8]);
     type Scan = KeySelection<LockKey>;
+    /// Keys start with the partition key; the scope and lock name after it don't
+    /// sort like the columns showing them.
+    const NATIVE_ORDERS: &'static [NativeOrder] = &[&[OrderTerm::Column("partition_key")]];
 }
 
 impl PhysicalTable for LocksTable {
     type Key = LockKey;
+}
+
+/// A lock is named by its scope (NULL when unscoped) and its lock name, as the
+/// `scope` and `lock_name` columns show them.
+impl LookupTable for LocksTable {
+    type Id = (Option<ReString>, ReString);
+    /// A starting point for small lock values, not measured.
+    const BATCH_SIZE: NonZeroUsize = NonZeroUsize::new(500).unwrap();
+
+    /// `None` for an invalid scope or a name without `service/`. Empty keys
+    /// (`Svc/`), which older versions allowed, stay valid.
+    fn key((scope, lock_name): &Self::Id) -> Option<LockKey> {
+        let optional_scope = scope
+            .as_deref()
+            .map(Scope::try_non_interned)
+            .transpose()
+            .ok()?;
+        let lock_name = LockName::parse_unchecked(lock_name).ok()?;
+        let partition_key = CanonicalLockId {
+            scope: &optional_scope,
+            lock_name: &lock_name,
+        }
+        .partition_key();
+        Some(LockKey {
+            partition_key,
+            optional_scope,
+            lock_name,
+        })
+    }
+
+    /// Reads the fields with checked bounds and UTF-8 (the stored-key decoders
+    /// don't check either), rebuilds the key from them, and requires the same
+    /// partition key and bytes.
+    fn check_key(bytes: &[u8]) -> anyhow::Result<PartitionKey> {
+        let rest = bytes
+            .strip_prefix(KeyKind::Lock.as_bytes())
+            .context("not a lock key")?;
+        let (stored, mut rest) = rest
+            .split_first_chunk()
+            .context("lock key without a partition key")?;
+        let scope = OptionalScopeCodec::take_encoded(&mut rest)
+            .and_then(OptionalScopeCodec::decode_encoded)
+            .context("invalid lock scope")?;
+        let lock_name = LockNameCodec::decode_encoded(rest).context("invalid lock name")?;
+        let key = Self::key(&(scope, lock_name)).context("invalid lock identity")?;
+        ensure!(
+            key.partition_key == PartitionKey::from_be_bytes(*stored),
+            "lock key stored under another partition key"
+        );
+        let mut canonical = Vec::with_capacity(bytes.len());
+        key.serialize_to(&mut canonical);
+        ensure!(canonical == bytes, "lock key isn't canonical");
+        Ok(key.partition_key)
+    }
+}
+
+/// A branch that pins both `scope` and `lock_name` to finite sets can only match
+/// their combinations, up to [`MAX_LOOKUP_PAIRS`] of them; otherwise it needs a
+/// scan.
+impl LookupBinding for LocksBinding {
+    fn lookup_ids(domains: &LocksDomains) -> Domain<(Option<ReString>, ReString)> {
+        domains
+            .scope
+            .bounded_product(&domains.lock_name, MAX_LOOKUP_PAIRS)
+    }
 }
 
 impl KeySchema for LockKey {
@@ -137,13 +212,12 @@ impl SchemaBinding for LocksBinding {
                 }
             }
         }
-        // The header accepts one interval; residuals retain gaps, cross-header
-        // candidates of the suffix fields, and unsupported predicates.
-        let request =
-            match partition_key_envelope(&partition_keys(keys, scope, lock_name, acquired_by)) {
-                None => KeySelection::empty(),
-                Some(range) => request.restrict_scope(range),
-            };
+        // Residuals retain gaps of non-finite key sets, cross-header candidates
+        // of the suffix fields, and unsupported predicates.
+        let request = restrict_partition_keys(
+            request,
+            &partition_keys(keys, scope, lock_name, acquired_by),
+        );
         Ok(PreparedRead::new(request, SelectionPrecision::Inexact))
     }
 
@@ -297,5 +371,113 @@ mod tests {
             OrderedKeyField::new::<OptionalScopeCodec>("scope"),
         ];
         assert!(std::panic::catch_unwind(|| validate_fields(&misplaced)).is_err());
+    }
+
+    /// A branch that pins both columns to finite sets names every combination;
+    /// one that doesn't names no finite set, so the source is scanned.
+    #[test]
+    fn lock_ids_combine_finite_scopes_and_names() {
+        let mut domains = LocksDomains {
+            scope: Domain::values([None, Some(ReString::from("tenant-1"))]),
+            lock_name: Domain::values(["Cart/a", "Cart/b"].map(ReString::from)),
+            ..Default::default()
+        };
+        let ids = LocksBinding::lookup_ids(&domains).into_values().unwrap();
+        assert_eq!(ids.len(), 4);
+        assert!(ids.contains(&(Some("tenant-1".into()), "Cart/b".into())));
+        domains.lock_name = Domain::all();
+        assert!(LocksBinding::lookup_ids(&domains).is_all());
+
+        // 100 × 100 is the limit; one more name makes the alternative scan.
+        let names = |n| Domain::values((0..n).map(|i| ReString::from(format!("Svc/k{i}"))));
+        domains.scope = Domain::values((0..100).map(|i| Some(ReString::from(format!("t{i}")))));
+        domains.lock_name = names(100);
+        let ids = LocksBinding::lookup_ids(&domains).into_values().unwrap();
+        assert_eq!(ids.len(), MAX_LOOKUP_PAIRS);
+        domains.lock_name = names(101);
+        assert!(LocksBinding::lookup_ids(&domains).is_all());
+    }
+
+    /// Received lock keys are checked field by field before anything decodes
+    /// them: a malformed key is an error, never a panic. Every valid name is
+    /// accepted with its own partition key, including an empty key and names
+    /// that extend one another.
+    #[test]
+    fn received_lock_keys_are_checked_before_decoding() {
+        let id =
+            |scope: Option<&str>, name: &str| (scope.map(ReString::from), ReString::from(name));
+        let encode = |scope, name| {
+            let key = LocksTable::key(&id(scope, name)).unwrap();
+            let mut bytes = Vec::new();
+            key.serialize_to(&mut bytes);
+            (bytes, key.partition_key)
+        };
+        for (scope, name) in [
+            (None, "Cart/alice"),
+            (Some("tenant-1"), "Cart/alice"),
+            (None, "Svc/"),
+            (None, "Svc/a"),
+            (None, "Svc/a/b"),
+            (None, "Svc/ab"),
+            (Some("tenant-1"), "Svc/a"),
+            (Some("tenant-1"), "Svc/ab"),
+        ] {
+            let (bytes, partition_key) = encode(scope, name);
+            assert_eq!(
+                LocksTable::check_key(&bytes).unwrap(),
+                partition_key,
+                "{scope:?} {name}"
+            );
+        }
+        // IDs that name no lock: a query naming them scans instead.
+        for (scope, name) in [
+            (Some(""), "Cart/a"),
+            (Some("bad scope"), "Cart/a"),
+            (None, "noslash"),
+            (None, "/key"),
+        ] {
+            assert!(
+                LocksTable::key(&id(scope, name)).is_none(),
+                "{scope:?} {name}"
+            );
+        }
+
+        // Scoped: kind (2) | partition key (8) | `s` | length (4) | `tenant-1` | name.
+        let (scoped, partition_key) = encode(Some("tenant-1"), "Cart/alice");
+        let (unscoped, _) = encode(None, "Cart/alice");
+        let header = |rest: &[u8]| {
+            let mut bytes = KeyKind::Lock.as_bytes().to_vec();
+            bytes.extend_from_slice(&partition_key.to_be_bytes());
+            bytes.extend_from_slice(rest);
+            bytes
+        };
+        let mut wrong_kind = scoped.clone();
+        wrong_kind[..KeyKind::SERIALIZED_LENGTH].copy_from_slice(KeyKind::State.as_bytes());
+        let mut unknown_tag = scoped.clone();
+        unknown_tag[10] = b'x';
+        let mut moved = scoped.clone();
+        moved[9] ^= 1;
+        for (case, bytes) in [
+            ("another key kind", wrong_kind),
+            ("short key kind", scoped[..1].to_vec()),
+            ("no partition key", scoped[..2].to_vec()),
+            ("short partition key", scoped[..9].to_vec()),
+            ("no scope tag", scoped[..10].to_vec()),
+            ("short scope length", scoped[..12].to_vec()),
+            ("truncated scope", scoped[..17].to_vec()),
+            ("name without a slash", unscoped[..15].to_vec()),
+            ("unknown scope tag", unknown_tag),
+            ("zero scope length", header(b"s\0\0\0\0Cart/alice")),
+            (
+                "oversized scope length",
+                header(b"s\xff\xff\xff\xffCart/alice"),
+            ),
+            ("non-UTF-8 scope", header(b"s\0\0\0\x02\xff\xfeCart/alice")),
+            ("invalid scope", header(b"s\0\0\0\x09bad scopeCart/alice")),
+            ("non-UTF-8 name", header(b"uCart/\xff")),
+            ("another partition key", moved),
+        ] {
+            assert!(LocksTable::check_key(&bytes).is_err(), "{case}");
+        }
     }
 }

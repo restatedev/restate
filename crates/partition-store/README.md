@@ -13,16 +13,19 @@ kind, one partition's data is one contiguous range of keys.
 
 This crate also owns the store's **derived data**: secondary indexes and
 statistics computed from the stored tables, and the machinery that builds them
-while the partition keeps running. Read the rest before adding an index, a
-statistic, a data migration or a backfill here or in the worker.
+while the partition keeps running. The same machinery runs **one-time
+migrations** of stored data online. Read the rest before adding an index, a
+statistic, a data migration or a backfill here or in the worker; to write a
+migration, start with the guide in `src/migrations/online.rs`.
 
 ## The concepts, in the order you need them
 
 **Source tables.** Derived data is computed from a *source table*: one of the
 store's tables whose rows are read by the mechanisms below. Today the only
-source is the virtual queues' `entry_status` table: the walk records name it,
-and the definitions apply to its rows. Supporting other source tables is the
-design direction; this document uses `entry_status` as its running example.
+source of indexes is the virtual queues' `entry_status` table: the walk records
+name it, and the definitions apply to its rows. One-time migrations may walk
+other tables (`walk::Source`). This document uses `entry_status` as its running
+example.
 Its rows describe each queued unit of work (an *entry*, for example an
 invocation): its stage (inbox, running, suspended, finished, …), its status, its
 timing statistics, and more. Where this document says "entry", read "a row of
@@ -48,7 +51,7 @@ a new ID; IDs are never reused.
 **Keeping an index up to date.** Two mechanisms do this.
 - **Writes.** Whenever the processor changes a row of the source table, it also
   updates every **maintained** index over that table, the ones being built or
-  Ready: remove what the row's old state
+  Complete: remove what the row's old state
   contributed, add what the new state contributes. If the index doesn't contain
   the old state yet, because the index is newer than the row, the write only
   adds. We call that *adopting* the row.
@@ -61,7 +64,7 @@ a new ID; IDs are never reused.
 
 **Status.** An index is `Backfilling` until a walk finds it complete: writes keep
 it up to date, but it is incomplete, so queries must not read it. It becomes
-`Ready` once a full pass of a walk finds every row covered; queries may read it.
+`Complete` once a full pass of a walk finds every row covered; queries may read it.
 A definition that can't fill rows from the row alone (a *passive* one) relies on
 writes and deletions to cover them: between passes it stays `Backfilling`
 without a walk, and its job waits for the next pass. It is `Dropped` when its
@@ -72,27 +75,33 @@ state, the source row keeps a small list, `touched_by`: the IDs of the indexes
 still being built that already contain this row. (The list names the index's
 *build job*, which for now has the same ID as the index.) Writes and walks are
 the only ways a row gets a token, and the token is the only proof that an index
-being built contains the row. A row carries a token until that index is Ready or
+being built contains the row. A row carries a token until that index is Complete or
 dropped; the next write then drops it. Each source table stores its tokens in
 its own rows; for the example, that is the `entry_status` header.
 
-**Index registry.** The per-store record of which indexes exist, with their
-definition name, ID and status (`src/registry.rs`). An index being built points
-to its **walk**, recorded next to the registry (`src/walk.rs`): the walk has its
-own ID and holds the traversal's progress, and several indexes built together
-share one walk. Both records are local to the store, not replicated: two
-replicas of one partition can be at different points, which is normal.
+**Registry.** The per-store record of which indexes exist, with their
+definition name, ID and status, and of the one-time migrations the store runs
+or ran (`src/registry.rs`). An index being built, or a migration in progress,
+points to its **walk**, recorded next to the registry (`src/walk.rs`): the walk
+has its own ID and holds the traversal's progress, and several indexes built
+together share one walk. Both records are local to the store, not replicated: two
+replicas of one partition can be at different points, which is normal. The
+registry, each walk and each migration job have a key of their own, under one
+key kind (`src/registry/records.rs`), so a slice writes only the records it
+changes.
 
 **Definition families.** Definitions released together are grouped in a
 *family*, switched on by the same configuration options.
 
-**Migration job.** The general unit of maintenance work, today building an
-index. Each index has a build job with the same ID, recorded next to the
-registry (`src/job.rs`): its status, when it started and finished, and what
-its slices did, and when a waiting job may start its next pass. The registry
-decides whether an index is Ready, and the walk holds where its work resumes and
+**Migration job.** The general unit of maintenance work: building an index or
+running a one-time migration. Each index and each migration in progress has a
+job with the same ID, recorded next to the registry (`src/job.rs`): its
+status, when it started and finished, and what its slices did, and when a
+waiting job may start its next pass. The registry decides whether an index or a
+migration is Complete, and the walk holds where its work resumes and
 the evidence for completing it; a job record can be rebuilt from the registry.
-Finished jobs are kept up to `worker.storage.migration-job-history-limit`.
+Finished jobs are kept for `worker.storage.finished-migration-jobs-retention`,
+24 hours by default, then hidden and removed by compaction.
 
 ## The rules
 
@@ -107,7 +116,7 @@ are their foundation.
 2. **Index IDs are never reused**, so a stale token or a not-yet-deleted key can
    never be mistaken for a new build.
 3. **One decision per index per row change.** The index contains the row's old
-   state if the index is Ready or the row holds the index's token. Then remove
+   state if the index is Complete or the row holds the index's token. Then remove
    old and add new; otherwise only add. Never apply a change twice; never skip an
    index that is being maintained.
 4. **Read the stored row in the same transaction before changing it.** A row
@@ -118,30 +127,46 @@ are their foundation.
    together with the row's old state for this reason; it does not prove the row
    is current.
 5. **A slice commits its index writes, the tokens it adds to the rows it
-   filled, its cursor and, at the end, `Ready` together.** A crash loses them
+   filled, its cursor and, at the end, `Complete` together.** A crash loses them
    together, which is why the store needs no write-ahead log for this. The same
    holds for a write: the row change, its index effects and its token change are
    one commit. A fill keeps the tokens the row already holds.
-6. **Only a full pass with no gap makes an index Ready.** A walk's indexes join
+6. **Only a full pass with no gap makes an index Complete.** A walk's indexes join
    it when it starts, at the beginning of its source, and every definition today
    can fill a row, so each row the walk passes holds the token or gets it before
    the cursor moves on. An index that joins a walk late, or a definition that
-   can't fill, needs its own full pass before it is Ready.
-7. **Queries read only Ready indexes, resolved in their own snapshot.** A read
-   finds the Ready index of a definition in the registry as it was when the read
-   was admitted, or fails with `IndexNotReady`.
-8. **Persisted formats are append-only.** Bilrost tags, enum numbers and the keys
-   under which the registry and walks are stored never change meaning. Rename
-   in code freely; never renumber.
-9. **The `index-registry` storage feature fences older binaries.** It is set with
-   the first registration and records a minimum Restate version, so an older
-   binary, which doesn't know tokens and index keys, refuses to open the store
-   because of that version floor rather than ignoring them.
+   can't fill, needs its own full pass before it is Complete.
+7. **Queries read only Complete indexes, resolved in their own snapshot.** A read
+   finds the Complete index of a definition in the registry as it was when the read
+   was admitted, or fails with `IndexNotComplete`.
+8. **Persisted formats are append-only.** Bilrost tags and enum numbers never
+   change meaning. The registry, walks and jobs are stored under `rg` keys
+   (`src/registry/records.rs`); their key layout and record kinds are
+   append-only too. Rename in code freely; never renumber.
+9. **The `registry` storage feature fences older binaries.** It is set with
+   the first index registration and records a minimum Restate version, so an
+   older binary, which doesn't know tokens and index keys, refuses to open the
+   store because of that version floor rather than ignoring them. Migrations
+   register only on a store that has it, and never set it.
+10. **Every definition declares the Restate version that introduced it**
+    (`introduced:` next to `definition:`). A node of an older version can't
+    maintain or read the definition's indexes, so a query coordinator must
+    choose an index only where every node serving its partitions runs at least
+    that version. The V2 planner checks this, against the versions the worker
+    nodes recorded, before it reads an index in place of its primary. The version is code,
+    not stored data: it is never persisted.
+11. **A migration's name is never reused.** A store registers each `name/N` once and
+    keeps its entry forever, so a migration that changes in any way is a new
+    version, `name/N+1`, which runs again on every store. From the release that
+    adds it, foreground writes must already produce the migrated form: the walk
+    never visits rows written behind its cursor or after its end. Each replica
+    migrates at its own pace, so what a command does must never depend on
+    whether a row is migrated yet.
 
 ## Don'ts
 
 Don't read a Backfilling index, or a newer registry than your snapshot. Don't
 reuse a row read in an earlier transaction as an old state. Don't renumber tags,
-enums or storage keys. Don't reuse an ID, or change a definition without
-renaming it. Don't add an option, feature or definition without a
+enums or storage keys. Don't reuse an ID, or change a definition or a
+migration without renaming it. Don't add an option, feature or definition without a
 `Since vX.Y.Z` note.

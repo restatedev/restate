@@ -239,7 +239,7 @@ pub fn open_db_with_cf_options(
             files
                 .iter()
                 .map(|lf| {
-                    let normalized_name = lf.name.strip_prefix('/').unwrap_or(&lf.name);
+                    let normalized_name = lf.name.trim_prefix('/');
                     (normalized_name.to_string(), LiveFileInfo::from(lf))
                 })
                 .collect()

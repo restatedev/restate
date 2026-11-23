@@ -45,43 +45,48 @@ pub mod test_util;
 
 pub(crate) mod backfill;
 
-/// Registers the status gauges as Ready, for tests that write every entry
+/// Registers the status gauges as Complete, for tests that write every entry
 /// afterwards and therefore need no backfill.
 #[cfg(test)]
 pub(crate) async fn complete_gauges(store: &mut crate::PartitionStore) {
     use restate_storage_api::Transaction;
 
-    use crate::registry::{DEFINITIONS, IndexKind, IndexRegistry, MaintainedIndexes};
+    use crate::registry::{INDEX_DEFINITIONS, IndexKind, PublishedRegistry, Registry};
     use crate::walk::Walks;
 
-    let mut registry = IndexRegistry::default();
+    let mut registry = Registry::default();
     for definition in crate::vqueue_table::STATUS_GAUGES.definitions {
         let id = registry
             .register(definition.name, IndexKind::Aggregate)
             .unwrap();
-        registry.set_ready(id).unwrap();
+        registry.set_complete(id).unwrap();
     }
-    // Snapshot reads resolve the Ready index from the persisted registry.
+    // Snapshot reads resolve the Complete index from the persisted registry.
     let partition_id = store.partition_id();
     let mut tx = store.transaction();
-    crate::fsm_table::put_registry(&mut tx, partition_id, &registry).unwrap();
+    crate::registry::records::RecordSink::put(
+        &mut tx,
+        &crate::registry::records::RecordKey::registry(partition_id),
+        &registry,
+    )
+    .unwrap();
     tx.commit().await.unwrap();
     drop(tx);
-    store.set_maintained_indexes(MaintainedIndexes::new(
+    store.set_published_registry(PublishedRegistry::new(
         &registry,
         &Walks::default(),
-        DEFINITIONS,
+        INDEX_DEFINITIONS,
     ));
 }
 
-/// The Ready index of statistic `S` in `store`.
+/// The Complete index of statistic `S` in `store`.
 #[cfg(test)]
-pub(crate) fn ready_index_scope<S: Stat>(store: &crate::PartitionStore) -> IndexScope {
+pub(crate) fn complete_index_scope<S: Stat>(store: &crate::PartitionStore) -> IndexScope {
     IndexScope {
         partition: store.partition_id(),
         index: store
-            .maintained_indexes()
-            .ready_index(S::DEFINITION, crate::registry::IndexKind::Aggregate)
+            .published_registry()
+            .complete_index(S::DEFINITION, crate::registry::IndexKind::Aggregate)
             .unwrap(),
     }
 }

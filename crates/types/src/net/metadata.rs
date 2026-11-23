@@ -263,7 +263,7 @@ mod wire {
     use crate::{
         config::Configuration,
         net::{ProtocolVersion, metadata::MetadataContainer},
-        schema::SchemaUnindexed,
+        schema::{Schema, SchemaUnindexed},
         storage::{self},
     };
 
@@ -370,11 +370,14 @@ mod wire {
                 MetadataContainer::Logs(Arc::new(value))
             }
             MetadataKind::Schema => {
-                let value: SchemaUnindexed = storage::decode::decode_bilrost_zstd(&mut buf)?;
+                let (value, uncompressed): (SchemaUnindexed, _) =
+                    storage::decode::decode_bilrost_zstd_with_len(&mut buf)?;
                 value
                     .verify()
                     .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
-                MetadataContainer::Schema(Arc::new(value.into()))
+                MetadataContainer::Schema(Arc::new(
+                    Schema::from(value).with_uncompressed_size(uncompressed),
+                ))
             }
         };
 
@@ -415,6 +418,14 @@ mod tests {
 
                 assert_eq!(decoded.container.kind(), container.kind());
                 assert_eq!(decoded.container.version(), container.version());
+
+                // V6+ sends the schema with its storage encoding, so its size is known
+                if let MetadataContainer::Schema(schema) = &decoded.container {
+                    assert_eq!(
+                        schema.uncompressed_size().is_some(),
+                        protocol_version != ProtocolVersion::V4
+                    );
+                }
 
                 match decoded.container {
                     MetadataContainer::NodesConfiguration(decoded) => {

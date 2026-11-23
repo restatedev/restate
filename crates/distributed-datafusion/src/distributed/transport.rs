@@ -36,11 +36,15 @@ use restate_platform::sync::Mutex;
 use restate_types::GenerationalNodeId;
 use restate_types::net::ProtocolVersion;
 use restate_types::net::distributed_query::{
-    QueryTaskClose, QueryTaskExecute, QueryTaskId, QueryTaskInstall, QueryTaskInstalled,
-    QueryTaskNext, QueryTaskReplyBody, QueryTaskRequest,
+    QueryTaskAnalyze, QueryTaskClose, QueryTaskClosed, QueryTaskExecute, QueryTaskId,
+    QueryTaskInstall, QueryTaskNext, QueryTaskReplyBody, QueryTaskRequest,
 };
 
-use crate::{decode_record_batch, decode_schema};
+use crate::decode_schema;
+
+use super::analyze::{Arrival, ReportRegistry};
+use super::ipc;
+use super::report::{digest, read_report};
 
 type Tasks = Arc<Mutex<HashMap<TaskKey, RemoteTask>>>;
 
@@ -73,7 +77,7 @@ impl<N: NetworkSender> ChannelResolver for RestateChannelResolver<N> {
             .map_err(|err| exec_datafusion_err!("invalid query owner: {err}"))?;
         let connection = self
             .network
-            .get_connection(node, Swimlane::Datafusion)
+            .get_connection(node, Swimlane::QueryEngine)
             .in_tc_as_task(
                 &self.task_center,
                 TaskKind::InPlace,
@@ -86,6 +90,7 @@ impl<N: NetworkSender> ChannelResolver for RestateChannelResolver<N> {
         }
         Ok(Box::new(RestateWorkerChannel {
             connection,
+            owner: node,
             tasks: Arc::clone(&self.tasks),
         }))
     }
@@ -101,7 +106,23 @@ struct RemoteTask {
 
 struct RestateWorkerChannel {
     connection: Connection,
+    owner: GenerationalNodeId,
     tasks: Tasks,
+}
+
+/// Tells a test what the coordinator decided about each task's telemetry:
+/// whether its worker will report, what became of a report it read, and a
+/// task closed on cleanup without its report being read.
+#[cfg(test)]
+pub(super) static TELEMETRY: std::sync::Mutex<
+    Option<tokio::sync::mpsc::UnboundedSender<(QueryTaskId, String)>>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn telemetry(id: &QueryTaskId, what: String) {
+    if let Some(sender) = &*TELEMETRY.lock().unwrap() {
+        let _ = sender.send((id.clone(), what));
+    }
 }
 
 fn task_id(key: TaskKey, ctx: &TaskContext) -> Result<QueryTaskId> {
@@ -170,6 +191,8 @@ impl WorkerChannel for RestateWorkerChannel {
             }
         };
         let id = task_id(request.task_key, ctx)?;
+        let registry = ctx.session_config().get_extension::<ReportRegistry>();
+        let report_key = (request.task_key.stage_id, request.task_key.task_number);
         let metadata = ctx
             .session_config()
             .get_extension::<restate_storage_query_api::QueryMetadata>()
@@ -217,20 +240,34 @@ impl WorkerChannel for RestateWorkerChannel {
                 .collect(),
             redacted_sql: metadata.redacted_sql.clone(),
             planning_duration: metadata.planning_duration,
+            // Only an EXPLAIN ANALYZE asks for the task's report.
+            analyze: registry.as_ref().map(|_| QueryTaskAnalyze {}),
         };
+        let plan_digest = digest(&install.plan);
         let reply = rpc(&self.connection, QueryTaskRequest::Install(install)).await?;
-        match reply {
-            QueryTaskReplyBody::Installed(QueryTaskInstalled { schema: actual }) => {
-                if decode_schema(&actual).map_err(|err| DataFusionError::External(err.into()))?
+        // The registry waits for the task's report only if its worker will send one.
+        let registry = match reply {
+            QueryTaskReplyBody::Installed(installed) => {
+                if decode_schema(&installed.schema)
+                    .map_err(|err| DataFusionError::External(err.into()))?
                     != *schema
                 {
                     return exec_err!(
                         "installed task output schema differs from its planned schema"
                     );
                 }
+                registry.filter(|registry| {
+                    registry.installed(report_key, installed.analyze.is_some(), plan_digest);
+                    #[cfg(test)]
+                    telemetry(
+                        &id,
+                        format!("installed report={}", installed.analyze.is_some()),
+                    );
+                    installed.analyze.is_some()
+                })
             }
             _ => return exec_err!("worker did not acknowledge task installation"),
-        }
+        };
         self.tasks.lock().insert(
             request.task_key,
             RemoteTask {
@@ -243,13 +280,51 @@ impl WorkerChannel for RestateWorkerChannel {
 
         // Static source tasks have no work-unit or sampling traffic. The library's
         // request-stream EOS owns task lifetime; keep it alive until that EOS arrives.
+        let owner = self.owner;
         Ok(stream::once(async move {
             while let Some(message) = c2w.next().await {
                 if !matches!(message, CoordinatorToWorkerMsg::WorkUnitEos) {
                     return exec_err!("unsupported coordinator control message");
                 }
             }
-            guard.close().await?;
+            match registry {
+                // The report is optional: waiting for it is bounded by the query's
+                // one deadline, and failing to get it only marks it missing. A
+                // worker without reports closes as before.
+                Some(registry) => {
+                    let closed = tokio::time::timeout_at(registry.deadline(), guard.close()).await;
+                    registry.received(
+                        report_key,
+                        match closed {
+                            Ok(Ok(QueryTaskClosed {
+                                report: Some(bytes),
+                            })) => match read_report(&bytes) {
+                                Ok(report) => {
+                                    #[cfg(test)]
+                                    telemetry(&guard.id, "received".to_owned());
+                                    Arrival::Report(owner, report)
+                                }
+                                Err(reason) => {
+                                    tracing::debug!(%owner, reason, "Query task report unusable");
+                                    #[cfg(test)]
+                                    telemetry(&guard.id, "invalid".to_owned());
+                                    Arrival::Invalid
+                                }
+                            },
+                            Ok(Ok(QueryTaskClosed { report: None }) | Err(_)) | Err(_) => {
+                                #[cfg(test)]
+                                telemetry(&guard.id, "missing".to_owned());
+                                Arrival::Missing
+                            }
+                        },
+                    );
+                }
+                None => {
+                    guard.close().await?;
+                    #[cfg(test)]
+                    telemetry(&guard.id, "closed".to_owned());
+                }
+            }
             Ok(WorkerToCoordinatorMsg::LoadInfoEos)
         })
         .boxed())
@@ -293,29 +368,27 @@ impl WorkerChannel for RestateWorkerChannel {
         Ok(
             (request.target_partition_start..request.target_partition_end)
                 .map(|partition| {
-                    stream::try_unfold(task.clone(), move |task| async move {
-                        let reply = rpc(
-                            &task.connection,
-                            QueryTaskRequest::Next(QueryTaskNext {
-                                id: task.id.clone(),
-                                partition: partition as u64,
-                            }),
-                        )
-                        .await?;
-                        match reply {
-                            QueryTaskReplyBody::End(()) => Ok(None),
-                            QueryTaskReplyBody::Batch(bytes) => {
-                                let batch = decode_record_batch(&bytes)?;
-                                if batch.schema() != task.schema {
-                                    return exec_err!(
-                                        "remote task returned a different output schema"
-                                    );
+                    let decoder = ipc::Decoder::new(Arc::clone(&task.schema));
+                    stream::try_unfold(
+                        (task.clone(), decoder),
+                        move |(task, mut decoder)| async move {
+                            let reply = rpc(
+                                &task.connection,
+                                QueryTaskRequest::Next(QueryTaskNext {
+                                    id: task.id.clone(),
+                                    partition: partition as u64,
+                                }),
+                            )
+                            .await?;
+                            match reply {
+                                QueryTaskReplyBody::End(()) => Ok(None),
+                                QueryTaskReplyBody::Batch(data) => {
+                                    Ok(Some((decoder.decode(data)?, (task, decoder))))
                                 }
-                                Ok(Some((batch, task)))
+                                _ => exec_err!("unexpected task output response"),
                             }
-                            _ => exec_err!("unexpected task output response"),
-                        }
-                    })
+                        },
+                    )
                     .boxed()
                 })
                 .collect(),
@@ -335,23 +408,23 @@ struct TaskGuard {
 }
 
 impl TaskGuard {
-    async fn close(&mut self) -> Result<()> {
-        if let Some(connection) = &self.connection {
-            if !matches!(
-                rpc(
-                    connection,
-                    QueryTaskRequest::Close(QueryTaskClose {
-                        id: self.id.clone()
-                    })
-                )
-                .await?,
-                QueryTaskReplyBody::Closed(())
-            ) {
-                return exec_err!("unexpected task close response");
-            }
-            self.connection = None;
-        }
-        Ok(())
+    /// Closes the task; its reply, which may carry its encoded report.
+    async fn close(&mut self) -> Result<QueryTaskClosed> {
+        let Some(connection) = &self.connection else {
+            return Ok(QueryTaskClosed::default());
+        };
+        let QueryTaskReplyBody::Closed(closed) = rpc(
+            connection,
+            QueryTaskRequest::Close(QueryTaskClose {
+                id: self.id.clone(),
+            }),
+        )
+        .await?
+        else {
+            return exec_err!("unexpected task close response");
+        };
+        self.connection = None;
+        Ok(closed)
     }
 }
 
@@ -361,11 +434,15 @@ impl Drop for TaskGuard {
         if let Some(connection) = self.connection.take() {
             let id = self.id.clone();
             tokio::spawn(async move {
+                #[cfg(test)]
+                let closed = id.clone();
                 if let Err(error) =
                     rpc(&connection, QueryTaskRequest::Close(QueryTaskClose { id })).await
                 {
                     tracing::debug!(%error, "Query task cleanup RPC failed");
                 }
+                #[cfg(test)]
+                telemetry(&closed, "closed unread".to_owned());
             });
         }
     }

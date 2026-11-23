@@ -244,23 +244,38 @@ macro_rules! stage_index {
 
 stage_index!(
     /// Entries in the inbox stage.
-    InboxIndexTable, InboxIndexBinding, InboxKey, Stage::Inbox
+    InboxIndexTable,
+    InboxIndexBinding,
+    InboxKey,
+    Stage::Inbox
 );
 stage_index!(
     /// Entries in the running stage.
-    RunningIndexTable, RunningIndexBinding, RunningKey, Stage::Running
+    RunningIndexTable,
+    RunningIndexBinding,
+    RunningKey,
+    Stage::Running
 );
 stage_index!(
     /// Entries in the suspended stage.
-    SuspendedIndexTable, SuspendedIndexBinding, SuspendedKey, Stage::Suspended
+    SuspendedIndexTable,
+    SuspendedIndexBinding,
+    SuspendedKey,
+    Stage::Suspended
 );
 stage_index!(
     /// Entries in the paused stage.
-    PausedIndexTable, PausedIndexBinding, PausedKey, Stage::Paused
+    PausedIndexTable,
+    PausedIndexBinding,
+    PausedKey,
+    Stage::Paused
 );
 stage_index!(
     /// Entries in the finished stage.
-    FinishedIndexTable, FinishedIndexBinding, FinishedKey, Stage::Finished
+    FinishedIndexTable,
+    FinishedIndexBinding,
+    FinishedKey,
+    Stage::Finished
 );
 
 #[cfg(test)]

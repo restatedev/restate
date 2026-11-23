@@ -15,10 +15,10 @@ use std::sync::Arc;
 use datafusion::catalog::TableProvider;
 
 use restate_partition_store::locks_table::LocksBinding;
-use restate_storage_query_api::tables::locks::{Locks, LocksColumn};
+use restate_storage_query_api::tables::locks::Locks;
 
 use crate::context::SelectPartitions;
-use crate::schema_scan::SchemaScanner;
+use crate::schema_scan::LookupScanner;
 use crate::sharding::PartitionSource;
 use crate::source_registry::SourceRegistry;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
@@ -29,7 +29,10 @@ mod tests;
 crate::tables::table_adapter!(pub(crate) SysLocksTable, Locks);
 
 impl PartitionSource for SysLocksTable {
-    const ORDERING: &'static [LocksColumn] = &[LocksColumn::PartitionKey];
+    const ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] = <<LocksBinding as restate_storage_query_api::SchemaBinding>::Table as restate_storage_query_api::Table>::NATIVE_ORDERS;
+    /// A finite set of scope and lock-name pairs is looked up instead of scanned.
+    const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> =
+        Some(crate::access::select_lookup::<LocksBinding>);
 }
 
 impl SysLocksTable {
@@ -43,6 +46,6 @@ impl SysLocksTable {
     }
 
     pub(crate) fn create_local_scanner() -> impl ScanPartition {
-        SchemaScanner::<LocksBinding>::new()
+        LookupScanner::<LocksBinding>::new()
     }
 }

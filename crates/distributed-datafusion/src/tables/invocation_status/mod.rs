@@ -13,25 +13,43 @@ use std::ops::{ControlFlow, RangeBounds};
 use std::sync::Arc;
 
 use bilrost::{Message, OwnedMessage};
+use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::TableProvider;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::{PhysicalExpr, SendableRecordBatchStream};
 
+use restate_partition_store::index::RegisteredIndex;
 use restate_partition_store::invocation_status_table::{
-    InvocationStatusKey, InvocationStatusKeys, InvocationStatusRecords, InvocationStatusScan,
+    EntryIndexExecution, EntryIndexPath, EntryIndexRead, InvocationStatusKey, InvocationStatusKeys,
+    InvocationStatusRecords, InvocationStatusScan, ScanReason,
 };
 use restate_partition_store::keys::selection::KeySelection;
+use restate_partition_store::vqueue_table::{
+    EntryByCreated as StoredEntryIndex, EntryByStatusCreated as StoredStatusIndex,
+    EntryByStatusCreatedKey,
+};
+use restate_storage_query_api::ordering::NativeOrder;
+use restate_storage_query_api::schema::index::index_restriction;
 use restate_storage_query_api::selection::domain::Domain;
+use restate_storage_query_api::selection::{Selection, ValuePredicate};
+use restate_storage_query_api::tables::index::{
+    EntryByServiceCreated, EntryByServiceCreatedDomains, EntryByStatusCreated,
+    EntryByStatusCreatedDomains,
+};
 use restate_storage_query_api::tables::invocation_status::{
     InvocationStatus, InvocationStatusColumn,
 };
 use restate_storage_query_api::{LogicalSchema, RowSink, SelectionSchema};
+use restate_types::SemanticRestateVersion;
+use restate_types::config::Configuration;
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
 use restate_types::sharding::KeyRange;
 use restate_worker_api::PartitionCaptureRequirements;
 
-use crate::access::{PrimaryKeys, PrimaryRead, PrimarySelection};
+use crate::access::{
+    CompleteIndex, IndexAccess, IndexOrder, PrimaryKeys, PrimaryRead, PrimarySelection,
+};
 use crate::batches::{BatchSink, Batches, scan_rows_into};
 use crate::context::SelectPartitions;
 use crate::schema_scan::compile_selection;
@@ -41,7 +59,7 @@ use crate::statistics::{
     DEPLOYMENT_ROW_ESTIMATE, RowEstimate, SERVICE_ROW_ESTIMATE, TableStatisticsBuilder,
 };
 use crate::table_providers::{
-    PartitionReadContext, PartitionedTableProvider, PreparedPartitionRead, ReadMetrics,
+    InOrder, PartitionReadContext, PartitionedTableProvider, PreparedPartitionRead, ReadMetrics,
     ScanPartition,
 };
 
@@ -52,8 +70,142 @@ mod tests;
 crate::tables::table_adapter!(pub(crate) SysInvocationStatusTable, InvocationStatus);
 
 impl PartitionSource for SysInvocationStatusTable {
-    const ORDERING: &'static [InvocationStatusColumn] = &[InvocationStatusColumn::PartitionKey];
+    const ORDERS: &'static [NativeOrder] =
+        <InvocationStatusRecords as restate_storage_query_api::Table>::NATIVE_ORDERS;
+    const ID_COLUMN: Option<InvocationStatusColumn> = Some(InvocationStatusColumn::Id);
     const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> = Some(select_primary);
+    // A query whose statuses narrow the status index's lanes reads it; any
+    // other, the creation index, which checks statuses on each candidate.
+    const INDEXES: &'static [IndexAccess<InvocationStatus>] = &[
+        IndexAccess::of::<StatusIndex>(),
+        IndexAccess::of::<EntryIndex>(),
+    ];
+}
+
+/// The entry index `entry_by_created/1`, read for the invocations it finds. It
+/// holds every invocation once its partition has fully migrated to vqueues and
+/// the index is Complete; until then, each partition's read scans instead,
+/// before returning anything. Its policy: the query asks for the newest
+/// invocations, or the oldest, of all services or a few, so the read merges one
+/// creation hour's runs at a time, a run per service, and stops early:
+///
+/// ```sql
+/// SELECT id FROM sys_invocation_status
+/// [WHERE target_service_name = 'Promises' AND target_service_key IS NOT NULL]
+/// ORDER BY created_at DESC [NULLS FIRST | NULLS LAST]
+/// LIMIT 51
+/// ```
+///
+/// Oldest first (`ORDER BY created_at ASC … LIMIT 250`) reads each run from
+/// its oldest end. Another order scans instead. Other conditions, such as
+/// `status = 'scheduled'`, are checked on each candidate
+/// ([`CompleteIndex::NEEDS_ORDERED_DEMAND`]).
+struct EntryIndex;
+
+impl CompleteIndex for EntryIndex {
+    type Index = EntryByServiceCreated;
+    const INTRODUCED: SemanticRestateVersion = <StoredEntryIndex as RegisteredIndex>::INTRODUCED;
+
+    /// The read merges its runs by creation time, newest first. The index keeps
+    /// each entry's full creation timestamp, whose millisecond is the
+    /// invocation's `created_at`: the read checks that for every row.
+    ///
+    /// `created_at` is never NULL: every stored invocation status has a
+    /// creation time, and the row writer always sets it (`row.rs`).
+    const ORDERING: &'static [IndexOrder<InvocationStatusColumn>] = &[IndexOrder {
+        column: InvocationStatusColumn::CreatedAt,
+        options: SortOptions {
+            descending: true,
+            nulls_first: false,
+        },
+        never_null: true,
+    }];
+
+    /// The read merges one creation hour's runs at a time, one per service
+    /// with an invocation in that hour, so pages of all services qualify, as
+    /// do pages of any number of named ones. Where the index isn't maintained, every
+    /// partition would scan and sort instead, so the planner then scans.
+    fn useful(restriction: &EntryByServiceCreatedDomains) -> bool {
+        if !Configuration::pinned()
+            .common
+            .experimental
+            .is_track_entry_indexes_enabled()
+        {
+            return false;
+        }
+        // An empty list of services selects nothing.
+        !matches!(
+            restriction.target_service_name.to_predicate(),
+            Some(ValuePredicate::In(names)) if names.is_empty()
+        )
+    }
+
+    const NEEDS_ORDERED_DEMAND: bool = true;
+
+    /// A LIMIT without an ORDER BY, such as the UI's
+    /// `WHERE target_service_name IN ('Doss') LIMIT 250`, reads the newest
+    /// matches and stops, where the query names its services or bounds the
+    /// creation time: the read visits only their runs or hours. Without either,
+    /// it would visit every service's runs, and the scan, which stops at the
+    /// LIMIT too, reads instead.
+    fn useful_unordered(restriction: &EntryByServiceCreatedDomains) -> bool {
+        (restriction.target_service_name.to_predicate().is_some()
+            || restriction.created_at.to_predicate().is_some())
+            && Self::useful(restriction)
+    }
+}
+
+/// The entry index `entry_by_status_created/1`, read for the invocations of
+/// some statuses or outcomes. The public `status` and `completion_result`
+/// select the stages and stored statuses their entries can be in, the
+/// index's **lanes**: completed invocations are Finished, failed ones in any
+/// stored status but Succeeded, the others in any other stage. Each partition
+/// reads the lanes with keys, like `entry_by_created/1`, and merges them into
+/// creation order; until the index is Complete it scans instead. Its policy:
+/// the newest or oldest invocations of some statuses, of all services or a
+/// few, under the creation index's other conditions:
+///
+/// ```sql
+/// SELECT id FROM sys_invocation_status
+/// WHERE status = 'scheduled' [AND target_service_name IN ('Counter')]
+/// ORDER BY created_at DESC NULLS LAST
+/// LIMIT 250
+/// ```
+///
+/// A status condition that doesn't narrow the lanes, such as
+/// `status IN ('invoked', 'completed')`, leaves it unused.
+struct StatusIndex;
+
+impl CompleteIndex for StatusIndex {
+    type Index = EntryByStatusCreated;
+    const INTRODUCED: SemanticRestateVersion = <StoredStatusIndex as RegisteredIndex>::INTRODUCED;
+    /// As [`EntryIndex::ORDERING`]: the lanes merge by creation time.
+    const ORDERING: &'static [IndexOrder<InvocationStatusColumn>] = EntryIndex::ORDERING;
+
+    fn useful(restriction: &EntryByStatusCreatedDomains) -> bool {
+        if !Configuration::pinned()
+            .common
+            .experimental
+            .is_track_entry_indexes_enabled()
+        {
+            return false;
+        }
+        // An empty list of services selects nothing.
+        if let Some(ValuePredicate::In(names)) = restriction.target_service_name.to_predicate()
+            && names.is_empty()
+        {
+            return false;
+        }
+        let all = EntryByStatusCreatedKey::lanes(&Selection::All).count();
+        EntryByStatusCreatedKey::lanes(&restriction.to_selection()).count() < all
+    }
+
+    const NEEDS_ORDERED_DEMAND: bool = true;
+
+    /// The statuses always narrow the read to fewer lanes ([`Self::useful`]).
+    fn useful_unordered(restriction: &EntryByStatusCreatedDomains) -> bool {
+        Self::useful(restriction)
+    }
 }
 
 impl SysInvocationStatusTable {
@@ -144,6 +296,10 @@ impl ScanPartition for StatusScanner {
         true
     }
 
+    fn supports_index(&self, index: &str) -> bool {
+        index == EntryByServiceCreated::NAME || index == EntryByStatusCreated::NAME
+    }
+
     fn prepare_read(
         self: Arc<Self>,
         access: PrimaryRead,
@@ -151,14 +307,41 @@ impl ScanPartition for StatusScanner {
         predicate: Option<Arc<dyn PhysicalExpr>>,
         limit: Option<usize>,
     ) -> anyhow::Result<Arc<dyn PreparedPartitionRead>> {
-        let access = match access {
-            PrimaryRead::Scan => StatusAccess::Scan(Arc::new(InvocationStatusKeys::prepare(
+        let scan = || -> anyhow::Result<_> {
+            Ok(Arc::new(InvocationStatusKeys::prepare(
                 &compile_selection::<InvocationStatus>(predicate.as_ref())?,
                 crate::selection::key_range(&InvocationStatus::candidate_shard_keys(
                     predicate.as_slice(),
                 )?),
-            )?)),
-            PrimaryRead::Index(index) => anyhow::bail!("unsupported index '{index}'"),
+            )?))
+        };
+        let access = match access {
+            PrimaryRead::Scan => StatusAccess::Scan(scan()?),
+            PrimaryRead::Index(read) => {
+                anyhow::ensure!(
+                    self.supports_index(read.name()),
+                    "unsupported index '{}'",
+                    read.name()
+                );
+                // The planner's choice is fixed, its order too; the restriction is
+                // derived again from the shipped predicate, and the predicate stays
+                // residual.
+                let index = if read.name() == EntryByStatusCreated::NAME {
+                    let selection =
+                        index_restriction::<EntryByStatusCreated>(predicate.as_slice())?
+                            .map_or(Selection::Empty, |domains| domains.to_selection());
+                    EntryIndexRead::prepare_by_status(&selection, read.direction::<StatusIndex>()?)?
+                } else {
+                    let selection =
+                        index_restriction::<EntryByServiceCreated>(predicate.as_slice())?
+                            .map_or(Selection::Empty, |domains| domains.to_selection());
+                    EntryIndexRead::prepare(&selection, read.direction::<EntryIndex>()?)?
+                };
+                StatusAccess::EntryIndex {
+                    index: Arc::new(index),
+                    fallback: scan()?,
+                }
+            }
             PrimaryRead::MultiGet(keys) => {
                 keys.validate()?;
                 let decoded = InvocationKeys::decode(keys.encoded.as_slice())?;
@@ -193,6 +376,12 @@ impl ScanPartition for StatusScanner {
 enum StatusAccess {
     Scan(#[debug(skip)] Arc<KeySelection<InvocationStatusKey>>),
     Keys(Arc<[InvocationId]>),
+    EntryIndex {
+        #[debug(skip)]
+        index: Arc<EntryIndexRead>,
+        #[debug(skip)]
+        fallback: Arc<KeySelection<InvocationStatusKey>>,
+    },
 }
 
 #[derive(Debug)]
@@ -203,6 +392,33 @@ struct StatusRead {
 }
 
 impl PreparedPartitionRead for StatusRead {
+    /// An entry-index read that scans instead loses its creation order. The read
+    /// tells which path it took as it opens, before its first row.
+    fn execute_in_order(
+        &self,
+        context: PartitionReadContext,
+        batch_size: usize,
+        metrics: ReadMetrics,
+    ) -> anyhow::Result<(SendableRecordBatchStream, InOrder)> {
+        if !matches!(self.access, StatusAccess::EntryIndex { .. }) {
+            let rows = self.read(context, batch_size, metrics, None)?;
+            return Ok((rows, Box::pin(std::future::ready(true))));
+        }
+        let (chosen, path) = tokio::sync::oneshot::channel();
+        let rows = self.read(context, batch_size, metrics, Some(chosen))?;
+        // No answer means the read failed, or stopped before opening, so it
+        // returns no rows to order.
+        Ok((
+            rows,
+            Box::pin(async move {
+                match path.await {
+                    Ok(path) => matches!(path, EntryIndexPath::Index { .. }),
+                    Err(_) => true,
+                }
+            }),
+        ))
+    }
+
     fn capture_requirements(&self) -> PartitionCaptureRequirements {
         PartitionCaptureRequirements {
             storage: true,
@@ -216,7 +432,28 @@ impl PreparedPartitionRead for StatusRead {
         batch_size: usize,
         metrics: ReadMetrics,
     ) -> anyhow::Result<SendableRecordBatchStream> {
+        self.read(context, batch_size, metrics, None)
+    }
+}
+
+impl StatusRead {
+    /// An entry-index read tells `chosen` which path it takes.
+    fn read(
+        &self,
+        context: PartitionReadContext,
+        batch_size: usize,
+        metrics: ReadMetrics,
+        chosen: Option<tokio::sync::oneshot::Sender<EntryIndexPath>>,
+    ) -> anyhow::Result<SendableRecordBatchStream> {
         anyhow::ensure!(batch_size > 0, "batch size must be positive");
+        let memory = context.retained_memory("entry index read of sys_invocation_status");
+        // Which path each partition's entry-index read took, and how many
+        // statuses the index read fetched, for EXPLAIN ANALYZE.
+        let (index_reads, index_scans, index_statuses) = (
+            metrics.counter("entry_index_reads"),
+            metrics.counter("entry_index_scans"),
+            metrics.counter("entry_index_statuses"),
+        );
         let (store, executor) = context.storage_read()?;
         let (store, executor) = (store.clone(), executor.clone());
         let projection = Arc::clone(&self.projection);
@@ -243,6 +480,47 @@ impl PreparedPartitionRead for StatusRead {
                     }
                     InvocationStatusScan::Ids(keys.iter().copied().collect())
                 }
+                StatusAccess::EntryIndex { index, fallback } => {
+                    // Why a read scanned, and how much of the index a read
+                    // examined: the runs it merged and the keys it went through.
+                    let (not_migrated, not_complete, too_many_runs) = (
+                        metrics.counter("entry_index_scans_not_migrated"),
+                        metrics.counter("entry_index_scans_not_complete"),
+                        metrics.counter("entry_index_scans_too_many_runs"),
+                    );
+                    let runs = metrics.counter("entry_index_runs");
+                    let examined = metrics.counter("entry_index_keys_examined");
+                    InvocationStatusScan::EntryIndex {
+                        index,
+                        fallback,
+                        execution: Arc::new(EntryIndexExecution::new(
+                            memory,
+                            move |path| {
+                                match path {
+                                    EntryIndexPath::Index { runs: merged } => {
+                                        index_reads.add(1);
+                                        runs.add(merged);
+                                    }
+                                    EntryIndexPath::Scan(reason) => {
+                                        index_scans.add(1);
+                                        match reason {
+                                            ScanReason::NotMigrated => not_migrated.add(1),
+                                            ScanReason::NotComplete => not_complete.add(1),
+                                            ScanReason::TooManyRuns => too_many_runs.add(1),
+                                        }
+                                    }
+                                }
+                                if let Some(chosen) = chosen {
+                                    let _ = chosen.send(path);
+                                }
+                            },
+                            move |statuses, keys| {
+                                index_statuses.add(statuses);
+                                examined.add(usize::try_from(keys).unwrap_or(usize::MAX));
+                            },
+                        )),
+                    }
+                }
             };
             scan_rows_into::<InvocationStatusRecords, InvocationStatus, _>(
                 store,
@@ -258,6 +536,7 @@ impl PreparedPartitionRead for StatusRead {
                     tx.clone(),
                 ),
                 |(id, status), batches: &mut Batches<InvocationStatus>| {
+                    batches.set_record(&id);
                     if let ControlFlow::Break(result) = batches.append_with(|builder| {
                         row::append_row(builder, id, &status).map_err(|error| {
                             restate_storage_api::StorageError::Conversion(error.into())

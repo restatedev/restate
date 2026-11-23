@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::PathBuf;
 
 use http::HeaderName;
@@ -79,6 +79,60 @@ pub struct AdminOptions {
     /// Since v1.8.2
     pub reconfiguration_grace_period: FriendlyDuration,
 
+    /// # Leader handover policy
+    ///
+    /// When the cluster controller moves a partition's leadership to another replica while the
+    /// current leader is healthy, for example after a node came back or joined the cluster.
+    /// The partition has no leader until the new leader has replayed the log up to the point
+    /// where it took over, so moving leadership to a replica that is far behind makes the
+    /// partition unavailable for that long.
+    ///
+    /// * `catch-up-time`: move leadership only once the new leader is estimated to catch up with
+    ///   the log within `leader-handover-max-catch-up-time`. The same applies to replica set
+    ///   changes that remove the current leader.
+    /// * `immediate`: move leadership as soon as the new leader has finished its initial replay.
+    ///
+    /// Leadership always fails over immediately when the current leader is down.
+    ///
+    /// Default: `catch-up-time`
+    ///
+    /// Since v1.8.2
+    pub leader_handover_policy: LeaderHandoverPolicy,
+
+    /// # Leader handover maximum catch-up time
+    ///
+    /// With the `catch-up-time` leader handover policy, a replica only takes over leadership from
+    /// a healthy leader if it is estimated to replay the rest of the log within this time. The
+    /// estimate is the number of records the replica is behind divided by its replay rate.
+    ///
+    /// Default: 3 seconds
+    ///
+    /// Since v1.8.2
+    pub leader_handover_max_catch_up_time: NonZeroFriendlyDuration,
+
+    /// # Leader handover probe interval
+    ///
+    /// With the `catch-up-time` leader handover policy, how often the cluster controller measures
+    /// the replay rate of replicas and checks the progress of a replica that is catching up to take
+    /// over leadership.
+    ///
+    /// Default: 10 seconds
+    ///
+    /// Since v1.8.2
+    pub leader_handover_probe_interval: NonZeroFriendlyDuration,
+
+    /// # Leader handover maximum attempts
+    ///
+    /// With the `catch-up-time` leader handover policy, how many rounds a replica gets to catch up
+    /// with the log before leadership is moved to it anyway. A round ends when the replica has
+    /// replayed the log up to where it was when the round started. A replica that falls further
+    /// behind while it catches up gets all rounds as well.
+    ///
+    /// Default: 5
+    ///
+    /// Since v1.8.2
+    pub leader_handover_max_attempts: NonZeroU32,
+
     /// Disable serving the Restate Web UI on the admin port. Default is `false`.
     pub disable_web_ui: bool,
 
@@ -144,10 +198,34 @@ impl Default for AdminOptions {
             query_engine: Default::default(),
             heartbeat_interval: NonZeroFriendlyDuration::from_millis_unchecked(1500),
             reconfiguration_grace_period: FriendlyDuration::from_secs(5 * 60),
+            leader_handover_policy: LeaderHandoverPolicy::default(),
+            leader_handover_max_catch_up_time: NonZeroFriendlyDuration::from_secs_unchecked(3),
+            leader_handover_probe_interval: NonZeroFriendlyDuration::from_secs_unchecked(10),
+            leader_handover_max_attempts: NonZeroU32::new(5).expect("is non-zero"),
             #[cfg(any(test, feature = "test-util"))]
             disable_cluster_controller: false,
             disable_web_ui: false,
             storage_accounting_update_interval: None,
         }
     }
+}
+
+/// # Leader handover policy
+///
+/// When the cluster controller moves a partition's leadership away from a healthy leader.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, strum::Display)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum LeaderHandoverPolicy {
+    /// # Catch-up time
+    ///
+    /// Move leadership only to a replica that is estimated to catch up with the log within
+    /// `leader-handover-max-catch-up-time`.
+    #[default]
+    CatchUpTime,
+    /// # Immediate
+    ///
+    /// Move leadership as soon as a replica has finished its initial replay, whatever its lag.
+    Immediate,
 }

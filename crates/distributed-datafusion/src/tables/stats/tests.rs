@@ -93,7 +93,7 @@ async fn stats_tables_aggregate_filter_and_follow_lifecycle_across_stores() {
         ),
     ]);
     let mut config = Configuration::default();
-    // Tracked from the start, over empty partitions, the gauges are Ready at once.
+    // Tracked from the start, over empty partitions, the gauges are Complete at once.
     config.common.experimental.set_track_status_gauges(true);
     config.common.experimental.set_query_stats_tables(true);
     Configuration::set(config.clone());
@@ -174,11 +174,11 @@ async fn stats_tables_aggregate_filter_and_follow_lifecycle_across_stores() {
     let session = session.as_ref();
 
     assert_rows(session, "SELECT kind, stage, status, num_entries FROM sys_service_stats WHERE service_name = 'counter'", &[
-        &["invocation", "running", "started", "3"],
+        &["invocation", "running", "running", "3"],
         &["state-mutation", "inbox", "new", "1"],
     ]).await;
     assert_rows(session, &format!("SELECT service_name, stage, status, num_entries FROM sys_deployment_stats WHERE deployment_id = '{deployment}'"), &[
-        &["counter", "running", "started", "3"],
+        &["counter", "running", "running", "3"],
     ]).await;
     assert_rows(
         session,
@@ -209,7 +209,7 @@ async fn stats_tables_aggregate_filter_and_follow_lifecycle_across_stores() {
     assert_rows(
         session,
         "SELECT stage, status, SUM(num_entries) FROM sys_virtual_object_stats GROUP BY stage, status",
-        &[&["running", "started", "3"], &["inbox", "new", "1"]],
+        &[&["running", "running", "3"], &["inbox", "new", "1"]],
     )
     .await;
     for (predicate, expected) in [
@@ -227,7 +227,7 @@ async fn stats_tables_aggregate_filter_and_follow_lifecycle_across_stores() {
     }
     assert_rows(
         session,
-        "SELECT key, num_entries FROM sys_virtual_object_stats WHERE scope IS NULL AND stage = 'running' AND status = 'started' LIMIT 1",
+        "SELECT key, num_entries FROM sys_virtual_object_stats WHERE scope IS NULL AND stage = 'running' AND status = 'running' LIMIT 1",
         &[&["b", "1"]],
     )
     .await;
@@ -298,15 +298,23 @@ async fn stats_tables_aggregate_filter_and_follow_lifecycle_across_stores() {
     );
     tx.commit().await.unwrap();
     drop(tx);
+    // Running shows one effective status whatever is stored: the yielded bucket
+    // and the started ones sum into one row.
     assert_rows(
         session,
         "SELECT stage, status, num_entries FROM sys_deployment_stats WHERE stage = 'running'",
-        &[&["running", "started", "2"], &["running", "yielded", "1"]],
+        &[&["running", "running", "3"]],
     )
     .await;
     assert_rows(session,
-        "SELECT num_entries FROM sys_virtual_object_stats WHERE status = 'yielded' AND partition_key = 4337",
+        "SELECT num_entries FROM sys_virtual_object_stats WHERE status = 'running' AND partition_key = 4337",
         &[&["1"]]).await;
+    assert_rows(
+        session,
+        "SELECT num_entries FROM sys_virtual_object_stats WHERE status = 'yielded'",
+        &[],
+    )
+    .await;
 
     // Updating and deleting entries must be reflected in subsequent queries in the same session.
     for (store_index, pk) in [(0, 3337), (1, 5337)] {
@@ -341,7 +349,7 @@ async fn stats_tables_aggregate_filter_and_follow_lifecycle_across_stores() {
     assert_rows(
         session,
         "SELECT stage, status, num_entries FROM sys_deployment_stats WHERE num_entries > 0",
-        &[&["running", "yielded", "1"], &["paused", "started", "1"]],
+        &[&["running", "running", "1"], &["paused", "paused", "1"]],
     )
     .await;
     assert_rows(
@@ -351,8 +359,9 @@ async fn stats_tables_aggregate_filter_and_follow_lifecycle_across_stores() {
     )
     .await;
 
-    // One stable object key can expand to two statuses in the same stage. A later
-    // status-only update merges the buckets back into one SQL row with count two.
+    // One stable object key can hold two stored statuses in the same stage. Paused
+    // shows one effective status, so both buckets sum into one SQL row with count
+    // two, before and after a status-only update merges them into one bucket.
     let qid = VQueueId::custom(3337, "stats");
     let target = EntryTargetRef::VirtualObject {
         scope: Some("tenant"),
@@ -391,7 +400,7 @@ async fn stats_tables_aggregate_filter_and_follow_lifecycle_across_stores() {
         assert_rows(
             session,
             &format!("SELECT status, num_entries FROM {table} WHERE {predicate}"),
-            &[&["new", "1"], &["started", "1"]],
+            &[&["paused", "2"]],
         )
         .await;
     }
@@ -423,7 +432,7 @@ async fn stats_tables_aggregate_filter_and_follow_lifecycle_across_stores() {
             &format!(
                 "SELECT status, num_entries FROM {table} WHERE {predicate} AND num_entries > 1"
             ),
-            &[&["started", "2"]],
+            &[&["paused", "2"]],
         )
         .await;
         assert_rows(

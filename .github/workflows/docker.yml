@@ -62,6 +62,15 @@ on:
         required: false
         default: false
         type: boolean
+      cacheImageTarball:
+        description: "also save the `uploadImageAsTarball` tarball to the WarpBuild cache; its key is the `tarballCacheKey` output"
+        required: false
+        default: false
+        type: boolean
+    outputs:
+      tarballCacheKey:
+        description: "WarpBuild cache key of the image tarball (restored with `path: restate.tar`), or empty"
+        value: ${{ jobs.build-and-push-image.outputs.tarballCacheKey }}
 
   workflow_dispatch:
     inputs:
@@ -130,6 +139,8 @@ jobs:
       packages: write
     runs-on: ${{ inputs.runnerSize == '32x' && 'warp-ubuntu-latest-x64-32x' || inputs.runnerSize == '16x' && 'warp-ubuntu-latest-x64-16x' || inputs.parca && 'warp-ubuntu-latest-x64-32x' || 'warp-ubuntu-latest-x64-16x' }}
     timeout-minutes: ${{ inputs.parca && 140 || 70 }}
+    outputs:
+      tarballCacheKey: ${{ steps.cache-tarball.outcome == 'success' && steps.cache-tarball-key.outputs.key || '' }}
 
     steps:
       - name: Checkout repository
@@ -264,8 +275,11 @@ jobs:
           flavor: |
             latest=${{ (steps.is-latest.outputs.is_latest == 'true') && 'true' || 'false' }}
             ${{ steps.prefix.outputs.value != '' && format('prefix={0},onlatest=true', steps.prefix.outputs.value) || '' }}
+          # Non-`v` tags (e.g. custom builds dispatched on `my-build.2`) get their own name as an
+          # immutable image tag; release tags (`v*`) keep getting only the semver tags below.
           tags: |
             type=ref,event=branch
+            type=ref,event=tag,enable=${{ !startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{version}}
             type=semver,pattern={{version}},suffix=-{{date 'YYYYMMDD'}}
             type=semver,pattern={{major}}.{{minor}}
@@ -342,6 +356,22 @@ jobs:
           path: restate.tar
           retention-days: 1
           if-no-files-found: error
+
+      # Test jobs restore the tarball from here instead of downloading the artifact. Artifact
+      # downloads use a single connection and took from seconds to over 6 minutes; the WarpBuild
+      # cache restores at a few hundred MB/s. Restoring needs the same `path` (it is part of the
+      # cache version). The key is per run, so a re-run of only the test jobs still finds it.
+      - name: Compute image tarball cache key
+        id: cache-tarball-key
+        if: ${{ inputs.uploadImageAsTarball != '' && inputs.cacheImageTarball }}
+        run: echo "key=docker-image-${{ inputs.uploadImageAsTarball }}-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+      - name: Save docker image tar to the WarpBuild cache
+        id: cache-tarball
+        if: ${{ inputs.uploadImageAsTarball != '' && inputs.cacheImageTarball }}
+        uses: WarpBuilds/cache/save@v1.4.13
+        with:
+          path: restate.tar
+          key: ${{ steps.cache-tarball-key.outputs.key }}
 
       - name: Extract debug symbols
         if: ${{ inputs.parca }}

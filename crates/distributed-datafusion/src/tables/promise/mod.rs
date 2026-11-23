@@ -18,12 +18,12 @@ use datafusion::physical_plan::PhysicalExpr;
 
 use restate_partition_store::promise_table::{PromiseBinding, ScopedPromiseBinding};
 use restate_storage_query_api::SelectionSchema;
-use restate_storage_query_api::tables::promise::{Promise, PromiseColumn};
+use restate_storage_query_api::tables::promise::Promise;
 use restate_util_string::ReString;
 
 use crate::QuerySource;
 use crate::context::SelectPartitions;
-use crate::schema_scan::SchemaScanner;
+use crate::schema_scan::LookupScanner;
 use crate::sharding::PartitionSource;
 use crate::source_registry::SourceRegistry;
 use crate::table_providers::PartitionedTableProvider;
@@ -55,7 +55,10 @@ impl QuerySource for ScopedPromiseSource {
     }
 }
 impl PartitionSource for LegacyPromiseSource {
-    const ORDERING: &'static [PromiseColumn] = &[PromiseColumn::PartitionKey];
+    const ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] = <<PromiseBinding as restate_storage_query_api::SchemaBinding>::Table as restate_storage_query_api::Table>::NATIVE_ORDERS;
+    /// A finite set of complete promise keys is looked up instead of read.
+    const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> =
+        Some(crate::access::select_lookup::<PromiseBinding>);
 
     /// The legacy layout holds only unscoped promises.
     fn can_read(filters: &[Arc<dyn PhysicalExpr>]) -> anyhow::Result<bool> {
@@ -65,7 +68,10 @@ impl PartitionSource for LegacyPromiseSource {
     }
 }
 impl PartitionSource for ScopedPromiseSource {
-    const ORDERING: &'static [PromiseColumn] = &[PromiseColumn::PartitionKey];
+    const ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] = <<ScopedPromiseBinding as restate_storage_query_api::SchemaBinding>::Table as restate_storage_query_api::Table>::NATIVE_ORDERS;
+    /// A finite set of complete promise keys is looked up instead of read.
+    const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> =
+        Some(crate::access::select_lookup::<ScopedPromiseBinding>);
 }
 
 impl SysPromiseTable {
@@ -80,10 +86,10 @@ impl SysPromiseTable {
     }
 
     pub(crate) fn register_scanners(sources: &SourceRegistry) {
-        sources.register_declared_scanner::<LegacyPromiseSource>(Arc::new(SchemaScanner::<
+        sources.register_declared_scanner::<LegacyPromiseSource>(Arc::new(LookupScanner::<
             PromiseBinding,
         >::new()));
-        sources.register_declared_scanner::<ScopedPromiseSource>(Arc::new(SchemaScanner::<
+        sources.register_declared_scanner::<ScopedPromiseSource>(Arc::new(LookupScanner::<
             ScopedPromiseBinding,
         >::new()));
     }

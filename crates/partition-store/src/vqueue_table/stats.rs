@@ -35,6 +35,7 @@ use crate::stats::{EncodeStatKey, Stat};
 /// Counts by service, handler and entry kind.
 pub(crate) static SERVICE_STATS: IndexDefinition = IndexDefinition {
     name: ServiceStats::DEFINITION,
+    introduced: ServiceStats::INTRODUCED,
     kind: IndexKind::Aggregate,
     apply: apply_service_stats,
     can_fill: true,
@@ -43,6 +44,7 @@ pub(crate) static SERVICE_STATS: IndexDefinition = IndexDefinition {
 /// Counts by pinned deployment and service.
 pub(crate) static DEPLOYMENT_STATS: IndexDefinition = IndexDefinition {
     name: DeploymentStats::DEFINITION,
+    introduced: DeploymentStats::INTRODUCED,
     kind: IndexKind::Aggregate,
     apply: apply_deployment_stats,
     can_fill: true,
@@ -51,6 +53,7 @@ pub(crate) static DEPLOYMENT_STATS: IndexDefinition = IndexDefinition {
 /// Counts by virtual object, handler and entry kind.
 pub(crate) static VIRTUAL_OBJECT_STATS: IndexDefinition = IndexDefinition {
     name: VirtualObjectStats::DEFINITION,
+    introduced: VirtualObjectStats::INTRODUCED,
     kind: IndexKind::Aggregate,
     apply: apply_virtual_object_stats,
     can_fill: true,
@@ -220,8 +223,8 @@ mod tests {
         let scope = IndexScope {
             partition: tx.partition_id(),
             index: tx
-                .maintained_indexes()
-                .ready_index(S::DEFINITION, IndexKind::Aggregate)
+                .published_registry()
+                .complete_index(S::DEFINITION, IndexKind::Aggregate)
                 .unwrap(),
         };
         let mut encoded = Vec::new();
@@ -407,7 +410,7 @@ mod tests {
         };
         let size = tx.estimated_size_in_bytes();
         let header = tx.get_vqueue_entry_status(&id).await.unwrap().unwrap();
-        tx.maintained_indexes().apply(
+        tx.published_registry().apply(
             &mut tx,
             &context,
             &EntryChange::Update {

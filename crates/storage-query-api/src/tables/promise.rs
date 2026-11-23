@@ -56,6 +56,28 @@ define_schema! {
     }
 }
 
+/// The most promise keys one alternative of a query may name for V2 to look
+/// promises up by key instead of reading their workflows. Pinning every key
+/// column names their combinations: `service_key IN (…300…) AND key IN (…50…)`
+/// names 15,000 keys. Above this many, that alternative reads its workflows
+/// instead, with the same rows.
+pub const MAX_LOOKUP_KEYS: usize = 10_000;
+
+/// The promise keys one alternative of a query names, restricted to `scope`, up
+/// to [`MAX_LOOKUP_KEYS`] of them ([`super::state::named_object_keys`]).
+pub fn named_promise_keys(
+    scope: Domain<Option<ReString>>,
+    domains: &PromiseDomains,
+) -> Domain<super::state::ObjectKeyId> {
+    super::state::named_object_keys(
+        scope,
+        &domains.service_name,
+        &domains.service_key,
+        &domains.key,
+        MAX_LOOKUP_KEYS,
+    )
+}
+
 /// A borrowed promise row.
 pub struct PromiseView<'a> {
     pub partition_key: PartitionKey,

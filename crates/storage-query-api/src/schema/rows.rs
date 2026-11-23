@@ -19,7 +19,7 @@ use datafusion::arrow::datatypes::{ArrowPrimitiveType, ByteArrayType, DataType};
 use restate_storage_api::vqueue_table::{Stage, Status};
 use restate_types::identifiers::{BaseEntryId, CanonicalEntryId, InvocationId};
 use restate_types::time::MillisSinceEpoch;
-use restate_types::vqueues::{EntryKind, VQueueId};
+use restate_types::vqueues::{EffectiveStatus, EntryKind, VQueueId};
 use restate_util_string::ReString;
 
 /// Documentation for an exposed column, generated with its representation.
@@ -48,20 +48,30 @@ impl StringValue for String {
 }
 
 impl StringValue for EntryKind {
+    /// NULL for the `Unknown` sentinel, which is no value.
     fn string_value(&self) -> Option<&str> {
-        Some(self.as_str())
+        self.name()
     }
 }
 
 impl StringValue for Stage {
+    /// NULL for the `Unknown` sentinel, which is no value.
     fn string_value(&self) -> Option<&str> {
-        Some(self.as_str())
+        self.name()
     }
 }
 
 impl StringValue for Status {
+    /// NULL for the `Unknown` sentinel, which is no value.
     fn string_value(&self) -> Option<&str> {
-        Some(self.as_str())
+        self.name()
+    }
+}
+
+impl StringValue for EffectiveStatus {
+    /// NULL for the `Unknown` sentinel, which is no value.
+    fn string_value(&self) -> Option<&str> {
+        self.name()
     }
 }
 

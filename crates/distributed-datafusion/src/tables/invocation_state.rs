@@ -29,10 +29,10 @@ use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 crate::tables::table_adapter!(pub(crate) SysInvocationStateTable, SysInvocationStateBuilder, InvocationState);
 
 impl crate::sharding::PartitionSource for SysInvocationStateTable {
-    const ORDERING:
-        &'static [restate_storage_query_api::tables::invocation_state::InvocationStateColumn] = &[
-        restate_storage_query_api::tables::invocation_state::InvocationStateColumn::PartitionKey,
-    ];
+    const ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] =
+        &[&[restate_storage_query_api::ordering::OrderTerm::Column(
+            "partition_key",
+        )]];
 }
 
 impl SysInvocationStateTable {
@@ -204,6 +204,7 @@ mod tests {
                 invoker: Some(reports.into()),
                 ..Default::default()
             },
+            timing: restate_worker_api::CaptureTiming::admitted_at(tokio::time::Instant::now()),
         });
         let batches = prepared
             .execute(context.clone(), 1, ReadMetrics::default())

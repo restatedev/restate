@@ -80,6 +80,7 @@
 
 use std::marker::PhantomData;
 use std::ops::Bound::{self, Excluded, Included, Unbounded};
+use std::ops::Range;
 use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
@@ -156,6 +157,11 @@ impl OrderedKeyField {
         self.tag
     }
 
+    /// Borrows this field's encoding from the front of `input` and advances past it.
+    pub(crate) fn take_encoded<'a>(&self, input: &mut &'a [u8]) -> Result<&'a [u8]> {
+        (self.take)(input)
+    }
+
     /// Associates a logical column tag with its physical codec.
     pub(crate) const fn new<C: OrderedFieldCodec>(tag: &'static str) -> Self {
         Self {
@@ -214,6 +220,23 @@ pub(crate) enum PreparedFieldPredicate {
 }
 
 impl PreparedFieldPredicate {
+    /// The bytes it holds beyond its own size.
+    fn heap_bytes(&self) -> usize {
+        match self {
+            Self::Value(value) => value.heap_bytes(),
+            Self::Ranges(ranges) => ranges.heap_bytes(),
+            Self::Prefix {
+                prefix,
+                nullable_lower,
+                upper,
+            } => {
+                prefix.encoded_lower_bound().len()
+                    + nullable_lower.as_ref().map_or(0, |lower| lower.len())
+                    + upper.as_ref().map_or(0, |upper| upper.len())
+            }
+        }
+    }
+
     /// Whether this is an equality or IN predicate over complete values.
     fn is_finite(&self) -> bool {
         matches!(self, Self::Value(value) if value.is_finite())
@@ -538,6 +561,11 @@ pub struct KeySelection<K> {
     /// store's own scope is intersected with it when a cursor is bound, so it can
     /// only narrow the read.
     scope: Option<HeaderBounds>,
+    /// The complete headers the read is restricted to, when there are several
+    /// ([`Self::restrict_headers`]): sorted, distinct, and inside `scope`, which
+    /// spans them. A cursor seeks from one listed header to the next instead of
+    /// visiting every header in between.
+    headers: Option<Arc<[Bytes]>>,
     _key: PhantomData<fn() -> K>,
 }
 
@@ -549,14 +577,49 @@ pub(crate) enum KeyMatch {
     /// The key does not match; advance normally. Used when a live scope rejects
     /// a key that the static bounds admit.
     Skip,
-    /// A strictly forward, in-bounds absolute byte target. Seek to the first key
-    /// at or after it and evaluate that key again; the target need not exist.
-    Seek(Bytes),
+    /// Seek to the first key at or after [`KeySelectionCursor::seek_target`], a
+    /// strictly forward, in-bounds absolute byte target, and evaluate that key
+    /// again; the target need not exist.
+    Seek,
     /// No later key in this scan interval can match.
     Done,
 }
 
 impl<K> KeySelection<K> {
+    /// The bytes the selection holds, for a read that charges it: its field and
+    /// predicate slots with their lists and prefixes, its literals, its listed
+    /// headers and its scope. Not counted: the allocator's own overhead.
+    pub fn retained_bytes(&self) -> usize {
+        let fields = self
+            .fields
+            .iter()
+            .map(|field| {
+                field.predicates.capacity() * std::mem::size_of::<PreparedFieldPredicate>()
+                    + field
+                        .predicates
+                        .iter()
+                        .map(PreparedFieldPredicate::heap_bytes)
+                        .sum::<usize>()
+            })
+            .sum::<usize>();
+        let headers = self.headers.as_ref().map_or(0, |headers| {
+            headers.len() * std::mem::size_of::<Bytes>()
+                + headers.iter().map(Bytes::len).sum::<usize>()
+        });
+        self.fields.capacity() * std::mem::size_of::<PreparedField>()
+            + fields
+            + self.literals.len()
+            + headers
+            + self.scope.as_ref().map_or(0, |scope| scope.0.bound_bytes())
+    }
+
+    /// [`Self::retained_bytes`], plus the selection's own fields and the two
+    /// reference counts of the `Arc` it is shared behind: everything a
+    /// prepared, shared selection holds.
+    pub fn shared_retained_bytes(&self) -> usize {
+        size_of::<Self>() + 2 * size_of::<usize>() + self.retained_bytes()
+    }
+
     /// A selection that matches no key; its scan is `None`.
     pub fn empty() -> Self {
         Self {
@@ -574,6 +637,7 @@ impl<K> KeySelection<K> {
             empty: false,
             precision: SelectionPrecision::Exact,
             scope: None,
+            headers: None,
             _key: PhantomData,
         }
     }
@@ -581,6 +645,11 @@ impl<K> KeySelection<K> {
     /// Precision relative to the native selection used during preparation.
     pub fn precision(&self) -> SelectionPrecision {
         self.precision
+    }
+
+    /// Whether the selection matches no key.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.empty
     }
 
     /// Binds logical clauses to physical fields and collects their encoded literals.
@@ -652,14 +721,19 @@ impl<K> KeySelection<K> {
             empty: matches!(selection, Selection::Empty),
             ..Self::all()
         };
-        let Selection::Predicates(predicates) = selection else {
-            return Ok(result);
+        // A selection without clauses still takes the restrictions `derive`
+        // gives, such as a status index lane's pinned stage and status.
+        let predicates = match selection {
+            Selection::Empty => return Ok(result),
+            Selection::Predicates(predicates) if !predicates.is_unconstrained() => Some(predicates),
+            _ => None,
         };
-        if predicates.is_unconstrained() {
-            return Ok(result);
-        }
         let mut has_key_clauses = false;
-        for (column, _) in predicates.iter().filter(|(_, clauses)| !clauses.is_empty()) {
+        for (column, _) in predicates
+            .into_iter()
+            .flat_map(|predicates| predicates.iter())
+            .filter(|(_, clauses)| !clauses.is_empty())
+        {
             if K::FIELDS
                 .iter()
                 .any(|field| T::column_from_tag(field.tag()) == Some(column))
@@ -690,7 +764,8 @@ impl<K> KeySelection<K> {
                 }
                 _ => {}
             }
-            if let Some(column) = T::column_from_tag(schema.tag()) {
+            if let (Some(predicates), Some(column)) = (predicates, T::column_from_tag(schema.tag()))
+            {
                 for clause in predicates.for_column(column) {
                     match prepare(clause, &mut literals)? {
                         // A terminal field accepts only finite predicates.
@@ -843,10 +918,10 @@ impl<K> KeySelection<K> {
         let Some(scan) = self.scan_with_prefix(key_kind, prefix)? else {
             return Ok(None);
         };
-        // Share the fixed identity with the lower bound rather than copying it.
+        // Its own copy, so that no allocation is shared (see `retained_bytes`).
         let identity = match &scan {
             PhysicalScan::Prefix(_, start) | PhysicalScan::RangeExclusive(_, _, start, _) => {
-                start.slice(..prefix.len())
+                Bytes::copy_from_slice(&start[..prefix.len()])
             }
         };
         let scan = match &self.scope {
@@ -869,7 +944,9 @@ impl<K> KeySelection<K> {
             selection: self,
             live: None,
             position: Position {
-                scan,
+                // Copied so that the cursor owns its bounds outright: built by
+                // growing a buffer, they may hold spare capacity or share it.
+                scan: scan.to_exact(),
                 header,
                 offsets: Vec::with_capacity(if fields == 0 { 0 } else { fields + 1 }),
                 target: BytesMut::new(),
@@ -914,6 +991,59 @@ impl<K: KeySchema> KeySelection<K> {
         });
         self.empty = scan.is_none();
         self.scope = scan.map(HeaderBounds);
+        match self.headers.take() {
+            Some(headers) if !self.empty => self.restrict_headers(headers.iter().cloned()),
+            _ => self,
+        }
+    }
+
+    /// Restricts the read to `headers`, each one complete header of
+    /// `K::Header::LENGTH` bytes, such as the header of one partition key. Unlike
+    /// one interval covering them, the list lets a cursor seek from one listed
+    /// header straight to the next:
+    ///
+    /// ```text
+    /// headers listed: P3, P9
+    /// interval P3..=P9 visits   P3 P4 P5 P6 P7 P8 P9   (every object in between)
+    /// the list visits           P3                P9
+    /// ```
+    ///
+    /// Like [`Self::restrict_scope`], it can only narrow a read: headers outside
+    /// the current restriction are dropped. One header restricts the scope to it.
+    pub(crate) fn restrict_headers(mut self, headers: impl IntoIterator<Item = Bytes>) -> Self {
+        if self.empty {
+            return self;
+        }
+        let mut listed: Vec<Bytes> = headers
+            .into_iter()
+            .filter(|header| {
+                debug_assert_eq!(header.len(), K::Header::LENGTH);
+                self.scope
+                    .as_ref()
+                    .is_none_or(|scope| scope.0.contains_key(header))
+                    && self
+                        .headers
+                        .as_ref()
+                        .is_none_or(|current| current.binary_search(header).is_ok())
+            })
+            .collect();
+        listed.sort_unstable();
+        listed.dedup();
+        let kind = K::Header::KEY_KIND;
+        let scope = match listed.as_slice() {
+            [] => None,
+            [header] => Some(PhysicalScan::Prefix(kind, header.clone())),
+            [first, .., last] => {
+                let span = header_span(kind, first, last);
+                match (span, &self.scope) {
+                    (Some(span), Some(current)) => span.intersect(&current.0),
+                    (span, _) => span,
+                }
+            }
+        };
+        self.empty = scope.is_none();
+        self.scope = scope.map(HeaderBounds);
+        self.headers = (listed.len() > 1 && !self.empty).then(|| listed.into());
         self
     }
 
@@ -931,6 +1061,29 @@ impl<K: KeySchema> KeySelection<K> {
         let Some(bounds) = K::Header::bounds(scope) else {
             return Ok(None);
         };
+        if let Some(headers) = &self.headers {
+            // The listed headers this store owns: contiguous, as both are sorted.
+            let owned = |header: &Bytes| bounds.0.contains_key(header);
+            let Some(first) = headers.iter().position(owned) else {
+                return Ok(None);
+            };
+            let last = headers.iter().rposition(owned).unwrap_or(first);
+            if first == last {
+                let header = headers[first].clone();
+                return self.fixed_cursor(K::Header::KEY_KIND, &header);
+            }
+            let Some(scan) = header_span(K::Header::KEY_KIND, &headers[first], &headers[last])
+                .and_then(|span| span.intersect(&bounds.0))
+            else {
+                return Ok(None);
+            };
+            let header = CursorHeader::Listed {
+                length: K::Header::LENGTH,
+                headers: Arc::clone(headers),
+                owned: first..last + 1,
+            };
+            return Ok(Some(self.with_cursor(scan, header)));
+        }
         if let PhysicalScan::Prefix(kind, prefix) = &bounds.0 {
             return self.fixed_cursor(*kind, prefix);
         }
@@ -977,9 +1130,78 @@ pub(crate) struct KeySelectionCursor<K> {
 }
 
 impl<K> KeySelectionCursor<K> {
+    /// Whether every key the cursor visits has one header, as an index's keys
+    /// have: a bucket of a read's keys is then one range of them.
+    pub(crate) fn fixed_header(&self) -> bool {
+        matches!(self.position.header, CursorHeader::Fixed(_))
+    }
+
     /// The static bounds the caller must enforce while iterating and seeking.
     pub(crate) fn scan(&self) -> &PhysicalScan<Bytes> {
         &self.position.scan
+    }
+
+    /// The target of the last [`KeyMatch::Seek`], until the next evaluation.
+    pub(crate) fn seek_target(&self) -> &[u8] {
+        &self.position.target
+    }
+
+    /// The end of what the selection may match among the keys that start with
+    /// `prefix`, a key's header and first `fields` fields: every key it matches
+    /// there sorts before it, and it sorts no later than the first key past
+    /// `prefix`. Built like the end of the scan interval, from the bounds of the
+    /// fields after `prefix`, in the seek storage, and lent until the next
+    /// evaluation. A read that goes backwards starts there.
+    pub(crate) fn end_within(&mut self, prefix: &[u8], fields: usize) -> Result<&[u8]> {
+        let target = &mut self.position.target;
+        target.clear();
+        target.extend_from_slice(prefix);
+        let literals = &self.selection.literals;
+        for field in self.selection.fields.iter().skip(fields) {
+            let FieldBounds::Interval { lower, upper } = field.bounds(literals) else {
+                break;
+            };
+            if let (Included(lo), Included(hi)) = (lower, upper)
+                && lo == hi
+            {
+                target.extend_from_slice(hi);
+                continue;
+            }
+            match upper {
+                Included(value) => target.extend_from_slice(value),
+                Excluded(value) => {
+                    target.extend_from_slice(value);
+                    return Ok(&target[..]);
+                }
+                Unbounded => {}
+            }
+            break;
+        }
+        // Past every key that starts with the bytes so far, carrying no further
+        // than `prefix`; without a carry, past every key under `prefix`.
+        if !advance_prefix(target, prefix.len()) {
+            target.truncate(prefix.len());
+            if !advance_prefix(target, 0) {
+                return Err(StorageError::DataIntegrityError);
+            }
+        }
+        Ok(&target[..])
+    }
+
+    /// The bytes this cursor holds of its own, at capacity: its bounds and fixed
+    /// header, allocated at their exact length and not shared, and its seek
+    /// storage, which only grows. The selection, including a list of headers it
+    /// shares with the cursor, and a live selection installed by the caller, are
+    /// not counted.
+    pub(crate) fn retained_bytes(&self) -> usize {
+        let identity = match &self.position.header {
+            CursorHeader::Fixed(identity) => identity.len(),
+            CursorHeader::Varying(_) | CursorHeader::Listed { .. } => 0,
+        };
+        self.position.scan.bound_bytes()
+            + identity
+            + self.position.offsets.capacity() * std::mem::size_of::<usize>()
+            + self.position.target.capacity()
     }
 
     /// Installs a tighter live selection. It replaces the previous live one rather
@@ -1002,17 +1224,25 @@ impl<K> KeySelectionCursor<K> {
     /// passed, not that every field was decoded and validated. The caller keeps the
     /// iterator inside the scan bounds; this method only checks the header.
     pub(crate) fn evaluate(&mut self, key: &[u8]) -> Result<KeyMatch> {
+        if let Some(next) = self.position.unlisted(key)? {
+            return self.position.seek_listed(&self.selection, next);
+        }
         let payload = match &self.position.header {
             CursorHeader::Fixed(identity) => key.strip_prefix(identity.as_ref()),
-            CursorHeader::Varying(length) => key.get(*length..),
+            CursorHeader::Varying(length) | CursorHeader::Listed { length, .. } => {
+                key.get(*length..)
+            }
         }
         .ok_or(StorageError::DataIntegrityError)?;
-        if self
-            .live
-            .as_ref()
-            .and_then(|live| live.scope.as_ref())
-            .is_some_and(|scope| !scope.0.contains_key(key))
-        {
+        if self.live.as_ref().is_some_and(|live| {
+            live.scope
+                .as_ref()
+                .is_some_and(|scope| !scope.0.contains_key(key))
+                || live
+                    .headers
+                    .as_ref()
+                    .is_some_and(|headers| !headers.iter().any(|header| key.starts_with(header)))
+        }) {
             return Ok(KeyMatch::Skip);
         }
         for selection in std::iter::once(self.selection.as_ref()).chain(self.live.as_ref()) {
@@ -1028,6 +1258,8 @@ impl<K> KeySelectionCursor<K> {
 }
 
 /// The scan's bounds and reusable seek storage, shared by the static and live selections.
+/// Seek targets are lent from the storage until the next evaluation, so it stays
+/// with the cursor and keeps its capacity from key to key.
 struct Position {
     scan: PhysicalScan<Bytes>,
     header: CursorHeader,
@@ -1038,6 +1270,13 @@ struct Position {
 enum CursorHeader {
     Fixed(Bytes),
     Varying(usize),
+    /// Headers of `length` bytes from the selection's list: only `owned` of them,
+    /// the ones this store owns, in order.
+    Listed {
+        length: usize,
+        headers: Arc<[Bytes]>,
+        owned: Range<usize>,
+    },
 }
 
 impl Position {
@@ -1052,7 +1291,7 @@ impl Position {
     ) -> Result<KeyMatch> {
         let identity = match &self.header {
             CursorHeader::Fixed(identity) => identity.as_ref(),
-            CursorHeader::Varying(length) => &key[..*length],
+            CursorHeader::Varying(length) | CursorHeader::Listed { length, .. } => &key[..*length],
         };
         for index in (0..=rejected).rev() {
             let start = self.offsets[index];
@@ -1083,12 +1322,21 @@ impl Position {
             if !self.scan.contains_key(&self.target) {
                 return Ok(KeyMatch::Done);
             }
-            return Ok(KeyMatch::Seek(self.target.split().freeze()));
+            return Ok(KeyMatch::Seek);
         }
-        // The suffix is exhausted within this header. Seek to the first key after
-        // it; carries may shorten the header, so no suffix bound is appended.
-        let CursorHeader::Varying(length) = self.header else {
-            return Ok(KeyMatch::Done);
+        // The suffix is exhausted within this header. Seek to the next listed
+        // header, or to the first key after this one; carries may shorten the
+        // header, so no suffix bound is appended.
+        let length = match &self.header {
+            CursorHeader::Fixed(_) => return Ok(KeyMatch::Done),
+            CursorHeader::Varying(length) => *length,
+            CursorHeader::Listed { .. } => {
+                let next = match self.listed(key)? {
+                    Ok(index) => index + 1,
+                    Err(next) => next,
+                };
+                return self.seek_listed(selection, next);
+            }
         };
         self.target.clear();
         self.target.extend_from_slice(&key[..length]);
@@ -1097,8 +1345,70 @@ impl Position {
         {
             return Ok(KeyMatch::Done);
         }
-        Ok(KeyMatch::Seek(self.target.split().freeze()))
+        Ok(KeyMatch::Seek)
     }
+}
+
+impl Position {
+    /// Where the header of `key` is among the owned listed headers: `Ok` with its
+    /// index if it is one, `Err` with the index of the next one otherwise.
+    fn listed(&self, key: &[u8]) -> Result<std::result::Result<usize, usize>> {
+        let CursorHeader::Listed {
+            length,
+            headers,
+            owned,
+        } = &self.header
+        else {
+            return Err(StorageError::DataIntegrityError);
+        };
+        let header = key.get(..*length).ok_or(StorageError::DataIntegrityError)?;
+        Ok(headers[owned.clone()]
+            .binary_search_by(|listed| listed.as_ref().cmp(header))
+            .map(|index| owned.start + index)
+            .map_err(|index| owned.start + index))
+    }
+
+    /// For listed headers, the index of the next one when `key`'s header is not
+    /// listed. Its keys are skipped as a whole.
+    fn unlisted(&self, key: &[u8]) -> Result<Option<usize>> {
+        if !matches!(self.header, CursorHeader::Listed { .. }) {
+            return Ok(None);
+        }
+        Ok(self.listed(key)?.err())
+    }
+
+    /// Seeks to the listed header at `index` and the smallest suffix `selection`
+    /// accepts under it, or ends the read past the last owned header.
+    fn seek_listed<K>(&mut self, selection: &KeySelection<K>, index: usize) -> Result<KeyMatch> {
+        let Position {
+            scan,
+            header: CursorHeader::Listed { headers, owned, .. },
+            target,
+            ..
+        } = self
+        else {
+            return Err(StorageError::DataIntegrityError);
+        };
+        if index >= owned.end {
+            return Ok(KeyMatch::Done);
+        }
+        target.clear();
+        target.extend_from_slice(&headers[index]);
+        if !selection.append_minimum(0, target)? || !scan.contains_key(&target[..]) {
+            return Ok(KeyMatch::Done);
+        }
+        Ok(KeyMatch::Seek)
+    }
+}
+
+/// The bytes from header `first` through header `last` inclusive, as one scan
+/// of `kind`. `None` if nothing follows `last`.
+fn header_span(kind: KeyKind, first: &Bytes, last: &Bytes) -> Option<PhysicalScan<Bytes>> {
+    let mut end = BytesMut::from(last.as_ref());
+    if !advance_prefix(&mut end, 0) {
+        return None;
+    }
+    HeaderBounds::range(kind, first.clone(), end.freeze()).map(|bounds| bounds.0)
 }
 
 /// Moves past a complete prefix, truncating trailing 0xff bytes. Restricting the

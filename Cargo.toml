@@ -35,11 +35,10 @@ resolver = "2"
 version = "1.8.2-dev"
 authors = ["restate.dev"]
 edition = "2024"
-rust-version = "1.98.1"
+rust-version = "1.100.0"
 license = "BUSL-1.1"
 repository = "https://github.com/restatedev/restate"
-homepage = "https://github.com/restatedev/restate"
-description = "Restate makes distributed applications easy!"
+homepage = "https://restate.dev"
 
 [workspace.dependencies]
 # Own crates
@@ -57,7 +56,6 @@ restate-core-derive = { path = "crates/core/derive" }
 restate-distributed-datafusion = { path = "crates/distributed-datafusion" }
 restate-encoding = { path = "crates/encoding" }
 restate-errors = { path = "crates/errors" }
-restate-fs-util = { path = "crates/fs-util" }
 restate-futures-util = { path = "crates/futures-util" }
 restate-hyper-uds = { path = "crates/hyper-uds" }
 restate-ingress-http = { path = "crates/ingress-http" }
@@ -77,7 +75,6 @@ restate-partition-store = { path = "crates/partition-store" }
 restate-platform = { path = "crates/platform" }
 restate-rocksdb = { path = "crates/rocksdb" }
 restate-serde-util = { path = "crates/serde-util" }
-restate-server = { path = "server" }
 restate-lite = { path = "lite" }
 restate-service-client = { path = "crates/service-client" }
 restate-service-protocol = { path = "crates/service-protocol" }
@@ -118,6 +115,7 @@ anyhow = "1"
 arc-swap = "1.9"
 arrayvec = { version = "0.7" }
 arrow = { version = "59.3.0", default-features = false }
+arrow-buffer = { version = "59.3.0", default-features = false }
 assert2 = "0.4.1"
 async-channel = "2.5.0"
 async-trait = "0.1.89"

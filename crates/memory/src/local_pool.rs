@@ -144,7 +144,7 @@ impl SharedState {
     fn return_memory(&self, amount: usize) {
         let result = self
             .in_flight
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 // Only subtract if the budget is alive (dead bit not set).
                 // If dead, return None to signal the CAS should fail.
                 (current & DEAD_BIT == 0).then_some(current - amount)
@@ -418,6 +418,37 @@ impl LocalMemoryPool {
             local: Arc::clone(&self.shared.notify).notified_owned(),
             global: self.shared.pool.availability_notified_owned(),
         }
+    }
+}
+
+/// A budget that a read reserves from: a [`LocalMemoryPool`], or one that is
+/// [lent](crate::LentMemoryPool).
+pub trait ReserveMemory {
+    /// See [`LocalMemoryPool::try_reserve`].
+    fn try_reserve(&mut self, size: usize) -> Option<LocalMemoryLease>;
+
+    /// Reserves `size` bytes, waiting for memory to be released if needed.
+    /// Fails if waiting can't help.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel-safe: no memory is reserved until this returns.
+    fn reserve(
+        &mut self,
+        size: usize,
+    ) -> impl Future<Output = Result<LocalMemoryLease, OutOfMemory>> + Send;
+}
+
+impl ReserveMemory for LocalMemoryPool {
+    fn try_reserve(&mut self, size: usize) -> Option<LocalMemoryLease> {
+        LocalMemoryPool::try_reserve(self, size)
+    }
+
+    fn reserve(
+        &mut self,
+        size: usize,
+    ) -> impl Future<Output = Result<LocalMemoryLease, OutOfMemory>> + Send {
+        LocalMemoryPool::reserve(self, size, 0)
     }
 }
 

@@ -196,6 +196,9 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
                     PartitionFeatureChange::EnableByteOffsets => {
                         self.processor.start_byte_offsets(self.txn, lsn)?;
                     }
+                    // Only affects transitions applied after this point; entries keep what they
+                    // recorded before.
+                    PartitionFeatureChange::EnableVqLifecycleRefined => {}
                     // Replicas could store state mutations enqueued before v1.8.0 under different
                     // ids (#5416). Removing all pending ones at this log position leaves every
                     // replica with the same entries. The cleanup commits the removals itself; the
@@ -264,6 +267,7 @@ mod tests {
     use std::sync::Arc;
 
     use googletest::prelude::*;
+    use tokio_util::sync::CancellationToken;
 
     use restate_bifrost::{Bifrost, DataRecord};
     use restate_core::TestCoreEnv;
@@ -271,16 +275,23 @@ mod tests {
     use restate_rocksdb::RocksDbManager;
     use restate_storage_api::Transaction;
     use restate_storage_api::fsm_table::ReadFsmTable;
+    use restate_storage_api::inbox_table::{InboxEntry, WriteInboxTable};
+    use restate_storage_api::invocation_status_table::{
+        CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, InvocationStatus,
+        PreFlightInvocationMetadata, ScheduledInvocation, WriteInvocationStatusTable,
+    };
     use restate_types::cluster::cluster_state::PartitionProcessorStatus;
     use restate_types::config::Configuration;
-    use restate_types::identifiers::{PartitionId, PartitionKey};
+    use restate_types::identifiers::{BaseEntryId, InvocationId, PartitionId, PartitionKey};
+    use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType};
+    use restate_types::journal_v2::{NotificationId, UnresolvedFuture};
     use restate_types::logs::{Keys, Lsn, SequenceNumber};
     use restate_types::partitions::Partition;
     use restate_types::partitions::features::{PartitionFeatureChange, PersistedFeatures};
     use restate_types::partitions::state::PartitionReplicaSetStates;
     use restate_types::protobuf::cluster::DetailedRunMode;
     use restate_types::sharding::KeyRange;
-    use restate_types::time::NanosSinceEpoch;
+    use restate_types::time::{MillisSinceEpoch, NanosSinceEpoch};
     use restate_types::{GenerationalNodeId, SemanticRestateVersion};
     use restate_vqueues::context::HasVQueuesMut;
     use restate_wal_protocol::control::VersionBarrierCommand;
@@ -649,6 +660,151 @@ mod tests {
             processor.fsm_position().byte_offsets_base_lsn,
             eq(Lsn::OLDEST)
         );
+    }
+
+    /// Enabling vqueues gives every stored invocation its entry, so the partition,
+    /// read through a snapshot, has fully migrated. The inputs are the legacy
+    /// statuses: scheduled, inboxed (with its inbox entry), invoked, suspended,
+    /// paused and completed.
+    /// - Skipping completed invocations leaves the completed one without an entry,
+    ///   and the partition doesn't count as fully migrated. Neither does one that
+    ///   never stored its features.
+    /// - Enabling the full migration afterwards migrates the completed invocation
+    ///   and leaves the others' entries as they are.
+    /// - Skipping completed invocations when there are none is a full migration.
+    #[restate_core::test]
+    async fn migration_gives_every_invocation_its_entry() {
+        let env = TestCoreEnv::create_with_single_node(1, 0).await;
+        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
+        let mut node_ctx = NodeContext::new(
+            GenerationalNodeId::new(1, 0),
+            Configuration::live(),
+            PartitionReplicaSetStates::default(),
+            RuleBookCacheHandle::detached(),
+            bifrost,
+            InvokerCapacity::new_unlimited(),
+            PartitionLeaderHandlesRegistry::default(),
+        );
+        // One object per invocation, so each migrates into its own queue.
+        let target = |key: &str| {
+            InvocationTarget::virtual_object("svc", key, "run", VirtualObjectHandlerType::Exclusive)
+        };
+        let pre_flight = |key: &str| PreFlightInvocationMetadata {
+            invocation_target: target(key),
+            ..PreFlightInvocationMetadata::mock()
+        };
+        let in_flight = |key: &str| InFlightInvocationMetadata {
+            invocation_target: target(key),
+            ..InFlightInvocationMetadata::mock()
+        };
+        let legacy = || {
+            [
+                InvocationStatus::Scheduled(ScheduledInvocation {
+                    metadata: PreFlightInvocationMetadata {
+                        execution_time: Some(MillisSinceEpoch::new(1_744_000_060_000)),
+                        ..pre_flight("scheduled")
+                    },
+                }),
+                InvocationStatus::Inboxed(InboxedInvocation {
+                    inbox_sequence_number: 1,
+                    metadata: pre_flight("inboxed"),
+                }),
+                InvocationStatus::Invoked(in_flight("invoked")),
+                InvocationStatus::Suspended {
+                    metadata: in_flight("suspended"),
+                    awaiting_on: UnresolvedFuture::unknown_from_iter([
+                        NotificationId::for_completion(1),
+                    ]),
+                },
+                InvocationStatus::Paused(in_flight("paused")),
+                InvocationStatus::Completed(CompletedInvocation {
+                    invocation_target: target("completed"),
+                    ..CompletedInvocation::mock_neo()
+                }),
+            ]
+        };
+        let mut enable = async |processor: &mut ProcessorRawContext,
+                                storage: &mut PartitionStore,
+                                change: PartitionFeatureChange| {
+            apply_barrier(
+                &mut node_ctx,
+                processor,
+                storage,
+                barrier(SemanticRestateVersion::current().clone(), vec![change.id()]),
+            )
+            .await
+            .expect("enable vqueues");
+            let (snapshot, _closed) = storage.query_read(CancellationToken::new()).unwrap();
+            (
+                storage.invocation_entry_mismatches().unwrap(),
+                snapshot.fully_migrated_to_vqueues().unwrap(),
+            )
+        };
+
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        for (id, with_completed) in [(0, true), (1, false)] {
+            let partition = Partition::new(PartitionId::from(id), KeyRange::FULL);
+            let mut storage = manager.open(&partition, None).await.unwrap();
+            let mut processor =
+                ProcessorRawContext::new(Arc::new(partition), PersistedFeatures::default());
+            let mut completed = None;
+            let mut txn = storage.transaction();
+            for status in legacy() {
+                let invocation_id =
+                    InvocationId::generate(status.invocation_target().unwrap(), None);
+                match &status {
+                    InvocationStatus::Completed(_) if !with_completed => continue,
+                    InvocationStatus::Completed(_) => completed = Some(invocation_id),
+                    InvocationStatus::Inboxed(inboxed) => txn
+                        .put_inbox_entry(
+                            inboxed.inbox_sequence_number,
+                            &InboxEntry::Invocation(
+                                inboxed
+                                    .metadata
+                                    .invocation_target
+                                    .as_keyed_service_id()
+                                    .unwrap(),
+                                invocation_id,
+                            ),
+                        )
+                        .unwrap(),
+                    _ => {}
+                }
+                txn.put_invocation_status(&invocation_id, &status).unwrap();
+            }
+            txn.commit().await.unwrap();
+            let (snapshot, _closed) = storage.query_read(CancellationToken::new()).unwrap();
+            assert!(!snapshot.fully_migrated_to_vqueues().unwrap());
+            drop(snapshot);
+
+            let (mismatches, fully) = enable(
+                &mut processor,
+                &mut storage,
+                PartitionFeatureChange::EnableVqueuesSkipCompleted,
+            )
+            .await;
+            let Some(completed) = completed else {
+                assert!(mismatches.is_empty(), "{mismatches:?}");
+                assert!(fully, "no completed invocations: a full migration");
+                continue;
+            };
+            assert_eq!(
+                mismatches.invocations_without_entry,
+                vec![BaseEntryId::from(completed)]
+            );
+            assert!(mismatches.entries_without_invocation.is_empty());
+            assert!(!fully);
+
+            let (mismatches, fully) = enable(
+                &mut processor,
+                &mut storage,
+                PartitionFeatureChange::EnableVqueues,
+            )
+            .await;
+            assert!(mismatches.is_empty(), "{mismatches:?}");
+            assert!(fully);
+        }
     }
 
     #[restate_core::test]

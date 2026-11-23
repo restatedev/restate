@@ -27,7 +27,7 @@ use super::widgets::{
 use crate::observe::{
     ClusterView, Finding, LogPlacement, LogView, PartitionPlacement, PartitionView,
 };
-use crate::render::{Verdict, group_findings, snapshot_taken};
+use crate::render::{FindingLine, Verdict, group_findings, snapshot_taken};
 
 /// Rendered output, a line at a time.
 pub struct Page {
@@ -36,7 +36,7 @@ pub struct Page {
 }
 
 impl Page {
-    fn new(width: u16) -> Self {
+    pub fn new(width: u16) -> Self {
         Self {
             width,
             lines: Vec::new(),
@@ -44,7 +44,7 @@ impl Page {
     }
 
     /// Renders `widget` into a `width` × `height` area.
-    fn add(&mut self, widget: impl Widget, width: u16, height: u16) {
+    pub fn add(&mut self, widget: impl Widget, width: u16, height: u16) {
         let area = Rect::new(0, 0, width, height);
         let mut buffer = Buffer::empty(area);
         widget.render(area, &mut buffer);
@@ -52,15 +52,19 @@ impl Page {
     }
 
     /// Adds `table` as wide as its content, up to the page's width.
-    fn table(&mut self, table: RichTable) {
+    pub fn table(&mut self, table: RichTable) {
         let height = table.height();
         let width = table.width().min(self.width);
         self.add(table, width, height);
     }
 
     fn findings(&mut self, findings: &[Finding]) {
+        self.finding_lines(group_findings(findings, 3));
+    }
+
+    pub fn finding_lines(&mut self, lines: Vec<FindingLine>) {
         let findings = Findings {
-            lines: group_findings(findings, 3),
+            lines,
             scroll: 0,
             selected: None,
         };

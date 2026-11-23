@@ -19,8 +19,9 @@ use restate_core::Metadata;
 use restate_core::partitions::PartitionRouting;
 use restate_partition_store::{PartitionStoreManager, QueryIoExecutor};
 use restate_platform::sync::Mutex;
+use restate_storage_query_api::ordering::OrderTerm;
 use restate_storage_query_api::schema::sharding::ShardingColumn;
-use restate_storage_query_api::{QueryMetadata, SelectionSchema};
+use restate_storage_query_api::{LogicalSchema, QueryMetadata, SelectionSchema};
 use restate_types::GenerationalNodeId;
 use restate_types::cluster_state::ClusterState;
 use restate_types::identifiers::PartitionId;
@@ -171,18 +172,24 @@ impl SourceRegistry {
                 let store = stores.get_partition_store(partition).await.ok_or_else(|| {
                     anyhow::anyhow!("partition {partition} doesn't exist on this node")
                 })?;
+                // No processor admits an offline read: it is admitted once its
+                // store is found.
+                let admitted = tokio::time::Instant::now();
+                let mut timing = restate_worker_api::CaptureTiming::admitted_at(admitted);
+                let storage = if capture.storage {
+                    let read = store
+                        .query_read(tokio_util::sync::CancellationToken::new())?
+                        .0;
+                    timing.snapshot = Some(restate_worker_api::CaptureSpan::since(admitted));
+                    Some(read)
+                } else {
+                    None
+                };
                 Ok(restate_worker_api::CapturedPartitionRead {
                     partition,
-                    storage: if capture.storage {
-                        Some(
-                            store
-                                .query_read(tokio_util::sync::CancellationToken::new())?
-                                .0,
-                        )
-                    } else {
-                        None
-                    },
+                    storage,
                     live: restate_worker_api::CapturedPartitionState::empty(capture),
+                    timing,
                 })
             }
             PartitionReads::Unavailable => {
@@ -204,6 +211,11 @@ impl SourceRegistry {
             metadata,
             cluster_state,
         }
+    }
+
+    /// The cluster metadata the planner reads, such as the nodes' versions.
+    pub(crate) fn metadata(&self) -> &Metadata {
+        &self.metadata
     }
 
     /// Offline execution uses the same prepared sources without cluster routing.
@@ -275,14 +287,7 @@ impl SourceRegistry {
                 .map(crate::access::IndexAccess::declared)
                 .collect(),
             can_read: T::can_read,
-            ordering: T::ORDERING
-                .iter()
-                .map(|&column| {
-                    T::Schema::sql_name(column)
-                        .expect("ordered column has a SQL representation")
-                        .to_owned()
-                })
-                .collect(),
+            orders: orders::<T>(),
         }
     }
 
@@ -304,6 +309,13 @@ impl SourceRegistry {
                 .iter()
                 .all(|index| scanner.supports_index(index.declared().identity())),
             "declared indexes must be readable by the source's scanner"
+        );
+        assert!(
+            T::INDEXES.iter().all(|index| {
+                restate_types::SemanticRestateVersion::current()
+                    .release_is_equal_or_newer_than(&index.declared().introduced())
+            }),
+            "a declared index can't be newer than this binary"
         );
         self.register_partition_scanner::<T>(scanner);
     }
@@ -354,6 +366,91 @@ impl SourceRegistry {
 
 type SourceEligibility = fn(&[Arc<dyn PhysicalExpr>]) -> anyhow::Result<bool>;
 
+/// The orders a source's key-ordered reads deliver within a partition
+/// ([`NativeOrder`]), each term on the SQL column it reads.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SourceOrders(pub(crate) Vec<SourceOrder>);
+
+impl SourceOrders {
+    /// The first order of plain columns, which workers that predate orders of
+    /// functions declare for a primary-key scan.
+    pub(crate) fn columns(&self) -> Vec<String> {
+        self.0
+            .iter()
+            .find(|order| order.terms.iter().all(|term| term.function.is_none()))
+            .map(|order| order.terms.iter().map(|term| term.column.clone()).collect())
+            .unwrap_or_default()
+    }
+}
+
+/// One of a source's [`SourceOrders`], as it travels to workers.
+#[derive(Debug, Clone, Default, PartialEq, Eq, bilrost::Message)]
+pub(crate) struct SourceOrder {
+    #[bilrost(1)]
+    pub(crate) terms: Vec<SourceTerm>,
+}
+
+/// A term of a [`SourceOrder`]: the column it reads and, for a function of the
+/// record's ID, the function's name. A worker that doesn't know the function
+/// keeps the order's terms before it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, bilrost::Message)]
+pub(crate) struct SourceTerm {
+    #[bilrost(1)]
+    pub(crate) column: String,
+    #[bilrost(2)]
+    pub(crate) function: Option<String>,
+}
+
+/// `T::ORDERS` on `T`'s SQL columns. A column term must name one of them, and a
+/// function term needs an ID column the function applies to.
+fn orders<T: PartitionSource>() -> SourceOrders {
+    let schema = T::Schema::arrow_schema();
+    let id = T::ID_COLUMN.map(|column| {
+        let kind = T::Schema::SHARDING_COLUMNS
+            .iter()
+            .find(|sharding| sharding.column == column)
+            .map(|sharding| sharding.kind);
+        let name = T::Schema::sql_name(column).expect("an ID column has a SQL representation");
+        (name, kind)
+    });
+    let term = |term: &OrderTerm| match *term {
+        OrderTerm::Column(column) => {
+            assert!(
+                schema.field_with_name(column).is_ok(),
+                "{}: no column {column} to order by",
+                T::identity()
+            );
+            SourceTerm {
+                column: column.to_owned(),
+                function: None,
+            }
+        }
+        OrderTerm::Function(function) => {
+            let (name, kind) = id.unwrap_or_else(|| {
+                panic!("{}: {} needs an ID column", T::identity(), function.name())
+            });
+            assert!(
+                kind.is_some_and(|kind| function.applies_to(kind)),
+                "{}: {} doesn't apply to its ID column",
+                T::identity(),
+                function.name()
+            );
+            SourceTerm {
+                column: name.to_owned(),
+                function: Some(function.name().to_owned()),
+            }
+        }
+    };
+    SourceOrders(
+        T::ORDERS
+            .iter()
+            .map(|order| SourceOrder {
+                terms: order.iter().map(term).collect(),
+            })
+            .collect(),
+    )
+}
+
 #[derive(Clone, derive_more::Debug)]
 pub(crate) struct PartitionSourceDescriptor {
     pub table: ReString,
@@ -361,7 +458,7 @@ pub(crate) struct PartitionSourceDescriptor {
     pub require_leader: bool,
     /// Sharding columns at ordinals of the source's (projected) Arrow schema.
     pub sharding_columns: Vec<ShardingColumn<usize>>,
-    pub ordering: Vec<String>,
+    pub orders: SourceOrders,
     #[debug(skip)]
     pub primary_access: Option<SelectPrimary>,
     #[debug(skip)]

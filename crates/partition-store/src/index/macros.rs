@@ -16,6 +16,7 @@
 ///     /// Find the most recently transitioned entries for a service within a stage.
 ///     EntryByStageService,
 ///     definition: "entry_by_stage_service/1",   // registered under this name
+///     introduced: (1, 8, 2),                     // the Restate version that added it
 ///     key: EntryByStageServiceKey {
 ///         stage: StageRankCodec,
 ///         service_name: ServiceNameCodec => str, // `=> str`: the encoder borrows a &str
@@ -31,7 +32,11 @@
 /// `PrimaryKey`, and a read checks that it belongs to the partition it runs on.
 ///
 /// The index is **registered** under `definition:`: each replica's registry
-/// issues the index ID of its build, and a read resolves the Ready one.
+/// issues the index ID of its build, and a read resolves the Complete one.
+///
+/// An optional `value: T,` after the key declares what each key stores besides
+/// itself, an [`IndexValue`](crate::index::IndexValue); without it the index
+/// holds keys only (`()`).
 ///
 /// The declaration generates, through `define_ordered_key!`:
 /// - `EntryByStageServiceKey`, its borrowing `…KeyRef` and `…KeyView`, the prefix
@@ -50,19 +55,23 @@
 ///     stage, service_name => non_null, transitioned_at, canonical_id,
 /// );
 /// ```
-// The index definitions, in their own commit, and tests declare indexes with it.
-#[allow(unused_macros)]
 macro_rules! define_secondary_index {
     (
         $(#[$meta:meta])*
         $index:ident,
         definition: $definition:literal,
-        key: $key:ident { $($fields:tt)* } $(,)?
+        introduced: ($major:literal, $minor:literal, $patch:literal),
+        key: $key:ident { $($fields:tt)* }
+        $(, value: $value:ty)? $(,)?
     ) => {
         crate::index::macros::define_secondary_index!(
-            @annotation [$(#[$meta])* $index, $key, [registered $definition]] []; $($fields)*
+            @annotation [$(#[$meta])* $index, $key, [registered $definition ($major, $minor, $patch)], [$($value)?]] [];
+            $($fields)*
         );
     };
+
+    (@value) => { () };
+    (@value $value:ty) => { $value };
 
     // A `ty` macro fragment cannot be followed by `(`. Strip the terminal
     // annotation before parsing the field types, preserving arbitrary Rust types.
@@ -96,17 +105,18 @@ macro_rules! define_secondary_index {
         );
     };
 
-    (@identity $index:ident, $primary_type:ty, [registered $definition:literal]) => {
+    (@identity $index:ident, $primary_type:ty, [registered $definition:literal ($major:literal, $minor:literal, $patch:literal)], [$($value:ty)?]) => {
         impl crate::index::SecondaryIndex for $index {
             type PrimaryKey = <$primary_type as crate::keys::FieldCodec>::Value;
             type Scope = crate::keys::header::IndexScope;
+            type Value = crate::index::macros::define_secondary_index!(@value $($value)?);
 
             fn scope(
                 metadata: &crate::table::ReadMetadata<'_>,
             ) -> crate::Result<crate::keys::header::IndexScope> {
                 Ok(crate::keys::header::IndexScope {
                     partition: metadata.partition.partition_id,
-                    index: metadata.ready_index(
+                    index: metadata.complete_index(
                         $definition,
                         crate::registry::IndexKind::Secondary,
                     )?,
@@ -120,10 +130,12 @@ macro_rules! define_secondary_index {
 
         impl crate::index::RegisteredIndex for $index {
             const DEFINITION: &'static str = $definition;
+            const INTRODUCED: restate_types::SemanticRestateVersion =
+                restate_types::SemanticRestateVersion::new($major, $minor, $patch);
         }
     };
 
-    (@emit [$(#[$meta:meta])* $index:ident, $key:ident, [$($identity:tt)*]]
+    (@emit [$(#[$meta:meta])* $index:ident, $key:ident, [$($identity:tt)*], [$($value:ty)?]]
         [$($field:ident: $codec:ty $(=> $borrowed:ty)?,)*];
         $primary_key:ident: $primary_type:ty
     ) => {
@@ -131,7 +143,7 @@ macro_rules! define_secondary_index {
         pub enum $index {}
 
         crate::index::macros::define_secondary_index!(
-            @identity $index, $primary_type, [$($identity)*]
+            @identity $index, $primary_type, [$($identity)*], [$($value)?]
         );
 
         crate::keys::macros::define_ordered_key!(

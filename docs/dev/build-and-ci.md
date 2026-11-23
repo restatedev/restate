@@ -45,7 +45,7 @@ The Rust build is configured through several files. When making changes, be awar
 |------|---------|-------------------|
 | `Cargo.toml` | Workspace members, shared package metadata (version, edition, rust-version), centralized dependencies, release profile settings | `workspace.package.version` updated for releases; `rust-version` must match `rust-toolchain.toml` |
 | `rust-toolchain.toml` | Pins Rust version and components (rustfmt, clippy) for local development | Must match dev-tools image Rust version |
-| `.cargo/config.toml` | Cargo behavior: `RUST_TEST_THREADS=1`, `xtask` alias, per-target RUSTFLAGS (unwind tables, `uuid_unstable`, `tokio_unstable`, frame pointers, static linking) | RUSTFLAGS must be duplicated in `release-build-setup.yml` ([cargo-dist#1571](https://github.com/axodotdev/cargo-dist/issues/1571)) |
+| `.cargo/config.toml` | Cargo behavior: `RUST_TEST_THREADS=1`, `xtask` alias, 7-day dependency cooldown (`registry.global-min-publish-age`), per-target RUSTFLAGS (unwind tables, `uuid_unstable`, `tokio_unstable`, frame pointers, static linking) | RUSTFLAGS must be duplicated in `release-build-setup.yml` ([cargo-dist#1571](https://github.com/axodotdev/cargo-dist/issues/1571)) |
 | `.config/hakari.toml` | cargo-hakari configuration for workspace-hack generation | See [cargo-hakari section](#cargo-hakari-workspace-hack) |
 | `.config/nextest.toml` | cargo-nextest test runner configuration (timeouts) | — |
 | `deny.toml` | cargo-deny: license allowlist, advisory checks, dependency bans, source restrictions | Update when adding deps with new licenses or Git sources |
@@ -56,6 +56,18 @@ The Rust build is configured through several files. When making changes, be awar
 2. Update `workspace.package.rust-version` in `Cargo.toml`
 3. Update the Rust version in the dev-tools Dockerfile
 4. Release a new dev-tools image and update pins in `docker/Dockerfile` and `dist-workspace.toml`
+
+### Dependency cooldown
+
+`.cargo/config.toml` sets `registry.global-min-publish-age = "7 days"`, so the resolver ignores crate versions published less than a week ago unless they are already in `Cargo.lock`. This guards against freshly published malicious or broken releases. To pull in an urgent fix (e.g. a security patch) sooner:
+
+```bash
+CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE=allow cargo update -p <crate> --precise <version>
+```
+
+### Unused dependencies
+
+Cargo's `unused_dependencies` lint reports `[dependencies]`/`[build-dependencies]` entries that no target uses (it does not check `[dev-dependencies]`; use `just udeps` for that). CI denies Cargo lint warnings via `CARGO_BUILD_WARNINGS=deny`. Crates that do not use any code from `restate-workspace-hack` need `use restate_workspace_hack as _;` in their `lib.rs` to keep the lint quiet.
 
 ## cargo-hakari (workspace-hack)
 
@@ -121,7 +133,7 @@ Triggered on: PRs, pushes to `main`, `release/*`, and `hotfix/*` branches, and a
 | Job | Runner | Purpose |
 |-----|--------|---------|
 | `workspace-hack-check` | warp-ubuntu-latest-x64-4x | Verifies `cargo-hakari` workspace-hack is up to date |
-| `build-and-test` | warp-ubuntu-latest-x64-16x | Runs lint, tests and doctests, including Azure Blob metadata tests against Azurite |
+| `build-and-test` | warp-ubuntu-latest-x64-16x | Runs `just verify` (lint + test + doctest) and checks that `cli/src/commands/sql_tables.rs` is up to date |
 | `docker` | warp-ubuntu-latest-x64-16x | Builds Docker image, uploads as tarball artifact |
 | `docker-pr-cache` | warp-ubuntu-latest-x64-16x | Main pushes only. Builds the `release-lite` dependency layer (the `builder` stage) that PR `docker` builds restore from the cache |
 
@@ -136,7 +148,7 @@ Triggered on: PRs, pushes to `main`, `release/*`, and `hotfix/*` branches, and a
 | `sdk-rust` | SDK-Rust integration tests |
 | `e2e` | End-to-end tests from `restatedev/e2e` |
 
-Experimental feature tests (`e2e-vqueues`, `e2e-experimental-kafka-ingestion`, etc.) run with `continue-on-error: true` and don't block merges.
+Experimental feature tests (currently `e2e-bilrost-schema`) run with `continue-on-error: true` and don't block merges.
 
 A new push to a PR cancels that PR's CI run that is still in progress.
 
@@ -172,13 +184,16 @@ Integration tests need a Docker image of the Restate server built from the PR/co
 
 **How it works:**
 
-1. The `docker` job builds the image and saves it as an OCI tarball artifact named `restate.tar`
-2. **For SDK tests**: The workflow calls the SDK repo's `integration.yaml` with `restateCommit: ${{ github.sha }}`. The SDK workflow uses `actions/download-artifact` to fetch the tarball from the *calling* workflow
-3. **For e2e tests**: The e2e job downloads the artifact directly, loads it, and re-tags it to a known name
+1. The `docker` job builds the image and saves it as an OCI tarball artifact named `restate.tar`. It also saves the same file to the WarpBuild cache under a per-run key (`docker-image-restate.tar-<run_id>`), returned as the `tarballCacheKey` output
+2. **Image transfer**: Test jobs restore `restate.tar` from the WarpBuild cache, which is much faster than the artifact download (artifact downloads use a single connection and took from seconds to over 6 minutes). They fall back to the artifact if the cache has no entry, e.g. if saving failed. The artifact is also what Jepsen and manual SDK integration runs fetch by PR or commit
+3. **For SDK tests**: The workflow calls the SDK repo's `integration.yaml` with `restateCommit: ${{ github.sha }}` and `restateImageCacheKey`. The SDK workflow restores the tarball from the WarpBuild cache, or falls back to `actions/download-artifact` to fetch it from the *calling* workflow. A reusable workflow runs with the caller's repository and ref, so it finds the cache entry the `docker` job saved
+4. **For e2e tests**: The e2e job restores (or downloads) the tarball directly, loads it, and re-tags it to a known name
 
 **Fragility points:**
 
 - **Cross-workflow artifact access**: SDK integration workflows download artifacts from the restate workflow using `actions/download-artifact`. This relies on GitHub's artifact sharing between `workflow_call` caller and callee, which can be brittle across GitHub Actions updates
+- **WarpBuild cache path**: The cache version includes the cached `path`, so every restore must use `path: restate.tar`, exactly as the save in `docker.yml`. Entries expire 7 days after last use
+- **SDK workflow inputs**: Passing an input that a called workflow doesn't define fails the run, so an SDK repo must accept `restateImageCacheKey` before ci.yml passes it
 - **Artifact naming**: The artifact must be named exactly `restate.tar` - both the upload in `docker.yml` and downloads in SDK workflows must agree
 - **Artifact retention**: Artifacts are retained for 1 day (`retention-days: 1`). Long-running or queued jobs may fail if artifacts expire
 - **Image tagging**: e2e tests re-tag the image to `localhost/restatedev/restate-commit-download:latest`. If this tag format changes, e2e tests break
@@ -194,6 +209,7 @@ A **reusable workflow** called by this repo and many others in the restatedev or
 
 **Inputs:**
 - `uploadImageAsTarball`: Save image as artifact for downstream jobs
+- `cacheImageTarball`: Also save that tarball to the WarpBuild cache; the key is the `tarballCacheKey` output
 - `platforms`: Target platforms (default: `linux/arm64,linux/amd64`)
 - `parca`: Split debug symbols and upload to Polar Signals
 - `buildIndividually`: Build binaries separately to avoid feature unification
@@ -205,6 +221,11 @@ A **reusable workflow** called by this repo and many others in the restatedev or
 - `cacheReadOnly`: Read the build cache without exporting to it
 
 `cacheOnly` and `cacheReadOnly` can only be set through `workflow_call`. `workflow_dispatch` is at GitHub's 10-input limit.
+
+**Image tags** (non-`release` profiles prefix each tag with `<profile>-`):
+- Branch builds are tagged with the branch name (`/` becomes `-`). The tag moves with every rebuild of that branch.
+- Release tags (`vX.Y.Z`) get semver tags (`X.Y.Z`, `X.Y.Z-<date>`, `X.Y`) and, for the newest release, `latest`.
+- Any other git tag becomes the image tag as is. Use this for a custom build that must stay identifiable: push a tag and dispatch the workflow on it, e.g. `gh workflow run docker.yml --ref my-build.2` publishes `restate:my-build.2`. Such tags must not start with `v` (no image tag would be produced) and must not contain `X.Y.Z`, because that would trigger `release.yml`.
 
 **Build optimizations:**
 - Uses `sccache` with WarpBuild cache, keyed by Cargo profile and `Cargo.lock`

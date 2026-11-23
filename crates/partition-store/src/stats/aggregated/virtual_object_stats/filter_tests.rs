@@ -13,7 +13,7 @@ use std::ops::ControlFlow;
 
 use rocksdb::ReadOptions;
 
-use restate_rocksdb::{Priority, RocksDbManager};
+use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::vqueue_table::{Stage, Status};
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
@@ -28,7 +28,7 @@ use crate::scan::PhysicalScan;
 use crate::stats::Stat;
 use crate::stats::aggregated::test_util::read_stats;
 use crate::stats::aggregated::{
-    AggregatedStatsMut, StageStatus, complete_gauges, ready_index_scope,
+    AggregatedStatsMut, StageStatus, complete_gauges, complete_index_scope,
 };
 
 use super::{VirtualObjectStats, VirtualObjectStatsKey};
@@ -42,7 +42,7 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
         .await
         .unwrap();
     complete_gauges(&mut store).await;
-    let partition = ready_index_scope::<VirtualObjectStats>(&store);
+    let partition = complete_index_scope::<VirtualObjectStats>(&store);
     let mut tx = store.transaction();
     for service in ["A", "B", "LargeState", "Z"] {
         // Key comparisons are lexical: "10000" is below "9999".
@@ -215,7 +215,7 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
             match cursor.evaluate(&key).unwrap() {
                 KeyMatch::Match => raw.advance().unwrap(),
                 KeyMatch::Skip => panic!("fixed_header_uses_ordered_seeks"),
-                KeyMatch::Seek(target) => raw.seek_forward(target).unwrap(),
+                KeyMatch::Seek => raw.seek_forward(cursor.seek_target()).unwrap(),
                 KeyMatch::Done => break,
             }
         }
@@ -280,24 +280,12 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
     expected_upper.extend_from_slice(b"Largf");
     assert_eq!(upper.as_ref(), expected_upper);
 
-    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-    store
-        .iterator_for_each_physical(
-            "test-prefix-upper-bound",
-            Priority::Low,
-            ReadOptions::default(),
-            scan,
-            move |(key, _)| {
-                sender.send(key.to_vec()).unwrap();
-                ControlFlow::Continue(())
-            },
-        )
-        .unwrap()
-        .await
-        .unwrap();
+    let snapshot = store.partition_db().read_snapshot().unwrap();
+    let mut rows = snapshot.scan(scan, ReadOptions::default());
     let mut visited = Vec::new();
-    while let Some(key) = receiver.recv().await {
-        visited.push(key);
+    while let Some((key, _)) = rows.item().unwrap() {
+        visited.push(key.to_vec());
+        rows.next();
     }
     let expected: Vec<_> = ["Large", "LargeState"]
         .into_iter()

@@ -22,6 +22,11 @@
 //! field to `X`'s UUID. Other invocations sharing that partition key (all
 //! invocations of one virtual-object key) are skipped by seeking, not read.
 
+use std::num::NonZeroUsize;
+
+use anyhow::Context;
+
+use restate_storage_query_api::ordering::{NativeOrder, OrderFunction, OrderInput, OrderTerm};
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, SelectionPrecision, ValuePredicate};
 use restate_storage_query_api::tables::journal::{Journal, JournalClause, JournalColumn};
@@ -29,20 +34,24 @@ use restate_storage_query_api::tables::journal_events::{
     JournalEvents, JournalEventsClause, JournalEventsColumn,
 };
 use restate_storage_query_api::{PreparedRead, Table};
-use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey};
+use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
 
 use crate::Result;
+use crate::journal_table::JournalKey as JournalV1Key;
+use crate::journal_table_v2::JournalKey as JournalV2Key;
 use crate::keys::codecs::{InvocationUuidCodec, U8Codec, U32Codec, U64Codec};
 use crate::keys::header::{KeySchema, PartitionKeyHeader, PartitionKeyed, prepare_partition_keyed};
 use crate::keys::selection::codec::FieldPredicateCodec;
 use crate::keys::selection::{KeySelection, OrderedKeyField, OrderedKeySchema};
 use crate::keys::{DecodeTableKey, EncodeTableKeyPrefix, KeyDecode, KeyDecoder, KeyKind};
+use crate::lookup::{LookupTable, ensure_canonical};
 use crate::table::PhysicalTable;
 
 macro_rules! journal_table {
     (
         $(#[$meta:meta])* $table:ident, $key:ty, $schema:ty, $prepare:path,
-        fields [$($tag:literal: $codec:ty),+ $(,)?]
+        fields [$($tag:literal: $codec:ty),+ $(,)?],
+        orders $orders:expr
     ) => {
         $(#[$meta])*
         pub enum $table {}
@@ -50,6 +59,17 @@ macro_rules! journal_table {
         impl Table for $table {
             type Record<'a> = (KeyDecoder<'a, $key>, &'a [u8]);
             type Scan = KeySelection<$key>;
+            const NATIVE_ORDERS: &'static [NativeOrder] = $orders;
+
+            fn order_key<R>(
+                (key, _): &Self::Record<'_>,
+                function: OrderFunction,
+                with: impl FnOnce(&[u8]) -> R,
+            ) -> Option<R> {
+                let key = key.decode_all().ok()?;
+                InvocationId::from_parts(key.partition_key, key.invocation_uuid)
+                    .order_key(function, with)
+            }
         }
 
         impl PhysicalTable for $table {
@@ -88,27 +108,90 @@ macro_rules! journal_table {
     };
 }
 
+/// Journal entries, keyed `partition key | uuid | index`: by partition key, and by
+/// invocation, then index.
+const JOURNAL_ORDERS: &[NativeOrder] = &[
+    &[OrderTerm::Column("partition_key")],
+    &[
+        OrderTerm::Function(OrderFunction::InvocationId),
+        OrderTerm::Column("index"),
+    ],
+];
+
 journal_table!(
     /// Journal entries of service protocol versions below 4.
     JournalTable, crate::journal_table::JournalKey, Journal, prepare_journal,
-    fields ["id": InvocationUuidCodec, "index": U32Codec]
+    fields ["id": InvocationUuidCodec, "index": U32Codec],
+    orders JOURNAL_ORDERS
 );
 journal_table!(
     /// Journal entries of service protocol version 4 and later.
     JournalV2Table, crate::journal_table_v2::JournalKey, Journal, prepare_journal,
-    fields ["id": InvocationUuidCodec, "index": U32Codec]
+    fields ["id": InvocationUuidCodec, "index": U32Codec],
+    orders JOURNAL_ORDERS
 );
 journal_table!(
     /// Invocation events. Only `id` binds a logical column; the remaining fields
-    /// are declared so key evaluation can find their boundaries.
+    /// are declared so key evaluation can find their boundaries. By partition key,
+    /// and by invocation: the event type after it shows as a name, which doesn't
+    /// sort like its code.
     JournalEventsTable, crate::journal_events::JournalEventKey, JournalEvents, prepare_events,
     fields [
         "id": InvocationUuidCodec,
         "event_type_code": U8Codec,
         "timestamp": U64Codec,
         "lsn": U64Codec,
+    ],
+    orders &[
+        &[OrderTerm::Column("partition_key")],
+        &[OrderTerm::Function(OrderFunction::InvocationId)],
     ]
 );
+
+/// A journal entry is named by its invocation ID and index, as the `id` and
+/// `index` columns show them. Both layouts store `kind | partition key | UUID |
+/// index`, so a received key must be exactly that long.
+macro_rules! journal_lookup {
+    ($table:ty, $key:ident, $kind:expr) => {
+        impl LookupTable for $table {
+            type Id = (InvocationId, u32);
+            /// Smaller than for locks: entries can be large. Not measured.
+            const BATCH_SIZE: NonZeroUsize = NonZeroUsize::new(100).unwrap();
+
+            fn key((id, index): &(InvocationId, u32)) -> Option<$key> {
+                Some($key {
+                    partition_key: id.partition_key(),
+                    invocation_uuid: id.invocation_uuid(),
+                    journal_index: *index,
+                })
+            }
+
+            fn check_key(bytes: &[u8]) -> anyhow::Result<PartitionKey> {
+                let rest = bytes
+                    .strip_prefix($kind.as_bytes())
+                    .context("not a journal key")?;
+                let (stored, rest) = rest
+                    .split_first_chunk::<8>()
+                    .context("journal key without a partition key")?;
+                let (uuid, rest) = rest
+                    .split_first_chunk::<{ InvocationUuid::RAW_BYTES_LEN }>()
+                    .context("journal key without an invocation UUID")?;
+                let index: [u8; 4] = rest.try_into().context("journal key without an index")?;
+                let id = InvocationId::from_parts(
+                    PartitionKey::from_be_bytes(*stored),
+                    InvocationUuid::from_bytes(*uuid),
+                );
+                let key =
+                    Self::key(&(id, u32::from_be_bytes(index))).context("invalid journal key")?;
+                ensure_canonical(bytes, *stored, &key)?;
+                Ok(key.partition_key)
+            }
+        }
+    };
+}
+
+journal_lookup!(JournalTable, JournalV1Key, KeyKind::Journal);
+journal_lookup!(JournalV2Table, JournalV2Key, KeyKind::JournalV2);
 
 fn prepare_journal<K: PartitionKeyed>(
     selection: &Selection<Journal>,
@@ -169,14 +252,47 @@ mod tests {
 
     use super::*;
 
+    /// Received journal keys of either layout are checked before anything decodes
+    /// them: exactly `kind | partition key | UUID | index`, accepted with the
+    /// partition key of the invocation they name.
+    #[test]
+    fn received_journal_keys_are_checked_before_decoding() {
+        let id = InvocationId::from_parts(7, InvocationUuid::from_u128(42));
+        let v1 = JournalTable::key(&(id, 3)).unwrap();
+        let mut v1_bytes = Vec::new();
+        EncodeTableKey::serialize_to(&v1, &mut v1_bytes);
+        assert_eq!(JournalTable::check_key(&v1_bytes).unwrap(), 7);
+        let v2 = JournalV2Table::key(&(id, 3)).unwrap();
+        let mut v2_bytes = Vec::new();
+        EncodeTableKey::serialize_to(&v2, &mut v2_bytes);
+        assert_eq!(JournalV2Table::check_key(&v2_bytes).unwrap(), 7);
+
+        let mut moved = v2_bytes.clone();
+        moved[9] ^= 1;
+        let mut long = v1_bytes.clone();
+        long.push(0);
+        for (case, bytes) in [
+            ("another layout", v2_bytes.clone()),
+            ("short partition key", v1_bytes[..9].to_vec()),
+            ("short UUID", v1_bytes[..20].to_vec()),
+            ("short index", v1_bytes[..v1_bytes.len() - 1].to_vec()),
+            ("trailing bytes", long),
+        ] {
+            assert!(JournalTable::check_key(&bytes).is_err(), "{case}");
+        }
+        // The partition key is part of the invocation ID: the same UUID under
+        // another partition key is another invocation's entry, stored under its own.
+        assert_eq!(JournalV2Table::check_key(&moved).unwrap(), 6);
+    }
+
     #[test]
     fn invocation_ids_and_indexes_position_journal_reads() {
-        // Four invocations with ten entries each on partition keys 7, 8 and 9, read
+        // Four invocations with ten entries each on partition keys 7 to 29, read
         // by an owner of many partition keys. UUIDs are distinct, as in practice.
         let id = |key: u64, n: u64| {
             InvocationId::from_parts(key, InvocationUuid::from_u128((key * 100 + n).into()))
         };
-        let mut entries: Vec<_> = (7..=9)
+        let mut entries: Vec<_> = (7..=29)
             .flat_map(|key| (1..=4).map(move |n| id(key, n)))
             .flat_map(|id| (0..10).map(move |index| (id, index)))
             .map(|(id, index)| {
@@ -217,18 +333,16 @@ mod tests {
         assert_eq!(rows, [(target, 3), (target, 4)]);
         assert_eq!(visited, 2, "an_index_range_positions_within_an_invocation");
 
-        // Partition keys 7..=9 lie between the requested IDs: each is positioned
-        // past by seeks rather than read.
-        let (first, last) = (id(7, 1), id(9, 4));
+        // The requested IDs are on partition keys 7 and 29: the read lists those
+        // two, so the invocations on the 21 keys between are never visited, and
+        // within each key it seeks past the other invocations.
+        let (first, last) = (id(7, 1), id(29, 4));
         let (rows, visited) = read(Selection::All.and(ids(&[first, last])));
         let expected: Vec<_> = [first, last]
             .into_iter()
             .flat_map(|id| (0..10).map(move |index| (id, index)))
             .collect();
         assert_eq!(rows, expected);
-        assert!(
-            visited <= 24,
-            "id_lists_seek_between_partition_keys: {visited}"
-        );
+        assert_eq!(visited, 23, "id_lists_seek_between_partition_keys");
     }
 }

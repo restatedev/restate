@@ -275,7 +275,7 @@ impl<T: TransportConnect> RepairTail<T> {
             tokio::select! {
                 // we fail the readstream during shutdown only, in that case, there is not much
                 // we can do but to stop.
-                Some(Ok(entry)) = rx.recv() => {
+                Some(Ok((entry, _memory))) = rx.recv() => {
                     // we received a record. Should we replicate it?
                     if let Err(e) = self.digests.replicate_record_and_advance(
                         entry,

@@ -199,7 +199,7 @@ fn boxed_empty_request(uri: &str) -> Request<BoxBody> {
         .uri(uri)
         .body(
             http_body_util::Empty::<Bytes>::new()
-                .map_err(|e| e.into())
+                .map_err(|e| match e {})
                 .boxed(),
         )
         .unwrap()
@@ -210,7 +210,7 @@ fn boxed_body_request(uri: &str, payload: Bytes) -> Request<BoxBody> {
         .uri(uri)
         .body(
             http_body_util::Full::new(payload)
-                .map_err(|e| e.into())
+                .map_err(|e| match e {})
                 .boxed(),
         )
         .unwrap()

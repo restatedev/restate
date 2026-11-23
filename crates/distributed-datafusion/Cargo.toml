@@ -29,7 +29,7 @@ restate-service-protocol-v4 = { workspace = true, features = ["entry-codec"] }
 restate-sharding = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-storage-query-api = { workspace = true }
-# The cluster tables `indexes` and `migration_jobs` reuse its scanners.
+# The cluster tables `registry` and `migration_jobs` reuse its scanners.
 restate-storage-query-datafusion = { workspace = true }
 restate-types = { workspace = true }
 restate-util-sql = { workspace = true }
@@ -38,8 +38,10 @@ restate-worker-api = { workspace = true, features = ["serde"] }
 
 ahash = { workspace = true }                                                    # Required to due a yanked version used by datafusion
 anyhow = { workspace = true }
+arrow = { workspace = true, features = ["ipc_compression"] }
 async-trait = { workspace = true }
 bilrost = { workspace = true }
+bytes = { workspace = true }
 codederror = { workspace = true }
 dashmap = { workspace = true }
 datafusion = { workspace = true }
@@ -74,7 +76,6 @@ restate-storage-api = { workspace = true, features = ["test-util"] }
 restate-storage-query-datafusion = { workspace = true, features = ["test-util"] }
 restate-types = { workspace = true, features = ["test-util"] }
 
-bytes = { workspace = true }
 googletest = { workspace = true }
 
 [lints]

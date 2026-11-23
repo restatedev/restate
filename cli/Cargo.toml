@@ -20,7 +20,7 @@ features = ["dev-cmd"]
 [features]
 default = ["no-trace-logging"]
 # enables restate dev/up command
-dev-cmd = ["restate-lite", "mock-service-endpoint"]
+dev-cmd = ["restate-lite"]
 no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
 
 [dependencies]
@@ -36,7 +36,6 @@ restate-util-time = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-types = { workspace = true }
 restate-lite = { workspace = true, optional = true }
-mock-service-endpoint = { workspace = true, optional = true }
 
 anyhow = { workspace = true }
 arc-swap = { workspace = true }

@@ -11,6 +11,7 @@
 #![doc = include_str!("../README.md")]
 
 pub mod blob_table;
+mod budgeted_reads;
 mod compaction_filter;
 pub mod deduplication_table;
 mod durable_lsn_tracking;
@@ -28,15 +29,19 @@ pub mod journal_table;
 pub mod journal_table_v2;
 pub mod keys;
 pub mod locks_table;
+pub mod lookup;
 mod memory;
 mod metric_definitions;
 pub mod migrations;
+mod offloaded_reads;
+pub mod ordered_runs;
 pub mod outbox_table;
 mod owned_iter;
 mod partition_db;
 mod partition_store;
 mod partition_store_manager;
 mod partition_store_snapshot;
+pub mod population;
 pub mod promise_table;
 pub mod query_read;
 mod read_snapshot;
@@ -46,6 +51,7 @@ pub mod service_status_table;
 pub mod snapshots;
 pub mod state_table;
 pub mod stats;
+mod status_lanes;
 pub mod table;
 pub mod timer_table;
 pub mod vqueue_table;

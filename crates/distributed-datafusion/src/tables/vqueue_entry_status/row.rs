@@ -8,10 +8,134 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_storage_api::vqueue_table::RawStatusHeaderRef;
+use restate_clock::RoughTimestamp;
+use restate_partition_store::vqueue_table::EntryKeyRow;
+use restate_storage_api::vqueue_table::stats::EntryStatistics;
+use restate_storage_api::vqueue_table::{EntryMetadataRef, RawStatusHeaderRef, Stage, Status};
+use restate_storage_query_api::tables::vqueue_entry_status::VqueueEntryStatusRow;
 use restate_types::identifiers::BaseEntryId;
+use restate_types::vqueues::{EffectiveStatus, Seq, VQueueId, VQueueIdRef};
 
 use super::schema::SysVqueueEntryStatusBuilder;
+
+/// An entry's place in its queue: the columns of its stage key.
+pub(crate) struct EntryPlace<'a> {
+    pub(crate) qid: &'a VQueueIdRef<'a>,
+    pub(crate) stage: Stage,
+    pub(crate) has_lock: bool,
+    pub(crate) next_run_at: RoughTimestamp,
+    pub(crate) seq: Seq,
+}
+
+/// An entry's status, metadata and statistics.
+pub(crate) struct EntryState<'a> {
+    pub(crate) status: Status,
+    pub(crate) metadata: &'a EntryMetadataRef<'a>,
+    pub(crate) stats: &'a EntryStatistics,
+}
+
+/// The native row of an entry, for checking conditions on it, with the columns
+/// [`append_entry_row`] writes from the same parts, except the metadata, which
+/// is left empty: the row is for conditions on other columns.
+pub(crate) fn covered_row(
+    id: &BaseEntryId,
+    place: &EntryPlace<'_>,
+    state: &EntryState<'_>,
+) -> VqueueEntryStatusRow {
+    let stats = state.stats;
+    let latest = stats.latest_attempt_wait_stats;
+    let total = stats.total_wait_stats;
+    VqueueEntryStatusRow {
+        partition_key: id.partition_key(),
+        entry_id: *id,
+        vqueue_id: VQueueId::from_raw_bytes(&mut place.qid.as_raw_bytes()),
+        stage: place.stage,
+        status: EffectiveStatus::new(place.stage, state.status),
+        has_lock: place.has_lock,
+        next_at: place.next_run_at.as_unix_millis(),
+        sequence_number: place.seq.as_u64(),
+        entry_kind: id.kind(),
+        created_at: stats.created_at.to_unix_millis(),
+        transitioned_at: stats.transitioned_at.to_unix_millis(),
+        num_attempts: stats.num_attempts,
+        num_errors: stats.num_errors,
+        num_pauses: stats.num_paused,
+        num_suspensions: stats.num_suspensions,
+        num_yields: stats.num_yields,
+        first_attempt_at: stats.first_attempt_at.map(|at| at.to_unix_millis()),
+        latest_attempt_at: stats.latest_attempt_at.map(|at| at.to_unix_millis()),
+        first_runnable_at: stats.first_runnable_at,
+        deployment: None,
+        needed_memory: None,
+        retry_attempts: 0,
+        retry_count_since_last_stored_command: 0,
+        latest_attempt_blocked_on_invoker_concurrency: latest.blocked_on_invoker_concurrency_ms
+            as i64,
+        latest_attempt_blocked_on_throttling_rules: latest.blocked_on_throttling_rules_ms as i64,
+        latest_attempt_blocked_on_invoker_throttling: latest.blocked_on_invoker_throttling_ms
+            as i64,
+        latest_attempt_blocked_on_invoker_memory: latest.blocked_on_invoker_memory_ms as i64,
+        latest_attempt_blocked_on_concurrency_rules: latest.blocked_on_concurrency_rules_ms as i64,
+        latest_attempt_blocked_on_lock: latest.blocked_on_lock_ms as i64,
+        latest_attempt_blocked_on_deployment_concurrency: latest
+            .blocked_on_deployment_concurrency_ms
+            as i64,
+        total_blocked_on_invoker_concurrency: total.blocked_on_invoker_concurrency_ms as i64,
+        total_blocked_on_throttling_rules: total.blocked_on_throttling_rules_ms as i64,
+        total_blocked_on_invoker_throttling: total.blocked_on_invoker_throttling_ms as i64,
+        total_blocked_on_invoker_memory: total.blocked_on_invoker_memory_ms as i64,
+        total_blocked_on_concurrency_rules: total.blocked_on_concurrency_rules_ms as i64,
+        total_blocked_on_lock: total.blocked_on_lock_ms as i64,
+        total_blocked_on_deployment_concurrency: total.blocked_on_deployment_concurrency_ms as i64,
+        canonical_id: id.canonicalize(place.seq),
+    }
+}
+
+/// Appends the row of an entry as a status index's key holds it: only the
+/// columns the key holds, written as [`append_entry_row`] writes them from an
+/// entry status. The caller projects no other column.
+#[inline]
+pub(crate) fn append_status_key_row(builder: &mut SysVqueueEntryStatusBuilder, key: &EntryKeyRow) {
+    let mut row = builder.row();
+    let id = key.id.to_base_entry_id();
+    if row.is_partition_key_defined() {
+        row.partition_key(id.partition_key());
+    }
+    if row.is_entry_id_defined() {
+        row.fmt_entry_id(id);
+    }
+    if row.is_canonical_id_defined() {
+        row.fmt_canonical_id(key.id);
+    }
+    if row.is_sequence_number_defined() {
+        row.sequence_number(key.id.seq().as_u64());
+    }
+    if row.is_entry_kind_defined()
+        && let Some(name) = id.kind().name()
+    {
+        row.entry_kind(name);
+    }
+    if row.is_stage_defined()
+        && let Some(name) = key.stage.name()
+    {
+        row.stage(name);
+    }
+    if row.is_status_defined()
+        && let Some(name) = EffectiveStatus::new(key.stage, key.status).name()
+    {
+        row.status(name);
+    }
+    if row.is_created_at_defined()
+        && let Some(at) = key.created_at
+    {
+        row.created_at(at.to_unix_millis().as_u64() as i64);
+    }
+    if row.is_transitioned_at_defined()
+        && let Some(at) = key.transitioned_at
+    {
+        row.transitioned_at(at.to_unix_millis().as_u64() as i64);
+    }
+}
 
 #[inline]
 pub(crate) fn append_vqueue_entry_status_row(
@@ -19,9 +143,33 @@ pub(crate) fn append_vqueue_entry_status_row(
     id: &BaseEntryId,
     header: &RawStatusHeaderRef<'_>,
 ) {
-    let stats = &header.stats;
-    let metadata = &header.metadata;
+    append_entry_row(
+        builder,
+        id,
+        &EntryPlace {
+            qid: &header.qid,
+            stage: header.stage,
+            has_lock: header.has_lock,
+            next_run_at: header.next_run_at,
+            seq: header.seq,
+        },
+        Some(&EntryState {
+            status: header.status,
+            metadata: &header.metadata,
+            stats: &header.stats,
+        }),
+    );
+}
 
+/// Appends an entry's row. Without `state`, only the columns of `place` and
+/// `id` are set: the caller projects no other column.
+#[inline]
+pub(crate) fn append_entry_row(
+    builder: &mut SysVqueueEntryStatusBuilder,
+    id: &BaseEntryId,
+    place: &EntryPlace<'_>,
+    state: Option<&EntryState<'_>>,
+) {
     let mut row = builder.row();
 
     if row.is_partition_key_defined() {
@@ -32,29 +180,45 @@ pub(crate) fn append_vqueue_entry_status_row(
         row.fmt_entry_id(id);
     }
     if row.is_canonical_id_defined() {
-        row.fmt_canonical_id(id.canonicalize(header.seq));
+        row.fmt_canonical_id(id.canonicalize(place.seq));
     }
     if row.is_vqueue_id_defined() {
-        row.fmt_vqueue_id(&header.qid);
+        row.fmt_vqueue_id(place.qid);
     }
-    if row.is_stage_defined() {
-        row.stage(header.stage.as_str());
-    }
-    if row.is_status_defined() {
-        row.status(header.status.as_str());
+    if row.is_stage_defined()
+        && let Some(name) = place.stage.name()
+    {
+        row.stage(name);
     }
     if row.is_has_lock_defined() {
-        row.has_lock(header.has_lock);
+        row.has_lock(place.has_lock);
     }
     if row.is_next_at_defined() {
-        row.next_at(header.next_run_at.as_unix_millis().as_u64() as i64);
+        row.next_at(place.next_run_at.as_unix_millis().as_u64() as i64);
     }
     if row.is_sequence_number_defined() {
-        row.sequence_number(header.seq.as_u64());
+        row.sequence_number(place.seq.as_u64());
     }
 
-    if row.is_entry_kind_defined() {
-        row.fmt_entry_kind(id.kind());
+    if row.is_entry_kind_defined()
+        && let Some(name) = id.kind().name()
+    {
+        row.entry_kind(name);
+    }
+
+    let Some(EntryState {
+        status,
+        metadata,
+        stats,
+    }) = state
+    else {
+        return;
+    };
+
+    if row.is_status_defined()
+        && let Some(name) = EffectiveStatus::new(place.stage, *status).name()
+    {
+        row.status(name);
     }
 
     if row.is_created_at_defined() {

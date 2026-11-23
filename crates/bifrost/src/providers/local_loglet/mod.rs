@@ -116,9 +116,9 @@ impl LocalLoglet {
     }
 
     #[inline]
-    fn notify_readers(&self, sealed: bool, release_pointer: LogletOffset) {
-        // tail is beyond the release pointer
-        self.tail_watch.notify(sealed, release_pointer.next());
+    fn notify_readers(&self, release_pointer: LogletOffset) {
+        // The tail is beyond the release pointer; only `seal` seals the watch.
+        self.tail_watch.notify_offset_update(release_pointer.next());
     }
 }
 
@@ -187,18 +187,18 @@ impl Loglet for LocalLoglet {
             ShutdownError
         })?;
 
-        // AcqRel to ensure that the offset is visible to other threads and to synchronize sealed
-        // with find_tail.
+        // Publish the offset, to `find_tail` and to the tail watch, before reading `sealed`.
+        // An append acknowledged below thus read `sealed` as false before `seal` set it, and a
+        // tail that reads `sealed` as true covers this offset (see `find_tail`).
         let release_pointer = LogletOffset::from(
             self.last_committed_offset
-                .fetch_max(offset.into(), Ordering::AcqRel)
+                .fetch_max(offset.into(), Ordering::SeqCst)
                 .max(offset.into()),
         );
-        let is_sealed = self.sealed.load(Ordering::Relaxed);
-        self.notify_readers(is_sealed, release_pointer);
+        self.notify_readers(release_pointer);
         // Ensure that we don't acknowledge the append (even that it has happened) if the loglet
         // has been sealed already.
-        if is_sealed {
+        if self.sealed.load(Ordering::SeqCst) {
             return Ok(LogletCommit::sealed());
         }
         self.append_latency.record(start_time.elapsed());
@@ -209,11 +209,14 @@ impl Loglet for LocalLoglet {
         &self,
         _: FindTailOptions,
     ) -> Result<TailState<LogletOffset>, OperationError> {
-        // `fetch_add(0)` with Release ordering to enforce using last_committed_offset as a memory
-        // barrier and synchronization point with other threads.
+        // `sealed` first, then the offset, both SeqCst like the writes in `enqueue_batch` and
+        // `seal`: if `sealed` reads true, every append that read it as false, and so was
+        // acknowledged, raised the offset before this read. A sealed tail thus covers every
+        // acknowledged append.
+        let sealed = self.sealed.load(Ordering::SeqCst);
         let last_committed =
-            LogletOffset::from(self.last_committed_offset.fetch_add(0, Ordering::Release)).next();
-        Ok(if self.sealed.load(Ordering::Relaxed) {
+            LogletOffset::from(self.last_committed_offset.load(Ordering::SeqCst)).next();
+        Ok(if sealed {
             TailState::Sealed(last_committed)
         } else {
             TailState::Open(last_committed)
@@ -281,7 +284,7 @@ impl Loglet for LocalLoglet {
             warn!("Unsure if the local loglet record was sealed, the ack channel was dropped");
             Err(ShutdownError.into())
         })?;
-        self.sealed.store(true, Ordering::Relaxed);
+        self.sealed.store(true, Ordering::SeqCst);
         self.tail_watch.notify_seal();
 
         Ok(())

@@ -88,4 +88,58 @@ async fn vqueue_metadata_matches_v1() {
         rows(new.as_ref(), "SELECT COUNT(*) FROM sys_vqueue_meta").await,
         [["3"]]
     );
+
+    // A finite set of IDs is looked up by key. The predicate still applies to
+    // the fetched rows, before LIMIT, and a JOIN keeps its multiplicity.
+    let [lock, service, unlinked] = metas.map(|(id, _)| id);
+    let missing = VQueueId::custom(9, "missing");
+    let looked_up = [
+        format!(
+            "SELECT id, service_name FROM sys_vqueue_meta \
+             WHERE id IN ('{lock}', '{service}', '{missing}', '{service}') ORDER BY id"
+        ),
+        format!(
+            "SELECT id FROM sys_vqueue_meta \
+             WHERE id IN ('{lock}', '{service}', '{unlinked}') AND service_name = 'Checkout' LIMIT 1"
+        ),
+        format!(
+            "SELECT id FROM sys_vqueue_meta WHERE id = '{lock}' OR id = '{unlinked}' ORDER BY id"
+        ),
+        format!(
+            "SELECT m.id FROM sys_vqueue_meta m \
+             JOIN (VALUES ('{lock}'), ('{lock}'), ('{service}')) AS v(x) ON m.id = v.x \
+             WHERE m.id IN ('{lock}', '{service}') ORDER BY m.id"
+        ),
+    ];
+    // Scanned, or with LIMIT 0 not read at all.
+    let scanned = [
+        format!("SELECT id FROM sys_vqueue_meta WHERE id NOT IN ('{lock}') ORDER BY id"),
+        "SELECT id FROM sys_vqueue_meta WHERE scope = 'tenant'".to_owned(),
+        format!("SELECT id FROM sys_vqueue_meta WHERE id IN ('{lock}') LIMIT 0"),
+    ];
+    for (sql, lookup) in looked_up
+        .iter()
+        .map(|sql| (sql, true))
+        .chain(scanned.iter().map(|sql| (sql, false)))
+    {
+        assert_eq!(
+            rows(new.as_ref(), sql).await,
+            rows(old.as_ref(), sql).await,
+            "{sql}"
+        );
+        let plan = rows(new.as_ref(), &format!("EXPLAIN {sql}"))
+            .await
+            .concat()
+            .join("\n");
+        assert_eq!(plan.contains("MultiGetExec"), lookup, "{sql}\n{plan}");
+    }
+    let mut counts = Vec::new();
+    for sql in [&looked_up[0], &looked_up[1], &looked_up[3]] {
+        counts.push(rows(new.as_ref(), sql).await.len());
+    }
+    assert_eq!(
+        counts,
+        [2, 1, 3],
+        "duplicates_and_missing_ids_residual_before_limit_join_multiplicity"
+    );
 }

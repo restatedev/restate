@@ -284,9 +284,9 @@ mod tests {
 
     #[test]
     fn remote_scan_failures_are_not_reported_as_datafusion_bugs() {
-        let not_ready = "'service_stats/1' is not ready on partition 12: no maintained index";
-        let storage = DataFusionError::External(anyhow::anyhow!(not_ready).into());
-        assert_eq!(failure_message(&storage), not_ready);
+        let not_complete = "'service_stats/1' is not complete on partition 12: no maintained index";
+        let storage = DataFusionError::External(anyhow::anyhow!(not_complete).into());
+        assert_eq!(failure_message(&storage), not_complete);
 
         // The coordinator reports it as external once, and names the node.
         let reported: DataFusionError = RemoteScanError::Failed {
@@ -296,7 +296,7 @@ mod tests {
         .into();
         assert_eq!(
             reported.to_string(),
-            format!("External error: scan on N3 failed: {not_ready}")
+            format!("External error: scan on N3 failed: {not_complete}")
         );
 
         // A DataFusion bug on the remote node keeps DataFusion's report.

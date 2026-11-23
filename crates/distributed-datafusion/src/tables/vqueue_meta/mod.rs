@@ -18,7 +18,7 @@ use restate_partition_store::vqueue_table::VQueueMetaBinding;
 use restate_storage_query_api::tables::vqueue_meta::{VqueueMeta, VqueueMetaColumn};
 
 use crate::context::SelectPartitions;
-use crate::schema_scan::SchemaScanner;
+use crate::schema_scan::LookupScanner;
 use crate::sharding::PartitionSource;
 use crate::source_registry::SourceRegistry;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
@@ -29,7 +29,11 @@ mod tests;
 crate::tables::table_adapter!(pub(crate) SysVqueueMetaTable, VqueueMeta);
 
 impl PartitionSource for SysVqueueMetaTable {
-    const ORDERING: &'static [VqueueMetaColumn] = &[VqueueMetaColumn::PartitionKey];
+    const ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] = <<VQueueMetaBinding as restate_storage_query_api::SchemaBinding>::Table as restate_storage_query_api::Table>::NATIVE_ORDERS;
+    const ID_COLUMN: Option<VqueueMetaColumn> = Some(VqueueMetaColumn::Id);
+    /// A finite set of queue IDs is looked up instead of scanned.
+    const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> =
+        Some(crate::access::select_lookup::<VQueueMetaBinding>);
 }
 
 impl SysVqueueMetaTable {
@@ -43,6 +47,6 @@ impl SysVqueueMetaTable {
     }
 
     pub(crate) fn create_local_scanner() -> impl ScanPartition {
-        SchemaScanner::<VQueueMetaBinding>::new()
+        LookupScanner::<VQueueMetaBinding>::new()
     }
 }

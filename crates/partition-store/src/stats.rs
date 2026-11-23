@@ -16,7 +16,7 @@
 //! statistic's payload. The header identifies the physical partition and the
 //! registry's index ID of the index; it does not contain a service's
 //! partition key. Ordered payloads use the same schema-selected field codecs as
-//! other ordered keys. Reads resolve the Ready index of the statistic's
+//! other ordered keys. Reads resolve the Complete index of the statistic's
 //! definition, and fail when there is none.
 //!
 //! A write never reads a counter: it hands RocksDB a signed delta, a **merge
@@ -60,6 +60,13 @@ use self::aggregated::Aggregate;
 pub trait Stat {
     /// The name of the registry definition whose indexes hold this statistic.
     const DEFINITION: &'static str;
+    /// The Restate version that introduced the definition. A node of an older
+    /// version can neither maintain nor read its indexes, so a query coordinator
+    /// must choose one only where every node serving its partitions runs at least
+    /// this version. The V2 planner checks this before it reads an index in place
+    /// of its primary.
+    /// Code, not stored data: it is never persisted.
+    const INTRODUCED: restate_types::SemanticRestateVersion;
     const STAT_KIND: StatKind;
 
     type OwnedKey: DecodeStatKey<Self>;

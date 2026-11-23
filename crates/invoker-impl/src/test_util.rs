@@ -13,7 +13,9 @@ use std::convert::Infallible;
 use bytes::Bytes;
 
 use restate_errors::NotRunningError;
-use restate_memory::{IgnorePinnableMemoryStream, LocalMemoryLease, LocalMemoryPool};
+use restate_memory::{
+    ClaimedMemoryPool, IgnorePinnableMemoryStream, LocalMemoryLease, LocalMemoryPool,
+};
 use restate_types::LimitKey;
 use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
 use restate_types::invocation::{FencingToken, InvocationTarget, ServiceInvocationSpanContext};
@@ -88,7 +90,7 @@ impl InvocationReaderTransaction for EmptyStorageReaderTransaction {
         _invocation_id: &InvocationId,
         _length: EntryIndex,
         _journal_kind: JournalKind,
-        _budget: &'a mut LocalMemoryPool,
+        _budget: ClaimedMemoryPool<'a>,
     ) -> Result<Self::LocalMemoryPooledJournalStream<'a>, Self::Error> {
         Ok(futures::stream::empty())
     }
@@ -97,7 +99,7 @@ impl InvocationReaderTransaction for EmptyStorageReaderTransaction {
         &'a mut self,
         _service_id: &ServiceId,
         _eager_state_config: &StatePreloadPolicy,
-        _budget: &'a mut LocalMemoryPool,
+        _budget: ClaimedMemoryPool<'a>,
     ) -> Result<EagerState<Self::LocalMemoryPooledStateStream<'a>>, Self::Error> {
         Ok(EagerState::new_complete(IgnorePinnableMemoryStream::new(
             futures::stream::empty(),

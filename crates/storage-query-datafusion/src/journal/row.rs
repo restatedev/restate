@@ -8,11 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use bytes::Bytes;
+
 use crate::journal::schema::SysJournalBuilder;
 use crate::log_data_corruption_error;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::journal_table::JournalEntry;
+use restate_storage_api::journal_table_v2::StoredUnhydratedRawEntry;
+use restate_types::blob::BlobId;
 use restate_types::identifiers::{JournalEntryId, WithInvocationId, WithPartitionKey};
 use restate_types::journal::Entry;
 use restate_types::journal::enriched::EnrichedEntryHeader;
@@ -20,7 +24,6 @@ use restate_types::journal::{CompletePromiseEntry, GetPromiseEntry, PeekPromiseE
 use restate_types::journal_v2;
 use restate_types::journal_v2::EntryMetadata;
 use restate_types::journal_v2::{CommandMetadata, Decoder};
-use restate_types::storage::StoredRawEntry;
 
 #[inline]
 pub(crate) fn append_journal_row(
@@ -130,12 +133,15 @@ pub(crate) fn append_journal_row(
     };
 }
 
-#[inline]
+/// Appends a V2 journal entry. Its content, if stored in a blob, is read with `read_content` only
+/// when a column derived from it is requested. If the blob is missing, those columns are left
+/// empty.
 pub(crate) fn append_journal_row_v2(
     builder: &mut SysJournalBuilder,
     journal_entry_id: JournalEntryId,
-    raw_entry: StoredRawEntry,
-) {
+    entry: StoredUnhydratedRawEntry,
+    read_content: impl FnOnce(BlobId) -> restate_storage_api::Result<Option<Bytes>>,
+) -> restate_storage_api::Result<()> {
     let mut row = builder.row();
     row.version(2);
 
@@ -146,36 +152,52 @@ pub(crate) fn append_journal_row_v2(
 
     row.index(journal_entry_id.journal_index());
     if row.is_entry_type_defined() {
-        row.fmt_entry_type(raw_entry.ty());
+        row.fmt_entry_type(entry.ty());
     }
 
-    row.appended_at(raw_entry.header.append_time.as_u64() as i64);
+    row.appended_at(entry.header().append_time.as_u64() as i64);
+    if row.is_raw_length_defined() {
+        row.raw_length(entry.content_len() as u64);
+    }
 
-    if row.is_raw_defined() || row.is_raw_length_defined() {
-        let serialized = raw_entry.inner.serialized_content();
-        if row.is_raw_defined() {
-            row.raw(&serialized);
+    if !(row.is_raw_defined()
+        || row.is_entry_lite_json_defined()
+        || row.is_entry_json_defined()
+        || row.is_name_defined())
+    {
+        return Ok(());
+    }
+    let entry = match entry.try_into_inline() {
+        Ok(entry) => entry,
+        Err(entry) => {
+            let blob = entry.content_blob().expect("the content is in a blob");
+            let Some(content) = read_content(blob.id)? else {
+                log_data_corruption_error!(
+                    "sys_journal",
+                    &journal_entry_id.invocation_id(),
+                    "content_blob",
+                    "blob not found"
+                );
+                return Ok(());
+            };
+            entry.hydrate_with(content)
         }
-        if row.is_raw_length_defined() {
-            row.raw_length(
-                serialized
-                    .len()
-                    .try_into()
-                    .expect("raw length to fit in a u64"),
-            );
-        }
+    };
+
+    if row.is_raw_defined() {
+        row.raw(entry.inner.serialized_content());
     }
 
     if row.is_entry_lite_json_defined() {
         // We need to parse the entry
-        let Ok(entry_lite) = ServiceProtocolV4Codec::decode_entry_lite(&raw_entry.inner) else {
+        let Ok(entry_lite) = ServiceProtocolV4Codec::decode_entry_lite(&entry.inner) else {
             log_data_corruption_error!(
                 "sys_journal",
                 &journal_entry_id.invocation_id(),
                 "entry",
                 "The entry should decode correctly"
             );
-            return;
+            return Ok(());
         };
         let Ok(entry_lite_json) = serde_json::to_string(&entry_lite) else {
             log_data_corruption_error!(
@@ -184,21 +206,21 @@ pub(crate) fn append_journal_row_v2(
                 "entry",
                 "The entry should decode correctly"
             );
-            return;
+            return Ok(());
         };
         row.entry_lite_json(entry_lite_json);
     }
 
     if row.is_entry_json_defined() || row.is_name_defined() {
         // We need to parse the entry
-        let Ok(entry) = raw_entry.decode::<ServiceProtocolV4Codec, journal_v2::Entry>() else {
+        let Ok(entry) = entry.decode::<ServiceProtocolV4Codec, journal_v2::Entry>() else {
             log_data_corruption_error!(
                 "sys_journal",
                 &journal_entry_id.invocation_id(),
                 "entry",
                 "The entry should decode correctly"
             );
-            return;
+            return Ok(());
         };
 
         if row.is_entry_json_defined()
@@ -212,4 +234,5 @@ pub(crate) fn append_journal_row_v2(
             row.name(cmd.name());
         }
     }
+    Ok(())
 }

@@ -22,7 +22,7 @@
 //!   membership seek while ranges and prefixes stay residual.
 //! - **Read metadata** ([`ReadMetadata`]): what a read may touch: the partition's
 //!   key range, the storage features in force and the registry as the snapshot
-//!   saw it, so that an index is only read in a state the snapshot saw as Ready.
+//!   saw it, so that an index is only read in a state the snapshot saw as Complete.
 //! - **Record**: one key, handed to the caller as a decoder positioned after the
 //!   header plus the value bytes, undecoded.
 //! - **Multi-get cursor** ([`MultiGetCursor`]): the records of a finite ID set,
@@ -58,10 +58,10 @@ use restate_types::partitions::Partition;
 use crate::features::StorageFeatures;
 use crate::keys::header::{KeyHeader, KeySchema};
 use crate::keys::selection::{KeyMatch, KeySelection, KeySelectionCursor};
-use crate::keys::{EncodeTableKey, KeyDecoder};
+use crate::keys::{EncodeTableKey, KeyDecoder, KeyKind};
 use crate::partition_db::PhysicalPartition;
 use crate::query_read::SnapshotCursor;
-use crate::registry::{IndexKind, IndexNotReady, MaintainedIndexes};
+use crate::registry::{IndexKind, IndexNotComplete, PublishedRegistry};
 use crate::{ReadSnapshot, Result};
 
 #[cfg(test)]
@@ -80,31 +80,33 @@ pub struct ReadMetadata<'a> {
 /// Where a read resolves the index IDs of registered indexes.
 #[derive(Clone, Copy)]
 pub(crate) enum IndexSource<'a> {
-    /// The registry as of the read's snapshot, so the ID and readiness match the
-    /// data it reads.
+    /// The registry as of the read's snapshot, so the index's ID and status
+    /// match the data it reads.
     Snapshot(&'a ReadSnapshot),
     /// The store's installed indexes, for reads that are not snapshot-bound.
     #[allow(dead_code)] // Used by reads that are not snapshot-bound.
-    Store(&'a MaintainedIndexes),
+    Store(&'a PublishedRegistry),
 }
 
 impl ReadMetadata<'_> {
-    /// The index ID of the Ready index of `definition` this read may use.
-    /// Anything else fails with [`crate::registry::IndexNotReady`]: an incomplete index is never
+    /// The index ID of the Complete index of `definition` this read may use.
+    /// Anything else fails with [`crate::registry::IndexNotComplete`]: an incomplete index is never
     /// read as complete.
-    pub(crate) fn ready_index(&self, definition: &str, kind: IndexKind) -> Result<u32> {
+    pub(crate) fn complete_index(&self, definition: &str, kind: IndexKind) -> Result<u32> {
         match self.indexes {
-            IndexSource::Snapshot(snapshot) => snapshot.ready_index(definition, kind),
-            IndexSource::Store(active) => active.ready_index(definition, kind).map_err(|reason| {
-                StorageError::Generic(
-                    IndexNotReady {
-                        definition: definition.into(),
-                        partition: self.partition.partition_id,
-                        reason,
-                    }
-                    .into(),
-                )
-            }),
+            IndexSource::Snapshot(snapshot) => snapshot.complete_index(definition, kind),
+            IndexSource::Store(active) => {
+                active.complete_index(definition, kind).map_err(|reason| {
+                    StorageError::Generic(
+                        IndexNotComplete {
+                            definition: definition.into(),
+                            partition: self.partition.partition_id,
+                            reason,
+                        }
+                        .into(),
+                    )
+                })
+            }
         }
     }
 }
@@ -135,7 +137,7 @@ pub trait PhysicalTable:
 
 /// A table whose records a query fetches by ID: the IDs' order is the order of
 /// the keys they encode to, so a batch of IDs is one sorted multi-get.
-pub(crate) trait MultiGetTable: PhysicalTable<Key: EncodeTableKey> {
+pub trait MultiGetTable: PhysicalTable<Key: EncodeTableKey> {
     /// The ID of a record. Its `Ord` is the stored key order, which the sorted
     /// multi-get relies on; the keys of the table have one fixed length.
     type Id: Clone + Ord;
@@ -151,14 +153,29 @@ pub(crate) trait MultiGetTable: PhysicalTable<Key: EncodeTableKey> {
     fn key(id: &Self::Id) -> Self::Key;
 }
 
-/// Fetches the records of an ID set in ID order, a bounded batch per multi-get:
-/// a step hands out the next ID that has a record ([`CursorStep::Record`]) or
-/// skips one that has none, and a batch is fetched when the steps reach it.
-pub(crate) struct MultiGetCursor<T: MultiGetTable> {
-    ids: btree_set::IntoIter<T::Id>,
-    /// The IDs of the fetched batch, in order; `key_buf` holds their keys.
-    batch_ids: Vec<T::Id>,
+/// A key a [`KeyBatchCursor`] fetches: its partition key, so keys outside the
+/// snapshot's partition are skipped, and its stored bytes.
+pub(crate) trait BatchKey {
+    fn partition_key(&self) -> PartitionKey;
+    fn encode(&self, target: &mut BytesMut);
+}
+
+/// Fetches the records of a sequence of keys, in stored-byte order, a bounded
+/// batch per multi-get: a step hands out the next key that has a record
+/// ([`CursorStep::Record`]) or skips one that has none, and a batch is fetched
+/// when the steps reach it.
+///
+/// Each refill examines at most `batch_size` keys, owned or not, so a step does
+/// bounded work even when a whole batch lies outside the partition.
+pub(crate) struct KeyBatchCursor<I: BatchKey, It: ExactSizeIterator<Item = I>> {
+    keys: It,
+    batch_size: NonZeroUsize,
+    key_kind: KeyKind,
+    /// The keys of the fetched batch, in order; `key_buf` holds their bytes, and
+    /// `ends` where each one ends in it.
+    batch: Vec<I>,
     key_buf: BytesMut,
+    ends: Vec<usize>,
     results: Option<OwnedPinnedBatch<RocksReadSnapshot<PhysicalPartition>>>,
     /// The batch index the next step examines.
     next: usize,
@@ -170,30 +187,39 @@ pub(crate) struct MultiGetCursor<T: MultiGetTable> {
     snapshot: ReadSnapshot,
 }
 
-impl<T: MultiGetTable> MultiGetCursor<T> {
-    pub(crate) fn new(snapshot: ReadSnapshot, ids: BTreeSet<T::Id>) -> Self {
+impl<I: BatchKey, It: ExactSizeIterator<Item = I>> KeyBatchCursor<I, It> {
+    /// `keys` must be in stored-byte order: a batch is one sorted multi-get.
+    pub(crate) fn new(
+        snapshot: ReadSnapshot,
+        keys: It,
+        batch_size: NonZeroUsize,
+        key_kind: KeyKind,
+    ) -> Self {
         Self {
-            snapshot,
-            batch_ids: Vec::with_capacity(ids.len().min(T::BATCH_SIZE.get())),
-            ids: ids.into_iter(),
+            batch: Vec::with_capacity(keys.len().min(batch_size.get())),
+            keys,
+            batch_size,
+            key_kind,
             key_buf: BytesMut::new(),
+            ends: Vec::new(),
             results: None,
             next: 0,
             current: None,
+            snapshot,
         }
     }
 
     pub(crate) fn advance(&mut self) -> Result<CursorStep> {
         self.snapshot.check_active()?;
         self.current = None;
-        if self.next == self.batch_ids.len() {
-            if self.ids.len() == 0 {
+        if self.next == self.batch.len() {
+            if self.keys.len() == 0 {
                 return Ok(CursorStep::Done);
             }
             self.refill()?;
         }
-        if self.next == self.batch_ids.len() {
-            // Every ID of the batch lies outside the partition.
+        if self.next == self.batch.len() {
+            // Every key of the batch lies outside the partition.
             return Ok(CursorStep::Skipped);
         }
         let index = self.next;
@@ -211,8 +237,13 @@ impl<T: MultiGetTable> MultiGetCursor<T> {
         })
     }
 
-    /// The current record: its ID and its stored value.
-    pub(crate) fn current(&self) -> Result<(T::Id, &[u8])> {
+    /// The snapshot the cursor reads.
+    pub(crate) fn snapshot(&self) -> &ReadSnapshot {
+        &self.snapshot
+    }
+
+    /// The current record's key, its stored bytes and its stored value.
+    pub(crate) fn current(&self) -> Result<(&I, &[u8], &[u8])> {
         self.snapshot.check_active()?;
         let index = self.current.ok_or(StorageError::DataIntegrityError)?;
         let value = self
@@ -220,7 +251,14 @@ impl<T: MultiGetTable> MultiGetCursor<T> {
             .get(index)
             .map_err(|error| StorageError::Generic(error.into()))?
             .ok_or(StorageError::DataIntegrityError)?;
-        Ok((self.batch_ids[index].clone(), value))
+        let start = index
+            .checked_sub(1)
+            .map_or(0, |previous| self.ends[previous]);
+        Ok((
+            &self.batch[index],
+            &self.key_buf[start..self.ends[index]],
+            value,
+        ))
     }
 
     fn results(&self) -> Result<&OwnedPinnedBatch<RocksReadSnapshot<PhysicalPartition>>> {
@@ -229,35 +267,92 @@ impl<T: MultiGetTable> MultiGetCursor<T> {
             .ok_or(StorageError::DataIntegrityError)
     }
 
-    /// Fetches the next batch: the next `BATCH_SIZE` IDs, minus those outside the
-    /// partition.
+    /// Fetches the next batch: the next `batch_size` keys, minus those outside
+    /// the partition.
     fn refill(&mut self) -> Result<()> {
         self.key_buf.clear();
-        self.batch_ids.clear();
+        self.ends.clear();
+        self.batch.clear();
         self.results = None;
         self.next = 0;
         let partition = self.snapshot.partition_key_range();
-        let mut key_len = 0;
-        for id in self.ids.by_ref().take(T::BATCH_SIZE.get()) {
-            if partition.contains(&T::partition_key(&id)) {
-                let key = T::key(&id);
-                key_len = key.serialized_length();
-                key.serialize_to(&mut self.key_buf);
-                self.batch_ids.push(id);
+        for key in self.keys.by_ref().take(self.batch_size.get()) {
+            if partition.contains(&key.partition_key()) {
+                key.encode(&mut self.key_buf);
+                self.ends.push(self.key_buf.len());
+                self.batch.push(key);
             }
         }
-        if self.batch_ids.is_empty() {
+        if self.batch.is_empty() {
             return Ok(());
         }
-        debug_assert_eq!(self.key_buf.len(), key_len * self.batch_ids.len());
+        let key_buf = &self.key_buf;
+        let keys = std::iter::once(0)
+            .chain(self.ends.iter().copied())
+            .zip(self.ends.iter().copied())
+            .map(|(start, end)| &key_buf[start..end]);
         let reader = self.snapshot.storage_snapshot().reader();
         self.results = Some(
             reader
-                .multi_get_pinned(T::Key::KEY_KIND, self.key_buf.chunks_exact(key_len), true)
+                .multi_get_pinned(self.key_kind, keys, true)
                 .map_err(|error| StorageError::Generic(error.into()))?
                 .into_owned(),
         );
         Ok(())
+    }
+}
+
+/// An ID of a [`MultiGetTable`], fetched through its stored key.
+pub(crate) struct IdKey<T: MultiGetTable>(T::Id);
+
+impl<T: MultiGetTable> BatchKey for IdKey<T> {
+    fn partition_key(&self) -> PartitionKey {
+        T::partition_key(&self.0)
+    }
+
+    fn encode(&self, target: &mut BytesMut) {
+        T::key(&self.0).serialize_to(target);
+    }
+}
+
+type IdKeys<T> = std::iter::Map<
+    btree_set::IntoIter<<T as MultiGetTable>::Id>,
+    fn(<T as MultiGetTable>::Id) -> IdKey<T>,
+>;
+
+/// Fetches the records of an ID set in ID order, which is their stored-key order,
+/// [`MultiGetTable::BATCH_SIZE`] IDs per multi-get ([`KeyBatchCursor`]).
+pub(crate) struct MultiGetCursor<T: MultiGetTable>(KeyBatchCursor<IdKey<T>, IdKeys<T>>);
+
+impl<T: MultiGetTable> MultiGetCursor<T> {
+    pub(crate) fn new(snapshot: ReadSnapshot, ids: BTreeSet<T::Id>) -> Self {
+        Self::with_batch_size(snapshot, ids, T::BATCH_SIZE)
+    }
+
+    /// [`Self::new`], with at most `batch_size` IDs per multi-get instead of
+    /// [`MultiGetTable::BATCH_SIZE`].
+    pub(crate) fn with_batch_size(
+        snapshot: ReadSnapshot,
+        ids: BTreeSet<T::Id>,
+        batch_size: NonZeroUsize,
+    ) -> Self {
+        let keys: IdKeys<T> = ids.into_iter().map(IdKey);
+        Self(KeyBatchCursor::new(
+            snapshot,
+            keys,
+            batch_size.min(T::BATCH_SIZE),
+            T::Key::KEY_KIND,
+        ))
+    }
+
+    pub(crate) fn advance(&mut self) -> Result<CursorStep> {
+        self.0.advance()
+    }
+
+    /// The current record: its ID and its stored value.
+    pub(crate) fn current(&self) -> Result<(T::Id, &[u8])> {
+        let (id, _, value) = self.0.current()?;
+        Ok((id.0.clone(), value))
     }
 }
 
@@ -301,9 +396,10 @@ pub(crate) fn navigate_live<K: KeySchema>(
                 matches.push(position);
                 position += 1;
             }
-            KeyMatch::Seek(target) => {
-                assert!(target.as_ref() > key);
-                position = keys.partition_point(|key| key.as_ref() < target.as_ref());
+            KeyMatch::Seek => {
+                let target = cursor.seek_target();
+                assert!(target > key);
+                position = keys.partition_point(|key| key.as_ref() < target);
             }
             KeyMatch::Skip => position += 1,
             KeyMatch::Done => break,
@@ -338,7 +434,8 @@ impl<T: PhysicalTable> BlockingScan<T> for ReadSnapshot {
 /// the selection or the ownership check rejects, so a step is bounded work.
 pub struct TableCursor<T: PhysicalTable> {
     inner: Option<(SnapshotCursor, KeySelectionCursor<T::Key>)>,
-    seek: Option<bytes::Bytes>,
+    /// The selection asked to seek to its target before the next key.
+    seek: bool,
     first: bool,
     positioned: bool,
     evaluated: u64,
@@ -370,7 +467,7 @@ impl<T: PhysicalTable> CursorScan<T> for ReadSnapshot {
                         .map(|cursor| (cursor, selection))
                 })
                 .transpose()?,
-            seek: None,
+            seek: false,
             first: true,
             positioned: false,
             evaluated: 0,
@@ -385,9 +482,10 @@ impl<T: PhysicalTable> ReadCursor<T> for TableCursor<T> {
             return Ok(CursorStep::Done);
         };
         if !std::mem::take(&mut self.first) {
-            match self.seek.take() {
-                Some(target) => cursor.seek_forward(target)?,
-                None => cursor.advance()?,
+            if std::mem::take(&mut self.seek) {
+                cursor.seek_forward(selection.seek_target())?;
+            } else {
+                cursor.advance()?;
             }
         }
         let Some((key, _)) = cursor.peek()? else {
@@ -396,7 +494,7 @@ impl<T: PhysicalTable> ReadCursor<T> for TableCursor<T> {
         };
         self.evaluated += 1;
         match selection.evaluate(key)? {
-            KeyMatch::Seek(target) => self.seek = Some(target),
+            KeyMatch::Seek => self.seek = true,
             KeyMatch::Done => {
                 self.inner = None;
                 return Ok(CursorStep::Done);

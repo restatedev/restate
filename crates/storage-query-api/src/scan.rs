@@ -44,12 +44,15 @@
 //! [`Scan`] submits that work with the backend's admission and query IO executor.
 
 use std::fmt::Debug;
+use std::marker::PhantomData;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::task::Poll;
 
 use restate_storage_api::Result;
 use restate_storage_api::scan::{RowConsumer, ScanOutcome};
+
+use crate::ordering::{NativeOrder, OrderFunction, OrderInput};
 
 /// A physical table: the records it yields and the prepared request that
 /// describes one read of it.
@@ -63,6 +66,51 @@ pub trait Table: 'static {
     /// Immutable preparation shared by independent executions. Cursor state is
     /// local to each execution, so reusing a request never reuses its position.
     type Scan: Send + Sync + 'static;
+    /// The orders the table's key-ordered reads deliver within a partition: its
+    /// primary-key scan and its lookups of complete keys, which fetch their keys in
+    /// stored order. Storage owns this claim, as it owns the keys it rests on. See
+    /// [`ordering`](crate::ordering#native-orders).
+    const NATIVE_ORDERS: &'static [NativeOrder] = &[];
+
+    /// Calls `with` on the byte form of `function`'s value of `record`'s ID
+    /// ([`OrderInput`]), or returns `None` if the record has none. A table answers
+    /// for each function of its [`Self::NATIVE_ORDERS`], so that a read can write
+    /// a key field ([`OrderFunction::key_field`]) from the ID it holds instead of
+    /// its text.
+    fn order_key<R>(
+        _record: &Self::Record<'_>,
+        _function: OrderFunction,
+        _with: impl FnOnce(&[u8]) -> R,
+    ) -> Option<R> {
+        None
+    }
+}
+
+/// A record of `T` as the input of its ordering functions ([`Table::order_key`]).
+pub struct RecordKeys<'r, 'a, T: Table>(pub &'r T::Record<'a>);
+
+impl<T: Table> OrderInput for RecordKeys<'_, '_, T> {
+    fn order_key<R>(&self, function: OrderFunction, with: impl FnOnce(&[u8]) -> R) -> Option<R> {
+        T::order_key(self.0, function, with)
+    }
+}
+
+/// The records of `T`, requested by `R` instead of `T`'s own request: for
+/// example, a set of complete keys fetched by multi-get. A binding of `T` turns
+/// them into rows unchanged ([`crate::SchemaBinding::read_records`]).
+pub struct RecordsOf<T, R>(PhantomData<fn() -> (T, R)>);
+
+impl<T: Table, R: Send + Sync + 'static> Table for RecordsOf<T, R> {
+    type Record<'a> = T::Record<'a>;
+    type Scan = R;
+
+    fn order_key<O>(
+        record: &Self::Record<'_>,
+        function: OrderFunction,
+        with: impl FnOnce(&[u8]) -> O,
+    ) -> Option<O> {
+        T::order_key(record, function, with)
+    }
 }
 
 /// Executes a prepared read on the caller's thread, including blocking storage
@@ -85,6 +133,16 @@ pub enum CursorStep {
     Record,
     Skipped,
     Done,
+}
+
+/// Which way a read goes through an index: in its key order, or against it.
+/// For an index keyed `service | created_at ↓`, forward reads a service's
+/// entries newest first and backward reads them oldest first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReadDirection {
+    #[default]
+    Forward,
+    Backward,
 }
 
 /// Caller-driven, blocking physical reads. A cursor owns its storage lifetime,

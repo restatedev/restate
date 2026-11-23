@@ -173,6 +173,40 @@ pub(crate) fn partition_key_envelope(domain: &Domain<PartitionKey>) -> Option<Ke
     ))
 }
 
+/// Restricts `request` to the partition keys of `domain`. A finite set of them is
+/// kept as the list of their headers ([`KeySelection::restrict_headers`]), so a
+/// read of a few objects visits only their partition keys, however far apart.
+/// Any other set restricts the read to the one interval covering it
+/// ([`partition_key_envelope`]), whose gaps the residual filter rejects. An empty
+/// set selects nothing.
+pub(crate) fn restrict_partition_keys<K>(
+    request: KeySelection<K>,
+    domain: &Domain<PartitionKey>,
+) -> KeySelection<K>
+where
+    K: KeySchema,
+    K::Header: KeyHeader<Scope = KeyRange>,
+{
+    if let Some(keys) = domain.clone().into_values() {
+        let headers: Option<Vec<Bytes>> = keys
+            .into_iter()
+            .map(|key| match K::Header::bounds(KeyRange::new(key, key))?.0 {
+                PhysicalScan::Prefix(_, header) if header.len() == K::Header::LENGTH => {
+                    Some(header)
+                }
+                _ => None,
+            })
+            .collect();
+        if let Some(headers) = headers {
+            return request.restrict_headers(headers);
+        }
+    }
+    match partition_key_envelope(domain) {
+        None => KeySelection::empty(),
+        Some(range) => request.restrict_scope(range),
+    }
+}
+
 /// Keys with a `kind | partition key` header followed by ordered fields.
 pub(crate) trait PartitionKeyed:
     OrderedKeySchema + KeySchema<Header = PartitionKeyHeader<Self>> + EncodeTableKeyPrefix
@@ -187,14 +221,14 @@ impl<K> PartitionKeyed for K where
 /// Prepares a selection over a [`PartitionKeyed`] key. `field` translates clauses
 /// into conditions on the fields, as [`KeySelection::for_key_fields`] does.
 /// Clauses on `header_columns` constrain the header instead: `header` turns each
-/// into a set of partition keys, and the read is restricted to the one interval
-/// covering their intersection.
+/// into a set of partition keys, and the read is restricted to their
+/// intersection ([`restrict_partition_keys`]).
 ///
 /// A header-derived restriction makes the result inexact. For example,
 /// `id IN (A, B)` with `A` on partition key 10 and `B` on 30 restricts the header
-/// to `10..=30`, while `field` constrains the rest of the ID; a record on
-/// partition key 20 whose field matches `A` lies inside both bounds and must be
-/// rejected by the residual filter.
+/// to 10 and 30, while `field` constrains the rest of the ID; a record on
+/// partition key 30 whose field matches `A` passes both and must be rejected by
+/// the residual filter.
 pub(crate) fn prepare_partition_keyed<S: SelectionSchema, K: PartitionKeyed>(
     selection: &Selection<S>,
     header_columns: &[S::Column],
@@ -231,10 +265,13 @@ pub(crate) fn prepare_partition_keyed_with<S: SelectionSchema, K: PartitionKeyed
     } else {
         SelectionPrecision::Inexact
     };
-    Ok(match partition_key_envelope(&keys) {
-        Some(range) => (request.restrict_scope(range), precision),
-        None => (KeySelection::empty(), SelectionPrecision::Exact),
-    })
+    let request = restrict_partition_keys(request, &keys);
+    let precision = if request.is_empty() {
+        SelectionPrecision::Exact
+    } else {
+        precision
+    };
+    Ok((request, precision))
 }
 
 /// The header of the existing partition-keyed tables, `key kind | partition key`,

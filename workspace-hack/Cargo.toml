@@ -19,7 +19,7 @@ publish = false
 adaptive-timeout = { version = "0.0.1-alpha.4", features = ["schemars", "serde", "sync", "tokio"] }
 ahash = { version = "0.8", features = ["serde"] }
 arrayvec = { version = "0.7" }
-arrow = { version = "59", features = ["canonical_extension_types", "chrono-tz", "prettyprint"] }
+arrow = { version = "59", features = ["canonical_extension_types", "chrono-tz", "ipc_compression", "prettyprint"] }
 arrow-array = { version = "59", default-features = false, features = ["chrono-tz"] }
 arrow-cast = { version = "59", default-features = false, features = ["prettyprint"] }
 arrow-ipc = { version = "59", features = ["lz4", "zstd"] }
@@ -162,7 +162,6 @@ utoipa = { version = "6", features = ["axum_extras", "time"] }
 uuid = { version = "1", features = ["js", "serde", "v4", "v7"] }
 winnow = { version = "1" }
 xxhash-rust = { version = "0.8", default-features = false, features = ["std", "xxh3"] }
-zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 zeroize = { version = "1", features = ["derive"] }
 zlib-rs = { version = "0.6", default-features = false, features = ["std"] }
 zstd = { version = "0.13" }
@@ -199,7 +198,6 @@ quote = { version = "1" }
 regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa-build", "dfa-onepass", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
-schemars = { version = "1", features = ["bytes1"] }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
@@ -272,5 +270,6 @@ rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 
 ### END HAKARI SECTION
 
-[lints]
-workspace = true
+# The workspace-hack only exists to unify features, so its dependencies are never used directly.
+[lints.cargo]
+unused_dependencies = "allow"

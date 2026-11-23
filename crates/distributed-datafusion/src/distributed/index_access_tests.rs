@@ -217,7 +217,7 @@ async fn stage_index_access_matches_scans_across_windows_and_owners() {
                         .accesses
                         .iter()
                         .all(|(_, access)| matches!(access, PrimaryRead::Index(index)
-                            if index.as_str() == "_idx_entry_by_queue")),
+                            if index.name() == "_idx_entry_by_queue")),
                     indexed,
                     "owners_receive_the_planned_access: {sql}: {:?}",
                     reads.accesses
@@ -244,41 +244,52 @@ async fn stage_index_access_matches_scans_across_windows_and_owners() {
                 rows.len() == 1 && qualifying.contains(&rows[0][0]),
                 "unordered_limits_count_qualifying_rows: {sql}: {rows:?}"
             );
-            // The leaf reports the index work: every reference of the queue was
-            // fetched and matched; navigation evaluated at least those keys.
-            // Coordinator plans do not show remote tasks' metrics.
-            if !distributed {
+            // The leaf reports the index work: with the deployment, which the
+            // stage records don't hold exactly, every reference of the queue
+            // was fetched and matched; navigation evaluated at least those
+            // keys. A remote task reports it to the coordinator.
+            let analyze = async |columns: &str| {
                 let sql = format!(
-                    "EXPLAIN ANALYZE SELECT entry_id FROM sys_vqueue_entry_status WHERE vqueue_id = '{}'",
-                    busy
+                    "EXPLAIN ANALYZE SELECT {columns} FROM sys_vqueue_entry_status \
+                     WHERE vqueue_id = '{busy}'"
                 );
-                let plan = crate::mocks::rows(session.as_ref(), &sql)
+                crate::mocks::rows(session.as_ref(), &sql)
                     .await
                     .concat()
-                    .join("\n");
-                let metric = |name: &str| -> u64 {
-                    let at = plan
-                        .find(&format!("{name}="))
-                        .unwrap_or_else(|| panic!("{name} missing: {plan}"));
-                    plan[at + name.len() + 1..]
-                        .split(|c: char| !c.is_ascii_digit())
-                        .next()
-                        .unwrap()
-                        .parse()
-                        .unwrap()
-                };
-                assert_eq!(
-                    [
-                        metric("index_references"),
-                        metric("primary_keys_fetched"),
-                        metric("primary_missing"),
-                        metric("primary_mismatched"),
-                    ],
-                    [600, 600, 0, 0],
-                    "index_work_metrics: distributed={distributed}: {plan}"
-                );
-                assert!(metric("index_keys_visited") >= 600, "{plan}");
-            }
+                    .join("\n")
+            };
+            let plan = analyze("entry_id, deployment").await;
+            let metric = |plan: &str, name: &str| -> u64 {
+                let at = plan
+                    .find(&format!("{name}="))
+                    .unwrap_or_else(|| panic!("{name} missing: {plan}"));
+                plan[at + name.len() + 1..]
+                    .split(|c: char| !c.is_ascii_digit())
+                    .next()
+                    .unwrap()
+                    .parse()
+                    .unwrap()
+            };
+            assert_eq!(
+                [
+                    metric(&plan, "index_references"),
+                    metric(&plan, "primary_keys_fetched"),
+                    metric(&plan, "primary_missing"),
+                    metric(&plan, "primary_mismatched"),
+                ],
+                [600, 600, 0, 0],
+                "index_work_metrics: distributed={distributed}: {plan}"
+            );
+            assert!(metric(&plan, "index_keys_visited") >= 600, "{plan}");
+            // Without it, the stage records alone: the same keys, no status
+            // fetched, no value decoded for a key column.
+            let plan = analyze("entry_id").await;
+            assert!(
+                metric(&plan, "stage_keys_visited") >= 600
+                    && metric(&plan, "stage_values_decoded") == 0
+                    && !plan.contains("primary_keys_fetched"),
+                "covered_reads_fetch_nothing: distributed={distributed}: {plan}"
+            );
 
             // An unrestricted ordered limit keeps the scan and its sort.
             let sql = "SELECT entry_id FROM sys_vqueue_entry_status ORDER BY entry_id LIMIT 5";
@@ -294,6 +305,528 @@ async fn stage_index_access_matches_scans_across_windows_and_owners() {
                 reads.accesses
             );
             assert_eq!(rows, scanned(sql).await, "{sql}");
+        }
+    }
+}
+
+/// The workflow page through the entry index, across eight partitions on three
+/// owners: the same rows as a scan, newest created first, with the query's other
+/// conditions applied before its LIMIT and OFFSET, whatever they are. Another
+/// order or a tie-breaker scans every partition instead, with the same rows.
+/// Each partition takes its own path, shown by invocations the index lacks:
+/// - most read the index;
+/// - one hasn't fully migrated to vqueues, and one has no Complete index: they
+///   scan, filter, and keep the newest rows the query needs; the first holds
+///   73 page matches, more than the page and its OFFSET reach;
+/// - one holds a service with more handlers than one read merges: it scans
+///   for that service.
+///
+/// With one lane per partition the owners merge their partitions; with fewer
+/// lanes they concatenate them and the plan sorts.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
+async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
+    use restate_storage_api::fsm_table::WriteFsmTable;
+    use restate_storage_api::invocation_status_table::{
+        CompletedInvocation, InFlightInvocationMetadata, InvocationStatus, StatusTimestamps,
+        WriteInvocationStatusTable,
+    };
+    use restate_types::config::Configuration;
+    use restate_types::identifiers::{InvocationId, InvocationUuid};
+    use restate_types::invocation::{
+        InvocationTarget, VirtualObjectHandlerType, WorkflowHandlerType,
+    };
+    use restate_types::partitions::features::PersistedFeatures;
+    use restate_types::vqueues::{EntryTargetExt, Seq};
+
+    use crate::tables::invocation_status::SysInvocationStatusTable;
+
+    const INDEX: &str = "_idx_entry_by_service_created";
+    /// Not migrated, and no Complete index: these partitions scan.
+    const UNMIGRATED: usize = 5;
+    const INCOMPLETE: usize = 6;
+    /// Holds the service with more handlers than one read merges.
+    const MANY: usize = 3;
+
+    let reads = Arc::new(Mutex::new(Reads::default()));
+    let mut fixture = setup_with_scanners({
+        let reads = Arc::clone(&reads);
+        move |node, sources| {
+            sources.register_declared_scanner::<SysInvocationStatusTable>(Arc::new(
+                CheckedScanner {
+                    node,
+                    check_owner: true,
+                    inner: Arc::new(SysInvocationStatusTable::create_local_scanner()),
+                    reads: Arc::clone(&reads),
+                },
+            ));
+        }
+    })
+    .await;
+    let mut tracking = Configuration::default();
+    tracking.common.experimental.set_track_entry_indexes(true);
+    let mut reset = Configuration::default();
+    reset.common.experimental.set_entry_indexes_reset(true);
+    Configuration::set(tracking.clone());
+
+    const BASE: u64 = 1_744_010_000_000;
+    let page = |key: &str| {
+        InvocationTarget::workflow("Promises", key, "promise", WorkflowHandlerType::Shared)
+    };
+    let partitions = fixture.stores.len() as u64;
+    for (partition, store) in fixture.stores.iter_mut().enumerate() {
+        let config = if partition == INCOMPLETE {
+            &reset
+        } else {
+            &tracking
+        };
+        store
+            .verify_and_run_migrations(Default::default(), config)
+            .await
+            .unwrap();
+        let start = store.partition_key_range().start();
+        let mut tx = store.transaction();
+        let mut sequence = 0;
+        let mut put = |target: &InvocationTarget, created: u64, entry: bool| {
+            sequence += 1;
+            let id = InvocationId::from_parts(
+                start + sequence % 7,
+                InvocationUuid::from_u128(u128::from(sequence) << 8 | partition as u128),
+            );
+            let created = MillisSinceEpoch::new(created);
+            let seq = Some(Seq::new(sequence));
+            let status = if sequence.is_multiple_of(3) {
+                let mut completed = CompletedInvocation::mock_neo();
+                completed.invocation_target = target.clone();
+                completed.timestamps = StatusTimestamps::init(created);
+                completed.creation_seq = seq;
+                InvocationStatus::Completed(completed)
+            } else {
+                let mut invoked = InFlightInvocationMetadata::mock();
+                invoked.invocation_target = target.clone();
+                invoked.timestamps = StatusTimestamps::init(created);
+                invoked.creation_seq = seq;
+                InvocationStatus::Invoked(invoked)
+            };
+            tx.put_invocation_status(&id, &status).unwrap();
+            if entry {
+                // The entry's stage follows its invocation's status.
+                let (stage, status) = if sequence.is_multiple_of(3) {
+                    (Stage::Finished, Status::Succeeded)
+                } else if sequence.is_multiple_of(2) {
+                    (Stage::Inbox, Status::New)
+                } else {
+                    (Stage::Running, Status::Started)
+                };
+                let created = UniqueTimestamp::from_unix_millis_unchecked(created);
+                let key =
+                    EntryKey::new(false, created.to_unix_millis(), sequence, EntryId::from(id));
+                let qid = VQueueId::custom(id.partition_key(), "q");
+                let stats = EntryStatistics::new(created, key.run_at());
+                tx.create_vqueue_entry_status(
+                    &EntryContext {
+                        qid: &qid,
+                        target: &target.entry_target_ref(),
+                    },
+                    EntryStateRef {
+                        stage,
+                        status,
+                        entry_key: &key,
+                        metadata: &EntryMetadata::default(),
+                        stats: &stats,
+                    },
+                );
+                // And its stage record, as the scheduler writes it.
+                tx.put_vqueue_inbox(
+                    &qid,
+                    stage,
+                    &key,
+                    &EntryValue {
+                        status,
+                        metadata: EntryMetadata::default(),
+                        stats,
+                    },
+                );
+            }
+        };
+        let p = partition as u64;
+        for n in 0..12u64 {
+            // Interleaved across partitions, distinct per page invocation.
+            let created = BASE + (n * partitions + p) * 10;
+            put(&page(&format!("w{p}-{n}")), created, true);
+            // Same service and handler, rejected by the query's other conditions,
+            // some of them newer than every page invocation: a virtual object,
+            // and a plain service without a key.
+            let object = InvocationTarget::virtual_object(
+                "Promises",
+                format!("o{p}-{n}"),
+                "promise",
+                VirtualObjectHandlerType::Shared,
+            );
+            put(&object, created + 5_000, true);
+            put(
+                &InvocationTarget::service("Promises", "promise"),
+                created,
+                true,
+            );
+            put(
+                &InvocationTarget::workflow(
+                    "Promises",
+                    format!("w{p}-{n}"),
+                    "run",
+                    WorkflowHandlerType::Workflow,
+                ),
+                created + 1,
+                true,
+            );
+        }
+        // More page invocations than the page shows, interleaved with the other
+        // partitions': the scanning partition must keep its newest 51.
+        if partition == UNMIGRATED {
+            for k in 0..60u64 {
+                put(&page(&format!("x{p}-{k}")), BASE + k * 15 + 3, true);
+            }
+        }
+        // Without an entry: found only where the partition scans.
+        put(&page(&format!("probe{p}")), BASE - 1_000, false);
+        // The declared Doss page's service: more invocations than its LIMIT,
+        // on two partitions and two handlers.
+        let doss = match partition {
+            0 => 300,
+            1 => 20,
+            _ => 0,
+        };
+        for k in 0..doss {
+            let handler = if k % 2 == 0 { "a" } else { "b" };
+            put(
+                &InvocationTarget::service("Doss", handler),
+                BASE + k * 7,
+                true,
+            );
+        }
+        if partition == MANY {
+            for handler in 0..257u64 {
+                put(
+                    &InvocationTarget::service("Many", format!("h{handler}")),
+                    BASE + handler * 3,
+                    true,
+                );
+            }
+        }
+        tx.put_state_machine_features(&PersistedFeatures {
+            vqueues: partition != UNMIGRATED,
+            ..Default::default()
+        })
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    // As the UI sends it.
+    let exact = include_str!("../ui_queries/workflow_page.sql");
+    for parallelism in [1, 4] {
+        let env = crate::DataFusionEnv::new(
+            64 * 1024 * 1024,
+            None,
+            Some(parallelism),
+            &HashMap::from([("datafusion.execution.batch_size".into(), "8".into())]),
+        )
+        .unwrap()
+        .with_mock_clock(restate_clock::MockClock::new())
+        .unwrap()
+        .with_distributed_execution(fixture.network.clone());
+        env.register_table::<SysInvocationStatusTable>(
+            "public",
+            "sys_invocation_status",
+            SysInvocationStatusTable::create_provider(
+                fixture.partitions.clone(),
+                &fixture.scanners,
+            ),
+        )
+        .unwrap();
+        let engine = DataFusionQueryEngine::from_env(env, None);
+        let session = engine.create_session(SessionOptions::default()).unwrap();
+        // A query and the accesses its owners received.
+        let run = async |sql: &str| {
+            *reads.lock() = Reads::default();
+            let rows = crate::mocks::rows(session.as_ref(), sql).await;
+            (rows, std::mem::take(&mut reads.lock().accesses))
+        };
+        // The same query over an unrestricted scan.
+        let scanned = async |sql: &str| {
+            let sql = sql.replacen(
+                "FROM sys_invocation_status",
+                "FROM (SELECT * FROM sys_invocation_status LIMIT 1000000) AS sys_invocation_status",
+                1,
+            );
+            let (rows, accesses) = run(&sql).await;
+            assert!(
+                accesses
+                    .iter()
+                    .all(|(_, access)| matches!(access, PrimaryRead::Scan))
+            );
+            rows
+        };
+        let through_index = |accesses: &[(PartitionId, PrimaryRead)], sql: &str| {
+            assert_eq!(accesses.len(), fixture.stores.len(), "{sql}");
+            assert!(
+                accesses.iter().all(|(_, access)| matches!(access, PrimaryRead::Index(index) if index.name() == INDEX)),
+                "every_owner_reads_the_index: {sql}: {accesses:?}"
+            );
+        };
+        // Oldest first, the index is read backwards. Past the probes, which
+        // only the partitions that scan can find (below).
+        let oldest = exact.replace(
+            "ORDER BY created_at DESC",
+            &format!("AND created_at >= to_timestamp_millis({BASE}) ORDER BY created_at ASC"),
+        );
+        for sql in [
+            exact.to_owned(),
+            exact.replace("LIMIT 51", "LIMIT 10 OFFSET 45"),
+            "SELECT id FROM sys_invocation_status WHERE target_service_name = 'Many' \
+             ORDER BY created_at DESC NULLS LAST LIMIT 3"
+                .to_owned(),
+            oldest.clone(),
+            oldest.replace("LIMIT 51", "LIMIT 10 OFFSET 45"),
+            "SELECT id FROM sys_invocation_status WHERE target_service_name = 'Many' \
+             ORDER BY created_at ASC NULLS LAST LIMIT 3"
+                .to_owned(),
+        ] {
+            let (rows, accesses) = run(&sql).await;
+            through_index(&accesses, &sql);
+            assert!(!rows.is_empty(), "{sql}");
+            assert_eq!(
+                rows,
+                scanned(&sql).await,
+                "parallelism {parallelism}: {sql}"
+            );
+        }
+        assert_eq!(run(exact).await.0.len(), 51);
+        // A condition on the status reads the status index on every owner,
+        // with the scan's rows.
+        let running = exact.replace("target_service_key IS NOT NULL", "status = 'invoked'");
+        let (rows, accesses) = run(&running).await;
+        assert_eq!(accesses.len(), fixture.stores.len(), "{running}");
+        assert!(
+            accesses.iter().all(|(_, access)| matches!(
+                access,
+                PrimaryRead::Index(index) if index.name() == "_idx_entry_by_status_created"
+            )),
+            "{running}: {accesses:?}"
+        );
+        assert!(!rows.is_empty(), "{running}");
+        assert_eq!(
+            rows,
+            scanned(&running).await,
+            "parallelism {parallelism}: {running}"
+        );
+        for sql in [
+            // Ties with another key, which the query orders by.
+            "SELECT id, created_at FROM sys_invocation_status WHERE target_service_name = 'Promises' \
+             AND target_handler_name = 'promise' ORDER BY created_at DESC NULLS LAST, id LIMIT 40"
+                .to_owned(),
+        ] {
+            let (rows, accesses) = run(&sql).await;
+            assert_eq!(accesses.len(), fixture.stores.len(), "{sql}");
+            assert!(
+                accesses
+                    .iter()
+                    .all(|(_, access)| matches!(access, PrimaryRead::Scan)),
+                "{sql}: {accesses:?}"
+            );
+            assert!(!rows.is_empty(), "{sql}");
+            assert_eq!(
+                rows,
+                scanned(&sql).await,
+                "parallelism {parallelism}: {sql}"
+            );
+        }
+        // Only the partitions that scan find their invocation without an entry,
+        // older than every other.
+        let probes = format!(
+            "SELECT target_service_key FROM sys_invocation_status \
+             WHERE target_service_name = 'Promises' AND target_handler_name = 'promise' \
+             AND created_at < to_timestamp_millis({BASE}) \
+             ORDER BY created_at DESC NULLS LAST LIMIT 20"
+        );
+        for probes in [probes.clone(), probes.replace("DESC", "ASC")] {
+            let (mut rows, accesses) = run(&probes).await;
+            through_index(&accesses, &probes);
+            rows.sort();
+            assert_eq!(
+                rows,
+                [
+                    [format!("probe{UNMIGRATED}")],
+                    [format!("probe{INCOMPLETE}")]
+                ],
+                "parallelism {parallelism}: {probes}"
+            );
+        }
+        assert_eq!(scanned(&probes).await.len(), fixture.stores.len());
+        let plan = crate::mocks::rows(session.as_ref(), &format!("EXPLAIN {exact}"))
+            .await
+            .concat()
+            .join("\n");
+        // One lane per partition: owners and the coordinator merge, nothing sorts.
+        // Fewer lanes concatenate partitions, and the plan sorts.
+        assert!(
+            plan.contains(INDEX) && plan.contains("fallback_fetch=51"),
+            "{plan}"
+        );
+        assert_eq!(
+            !plan.contains("SortExec"),
+            parallelism == 4,
+            "parallelism {parallelism}: {plan}"
+        );
+    }
+
+    // The repository's exact UI queries and the declared Doss query, under
+    // EXPLAIN ANALYZE across the three owners: every stage's task reports, and
+    // none of its numbers is missing, invalid or misattributed.
+    const DOSS: &str = "SELECT\n        ss.id AS id\n      FROM sys_invocation_status ss\n      WHERE ss.target_service_name IN ('Doss')\n      LIMIT 250 ";
+    let env = environment(4, 8).with_distributed_execution(fixture.network.clone());
+    env.register_tables(crate::UserTables::new(
+        fixture.partitions.clone(),
+        fixture.scanners.clone(),
+    ))
+    .await
+    .unwrap();
+    let session = DataFusionQueryEngine::from_env(env, None)
+        .create_session(SessionOptions::default())
+        .unwrap();
+    // Doss without ORDER BY: any 250 of its 320 invocations, each once.
+    let all: BTreeSet<_> = crate::mocks::rows(
+        session.as_ref(),
+        "SELECT id FROM sys_invocation_status WHERE target_service_name = 'Doss'",
+    )
+    .await
+    .concat()
+    .into_iter()
+    .collect();
+    assert_eq!(all.len(), 320);
+    // The UI's finished page on `sys_vqueues`, read from the finished stage
+    // records of every partition: the newest 250 creation times of the finished
+    // entries, ties included, each entry once and a finished one.
+    let finished = include_str!("../ui_queries/vqueues_finished_newest.sql");
+    let found = crate::mocks::rows(
+        session.as_ref(),
+        &finished.replace("v.entry_id AS id", "v.entry_id AS id, v.created_at"),
+    )
+    .await;
+    let newest = crate::mocks::rows(
+        session.as_ref(),
+        "SELECT entry_id, created_at FROM sys_vqueue_entry_status WHERE stage = 'finished' \
+         ORDER BY created_at DESC",
+    )
+    .await;
+    let times = |rows: &[Vec<String>]| rows.iter().map(|row| row[1].clone()).collect::<Vec<_>>();
+    assert_eq!(found.len(), 250);
+    assert_eq!(times(&found), times(&newest[..250]));
+    assert_eq!(found.iter().collect::<BTreeSet<_>>().len(), 250);
+    assert!(found.iter().all(|row| newest.contains(row)));
+    let page = crate::mocks::rows(session.as_ref(), DOSS).await.concat();
+    assert_eq!(page.len(), 250);
+    assert_eq!(page.iter().collect::<BTreeSet<_>>().len(), 250);
+    assert!(page.iter().all(|id| all.contains(id)));
+    for (name, sql) in [
+        (
+            "service_oldest",
+            include_str!("../ui_queries/service_oldest.sql"),
+        ),
+        (
+            "service_scheduled_newest",
+            include_str!("../ui_queries/service_scheduled_newest.sql"),
+        ),
+        (
+            "vqueues_finished_newest",
+            include_str!("../ui_queries/vqueues_finished_newest.sql"),
+        ),
+        ("workflow_page", exact),
+        ("doss", DOSS),
+    ] {
+        let plan = crate::mocks::rows(session.as_ref(), &format!("EXPLAIN ANALYZE {sql}"))
+            .await
+            .concat()
+            .join("\n");
+        eprintln!("corpus_analyze name={name}\n{plan}");
+        let stages = plan.matches("NetworkCoalesceExec").count();
+        assert!(stages > 0, "{name}: {plan}");
+        assert_eq!(
+            plan.matches("tasks_completed=1").count() + plan.matches("tasks_incomplete=1").count(),
+            stages,
+            "{name}: {plan}"
+        );
+        for marker in [
+            "metrics_missing",
+            "metrics_invalid",
+            "metrics_unsupported",
+            "metrics_shape_mismatch",
+            "metrics_wrong_owner",
+            "metrics_ambiguous",
+            "tasks_failed",
+        ] {
+            assert!(!plan.contains(marker), "{name}: {marker}: {plan}");
+        }
+    }
+
+    // The newest finished entries, through `entry_by_status_transitioned/1`'s
+    // Finished lanes on every owner, except the partition whose index was
+    // reset, which scans and sorts: the same rows as a scan, each owner's read
+    // shown. Then the newest active entries, through
+    // `entry_by_status_created/1`'s lanes, the same way.
+    // Neither ordered column is ever NULL, so each query reads the same with
+    // NULLs placed last, first, or by default (first, for DESC): in the same
+    // plan, but for the spelling.
+    let finished = "SELECT entry_id, transitioned_at FROM sys_vqueue_entry_status \
+        WHERE stage = 'finished' ORDER BY transitioned_at DESC NULLS LAST LIMIT 20";
+    let active = "SELECT entry_id, created_at FROM sys_vqueue_entry_status \
+        WHERE stage IN ('inbox', 'running') ORDER BY created_at DESC NULLS LAST LIMIT 20";
+    let times = |rows: Vec<Vec<String>>| {
+        rows.into_iter()
+            .map(|row| row[1].clone())
+            .collect::<Vec<_>>()
+    };
+    let unspelled = |plan: String| plan.replace(" NULLS FIRST", "").replace(" NULLS LAST", "");
+    for (sql, index) in [
+        (finished, "_idx_entry_status_by_status_transitioned"),
+        (active, "_idx_entry_status_by_status_created"),
+    ] {
+        let explained = async |sql: &str| {
+            let plan = crate::mocks::rows(session.as_ref(), &format!("EXPLAIN {sql}"))
+                .await
+                .concat()
+                .join("\n");
+            unspelled(plan)
+        };
+        let expected = explained(sql).await;
+        for spelling in ["DESC NULLS LAST", "DESC", "DESC NULLS FIRST"] {
+            let sql = sql.replace("DESC NULLS LAST", spelling);
+            let unrestricted = sql.replacen(
+                "FROM sys_vqueue_entry_status",
+                "FROM (SELECT * FROM sys_vqueue_entry_status LIMIT 1000000) AS sys_vqueue_entry_status",
+                1,
+            );
+            assert_eq!(
+                times(crate::mocks::rows(session.as_ref(), &sql).await),
+                times(crate::mocks::rows(session.as_ref(), &unrestricted).await),
+                "{sql}"
+            );
+            assert_eq!(explained(&sql).await, expected, "{sql}");
+            let plan = crate::mocks::rows(session.as_ref(), &format!("EXPLAIN ANALYZE {sql}"))
+                .await
+                .concat()
+                .join("\n");
+            eprintln!("{index} {spelling}\n{plan}");
+            assert!(plan.contains(index), "{plan}");
+            assert_eq!(
+                plan.matches("tasks_completed=1").count()
+                    + plan.matches("tasks_incomplete=1").count(),
+                3,
+                "{plan}"
+            );
+            assert!(plan.contains("entry_index_scans_not_complete=1"), "{plan}");
+            assert!(
+                !plan.contains("entry_index_reads=0,"),
+                "every owner reads the index somewhere: {plan}"
+            );
         }
     }
 }

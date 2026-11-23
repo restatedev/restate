@@ -3832,9 +3832,9 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -5380,9 +5380,9 @@ dependencies = [
 
 [[package]]
 name = "libz-sys"
-version = "1.1.31"
+version = "1.1.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff20308ecabd635a2dc1dd5834a86c462cca20efba1d5d3ddab1f8aea3455cb2"
+checksum = "fee3f59f4321dab0c78d828942e7aa09d0bd8ad6e78a501977e6bf3d02938045"
 dependencies = [
  "cc",
  "libc",
@@ -7818,7 +7818,6 @@ dependencies = [
  "indoc",
  "itertools 0.15.0",
  "json-patch",
- "mock-service-endpoint",
  "open",
  "rand 0.10.2",
  "reqwest",
@@ -8002,6 +8001,7 @@ version = "1.8.2-dev"
 dependencies = [
  "ahash",
  "anyhow",
+ "arrow",
  "async-trait",
  "bilrost",
  "bytes",
@@ -8137,16 +8137,6 @@ dependencies = [
  "test-log",
  "thiserror 2.0.20",
  "tracing",
-]
-
-[[package]]
-name = "restate-fs-util"
-version = "1.8.2-dev"
-dependencies = [
- "restate-workspace-hack",
- "tokio",
- "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -8402,7 +8392,6 @@ dependencies = [
  "reqwest",
  "restate-clock",
  "restate-core",
- "restate-metadata-providers",
  "restate-metadata-server-grpc",
  "restate-metadata-store",
  "restate-test-util",
@@ -8434,6 +8423,7 @@ dependencies = [
  "codederror",
  "derive_more",
  "googletest",
+ "libc",
  "metrics",
  "parking_lot",
  "prost",
@@ -8951,7 +8941,6 @@ name = "restate-service-protocol"
 version = "1.8.2-dev"
 dependencies = [
  "bytes",
- "bytes-utils",
  "codederror",
  "googletest",
  "paste",
@@ -9025,7 +9014,6 @@ dependencies = [
  "bytes",
  "bytestring",
  "derive_more",
- "enum-map",
  "futures",
  "opentelemetry",
  "prost",
@@ -9042,7 +9030,6 @@ dependencies = [
  "serde_with",
  "strum",
  "thiserror 2.0.20",
- "zerocopy",
 ]
 
 [[package]]
@@ -9208,6 +9195,7 @@ dependencies = [
  "ahash",
  "anyhow",
  "arc-swap",
+ "arrow-buffer",
  "base62",
  "base64 0.23.1",
  "bilrost",
@@ -9356,7 +9344,6 @@ dependencies = [
 name = "restate-util-string"
 version = "1.8.2-dev"
 dependencies = [
- "ahash",
  "bilrost",
  "bytes",
  "bytestring",
@@ -9462,8 +9449,8 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "1.1.4"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v1.1.4#25c6353db56729631f61c0f1ab6b2fdc8c44ab78"
+version = "1.1.8"
+source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v1.1.8#0e3cce8c1d13619f7401681d033cfa102e4286d2"
 
 [[package]]
 name = "restate-worker"
@@ -9492,7 +9479,6 @@ dependencies = [
  "restate-errors",
  "restate-futures-util",
  "restate-ingestion-client",
- "restate-ingress-http",
  "restate-ingress-kafka",
  "restate-invoker-impl",
  "restate-limiter",
@@ -9731,7 +9717,6 @@ dependencies = [
  "uuid",
  "winnow 1.0.4",
  "xxhash-rust",
- "zerocopy",
  "zeroize",
  "zlib-rs",
  "zstd 0.13.4",
@@ -9758,7 +9743,6 @@ dependencies = [
  "ctrlc",
  "diff",
  "futures",
- "futures-util",
  "googletest",
  "humantime",
  "itertools 0.15.0",
@@ -9767,7 +9751,6 @@ dependencies = [
  "prost-types",
  "rand 0.10.2",
  "ratatui",
- "restate-bifrost",
  "restate-cli-util",
  "restate-clock",
  "restate-core",
@@ -9775,20 +9758,15 @@ dependencies = [
  "restate-local-cluster-runner",
  "restate-log-server-grpc",
  "restate-memory",
- "restate-metadata-server",
  "restate-metadata-server-grpc",
  "restate-metadata-store",
- "restate-rocksdb",
  "restate-test-util",
  "restate-types",
  "restate-util-time",
- "restate-wal-protocol",
  "restate-workspace-hack",
- "rlimit",
  "rustls",
  "serde",
  "serde_json",
- "tempfile",
  "test-log",
  "thiserror 2.0.20",
  "tokio",
@@ -11779,9 +11757,9 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",

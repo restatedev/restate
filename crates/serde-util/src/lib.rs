@@ -8,6 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+// Only linked so hakari can unify features across the workspace.
+use restate_workspace_hack as _;
+
 mod header_map;
 #[cfg(feature = "proto")]
 mod proto;

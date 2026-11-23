@@ -42,7 +42,7 @@ use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, JournalMetadata,
     JournalRetentionPolicy, PreFlightInvocationArgument, PreFlightInvocationInput,
     PreFlightInvocationJournal, PreFlightInvocationMetadata, ReadInvocationStatusTable,
-    WriteInvocationStatusTable,
+    StatusTimestamps, WriteInvocationStatusTable,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ScheduledInvocation};
 use restate_storage_api::journal_events::WriteJournalEventsTable;
@@ -1383,6 +1383,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 name: Default::default(),
             }
             .into();
+
             let new_raw_entry = new_entry.encode::<ServiceProtocolV4Codec>();
 
             if let Some(leader) = self.leader {
@@ -1885,8 +1886,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
                 .await?
             {
-                let record_unique_ts =
-                    UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
+                let finished_at = self.vqueue_finished_at(&metadata.timestamps);
                 let new_status = match termination_flavor {
                     TerminationFlavor::Kill => vqueue_table::Status::Killed,
                     TerminationFlavor::Cancel => vqueue_table::Status::Cancelled,
@@ -1901,7 +1901,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 .await?
                 .expect("terminate expects vqueue to exist")
                 .end(
-                    record_unique_ts,
+                    finished_at,
                     &entry_status,
                     &invocation_target.entry_target_ref(),
                     new_status,
@@ -2041,8 +2041,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
                 .await?
             {
-                let record_unique_ts =
-                    UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
+                let finished_at = self.vqueue_finished_at(&metadata.timestamps);
                 let new_status = match termination_flavor {
                     TerminationFlavor::Kill => vqueue_table::Status::Killed,
                     TerminationFlavor::Cancel => vqueue_table::Status::Cancelled,
@@ -2057,7 +2056,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 .await?
                 .expect("terminate expects vqueue to exist")
                 .end(
-                    record_unique_ts,
+                    finished_at,
                     &entry_status,
                     &invocation_target.entry_target_ref(),
                     new_status,
@@ -2217,11 +2216,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 *invocation_id,
                 journal_length,
             )?
-            .try_filter_map(|(_, journal_entry)| async {
-                if let Some(cmd) = journal_entry.inner.try_as_command()
-                    && let journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
-                        call_or_send_metadata,
-                    ) = cmd.command_specific_metadata()
+            .try_filter_map(|(_, journal_entry)| async move {
+                if let Some(journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
+                    call_or_send_metadata,
+                )) = journal_entry.command_specific_metadata()
                 {
                     return Ok(Some(call_or_send_metadata.invocation_id));
                 }
@@ -2860,6 +2858,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .map(|pd| pd.service_protocol_version);
 
         let vqueue_id = invocation_metadata.vqueue_id.clone();
+        // Before the metadata moves into the completed status.
+        let finished_at = self.vqueue_finished_at(&invocation_metadata.timestamps);
         let mut end_status = vqueue_table::Status::Succeeded;
         // If there are any response sinks, or we need to store back the completed status,
         //  we need to find the latest output entry
@@ -2967,9 +2967,6 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 // Invocation has been removed already!
                 return Ok(());
             };
-            let record_unique_ts =
-                UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
-
             // Make sure we report cancel/killed correctly.
             end_status = match flavor {
                 Some(TerminationFlavor::Cancel) => vqueue_table::Status::Cancelled,
@@ -2986,7 +2983,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .await?
             .expect("terminate expects vqueue to exist")
             .end(
-                record_unique_ts,
+                finished_at,
                 &entry_status,
                 &invocation_target.entry_target_ref(),
                 end_status,
@@ -3259,6 +3256,19 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             debug_if_leader!(self.is_leader(), "Invoke");
 
             let status = self.get_invocation_status(&invocation_id).await?;
+            // Once the partition refines its vqueue lifecycle, every run records started, so
+            // that pausing or suspending the entry carries its latest attempt's status. Before,
+            // a later run kept the status it had in the inbox, such as backing-off.
+            let run_status = if self
+                .processor
+                .fsm()
+                .features()
+                .is_vq_lifecycle_refined_enabled()
+            {
+                vqueue_table::Status::Started
+            } else {
+                header.status()
+            };
             let mut vqueue = VQueue::get(
                 qid,
                 self.storage,
@@ -3276,6 +3286,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     .expect("running invocation has a target")
                     .entry_target_ref(),
                 wait_stats,
+                run_status,
             );
             let vq_handle = vqueue.handle();
 
@@ -3315,11 +3326,13 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 .await?
                 .unwrap();
 
+                // The first run.
                 vqueue.run_entry(
                     record_unique_ts,
                     &header,
                     &metadata.invocation_target.entry_target_ref(),
                     wait_stats,
+                    vqueue_table::Status::Started,
                 );
                 let vq_handle = vqueue.handle();
 
@@ -4289,7 +4302,11 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 .await?
                 .unwrap_or_else(|| panic!("There should be a journal entry at index {i}"));
                 if entry.ty() == journal_v2::EntryType::Command(CommandType::Output) {
-                    let cmd = entry.decode::<ServiceProtocolV4Codec, OutputCommand>()?;
+                    let cmd = journal_table_v2::ReadJournalTable::hydrate_journal_entry(
+                        self.storage,
+                        entry,
+                    )?
+                    .decode::<ServiceProtocolV4Codec, OutputCommand>()?;
                     return Ok(Some(match cmd.result {
                         OutputResult::Success(s) => ResponseResult::Success(s),
                         OutputResult::Failure(f) => ResponseResult::Failure(f.into()),
@@ -5128,13 +5145,18 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             )?);
 
             while let Some((_, entry)) = journal.try_next().await? {
-                match &entry.inner {
-                    RawEntry::Command(cmd) if cmd.command_type() == CommandType::Sleep => {
-                        let sleep = cmd.decode::<ServiceProtocolV4Codec, SleepCommand>()?;
+                match entry.ty() {
+                    journal_v2::EntryType::Command(CommandType::Sleep) => {
+                        let sleep = self
+                            .storage
+                            .hydrate_journal_entry(entry)?
+                            .decode::<ServiceProtocolV4Codec, SleepCommand>()?;
                         sleeps.insert(sleep.completion_id, sleep.wake_up_time);
                     }
-                    RawEntry::Notification(notification) => {
-                        if let NotificationId::CompletionId(completion_id) = notification.id() {
+                    journal_v2::EntryType::Notification(_) => {
+                        if let Some(NotificationId::CompletionId(completion_id)) =
+                            entry.notification_id()
+                        {
                             sleeps.remove(&completion_id);
                         }
                     }
@@ -5377,6 +5399,24 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         }
 
         Ok(vqueue_table::Status::Succeeded)
+    }
+
+    /// When the vqueue entry of an invocation whose status carries `timestamps` enters Finished:
+    /// once the partition refines its vqueue lifecycle, the invocation's completion time, as its
+    /// completed status records it; before, the completing record's time, which another node's
+    /// clock can put before the invocation's last modification.
+    fn vqueue_finished_at(&self, timestamps: &StatusTimestamps) -> UniqueTimestamp {
+        let finished_at = if self
+            .processor
+            .fsm()
+            .features()
+            .is_vq_lifecycle_refined_enabled()
+        {
+            timestamps.completion_time(self.record_created_at)
+        } else {
+            self.record_created_at
+        };
+        UniqueTimestamp::from_unix_millis_unchecked(finished_at)
     }
 
     /// Moves the given invocation to the inbox and making it eligible for scheduling. Depending on its

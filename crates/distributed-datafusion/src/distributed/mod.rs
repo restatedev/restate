@@ -10,8 +10,16 @@
 
 //! Explicit, owner-bound stages backed by datafusion-distributed's task runtime.
 
+pub(crate) mod analyze;
+pub(crate) mod analyze_view;
+pub(crate) mod capture_metrics;
+pub(crate) mod demand;
+pub(crate) mod emission;
+mod ipc;
 mod pushdown;
+pub(crate) mod report;
 mod requirements;
+pub(crate) use requirements::TemplateRequirements;
 pub(crate) mod source;
 mod transport;
 mod worker;

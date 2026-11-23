@@ -49,7 +49,7 @@ impl QueryFailureKind {
     pub const UNKNOWN: Self = Self(0);
     /// A bug: the engine reached a state it shouldn't.
     pub const INTERNAL: Self = Self(1);
-    /// Storage couldn't serve the read, for example a statistic that isn't ready.
+    /// Storage couldn't serve the read, for example a statistic that isn't complete.
     pub const STORAGE: Self = Self(2);
     /// The partition couldn't admit the read; the code says why.
     pub const ADMISSION: Self = Self(3);
@@ -79,7 +79,7 @@ impl QueryFailureKind {
 /// add, so read admission details through [`Self::partition_read_error`].
 ///
 /// It displays as `<origin>: <kind>: <message>`, for example
-/// `N2:1: storage: 'service_stats/1' is not ready on partition 12`; an unknown
+/// `N2:1: storage: 'service_stats/1' is not complete on partition 12`; an unknown
 /// kind is left out.
 #[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
 pub struct QueryTaskError {
@@ -427,11 +427,14 @@ mod tests {
         assert_eq!(unknown.to_string(), "N3:4: from the future");
         let storage = QueryTaskError {
             origin: Some(GenerationalNodeId::new(2, 1)),
-            ..QueryTaskError::new(QueryFailureKind::STORAGE, "'service_stats/1' is not ready")
+            ..QueryTaskError::new(
+                QueryFailureKind::STORAGE,
+                "'service_stats/1' is not complete",
+            )
         };
         assert_eq!(
             storage.to_string(),
-            "N2:1: storage: 'service_stats/1' is not ready"
+            "N2:1: storage: 'service_stats/1' is not complete"
         );
         let bug = QueryTaskError::new(QueryFailureKind::INTERNAL, "unexpected plan");
         assert_eq!(bug.to_string(), "internal: unexpected plan");

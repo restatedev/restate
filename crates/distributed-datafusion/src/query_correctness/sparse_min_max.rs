@@ -24,6 +24,7 @@ use datafusion::arrow::util::display::array_value_to_string;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::PhysicalExpr;
 use futures::{FutureExt, TryStreamExt};
+use tokio_util::sync::CancellationToken;
 
 use restate_clock::MockClock;
 use restate_core::network::NetworkSender;
@@ -35,8 +36,8 @@ use restate_platform::sync::Mutex;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::vqueue_table::{
-    EntryContext, EntryKey, EntryMetadata, EntryStateRef, ScanVQueueEntryStatusTable, Stage,
-    Status, WriteVQueueTable, filters::ScanEntryIdFilter, stats::EntryStatistics,
+    EntryContext, EntryKey, EntryMetadata, EntryStateRef, Stage, Status, WriteVQueueTable,
+    filters::ScanEntryIdFilter, stats::EntryStatistics,
 };
 use restate_storage_query_api::{QueryEngine, QueryOptions, SessionOptions};
 use restate_storage_query_datafusion as v1;
@@ -187,6 +188,15 @@ fn v2_env(parallelism: usize, batch_size: usize, dynamic_filters: bool) -> DataF
     .unwrap()
 }
 
+/// The V1 and V2 sources of each remote worker.
+type Workers = HashMap<
+    GenerationalNodeId,
+    (
+        v1::remote_query_scanner_manager::RemoteScannerManager,
+        SourceRegistry,
+    ),
+>;
+
 struct Fixture<N> {
     network: N,
     partitions: Partitions,
@@ -195,6 +205,8 @@ struct Fixture<N> {
     v1_mixed: v1::remote_query_scanner_manager::RemoteScannerManager,
     v2_mixed: SourceRegistry,
     v2_predicates: Arc<Mutex<BTreeMap<String, usize>>>,
+    /// The remote workers' sources, whose servers start on first connection.
+    _workers: Arc<OnceLock<Workers>>,
 }
 
 #[derive(Debug)]
@@ -276,13 +288,6 @@ async fn setup() -> Fixture<impl NetworkSender> {
     for (_, partition) in &partitions.0 {
         stores.push(manager.open(partition, None).await.unwrap());
     }
-    type Workers = HashMap<
-        GenerationalNodeId,
-        (
-            v1::remote_query_scanner_manager::RemoteScannerManager,
-            SourceRegistry,
-        ),
-    >;
     let workers = Arc::new(OnceLock::<Workers>::new());
     let start_servers =
         |legacy, distributed, router: &mut restate_core::network::MessageRouterBuilder| {
@@ -292,15 +297,13 @@ async fn setup() -> Fixture<impl NetworkSender> {
                 router,
             );
             let v2_server = DistributedQueryServer::new(v2_env(1, 2, true), distributed, router);
-            // Poll once to start both service receivers before MockConnector routes RPCs.
+            // Poll once to start the V1 receiver before MockConnector routes RPCs.
             let mut v1_task = Box::pin(v1_server.run());
-            let mut v2_task = Box::pin(v2_server.run());
             assert!(v1_task.as_mut().now_or_never().is_none());
-            assert!(v2_task.as_mut().now_or_never().is_none());
             // Like production, shutdown waits for both servers to stop, releasing their
             // storage owners before teardown checks run. Polled before spawning, the V1
             // server's own shutdown watcher is bound outside its task, so stop it when
-            // its task is cancelled; the V2 server also stops when its connection closes.
+            // its task is cancelled.
             TaskCenter::current()
                 .spawn(TaskKind::SystemService, "min-max-v1-scanners", async move {
                     tokio::select! {
@@ -309,13 +312,19 @@ async fn setup() -> Fixture<impl NetworkSender> {
                     }
                 })
                 .unwrap();
-            TaskCenter::current()
-                .spawn(TaskKind::SystemService, "min-max-v2-tasks", v2_task)
-                .unwrap();
+            crate::mocks::spawn_query_server("min-max-v2-tasks", v2_server);
         };
+    // Queries keep the connector through their network, possibly past teardown
+    // (see `keep_network_past_teardown`), so it must not own storage: it only
+    // borrows the workers' sources. The fixture owns them, and so does each
+    // server it starts.
     let (connector, _) = MockConnector::new({
-        let workers = Arc::clone(&workers);
+        let workers = Arc::downgrade(&workers);
         move |node, router: &mut restate_core::network::MessageRouterBuilder| {
+            // A node first reached once the test has returned serves nothing.
+            let Some(workers) = workers.upgrade() else {
+                return;
+            };
             let (v1, v2) = &workers.get().unwrap()[&node];
             start_servers(v1.clone(), v2.clone(), router);
         }
@@ -375,6 +384,7 @@ async fn setup() -> Fixture<impl NetworkSender> {
         &mut coordinator.router_builder,
     );
     let coordinator = coordinator.build().await;
+    crate::mocks::keep_network_past_teardown(coordinator.networking.clone());
     // ScannerTask watches peer liveness; the mock transport has no failure detector.
     for id in 1..=3 {
         TaskCenter::current()
@@ -407,6 +417,7 @@ async fn setup() -> Fixture<impl NetworkSender> {
         v1_mixed,
         v2_mixed,
         v2_predicates,
+        _workers: workers,
     }
 }
 
@@ -452,7 +463,7 @@ impl<N: NetworkSender> Fixture<N> {
 
     async fn populate(&mut self, layout: Layout) -> (Vec<Option<i64>>, Vec<Option<i64>>) {
         let mut fixture = Vec::new();
-        let primary = Arc::new(Mutex::new(Vec::new()));
+        let mut primary = Vec::new();
         for (index, store) in self.stores.iter_mut().enumerate() {
             let key = store.partition_key_range().start();
             let qid = VQueueId::custom(key, "sparse-min-max");
@@ -495,12 +506,12 @@ impl<N: NetworkSender> Fixture<N> {
             }
             tx.commit().await.unwrap();
             drop(tx);
-            let output = Arc::clone(&primary);
-            store
-                .for_each_vqueue_entry_status(
+            let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
+            snapshot
+                .for_each_vqueue_entry_status_blocking(
                     ScanEntryIdFilter::PartitionKey(KeyRange::FULL),
-                    move |_, header| {
-                        output.lock().push(
+                    |_, header| {
+                        primary.push(
                             header
                                 .stats
                                 .first_attempt_at
@@ -509,11 +520,8 @@ impl<N: NetworkSender> Fixture<N> {
                         ControlFlow::Continue(())
                     },
                 )
-                .unwrap()
-                .await
                 .unwrap();
         }
-        let primary = primary.lock().clone();
         assert_eq!(
             primary, fixture,
             "broad primary scan must match fixture values before SQL"

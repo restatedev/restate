@@ -9,13 +9,15 @@
 // by the Apache License, Version 2.0.
 
 //! What each partition replica open on this node records about its indexes and
-//! migration jobs, for the cluster tables `indexes` and `migration_jobs`.
+//! migration jobs, for the cluster tables `registry` and `migration_jobs`.
 //!
-//! Each replica is read through one snapshot, so its registry, walks and job
+//! Each replica is read through one snapshot, with one scan of its registry
+//! records (see [`crate::registry::records`]), so its registry, walks and job
 //! records agree with each other; two replicas, or two reports, may be at
 //! different points. The reads block, so they run on the query IO pool. A
 //! replica whose records can't be read is reported as such, never as a replica
-//! without indexes.
+//! without indexes. Finished jobs whose record expired are left out, whether or
+//! not compaction removed them yet.
 //!
 //! The constraints the replica's walk driver last observed come with it, read
 //! from the driver's published state rather than the snapshot; see
@@ -28,25 +30,23 @@
 //! only makes it when asked.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
-use rocksdb::{Range, SizeApproximationOptions};
+use rocksdb::{Range, ReadOptions, SizeApproximationOptions};
 use tokio::time::Instant;
 use zerocopy::IntoBytes;
 
+use restate_clock::WallClock;
 use restate_storage_api::Result;
 use restate_types::identifiers::PartitionId;
 use restate_types::sharding::KeyRange;
 
-use crate::fsm_table::{fsm_variable, migration_jobs_key, registry_key, walks_key};
-use crate::job::{MigrationJob, MigrationJobRecords, MigrationJobStatus, MigrationJobs};
-use crate::keys::{DecodeTableKey, IndexKeyPrefix, KeyKind};
-use crate::read_snapshot::PartitionSnapshotReader;
-use crate::registry::{IndexKind, IndexRegistry};
+use crate::job::{MigrationJob, MigrationJobStatus, MigrationJobs};
+use crate::keys::{IndexKeyPrefix, KeyKind};
+use crate::registry::records::{self, RecordsError};
+use crate::registry::{IndexKind, Registry};
 use crate::stats::AggregateKeyPrefix;
-use crate::vqueue_table::EntryStatusKey;
-use crate::walk::{DriverState, Source, Walk, Walks};
-use crate::{PartitionDb, PartitionStoreManager};
+use crate::walk::{DriverState, Walk, Walks};
+use crate::{PartitionDb, PartitionReadSnapshot, PartitionStoreManager};
 
 use super::QueryIoExecutor;
 
@@ -57,9 +57,10 @@ use super::QueryIoExecutor;
 pub struct ReplicaMigrations {
     pub partition_id: PartitionId,
     pub key_range: KeyRange,
-    pub registry: IndexRegistry,
+    pub registry: Registry,
     pub walks: Walks,
-    pub jobs: MigrationJobRecords,
+    /// The unfinished jobs and the finished ones not expired yet, by ID.
+    pub jobs: MigrationJobs,
     /// RocksDB's estimate of the storage each index's keys take, including
     /// writes not flushed yet, by index ID. Empty unless the report asked for
     /// sizes; an index of unknown kind, or whose estimate returned an error, has
@@ -68,14 +69,17 @@ pub struct ReplicaMigrations {
     /// The scheduling constraints the replica's walk driver last observed, read
     /// next to the snapshot; `None` without a running driver.
     pub driver: Option<DriverState>,
+    /// The IDs of the migrations in `registry` that this binary doesn't know, a
+    /// later release's: their jobs can't progress on this replica.
+    pub unknown_migrations: Vec<u32>,
 }
 
 impl ReplicaMigrations {
     /// How far `walk` is through this replica's key range, in percent: the
-    /// position of its cursor's partition key. Approximate, because entries spread
+    /// position of its cursor's partition key. Approximate, because rows spread
     /// over the range by hashing, and never evidence of completion. `None` for a
-    /// walk whose source isn't entry statuses, including a source this binary
-    /// doesn't know, before the first slice, or when the range holds a single key.
+    /// walk over a source this binary doesn't know, before the first slice, or
+    /// when the range holds a single key.
     pub fn progress_percent(&self, walk: &Walk) -> Option<u32> {
         let (done, span) = self.position(walk)?;
         u32::try_from(done * 100 / span).ok()
@@ -101,11 +105,15 @@ impl ReplicaMigrations {
         pass_started_at.checked_add(u64::try_from(elapsed * span / done).ok()?)
     }
 
-    /// Why `job` isn't progressing at `now`, according to the constraints the
-    /// replica's walk driver last observed: `None` when it reported none that
-    /// applies, which doesn't prove progress (the driver may be resting between
-    /// slices, or not running). In this order:
+    /// Why `job` isn't progressing at `now`: because this binary doesn't know
+    /// its migration, or because of the constraints the replica's walk driver
+    /// last observed. `None` when neither applies, which doesn't prove progress
+    /// (the driver may be resting between slices, or not running). In this
+    /// order:
     ///
+    /// - `unknown-migration`, for the job of a migration this binary doesn't
+    ///   know, a later release's, whether or not a driver runs: only a binary
+    ///   that knows it can run it;
     /// - `background-migrations-disabled`, for every unfinished job;
     /// - `snapshot-export`, for a job with a walk, or one waiting for a pass it
     ///   may start now;
@@ -122,12 +130,15 @@ impl ReplicaMigrations {
         if !matches!(job.status, Pending | Running | Waiting) {
             return None;
         }
+        if self.unknown_migrations.contains(&job.id().as_u32()) {
+            return Some("unknown-migration");
+        }
         let driver = self.driver.as_ref()?;
         if driver.disabled {
             return Some("background-migrations-disabled");
         }
         let id = job.id().as_u32();
-        let walk = self.registry.get(id).and_then(|index| index.walk);
+        let walk = self.registry.walk_of(id);
         let may_start = job.status == Waiting
             && driver
                 .eligible_at
@@ -159,14 +170,10 @@ impl ReplicaMigrations {
     /// How many partition keys of this replica's range `walk`'s cursor is past, and
     /// how many the range spans.
     fn position(&self, walk: &Walk) -> Option<(u128, u128)> {
-        if walk.source() != Some(Source::EntryStatus) {
-            return None;
-        }
-        let mut cursor = walk.cursor.as_deref()?;
-        let key = EntryStatusKey::deserialize_from(&mut cursor).ok()?;
+        let cursor = walk.source()?.partition_key(walk.cursor.as_deref()?).ok()?;
         let (start, end) = (self.key_range.start(), self.key_range.end());
         let span = u128::from(end.checked_sub(start).filter(|span| *span > 0)?);
-        let done = u128::from(key.id.partition_key().checked_sub(start)?);
+        let done = u128::from(cursor.checked_sub(start)?);
         Some((done.min(span), span))
     }
 }
@@ -175,7 +182,8 @@ impl ReplicaMigrations {
 #[derive(Debug, Clone)]
 pub struct UnreadableReplica {
     pub partition_id: PartitionId,
-    /// Which record: `registry`, `walks`, `unfinished jobs` or `job history`.
+    /// Which record: `registry`, `walk` or `job`, or `key` or `records` when a
+    /// key or the scan itself failed.
     pub record: &'static str,
     pub error: String,
 }
@@ -219,9 +227,14 @@ impl PartitionStoreManager {
                     continue;
                 };
                 let partition = db.partition();
-                match read_replica(&snapshot.reader(), partition.id(), partition.key_range) {
+                let now = WallClock::now_ms().as_u64();
+                match read_replica(&snapshot, partition.id(), partition.key_range, now) {
                     Ok(mut replica) => {
                         replica.driver = db.driver_state().get();
+                        if let Some(published) = db.published_registry() {
+                            replica.unknown_migrations =
+                                published.unknown_migrations(&replica.registry);
+                        }
                         // While the snapshot keeps the replica admitted.
                         if sizes == IndexSizes::Estimate {
                             replica.index_sizes = index_sizes(&db, &replica.registry);
@@ -240,36 +253,30 @@ impl PartitionStoreManager {
     }
 }
 
-/// Reads one replica's records through `reader`, or names the record that can't
-/// be read and why.
+/// Reads one replica's records through `snapshot` with one scan, leaving out
+/// the jobs expired at `now`, or names the record that can't be read and why.
 fn read_replica(
-    reader: &PartitionSnapshotReader<'_>,
+    snapshot: &PartitionReadSnapshot,
     partition_id: PartitionId,
     key_range: KeyRange,
+    now: u64,
 ) -> std::result::Result<ReplicaMigrations, (&'static str, String)> {
-    let jobs = |state_id, record| {
-        decode(
-            reader,
-            migration_jobs_key(partition_id, state_id),
-            record,
-            |value| MigrationJobs::decode(value).map_err(|err| err.to_string()),
-        )
-    };
+    let mut iterator = snapshot.scan(records::scan(partition_id, None), ReadOptions::default());
+    let read = records::read(
+        &mut iterator,
+        |job| !job.is_expired(now),
+        |id, error| Err(RecordsError::Job { id, error }),
+    )
+    .map_err(|err| (err.record(), err.to_string()))?;
     Ok(ReplicaMigrations {
         partition_id,
         key_range,
-        registry: decode(reader, registry_key(partition_id), "registry", |value| {
-            IndexRegistry::decode(value).map_err(|err| err.to_string())
-        })?,
-        walks: decode(reader, walks_key(partition_id), "walks", |value| {
-            Walks::decode(value).map_err(|err| err.to_string())
-        })?,
-        jobs: MigrationJobRecords {
-            unfinished: jobs(fsm_variable::MIGRATION_JOBS, "unfinished jobs")?,
-            history: Arc::new(jobs(fsm_variable::MIGRATION_JOB_HISTORY, "job history")?),
-        },
+        registry: read.registry.unwrap_or_default(),
+        walks: read.walks,
+        jobs: read.jobs,
         index_sizes: HashMap::new(),
         driver: None,
+        unknown_migrations: Vec::new(),
     })
 }
 
@@ -279,13 +286,13 @@ fn read_replica(
 /// still show bytes until compaction removes its keys. Indexes of an unknown
 /// kind are left out, and so are all of a key kind's if its call returns an
 /// error.
-fn index_sizes(db: &PartitionDb, registry: &IndexRegistry) -> HashMap<u32, u64> {
+fn index_sizes(db: &PartitionDb, registry: &Registry) -> HashMap<u32, u64> {
     let mut options = SizeApproximationOptions::new();
     options.set_include_memtables(true);
     options.set_include_files(true);
     let rocksdb = db.rocksdb().inner().as_raw_db();
     let ranges: Vec<_> = registry
-        .entries()
+        .indexes()
         .iter()
         .filter_map(|index| {
             let (kind, start, end) = index_key_range(index.kind, db.partition().id(), index.id)?;
@@ -338,21 +345,6 @@ fn index_key_range(
     };
     let mut end = start.clone();
     crate::convert_to_upper_bound(&mut end).then_some((kind, start, end))
-}
-
-/// The `record` stored at `key`, decoded, or its default when absent.
-fn decode<T: Default>(
-    reader: &PartitionSnapshotReader<'_>,
-    key: impl AsRef<[u8]>,
-    record: &'static str,
-    decode: impl FnOnce(&[u8]) -> std::result::Result<T, String>,
-) -> std::result::Result<T, (&'static str, String)> {
-    let value = reader
-        .get_pinned(KeyKind::Fsm, key.as_ref())
-        .map_err(|err| (record, err.to_string()))?;
-    value
-        .map_or(Ok(T::default()), |value| decode(&value))
-        .map_err(|err| (record, err))
 }
 
 #[cfg(test)]

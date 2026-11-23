@@ -14,9 +14,7 @@ use datafusion::catalog::TableProvider;
 
 use restate_limiter::Level;
 use restate_storage_query_api::LogicalSchema;
-use restate_storage_query_api::tables::user_limits::{
-    UserLimits, UserLimitsBatchBuilder, UserLimitsColumn,
-};
+use restate_storage_query_api::tables::user_limits::{UserLimits, UserLimitsBatchBuilder};
 use restate_types::identifiers::{PartitionKey, partitioner::HashPartitioner};
 use restate_worker_api::{PartitionCaptureRequirements, UserLimitCounterEntry};
 
@@ -32,7 +30,10 @@ impl crate::sharding::PartitionSource for SysUserLimitsTable {
     // Within a storage partition, like V1's and the other partition tables': the
     // processor captures the counters sorted by partition key, which is each
     // counter's scope's key (the key this table shows).
-    const ORDERING: &'static [UserLimitsColumn] = &[UserLimitsColumn::PartitionKey];
+    const ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] =
+        &[&[restate_storage_query_api::ordering::OrderTerm::Column(
+            "partition_key",
+        )]];
 }
 
 impl SysUserLimitsTable {
@@ -134,6 +135,7 @@ mod tests {
                 user_limits: Some(entries.into()),
                 ..Default::default()
             },
+            timing: restate_worker_api::CaptureTiming::admitted_at(tokio::time::Instant::now()),
         });
         let scanner = Arc::new(SysUserLimitsTable::create_local_scanner());
         let schema = UserLimits::arrow_schema();

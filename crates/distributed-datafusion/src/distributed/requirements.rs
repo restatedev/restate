@@ -25,6 +25,7 @@ use datafusion::physical_optimizer::limit_pushdown::LimitPushdown;
 use datafusion::physical_optimizer::output_requirements::OutputRequirements;
 use datafusion::physical_optimizer::sanity_checker::SanityCheckPlan;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::execution_plan::{ChildrenPropertiesMode, ReplaceChildrenOptions};
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::statistics::StatisticsContext;
 use datafusion::physical_plan::union::UnionExec;
@@ -33,6 +34,8 @@ use datafusion::physical_plan::{
     PlanProperties, StatisticsArgs,
 };
 use datafusion_distributed::{NetworkBoundary, NetworkCoalesceExec, Stage};
+
+use super::source::PartitionReadExec;
 
 /// Settle correctness requirements before assigning work to owners. Optional
 /// fan-out is deferred until each stage has its own budget; a query-wide target
@@ -52,15 +55,12 @@ fn optimize(
     plan: Arc<dyn ExecutionPlan>,
     config: &ConfigOptions,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    // Union branches are independent pipelines. Finalize each with its own
-    // input budget, then prevent the enclosing stage's target from widening
-    // every branch again (for example, a filter on each single-partition scan).
+    // LimitPushdown can fold a global limit into a coalesce's fetch.
+    // EnsureRequirements removes coalesces, and OutputRequirements only captures
+    // fetches on sorts/ordered merges. Make the row bound an explicit operator
+    // before rebuilding distribution, even in subqueries and templates.
     let plan = plan
         .transform_down(|plan| {
-            // LimitPushdown can fold a global limit into a coalesce's fetch.
-            // EnsureRequirements removes coalesces, and OutputRequirements only
-            // captures fetches on sorts/ordered merges. Make the row bound an
-            // explicit operator before rebuilding distribution, even in subqueries.
             if let Some(coalesce) = plan.downcast_ref::<CoalescePartitionsExec>()
                 && let Some(fetch) = coalesce.fetch()
             {
@@ -68,6 +68,19 @@ fn optimize(
                 let limit: Arc<dyn ExecutionPlan> =
                     Arc::new(GlobalLimitExec::new(input, 0, Some(fetch)));
                 return Ok(Transformed::yes(limit));
+            }
+            Ok(Transformed::no(plan))
+        })?
+        .data;
+    // Union branches are independent pipelines. Finalize each with its own
+    // input budget, then prevent the enclosing stage's target from widening
+    // every branch again (for example, a filter on each single-partition scan).
+    // A partition read's template settles on one partition, its unions included
+    // ([`ensure_requirements`]).
+    let plan = plan
+        .transform_down(|plan| {
+            if plan.is::<PartitionReadExec>() {
+                return Ok(Transformed::new(plan, false, TreeNodeRecursion::Jump));
             }
             let Some(union) = plan.downcast_ref::<UnionExec>() else {
                 return Ok(Transformed::no(plan));
@@ -103,7 +116,7 @@ fn optimize(
     // Preserve ORDER BY and fetch while native enforcement removes and rebuilds
     // exchanges. In particular, a stage-local sort must remain partition-local.
     let plan = OutputRequirements::new_add_mode().optimize(plan, &config)?;
-    let plan = EnsureRequirements::new().optimize(plan, &config)?;
+    let plan = ensure_requirements(plan, &config)?;
     let plan = OutputRequirements::new_remove_mode().optimize(plan, &config)?;
     // Restore native fetches after requirement enforcement has rebuilt exchanges.
     // In particular, absorb source limits before they can split same-owner stages.
@@ -151,6 +164,65 @@ pub(super) fn finalize(
     .map(|plan| plan.data)
 }
 
+/// DataFusion's `EnsureRequirements`, with each partition read's template settled
+/// as a pipeline of its own, on one partition. A partition read runs its template
+/// once per storage partition, and its lanes read several partitions at once; a
+/// split inside the template, which `EnsureRequirements` adds for parallelism to
+/// joins and filters, would only hash one partition's rows and lose the order its
+/// reads come in. The rest of the plan is settled with the query's budget.
+pub(crate) fn ensure_requirements(
+    plan: Arc<dyn ExecutionPlan>,
+    config: &ConfigOptions,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let mut one_partition = config.clone();
+    one_partition.execution.target_partitions = 1;
+    // Its reads come in their orders; combining several keeps them, never sorts.
+    one_partition.optimizer.prefer_existing_sort = true;
+    let plan = plan
+        .transform_down(|node| {
+            let Some(read) = node.downcast_ref::<PartitionReadExec>() else {
+                return Ok(Transformed::no(node));
+            };
+            let template =
+                EnsureRequirements::new().optimize(Arc::clone(read.input()), &one_partition)?;
+            let read = Arc::clone(&node).replace_children(
+                vec![Arc::new(PlanningInput::Template(template))],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )?;
+            Ok(Transformed::new(read, true, TreeNodeRecursion::Jump))
+        })?
+        .data;
+    EnsureRequirements::new()
+        .optimize(plan, config)?
+        .transform_up(|node| match node.downcast_ref::<PlanningInput>() {
+            Some(PlanningInput::Template(template)) => Ok(Transformed::yes(Arc::clone(template))),
+            _ => Ok(Transformed::no(node)),
+        })
+        .map(|plan| plan.data)
+}
+
+/// [`ensure_requirements`] in place of DataFusion's `EnsureRequirements`.
+#[derive(Debug)]
+pub(crate) struct TemplateRequirements;
+
+impl PhysicalOptimizerRule for TemplateRequirements {
+    fn optimize(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        config: &ConfigOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        ensure_requirements(plan, config)
+    }
+
+    fn name(&self) -> &str {
+        "restate_ensure_requirements"
+    }
+
+    fn schema_check(&self) -> bool {
+        true
+    }
+}
+
 /// An opaque, completed pipeline whose properties and statistics remain visible
 /// while native rules optimize its consumer with a different budget. Each scope
 /// removes its own wrappers before returning; none reach encoding/execution.
@@ -158,12 +230,14 @@ pub(super) fn finalize(
 enum PlanningInput {
     OwnerStage(Arc<dyn ExecutionPlan>),
     UnionBranch(Arc<dyn ExecutionPlan>),
+    /// A partition read's template ([`ensure_requirements`]).
+    Template(Arc<dyn ExecutionPlan>),
 }
 
 impl PlanningInput {
     fn input(&self) -> &Arc<dyn ExecutionPlan> {
         match self {
-            Self::OwnerStage(input) | Self::UnionBranch(input) => input,
+            Self::OwnerStage(input) | Self::UnionBranch(input) | Self::Template(input) => input,
         }
     }
 }

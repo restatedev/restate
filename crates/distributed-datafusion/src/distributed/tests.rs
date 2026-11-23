@@ -14,13 +14,15 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::util::display::array_value_to_string;
 use datafusion::common::{DataFusionError, Statistics};
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_proto::physical_plan::{DeduplicatingProtoConverter, PhysicalExtensionCodec};
-use futures::{FutureExt, StreamExt, TryStreamExt, stream};
+use futures::stream::BoxStream;
+use futures::{StreamExt, TryStreamExt, stream};
 
 use restate_clock::{MockClock, UniqueTimestamp};
 use restate_core::network::transport_connector::test_util::MockConnector;
@@ -39,8 +41,9 @@ use restate_storage_query_api::{QueryEngine, QueryOptions, QueryStatus, SessionO
 use restate_types::GenerationalNodeId;
 use restate_types::identifiers::{PartitionId, ServiceId};
 use restate_types::net::distributed_query::{
-    PartitionReadError, QueryErrorCode, QueryFailureKind, QueryTaskClose, QueryTaskError,
-    QueryTaskId, QueryTaskInstall, QueryTaskReply, QueryTaskReplyBody, QueryTaskRequest,
+    MetricLevel, MetricRecord, MetricRecordValue, NamedValue, PartitionReadError, QueryErrorCode,
+    QueryFailureKind, QueryTaskClose, QueryTaskError, QueryTaskId, QueryTaskInstall,
+    QueryTaskReply, QueryTaskReplyBody, QueryTaskReport, QueryTaskRequest, TaskOutcome,
 };
 use restate_types::net::node::{GetNodeState, GossipService, NodeStateResponse};
 use restate_types::net::{CURRENT_PROTOCOL_VERSION, ProtocolVersion};
@@ -56,7 +59,7 @@ use crate::access::PrimaryRead;
 use crate::context::DataFusionQueryEngine;
 use crate::mocks::MockPartitionSelector;
 use crate::query_correctness::run_distributed_state_corpus;
-use crate::schema_scan::SchemaScanner;
+use crate::schema_scan::LookupScanner;
 use crate::source_registry::{PartitionLocation, PartitionLocator, SourceRegistry};
 use crate::table_providers::{PreparedPartitionRead, ReadMetrics, ScanPartition};
 use crate::tables::state::{LegacyStateSource, ScopedStateSource, StateTable};
@@ -65,7 +68,7 @@ use crate::{DataFusionEnv, QuerySource};
 use super::DistributedQueryServer;
 use super::source::{SourceCodec, plan_partition_access};
 use super::transport::rpc;
-use super::worker::TaskObservation;
+use super::worker::{Hold, Tamper, TaskObservation, WorkerEvent};
 
 const OWNER: GenerationalNodeId = GenerationalNodeId::new(2, 1);
 
@@ -133,10 +136,90 @@ impl PartitionLocator for RemoteOwner {
 struct Fixture<N> {
     network: N,
     scanners: SourceRegistry,
-    owner_scanners: SourceRegistry,
+    /// The owner's sources, whose server starts on first connection.
+    owner_scanners: Arc<OnceLock<SourceRegistry>>,
     store: PartitionStore,
     manager: Arc<PartitionStoreManager>,
     observations: Arc<Mutex<Vec<TaskObservation>>>,
+    tamper: Arc<Mutex<Tamper>>,
+    /// Holds the owner's state reads, when set.
+    read_hold: Arc<Mutex<Option<ReadHold>>>,
+}
+
+/// A test's hold on the owner's state reads: each read tells `entered` its
+/// snapshot's completion, then waits for `release` before its first row.
+/// `entered` comes as the read is built, during the task's Execute: a Next
+/// waits on the read only once the worker has received it (`next-received`).
+#[derive(Clone)]
+struct ReadHold {
+    entered: tokio::sync::mpsc::UnboundedSender<tokio_util::sync::WaitForCancellationFutureOwned>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+/// An owner's state scanner that a test can hold ([`ReadHold`]).
+#[derive(derive_more::Debug)]
+struct Held(
+    Arc<dyn ScanPartition>,
+    #[debug(skip)] Arc<Mutex<Option<ReadHold>>>,
+);
+
+impl ScanPartition for Held {
+    fn prepare_read(
+        self: Arc<Self>,
+        access: PrimaryRead,
+        projection: SchemaRef,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
+        limit: Option<usize>,
+    ) -> anyhow::Result<Arc<dyn PreparedPartitionRead>> {
+        Ok(Arc::new(HeldRead(
+            Arc::clone(&self.0).prepare_read(access, projection, predicate, limit)?,
+            Arc::clone(&self.1),
+        )))
+    }
+}
+
+#[derive(derive_more::Debug)]
+struct HeldRead(
+    Arc<dyn PreparedPartitionRead>,
+    #[debug(skip)] Arc<Mutex<Option<ReadHold>>>,
+);
+
+impl PreparedPartitionRead for HeldRead {
+    fn capture_requirements(&self) -> restate_worker_api::PartitionCaptureRequirements {
+        self.0.capture_requirements()
+    }
+
+    fn execute(
+        &self,
+        context: crate::table_providers::PartitionReadContext,
+        batch_size: usize,
+        metrics: ReadMetrics,
+    ) -> anyhow::Result<SendableRecordBatchStream> {
+        let hold = self.1.lock().clone();
+        let closed = hold
+            .as_ref()
+            .map(|_| {
+                context
+                    .storage_read()
+                    .map(|(snapshot, _)| snapshot.closed())
+            })
+            .transpose()?;
+        let input = self.0.execute(context, batch_size, metrics)?;
+        let Some((hold, closed)) = hold.zip(closed) else {
+            return Ok(input);
+        };
+        let _ = hold.entered.send(closed);
+        let release = hold.release;
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            input.schema(),
+            stream::once(async move {
+                release.notified().await;
+                None
+            })
+            .filter_map(std::future::ready)
+            .chain(input),
+        )))
+    }
 }
 
 pub(super) fn environment(target_partitions: usize, batch_size: usize) -> DataFusionEnv {
@@ -168,27 +251,32 @@ async fn setup_at_version(
         .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
         .await
         .unwrap();
-    let worker_scanners = Arc::new(OnceLock::<SourceRegistry>::new());
+    let owner_scanners = Arc::new(OnceLock::<SourceRegistry>::new());
     let observations = Arc::new(Mutex::new(vec![]));
+    let tamper = Arc::new(Mutex::new(Tamper::default()));
+    // Queries keep the connector through their network, possibly past teardown
+    // (see `keep_network_past_teardown`), so it must not own storage: it only
+    // borrows the owner's sources and the observations.
     let (connector, _connections) = MockConnector::new({
-        let worker_scanners = Arc::clone(&worker_scanners);
-        let observations = Arc::clone(&observations);
+        let owner_scanners = Arc::downgrade(&owner_scanners);
+        let observations = Arc::downgrade(&observations);
+        let tamper = Arc::clone(&tamper);
         move |node, router: &mut restate_core::network::MessageRouterBuilder| {
             assert_eq!(node, OWNER, "task was routed to a non-owner");
+            // An owner first reached once the test has returned serves nothing.
+            let (Some(owner_scanners), Some(observations)) =
+                (owner_scanners.upgrade(), observations.upgrade())
+            else {
+                return;
+            };
             let mut server = DistributedQueryServer::new(
                 environment(1, 128),
-                worker_scanners.get().unwrap().clone(),
+                owner_scanners.get().unwrap().clone(),
                 router,
             );
-            server.observations = Arc::clone(&observations);
-            // Start the receiver before the connector can dispatch its first RPC.
-            let mut task = Box::pin(server.run());
-            assert!(task.as_mut().now_or_never().is_none());
-            // Like production, shutdown waits for the server to drain, releasing its
-            // storage owners before teardown checks run.
-            TaskCenter::current()
-                .spawn(TaskKind::SystemService, "distributed-query-test", task)
-                .unwrap();
+            server.observations = observations;
+            server.tamper = Arc::clone(&tamper);
+            crate::mocks::spawn_query_server("distributed-query-test", server);
             // An ordinary node service next to the query service, so tests can
             // check that query failures leave the connection usable for it.
             let mut gossip = router
@@ -229,21 +317,26 @@ async fn setup_at_version(
     .set_nodes_config(nodes)
     .build()
     .await;
+    crate::mocks::keep_network_past_teardown(coordinator.networking.clone());
     // The injected worker metadata belongs to N2, while the loopback transport's
     // task-center/global metadata remains N1. RPC, codecs and Arrow IPC are real.
     let owner = TestCoreEnv::create_with_single_node(2, 1).await;
     let local = SourceRegistry::local_only(owner.metadata);
     local.register_offline_reads(Arc::clone(&manager), crate::mocks::query_io());
-    let scanner: Arc<dyn ScanPartition> = Arc::new(SchemaScanner::<StateBinding>::new());
-    local.register_partition_scanner::<LegacyStateSource>(if fail_after_data {
-        Arc::new(FailAfterData(scanner))
-    } else {
-        scanner
-    });
-    local.register_partition_scanner::<ScopedStateSource>(Arc::new(SchemaScanner::<
+    let scanner: Arc<dyn ScanPartition> = Arc::new(LookupScanner::<StateBinding>::new());
+    let read_hold = Arc::new(Mutex::new(None));
+    local.register_partition_scanner::<LegacyStateSource>(Arc::new(Held(
+        if fail_after_data {
+            Arc::new(FailAfterData(scanner))
+        } else {
+            scanner
+        },
+        Arc::clone(&read_hold),
+    )));
+    local.register_partition_scanner::<ScopedStateSource>(Arc::new(LookupScanner::<
         ScopedStateBinding,
     >::new()));
-    worker_scanners.set(local.clone()).unwrap();
+    owner_scanners.set(local).unwrap();
     let scanners = SourceRegistry::new(
         Arc::new(RemoteOwner),
         coordinator.metadata,
@@ -252,10 +345,12 @@ async fn setup_at_version(
     Fixture {
         network: coordinator.networking,
         scanners,
-        owner_scanners: local,
+        owner_scanners,
         store,
         manager,
         observations,
+        tamper,
+        read_hold,
     }
 }
 
@@ -271,6 +366,388 @@ impl<N: NetworkSender> Fixture<N> {
         .unwrap();
         Arc::new(DataFusionQueryEngine::from_env(env, None))
     }
+
+    /// A Close reply cancels the runtime's control input, but its detached
+    /// cleanup task can still own the task context and, through the worker's
+    /// source registry, our partition store manager. Wait until only our
+    /// observations retain the contexts before tearing storage down.
+    async fn wait_for_task_cleanup(&self) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while self
+                .observations
+                .lock()
+                .iter()
+                .any(|task| Arc::strong_count(&task.context) > 1)
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("finished query tasks must be removed from the owner");
+    }
+}
+
+/// A real worker channel over the fixture's native RPC connection. An EmptyExec
+/// supplies the installed output contract; the typed output hook supplies only
+/// the unusual lane batches being tested, after the runtime has executed it.
+struct OutputTask {
+    client: Box<dyn datafusion_distributed::WorkerChannel>,
+    context: Arc<datafusion::execution::TaskContext>,
+    key: datafusion_distributed::TaskKey,
+    _control: futures::stream::BoxStream<
+        'static,
+        datafusion::common::Result<datafusion_distributed::WorkerToCoordinatorMsg>,
+    >,
+}
+
+impl OutputTask {
+    fn headers() -> http::HeaderMap {
+        use datafusion::common::config::{ConfigExtension, ExtensionOptions};
+        use datafusion_distributed::DistributedConfig;
+
+        let mut headers = http::HeaderMap::new();
+        for entry in super::runtime_config().entries() {
+            if let Some(value) = entry.value {
+                headers.insert(
+                    http::HeaderName::from_bytes(
+                        format!(
+                            "x-datafusion-distributed-config-{}.{}",
+                            DistributedConfig::PREFIX,
+                            entry.key
+                        )
+                        .as_bytes(),
+                    )
+                    .unwrap(),
+                    value.parse().unwrap(),
+                );
+            }
+        }
+        headers
+    }
+
+    async fn install<N: NetworkSender>(
+        fixture: &Fixture<N>,
+        schema: SchemaRef,
+        partitions: usize,
+    ) -> datafusion::common::Result<Self> {
+        use datafusion::physical_plan::empty::EmptyExec;
+        use datafusion_distributed::{ChannelResolver, MaybeEncoded, SetPlanRequest, TaskKey};
+
+        let mut state = environment(partitions, 128).build_session_state().unwrap();
+        let session_id = state.task_ctx().session_id();
+        state
+            .config_mut()
+            .set_extension(Arc::new(UniqueTimestamp::MIN));
+        state
+            .config_mut()
+            .set_extension(Arc::new(restate_storage_query_api::QueryMetadata {
+                session_id: session_id.into(),
+                query_ts: UniqueTimestamp::MIN,
+                headers: Default::default(),
+                redacted_sql: "IPC transport fixture".into(),
+                planning_duration: Default::default(),
+            }));
+        let context = state.task_ctx();
+        let key = TaskKey {
+            query_id: uuid::Uuid::new_v4(),
+            stage_id: 1,
+            task_number: 0,
+        };
+        let url = super::worker_url(OWNER).unwrap();
+        let mut client = super::transport::RestateChannelResolver::new(fixture.network.clone())
+            .get_worker_client_for_url(&url)
+            .await?;
+        let control = client
+            .coordinator_channel(
+                Self::headers(),
+                SetPlanRequest {
+                    task_key: key,
+                    task_count: 1,
+                    plan: MaybeEncoded::Decoded(Arc::new(
+                        EmptyExec::new(schema).with_partitions(partitions),
+                    )),
+                    dynamic_filter_remote_producer_ids: vec![],
+                    work_unit_feed_declarations: vec![],
+                    target_worker_url: url,
+                    query_start_time_ns: 0,
+                },
+                stream::pending().boxed(),
+                Default::default(),
+                &context,
+            )
+            .await?;
+        Ok(Self {
+            client,
+            context,
+            key,
+            _control: control,
+        })
+    }
+
+    async fn execute(
+        &mut self,
+        end: usize,
+    ) -> datafusion::common::Result<Vec<BoxStream<'static, datafusion::common::Result<RecordBatch>>>>
+    {
+        self.client
+            .execute_task(
+                Default::default(),
+                datafusion_distributed::ExecuteTaskRequest {
+                    task_key: self.key,
+                    target_partition_start: 0,
+                    target_partition_end: end,
+                    producer_head: datafusion_distributed::ProducerHead::None,
+                },
+                Default::default(),
+                &self.context,
+            )
+            .await
+    }
+}
+
+fn dictionary_output(
+    partition: usize,
+    input: SendableRecordBatchStream,
+) -> SendableRecordBatchStream {
+    use datafusion::arrow::array::{ArrayRef, DictionaryArray, Int32Array, StringArray};
+    use datafusion::arrow::datatypes::Int32Type;
+    use datafusion::arrow::record_batch::RecordBatch;
+
+    let schema = input.schema();
+    let first = Arc::new(StringArray::from(vec![format!("lane-{partition}-first")])) as ArrayRef;
+    let replacement = Arc::new(StringArray::from(vec![format!(
+        "lane-{partition}-replacement"
+    )])) as ArrayRef;
+    let batches = [Arc::clone(&first), first, replacement].map(|values| {
+        RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(
+                DictionaryArray::<Int32Type>::try_new(Int32Array::from(vec![0, 0]), values)
+                    .unwrap(),
+            )],
+        )
+        .map_err(Into::into)
+    });
+    Box::pin(RecordBatchStreamAdapter::new(schema, stream::iter(batches)))
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ipc_preserves_interleaved_lanes_and_ends_on_connection_loss_without_replay() {
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+
+    use restate_core::network::DrainReason;
+
+    let fixture = setup(false).await;
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "dictionary",
+        DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+        false,
+    )]));
+    fixture.tamper.lock().output = Some(dictionary_output);
+    let (events, mut replies) = tokio::sync::mpsc::unbounded_channel();
+    fixture.tamper.lock().events = Some(events);
+    let mut task = OutputTask::install(&fixture, schema, 3).await.unwrap();
+    let mut lanes = task.execute(3).await.unwrap();
+    // Interleave two lanes through dictionary replacement and EOS.
+    for suffix in ["first", "first", "replacement"] {
+        for partition in [1, 0] {
+            let batch = lanes[partition].next().await.unwrap().unwrap();
+            assert_eq!(batch.num_rows(), 2);
+            assert_eq!(
+                array_value_to_string(batch.column(0), 0).unwrap(),
+                format!("lane-{partition}-{suffix}")
+            );
+        }
+    }
+    for lane in &mut lanes[..2] {
+        assert!(lane.next().await.is_none());
+    }
+    // Leave the third lane advanced with two batches still unread at actual
+    // connection loss. This is not a drain after successful EOS.
+    let batch = lanes[2].next().await.unwrap().unwrap();
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(
+        array_value_to_string(batch.column(0), 0).unwrap(),
+        "lane-2-first"
+    );
+    let connection = fixture
+        .network
+        .get_connection(OWNER, Swimlane::QueryEngine)
+        .in_tc_as_task(
+            &TaskCenter::current(),
+            TaskKind::InPlace,
+            "ipc-loss-connect",
+        )
+        .await
+        .unwrap();
+    let closed = connection.closed();
+    connection
+        .drain(DrainReason::ConnectionDrain)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), closed)
+        .await
+        .unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(5), lanes[2].next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(error.to_string().contains("closed"), "{error}");
+    assert!(
+        lanes[2].next().await.is_none(),
+        "one terminal error, no retry"
+    );
+    let seen = std::iter::from_fn(|| replies.try_recv().ok()).collect::<Vec<_>>();
+    assert_eq!(
+        seen.iter()
+            .filter(|event| event.kind == "next-received")
+            .count(),
+        9, // Four pulls for each completed lane and one for the unfinished lane.
+        "{seen:?}"
+    );
+    assert_eq!(fixture.observations.lock().len(), 1, "no reinstallation");
+}
+
+fn zero_body_output(
+    partition: usize,
+    input: SendableRecordBatchStream,
+) -> SendableRecordBatchStream {
+    use datafusion::arrow::array::{Int32Array, RecordBatchOptions};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::record_batch::RecordBatch;
+
+    let schema = input.schema();
+    let batches = match partition {
+        0 => vec![
+            Ok(RecordBatch::try_new_with_options(
+                Arc::clone(&schema),
+                vec![],
+                &RecordBatchOptions::new().with_row_count(Some(7)),
+            )
+            .unwrap()),
+            Ok(RecordBatch::new_empty(Arc::clone(&schema))),
+            Err(DataFusionError::Execution("later lane failure".into())),
+        ],
+        1 => vec![],
+        _ => vec![Ok(RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "wrong",
+                DataType::Int32,
+                false,
+            )])),
+            vec![Arc::new(Int32Array::from(vec![1]))],
+        )
+        .unwrap())],
+    };
+    Box::pin(RecordBatchStreamAdapter::new(schema, stream::iter(batches)))
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ipc_delivers_zero_body_batches_before_failure_and_discards_failed_lanes() {
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+
+    use restate_types::net::distributed_query::QueryTaskNext;
+
+    let fixture = setup(false).await;
+    fixture.tamper.lock().output = Some(zero_body_output);
+    let mut task = OutputTask::install(&fixture, Arc::new(Schema::empty()), 3)
+        .await
+        .unwrap();
+    let mut lanes = task.execute(3).await.unwrap();
+    assert_eq!(lanes[0].next().await.unwrap().unwrap().num_rows(), 7);
+    assert!(
+        lanes[1].next().await.is_none(),
+        "empty sibling must finish independently"
+    );
+    assert_eq!(lanes[0].next().await.unwrap().unwrap().num_rows(), 0);
+    assert!(
+        lanes[0]
+            .next()
+            .await
+            .unwrap()
+            .unwrap_err()
+            .to_string()
+            .contains("later lane failure")
+    );
+    assert!(lanes[0].next().await.is_none());
+    assert!(
+        lanes[2]
+            .next()
+            .await
+            .unwrap()
+            .unwrap_err()
+            .to_string()
+            .contains("batch schema")
+    );
+    let id = fixture.observations.lock().last().unwrap().id.clone();
+    let connection = fixture
+        .network
+        .get_connection(OWNER, Swimlane::QueryEngine)
+        .in_tc_as_task(
+            &TaskCenter::current(),
+            TaskKind::InPlace,
+            "ipc-test-connect",
+        )
+        .await
+        .unwrap();
+    for partition in 0..3 {
+        let error = rpc(
+            &connection,
+            QueryTaskRequest::Next(QueryTaskNext {
+                id: id.clone(),
+                partition,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("already ended"), "{error}");
+    }
+
+    // A mismatched second stream must prevent publication of the entire range.
+    fixture.tamper.lock().output = Some(|partition, input| {
+        if partition == 0 {
+            input
+        } else {
+            Box::pin(RecordBatchStreamAdapter::new(
+                Arc::new(Schema::new(vec![Field::new(
+                    "wrong",
+                    DataType::Int32,
+                    false,
+                )])),
+                stream::empty(),
+            ))
+        }
+    });
+    let mut task = OutputTask::install(&fixture, Arc::new(Schema::empty()), 2)
+        .await
+        .unwrap();
+    let Err(error) = task.execute(2).await else {
+        panic!("stream mismatch must fail Execute");
+    };
+    assert!(error.to_string().contains("stream schema"), "{error}");
+    let id = fixture.observations.lock().last().unwrap().id.clone();
+    let error = rpc(
+        &connection,
+        QueryTaskRequest::Next(QueryTaskNext { id, partition: 0 }),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("not running"), "{error}");
+
+    // Reject a different Installed schema before the task can be executed.
+    fixture.tamper.lock().installed_schema = Some(Arc::new(Schema::new(vec![Field::new(
+        "wrong",
+        DataType::Int32,
+        false,
+    )])));
+    let Err(error) = OutputTask::install(&fixture, Arc::new(Schema::empty()), 1).await else {
+        panic!("mismatched install must fail");
+    };
+    assert!(
+        error.to_string().contains("installed task output schema"),
+        "{error}"
+    );
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
@@ -405,17 +882,18 @@ async fn explain_shows_distributed_stages_and_analyze_executes_them() {
         .engine(1, 2)
         .create_session(SessionOptions::default())
         .unwrap();
-    for (sql, analyze, verbose) in [
-        ("EXPLAIN SELECT COUNT(*) FROM state", false, false),
-        ("EXPLAIN VERBOSE SELECT COUNT(*) FROM state", false, true),
-        (
-            "EXPLAIN ANALYZE VERBOSE SELECT COUNT(*) FROM state",
-            true,
-            true,
-        ),
+    for (mode, analyze, verbose) in [
+        ("EXPLAIN", false, false),
+        ("EXPLAIN VERBOSE", false, true),
+        ("EXPLAIN ANALYZE", true, false),
+        ("EXPLAIN ANALYZE VERBOSE", true, true),
     ] {
+        let sql = format!(
+            "{mode} SELECT COUNT(*) FROM state \
+             WHERE service_key IN ('a','b','c','d','e','f','g','h','i')"
+        );
         let batches = tokio::time::timeout(Duration::from_secs(10), async {
-            let result = session.execute(sql, QueryOptions {}).await.unwrap();
+            let result = session.execute(&sql, QueryOptions {}).await.unwrap();
             result.stream.try_collect::<Vec<_>>().await.unwrap()
         })
         .await
@@ -452,12 +930,34 @@ async fn explain_shows_distributed_stages_and_analyze_executes_them() {
         );
         if !verbose {
             assert!(text.contains("partitions=[0], reads=1"), "{text}");
+            assert!(
+                text.matches("<set#1: 9 values, 9 distinct").count() >= 2,
+                "{text}"
+            );
+            assert!(!text.contains("<set#2"), "{text}");
+        } else {
+            assert!(!text.contains("<set#"), "{text}");
+            assert!(text.contains("a, b, c, d, e, f, g, h, i"), "{text}");
         }
+        let observations = std::mem::take(&mut *fixture.observations.lock());
         assert_eq!(
-            fixture.observations.lock().len(),
+            observations.len(),
             usize::from(analyze),
             "EXPLAIN must not install tasks; ANALYZE must execute remotely"
         );
+        for task in observations {
+            assert!(
+                !task.plan.contains("<set#"),
+                "worker receives executable native predicates"
+            );
+            assert!(
+                task.plan.contains("a, b, c, d, e, f, g, h, i"),
+                "{}",
+                task.plan
+            );
+            eprintln!("{mode} native worker plan:\n{}", task.plan);
+        }
+        eprintln!("{mode} coordinator output:\n{text}");
     }
 }
 
@@ -472,23 +972,11 @@ async fn finished_query_tasks_are_removed_from_the_owner() {
         .await
         .unwrap();
     result.stream.try_collect::<Vec<_>>().await.unwrap();
-    let installed = std::mem::take(&mut *fixture.observations.lock());
     assert!(
-        !installed.is_empty(),
+        !fixture.observations.lock().is_empty(),
         "the query must install a remote task"
     );
-    // Closing a finished task drops it on the owner, so only the observation's
-    // reference to the task context remains.
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while installed
-            .iter()
-            .any(|task| Arc::strong_count(&task.context) > 1)
-        {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("finished query tasks must be removed from the owner");
+    fixture.wait_for_task_cleanup().await;
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
@@ -517,7 +1005,7 @@ async fn older_fabric_rejects_query_tasks_and_keeps_ordinary_rpc_working() {
 
     let connection = fixture
         .network
-        .get_connection(OWNER, Swimlane::Datafusion)
+        .get_connection(OWNER, Swimlane::QueryEngine)
         .in_tc_as_task(
             &TaskCenter::current(),
             TaskKind::InPlace,
@@ -574,7 +1062,7 @@ async fn invalid_task_and_required_storage_fail_closed() {
     let fixture = setup(false).await;
     let connection = fixture
         .network
-        .get_connection(OWNER, Swimlane::Datafusion)
+        .get_connection(OWNER, Swimlane::QueryEngine)
         .in_tc_as_task(
             &TaskCenter::current(),
             TaskKind::InPlace,
@@ -597,6 +1085,7 @@ async fn invalid_task_and_required_storage_fail_closed() {
         query_headers: vec![],
         redacted_sql: Default::default(),
         planning_duration: Default::default(),
+        analyze: None,
     };
     let id = invalid.id.clone();
     let error = rpc(&connection, QueryTaskRequest::Install(invalid))
@@ -613,7 +1102,7 @@ async fn invalid_task_and_required_storage_fail_closed() {
     assert!(!connection.is_closed());
     assert!(matches!(
         rpc(&connection, QueryTaskRequest::Close(QueryTaskClose { id })).await,
-        Ok(QueryTaskReplyBody::Closed(()))
+        Ok(QueryTaskReplyBody::Closed(_))
     ));
     // This is the Datafusion swimlane connection. Ordinary node traffic usually
     // goes over other swimlanes; sending it here on purpose shows that the
@@ -641,7 +1130,7 @@ async fn invalid_task_and_required_storage_fail_closed() {
         Default::default(),
         StateBuilder::schema(),
         Arc::new(Statistics::new_unknown(&StateBuilder::schema())),
-        vec![],
+        crate::source_registry::SourceOrders::default(),
         None,
         None,
         crate::access::Access::Scan,
@@ -693,6 +1182,7 @@ async fn invalid_task_and_required_storage_fail_closed() {
         error.to_string().contains("doesn't exist on this node"),
         "{error}"
     );
+    fixture.wait_for_task_cleanup().await;
 }
 
 fn remote_error(error: &DataFusionError) -> &QueryTaskError {
@@ -711,7 +1201,8 @@ fn remote_error(error: &DataFusionError) -> &QueryTaskError {
 async fn processor_admission_errors_reach_the_remote_query_consumer() {
     let fixture = setup(false).await;
     let (commands, mut receiver) = tokio::sync::mpsc::channel(32);
-    fixture.owner_scanners.register_processor_reads(
+    let owner_scanners = fixture.owner_scanners.get().unwrap();
+    owner_scanners.register_processor_reads(
         ProcessorsManagerHandle::new(
             commands,
             Arc::new(UnusedRuleBook),
@@ -944,4 +1435,571 @@ async fn task_transport_preserves_rows_before_terminal_failure() {
     assert_eq!(rows, 3);
     assert_eq!(diagnostics.snapshot().status, QueryStatus::Failed);
     assert_eq!(diagnostics.snapshot().output_rows, 3);
+
+    // Under ANALYZE, a report the coordinator can't use doesn't hide the
+    // data's own failure.
+    fixture.tamper.lock().report = Some(vec![0xff; 16]);
+    let error = fixture
+        .engine(1, 1)
+        .create_session(SessionOptions::default())
+        .unwrap()
+        .execute("EXPLAIN ANALYZE SELECT * FROM state", QueryOptions {})
+        .await
+        .unwrap()
+        .stream
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("injected late storage failure"),
+        "{error}"
+    );
+}
+
+/// A report the coordinator can't use costs only the report. A worker from
+/// before reports, and a malformed, an oversized or an out-of-domain report,
+/// each show as a marker on the stage, and the query succeeds.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unusable_reports_degrade_to_markers() {
+    use bilrost::Message;
+
+    let fixture = setup(false).await;
+    let session = fixture
+        .engine(1, 2)
+        .create_session(SessionOptions::default())
+        .unwrap();
+    let analyze = async || {
+        let result = session
+            .execute(
+                "EXPLAIN ANALYZE SELECT COUNT(*) FROM state",
+                QueryOptions {},
+            )
+            .await
+            .unwrap();
+        let batches = result.stream.try_collect::<Vec<_>>().await.unwrap();
+        batches
+            .iter()
+            .flat_map(|batch| {
+                (0..batch.num_rows())
+                    .map(|row| array_value_to_string(batch.column(1), row).unwrap())
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let text = analyze().await;
+    assert!(text.contains("tasks_completed=1"), "{text}");
+    fixture.tamper.lock().legacy = true;
+    let text = analyze().await;
+    assert!(text.contains("metrics_unsupported=1"), "{text}");
+    fixture.tamper.lock().legacy = false;
+    // A well-formed report over the size a worker can build.
+    let oversized = QueryTaskReport {
+        task: vec![MetricRecord {
+            value: MetricRecordValue::Count(NamedValue {
+                name: "n".repeat(70_000).into(),
+                value: 1,
+            }),
+            level: MetricLevel::SUMMARY,
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+    .encode_to_vec();
+    for report in [vec![0xff; 16], oversized] {
+        fixture.tamper.lock().report = Some(report);
+        let text = analyze().await;
+        assert!(text.contains("metrics_invalid=1"), "{text}");
+        assert!(!text.contains("tasks_completed"), "{text}");
+    }
+    // A report from a newer worker, with a metric level this binary doesn't
+    // know, decodes: it's checked against its stage like any report, rather
+    // than being invalid. This one describes no plan, so it doesn't attach;
+    // the unit tests show that only such a metric is dropped.
+    let newer = QueryTaskReport {
+        outcome: TaskOutcome::COMPLETED,
+        task: vec![MetricRecord {
+            value: MetricRecordValue::Count(NamedValue {
+                name: "n".into(),
+                value: 1,
+            }),
+            level: MetricLevel(99),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+    .encode_to_vec();
+    fixture.tamper.lock().report = Some(newer);
+    let text = analyze().await;
+    assert!(text.contains("metrics_shape_mismatch=1"), "{text}");
+    assert!(!text.contains("metrics_invalid"), "{text}");
+}
+
+/// A Close racing a task's blocked requests, over the native transport, each
+/// held at an explicit barrier:
+///
+/// - **a blocked Next:** its read is held before its first row; the query is
+///   dropped, so the coordinator closes the task. The Next ends as closed,
+///   the task closes once, and the read's snapshot actually closes;
+/// - **a blocked Execute**, under ANALYZE: held before it runs; the query is
+///   dropped, and the Close arrives while it's held. Released, the Execute ends
+///   as closed and publishes nothing; the Close then settles once, with its
+///   report.
+///
+/// Every event names the owner's task, as installed.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_close_ends_a_blocked_execute_or_next_once() {
+    let mut fixture = setup(false).await;
+    let mut transaction = fixture.store.transaction();
+    for key in ["a", "b", "c"] {
+        transaction
+            .put_user_state(
+                &ServiceId::new(None, "service", "object"),
+                &Bytes::copy_from_slice(key.as_bytes()),
+                Bytes::from_static(b"value"),
+            )
+            .unwrap();
+    }
+    transaction.commit().await.unwrap();
+    drop(transaction);
+    let (events, mut events_rx) = tokio::sync::mpsc::unbounded_channel::<WorkerEvent>();
+    fixture.tamper.lock().events = Some(events);
+    // The first event of `kind` for task `id` not yet taken, received within
+    // 10 s: one request's events may arrive before or after another's.
+    let mut seen: Vec<WorkerEvent> = Vec::new();
+    let mut taken: Vec<bool> = Vec::new();
+    let mut next_event =
+        async |kind: &str, id: &QueryTaskId, seen: &mut Vec<WorkerEvent>, taken: &mut Vec<bool>| {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(at) = seen
+                    .iter()
+                    .enumerate()
+                    .position(|(at, event)| !taken[at] && event.kind == kind && event.id == *id)
+                {
+                    taken[at] = true;
+                    return seen[at].clone();
+                }
+                let event = tokio::time::timeout_at(deadline, events_rx.recv())
+                    .await
+                    .unwrap_or_else(|_| panic!("no {kind} event: {seen:#?}"))
+                    .unwrap();
+                seen.push(event);
+                taken.push(false);
+            }
+        };
+    let engine = fixture.engine(1, 1);
+
+    // A blocked Next.
+    let (entered, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+    *fixture.read_hold.lock() = Some(ReadHold {
+        entered,
+        release: Arc::new(tokio::sync::Notify::new()),
+    });
+    let mut stream = engine
+        .create_session(SessionOptions::default())
+        .unwrap()
+        .execute("SELECT * FROM state", QueryOptions {})
+        .await
+        .unwrap()
+        .stream;
+    let consumer = tokio::spawn(async move { stream.next().await.map(|batch| batch.is_ok()) });
+    let closed = tokio::time::timeout(Duration::from_secs(10), entered_rx.recv())
+        .await
+        .expect("the read is held")
+        .unwrap();
+    let task = fixture.observations.lock()[0].id.clone();
+    assert_eq!(fixture.observations.lock()[0].owner, OWNER);
+    next_event("next-received", &task, &mut seen, &mut taken).await;
+    next_event("next-polling", &task, &mut seen, &mut taken).await;
+    let connection = fixture
+        .network
+        .get_connection(OWNER, Swimlane::QueryEngine)
+        .in_tc_as_task(
+            &TaskCenter::current(),
+            TaskKind::InPlace,
+            "ipc-concurrent-connect",
+        )
+        .await
+        .unwrap();
+    let error = rpc(
+        &connection,
+        QueryTaskRequest::Next(restate_types::net::distributed_query::QueryTaskNext {
+            id: task.clone(),
+            partition: 0,
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("concurrent pull"), "{error}");
+    let concurrent = next_event("next", &task, &mut seen, &mut taken).await;
+    assert!(concurrent.outcome.contains("concurrent pull"));
+    consumer.abort();
+    let next = next_event("next", &task, &mut seen, &mut taken).await;
+    let close = next_event("close", &task, &mut seen, &mut taken).await;
+    assert!(next.outcome.contains("query task closed"), "{seen:#?}");
+    assert_eq!(close.outcome, "closed report=false");
+    tokio::time::timeout(Duration::from_secs(5), closed)
+        .await
+        .expect("the held read's snapshot closes");
+    *fixture.read_hold.lock() = None;
+
+    // A blocked Execute, under ANALYZE.
+    let (entered, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Notify::new());
+    fixture.tamper.lock().execute_hold = Some(Hold {
+        entered,
+        release: Arc::clone(&release),
+    });
+    let mut stream = engine
+        .create_session(SessionOptions::default())
+        .unwrap()
+        .execute("EXPLAIN ANALYZE SELECT * FROM state", QueryOptions {})
+        .await
+        .unwrap()
+        .stream;
+    let consumer = tokio::spawn(async move { stream.next().await.map(|batch| batch.is_ok()) });
+    let task = tokio::time::timeout(Duration::from_secs(10), entered_rx.recv())
+        .await
+        .expect("the Execute is held")
+        .unwrap();
+    let installed = fixture.observations.lock()[1].id.clone();
+    assert_eq!(task, installed);
+    consumer.abort();
+    // The Close has cancelled the task before the Execute goes on: receiving
+    // the Close only starts closing it.
+    next_event("cancelled", &task, &mut seen, &mut taken).await;
+    release.notify_one();
+    let execute = next_event("execute", &task, &mut seen, &mut taken).await;
+    let close = next_event("close", &task, &mut seen, &mut taken).await;
+    assert!(execute.outcome.contains("query task closed"), "{seen:#?}");
+    assert_eq!(close.outcome, "closed report=true");
+    // Each task closed once.
+    fixture.tamper.lock().events = None;
+    while let Ok(event) = events_rx.try_recv() {
+        seen.push(event);
+    }
+    for id in [&installed, &next.id] {
+        assert_eq!(
+            seen.iter()
+                .filter(|event| event.kind == "close" && event.id == *id)
+                .count(),
+            1,
+            "{seen:#?}"
+        );
+    }
+}
+
+/// A task's own failure stays the query's error however its telemetry fails
+/// too. An Execute fails as a protocol failure: without ANALYZE; under ANALYZE
+/// with a malformed report; and from a worker without reports. Each time the
+/// query fails with that failure, worded the same.
+///
+/// The ordering covered is the native one for a failed task: the control
+/// failure ends the query first; the coordinator's control stream for the
+/// task still ends, and closes it. Receipts from the coordinator, waited for
+/// as well as the failure, show for each task: without ANALYZE, the close;
+/// with a malformed report, that its worker was to report, then the report
+/// read and degraded to invalid (the soft-failure branch), after the control
+/// failure; from a worker without reports, that it wasn't to report, then
+/// the close.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_control_failure_stays_the_error_whatever_the_telemetry() {
+    let mut fixture = setup(false).await;
+    let mut transaction = fixture.store.transaction();
+    transaction
+        .put_user_state(
+            &ServiceId::new(None, "service", "object"),
+            &Bytes::from_static(b"a"),
+            Bytes::from_static(b"value"),
+        )
+        .unwrap();
+    transaction.commit().await.unwrap();
+    drop(transaction);
+    let (receipts, mut receipts_rx) = tokio::sync::mpsc::unbounded_channel();
+    *super::transport::TELEMETRY.lock().unwrap() = Some(receipts);
+    fixture.tamper.lock().execute_error = Some("injected execute failure".to_owned());
+    let engine = fixture.engine(1, 1);
+    let mut errors = Vec::new();
+    for (at, (sql, legacy, report, expected)) in [
+        ("SELECT * FROM state", false, None, &["closed"][..]),
+        (
+            "EXPLAIN ANALYZE SELECT * FROM state",
+            false,
+            Some(vec![0xff; 16]),
+            &["installed report=true", "invalid"][..],
+        ),
+        (
+            "EXPLAIN ANALYZE SELECT * FROM state",
+            true,
+            None,
+            &["installed report=false", "closed"][..],
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        {
+            let mut tamper = fixture.tamper.lock();
+            tamper.legacy = legacy;
+            tamper.report = report;
+        }
+        let error = engine
+            .create_session(SessionOptions::default())
+            .unwrap()
+            .execute(sql, QueryOptions {})
+            .await
+            .unwrap()
+            .stream
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap_err()
+            .to_string();
+        // The owner's failure, with its owner and kind.
+        assert!(
+            error.contains("N2:1: protocol: injected execute failure")
+                && !error.contains("metrics"),
+            "{sql}: {error}"
+        );
+        errors.push(error);
+        // This task's telemetry, up to what became of it.
+        let task = fixture.observations.lock()[at].id.clone();
+        let mut seen = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let terminal = ["closed unread", "closed", "received", "invalid", "missing"];
+        while seen
+            .last()
+            .is_none_or(|what: &String| !terminal.contains(&what.as_str()))
+        {
+            let (id, what) = tokio::time::timeout_at(deadline, receipts_rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("{sql}: {seen:?}"))
+                .unwrap();
+            if id == task {
+                seen.push(what);
+            }
+        }
+        assert_eq!(seen, expected, "{sql} legacy={legacy}");
+    }
+    // The same failure, worded the same, each time.
+    assert!(
+        errors.windows(2).all(|pair| pair[0] == pair[1]),
+        "{errors:#?}"
+    );
+}
+
+/// A Close sent while the coordinator still waits on the task, under
+/// ANALYZE, each step held at a barrier and correlated with the owner's
+/// installed task:
+///
+/// - **a blocked Next:** the Close cancels the task (cancellation applied is
+///   the barrier), the Next ends as closed, and the coordinator's own consumer
+///   gets that failure. The closing drops the task's stream and the copy
+///   settles; while the closing is held after that, the read's snapshot
+///   completes. A repeated Close arrives then; released,
+///   the closing finishes once and both Closes get the same report, which
+///   says the task stopped part-way, its one copy cancelled before it merged;
+/// - **an Execute held inside its cancellable work:** the Close cancels it
+///   there, it ends as closed, the consumer gets that failure, and the report
+///   says the task stopped part-way with nothing unsettled.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_close_cancels_a_waiting_task_and_finalizes_it_once() {
+    use bilrost::OwnedMessage;
+    use restate_types::net::distributed_query::TaskOutcome;
+
+    let mut fixture = setup(false).await;
+    let mut transaction = fixture.store.transaction();
+    for key in ["a", "b", "c"] {
+        transaction
+            .put_user_state(
+                &ServiceId::new(None, "service", "object"),
+                &Bytes::copy_from_slice(key.as_bytes()),
+                Bytes::from_static(b"value"),
+            )
+            .unwrap();
+    }
+    transaction.commit().await.unwrap();
+    drop(transaction);
+    let (events, mut events_rx) = tokio::sync::mpsc::unbounded_channel::<WorkerEvent>();
+    fixture.tamper.lock().events = Some(events);
+    let mut seen: Vec<WorkerEvent> = Vec::new();
+    let mut taken: Vec<bool> = Vec::new();
+    // The first event of `kind` for task `id` not yet taken, within 10 s.
+    let mut next_event =
+        async |kind: &str, id: &QueryTaskId, seen: &mut Vec<WorkerEvent>, taken: &mut Vec<bool>| {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(at) = seen
+                    .iter()
+                    .enumerate()
+                    .position(|(at, event)| !taken[at] && event.kind == kind && event.id == *id)
+                {
+                    taken[at] = true;
+                    return seen[at].clone();
+                }
+                let event = tokio::time::timeout_at(deadline, events_rx.recv())
+                    .await
+                    .unwrap_or_else(|_| panic!("no {kind} event: {seen:#?}"))
+                    .unwrap();
+                seen.push(event);
+                taken.push(false);
+            }
+        };
+    let connection = fixture
+        .network
+        .get_connection(OWNER, Swimlane::QueryEngine)
+        .in_tc_as_task(
+            &TaskCenter::current(),
+            TaskKind::InPlace,
+            "query-test-connect",
+        )
+        .await
+        .unwrap();
+    let close = |id: &QueryTaskId| {
+        let (connection, id) = (connection.clone(), id.clone());
+        tokio::spawn(async move {
+            rpc(&connection, QueryTaskRequest::Close(QueryTaskClose { id })).await
+        })
+    };
+    let report = |event: &WorkerEvent| {
+        QueryTaskReport::decode(event.report.clone().expect("a report").as_slice()).unwrap()
+    };
+    let engine = fixture.engine(1, 1);
+    let consume = |sql: &'static str| {
+        let engine = Arc::clone(&engine);
+        tokio::spawn(async move {
+            let mut stream = engine
+                .create_session(SessionOptions::default())
+                .unwrap()
+                .execute(sql, QueryOptions {})
+                .await
+                .unwrap()
+                .stream;
+            while let Some(batch) = stream.next().await {
+                if let Err(error) = batch {
+                    return error.to_string();
+                }
+            }
+            "ended".to_owned()
+        })
+    };
+
+    // A blocked Next.
+    let (entered, mut read_entered) = tokio::sync::mpsc::unbounded_channel();
+    *fixture.read_hold.lock() = Some(ReadHold {
+        entered,
+        release: Arc::new(tokio::sync::Notify::new()),
+    });
+    let (entered, mut finalizing) = tokio::sync::mpsc::unbounded_channel();
+    let finalize = Arc::new(tokio::sync::Notify::new());
+    fixture.tamper.lock().finalize_hold = Some(Hold {
+        entered,
+        release: Arc::clone(&finalize),
+    });
+    let consumer = consume("EXPLAIN ANALYZE SELECT * FROM state");
+    let snapshot = tokio::time::timeout(Duration::from_secs(10), read_entered.recv())
+        .await
+        .expect("the read is held")
+        .unwrap();
+    let (task, owner) = {
+        let observations = fixture.observations.lock();
+        (observations[0].id.clone(), observations[0].owner)
+    };
+    assert_eq!(owner, OWNER);
+    next_event("next-received", &task, &mut seen, &mut taken).await;
+    let first = close(&task);
+    next_event("cancelled", &task, &mut seen, &mut taken).await;
+    let next = next_event("next", &task, &mut seen, &mut taken).await;
+    assert!(next.outcome.contains("query task closed"), "{seen:#?}");
+    let failure = tokio::time::timeout(Duration::from_secs(10), consumer)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(failure.contains("query task closed"), "{failure}");
+    // Held after its copies settled, with the stream gone: the read's
+    // snapshot completes meanwhile.
+    let held = tokio::time::timeout(Duration::from_secs(10), finalizing.recv())
+        .await
+        .expect("the closing is held")
+        .unwrap();
+    assert_eq!(held, task);
+    let settled = next_event("settled", &task, &mut seen, &mut taken).await;
+    assert_eq!(settled.outcome, "idle=true settled=true");
+    tokio::time::timeout(Duration::from_secs(5), snapshot)
+        .await
+        .expect("the read's snapshot closes while the closing is held");
+    let repeated = close(&task);
+    next_event("close-received", &task, &mut seen, &mut taken).await;
+    next_event("close-received", &task, &mut seen, &mut taken).await;
+    finalize.notify_one();
+    for reply in [first, repeated] {
+        let reply = tokio::time::timeout(Duration::from_secs(10), reply)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(reply, QueryTaskReplyBody::Closed(_)));
+    }
+    let closed = next_event("close", &task, &mut seen, &mut taken).await;
+    let repeated = next_event("close-repeated", &task, &mut seen, &mut taken).await;
+    assert_eq!(closed.report, repeated.report);
+    let sent = report(&closed);
+    assert_eq!(
+        (sent.outcome, sent.unsettled_lanes),
+        (TaskOutcome::INCOMPLETE, 1),
+        "{sent:?}"
+    );
+    *fixture.read_hold.lock() = None;
+    fixture.tamper.lock().finalize_hold = None;
+
+    // An Execute held inside its cancellable work.
+    let (entered, mut execute_entered) = tokio::sync::mpsc::unbounded_channel();
+    fixture.tamper.lock().execute_inside_hold = Some(Hold {
+        entered,
+        release: Arc::new(tokio::sync::Notify::new()),
+    });
+    let consumer = consume("EXPLAIN ANALYZE SELECT * FROM state");
+    let held = tokio::time::timeout(Duration::from_secs(10), execute_entered.recv())
+        .await
+        .expect("the Execute is held")
+        .unwrap();
+    let (installed, owner) = {
+        let observations = fixture.observations.lock();
+        (observations[1].id.clone(), observations[1].owner)
+    };
+    assert_eq!((&held, owner), (&installed, OWNER));
+    let only = close(&installed);
+    next_event("cancelled", &installed, &mut seen, &mut taken).await;
+    let execute = next_event("execute", &installed, &mut seen, &mut taken).await;
+    assert!(execute.outcome.contains("query task closed"), "{seen:#?}");
+    let failure = tokio::time::timeout(Duration::from_secs(10), consumer)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(failure.contains("query task closed"), "{failure}");
+    tokio::time::timeout(Duration::from_secs(10), only)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let closed = next_event("close", &installed, &mut seen, &mut taken).await;
+    let sent = report(&closed);
+    assert_eq!(
+        (sent.outcome, sent.unsettled_lanes),
+        (TaskOutcome::INCOMPLETE, 0),
+        "{sent:?}"
+    );
+
+    // Each task finalized once, counted after every reply was received.
+    while let Ok(event) = events_rx.try_recv() {
+        seen.push(event);
+    }
+    for id in [&task, &installed] {
+        assert_eq!(
+            seen.iter()
+                .filter(|event| event.kind == "finalized" && event.id == *id)
+                .count(),
+            1,
+            "{seen:#?}"
+        );
+    }
 }

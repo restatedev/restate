@@ -15,6 +15,8 @@ use futures::Stream;
 use futures::future::Either;
 use pin_project_lite::pin_project;
 
+use crate::PinHandle;
+
 /// A [`Stream`] that tracks **pinned** (non-reclaimable) memory.
 ///
 /// Consumers that accumulate leases from a budgeted stream (e.g. merging
@@ -118,6 +120,41 @@ impl<S: Stream> Stream for IgnorePinnableMemoryStream<S> {
 impl<S: Stream> PinnableMemoryStream for IgnorePinnableMemoryStream<S> {
     fn pin_memory(self: Pin<&mut Self>, _amount: usize) {}
     fn unpin_memory(self: Pin<&mut Self>, _amount: usize) {}
+}
+
+pin_project! {
+    /// A [`PinnableMemoryStream`] whose leases are reserved from a
+    /// [`LentMemoryPool`](crate::LentMemoryPool): pins go to the pool's
+    /// [`PinHandle`].
+    pub struct WithPinHandle<S> {
+        #[pin]
+        inner: S,
+        pins: PinHandle,
+    }
+}
+
+impl<S> WithPinHandle<S> {
+    pub fn new(inner: S, pins: PinHandle) -> Self {
+        Self { inner, pins }
+    }
+}
+
+impl<S: Stream> Stream for WithPinHandle<S> {
+    type Item = S::Item;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.project().inner.poll_next(cx)
+    }
+}
+
+impl<S: Stream> PinnableMemoryStream for WithPinHandle<S> {
+    fn pin_memory(self: Pin<&mut Self>, amount: usize) {
+        self.pins.pin(amount)
+    }
+
+    fn unpin_memory(self: Pin<&mut Self>, amount: usize) {
+        self.pins.unpin(amount)
+    }
 }
 
 pin_project! {

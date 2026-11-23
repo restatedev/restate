@@ -204,7 +204,7 @@ impl ListItem for DeploymentListItem {
         let endpoint = match self.transport.strip_prefix("HTTP/") {
             // e.g. `HTTP/2.0` -> `HTTP 2`, `HTTP/1.1` -> `HTTP 1.1`
             Some(version) => {
-                let version = version.strip_suffix(".0").unwrap_or(version);
+                let version = version.trim_suffix(".0");
                 format!("{} (HTTP {version})", self.endpoint)
             }
             None => self.endpoint.clone(),

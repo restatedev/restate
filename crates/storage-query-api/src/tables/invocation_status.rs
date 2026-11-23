@@ -32,6 +32,7 @@ define_schema! {
                 domains.target_service_key.try_map_values(Clone::clone),
             )
         },
+        primary_key: id,
         columns {
             /// Internal column that is used for partitioning the services invocations. Can be ignored.
             partition_key: PartitionKey => DataType::UInt64,
@@ -46,8 +47,17 @@ define_schema! {
             /// Since v1.7.0.
             vqueue_id: Option<ReString> => DataType::LargeUtf8,
             /// Either `inboxed` or `scheduled` or `invoked` or `suspended` or `paused` or `completed`
+            #[values(
+                ["inboxed", "scheduled", "invoked", "suspended", "paused", "completed"]
+                    .map(ReString::from_static)
+            )]
             status: ReString => DataType::LargeUtf8,
             /// If `status = 'completed'`, this contains either `success` or `failure`
+            #[values([
+                None,
+                Some(ReString::from_static("success")),
+                Some(ReString::from_static("failure")),
+            ])]
             completion_result: Option<ReString> => DataType::LargeUtf8,
             /// If `status = 'completed' AND completion_result = 'failure'`, this contains the error cause
             completion_failure: Option<ReString> => DataType::LargeUtf8,

@@ -11,21 +11,25 @@
 use std::pin::pin;
 use std::time::Duration;
 
-use super::storage_test_environment;
+use super::{low_pri_executor, storage_test_environment};
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::StreamExt;
+use restate_memory::{LendableMemoryPool, LocalMemoryPool};
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::Transaction;
+use restate_storage_api::blob_table::{RawParts, ReadBlobTable};
 use restate_storage_api::journal_table_v2::{
     NotificationEntryIndex, ReadJournalTable, WriteJournalTable,
 };
+use restate_types::config::Configuration;
 use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use restate_types::journal_v2::raw::{RawCommandSpecificMetadata, RawNotificationResultVariant};
 use restate_types::journal_v2::{
-    CallCommand, CallRequest, CommandType, CompletionId, CompletionType, Entry, EntryMetadata,
-    EntryType, NotificationId, NotificationType, OneWayCallCommand, SleepCommand, SleepCompletion,
+    CallCommand, CallRequest, Command, CommandType, CompletionId, CompletionType, Entry,
+    EntryMetadata, EntryType, InputCommand, NotificationId, NotificationType, OneWayCallCommand,
+    SleepCommand, SleepCompletion,
 };
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
@@ -145,9 +149,8 @@ async fn check_sleep_completion_index<T: ReadJournalTable>(txn: &mut T) {
                 .await
                 .unwrap()
                 .unwrap()
-                .1
-                .command_type(),
-            CommandType::Sleep
+                .ty(),
+            EntryType::Command(CommandType::Sleep)
         );
     }
 }
@@ -282,14 +285,12 @@ async fn call_journal() {
     // First entry is call
     let entry = journal.next().await.unwrap().unwrap().1;
     assert_eq!(entry.ty(), EntryType::Command(CommandType::Call));
-    let cmd = entry.inner.try_as_command().unwrap();
-    restate_test_util::assert!(let RawCommandSpecificMetadata::CallOrSend(_) = cmd.command_specific_metadata());
+    restate_test_util::assert!(let Some(RawCommandSpecificMetadata::CallOrSend(_)) = entry.command_specific_metadata());
 
     // Second entry is one way call
     let entry = journal.next().await.unwrap().unwrap().1;
     assert_eq!(entry.ty(), EntryType::Command(CommandType::OneWayCall));
-    let cmd = entry.inner.try_as_command().unwrap();
-    restate_test_util::assert!(let RawCommandSpecificMetadata::CallOrSend(_) = cmd.command_specific_metadata());
+    restate_test_util::assert!(let Some(RawCommandSpecificMetadata::CallOrSend(_)) = entry.command_specific_metadata());
 
     // No more entries
     assert!(journal.next().await.is_none());
@@ -302,9 +303,8 @@ async fn call_journal() {
                 .await
                 .unwrap()
                 .unwrap()
-                .1
-                .command_type(),
-            CommandType::Call
+                .ty(),
+            EntryType::Command(CommandType::Call)
         );
     }
     assert_eq!(
@@ -312,10 +312,157 @@ async fn call_journal() {
             .await
             .unwrap()
             .unwrap()
-            .1
-            .command_type(),
-        CommandType::OneWayCall
+            .ty(),
+        EntryType::Command(CommandType::OneWayCall)
     );
 
     txn.commit().await.expect("should not fail");
+}
+
+#[restate_core::test]
+async fn journal_entry_content_blob() {
+    let mut rocksdb = storage_test_environment().await;
+    let mut config = Configuration::pinned().as_ref().clone();
+    config.common.experimental.set_write_blob_table(true);
+    rocksdb
+        .verify_and_run_migrations(Default::default(), &config)
+        .await
+        .unwrap();
+
+    let threshold = config.worker.inline_journal_entry_threshold.as_usize();
+    let header = StoredRawEntryHeader::new(MillisSinceEpoch::now());
+    let large = StoredRawEntry::new(
+        header.clone(),
+        Entry::from(InputCommand {
+            headers: vec![],
+            payload: Bytes::from(vec![7; threshold + 1]),
+            name: Default::default(),
+        })
+        .encode::<ServiceProtocolV4Codec>(),
+    );
+    let small = StoredRawEntry::new(
+        header,
+        mock_sleep_command(1).encode::<ServiceProtocolV4Codec>(),
+    );
+    let copy_id = InvocationId::from_parts(1, InvocationUuid::from_u128(2));
+
+    let mut txn = rocksdb.transaction();
+    let blob_id = txn
+        .put_journal_entry(&MOCK_INVOCATION_ID_1, 0, &large, &[])
+        .unwrap()
+        .expect("stored in a blob");
+    assert_eq!(
+        txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 1, &small, &[1])
+            .unwrap(),
+        None
+    );
+
+    // The transaction sees the blob it wrote
+    let stored = txn
+        .get_journal_entry(MOCK_INVOCATION_ID_1, 0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.content_blob().map(|blob| blob.id), Some(blob_id));
+    assert_eq!(stored.content_len(), large.inner.serialized_length());
+    let stored = stored.try_into_inline().expect_err("content in a blob");
+    assert_eq!(txn.hydrate_journal_entry(stored.clone()).unwrap(), large);
+    let inline = txn
+        .get_journal_entry(MOCK_INVOCATION_ID_1, 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(inline.try_into_inline().unwrap(), small);
+
+    // The metadata of a command is available before its content is read from the blob
+    let Entry::Command(Command::Call(mut call)) = mock_call_command(0, 1) else {
+        unreachable!("a call command");
+    };
+    call.request.parameter = Bytes::from(vec![7; threshold + 1]);
+    let large_call = StoredRawEntry::new(
+        StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+        Entry::from(call).encode::<ServiceProtocolV4Codec>(),
+    );
+    let call_id = InvocationId::from_parts(1, InvocationUuid::from_u128(3));
+    txn.put_journal_entry(&call_id, 0, &large_call, &[0, 1])
+        .unwrap()
+        .expect("stored in a blob");
+    let stored_call = txn.get_journal_entry(call_id, 0).await.unwrap().unwrap();
+    assert_eq!(stored_call.ty(), EntryType::Command(CommandType::Call));
+    restate_test_util::assert!(let Some(RawCommandSpecificMetadata::CallOrSend(_)) = stored_call.command_specific_metadata());
+    assert_eq!(txn.hydrate_journal_entry(stored_call).unwrap(), large_call);
+
+    // The copy shares the blob
+    txn.copy_journal_entry(&copy_id, 0, stored, &[]).unwrap();
+
+    txn.commit().await.unwrap();
+    drop(txn);
+
+    // Budgeted reads return hydrated entries, the lease covers the blob
+    let executor = low_pri_executor(&rocksdb);
+    let mut budget = LocalMemoryPool::unlimited();
+    let (entry, lease) = rocksdb
+        .get_journal_v2_entry_budgeted(MOCK_INVOCATION_ID_1, 0, &mut budget, &executor)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry, large);
+    assert!(lease.size() > threshold);
+    drop(lease);
+    let mut budget = LendableMemoryPool::new(budget);
+    for (invocation_id, expected) in [
+        (MOCK_INVOCATION_ID_1, vec![large.clone(), small]),
+        // The copy shares the blob
+        (copy_id, vec![large.clone()]),
+    ] {
+        let snapshot = rocksdb.snapshot().unwrap();
+        let entries: Vec<_> = snapshot
+            .get_journal_v2_budgeted(
+                invocation_id,
+                expected.len() as u32,
+                budget.claim().await,
+                &executor,
+            )
+            .unwrap()
+            .map(|item| item.unwrap())
+            .collect()
+            .await;
+        assert!(entries[0].2.size() > threshold);
+        let entries: Vec<_> = entries.into_iter().map(|(_, entry, _)| entry).collect();
+        assert_eq!(entries, expected);
+    }
+    assert_eq!(
+        rocksdb
+            .get_blob::<RawParts>(blob_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .1,
+        2
+    );
+
+    // Each journal releases its reference
+    let mut txn = rocksdb.transaction();
+    txn.delete_journal(&MOCK_INVOCATION_ID_1, 2).unwrap();
+    txn.commit().await.unwrap();
+    drop(txn);
+    verify_journal_deleted(&mut rocksdb.transaction(), 2).await;
+    let copied = rocksdb
+        .get_journal_entry(copy_id, 0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(rocksdb.hydrate_journal_entry(copied).unwrap(), large);
+
+    let mut txn = rocksdb.transaction();
+    txn.delete_journal(&copy_id, 1).unwrap();
+    txn.commit().await.unwrap();
+    drop(txn);
+    assert!(
+        rocksdb
+            .get_blob::<RawParts>(blob_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }

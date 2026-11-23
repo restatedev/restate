@@ -612,7 +612,13 @@ mod tests {
         .await
         .expect("vqueue should be created");
 
-        vqueue.run_entry(at, &header, &entry_target(), WaitStats::default())
+        vqueue.run_entry(
+            at,
+            &header,
+            &entry_target(),
+            WaitStats::default(),
+            Status::Started,
+        )
     }
 
     async fn reschedule(

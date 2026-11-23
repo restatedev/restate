@@ -8,14 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::future::Future;
-use std::ops::{ControlFlow, RangeInclusive};
+use std::ops::ControlFlow;
 use std::time::Duration;
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::Stream;
 
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::InvocationId;
@@ -104,8 +103,17 @@ impl StatusTimestamps {
 
     /// Update the statistics with an updated [`Self::completed_transition_time()`].
     fn record_completed_transition_time(&mut self, timestamp: MillisSinceEpoch) {
-        self.update(timestamp);
-        self.completed_transition_time = Some(self.modification_time)
+        let completed_at = self.completion_time(timestamp);
+        self.update(completed_at);
+        self.completed_transition_time = Some(completed_at)
+    }
+
+    /// When the invocation completes if the record completing it was created at
+    /// `timestamp`: never before its last modification. Records come from different
+    /// nodes' clocks, so the completing record can be older than one before it. This
+    /// is what [`Self::completed_transition_time()`] records.
+    pub fn completion_time(&self, timestamp: MillisSinceEpoch) -> MillisSinceEpoch {
+        self.modification_time.max(timestamp)
     }
 
     /// Creation time of the [`InvocationStatus`].
@@ -937,44 +945,27 @@ pub trait ReadInvocationStatusTable {
     ) -> impl Future<Output = Result<bool>> + Send;
 }
 
-#[derive(Debug, Clone)]
-pub enum ScanInvocationStatusTableRange {
-    PartitionKey(KeyRange),
-    InvocationId(RangeInclusive<InvocationId>),
-    InvocationIdSet(BTreeSet<InvocationId>),
-}
-
 pub trait ScanInvocationStatusTable {
-    fn for_each_invocation_status_lazy<
-        E: Into<anyhow::Error> + 'static,
+    /// Calls `f` with each invocation status from `from` (inclusive), or from the start of the
+    /// partition key range if `None`, until `f` breaks or no statuses remain. `f` keeps what it
+    /// needs in `state`, which the returned future yields back.
+    ///
+    /// `f` runs on a storage thread while the scan holds its iterator open, so it must not block.
+    fn fold_invocation_status_lazy<
+        S: Send + 'static,
+        E: Into<anyhow::Error>,
         F: for<'a> FnMut(
+                &mut S,
                 (InvocationId, &'a InvocationStatusV2Lazy<'a>),
             ) -> ControlFlow<std::result::Result<(), E>>
             + Send
-            + Sync
             + 'static,
     >(
         &self,
-        range: ScanInvocationStatusTableRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
-
-    fn filter_map_invocation_status_lazy<
-        O: Send + 'static,
-        E: Into<anyhow::Error>,
-        F: for<'a> FnMut(
-                (InvocationId, &'a InvocationStatusV2Lazy<'a>),
-            ) -> std::result::Result<Option<O>, E>
-            + Send
-            + Sync
-            + 'static,
-    >(
-        &self,
-        // Invocation id to start the scan from (inclusive). If `None`, the scan starts from the
-        // beginning of the partition key range.
         from: Option<InvocationId>,
+        state: S,
         f: F,
-    ) -> Result<impl Stream<Item = Result<O>> + Send>;
+    ) -> Result<impl Future<Output = Result<S>> + Send>;
 }
 
 pub trait WriteInvocationStatusTable {

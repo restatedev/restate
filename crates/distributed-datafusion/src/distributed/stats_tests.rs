@@ -75,9 +75,9 @@ async fn reopen(store: &mut PartitionStore, configure: impl FnOnce(&mut Configur
         .unwrap();
 }
 
-/// Tracks the status gauges of `store` and returns its Ready indexes: the
+/// Tracks the status gauges of `store` and returns its Complete indexes: the
 /// service, deployment and virtual-object gauges. `store` has no entries, so
-/// there's nothing to backfill and the gauges are Ready at once.
+/// there's nothing to backfill and the gauges are Complete at once.
 async fn complete(store: &mut PartitionStore) -> [IndexScope; 3] {
     reopen(store, |config| {
         config.common.experimental.set_track_status_gauges(true)
@@ -125,7 +125,7 @@ async fn set_entry(store: &mut PartitionStore, exists: bool) {
     tx.commit().await.unwrap();
 }
 
-/// The Ready status-gauge indexes of `store`.
+/// The Complete status-gauge indexes of `store`.
 fn indexes(store: &PartitionStore) -> [IndexScope; 3] {
     let (snapshot, _) = store.query_read(CancellationToken::new()).unwrap();
     [
@@ -136,7 +136,7 @@ fn indexes(store: &PartitionStore) -> [IndexScope; 3] {
     .map(|definition| IndexScope {
         partition: store.partition_id(),
         index: snapshot
-            .ready_index(definition, IndexKind::Aggregate)
+            .complete_index(definition, IndexKind::Aggregate)
             .unwrap(),
     })
 }
@@ -180,7 +180,7 @@ const TABLES: [&str; 3] = [
 ];
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
-async fn statistics_queries_fail_until_every_replica_is_ready() {
+async fn statistics_queries_fail_until_every_replica_is_complete() {
     let mut config = Configuration::default();
     config.common.experimental.set_query_stats_tables(true);
     Configuration::set(config);
@@ -193,7 +193,7 @@ async fn statistics_queries_fail_until_every_replica_is_ready() {
     .await
     .unwrap();
     let engine = DataFusionQueryEngine::from_env(env, None);
-    // One session throughout: readiness is checked by each read, not when the
+    // One session throughout: completion is checked by each read, not when the
     // session or the worker starts.
     let session = engine.create_session(SessionOptions::default()).unwrap();
     let fails = async |reasons: &[&str]| {
@@ -210,7 +210,7 @@ async fn statistics_queries_fail_until_every_replica_is_ready() {
             };
             assert!(
                 reasons.iter().all(|reason| error.contains(reason)),
-                "partitions_that_are_not_ready_fail_the_query: {sql}: {error}"
+                "partitions_that_are_not_complete_fail_the_query: {sql}: {error}"
             );
             // An owner's storage error reads once, naming the owner and the kind,
             // not as a DataFusion bug or a doubly wrapped error.
@@ -224,12 +224,12 @@ async fn statistics_queries_fail_until_every_replica_is_ready() {
     };
 
     // Nothing is registered anywhere.
-    fails(&["is not ready", "nothing is registered"]).await;
-    // Every replica but one is Ready; the last one only maintains its gauges.
+    fails(&["is not complete", "nothing is registered"]).await;
+    // Every replica but one is Complete; the last one only maintains its gauges.
     // Registered over an existing entry, they wait for a backfill, which no
     // walk driver runs here.
-    let (last, ready) = fixture.stores.split_last_mut().unwrap();
-    for store in ready {
+    let (last, completed) = fixture.stores.split_last_mut().unwrap();
+    for store in completed {
         complete(store).await;
     }
     set_entry(last, true).await;
@@ -237,15 +237,15 @@ async fn statistics_queries_fail_until_every_replica_is_ready() {
         config.common.experimental.set_track_status_gauges(true)
     })
     .await;
-    let not_ready = format!("is not ready on partition {}", last.partition_id());
-    fails(&[&not_ready, "is still being completed"]).await;
+    let not_complete = format!("is not complete on partition {}", last.partition_id());
+    fails(&[&not_complete, "is still being completed"]).await;
     // Reset on that replica, its rebuilt gauges get index IDs that differ
     // from the other replicas'; each read resolves its own.
     reopen(last, |config| {
         config.common.experimental.set_status_gauges_reset(true)
     })
     .await;
-    fails(&[&not_ready, "no maintained index"]).await;
+    fails(&[&not_complete, "no maintained index"]).await;
     set_entry(last, false).await;
     let rebuilt = complete(last).await;
     assert_ne!(
@@ -257,14 +257,14 @@ async fn statistics_queries_fail_until_every_replica_is_ready() {
     for table in TABLES {
         assert_sql(
             session.as_ref(),
-            "ready_replicas_answer_without_reopening",
+            "complete_replicas_answer_without_reopening",
             &format!("SELECT COALESCE(SUM(num_entries), 0) FROM {table}"),
             &[&["0"]],
         )
         .await;
     }
 
-    // Counts on one remote owner's Ready indexes.
+    // Counts on one remote owner's Complete indexes.
     let store = &mut fixture.stores[1];
     let keys = full_keys(
         complete(store).await,
@@ -524,7 +524,7 @@ async fn schema_statistics_preserve_sql_pruning_and_owner_execution() {
          "SELECT service_name FROM sys_service_stats WHERE handler IS NULL AND upper(status) = 'NEW'",
          &[&["alpha"]]),
         ("residuals_filter_expanded_buckets",
-         "SELECT COUNT(*) FROM sys_virtual_object_stats WHERE upper(status) = 'STARTED'",
+         "SELECT COUNT(*) FROM sys_virtual_object_stats WHERE upper(status) = 'RUNNING'",
          &[&["16"]]),
         ("null_dimensions_are_not_empty_strings",
          "SELECT COUNT(*) FROM sys_virtual_object_stats WHERE scope IS NULL OR scope = ''",
@@ -669,11 +669,11 @@ async fn schema_statistics_preserve_sql_pruning_and_owner_execution() {
         ("sys_service_stats",         "stage != 'queued'",                              "40", 40),
         ("sys_service_stats",         "stage IN ('running', 'queued', NULL)",           "16", 40),
         ("sys_service_stats",         "stage NOT IN ('running', 'queued', NULL)",        "0",  0),
-        ("sys_service_stats",         "status = 'yielded'",                               "8", 40),
-        ("sys_service_stats",         "status < 'queued'",                              "16", 40),
-        ("sys_service_stats",         "status IN ('started', 'queued')",                "16", 40),
-        ("sys_service_stats",         "status NOT IN ('started', 'queued')",            "24", 40),
-        ("sys_service_stats",         "status NOT IN ('started', 'queued', NULL)",       "0",  0),
+        ("sys_service_stats",         "status = 'paused'",                                "8", 40),
+        ("sys_service_stats",         "status < 'queued'",                              "24", 40),
+        ("sys_service_stats",         "status IN ('running', 'queued')",                "16", 40),
+        ("sys_service_stats",         "status NOT IN ('running', 'queued')",            "24", 40),
+        ("sys_service_stats",         "status NOT IN ('running', 'queued', NULL)",       "0",  0),
         ("sys_service_stats",         "num_entries > 4",                                "40", 40),
         ("sys_service_stats",         "service_name ILIKE 'ALP%'",                       "24", 40),
         ("sys_deployment_stats",      "service_name LIKE 'alp%'",                        "16", 16),
@@ -724,7 +724,7 @@ async fn schema_statistics_preserve_sql_pruning_and_owner_execution() {
         );
     }
     let metadata = assert_sql(session, "native_owner_filter_and_partial_sum",
-        "SELECT num_entries FROM sys_service_stats WHERE service_name = 'alpha' AND handler = 'run' AND upper(status) = 'STARTED' AND num_entries > 4",
+        "SELECT num_entries FROM sys_service_stats WHERE service_name = 'alpha' AND handler = 'run' AND upper(status) = 'RUNNING' AND num_entries > 4",
         &[&["8"]]).await;
     {
         let tasks = fixture.tasks.lock();
@@ -759,7 +759,7 @@ async fn schema_statistics_preserve_sql_pruning_and_owner_execution() {
     let target = &fixture.stores[1];
     let pk = target.partition_key_range().start() + 1;
     let metadata = assert_sql(session, "object_routing_deduplicates_selected_keys",
-        &format!("SELECT service_name FROM sys_virtual_object_stats WHERE partition_key IN ({pk}, {pk}) AND upper(status) = 'STARTED' ORDER BY service_name LIMIT 1"),
+        &format!("SELECT service_name FROM sys_virtual_object_stats WHERE partition_key IN ({pk}, {pk}) AND upper(status) = 'RUNNING' ORDER BY service_name LIMIT 1"),
         &[&["alpha"]]).await;
     {
         let tasks = fixture.tasks.lock();

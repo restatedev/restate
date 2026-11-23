@@ -37,8 +37,8 @@ use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::Transaction;
 use restate_storage_api::inbox_table::ReadInboxTable;
 use restate_storage_api::invocation_status_table::{
-    InFlightInvocationMetadata, InvocationStatus, ReadInvocationStatusTable,
-    WriteInvocationStatusTable,
+    InFlightInvocationMetadata, InvocationStatus, InvocationStatusDiscriminants,
+    ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_table::{JournalEntry, ReadJournalTable};
 use restate_storage_api::outbox_table::ReadOutboxTable;
@@ -86,6 +86,10 @@ pub struct TestEnv {
     // TODO for the time being we use rocksdb storage because we have no mocks for storage interfaces.
     //  Perhaps we could make these tests faster by having those.
     pub storage: PartitionStore,
+    /// Whether the store is in a state the partition can reach: with vqueues
+    /// enabled, everything it stores went through vqueues or their migration.
+    /// Enabling vqueues on stored invocations without migrating them isn't.
+    migrated: bool,
 }
 
 impl TestEnv {
@@ -143,6 +147,7 @@ impl TestEnv {
         Self {
             processor,
             storage: rocksdb_storage,
+            migrated: true,
         }
     }
 
@@ -174,8 +179,29 @@ impl TestEnv {
         .unwrap();
 
         transaction.commit().await.unwrap();
+        self.assert_invocations_match_entries();
 
         action_collector
+    }
+
+    /// Once the partition has fully migrated to vqueues, every invocation has its
+    /// entry and every invocation entry its invocation, after every command:
+    /// reads that find invocations through their entries depend on it. Each
+    /// entry is also in a lane of the status index that its invocation's public
+    /// status and completion result select, which status pages depend on.
+    fn assert_invocations_match_entries(&self) {
+        if self.checks_invocation_entries() {
+            let mismatches = self.storage.invocation_entry_mismatches().unwrap();
+            std::assert!(
+                mismatches.is_empty(),
+                "invocations and their vqueue entries differ: {mismatches:?}"
+            );
+            let outside = self.storage.invocation_lane_mismatches().unwrap();
+            std::assert!(
+                outside.is_empty(),
+                "entries outside their invocations' status lanes: {outside:?}"
+            );
+        }
     }
 
     pub async fn apply_multiple(
@@ -198,7 +224,7 @@ impl TestEnv {
         invocation_id: InvocationId,
         journal_length: EntryIndex,
     ) -> Vec<journal_v2::Entry> {
-        restate_storage_api::journal_table_v2::ReadJournalTable::get_journal(
+        let entries = restate_storage_api::journal_table_v2::ReadJournalTable::get_journal(
             self.storage(),
             invocation_id,
             journal_length,
@@ -206,13 +232,21 @@ impl TestEnv {
         .expect("storage to be working")
         .try_collect::<Vec<_>>()
         .await
-        .unwrap_or_else(|_| panic!("can read journal {invocation_id} of length {journal_length}"))
-        .into_iter()
-        .map(|(i, e)| {
-            e.decode::<ServiceProtocolV4Codec, _>()
-                .unwrap_or_else(|_| panic!("entry index {i} can be decoded"))
-        })
-        .collect()
+        .unwrap_or_else(|_| panic!("can read journal {invocation_id} of length {journal_length}"));
+
+        let mut decoded = Vec::with_capacity(entries.len());
+        for (i, e) in entries {
+            let e = restate_storage_api::journal_table_v2::ReadJournalTable::hydrate_journal_entry(
+                &self.storage,
+                e,
+            )
+            .unwrap_or_else(|_| panic!("entry index {i} can be hydrated"));
+            decoded.push(
+                e.decode::<ServiceProtocolV4Codec, _>()
+                    .unwrap_or_else(|_| panic!("entry index {i} can be decoded")),
+            );
+        }
+        decoded
     }
 
     pub async fn read_journal_entry<E: TryFromEntry>(
@@ -220,14 +254,19 @@ impl TestEnv {
         invocation_id: InvocationId,
         idx: EntryIndex,
     ) -> E {
-        restate_storage_api::journal_table_v2::ReadJournalTable::get_journal_entry(
+        let entry = restate_storage_api::journal_table_v2::ReadJournalTable::get_journal_entry(
             self.storage(),
             invocation_id,
             idx,
         )
         .await
         .expect("storage to be working")
-        .expect("Entry to be present")
+        .expect("Entry to be present");
+        restate_storage_api::journal_table_v2::ReadJournalTable::hydrate_journal_entry(
+            &self.storage,
+            entry,
+        )
+        .expect("Entry to be hydrated")
         .decode::<ServiceProtocolV4Codec, E>()
         .expect("Entry to be of the specified type")
     }
@@ -298,7 +337,30 @@ impl TestEnv {
         );
     }
 
+    /// Whether [`Self::apply_at`] checks that invocations and their vqueue entries
+    /// correspond: once the partition has fully migrated, unless
+    /// [`Self::set_enabled_features`] was used.
+    pub fn checks_invocation_entries(&self) -> bool {
+        self.migrated
+            && self
+                .processor
+                .fsm()
+                .features()
+                .is_fully_migrated_to_vqueues()
+    }
+
+    /// Changes the features without migrating what is stored, unlike a partition,
+    /// so invocations stored before enabling vqueues have no entries.
     pub fn set_enabled_features(&mut self, features: PersistedFeatures) {
+        self.processor.set_enabled_features_in_memory(features);
+        self.migrated = false;
+    }
+
+    /// Enables `change` from the next record on, as a version barrier does, for a change that
+    /// needs no migration.
+    pub fn enable_feature(&mut self, change: PartitionFeatureChange) {
+        let mut features = *self.processor.enabled_features();
+        change.apply_to(&mut features);
         self.processor.set_enabled_features_in_memory(features);
     }
 }
@@ -807,6 +869,501 @@ async fn invocation_creation_seq_backfill() -> TestResult {
         .await?;
     assert_that!(status, pat!(InvocationStatus::Invoked(_)));
     assert_eq!(status.get_creation_seq(), Some(entry_seq));
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
+/// With vqueues enabled from the start, every invocation keeps its vqueue entry and every
+/// invocation entry its invocation after every command, which `TestEnv::apply_at` checks:
+/// through a scheduler run, completion with and without retention, purge, killing an
+/// inboxed invocation and cancelling a scheduled one.
+#[test(restate_core::test)]
+async fn invocations_keep_their_vqueue_entries_through_their_lifecycle() -> TestResult {
+    let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+        PartitionFeatureChange::EnableVqueues,
+    ]))
+    .await;
+    let invoke = |invocation_id, retention: Duration, execution_time| {
+        commands::InvokeCommand::test_envelope(ServiceInvocation {
+            invocation_id,
+            invocation_target: InvocationTarget::mock_service(),
+            completion_retention_duration: retention,
+            journal_retention_duration: retention,
+            execution_time,
+            ..ServiceInvocation::mock()
+        })
+    };
+    let output = |invocation_id| {
+        fixtures::invoker_entry_effect(
+            invocation_id,
+            OutputCommand {
+                result: OutputResult::Success(Default::default()),
+                name: Default::default(),
+            },
+        )
+    };
+    let terminate = |invocation_id, flavor| {
+        commands::TerminateInvocationCommand::test_envelope(InvocationTermination {
+            invocation_id,
+            flavor,
+            response_sink: None,
+        })
+    };
+
+    // Retained: run by the scheduler, completed, then purged.
+    let retained = InvocationId::mock_random();
+    test_env
+        .apply(invoke(retained, Duration::from_secs(120), None))
+        .await;
+    let header = test_env
+        .storage
+        .transaction()
+        .get_vqueue_entry_status(&BaseEntryId::from(retained))
+        .await?
+        .unwrap();
+    test_env
+        .apply(run_decision(header.vqueue_id(), *header.entry_key()))
+        .await;
+    assert_that!(
+        test_env.storage.get_invocation_status(&retained).await?,
+        pat!(InvocationStatus::Invoked(_))
+    );
+    test_env
+        .apply_multiple([
+            fixtures::pinned_deployment(retained, ServiceProtocolVersion::V6),
+            output(retained),
+            fixtures::invoker_end_effect(retained),
+        ])
+        .await;
+    assert_that!(
+        test_env.storage.get_invocation_status(&retained).await?,
+        pat!(InvocationStatus::Completed(_))
+    );
+    test_env
+        .apply(commands::PurgeInvocationCommand::test_envelope(
+            PurgeInvocationRequest {
+                invocation_id: retained,
+                response_sink: None,
+            },
+        ))
+        .await;
+    assert_that!(
+        test_env.storage.get_invocation_status(&retained).await?,
+        pat!(InvocationStatus::Free)
+    );
+
+    // Not retained: completed and removed at once.
+    let unretained = InvocationId::mock_random();
+    test_env
+        .apply(invoke(unretained, Duration::ZERO, None))
+        .await;
+    let header = test_env
+        .storage
+        .transaction()
+        .get_vqueue_entry_status(&BaseEntryId::from(unretained))
+        .await?
+        .unwrap();
+    test_env
+        .apply_multiple([
+            run_decision(header.vqueue_id(), *header.entry_key()),
+            fixtures::pinned_deployment(unretained, ServiceProtocolVersion::V6),
+            output(unretained),
+            fixtures::invoker_end_effect(unretained),
+        ])
+        .await;
+    assert_that!(
+        test_env.storage.get_invocation_status(&unretained).await?,
+        pat!(InvocationStatus::Free)
+    );
+
+    // Killed while inboxed, cancelled while scheduled.
+    let inboxed = InvocationId::mock_random();
+    let scheduled = InvocationId::mock_random();
+    let later = MillisSinceEpoch::new(MillisSinceEpoch::now().as_u64() + 3_600_000);
+    test_env
+        .apply_multiple([
+            invoke(inboxed, Duration::from_secs(120), None),
+            invoke(scheduled, Duration::from_secs(120), Some(later)),
+        ])
+        .await;
+    assert_that!(
+        test_env.storage.get_invocation_status(&scheduled).await?,
+        pat!(InvocationStatus::Scheduled(_))
+    );
+    test_env
+        .apply_multiple([
+            terminate(inboxed, TerminationFlavor::Kill),
+            terminate(scheduled, TerminationFlavor::Cancel),
+        ])
+        .await;
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
+/// The features of a partition with vqueues, before its vqueue lifecycle is refined.
+fn vqueue_features() -> PersistedFeatures {
+    PersistedFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+        PartitionFeatureChange::EnableVqueues,
+        PartitionFeatureChange::EnablePreflightInvocationTerminationRetention,
+    ])
+}
+
+/// Records come from different nodes' clocks, so the record that completes an invocation can be
+/// older than the one that created it. Ending, killing while inboxed and cancelling while
+/// scheduled each complete the invocation no earlier than its creation. With a refined vqueue
+/// lifecycle, its vqueue entry enters Finished at exactly that completion time; before, at the
+/// completing record's time.
+#[test(restate_core::test)]
+async fn finished_entries_transition_at_the_invocation_completion_time() -> TestResult {
+    let mut test_env = TestEnv::create_with_features(vqueue_features()).await;
+    for lifecycle_refined in [false, true] {
+        if lifecycle_refined {
+            test_env.enable_feature(PartitionFeatureChange::EnableVqLifecycleRefined);
+        }
+        let created_at = MillisSinceEpoch::now();
+        // The clock of the node writing the later records is five seconds behind.
+        let behind = MillisSinceEpoch::new(created_at.as_u64() - 5_000);
+        let later = MillisSinceEpoch::new(created_at.as_u64() + 3_600_000);
+        let invoke = |invocation_id, execution_time| {
+            commands::InvokeCommand::test_envelope(ServiceInvocation {
+                invocation_id,
+                invocation_target: InvocationTarget::mock_service(),
+                completion_retention_duration: Duration::from_secs(120),
+                execution_time,
+                ..ServiceInvocation::mock()
+            })
+        };
+        let terminate = |invocation_id, flavor| {
+            commands::TerminateInvocationCommand::test_envelope(InvocationTermination {
+                invocation_id,
+                flavor,
+                response_sink: None,
+            })
+        };
+
+        let [ended, inboxed, scheduled] = [(); 3].map(|_| InvocationId::mock_random());
+        for (invocation_id, execution_time) in
+            [(ended, None), (inboxed, None), (scheduled, Some(later))]
+        {
+            test_env
+                .apply_at(
+                    invoke(invocation_id, execution_time),
+                    created_at,
+                    Lsn::OLDEST,
+                )
+                .await;
+        }
+        let (_, qid, key) = invocation_entry(&mut test_env, &ended).await;
+        for envelope in [
+            run_decision(&qid, key),
+            fixtures::pinned_deployment(ended, ServiceProtocolVersion::V6),
+            fixtures::invoker_entry_effect(
+                ended,
+                OutputCommand {
+                    result: OutputResult::Success(Default::default()),
+                    name: Default::default(),
+                },
+            ),
+            fixtures::invoker_end_effect(ended),
+            terminate(inboxed, TerminationFlavor::Kill),
+            terminate(scheduled, TerminationFlavor::Cancel),
+        ] {
+            test_env.apply_at(envelope, behind, Lsn::OLDEST).await;
+        }
+
+        let finished_at = if lifecycle_refined {
+            created_at
+        } else {
+            behind
+        };
+        for invocation_id in [ended, inboxed, scheduled] {
+            let InvocationStatus::Completed(completed) = test_env
+                .storage
+                .get_invocation_status(&invocation_id)
+                .await?
+            else {
+                panic!("{invocation_id} is completed and retained");
+            };
+            assert_eq!(
+                completed.timestamps.completed_transition_time(),
+                Some(created_at)
+            );
+            let entry = test_env
+                .storage
+                .transaction()
+                .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
+                .await?
+                .unwrap();
+            assert_eq!(entry.stage(), Stage::Finished);
+            assert_eq!(
+                entry.stats().transitioned_at,
+                UniqueTimestamp::from_unix_millis_unchecked(finished_at),
+                "{invocation_id}, refined: {lifecycle_refined}"
+            );
+        }
+    }
+    test_env.shutdown().await;
+    Ok(())
+}
+
+/// Paused and suspended entries carry their status, and resuming or waking them up restores it.
+/// An entry yielded by a leader change records `yielded` in the inbox. With a refined vqueue
+/// lifecycle, its next run records `started`, so pausing or suspending it carries `started` and
+/// it comes back ready to run. Before, a later run kept `yielded`, and so did pausing and
+/// suspending.
+#[test(restate_core::test)]
+async fn parked_entries_carry_their_latest_run_status() -> TestResult {
+    let mut test_env = TestEnv::create_with_features(vqueue_features()).await;
+    for lifecycle_refined in [false, true] {
+        if lifecycle_refined {
+            test_env.enable_feature(PartitionFeatureChange::EnableVqLifecycleRefined);
+        }
+        let invocation_target = InvocationTarget::mock_service();
+        let invocation_id = InvocationId::generate(&invocation_target, None);
+        let entry = async |test_env: &mut TestEnv| {
+            let header = test_env
+                .storage
+                .transaction()
+                .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
+                .await
+                .unwrap()
+                .unwrap();
+            (header.stage(), header.status())
+        };
+        let run = async |test_env: &mut TestEnv| {
+            let (_, qid, key) = invocation_entry(test_env, &invocation_id).await;
+            test_env.apply(run_decision(&qid, key)).await;
+        };
+        let resume = || {
+            commands::ResumeInvocationCommand::test_envelope(ResumeInvocationRequest {
+                invocation_id,
+                update_deployment_id: None,
+                update_pinned_deployment_id: None,
+                run_at: None,
+                response_sink: None,
+            })
+        };
+
+        test_env
+            .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
+                invocation_id,
+                invocation_target: invocation_target.clone(),
+                completion_retention_duration: Duration::from_secs(120),
+                journal_retention_duration: Duration::from_secs(120),
+                ..ServiceInvocation::mock()
+            }))
+            .await;
+        run(&mut test_env).await;
+        fixtures::mock_pinned_deployment_v7(&mut test_env, invocation_id).await;
+        test_env
+            .apply(commands::InvokerEffectCommand::test_envelope(Effect {
+                invocation_id,
+                kind: InvokerEffectKind::Yield {
+                    reason: YieldReason::PartitionLeaderChange,
+                    error_event: None,
+                    resume_at: None,
+                },
+            }))
+            .await;
+        assert_eq!(
+            entry(&mut test_env).await,
+            (Stage::Inbox, vqueue_table::Status::Yielded)
+        );
+
+        let ran = if lifecycle_refined {
+            vqueue_table::Status::Started
+        } else {
+            vqueue_table::Status::Yielded
+        };
+
+        // Run again, pause, resume.
+        run(&mut test_env).await;
+        assert_eq!(entry(&mut test_env).await, (Stage::Running, ran));
+        test_env
+            .apply(commands::PauseInvocationCommand::test_envelope(
+                commands::PauseInvocationCommand {
+                    invocation_id,
+                    request_id: Some(PartitionProcessorRpcRequestId::new()),
+                },
+            ))
+            .await;
+        assert_eq!(entry(&mut test_env).await, (Stage::Paused, ran));
+        test_env.apply(resume()).await;
+        assert_eq!(entry(&mut test_env).await, (Stage::Inbox, ran));
+
+        // Run again, suspend, wake up.
+        run(&mut test_env).await;
+        test_env
+            .apply(fixtures::invoker_suspended(
+                invocation_id,
+                NotificationId::for_completion(1),
+            ))
+            .await;
+        assert_eq!(entry(&mut test_env).await, (Stage::Suspended, ran));
+        test_env.apply(resume()).await;
+        assert_eq!(entry(&mut test_env).await, (Stage::Inbox, ran));
+    }
+    test_env.shutdown().await;
+    Ok(())
+}
+
+/// The stage of the invocation's vqueue entry, its queue and key. The entry must exist.
+async fn invocation_entry(
+    test_env: &mut TestEnv,
+    invocation_id: &InvocationId,
+) -> (Stage, VQueueId, EntryKey) {
+    let header = test_env
+        .storage
+        .transaction()
+        .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
+        .await
+        .unwrap()
+        .expect("the invocation has its entry");
+    (
+        header.stage(),
+        header.vqueue_id().clone(),
+        *header.entry_key(),
+    )
+}
+
+/// Like the test above, through the other paths an invocation takes: yielding back to the inbox
+/// and running again, a manual pause and resume, and restarting a completed invocation as a new
+/// one. `TestEnv::apply_at` checks after every command that invocations and their entries
+/// correspond; the test makes sure the check is on.
+#[test(restate_core::test)]
+async fn invocations_keep_their_vqueue_entries_through_yield_pause_and_restart() -> TestResult {
+    let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+        PartitionFeatureChange::EnableVqueues,
+    ]))
+    .await;
+    std::assert!(test_env.checks_invocation_entries());
+    let status = async |test_env: &mut TestEnv, invocation_id| {
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap()
+            .discriminant()
+    };
+    let run = async |test_env: &mut TestEnv, invocation_id| {
+        let (stage, qid, key) = invocation_entry(test_env, &invocation_id).await;
+        assert_eq!(stage, Stage::Inbox);
+        test_env.apply(run_decision(&qid, key)).await;
+        assert_eq!(
+            invocation_entry(test_env, &invocation_id).await.0,
+            Stage::Running
+        );
+    };
+
+    let invocation_target = InvocationTarget::mock_service();
+    let invocation_id = InvocationId::generate(&invocation_target, None);
+    test_env
+        .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
+            invocation_id,
+            invocation_target: invocation_target.clone(),
+            completion_retention_duration: Duration::from_secs(120),
+            journal_retention_duration: Duration::from_secs(120),
+            ..ServiceInvocation::mock()
+        }))
+        .await;
+    run(&mut test_env, invocation_id).await;
+    test_env
+        .apply(fixtures::pinned_deployment(
+            invocation_id,
+            ServiceProtocolVersion::V6,
+        ))
+        .await;
+
+    // Yield back to the inbox, then run again.
+    test_env
+        .apply(commands::InvokerEffectCommand::test_envelope(Effect {
+            invocation_id,
+            kind: InvokerEffectKind::Yield {
+                reason: YieldReason::PartitionLeaderChange,
+                error_event: None,
+                resume_at: None,
+            },
+        }))
+        .await;
+    run(&mut test_env, invocation_id).await;
+
+    // Pause by hand, then resume and run again.
+    test_env
+        .apply(commands::PauseInvocationCommand::test_envelope(
+            commands::PauseInvocationCommand {
+                invocation_id,
+                request_id: Some(PartitionProcessorRpcRequestId::new()),
+            },
+        ))
+        .await;
+    assert_eq!(
+        status(&mut test_env, invocation_id).await,
+        Some(InvocationStatusDiscriminants::Paused)
+    );
+    assert_eq!(
+        invocation_entry(&mut test_env, &invocation_id).await.0,
+        Stage::Paused
+    );
+    test_env
+        .apply(commands::ResumeInvocationCommand::test_envelope(
+            ResumeInvocationRequest {
+                invocation_id,
+                update_deployment_id: None,
+                update_pinned_deployment_id: None,
+                run_at: None,
+                response_sink: None,
+            },
+        ))
+        .await;
+    run(&mut test_env, invocation_id).await;
+
+    // Complete it, then restart it as a new invocation.
+    test_env
+        .apply_multiple([
+            fixtures::invoker_entry_effect(
+                invocation_id,
+                OutputCommand {
+                    result: OutputResult::Success(Default::default()),
+                    name: Default::default(),
+                },
+            ),
+            fixtures::invoker_end_effect(invocation_id),
+        ])
+        .await;
+    assert_eq!(
+        status(&mut test_env, invocation_id).await,
+        Some(InvocationStatusDiscriminants::Completed)
+    );
+    assert_eq!(
+        invocation_entry(&mut test_env, &invocation_id).await.0,
+        Stage::Finished
+    );
+    let restarted = InvocationId::from_parts(
+        invocation_id.partition_key(),
+        InvocationUuid::generate(&invocation_target, None),
+    );
+    test_env
+        .apply(commands::RestartAsNewInvocationCommand::test_envelope(
+            RestartAsNewInvocationRequest {
+                invocation_id,
+                new_invocation_id: restarted,
+                copy_prefix_up_to_index_included: 0,
+                patch_deployment_id: None,
+                response_sink: None,
+                span_context: None,
+            },
+        ))
+        .await;
+    assert_eq!(
+        status(&mut test_env, restarted).await,
+        Some(InvocationStatusDiscriminants::Inboxed)
+    );
+    run(&mut test_env, restarted).await;
 
     test_env.shutdown().await;
     Ok(())

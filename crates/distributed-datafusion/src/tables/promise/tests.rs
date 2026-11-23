@@ -88,4 +88,47 @@ async fn promises_match_v1_across_layouts_and_scopes() {
         rows(new.as_ref(), "SELECT COUNT(*) FROM sys_promise").await,
         [["4"]]
     );
+
+    // Complete promise keys are looked up: `keys=` is the number of stored keys
+    // each layout fetches. Anything short of a complete key reads its workflows.
+    for (sql, keys, count) in [
+        (
+            "SELECT key FROM sys_promise WHERE scope IS NULL AND service_name = 'Signup' \
+             AND service_key IN ('alice', 'carol') AND key IN ('email', 'binary') ORDER BY key",
+            Some(4),
+            2,
+        ),
+        (
+            "SELECT key FROM sys_promise WHERE scope = 'tenant' AND service_name = 'Signup' \
+             AND service_key = 'bob' AND key IN ('approval', 'missing') ORDER BY key",
+            Some(2),
+            1,
+        ),
+        (
+            "SELECT key FROM sys_promise WHERE scope = 'tenant' AND service_name = 'Signup' \
+             AND service_key = 'bob' ORDER BY key",
+            None,
+            2,
+        ),
+        // No service is unnamed: the legacy layout looks the key up, the scoped
+        // layout reads.
+        (
+            "SELECT key FROM sys_promise WHERE scope IS NULL AND service_name = '' \
+             AND service_key = 'alice' AND key = 'email'",
+            Some(1),
+            0,
+        ),
+    ] {
+        let actual = rows(new.as_ref(), sql).await;
+        assert_eq!(actual, rows(old.as_ref(), sql).await, "{sql}");
+        assert_eq!(actual.len(), count, "{sql}");
+        let plan = rows(new.as_ref(), &format!("EXPLAIN {sql}"))
+            .await
+            .concat()
+            .join("\n");
+        match keys {
+            Some(keys) => assert!(plan.contains(&format!("keys={keys}")), "{sql}\n{plan}"),
+            None => assert!(!plan.contains("MultiGetExec"), "{sql}\n{plan}"),
+        }
+    }
 }

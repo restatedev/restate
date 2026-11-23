@@ -16,7 +16,6 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::WatchStream;
 use tracing::{debug, info, trace, warn};
 
-use restate_clock::WallClock;
 use restate_clock::time::MillisSinceEpoch;
 use restate_core::network::{
     Incoming, Oneshot, Reciprocal, Rpc, ServiceMessage, ServiceStream, ShardSender, Verdict,
@@ -117,7 +116,7 @@ impl<S: LogStore> LogletWorker<S> {
             // we assume that we are accepting writes until we observe that writes are disabled.
             accepting_writes: true,
             pending: PendingWaiters::default(),
-            last_request: WallClock::recent_ms(),
+            last_request: MillisSinceEpoch::now(),
             last_periodically_synced_global_tail: global_tail,
         };
 
@@ -354,7 +353,7 @@ impl<S: LogStore> LogletWorker<S> {
     // ---- Message processing ----
 
     fn process_data_svc_op(&mut self, msg: ServiceMessage<LogServerDataService>) {
-        self.last_request = WallClock::recent_ms();
+        self.last_request = MillisSinceEpoch::now();
         match msg {
             // GET_RECORDS
             ServiceMessage::Rpc(msg) if msg.msg_type() == GetRecords::TYPE => {
@@ -369,7 +368,7 @@ impl<S: LogStore> LogletWorker<S> {
     }
 
     fn process_info_svc_op(&mut self, msg: ServiceMessage<LogServerMetaService>) {
-        self.last_request = WallClock::recent_ms();
+        self.last_request = MillisSinceEpoch::now();
         match msg {
             // RELEASE
             ServiceMessage::Unary(msg) if msg.msg_type() == Release::TYPE => {
@@ -967,7 +966,10 @@ mod tests {
 
     use super::LogletWorker;
 
-    async fn setup() -> Result<RocksDbLogStore> {
+    async fn setup() -> Result<(
+        RocksDbLogStore,
+        crate::rocksdb_logstore::RocksDbLogWriterOwner,
+    )> {
         RocksDbManager::init();
         let metadata_builder = MetadataBuilder::default();
         assert!(TaskCenter::try_set_global_metadata(
@@ -980,7 +982,7 @@ mod tests {
 
     #[test(restate_core::test(start_paused = true))]
     async fn simple_store_flow() -> Result<()> {
-        let log_store = setup().await?;
+        let (log_store, _writer_owner) = setup().await?;
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
         const LOGLET: LogletId = LogletId::new_unchecked(1);
         let loglet_state_map = LogletStateMap::default();
@@ -1040,7 +1042,7 @@ mod tests {
 
     #[test(restate_core::test(start_paused = true))]
     async fn store_and_seal() -> Result<()> {
-        let log_store = setup().await?;
+        let (log_store, _writer_owner) = setup().await?;
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
         const LOGLET: LogletId = LogletId::new_unchecked(1);
         let loglet_state_map = LogletStateMap::default();
@@ -1158,7 +1160,7 @@ mod tests {
 
     #[test(restate_core::test(start_paused = true))]
     async fn repair_store() -> Result<()> {
-        let log_store = setup().await?;
+        let (log_store, _writer_owner) = setup().await?;
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
         const PEER: GenerationalNodeId = GenerationalNodeId::new(2, 2);
         const LOGLET: LogletId = LogletId::new_unchecked(1);
@@ -1297,7 +1299,7 @@ mod tests {
 
     #[test(restate_core::test(start_paused = true))]
     async fn simple_get_records_flow() -> Result<()> {
-        let log_store = setup().await?;
+        let (log_store, _writer_owner) = setup().await?;
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
         const LOGLET: LogletId = LogletId::new_unchecked(1);
         let loglet_state_map = LogletStateMap::default();
@@ -1492,7 +1494,7 @@ mod tests {
 
     #[test(restate_core::test(start_paused = true))]
     async fn trim_basics() -> Result<()> {
-        let log_store = setup().await?;
+        let (log_store, _writer_owner) = setup().await?;
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
         const LOGLET: LogletId = LogletId::new_unchecked(1);
         let loglet_state_map = LogletStateMap::default();

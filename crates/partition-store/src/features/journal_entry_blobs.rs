@@ -19,12 +19,9 @@ use crate::{MigrationError, PartitionStore};
 
 use super::{StorageFeature, StorageFeatures};
 
-/// A fence, not a switch: registry reconciliation persists it in the batch of the
-/// first registration (`PartitionStore::reconcile_registry`). It never enables
-/// itself and has nothing to migrate.
-impl StorageFeature for super::IndexRegistryFeature {
+impl StorageFeature for super::JournalEntryBlobsFeature {
     fn persisted_name() -> &'static ReString {
-        const NAME: &ReString = &ReString::from_static("index-registry");
+        const NAME: &ReString = &ReString::from_static("journal-entry-blobs");
         NAME
     }
 
@@ -33,19 +30,19 @@ impl StorageFeature for super::IndexRegistryFeature {
     }
 
     fn should_enable(
-        _config: &Configuration,
+        config: &Configuration,
         _current_version: &SemanticRestateVersion,
         _is_store_empty: bool,
     ) -> bool {
-        false
+        config.common.experimental.is_write_blob_table_enabled()
     }
 
     fn is_enabled(features: &StorageFeatures) -> bool {
-        features.is_index_registry
+        features.is_journal_entry_blobs
     }
 
     fn set_enabled(features: &mut StorageFeatures) {
-        features.is_index_registry = true;
+        features.is_journal_entry_blobs = true;
     }
 
     async fn enable(
@@ -54,6 +51,7 @@ impl StorageFeature for super::IndexRegistryFeature {
         _config: &Configuration,
         _finalization: &mut WriteBatch,
     ) -> Result<(), MigrationError> {
+        // Only entries written from now on are affected
         Ok(())
     }
 }

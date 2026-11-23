@@ -32,7 +32,7 @@ use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, VQueueId};
 
 use crate::keys::codecs::{CanonicalEntryIdCodec, ReverseUniqueTimestampCodec, StageRankCodec};
 use crate::keys::{EncodeTableKeyPrefix, IndexKeyPrefix, KeyKind};
-use crate::registry::{IndexDefinition, IndexKind, IndexRegistry, MaintainedIndexes};
+use crate::registry::{IndexDefinition, IndexKind, PublishedRegistry, Registry};
 use crate::vqueue_table::{EntryStatusKey, EntryStatusScan};
 use crate::{PartitionStore, PartitionStoreManager, PartitionStoreTransaction, StorageRead};
 
@@ -40,6 +40,7 @@ crate::index::macros::define_secondary_index!(
     /// A test index of entries by stage, newest transition first.
     InboxIndex,
     definition: "inbox_index/1",
+    introduced: (1, 8, 2),
     key: InboxIndexKey {
         stage: StageRankCodec,
         transitioned_at: ReverseUniqueTimestampCodec,
@@ -140,18 +141,21 @@ static INBOX_A: IndexDefinition = IndexDefinition {
     kind: IndexKind::Secondary,
     apply: apply_inbox_index,
     can_fill: true,
+    introduced: crate::registry::TEST_INTRODUCED,
 };
 static INBOX_B: IndexDefinition = IndexDefinition {
     name: "inbox_b/1",
     kind: IndexKind::Secondary,
     apply: apply_inbox_index,
     can_fill: true,
+    introduced: crate::registry::TEST_INTRODUCED,
 };
 static NOOP: IndexDefinition = IndexDefinition {
     name: "noop/1",
     kind: IndexKind::Aggregate,
     apply: apply_nothing,
     can_fill: true,
+    introduced: crate::registry::TEST_INTRODUCED,
 };
 
 /// Raw keys of index `id`.
@@ -176,7 +180,7 @@ fn instance_keys(store: &PartitionStore, id: u32) -> Vec<Vec<u8>> {
 #[restate_core::test]
 async fn every_write_stores_the_maintaining_instances() {
     let (mut store, qid, id, key, stats) = setup().await;
-    let mut registry = IndexRegistry::default();
+    let mut registry = Registry::default();
     let maintaining = [
         registry.register("noop/1", IndexKind::Aggregate).unwrap(),
         registry
@@ -185,7 +189,7 @@ async fn every_write_stores_the_maintaining_instances() {
     ];
     assert_eq!(maintaining, [64, 65]);
     // Unknown definitions are not maintained, so entries do not list them.
-    store.set_maintained_indexes(MaintainedIndexes::new(
+    store.set_published_registry(PublishedRegistry::new(
         &registry,
         &crate::walk::Walks::default(),
         &[&NOOP],
@@ -229,9 +233,9 @@ async fn every_write_stores_the_maintaining_instances() {
     tx.commit().await.unwrap();
     drop(tx);
 
-    // Once every index is Ready, writes store no list.
-    registry.set_ready(64).unwrap();
-    store.set_maintained_indexes(MaintainedIndexes::new(
+    // Once every index is Complete, writes store no list.
+    registry.set_complete(64).unwrap();
+    store.set_published_registry(PublishedRegistry::new(
         &registry,
         &crate::walk::Walks::default(),
         &[&NOOP],
@@ -246,7 +250,7 @@ async fn every_write_stores_the_maintaining_instances() {
     let header = tx.get_vqueue_entry_status(&id).await.unwrap().unwrap();
     assert!(
         header.touched_by().is_empty(),
-        "all_ready_writes_store_no_list"
+        "all_complete_writes_store_no_list"
     );
 
     // Deleting and re-creating in one transaction leaves only the new entry.
@@ -296,24 +300,24 @@ async fn untouched_entries_are_adopted_and_touched_ones_maintained() {
     tx.create_vqueue_entry_status(&context, state(Stage::Inbox, &stats[0]));
     tx.commit().await.unwrap();
     drop(tx);
-    let mut registry = IndexRegistry::default();
+    let mut registry = Registry::default();
     let maintaining = registry
         .register("inbox_a/1", IndexKind::Secondary)
         .unwrap();
-    let ready = registry
+    let complete = registry
         .register("inbox_b/1", IndexKind::Secondary)
         .unwrap();
-    registry.set_ready(ready).unwrap();
-    store.set_maintained_indexes(MaintainedIndexes::new(
+    registry.set_complete(complete).unwrap();
+    store.set_published_registry(PublishedRegistry::new(
         &registry,
         &crate::walk::Walks::default(),
         &[&INBOX_A, &INBOX_B],
     ));
-    // A Ready index is complete: its pass already indexed the entry.
+    // A Complete index is complete: its pass already indexed the entry.
     let mut tx = store.transaction();
     let canonical = key.to_canonical_entry_id(qid.partition_key());
     tx.update_secondary_index_with_id(
-        ready,
+        complete,
         None,
         Some(&InboxIndexKey::borrowed(
             Stage::Inbox,
@@ -337,18 +341,18 @@ async fn untouched_entries_are_adopted_and_touched_ones_maintained() {
     let counts = |store: &PartitionStore| {
         (
             instance_keys(store, maintaining).len(),
-            instance_keys(store, ready).len(),
+            instance_keys(store, complete).len(),
         )
     };
 
-    // Adopted by the Backfilling index: Put only. The Ready one moves its key.
+    // Adopted by the Backfilling index: Put only. The Complete one moves its key.
     update(&mut store, Stage::Inbox, &stats[1]).await;
     assert_eq!(read(&mut store).await, (Stage::Inbox, vec![maintaining]));
-    assert_eq!(counts(&store), (1, 1), "adoption_puts_and_ready_moves");
+    assert_eq!(counts(&store), (1, 1), "adoption_puts_and_complete_moves");
     let after_adoption = instance_keys(&store, maintaining);
     assert_eq!(
         after_adoption,
-        instance_keys(&store, ready)
+        instance_keys(&store, complete)
             .iter()
             .map(|key| {
                 let mut key = key.clone();
@@ -381,16 +385,16 @@ async fn untouched_entries_are_adopted_and_touched_ones_maintained() {
 
     // Deleting an entry the Backfilling index does not reflect deletes nothing
     // from it: an untouched entry has no key there. A planted key makes a stray
-    // deletion visible. The Ready index is complete, so it holds the entry.
-    store.set_maintained_indexes(MaintainedIndexes::default());
+    // deletion visible. The Complete index is complete, so it holds the entry.
+    store.set_published_registry(PublishedRegistry::default());
     let mut tx = store.transaction();
     tx.create_vqueue_entry_status(&context, state(Stage::Inbox, &stats[0]));
     let key = InboxIndexKey::borrowed(Stage::Inbox, Reverse(stats[0].transitioned_at), canonical);
     tx.update_secondary_index_with_id(maintaining, None, Some(&key));
-    tx.update_secondary_index_with_id(ready, None, Some(&key));
+    tx.update_secondary_index_with_id(complete, None, Some(&key));
     tx.commit().await.unwrap();
     drop(tx);
-    store.set_maintained_indexes(MaintainedIndexes::new(
+    store.set_published_registry(PublishedRegistry::new(
         &registry,
         &crate::walk::Walks::default(),
         &[&INBOX_A, &INBOX_B],
@@ -404,7 +408,7 @@ async fn untouched_entries_are_adopted_and_touched_ones_maintained() {
     assert_eq!(
         counts(&store),
         (1, 0),
-        "untouched_deletions_delete_nothing_and_ready_ones_delete_their_key"
+        "untouched_deletions_delete_nothing_and_complete_ones_delete_their_key"
     );
 }
 
