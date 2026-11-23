@@ -936,6 +936,25 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
         1,
     );
     assert_eq!(rows(ui).await, rows(&ui_scanned).await);
+    // All of the view's columns, `run_at` computed among them: the sort's
+    // column is one of the entries' own, so the page reads the index too.
+    let every_column = "SELECT * FROM sys_vqueues \
+        WHERE stage = 'finished' AND status IN ('succeeded', 'failed', 'cancelled', 'killed') \
+        ORDER BY created_at DESC NULLS LAST LIMIT 9";
+    let explained = plan(every_column, false).await;
+    assert!(
+        explained.contains("index=_idx_entry_status_by_status_created"),
+        "{explained}"
+    );
+    assert_eq!(
+        rows(every_column).await,
+        rows(&every_column.replacen(
+            "FROM sys_vqueues",
+            "FROM (SELECT * FROM sys_vqueues LIMIT 1000000) AS v",
+            1
+        ))
+        .await
+    );
     // A LIMIT without an ORDER BY whose stages and statuses leave fewer lanes
     // than all reads those lanes too, as the UI's failed entries of a
     // deployment, byte for byte: the Failed lane, the deployment checked on
