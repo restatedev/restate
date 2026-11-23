@@ -26,8 +26,10 @@
 //! - `<`, `<=`, `>`, and `>=`, including reversed comparisons, when the column's
 //!   value type supports order-preserving literal conversion or finite string values.
 //! - `!=` and `NOT IN` for finite string values, translated into native sets.
-//! - `IS NULL`. An `IS NULL OR <comparison or IN>` condition on the same column
-//!   can discard the NULL arm only when the target column cannot be NULL.
+//! - `IS NULL`, and `IS NULL OR <comparison or IN>` on the same column. On a
+//!   column that cannot be NULL the NULL arm is discarded; on a nullable column
+//!   NULL joins an equality or IN list, as in `scope IN ('a', 'b') OR scope IS
+//!   NULL`, and any other second arm stays residual.
 //! - Literal prefixes expressed as case-sensitive `LIKE 'prefix%'` or the
 //!   built-in `starts_with`, on columns declaring prefix support. LIKE escapes
 //!   are decoded; other wildcard patterns remain residual.
@@ -202,9 +204,19 @@ enum LiteralPredicate<'a> {
     In(&'a [Arc<dyn PhysicalExpr>], bool),
 }
 
-/// Builds the second arm of `col IS NULL OR <predicate>`. The NULL arm can only
-/// be dropped for value types that have no NULL; otherwise the OR stays residual.
-struct NonNullOr<'a>(LiteralPredicate<'a>);
+/// Builds `col IS NULL OR <other>`, where `other` constrains the same column.
+///
+/// On a column that cannot be NULL, the NULL arm never matches and is dropped.
+/// On a nullable column, NULL joins the values of an equality or IN list:
+/// `scope IN ('a', 'b') OR scope IS NULL` becomes `In([Some(a), Some(b), None])`.
+/// NULL literals in the list still match nothing, as in SQL. Any other arm, such
+/// as a range, leaves the OR residual, since one value predicate cannot hold a
+/// range plus NULL.
+struct NullOr<B> {
+    other: B,
+    /// Whether `other` is an equality or a positive IN list.
+    membership: bool,
+}
 
 impl<'a> InList<'a> {
     /// Extracts equality, literal IN/NOT IN, or same-column positive OR alternatives.
@@ -284,8 +296,12 @@ fn extract_column_literal<'a>(
     Some((col, lit))
 }
 
-/// Parses `col IS NULL OR <comparison on col>`. TopK dynamic filters take this
-/// form for NULLS FIRST orderings, including on columns that cannot be NULL.
+/// Parses `col IS NULL OR <predicate on col>`, the IS NULL on either side (see
+/// [`NullOr`]). TopK dynamic filters take this form for NULLS FIRST orderings,
+/// including on columns that cannot be NULL; queries take it to add NULL to a
+/// list. DataFusion expands short IN lists into ORs of equalities, so the other
+/// side may itself be such an OR. An IS NULL nested deeper in an OR, as in
+/// `col = 'a' OR col IS NULL OR col = 'b'`, stays residual.
 fn parse_null_or<T: SelectionSchema>(or: &BinaryExpr) -> Option<T::Clause> {
     let (is_null, other) = match (
         or.left().downcast_ref::<IsNullExpr>(),
@@ -296,11 +312,28 @@ fn parse_null_or<T: SelectionSchema>(or: &BinaryExpr) -> Option<T::Clause> {
         (None, None) => return None,
     };
     let column = is_null.arg().downcast_ref::<Column>()?;
-    let (other_column, builder) = literal_predicate(other)?;
-    if other_column.name() != column.name() {
+    let target = T::column_from_sql(column.name())?;
+    if let Some((other_column, other)) = literal_predicate(other) {
+        if other_column.name() != column.name() {
+            return None;
+        }
+        let membership = matches!(
+            other,
+            LiteralPredicate::Equal(_) | LiteralPredicate::In(_, false)
+        );
+        return T::value_clause(target, NullOr { other, membership });
+    }
+    let values = InList::parse(other, 64)?;
+    if values.col.name() != column.name() || values.negated {
         return None;
     }
-    T::value_clause(T::column_from_sql(column.name())?, NonNullOr(builder))
+    T::value_clause(
+        target,
+        NullOr {
+            other: values,
+            membership: true,
+        },
+    )
 }
 
 /// A column compared with literals, not yet bound to its native value type.
@@ -437,10 +470,19 @@ impl ValuePredicateBuilder for LiteralPredicate<'_> {
     }
 }
 
-impl ValuePredicateBuilder for NonNullOr<'_> {
+impl<B: ValuePredicateBuilder> ValuePredicateBuilder for NullOr<B> {
     fn build<V: SelectionValue>(self) -> Option<ValuePredicate<V>> {
         match V::from_literal(SelectionLiteral::Null) {
-            Err(LiteralConversionError::Unrepresentable) => self.0.build(),
+            Err(LiteralConversionError::Unrepresentable) => self.other.build(),
+            Ok(null) if self.membership => {
+                let mut values = match self.other.build()? {
+                    ValuePredicate::Equal(value) => vec![value],
+                    ValuePredicate::In(values) => values,
+                    ValuePredicate::Range { .. } => return None,
+                };
+                values.push(null);
+                Some(ValuePredicate::In(values))
+            }
             Ok(_) | Err(LiteralConversionError::Unsupported) => None,
         }
     }
@@ -2056,7 +2098,7 @@ mod tests {
     }
 
     #[test]
-    fn null_first_thresholds_preserve_nullable_and_mixed_column_predicates() {
+    fn is_null_or_conditions_follow_column_nullability() {
         fn threshold(filter: &Selection<TestTable>) -> (Bound<&str>, Bound<&str>) {
             let Selection::Predicates(fields) = filter else {
                 panic!("expected constraints")
@@ -2072,8 +2114,26 @@ mod tests {
             )
         }
 
+        fn handlers(filter: Selection<TestTable>) -> Vec<Option<String>> {
+            let Selection::Predicates(fields) = filter else {
+                panic!("expected constraints")
+            };
+            let [Clause::Handler(ValuePredicate::In(values))] =
+                fields.for_column(LogicalColumn::Handler)
+            else {
+                panic!("expected a handler list")
+            };
+            let mut values: Vec<_> = values
+                .iter()
+                .map(|value| value.as_ref().map(ReString::to_string))
+                .collect();
+            values.sort();
+            values
+        }
+
         // TopK filters for NULLS FIRST orderings keep an impossible NULL arm on
-        // non-nullable columns; the NULL arm of a nullable column stays residual.
+        // non-nullable columns; the NULL arm of a nullable column stays residual
+        // next to a range.
         let topk = col("service_name")
             .is_null()
             .or(col("service_name").gt(string(Some("beta"))));
@@ -2086,6 +2146,66 @@ mod tests {
             ),
             Selection::All
         ));
+        // On a nullable column, NULL joins an equality or IN list, including the
+        // OR of equalities DataFusion expands short lists into. A NULL literal in
+        // the list adds nothing.
+        let expected = |names: &[&str]| {
+            let mut values: Vec<_> = names.iter().map(|name| Some(name.to_string())).collect();
+            values.push(None);
+            values.sort();
+            values
+        };
+        assert_eq!(
+            handlers(translate(
+                col("handler")
+                    .in_list(
+                        vec![string(Some("beta")), string(None), string(Some("alpha"))],
+                        false,
+                    )
+                    .or(col("handler").is_null())
+            )),
+            expected(&["alpha", "beta"])
+        );
+        assert_eq!(
+            handlers(translate(
+                col("handler").is_null().or(col("handler")
+                    .eq(string(Some("alpha")))
+                    .or(col("handler").eq(string(Some("beta")))))
+            )),
+            expected(&["alpha", "beta"])
+        );
+        assert_eq!(
+            handlers(translate(
+                col("handler")
+                    .eq(string(Some("alpha")))
+                    .or(col("handler").is_null())
+            )),
+            expected(&["alpha"])
+        );
+        assert!(matches!(
+            translate(
+                col("handler")
+                    .is_null()
+                    .or(col("handler").in_list(vec![string(Some("alpha"))], true))
+            ),
+            Selection::All
+        ));
+        // The non-nullable column drops the NULL arm of a list as well.
+        let Selection::Predicates(fields) = translate(
+            col("service_name").is_null().or(col("service_name")
+                .eq(string(Some("alpha")))
+                .or(col("service_name").eq(string(Some("beta"))))),
+        ) else {
+            panic!("expected a service list")
+        };
+        let [Clause::ServiceName(ValuePredicate::In(names))] =
+            fields.for_column(LogicalColumn::ServiceName)
+        else {
+            panic!("expected a service list")
+        };
+        let mut names: Vec<_> = names.iter().map(ReString::as_str).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["alpha", "beta"]);
         assert!(matches!(
             translate(
                 col("service_name")

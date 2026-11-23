@@ -588,5 +588,64 @@ mod tests {
             .collect();
         assert!(!owned.is_empty() && owned.len() < expected.len());
         assert_eq!(found, owned);
+
+        // The same listing over the scoped layout, with `scope IN ('tenant') OR
+        // scope IS NULL`: unscoped objects live under their key's partition key,
+        // the tenant's objects under the tenant's. Both scopes name partition
+        // keys, so the read still visits only those, not every object around them.
+        let tenant = Scope::try_non_interned("tenant").unwrap();
+        let mut rows = Vec::new();
+        for scope in [None, Some(&tenant)] {
+            for object in 0..200 {
+                let service_key = format!("{object}");
+                for state in 0..2 {
+                    let mut bytes = Vec::new();
+                    ScopedStateKey {
+                        partition_key: HashPartitioner::compute_partition_key(
+                            scope.map_or(service_key.as_str(), |scope| scope.as_str()),
+                        ),
+                        scope: scope.cloned(),
+                        service_name: "Counter".into(),
+                        service_key: service_key.as_str().into(),
+                        state_key: Bytes::from(format!("k{state}")),
+                    }
+                    .serialize_to(&mut bytes);
+                    rows.push((bytes, (scope.is_some(), object, state)));
+                }
+            }
+        }
+        rows.sort();
+        let keys: Vec<_> = rows.iter().map(|(key, _)| key).collect();
+        let selection = Selection::All
+            .and(StateClause::ServiceName(ValuePredicate::Equal(
+                "Counter".into(),
+            )))
+            .and(StateClause::ServiceKey(ValuePredicate::In(
+                objects
+                    .iter()
+                    .map(|object| format!("{object}").into())
+                    .collect(),
+            )))
+            .and(StateClause::Scope(ValuePredicate::In(vec![
+                Some("tenant".into()),
+                None,
+            ])));
+        let prepared = ScopedStateBinding::prepare(&selection).unwrap();
+        let (matches, visited) = navigate(Arc::clone(prepared.request()), KeyRange::FULL, &keys);
+        let mut found: Vec<_> = matches.into_iter().map(|index| rows[index].1).collect();
+        found.sort_unstable();
+        let expected: Vec<_> = [false, true]
+            .into_iter()
+            .flat_map(|scoped| {
+                objects
+                    .iter()
+                    .flat_map(move |&object| (0..2).map(move |state| (scoped, object, state)))
+            })
+            .collect();
+        assert_eq!(found, expected);
+        assert!(
+            visited <= 2 * expected.len(),
+            "visits only the objects: {visited}"
+        );
     }
 }
