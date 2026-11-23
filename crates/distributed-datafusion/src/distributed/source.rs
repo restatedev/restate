@@ -344,11 +344,12 @@ impl PhysicalOptimizerRule for PrimaryAccessRule {
         plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let plan = plan
-            .transform_down(|plan| shard_joins::group_join(plan, config))?
-            .data;
-        // While the planner's bounded sorts still sit above their sources.
+        // While the planner's bounded sorts still sit above their sources, and
+        // above the JOINs a demand may cross to their inputs.
         let demands = Demands::of(&plan);
+        let plan = plan
+            .transform_down(|plan| shard_joins::group_join(plan, config, &demands))?
+            .data;
         plan.transform_up(|plan| {
             let demand = demands.on(&plan);
             let Some(scan) = plan.downcast_ref::<TableScanExec>() else {
