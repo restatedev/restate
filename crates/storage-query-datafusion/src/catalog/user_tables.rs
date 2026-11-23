@@ -96,17 +96,18 @@ pub(super) const SYS_INVOCATION_VIEW: &str = "CREATE VIEW restate.public.sys_inv
             sis.last_awaiting_on_future_json,
 
             arrow_cast(CASE
+                WHEN ss.effective_status IN ('ready', 'yielded') THEN 'ready'
+                WHEN ss.effective_status = 'backing-off' THEN 'backing-off'
+                WHEN ss.effective_status = 'running' THEN 'running'
                 WHEN ss.status = 'inboxed' THEN 'pending'
-                WHEN ss.status = 'scheduled' THEN 'scheduled'
-                WHEN ss.status = 'completed' THEN 'completed'
-                WHEN ss.status = 'suspended' THEN 'suspended'
-                WHEN ss.status = 'paused' THEN 'paused'
-                WHEN sis.in_flight THEN 'running'
-                WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
-                ELSE 'ready'
+                WHEN ss.status = 'invoked' THEN 'ready'
+                ELSE ss.status
             END, 'LargeUtf8') AS status,
             ss.completion_result,
-            ss.completion_failure
+            ss.completion_failure,
+            ss.stage,
+            ss.effective_status,
+            ss.completed
         FROM restate.public.sys_invocation_state sis
         RIGHT JOIN restate.public.sys_invocation_status ss ON ss.id = sis.id";
 

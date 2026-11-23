@@ -810,30 +810,9 @@ async fn shared_tables_preserve_v1_column_contracts() {
             .schema()
             .fields()
             .to_vec();
-        // V2's `partition_state` adds `report` after V1's columns, and
-        // invocations show their entries' columns after V1's.
-        let added: &[&str] = match name {
-            "partition_state" => &["report"],
-            "sys_invocation_status" | "sys_invocation" => {
-                &["stage", "effective_status", "completed"]
-            }
-            _ => &[],
-        };
-        let added_at = actual.len() - added.len();
-        let names: Vec<_> = actual
-            .drain(added_at..)
-            .map(|field| field.name().clone())
-            .collect();
-        assert_eq!(names, added, "{name}");
-        // Temporary, until V1 derives `status` the same way: V1's view still
-        // computes it with its old CASE, which ends in a literal and is never NULL,
-        // where V2's derived one falls back to a nullable column.
-        if name == "sys_invocation" {
-            for field in &mut actual {
-                if field.name() == "status" {
-                    *field = Arc::new(field.as_ref().clone().with_nullable(false));
-                }
-            }
+        // V2's `partition_state` adds `report` after V1's columns.
+        if name == "partition_state" {
+            assert_eq!(actual.pop().unwrap().name(), "report");
         }
         assert_eq!(
             actual, expected,
