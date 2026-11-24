@@ -516,6 +516,12 @@ pub struct InvokerOptions {
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub disable_eager_state: bool,
 
+    /// How many outputs an invocation task queues for the invoker before it stops reading from
+    /// the deployment. Defaults to 8.
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_output_queue_capacity: Option<NonZeroUsize>,
+
     /// # Invocation throttling
     ///
     /// Configures throttling for service invocations at the node level.
@@ -645,6 +651,11 @@ impl InvokerOptions {
             .unwrap_or_else(|| self.message_size_limit().get())
     }
 
+    pub fn task_output_queue_capacity(&self) -> NonZeroUsize {
+        self.task_output_queue_capacity
+            .unwrap_or(NonZeroUsize::new(8).expect("is non zero"))
+    }
+
     pub(crate) fn merge(&mut self, common: &CommonOptions, opts: &NetworkingOptions) {
         #[allow(deprecated)]
         self.service_client
@@ -720,6 +731,7 @@ impl Default for InvokerOptions {
             concurrent_invocations_limit: Some(NonZeroUsize::new(24000).expect("is non zero")),
             eager_state_size_limit: None,
             disable_eager_state: false,
+            task_output_queue_capacity: None,
             invocation_throttling: None,
             action_throttling: None,
             memory_limit: NonZeroByteCount::new(
