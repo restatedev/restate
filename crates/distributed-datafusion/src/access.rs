@@ -999,7 +999,7 @@ mod tests {
         // sort.
         struct Nullable;
         impl CompleteIndex for Nullable {
-            type Index = restate_storage_query_api::tables::index::EntryByServiceCreated;
+            type Index = restate_storage_query_api::tables::index::EntryByCreated;
             const INTRODUCED: SemanticRestateVersion = SemanticRestateVersion::new(1, 8, 2);
             const ORDERING: &'static [IndexOrder<PrimaryColumn<Self>>] = &[IndexOrder {
                 column: restate_storage_query_api::tables::invocation_status::InvocationStatusColumn::CreatedAt,
@@ -1009,9 +1009,7 @@ mod tests {
                 },
                 never_null: false,
             }];
-            fn useful(
-                _: &restate_storage_query_api::tables::index::EntryByServiceCreatedDomains,
-            ) -> bool {
+            fn useful(_: &restate_storage_query_api::tables::index::EntryByCreatedDomains) -> bool {
                 true
             }
         }

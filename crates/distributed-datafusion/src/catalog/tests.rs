@@ -20,7 +20,7 @@ use restate_limiter::RuleBook;
 use restate_limiter::rule_book::RuleBookObserver;
 use restate_platform::sync::Mutex;
 use restate_storage_query_api::tables::index::{
-    EntryByQueue, EntryByServiceCreated, EntryByStatusCreated, EntryStatusByStatusCreated,
+    EntryByCreated, EntryByQueue, EntryByStatusCreated, EntryStatusByStatusCreated,
     EntryStatusByStatusTransitioned,
 };
 use restate_storage_query_api::{
@@ -45,7 +45,7 @@ const STATS: [&str; 3] = [
 /// Every index the planner can read: none of them is a table.
 const INDEXES: [&str; 5] = [
     EntryByQueue::NAME,
-    EntryByServiceCreated::NAME,
+    EntryByCreated::NAME,
     EntryByStatusCreated::NAME,
     EntryStatusByStatusCreated::NAME,
     EntryStatusByStatusTransitioned::NAME,

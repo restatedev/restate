@@ -82,8 +82,8 @@ use restate_storage_query_api::SelectionSchema;
 use restate_storage_query_api::scan::{CursorStep, ReadDirection};
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
 use restate_storage_query_api::tables::index::{
-    EntryByServiceCreated as EntryIndex, EntryByServiceCreatedClause as EntryIndexClause,
-    EntryByServiceCreatedColumn as EntryIndexColumn, EntryByStatusCreated as StatusIndex,
+    EntryByCreated as EntryIndex, EntryByCreatedClause as EntryIndexClause,
+    EntryByCreatedColumn as EntryIndexColumn, EntryByStatusCreated as StatusIndex,
     EntryByStatusCreatedClause as StatusIndexClause,
     EntryByStatusCreatedColumn as StatusIndexColumn,
 };
@@ -1038,7 +1038,7 @@ mod tests {
         EntryContext, EntryKey, EntryMetadata, EntryStateRef, Stage, Status, WriteVQueueTable,
     };
     use restate_storage_query_api::selection::ValuePredicate;
-    use restate_storage_query_api::tables::index::EntryByServiceCreatedClause;
+    use restate_storage_query_api::tables::index::EntryByCreatedClause;
     use restate_types::config::Configuration;
     use restate_types::identifiers::{InvocationUuid, PartitionId, WithPartitionKey};
     use restate_types::invocation::InvocationTarget;
@@ -1137,7 +1137,7 @@ mod tests {
 
         let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
         let service = || {
-            Selection::All.and(EntryByServiceCreatedClause::TargetServiceName(
+            Selection::All.and(EntryByCreatedClause::TargetServiceName(
                 ValuePredicate::Equal("S".into()),
             ))
         };
@@ -1382,7 +1382,7 @@ mod tests {
         drop(tx);
         let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
         let read_big = EntryIndexRead::prepare(
-            &Selection::All.and(EntryByServiceCreatedClause::TargetServiceName(
+            &Selection::All.and(EntryByCreatedClause::TargetServiceName(
                 ValuePredicate::Equal("Big".into()),
             )),
             ReadDirection::Forward,

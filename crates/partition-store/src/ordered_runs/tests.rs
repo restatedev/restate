@@ -25,7 +25,7 @@ use restate_storage_api::vqueue_table::{
 use restate_storage_query_api::Table;
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
 use restate_storage_query_api::tables::index::{
-    EntryByServiceCreated as Index, EntryByServiceCreatedClause as IndexClause,
+    EntryByCreated as Index, EntryByCreatedClause as IndexClause,
 };
 use restate_types::config::Configuration;
 use restate_types::identifiers::PartitionId;
@@ -34,16 +34,82 @@ use restate_types::sharding::KeyRange;
 use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, HandlerRef, VQueueId};
 use restate_util_string::ReString;
 
+use crate::index::RegisteredIndex;
 use crate::keys::FieldCodec;
-use crate::keys::codecs::CanonicalEntryIdCodec;
-use crate::keys::selection::PrepareKeySelection;
-use crate::vqueue_table::{
-    ENTRY_BY_SERVICE_CREATED, EntryByServiceCreated, EntryByServiceCreatedKey,
+use crate::keys::codecs::{
+    CanonicalEntryIdCodec, ReverseUniqueTimestampCodec, ServiceNameCodec, StringCodec,
 };
+use crate::keys::selection::PrepareKeySelection;
+use crate::registry::{IndexDefinition, IndexKind};
 use crate::walk::engine;
-use crate::{PartitionStore, PartitionStoreManager};
+use crate::{PartitionStore, PartitionStoreManager, PartitionStoreTransaction};
 
 use super::*;
+
+crate::index::macros::define_secondary_index!(
+    /// A test index with one run per service and handler, newest created first:
+    /// the run merge's fixture.
+    RunsByServiceHandler,
+    definition: "test_runs_by_service_handler/1",
+    introduced: (1, 8, 2),
+    key: RunsByServiceHandlerKey {
+        target_service_name: ServiceNameCodec => str,
+        target_handler_name: Option<StringCodec> => str,
+        created_at: ReverseUniqueTimestampCodec,
+        canonical_id: CanonicalEntryIdCodec (primary_key),
+    }
+);
+
+// Restricted through the invocation columns of `entry_by_created/1`'s schema,
+// which has the same fields. Every invocation has a handler; only state
+// mutations, which a query on invocations skips, have none.
+crate::keys::macros::define_key_selection!(
+    RunsByServiceHandlerKey;
+    [restate_storage_query_api::tables::index::EntryByCreated];
+    target_service_name,
+    target_handler_name => present,
+    created_at,
+);
+
+static RUNS_BY_SERVICE_HANDLER: IndexDefinition = IndexDefinition {
+    name: RunsByServiceHandler::DEFINITION,
+    introduced: RunsByServiceHandler::INTRODUCED,
+    kind: IndexKind::Secondary,
+    apply: apply_runs_by_service_handler,
+    can_fill: true,
+};
+
+/// Removes the key of `before` and adds the key of `after`. Both share the
+/// entry's target, and the rest of the key never changes after creation, so an
+/// update writes nothing.
+fn apply_runs_by_service_handler(
+    storage: &mut PartitionStoreTransaction<'_>,
+    id: u32,
+    context: &EntryContext<'_>,
+    before: Option<&EntryStateRef<'_>>,
+    after: Option<&EntryStateRef<'_>>,
+) {
+    let project = |entry: &EntryStateRef<'_>| {
+        (
+            Reverse(entry.stats.created_at),
+            entry
+                .entry_key
+                .to_canonical_entry_id(context.qid.partition_key()),
+        )
+    };
+    let (old, new) = (before.map(project), after.map(project));
+    if old != new {
+        let key = |(created_at, canonical_id)| {
+            RunsByServiceHandlerKey::borrowed(
+                context.target.service(),
+                context.target.handler(),
+                created_at,
+                canonical_id,
+            )
+        };
+        storage.update_secondary_index_with_id(id, old.map(key).as_ref(), new.map(key).as_ref());
+    }
+}
 
 /// (service, handler, millis after the base, id byte); `None` is a state mutation.
 const ENTRIES: &[(&str, Option<&str>, u64, u8)] = &[
@@ -64,7 +130,7 @@ const BASE: u64 = 1_744_010_000_000;
 
 type Row = (String, Option<String>, Reverse<UniqueTimestamp>, Vec<u8>);
 
-fn row(key: EntryByServiceCreatedKey) -> Row {
+fn row(key: RunsByServiceHandlerKey) -> Row {
     let mut id = Vec::new();
     CanonicalEntryIdCodec::encode_field(&key.canonical_id, &mut id);
     (
@@ -88,9 +154,9 @@ async fn store_with_entries() -> PartitionStore {
         .verify_and_run_migrations(CancellationToken::new(), &config)
         .await
         .unwrap();
-    // The retired `entry_by_service_created/1`: its runs, a service and
-    // handler each, are this merge's fixture.
-    store.maintain_only(&[&ENTRY_BY_SERVICE_CREATED]).await;
+    // The fixture index: its runs, a service and handler each, are what the
+    // merge reads.
+    store.maintain_only(&[&RUNS_BY_SERVICE_HANDLER]).await;
     engine::run_all(&mut store, 3).await.unwrap();
 
     let qid = VQueueId::custom(7, "q");
@@ -153,13 +219,13 @@ fn limits(max_runs: usize, buffer: usize) -> OrderedRunsLimits {
 
 /// Every row the merge of `T` yields, in order, and the keys it examined after
 /// discovery.
-fn merged_from<T: PhysicalTable<Key = EntryByServiceCreatedKey>>(
+fn merged_from<T: PhysicalTable<Key = RunsByServiceHandlerKey>>(
     snapshot: &ReadSnapshot,
     selection: Selection<Index>,
     direction: ReadDirection,
     limits: OrderedRunsLimits,
 ) -> Option<(Vec<Row>, u64)> {
-    let request = Arc::new(EntryByServiceCreatedKey::prepare_candidates(&selection).unwrap());
+    let request = Arc::new(RunsByServiceHandlerKey::prepare_candidates(&selection).unwrap());
     let OrderedRunsDiscovery::Ready(mut runs) = snapshot
         .ordered_runs::<T>(request, 2, direction, limits, Box::new(()))
         .unwrap()
@@ -184,7 +250,7 @@ fn merged(
     direction: ReadDirection,
     limits: OrderedRunsLimits,
 ) -> Option<Vec<Row>> {
-    merged_from::<EntryByServiceCreated>(snapshot, selection, direction, limits)
+    merged_from::<RunsByServiceHandler>(snapshot, selection, direction, limits)
         .map(|(rows, _)| rows)
 }
 
@@ -298,7 +364,7 @@ async fn runs_merge_into_creation_order() {
         // Service A within the window: h1's run, with a key on either side of
         // the window, and h2's, with one newer. Backwards, each run reads back
         // from the window's end to its first match, examining only matches.
-        let (rows, examined) = merged_from::<EntryByServiceCreated>(
+        let (rows, examined) = merged_from::<RunsByServiceHandler>(
             &snapshot,
             Selection::All.and(service("A")).and(window()),
             direction,
@@ -371,9 +437,9 @@ impl RetainedMemory for Charged {
     }
 }
 
-fn service_a() -> Arc<KeySelection<EntryByServiceCreatedKey>> {
+fn service_a() -> Arc<KeySelection<RunsByServiceHandlerKey>> {
     Arc::new(
-        EntryByServiceCreatedKey::prepare_candidates(&Selection::<Index>::All.and(
+        RunsByServiceHandlerKey::prepare_candidates(&Selection::<Index>::All.and(
             IndexClause::TargetServiceName(ValuePredicate::Equal("A".into())),
         ))
         .unwrap(),
@@ -422,7 +488,7 @@ async fn merges_charge_what_they_hold_and_release_it() {
     let store = store_with_entries().await;
     let (snapshot, _closed) = store.query_read(CancellationToken::new()).unwrap();
     let start = |charged: &Charged, direction| {
-        snapshot.ordered_runs::<EntryByServiceCreated>(
+        snapshot.ordered_runs::<RunsByServiceHandler>(
             service_a(),
             2,
             direction,
@@ -483,10 +549,10 @@ async fn merges_charge_what_they_hold_and_release_it() {
         (service_a().and(h1()), ReadDirection::Forward),
         (service_a().and(h1()), ReadDirection::Backward),
     ] {
-        let request = Arc::new(EntryByServiceCreatedKey::prepare_candidates(&selection).unwrap());
+        let request = Arc::new(RunsByServiceHandlerKey::prepare_candidates(&selection).unwrap());
         let charged = Charged::default();
         let OrderedRunsDiscovery::Ready(mut runs) = snapshot
-            .ordered_runs::<EntryByServiceCreated>(
+            .ordered_runs::<RunsByServiceHandler>(
                 request,
                 2,
                 direction,
@@ -526,13 +592,13 @@ async fn merges_charge_what_they_hold_and_release_it() {
     // Neither does one that finds no run: here, a service without entries.
     let charged = Charged::default();
     let request = Arc::new(
-        EntryByServiceCreatedKey::prepare_candidates(&Selection::<Index>::All.and(
+        RunsByServiceHandlerKey::prepare_candidates(&Selection::<Index>::All.and(
             IndexClause::TargetServiceName(ValuePredicate::Equal("Z".into())),
         ))
         .unwrap(),
     );
     let OrderedRunsDiscovery::Ready(mut runs) = snapshot
-        .ordered_runs::<EntryByServiceCreated>(
+        .ordered_runs::<RunsByServiceHandler>(
             request,
             2,
             ReadDirection::Forward,
@@ -548,9 +614,9 @@ async fn merges_charge_what_they_hold_and_release_it() {
 
     // A read that stops at discovery holds nothing either.
     let charged = Charged::default();
-    let request = Arc::new(EntryByServiceCreatedKey::prepare_candidates(&Selection::All).unwrap());
+    let request = Arc::new(RunsByServiceHandlerKey::prepare_candidates(&Selection::All).unwrap());
     let discovery = snapshot
-        .ordered_runs::<EntryByServiceCreated>(
+        .ordered_runs::<RunsByServiceHandler>(
             request,
             2,
             ReadDirection::Forward,
@@ -594,15 +660,15 @@ async fn merges_charge_what_they_hold_and_release_it() {
 enum EvenOnly {}
 
 impl Table for EvenOnly {
-    type Record<'a> = (KeyDecoder<'a, EntryByServiceCreatedKey>, &'a [u8]);
-    type Scan = KeySelection<EntryByServiceCreatedKey>;
+    type Record<'a> = (KeyDecoder<'a, RunsByServiceHandlerKey>, &'a [u8]);
+    type Scan = KeySelection<RunsByServiceHandlerKey>;
 }
 
 impl PhysicalTable for EvenOnly {
-    type Key = EntryByServiceCreatedKey;
+    type Key = RunsByServiceHandlerKey;
 
     fn owns_record(
-        key: KeyDecoder<'_, EntryByServiceCreatedKey>,
+        key: KeyDecoder<'_, RunsByServiceHandlerKey>,
         _: &crate::table::ReadMetadata<'_>,
     ) -> Result<bool> {
         let id = row(key.decode_all()?).3;
@@ -660,7 +726,7 @@ async fn merges_release_the_snapshot_and_stop_on_cancellation() {
     let store = store_with_entries().await;
     let start = |snapshot: &ReadSnapshot| {
         let OrderedRunsDiscovery::Ready(runs) = snapshot
-            .ordered_runs::<EntryByServiceCreated>(
+            .ordered_runs::<RunsByServiceHandler>(
                 service_a(),
                 2,
                 ReadDirection::Forward,

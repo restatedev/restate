@@ -707,7 +707,7 @@ mod tests {
         };
         use restate_storage_query_api::scan::ReadDirection;
         use restate_storage_query_api::tables::index::{
-            EntryByServiceCreatedClause, EntryByStatusCreatedClause,
+            EntryByCreatedClause, EntryByStatusCreatedClause,
         };
         use restate_types::config::Configuration;
         use restate_types::invocation::InvocationTarget;
@@ -877,7 +877,7 @@ mod tests {
             .filter(|(_, entry)| entry.is_some())
             .map(|(id, entry)| (*id, *entry))
             .collect();
-        let by_service = Selection::All.and(EntryByServiceCreatedClause::TargetServiceName(
+        let by_service = Selection::All.and(EntryByCreatedClause::TargetServiceName(
             ValuePredicate::Equal("S".into()),
         ));
         let created = EntryIndexRead::prepare(&by_service, ReadDirection::Forward).unwrap();
