@@ -971,6 +971,7 @@ impl Handler {
                 on_max_attempts: self.retry_policy_on_max_attempts,
             },
             info,
+            protocol_family: self.protocol_family.unwrap_or_default(),
         }
     }
 }

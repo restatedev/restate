@@ -17,9 +17,10 @@ use restate_types::invocation::client::KillInvocationResponse;
 use restate_types::invocation::{
     InvocationMutationResponseSink, ResponseResult, TerminationFlavor,
 };
+use restate_types::journal_events::AttemptOutcome;
 
 use super::end_invocation::end_invocation;
-use super::{ErEndStorage, record_attempt_ended};
+use super::{AttemptEnd, ErEndStorage, event_failure, record_attempt_ended};
 use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
@@ -42,14 +43,22 @@ where
             response_sink,
         } = self;
         match status {
-            InvocationStatus::Invoked(metadata) => {
-                record_attempt_ended(
-                    ctx,
-                    &invocation_id,
-                    &InvocationStatus::Invoked(metadata.clone()),
-                    "killed",
-                )
-                .await?;
+            InvocationStatus::Invoked(mut metadata) => {
+                // A running attempt ends here; one backing off already recorded its end.
+                if metadata
+                    .explicit_recovery
+                    .as_ref()
+                    .is_some_and(|er| !er.attempt_ended)
+                {
+                    record_attempt_ended(
+                        ctx,
+                        &invocation_id,
+                        &mut metadata,
+                        AttemptEnd::new("killed", AttemptOutcome::Killed)
+                            .failure(Some(event_failure(&KILLED_INVOCATION_ERROR))),
+                        None,
+                    )?;
+                }
                 end_invocation(
                     ctx,
                     invocation_id,

@@ -23,6 +23,7 @@ use restate_types::invocation::{
     Header, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
+use restate_types::journal_events::{AttemptCause, WokenBy};
 use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
@@ -480,6 +481,14 @@ pub struct ExplicitRecoveryStatus {
     pub idle_restart_streak: u32,
     /// An action of the current attempt was applied (D63).
     pub action_applied: bool,
+    /// Why the current attempt started; once it ended, why the next one will. `None` before
+    /// the first attempt.
+    pub cause: Option<(AttemptCause, Option<WokenBy>)>,
+    /// The end of the current attempt was recorded. An attempt that a new one replaces without
+    /// it was lost.
+    pub attempt_ended: bool,
+    /// When the scheduler ran the current attempt.
+    pub run_at: Option<MillisSinceEpoch>,
 }
 
 impl ExplicitRecoveryStatus {
@@ -492,6 +501,9 @@ impl ExplicitRecoveryStatus {
             forwarded_notifications: 0,
             idle_restart_streak: 0,
             action_applied: false,
+            cause: None,
+            attempt_ended: false,
+            run_at: None,
         }
     }
 }

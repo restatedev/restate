@@ -288,6 +288,17 @@ message InvocationStatusV2 {
     uint32 idle_restart_streak = 6;
     // An action of the current attempt was applied (D63).
     bool action_applied = 7;
+    // Why the current attempt started; once it ended, why the next one will. Absent: the
+    // first attempt. A snake_case name of the journal event's attempt cause.
+    optional string cause = 8;
+    // What woke the invocation, when the cause is "wake_up": "result", "signal", "cancel".
+    optional string woken_by_kind = 9;
+    optional uint32 woken_by_result_id = 10;
+    optional string woken_by_signal_name = 11;
+    // The end of the current attempt was recorded.
+    bool attempt_ended = 12;
+    // When the scheduler ran the current attempt, in milliseconds since the UNIX epoch.
+    optional uint64 run_at = 13;
   }
   ExplicitRecoveryStatus explicit_recovery = 37;
 }

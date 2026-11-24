@@ -771,8 +771,40 @@ mod test {
             ErAction, ErEffect, ErEffectKind, ErStateScope,
         };
 
+        use restate_types::journal_events::{
+            ActionSummary, RecordLevel, RecordedAction, RecordedScope,
+        };
+
         use crate::v2::commands::ExplicitRecoveryEffectCommand;
 
+        // The record, with absent fields (skipped when serialized) and a member.
+        let member = RecordedAction {
+            kind: "SetState".to_owned(),
+            name: String::new(),
+            parent_span_id: None,
+            result_id: None,
+            invocation_id_result_id: None,
+            level: RecordLevel::Full,
+            summary: ActionSummary {
+                scope: Some(RecordedScope::Invocation),
+                key: Some("k".to_owned()),
+                bytes: Some(1),
+                ..Default::default()
+            },
+            payload: Some("v".to_owned()),
+            members: vec![],
+        };
+        let record = RecordedAction {
+            kind: "AtomicGroup".to_owned(),
+            name: "commit".to_owned(),
+            parent_span_id: Some(3),
+            result_id: Some(5),
+            invocation_id_result_id: None,
+            level: RecordLevel::Summary,
+            summary: ActionSummary::default(),
+            payload: None,
+            members: vec![member],
+        };
         let invocation_id = InvocationId::mock_random();
         let payload = ExplicitRecoveryEffectCommand::from(ErEffect {
             invocation_id,
@@ -785,6 +817,7 @@ mod test {
                     value: Bytes::from_static(b"v"),
                 }]),
                 highest_result_id: NonZeroU32::new(5),
+                record: Some(Box::new(record.clone())),
             },
         });
         assert_eq!(
@@ -804,8 +837,8 @@ mod test {
         assert_eq!((decoded.attempt, decoded.seq), (2, 7));
         assert!(matches!(
             &decoded.kind,
-            ErEffectKind::Action { action: ErAction::Group(members), highest_result_id }
-                if members.len() == 1 && *highest_result_id == NonZeroU32::new(5)
+            ErEffectKind::Action { action: ErAction::Group(members), highest_result_id, record: Some(decoded_record) }
+                if members.len() == 1 && *highest_result_id == NonZeroU32::new(5) && **decoded_record == record
         ));
     }
 

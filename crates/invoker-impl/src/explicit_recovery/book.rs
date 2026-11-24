@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use bytestring::ByteString;
 
 use restate_service_protocol_explicit_recovery::proto::result_notification_message::Result as NotificationResult;
+use restate_types::journal_events::{OutstandingKind, OutstandingResult};
 
 /// A protocol violation by the SDK.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +51,9 @@ pub(crate) struct AttemptBook {
     cancel_known: bool,
     /// Span ids started in this attempt.
     spans: HashSet<u32>,
+    /// What the record says of the external results not delivered yet, and whether their
+    /// action is recorded. Absent: the action is `RECORD_NONE`.
+    labels: HashMap<u32, (OutstandingResult, bool)>,
 }
 
 impl AttemptBook {
@@ -68,7 +72,49 @@ impl AttemptBook {
             received_forwards: 0,
             cancel_known: cancelled,
             spans: Default::default(),
+            labels: Default::default(),
         }
+    }
+
+    /// Notes what a result the attempt may wait for is, for the record: `recorded` when its
+    /// action has a record, so that its delivery is recorded too.
+    pub(crate) fn label(
+        &mut self,
+        result_id: u32,
+        kind: OutstandingKind,
+        label: String,
+        recorded: bool,
+    ) {
+        self.labels.insert(
+            result_id,
+            (
+                OutstandingResult {
+                    result_id,
+                    kind,
+                    label,
+                },
+                recorded,
+            ),
+        );
+    }
+
+    /// A result reached the attempt: true if its delivery is recorded.
+    pub(crate) fn delivered(&mut self, result_id: u32) -> bool {
+        self.labels
+            .remove(&result_id)
+            .is_some_and(|(_, recorded)| recorded)
+    }
+
+    /// The external results the attempt waits for, in id order, but those of `RECORD_NONE`.
+    pub(crate) fn outstanding(&self) -> Vec<OutstandingResult> {
+        let mut outstanding: Vec<_> = self
+            .external
+            .iter()
+            .chain(self.signal_waiters.values().flatten())
+            .filter_map(|id| self.labels.get(id).map(|(o, _)| o.clone()))
+            .collect();
+        outstanding.sort_by_key(|o| o.result_id);
+        outstanding
     }
 
     /// Checks a result id used after every id before it, in the order of the wire. 0 is absent.

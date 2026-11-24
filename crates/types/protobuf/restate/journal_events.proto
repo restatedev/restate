@@ -53,18 +53,127 @@ message SuspendedEvent {
   Future awaiting_on = 1;
 }
 
-// An attempt of an invocation on the explicit recovery protocol family started.
+// -- The record of the attempts of an invocation on the explicit recovery protocol family.
+// Enumerations are stored as their snake_case names. `lsn` is the log position of the record
+// that wrote the event.
+
+// An attempt started.
 message AttemptStartedEvent {
   uint32 attempt = 1;
   string deployment_id = 2;
   uint32 protocol_version = 3;
+  // "first", "retry", "restart", "wake_up", "resume".
+  optional string cause = 4;
+  // Only for "wake_up".
+  WokenBy woken_by = 5;
+  optional uint64 lsn = 6;
+  // When the scheduler ran the attempt, in milliseconds since the UNIX epoch.
+  optional uint64 scheduled_at = 7;
 }
 
-// An attempt of an invocation on the explicit recovery protocol family ended.
+message WokenBy {
+  // "result", "signal", "cancel".
+  string kind = 1;
+  optional uint32 result_id = 2;
+  optional string signal_name = 3;
+}
+
+// An attempt ended.
 message AttemptEndedEvent {
   uint32 attempt = 1;
-  // Why: "end", "failed", "restart (rule N)", "suspend", "restart loop".
+  // Why, as free text.
   string reason = 2;
+  // "returned", "failed", "restarted", "suspended", "paused", "killed", "lost".
+  optional string outcome = 3;
+  // The restart or suspend rule, 1 to 6.
+  optional uint32 rule = 4;
+  EventFailure failure = 5;
+  // What a suspended attempt was waiting on.
+  repeated OutstandingResult outstanding = 6;
+  optional uint64 lsn = 7;
+  // A failed attempt retried after a delay: not before then, in milliseconds since the UNIX epoch.
+  optional uint64 retry_at = 8;
+}
+
+message EventFailure {
+  uint32 code = 1;
+  string message = 2;
+}
+
+message OutstandingResult {
+  uint32 result_id = 1;
+  // "call", "attach", "signal_read".
+  string kind = 2;
+  string label = 3;
+}
+
+// An action of an attempt, as its record level asks.
+message ActionRecordedEvent {
+  uint32 attempt = 1;
+  RecordedAction action = 2;
+  optional uint64 lsn = 3;
+}
+
+message RecordedAction {
+  string kind = 1;
+  string name = 2;
+  optional uint32 parent_span_id = 3;
+  optional uint32 result_id = 4;
+  optional uint32 invocation_id_result_id = 5;
+  // "summary", "full".
+  string level = 6;
+  ActionSummary summary = 7;
+  // Only at "full": UTF-8 lossy, truncated.
+  optional string payload = 8;
+  // The members of an atomic group.
+  repeated RecordedAction members = 9;
+}
+
+message ActionSummary {
+  // "object", "invocation".
+  optional string scope = 1;
+  optional string key = 2;
+  RecordedTarget target = 3;
+  optional string invocation_id = 4;
+  optional string signal_name = 5;
+  optional uint32 signal_index = 6;
+  optional uint64 bytes = 7;
+  // A span started or ended inside an atomic group.
+  optional uint32 span_id = 8;
+  optional string outcome = 9;
+  EventFailure failure = 10;
+}
+
+message RecordedTarget {
+  string service = 1;
+  string handler = 2;
+  optional string key = 3;
+}
+
+message SpanStartedEvent {
+  uint32 attempt = 1;
+  uint32 span_id = 2;
+  optional uint32 parent_span_id = 3;
+  string name = 4;
+  optional uint64 lsn = 5;
+}
+
+message SpanEndedEvent {
+  uint32 attempt = 1;
+  uint32 span_id = 2;
+  // "ok", "value", "failure".
+  string outcome = 3;
+  optional string value = 4;
+  EventFailure failure = 5;
+  optional uint64 lsn = 6;
+}
+
+message ResultDeliveredEvent {
+  uint32 attempt = 1;
+  uint32 result_id = 2;
+  // "value", "failure", "void".
+  string variant = 3;
+  optional uint64 lsn = 4;
 }
 
 // Mirrors dev.restate.service.protocol.Future. Kept independent so this

@@ -80,25 +80,24 @@ fn decode(ty: EventType, value: Bytes) -> Result<Event, EventDecodingError> {
         EventType::Suspended => Ok(Event::Suspended(
             pb::SuspendedEvent::decode(value)?.try_into()?,
         )),
-        EventType::AttemptStarted => {
-            let pb::AttemptStartedEvent {
-                attempt,
-                deployment_id,
-                protocol_version,
-            } = pb::AttemptStartedEvent::decode(value)?;
-            Ok(Event::AttemptStarted(super::AttemptStartedEvent {
-                attempt,
-                deployment_id,
-                protocol_version,
-            }))
-        }
-        EventType::AttemptEnded => {
-            let pb::AttemptEndedEvent { attempt, reason } = pb::AttemptEndedEvent::decode(value)?;
-            Ok(Event::AttemptEnded(super::AttemptEndedEvent {
-                attempt,
-                reason,
-            }))
-        }
+        EventType::AttemptStarted => Ok(Event::AttemptStarted(
+            pb::AttemptStartedEvent::decode(value)?.try_into()?,
+        )),
+        EventType::AttemptEnded => Ok(Event::AttemptEnded(
+            pb::AttemptEndedEvent::decode(value)?.try_into()?,
+        )),
+        EventType::ActionRecorded => Ok(Event::ActionRecorded(
+            pb::ActionRecordedEvent::decode(value)?.try_into()?,
+        )),
+        EventType::SpanStarted => Ok(Event::SpanStarted(
+            pb::SpanStartedEvent::decode(value)?.into(),
+        )),
+        EventType::SpanEnded => Ok(Event::SpanEnded(
+            pb::SpanEndedEvent::decode(value)?.try_into()?,
+        )),
+        EventType::ResultDelivered => Ok(Event::ResultDelivered(
+            pb::ResultDeliveredEvent::decode(value)?.try_into()?,
+        )),
         EventType::Unknown => Ok(Event::Unknown),
     }
 }
@@ -117,25 +116,29 @@ fn encode(event: Event) -> RawEvent {
             EventType::Suspended,
             pb::SuspendedEvent::from(e).encode_to_vec().into(),
         ),
-        Event::AttemptStarted(super::AttemptStartedEvent {
-            attempt,
-            deployment_id,
-            protocol_version,
-        }) => RawEvent::new(
+        Event::AttemptStarted(e) => RawEvent::new(
             EventType::AttemptStarted,
-            pb::AttemptStartedEvent {
-                attempt,
-                deployment_id,
-                protocol_version,
-            }
-            .encode_to_vec()
-            .into(),
+            pb::AttemptStartedEvent::from(e).encode_to_vec().into(),
         ),
-        Event::AttemptEnded(super::AttemptEndedEvent { attempt, reason }) => RawEvent::new(
+        Event::AttemptEnded(e) => RawEvent::new(
             EventType::AttemptEnded,
-            pb::AttemptEndedEvent { attempt, reason }
-                .encode_to_vec()
-                .into(),
+            pb::AttemptEndedEvent::from(e).encode_to_vec().into(),
+        ),
+        Event::ActionRecorded(e) => RawEvent::new(
+            EventType::ActionRecorded,
+            pb::ActionRecordedEvent::from(e).encode_to_vec().into(),
+        ),
+        Event::SpanStarted(e) => RawEvent::new(
+            EventType::SpanStarted,
+            pb::SpanStartedEvent::from(e).encode_to_vec().into(),
+        ),
+        Event::SpanEnded(e) => RawEvent::new(
+            EventType::SpanEnded,
+            pb::SpanEndedEvent::from(e).encode_to_vec().into(),
+        ),
+        Event::ResultDelivered(e) => RawEvent::new(
+            EventType::ResultDelivered,
+            pb::ResultDeliveredEvent::from(e).encode_to_vec().into(),
         ),
         Event::Unknown => RawEvent::unknown(),
     }
@@ -396,5 +399,376 @@ mod pb {
 
             builder.build()
         }
+    }
+
+    // -- The attempt record. Enumerations are stored as their names.
+
+    fn parse<T: std::str::FromStr>(name: &str, what: &'static str) -> anyhow::Result<T> {
+        name.parse()
+            .map_err(|_| anyhow::anyhow!("unrecognized {what} '{name}'"))
+    }
+
+    fn parse_opt<T: std::str::FromStr>(
+        name: Option<String>,
+        what: &'static str,
+    ) -> anyhow::Result<Option<T>> {
+        name.map(|n| parse(&n, what)).transpose()
+    }
+
+    impl From<event::AttemptStartedEvent> for AttemptStartedEvent {
+        fn from(e: event::AttemptStartedEvent) -> Self {
+            AttemptStartedEvent {
+                attempt: e.attempt,
+                deployment_id: e.deployment_id,
+                protocol_version: e.protocol_version,
+                cause: e.cause.map(|c| c.to_string()),
+                woken_by: e.woken_by.map(|w| WokenBy {
+                    kind: w.kind.to_string(),
+                    result_id: w.result_id,
+                    signal_name: w.signal_name,
+                }),
+                lsn: e.lsn,
+                scheduled_at: e.scheduled_at,
+            }
+        }
+    }
+
+    impl TryFrom<AttemptStartedEvent> for event::AttemptStartedEvent {
+        type Error = anyhow::Error;
+
+        fn try_from(e: AttemptStartedEvent) -> Result<Self, Self::Error> {
+            Ok(event::AttemptStartedEvent {
+                attempt: e.attempt,
+                deployment_id: e.deployment_id,
+                protocol_version: e.protocol_version,
+                cause: parse_opt(e.cause, "attempt cause")?,
+                woken_by: e
+                    .woken_by
+                    .map(|w| {
+                        Ok::<_, anyhow::Error>(event::WokenBy {
+                            kind: parse(&w.kind, "wake-up kind")?,
+                            result_id: w.result_id,
+                            signal_name: w.signal_name,
+                        })
+                    })
+                    .transpose()?,
+                lsn: e.lsn,
+                scheduled_at: e.scheduled_at,
+            })
+        }
+    }
+
+    impl From<event::EventFailure> for EventFailure {
+        fn from(f: event::EventFailure) -> Self {
+            EventFailure {
+                code: f.code,
+                message: f.message,
+            }
+        }
+    }
+
+    impl From<EventFailure> for event::EventFailure {
+        fn from(f: EventFailure) -> Self {
+            event::EventFailure {
+                code: f.code,
+                message: f.message,
+            }
+        }
+    }
+
+    impl From<event::AttemptEndedEvent> for AttemptEndedEvent {
+        fn from(e: event::AttemptEndedEvent) -> Self {
+            AttemptEndedEvent {
+                attempt: e.attempt,
+                reason: e.reason,
+                outcome: e.outcome.map(|o| o.to_string()),
+                rule: e.rule,
+                failure: e.failure.map(Into::into),
+                outstanding: e
+                    .outstanding
+                    .into_iter()
+                    .map(|o| OutstandingResult {
+                        result_id: o.result_id,
+                        kind: o.kind.to_string(),
+                        label: o.label,
+                    })
+                    .collect(),
+                lsn: e.lsn,
+                retry_at: e.retry_at,
+            }
+        }
+    }
+
+    impl TryFrom<AttemptEndedEvent> for event::AttemptEndedEvent {
+        type Error = anyhow::Error;
+
+        fn try_from(e: AttemptEndedEvent) -> Result<Self, Self::Error> {
+            Ok(event::AttemptEndedEvent {
+                attempt: e.attempt,
+                reason: e.reason,
+                outcome: parse_opt(e.outcome, "attempt outcome")?,
+                rule: e.rule,
+                failure: e.failure.map(Into::into),
+                outstanding: e
+                    .outstanding
+                    .into_iter()
+                    .map(|o| {
+                        Ok(event::OutstandingResult {
+                            result_id: o.result_id,
+                            kind: parse(&o.kind, "outstanding kind")?,
+                            label: o.label,
+                        })
+                    })
+                    .collect::<anyhow::Result<_>>()?,
+                lsn: e.lsn,
+                retry_at: e.retry_at,
+            })
+        }
+    }
+
+    impl From<event::RecordedAction> for RecordedAction {
+        fn from(a: event::RecordedAction) -> Self {
+            let s = a.summary;
+            RecordedAction {
+                kind: a.kind,
+                name: a.name,
+                parent_span_id: a.parent_span_id,
+                result_id: a.result_id,
+                invocation_id_result_id: a.invocation_id_result_id,
+                level: a.level.to_string(),
+                summary: Some(ActionSummary {
+                    scope: s.scope.map(|s| s.to_string()),
+                    key: s.key,
+                    target: s.target.map(|t| RecordedTarget {
+                        service: t.service,
+                        handler: t.handler,
+                        key: t.key,
+                    }),
+                    invocation_id: s.invocation_id,
+                    signal_name: s.signal_name,
+                    signal_index: s.signal_index,
+                    bytes: s.bytes,
+                    span_id: s.span_id,
+                    outcome: s.outcome.map(|o| o.to_string()),
+                    failure: s.failure.map(Into::into),
+                }),
+                payload: a.payload,
+                members: a.members.into_iter().map(Into::into).collect(),
+            }
+        }
+    }
+
+    impl TryFrom<RecordedAction> for event::RecordedAction {
+        type Error = anyhow::Error;
+
+        fn try_from(a: RecordedAction) -> Result<Self, Self::Error> {
+            let s = a.summary.unwrap_or_default();
+            Ok(event::RecordedAction {
+                kind: a.kind,
+                name: a.name,
+                parent_span_id: a.parent_span_id,
+                result_id: a.result_id,
+                invocation_id_result_id: a.invocation_id_result_id,
+                level: parse(&a.level, "record level")?,
+                summary: event::ActionSummary {
+                    scope: parse_opt(s.scope, "state scope")?,
+                    key: s.key,
+                    target: s.target.map(|t| event::RecordedTarget {
+                        service: t.service,
+                        handler: t.handler,
+                        key: t.key,
+                    }),
+                    invocation_id: s.invocation_id,
+                    signal_name: s.signal_name,
+                    signal_index: s.signal_index,
+                    bytes: s.bytes,
+                    span_id: s.span_id,
+                    outcome: parse_opt(s.outcome, "span outcome")?,
+                    failure: s.failure.map(Into::into),
+                },
+                payload: a.payload,
+                members: a
+                    .members
+                    .into_iter()
+                    .map(TryInto::try_into)
+                    .collect::<anyhow::Result<_>>()?,
+            })
+        }
+    }
+
+    impl From<event::ActionRecordedEvent> for ActionRecordedEvent {
+        fn from(e: event::ActionRecordedEvent) -> Self {
+            ActionRecordedEvent {
+                attempt: e.attempt,
+                action: Some((*e.action).into()),
+                lsn: e.lsn,
+            }
+        }
+    }
+
+    impl TryFrom<ActionRecordedEvent> for event::ActionRecordedEvent {
+        type Error = anyhow::Error;
+
+        fn try_from(e: ActionRecordedEvent) -> Result<Self, Self::Error> {
+            Ok(event::ActionRecordedEvent {
+                attempt: e.attempt,
+                action: Box::new(e.action.context("missing action")?.try_into()?),
+                lsn: e.lsn,
+            })
+        }
+    }
+
+    impl From<event::SpanStartedEvent> for SpanStartedEvent {
+        fn from(e: event::SpanStartedEvent) -> Self {
+            SpanStartedEvent {
+                attempt: e.attempt,
+                span_id: e.span_id,
+                parent_span_id: e.parent_span_id,
+                name: e.name,
+                lsn: e.lsn,
+            }
+        }
+    }
+
+    impl From<SpanStartedEvent> for event::SpanStartedEvent {
+        fn from(e: SpanStartedEvent) -> Self {
+            event::SpanStartedEvent {
+                attempt: e.attempt,
+                span_id: e.span_id,
+                parent_span_id: e.parent_span_id,
+                name: e.name,
+                lsn: e.lsn,
+            }
+        }
+    }
+
+    impl From<event::SpanEndedEvent> for SpanEndedEvent {
+        fn from(e: event::SpanEndedEvent) -> Self {
+            SpanEndedEvent {
+                attempt: e.attempt,
+                span_id: e.span_id,
+                outcome: e.outcome.to_string(),
+                value: e.value,
+                failure: e.failure.map(Into::into),
+                lsn: e.lsn,
+            }
+        }
+    }
+
+    impl TryFrom<SpanEndedEvent> for event::SpanEndedEvent {
+        type Error = anyhow::Error;
+
+        fn try_from(e: SpanEndedEvent) -> Result<Self, Self::Error> {
+            Ok(event::SpanEndedEvent {
+                attempt: e.attempt,
+                span_id: e.span_id,
+                outcome: parse(&e.outcome, "span outcome")?,
+                value: e.value,
+                failure: e.failure.map(Into::into),
+                lsn: e.lsn,
+            })
+        }
+    }
+
+    impl From<event::ResultDeliveredEvent> for ResultDeliveredEvent {
+        fn from(e: event::ResultDeliveredEvent) -> Self {
+            ResultDeliveredEvent {
+                attempt: e.attempt,
+                result_id: e.result_id,
+                variant: e.variant.to_string(),
+                lsn: e.lsn,
+            }
+        }
+    }
+
+    impl TryFrom<ResultDeliveredEvent> for event::ResultDeliveredEvent {
+        type Error = anyhow::Error;
+
+        fn try_from(e: ResultDeliveredEvent) -> Result<Self, Self::Error> {
+            Ok(event::ResultDeliveredEvent {
+                attempt: e.attempt,
+                result_id: e.result_id,
+                variant: parse(&e.variant, "result variant")?,
+                lsn: e.lsn,
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use serde_json::json;
+
+    use crate::journal_events::{
+        ActionRecordedEvent, ActionSummary, AttemptStartedEvent, RECORD_PAYLOAD_LIMIT, RecordLevel,
+        RecordedAction, RecordedTarget, record_payload,
+    };
+
+    /// The attempt record as `sys_journal_events.event_json` shows it, back from JSON (the CLI)
+    /// and through storage; an event written before the record's fields existed still decodes.
+    #[test]
+    fn attempt_record_json_and_storage() {
+        let event = Event::ActionRecorded(ActionRecordedEvent {
+            attempt: 1,
+            action: Box::new(RecordedAction {
+                kind: "Call".to_owned(),
+                name: "ask".to_owned(),
+                parent_span_id: None,
+                result_id: Some(9),
+                invocation_id_result_id: Some(8),
+                level: RecordLevel::Full,
+                summary: ActionSummary {
+                    target: Some(RecordedTarget {
+                        service: "S".to_owned(),
+                        handler: "h".to_owned(),
+                        key: None,
+                    }),
+                    bytes: Some(2),
+                    ..Default::default()
+                },
+                payload: Some("hi".to_owned()),
+                members: vec![],
+            }),
+            lsn: Some(4),
+        });
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "ty": "ActionRecorded", "attempt": 1, "kind": "Call", "name": "ask",
+                "result_id": 9, "invocation_id_result_id": 8, "level": "full",
+                "summary": {"target": {"service": "S", "handler": "h"}, "bytes": 2},
+                "payload": "hi", "lsn": 4
+            })
+        );
+        assert_eq!(serde_json::from_value::<Event>(value).unwrap(), event);
+        assert_eq!(RawEvent::from(event.clone()).into_event_or_unknown(), event);
+
+        let old = pb::AttemptStartedEvent {
+            attempt: 2,
+            deployment_id: "dp".to_owned(),
+            protocol_version: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            RawEvent::new(EventType::AttemptStarted, old.encode_to_vec().into())
+                .into_event_or_unknown(),
+            Event::AttemptStarted(AttemptStartedEvent {
+                attempt: 2,
+                deployment_id: "dp".to_owned(),
+                protocol_version: 1,
+                cause: None,
+                woken_by: None,
+                lsn: None,
+                scheduled_at: None,
+            })
+        );
+
+        // Payloads are cut at the limit, on a character boundary.
+        let payload = record_payload("é".repeat(RECORD_PAYLOAD_LIMIT).as_bytes());
+        assert_eq!(payload.len(), RECORD_PAYLOAD_LIMIT);
+        assert!(payload.chars().all(|c| c == 'é'));
     }
 }

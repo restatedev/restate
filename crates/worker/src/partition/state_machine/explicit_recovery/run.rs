@@ -17,6 +17,7 @@ use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InboxedInvocation, InvocationStatus, ReadInvocationStatusTable,
     ScheduledInvocation, WriteInvocationStatusTable,
 };
+use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2;
 use restate_storage_api::lock_table::WriteLockTable;
@@ -25,12 +26,13 @@ use restate_storage_api::vqueue_table::{
 };
 use restate_tracing_instrumentation as instrumentation;
 use restate_types::identifiers::InvocationId;
+use restate_types::journal_events::{AttemptCause, AttemptOutcome};
 use restate_types::vqueues::{EntryTargetExt, VQueueId};
 use restate_util_string::ReString;
 use restate_vqueues::VQueue;
 use restate_worker_api::processor::{FsmAccess, PartitionFeatures};
 
-use super::er_of;
+use super::{AttemptEnd, er_of, record_attempt_ended};
 use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::{Action, CommandHandler, Error, StateMachineApplyContext};
 
@@ -53,7 +55,8 @@ where
         + journal_table_v2::WriteJournalTable
         + ReadVQueueTable
         + WriteVQueueTable
-        + WriteLockTable,
+        + WriteLockTable
+        + WriteJournalEventsTable,
     P: ProcessorContext,
     H: EntryStatusHeader,
 {
@@ -132,8 +135,22 @@ where
         );
         let vq_handle = vqueue.handle();
 
+        // An attempt whose end was never recorded was lost: a failover, a crash.
+        let previous = er_of(&mut metadata);
+        if previous.attempt > 0 && !previous.attempt_ended {
+            record_attempt_ended(
+                ctx,
+                &invocation_id,
+                &mut metadata,
+                AttemptEnd::new("lost", AttemptOutcome::Lost),
+                Some(AttemptCause::Restart),
+            )?;
+        }
+
         // A new attempt: what was counted for the previous one is discarded (D34, F14).
         let er = er_of(&mut metadata);
+        er.attempt_ended = false;
+        er.run_at = Some(ctx.record_created_at);
         er.attempt += 1;
         er.forwarded_notifications = 0;
         er.action_applied = false;

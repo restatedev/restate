@@ -1493,7 +1493,32 @@ pub mod v1 {
                     forwarded_notifications,
                     idle_restart_streak,
                     action_applied,
+                    cause,
+                    woken_by_kind,
+                    woken_by_result_id,
+                    woken_by_signal_name,
+                    attempt_ended,
+                    run_at,
                 } = value;
+                let cause = cause
+                    .map(|cause| {
+                        let cause = cause
+                            .parse()
+                            .map_err(|_| ConversionError::invalid_data_static("cause"))?;
+                        let woken_by = woken_by_kind
+                            .map(|kind| {
+                                Ok::<_, ConversionError>(restate_types::journal_events::WokenBy {
+                                    kind: kind.parse().map_err(|_| {
+                                        ConversionError::invalid_data_static("woken_by_kind")
+                                    })?,
+                                    result_id: woken_by_result_id,
+                                    signal_name: woken_by_signal_name,
+                                })
+                            })
+                            .transpose()?;
+                        Ok::<_, ConversionError>((cause, woken_by))
+                    })
+                    .transpose()?;
                 Ok(Self {
                     pinned_deployment_id: pinned_deployment_id
                         .map(|id| id.parse())
@@ -1506,6 +1531,9 @@ pub mod v1 {
                     forwarded_notifications,
                     idle_restart_streak,
                     action_applied,
+                    cause,
+                    attempt_ended,
+                    run_at: run_at.map(MillisSinceEpoch::new),
                 })
             }
         }
@@ -1522,7 +1550,12 @@ pub mod v1 {
                     forwarded_notifications,
                     idle_restart_streak,
                     action_applied,
+                    cause,
+                    attempt_ended,
+                    run_at,
                 } = value;
+                let (cause, woken_by) = cause.unzip();
+                let woken_by = woken_by.flatten();
                 Self {
                     pinned_deployment_id: pinned_deployment_id.map(|id| id.to_string()),
                     attempt,
@@ -1531,6 +1564,12 @@ pub mod v1 {
                     forwarded_notifications,
                     idle_restart_streak,
                     action_applied,
+                    cause: cause.map(|c| c.to_string()),
+                    woken_by_kind: woken_by.as_ref().map(|w| w.kind.to_string()),
+                    woken_by_result_id: woken_by.as_ref().and_then(|w| w.result_id),
+                    woken_by_signal_name: woken_by.and_then(|w| w.signal_name),
+                    attempt_ended,
+                    run_at: run_at.map(|t| t.as_u64()),
                 }
             }
         }
@@ -5050,6 +5089,18 @@ mod tests {
             forwarded_notifications: 2,
             idle_restart_streak: 1,
             action_applied: true,
+            cause: Some((
+                restate_types::journal_events::AttemptCause::WakeUp,
+                Some(restate_types::journal_events::WokenBy {
+                    kind: restate_types::journal_events::WakeUpKind::Signal,
+                    result_id: None,
+                    signal_name: Some("approved".to_owned()),
+                }),
+            )),
+            attempt_ended: true,
+            run_at: Some(restate_types::time::MillisSinceEpoch::new(
+                1_700_000_000_000,
+            )),
         };
         let metadata = InFlightInvocationMetadata {
             explicit_recovery: Some(er.clone()),

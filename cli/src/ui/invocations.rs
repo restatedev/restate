@@ -611,13 +611,60 @@ pub fn journal_event_lines(
                 describe_future(&suspended.awaiting_on, completion, false)
             ),
         ],
-        Event::AttemptStarted(started) => vec![format!(
-            "Attempt {} started on deployment {} (explicit recovery protocol v{})",
-            started.attempt, started.deployment_id, started.protocol_version
-        )],
-        Event::AttemptEnded(ended) => {
-            vec![format!("Attempt {} ended: {}", ended.attempt, ended.reason)]
+        Event::AttemptStarted(started) => {
+            let cause = match (&started.cause, &started.woken_by) {
+                (Some(cause), Some(woken_by)) => format!(", {cause} by {}", woken_by.kind),
+                (Some(cause), None) => format!(", {cause}"),
+                (None, _) => String::new(),
+            };
+            vec![format!(
+                "Attempt {} started on deployment {} (explicit recovery protocol v{}{cause})",
+                started.attempt, started.deployment_id, started.protocol_version
+            )]
         }
+        Event::AttemptEnded(ended) => {
+            let mut lines = vec![match ended.outcome {
+                Some(outcome) => format!(
+                    "Attempt {} ended: {outcome} ({})",
+                    ended.attempt, ended.reason
+                ),
+                None => format!("Attempt {} ended: {}", ended.attempt, ended.reason),
+            }];
+            if let Some(failure) = &ended.failure {
+                lines.push(format!("error: [{}] {}", failure.code, failure.message));
+            }
+            lines.extend(ended.outstanding.iter().map(|o| {
+                format!(
+                    "waiting on: {} {} (result {})",
+                    o.kind, o.label, o.result_id
+                )
+            }));
+            lines
+        }
+        Event::ActionRecorded(recorded) => {
+            let action = &recorded.action;
+            let name = if action.name.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", action.name)
+            };
+            vec![format!(
+                "Attempt {}: {}{name}",
+                recorded.attempt, action.kind
+            )]
+        }
+        Event::SpanStarted(span) => vec![format!(
+            "Attempt {}: span {} [{}] started",
+            span.attempt, span.span_id, span.name
+        )],
+        Event::SpanEnded(span) => vec![format!(
+            "Attempt {}: span {} ended: {}",
+            span.attempt, span.span_id, span.outcome
+        )],
+        Event::ResultDelivered(delivered) => vec![format!(
+            "Attempt {}: result {} delivered ({})",
+            delivered.attempt, delivered.result_id, delivered.variant
+        )],
         Event::Unknown => vec![format!("{} {anchor}", event.event_type)],
     }
 }

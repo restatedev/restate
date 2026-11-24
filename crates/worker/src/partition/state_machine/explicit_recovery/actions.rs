@@ -13,16 +13,21 @@ use std::num::NonZeroU32;
 use tracing::warn;
 
 use restate_storage_api::invocation_status_table::{InFlightInvocationMetadata, InvocationStatus};
+use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
     AttachInvocationRequest, NotifySignalRequest, ServiceInvocation, ServiceInvocationResponseSink,
     Source,
 };
+use restate_types::journal_events::{
+    ActionRecordedEvent, Event, RecordedAction, ResultDeliveredEvent, SpanEndedEvent,
+    SpanStartedEvent,
+};
 use restate_types::journal_v2::{BuiltInSignal, CallRequest, Signal, SignalId, SignalResult};
 use restate_wal_protocol::v2::commands;
-use restate_worker_api::invoker::explicit_recovery::{ErAction, ErStateScope};
+use restate_worker_api::invoker::explicit_recovery::{ErAction, ErRecord, ErStateScope};
 
-use super::{ErStorage, RESULT_ID_BLOCK, er_of};
+use super::{ErStorage, RESULT_ID_BLOCK, er_of, lsn, put_event};
 use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::{Error, StateMachineApplyContext};
 
@@ -34,12 +39,16 @@ pub(super) async fn on_action<S, P>(
     mut metadata: InFlightInvocationMetadata,
     action: ErAction,
     highest_result_id: Option<NonZeroU32>,
+    record: Option<Box<RecordedAction>>,
 ) -> Result<(), Error>
 where
     S: ErStorage,
     P: ProcessorContext,
 {
     apply_action(ctx, &invocation_id, &metadata, action).await?;
+    if let Some(record) = record {
+        on_record(ctx, &invocation_id, &metadata, ErRecord::Action(record))?;
+    }
 
     let er = er_of(&mut metadata);
     let mut changed = false;
@@ -64,6 +73,65 @@ where
             .put_invocation_status(&invocation_id, &InvocationStatus::Invoked(metadata))?;
     }
     Ok(())
+}
+
+/// Writes what the record of the attempt keeps of an action, a span or a delivered result: one
+/// event, also for an atomic group (its members are in it).
+pub(super) fn on_record<S, P>(
+    ctx: &mut StateMachineApplyContext<'_, S, P>,
+    invocation_id: &InvocationId,
+    metadata: &InFlightInvocationMetadata,
+    record: ErRecord,
+) -> Result<(), Error>
+where
+    S: WriteJournalEventsTable,
+{
+    let attempt = metadata
+        .explicit_recovery
+        .as_ref()
+        .expect("explicit recovery invocation")
+        .attempt;
+    let lsn = lsn(ctx);
+    let event = match record {
+        ErRecord::Action(action) => Event::ActionRecorded(ActionRecordedEvent {
+            attempt,
+            action,
+            lsn,
+        }),
+        ErRecord::SpanStart {
+            span_id,
+            parent_span_id,
+            name,
+        } => Event::SpanStarted(SpanStartedEvent {
+            attempt,
+            span_id,
+            parent_span_id,
+            name,
+            lsn,
+        }),
+        ErRecord::SpanEnd {
+            span_id,
+            outcome,
+            value,
+            failure,
+        } => Event::SpanEnded(SpanEndedEvent {
+            attempt,
+            span_id,
+            outcome,
+            value,
+            failure,
+            lsn,
+        }),
+        ErRecord::ResultDelivered { result_id, variant } => {
+            Event::ResultDelivered(ResultDeliveredEvent {
+                attempt,
+                result_id,
+                variant,
+                lsn,
+            })
+        }
+    };
+    put_event(ctx, invocation_id, metadata, event)
 }
 
 async fn apply_action<S, P>(

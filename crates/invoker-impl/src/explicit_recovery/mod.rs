@@ -29,6 +29,7 @@ use restate_types::clock::RoughTimestamp;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{FencingToken, InvocationTarget, ResponseResult};
+use restate_types::journal_events::OutstandingResult;
 use restate_types::retries::RetryIter;
 use restate_types::schema::invocation_target::OnMaxAttempts;
 use restate_types::time::MillisSinceEpoch;
@@ -53,7 +54,10 @@ pub(crate) enum InputItem {
 pub(crate) enum ErTaskOutput {
     End(ResponseResult),
     Restart(RestartRule),
-    Suspend { received_notifications: u32 },
+    Suspend {
+        received_notifications: u32,
+        outstanding: Vec<OutstandingResult>,
+    },
     Failed(InvokerError),
 }
 

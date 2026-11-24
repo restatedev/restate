@@ -185,6 +185,7 @@ mod mocks {
                         output_json_schema: None,
                         retry_policy: Default::default(),
                         info: vec![],
+                        protocol_family: Default::default(),
                     },
                 )]),
                 ty: invocation_target_metadata.target_ty.into(),

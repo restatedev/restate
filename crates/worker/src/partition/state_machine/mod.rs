@@ -3140,7 +3140,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteLockTable
             + ReadStateTable
             + WriteStateTable
-            + journal_table_v2::WriteJournalTable,
+            + journal_table_v2::WriteJournalTable
+            + WriteJournalEventsTable,
     {
         match entry_key.kind() {
             vqueues::EntryKind::Unknown => panic!("Cannot run unknown entry id"),
@@ -3277,7 +3278,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteVQueueTable
             + WriteLockTable
-            + journal_table_v2::WriteJournalTable,
+            + journal_table_v2::WriteJournalTable
+            + WriteJournalEventsTable,
     {
         let record_unique_ts = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
 

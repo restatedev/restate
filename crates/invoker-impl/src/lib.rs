@@ -777,9 +777,11 @@ where
                     },
                     ErTaskOutput::Suspend {
                         received_notifications,
+                        outstanding,
                     } => ErEffectKind::Suspend {
                         received_notifications,
                         idle_fallback: sm.idle_fallback(),
+                        outstanding,
                     },
                     ErTaskOutput::Failed(error) => {
                         let outcome = sm.on_task_error(&error);

@@ -465,6 +465,12 @@ pub struct HandlerMetadata {
     /// List of configuration/deprecation information related to this handler.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub info: Vec<SchemaInfo>,
+
+    /// # Protocol family
+    ///
+    /// The protocol family the handler runs on: `DurableExecution` or `ExplicitRecovery`.
+    #[serde(default)]
+    pub protocol_family: crate::service_protocol::ProtocolFamily,
 }
 
 impl restate_serde_util::MapAsVecItem for HandlerMetadata {
@@ -594,6 +600,7 @@ pub mod test_util {
                                 output_json_schema: None,
                                 retry_policy: Default::default(),
                                 info: vec![],
+                                protocol_family: Default::default(),
                             },
                         )
                     })
@@ -645,6 +652,7 @@ pub mod test_util {
                                 output_json_schema: None,
                                 retry_policy: Default::default(),
                                 info: vec![],
+                                protocol_family: Default::default(),
                             },
                         )
                     })

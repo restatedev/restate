@@ -14,9 +14,10 @@ use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::client::CancelInvocationResponse;
 use restate_types::invocation::{InvocationMutationResponseSink, TerminationFlavor};
+use restate_types::journal_events::{AttemptCause, WakeUpKind, WokenBy};
 use restate_worker_api::invoker::explicit_recovery::ErToInvoker;
 
-use super::{ErEndStorage, er_of, forward};
+use super::{ErEndStorage, er_of, forward, set_wake_up};
 use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
@@ -80,6 +81,15 @@ where
                 } else {
                     // A waiting invocation gets a new attempt, once, which starts cancelled.
                     er.cancelled = true;
+                    set_wake_up(
+                        &mut metadata,
+                        AttemptCause::WakeUp,
+                        Some(WokenBy {
+                            kind: WakeUpKind::Cancel,
+                            result_id: None,
+                            signal_name: None,
+                        }),
+                    );
                     ctx.do_resume_service(invocation_id, metadata).await?;
                 }
                 ctx.reply_to_cancel(response_sink, CancelInvocationResponse::Appended);

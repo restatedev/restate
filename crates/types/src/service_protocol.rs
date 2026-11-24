@@ -43,6 +43,7 @@ pub const MAX_EXPLICIT_RECOVERY_PROTOCOL_VERSION: i32 = 1;
     serde::Deserialize,
     bilrost::Enumeration,
 )]
+#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 pub enum ProtocolFamily {
     /// The durable execution protocol, with a journal replayed at every attempt.
     #[default]

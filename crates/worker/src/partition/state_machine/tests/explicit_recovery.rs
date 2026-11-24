@@ -33,13 +33,21 @@ use restate_types::invocation::{
     NotifySignalRequest, PurgeInvocationRequest, ResponseResult, ResumeInvocationRequest,
     ServiceInvocation, ServiceInvocationResponseSink, Source, TerminationFlavor,
 };
-use restate_types::journal_events::{AttemptEndedEvent, Event};
+use restate_types::journal_events::{
+    ActionRecordedEvent, ActionSummary, AttemptCause, AttemptEndedEvent, AttemptOutcome,
+    AttemptStartedEvent, Event, OutstandingKind, OutstandingResult, RecordLevel, RecordedAction,
+    RecordedScope, ResultDeliveredEvent, ResultVariant, SpanEndedEvent, SpanOutcome,
+    SpanStartedEvent, WakeUpKind, WokenBy,
+};
 use restate_types::journal_v2::{BuiltInSignal, CallRequest, Signal, SignalId, SignalResult};
+use restate_types::logs::Lsn;
 use restate_types::partitions::{PartitionFeatureChange, PersistedFeatures};
 use restate_types::service_protocol::ProtocolFamily;
+use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::v2::{Command, commands};
 use restate_worker_api::invoker::explicit_recovery::{
-    ErAction, ErEffect, ErEffectKind, ErFailureOutcome, ErStateScope, ErToInvoker, RestartRule,
+    ErAction, ErEffect, ErEffectKind, ErFailureOutcome, ErRecord, ErStateScope, ErToInvoker,
+    RestartRule,
 };
 
 use super::{TestEnv, run_decision};
@@ -83,6 +91,15 @@ async fn invoke(test_env: &mut TestEnv, journal_retention: Duration) -> ErInvoca
 
 /// Applies the scheduler's decision to run the invocation's entry.
 async fn run(test_env: &mut TestEnv, id: InvocationId) -> Vec<Action> {
+    let envelope = run_envelope(test_env, id).await;
+    test_env.apply(envelope).await
+}
+
+/// The scheduler's decision to run the invocation's entry.
+async fn run_envelope(
+    test_env: &mut TestEnv,
+    id: InvocationId,
+) -> restate_wal_protocol::v2::Envelope<restate_wal_protocol::v2::Raw> {
     let header = test_env
         .storage()
         .transaction()
@@ -95,9 +112,7 @@ async fn run(test_env: &mut TestEnv, id: InvocationId) -> Vec<Action> {
         Stage::Inbox,
         "only an entry in the inbox runs"
     );
-    test_env
-        .apply(run_decision(header.vqueue_id(), *header.entry_key()))
-        .await
+    run_decision(header.vqueue_id(), *header.entry_key())
 }
 
 fn effect(id: InvocationId, attempt: u32, seq: u64, kind: ErEffectKind) -> ErEffect {
@@ -121,6 +136,7 @@ fn action(action: ErAction, highest_result_id: u32) -> ErEffectKind {
     ErEffectKind::Action {
         action,
         highest_result_id: NonZeroU32::new(highest_result_id),
+        record: None,
     }
 }
 
@@ -143,6 +159,7 @@ fn suspend(received_notifications: u32) -> ErEffectKind {
     ErEffectKind::Suspend {
         received_notifications,
         idle_fallback: retry_fallback(),
+        outstanding: vec![],
     }
 }
 
@@ -403,10 +420,291 @@ async fn end_completes_and_records_the_attempt() {
         events,
         elements_are![
             pat!(Event::AttemptStarted(anything())),
-            eq(Event::AttemptEnded(AttemptEndedEvent {
+            pat!(Event::AttemptEnded(pat!(AttemptEndedEvent {
+                attempt: eq(1),
+                reason: eq("end"),
+                outcome: some(eq(AttemptOutcome::Returned)),
+                failure: none(),
+            })))
+        ]
+    );
+    test_env.shutdown().await;
+}
+
+/// A log: each record at its own position, created one millisecond after the previous one.
+struct Log {
+    t0: u64,
+    lsn: u64,
+}
+
+impl Log {
+    fn created_at(&self, lsn: u64) -> u64 {
+        self.t0 + lsn
+    }
+}
+
+/// Applies `envelope` at the next log position.
+async fn apply_next(
+    test_env: &mut TestEnv,
+    log: &mut Log,
+    envelope: restate_wal_protocol::v2::Envelope<restate_wal_protocol::v2::Raw>,
+) -> Vec<Action> {
+    log.lsn += 1;
+    let created_at = MillisSinceEpoch::new(log.created_at(log.lsn));
+    test_env
+        .apply_at(envelope, created_at, Lsn::new(log.lsn))
+        .await
+}
+
+fn recorded(kind: &str, name: &str, summary: ActionSummary) -> RecordedAction {
+    RecordedAction {
+        kind: kind.to_owned(),
+        name: name.to_owned(),
+        parent_span_id: None,
+        result_id: None,
+        invocation_id_result_id: None,
+        level: RecordLevel::Summary,
+        summary,
+        payload: None,
+        members: vec![],
+    }
+}
+
+/// The record of two attempts (docs/14): what the invoker proposes for the record becomes one
+/// event per log record; an action without a record (`RECORD_NONE`) leaves none; the suspended
+/// attempt says what it waited on, and the next one what woke it.
+#[restate_core::test]
+async fn attempt_record() {
+    let mut test_env = test_env().await;
+    let inv = invoke(&mut test_env, Duration::from_secs(3600)).await;
+    let mut log = Log {
+        t0: MillisSinceEpoch::now().as_u64(),
+        lsn: 1,
+    };
+    let envelope = run_envelope(&mut test_env, inv.id).await;
+    apply_next(&mut test_env, &mut log, envelope).await;
+    let deployment_id = DeploymentId::new();
+    let started = ErEffectKind::AttemptStarted {
+        deployment_id,
+        protocol_version: 1,
+    };
+    let at = |attempt, kind| {
+        commands::ExplicitRecoveryEffectCommand::test_envelope(effect(inv.id, attempt, 1, kind))
+    };
+    apply_next(&mut test_env, &mut log, at(1, started.clone())).await;
+
+    // A call, recorded; a write of a database page, not recorded.
+    let callee_target = InvocationTarget::mock_service();
+    let callee_id = InvocationId::mock_generate(&callee_target);
+    let call_record = RecordedAction {
+        result_id: Some(9),
+        invocation_id_result_id: Some(8),
+        ..recorded(
+            "Call",
+            "ask",
+            ActionSummary {
+                invocation_id: Some(callee_id.to_string()),
+                bytes: Some(5),
+                ..Default::default()
+            },
+        )
+    };
+    let call = ErEffectKind::Action {
+        action: ErAction::Call {
+            request: Box::new(CallRequest::mock(callee_id, callee_target)),
+            execution_time: None,
+            result_id: NonZeroU32::new(9),
+            uninvokable: None,
+        },
+        highest_result_id: NonZeroU32::new(9),
+        record: Some(Box::new(call_record.clone())),
+    };
+    apply_next(&mut test_env, &mut log, at(1, call)).await;
+    let page = action(set_state(ErStateScope::Object, "page/1", "bytes"), 0);
+    apply_next(&mut test_env, &mut log, at(1, page)).await;
+
+    // A group: one event, with its members.
+    let group_record = RecordedAction {
+        result_id: Some(10),
+        members: vec![
+            recorded(
+                "SetState",
+                "",
+                ActionSummary {
+                    scope: Some(RecordedScope::Invocation),
+                    key: Some("progress".to_owned()),
+                    bytes: Some(1),
+                    ..Default::default()
+                },
+            ),
+            recorded(
+                "SpanStart",
+                "inner",
+                ActionSummary {
+                    span_id: Some(2),
+                    ..Default::default()
+                },
+            ),
+        ],
+        ..recorded("AtomicGroup", "commit", ActionSummary::default())
+    };
+    let group = ErEffectKind::Action {
+        action: ErAction::Group(vec![set_state(ErStateScope::Invocation, "progress", "1")]),
+        highest_result_id: NonZeroU32::new(10),
+        record: Some(Box::new(group_record.clone())),
+    };
+    apply_next(&mut test_env, &mut log, at(1, group)).await;
+
+    // A span, and the call's result reaching the attempt.
+    let span_start = ErRecord::SpanStart {
+        span_id: 1,
+        parent_span_id: None,
+        name: "thinking".to_owned(),
+    };
+    let actions = apply_next(
+        &mut test_env,
+        &mut log,
+        at(1, ErEffectKind::Record(span_start)),
+    )
+    .await;
+    assert_eq!(
+        forwards(&actions),
+        vec![ErToInvoker::Applied { attempt: 1, seq: 1 }],
+        "a record is acked like an action"
+    );
+    let span_end = ErRecord::SpanEnd {
+        span_id: 1,
+        outcome: SpanOutcome::Value,
+        value: Some("done".to_owned()),
+        failure: None,
+    };
+    apply_next(
+        &mut test_env,
+        &mut log,
+        at(1, ErEffectKind::Record(span_end)),
+    )
+    .await;
+    let delivered = ErRecord::ResultDelivered {
+        result_id: 9,
+        variant: ResultVariant::Value,
+    };
+    apply_next(
+        &mut test_env,
+        &mut log,
+        at(1, ErEffectKind::Record(delivered)),
+    )
+    .await;
+    assert!(
+        !er_status(&mut test_env, inv.id).await.attempt_ended,
+        "records change nothing else"
+    );
+
+    // Suspended, waiting on a second call; a signal wakes it.
+    let waiting = OutstandingResult {
+        result_id: 12,
+        kind: OutstandingKind::Call,
+        label: "ask again".to_owned(),
+    };
+    let suspend = ErEffectKind::Suspend {
+        received_notifications: 0,
+        idle_fallback: retry_fallback(),
+        outstanding: vec![waiting.clone()],
+    };
+    apply_next(&mut test_env, &mut log, at(1, suspend)).await;
+    apply_next(&mut test_env, &mut log, named_signal(inv.id, "approval")).await;
+    let envelope = run_envelope(&mut test_env, inv.id).await;
+    apply_next(&mut test_env, &mut log, envelope).await;
+    apply_next(&mut test_env, &mut log, at(2, started)).await;
+    let end = ErEffectKind::End(ResponseResult::Success(Bytes::new()));
+    apply_next(&mut test_env, &mut log, at(2, end)).await;
+
+    let mut events = test_env.read_journal_events(&inv.id).await;
+    events.sort_by_key(|event| match event {
+        Event::AttemptStarted(e) => e.lsn,
+        Event::AttemptEnded(e) => e.lsn,
+        Event::ActionRecorded(e) => e.lsn,
+        Event::SpanStarted(e) => e.lsn,
+        Event::SpanEnded(e) => e.lsn,
+        Event::ResultDelivered(e) => e.lsn,
+        _ => None,
+    });
+    assert_eq!(
+        events,
+        vec![
+            Event::AttemptStarted(AttemptStartedEvent {
                 attempt: 1,
-                reason: "end".to_owned()
-            }))
+                deployment_id: deployment_id.to_string(),
+                protocol_version: 1,
+                cause: Some(AttemptCause::First),
+                woken_by: None,
+                lsn: Some(3),
+                // The run, not the attempt's start.
+                scheduled_at: Some(log.created_at(2)),
+            }),
+            Event::ActionRecorded(ActionRecordedEvent {
+                attempt: 1,
+                action: Box::new(call_record),
+                lsn: Some(4),
+            }),
+            Event::ActionRecorded(ActionRecordedEvent {
+                attempt: 1,
+                action: Box::new(group_record),
+                lsn: Some(6),
+            }),
+            Event::SpanStarted(SpanStartedEvent {
+                attempt: 1,
+                span_id: 1,
+                parent_span_id: None,
+                name: "thinking".to_owned(),
+                lsn: Some(7),
+            }),
+            Event::SpanEnded(SpanEndedEvent {
+                attempt: 1,
+                span_id: 1,
+                outcome: SpanOutcome::Value,
+                value: Some("done".to_owned()),
+                failure: None,
+                lsn: Some(8),
+            }),
+            Event::ResultDelivered(ResultDeliveredEvent {
+                attempt: 1,
+                result_id: 9,
+                variant: ResultVariant::Value,
+                lsn: Some(9),
+            }),
+            Event::AttemptEnded(AttemptEndedEvent {
+                attempt: 1,
+                reason: "suspend".to_owned(),
+                outcome: Some(AttemptOutcome::Suspended),
+                rule: Some(6),
+                failure: None,
+                outstanding: vec![waiting],
+                lsn: Some(10),
+                retry_at: None,
+            }),
+            Event::AttemptStarted(AttemptStartedEvent {
+                attempt: 2,
+                deployment_id: deployment_id.to_string(),
+                protocol_version: 1,
+                cause: Some(AttemptCause::WakeUp),
+                woken_by: Some(WokenBy {
+                    kind: WakeUpKind::Signal,
+                    result_id: None,
+                    signal_name: Some("approval".to_owned()),
+                }),
+                lsn: Some(13),
+                scheduled_at: Some(log.created_at(12)),
+            }),
+            Event::AttemptEnded(AttemptEndedEvent {
+                attempt: 2,
+                reason: "end".to_owned(),
+                outcome: Some(AttemptOutcome::Returned),
+                rule: None,
+                failure: None,
+                outstanding: vec![],
+                lsn: Some(14),
+                retry_at: None,
+            }),
         ]
     );
     test_env.shutdown().await;

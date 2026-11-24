@@ -22,9 +22,10 @@ use restate_types::identifiers::InvocationId;
 use restate_types::invocation::InvocationMutationResponseSink;
 use restate_types::invocation::client::{PauseInvocationResponse, ResumeInvocationResponse};
 use restate_types::journal_events::raw::RawEvent;
-use restate_types::journal_events::{Event, PausedEvent};
+use restate_types::journal_events::{AttemptCause, AttemptOutcome, Event, PausedEvent};
 use restate_types::vqueues::EntryTargetExt;
 
+use super::{AttemptEnd, record_attempt_ended, set_wake_up};
 use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::lifecycle::pause_invocation;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
@@ -54,7 +55,21 @@ where
         } = self;
         let paused_event = || RawEvent::from(Event::Paused(PausedEvent { last_failure: None }));
         let response = match status {
-            InvocationStatus::Invoked(metadata) => {
+            InvocationStatus::Invoked(mut metadata) => {
+                // A running attempt ends here; one backing off already recorded its end.
+                if metadata
+                    .explicit_recovery
+                    .as_ref()
+                    .is_some_and(|er| !er.attempt_ended)
+                {
+                    record_attempt_ended(
+                        ctx,
+                        &invocation_id,
+                        &mut metadata,
+                        AttemptEnd::new("paused", AttemptOutcome::Paused),
+                        None,
+                    )?;
+                }
                 pause_invocation(ctx, &invocation_id, metadata, paused_event()).await?;
                 // The running attempt is aborted; what it applied stays.
                 ctx.send_abort_invocation_to_invoker(invocation_id);
@@ -119,7 +134,9 @@ where
                 }
                 ResumeInvocationResponse::Ok
             }
-            InvocationStatus::Suspended { metadata, .. } | InvocationStatus::Paused(metadata) => {
+            InvocationStatus::Suspended { mut metadata, .. }
+            | InvocationStatus::Paused(mut metadata) => {
+                set_wake_up(&mut metadata, AttemptCause::Resume, None);
                 ctx.do_resume_service(invocation_id, metadata).await?;
                 ResumeInvocationResponse::Ok
             }

@@ -21,7 +21,10 @@ use restate_types::errors::InvocationErrorCode;
 use restate_types::identifiers::{BaseEntryId, DeploymentId, InvocationId};
 use restate_types::invocation::ResponseResult;
 use restate_types::journal_events::raw::RawEvent;
-use restate_types::journal_events::{AttemptStartedEvent, Event, PausedEvent, TransientErrorEvent};
+use restate_types::journal_events::{
+    AttemptCause, AttemptOutcome, AttemptStartedEvent, Event, EventFailure, OutstandingResult,
+    PausedEvent, TransientErrorEvent,
+};
 use restate_types::journal_v2::{NotificationId, UnresolvedFuture};
 use restate_types::vqueues::EntryTargetExt;
 use restate_util_string::ToReString;
@@ -29,7 +32,9 @@ use restate_vqueues::VQueue;
 use restate_worker_api::invoker::explicit_recovery::{ErFailureOutcome, RestartRule};
 
 use super::end_invocation::end_invocation;
-use super::{ErStorage, MAX_IDLE_RESTARTS, er_of, record_attempt_ended};
+use super::{
+    AttemptEnd, ErStorage, MAX_IDLE_RESTARTS, er_of, lsn, put_event, record_attempt_ended,
+};
 use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::lifecycle::{
     ApplyEventCommand, YieldInvocationCommand, pause_invocation,
@@ -50,6 +55,13 @@ where
 {
     let er = er_of(&mut metadata);
     let attempt = er.attempt;
+    let scheduled_at = er.run_at.map(|t| t.as_u64());
+    // No cause noted: the first attempt, or a wake-up from outside this module.
+    let (cause, woken_by) = er.cause.clone().unwrap_or(if attempt == 1 {
+        (AttemptCause::First, None)
+    } else {
+        (AttemptCause::Resume, None)
+    });
     if er.pinned_deployment_id.is_none() {
         er.pinned_deployment_id = Some(deployment_id);
         if let Some(header) = ctx
@@ -76,19 +88,18 @@ where
         metadata.timestamps.update(ctx.record_created_at);
     }
 
-    let status = InvocationStatus::Invoked(metadata);
-    ApplyEventCommand {
-        invocation_id: &invocation_id,
-        invocation_status: &status,
-        event: RawEvent::from(Event::AttemptStarted(AttemptStartedEvent {
-            attempt,
-            deployment_id: deployment_id.to_string(),
-            protocol_version: u32::from(protocol_version),
-        })),
-    }
-    .apply(ctx)
-    .await?;
-    ctx.storage.put_invocation_status(&invocation_id, &status)?;
+    let event = Event::AttemptStarted(AttemptStartedEvent {
+        attempt,
+        deployment_id: deployment_id.to_string(),
+        protocol_version: u32::from(protocol_version),
+        cause: Some(cause),
+        woken_by: woken_by.filter(|_| cause == AttemptCause::WakeUp),
+        lsn: lsn(ctx),
+        scheduled_at,
+    });
+    put_event(ctx, &invocation_id, &metadata, event)?;
+    ctx.storage
+        .put_invocation_status(&invocation_id, &InvocationStatus::Invoked(metadata))?;
     Ok(())
 }
 
@@ -173,23 +184,11 @@ where
     if rule.may_be_idle() && !er.action_applied {
         er.idle_restart_streak = er.idle_restart_streak.saturating_add(1);
         let streak = er.idle_restart_streak;
-        let status = InvocationStatus::Invoked(metadata);
-        ctx.storage.put_invocation_status(&invocation_id, &status)?;
-        let InvocationStatus::Invoked(metadata) = status else {
-            unreachable!()
-        };
         if streak > MAX_IDLE_RESTARTS {
             debug!(
                 restate.invocation.id = %invocation_id,
                 "Idle restart {streak} in a row: treated as a failure"
             );
-            record_attempt_ended(
-                ctx,
-                &invocation_id,
-                &InvocationStatus::Invoked(metadata.clone()),
-                "restart loop",
-            )
-            .await?;
             let event = TransientErrorEvent {
                 error_code: InvocationErrorCode::from(500u16),
                 error_message: format!(
@@ -201,6 +200,12 @@ where
                 related_command_name: None,
                 related_command_type: None,
             };
+            let failure = EventFailure {
+                code: u32::from(u16::from(event.error_code)),
+                message: event.error_message.clone(),
+            };
+            let (end, next) = AttemptEnd::failed("restart loop", Some(failure), &idle_fallback);
+            record_attempt_ended(ctx, &invocation_id, &mut metadata, end, next)?;
             return on_failed(
                 ctx,
                 invocation_id,
@@ -218,7 +223,7 @@ where
 async fn restart<S, P>(
     ctx: &mut StateMachineApplyContext<'_, S, P>,
     invocation_id: InvocationId,
-    metadata: InFlightInvocationMetadata,
+    mut metadata: InFlightInvocationMetadata,
     rule: RestartRule,
 ) -> Result<(), Error>
 where
@@ -228,10 +233,14 @@ where
     record_attempt_ended(
         ctx,
         &invocation_id,
-        &InvocationStatus::Invoked(metadata.clone()),
-        format!("restart (rule {})", rule as u8),
-    )
-    .await?;
+        &mut metadata,
+        AttemptEnd::new(
+            format!("restart (rule {})", rule as u8),
+            AttemptOutcome::Restarted,
+        )
+        .rule(rule as u32),
+        Some(AttemptCause::Restart),
+    )?;
     // A restart is not a failure: the yield resets the retry counters (D46).
     YieldInvocationCommand {
         invocation_id: &invocation_id,
@@ -251,6 +260,7 @@ pub(super) async fn on_suspend<S, P>(
     mut metadata: InFlightInvocationMetadata,
     received_notifications: u32,
     idle_fallback: ErFailureOutcome,
+    outstanding: Vec<OutstandingResult>,
 ) -> Result<(), Error>
 where
     S: ErStorage,
@@ -272,13 +282,10 @@ where
         .await;
     }
 
-    record_attempt_ended(
-        ctx,
-        &invocation_id,
-        &InvocationStatus::Invoked(metadata.clone()),
-        "suspend",
-    )
-    .await?;
+    // Why the next attempt starts is known once something wakes the invocation.
+    let mut end = AttemptEnd::new("suspend", AttemptOutcome::Suspended).rule(6);
+    end.outstanding = outstanding;
+    record_attempt_ended(ctx, &invocation_id, &mut metadata, end, None)?;
 
     let entry_id = BaseEntryId::from(invocation_id);
     if let Some(header) = ctx.storage.get_vqueue_entry_status(&entry_id).await? {

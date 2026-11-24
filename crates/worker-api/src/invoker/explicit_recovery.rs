@@ -25,6 +25,9 @@ use restate_types::invocation::{
     FencingToken, Header, InvocationQuery, ResponseResult, ServiceInvocationSpanContext,
 };
 use restate_types::journal_events::raw::RawEvent;
+use restate_types::journal_events::{
+    EventFailure, OutstandingResult, RecordedAction, ResultVariant, SpanOutcome,
+};
 use restate_types::journal_v2::{CallRequest, SignalResult};
 use restate_types::schema::invocation_target::StatePreloadPolicy;
 use restate_types::time::MillisSinceEpoch;
@@ -55,7 +58,12 @@ pub enum ErEffectKind {
     Action {
         action: ErAction,
         highest_result_id: Option<NonZeroU32>,
+        /// How the action appears in the record of the attempt; `None`: not at all.
+        #[cfg_attr(feature = "serde", serde(default))]
+        record: Option<Box<RecordedAction>>,
     },
+    /// Something only the record of the attempt keeps: it changes nothing else.
+    Record(ErRecord),
     // -- Terminal
     /// The handler returned: complete the invocation with this output.
     End(ResponseResult),
@@ -74,6 +82,33 @@ pub enum ErEffectKind {
     Suspend {
         received_notifications: u32,
         idle_fallback: ErFailureOutcome,
+        /// The external results the attempt waited for, for the record.
+        #[cfg_attr(feature = "serde", serde(default))]
+        outstanding: Vec<OutstandingResult>,
+    },
+}
+
+/// What only the record of an attempt keeps (docs/14).
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ErRecord {
+    /// A recorded action that the runtime serves without applying anything: a read, a flush.
+    Action(Box<RecordedAction>),
+    SpanStart {
+        span_id: u32,
+        parent_span_id: Option<u32>,
+        name: String,
+    },
+    SpanEnd {
+        span_id: u32,
+        outcome: SpanOutcome,
+        value: Option<String>,
+        failure: Option<EventFailure>,
+    },
+    /// The attempt took the result of a recorded action.
+    ResultDelivered {
+        result_id: u32,
+        variant: ResultVariant,
     },
 }
 
@@ -81,7 +116,9 @@ impl ErEffectKind {
     /// After a terminal effect the attempt proposes nothing more.
     pub fn is_terminal(&self) -> bool {
         match self {
-            ErEffectKind::AttemptStarted { .. } | ErEffectKind::Action { .. } => false,
+            ErEffectKind::AttemptStarted { .. }
+            | ErEffectKind::Action { .. }
+            | ErEffectKind::Record(_) => false,
             ErEffectKind::End(_)
             | ErEffectKind::Failed { .. }
             | ErEffectKind::Restart { .. }

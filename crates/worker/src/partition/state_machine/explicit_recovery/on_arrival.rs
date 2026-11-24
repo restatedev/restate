@@ -16,10 +16,11 @@ use tracing::debug;
 use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::ResponseResult;
+use restate_types::journal_events::{AttemptCause, WakeUpKind, WokenBy};
 use restate_types::journal_v2::{Signal, SignalId};
 use restate_worker_api::invoker::explicit_recovery::ErToInvoker;
 
-use super::{ErStorage, er_of, forward};
+use super::{ErStorage, er_of, forward, set_wake_up};
 use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
@@ -61,8 +62,17 @@ where
                     },
                 );
             }
-            InvocationStatus::Suspended { metadata, .. } => {
+            InvocationStatus::Suspended { mut metadata, .. } => {
                 // What woke the invocation is not delivered: the new attempt asks again.
+                set_wake_up(
+                    &mut metadata,
+                    AttemptCause::WakeUp,
+                    Some(WokenBy {
+                        kind: WakeUpKind::Result,
+                        result_id: Some(result_id),
+                        signal_name: None,
+                    }),
+                );
                 ctx.do_resume_service(invocation_id, metadata).await?;
             }
             _ => {
@@ -135,7 +145,16 @@ where
                     },
                 );
             }
-            InvocationStatus::Suspended { metadata, .. } => {
+            InvocationStatus::Suspended { mut metadata, .. } => {
+                set_wake_up(
+                    &mut metadata,
+                    AttemptCause::WakeUp,
+                    Some(WokenBy {
+                        kind: WakeUpKind::Signal,
+                        result_id: None,
+                        signal_name: Some(name.to_string()),
+                    }),
+                );
                 ctx.do_resume_service(invocation_id, metadata).await?;
             }
             // Kept for the first attempt, or for the attempt after a resume.

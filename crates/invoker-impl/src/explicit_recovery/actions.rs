@@ -29,12 +29,16 @@ use restate_types::invocation::{
     Header, InvocationQuery, InvocationTarget, InvocationTargetType, ResponseResult,
     ServiceInvocationSpanContext, SpanRelation,
 };
+use restate_types::journal_events::{
+    ActionSummary, EventFailure, OutstandingKind, RecordLevel, RecordedAction, RecordedScope,
+    RecordedTarget, SpanOutcome, record_payload,
+};
 use restate_types::journal_v2::{CallRequest, Failure, FailureMetadata, SignalResult};
 use restate_types::limit_key::LimitKey;
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
 use restate_types::time::MillisSinceEpoch;
 use restate_util_string::ReString;
-use restate_worker_api::invoker::explicit_recovery::{ErAction, ErStateScope};
+use restate_worker_api::invoker::explicit_recovery::{ErAction, ErRecord, ErStateScope};
 
 use super::book::{AttemptBook, Violation};
 
@@ -76,10 +80,161 @@ pub(crate) enum Classified {
         highest_result_id: Option<NonZeroU32>,
         internal: Vec<(u32, NotificationResult)>,
         external: Vec<u32>,
+        record: Option<Box<RecordedAction>>,
+    },
+    /// A recorded span: proposed for the record only. `internal` are sent once it is applied.
+    Record {
+        record: ErRecord,
+        internal: Vec<(u32, NotificationResult)>,
     },
     /// Answered at once, without proposing anything.
     Answer(Vec<(u32, NotificationResult)>),
-    Read(Read),
+    /// Served by the attempt. A recorded read is proposed for the record first.
+    Read {
+        read: Read,
+        record: Option<Box<RecordedAction>>,
+    },
+}
+
+/// The display fields every action has (`ActionTemplate`).
+struct Display {
+    name: String,
+    parent_span_id: u32,
+    record: i32,
+}
+
+impl Display {
+    /// How much of the action is recorded. `RECORD_DEFAULT` records a summary, except of reads
+    /// and `Flush` (`recorded_by_default` false).
+    fn level(&self, recorded_by_default: bool) -> Option<RecordLevel> {
+        match proto::RecordLevel::try_from(self.record).unwrap_or(proto::RecordLevel::RecordDefault)
+        {
+            proto::RecordLevel::RecordNone => None,
+            proto::RecordLevel::RecordSummary => Some(RecordLevel::Summary),
+            proto::RecordLevel::RecordFull => Some(RecordLevel::Full),
+            proto::RecordLevel::RecordDefault => {
+                recorded_by_default.then_some(RecordLevel::Summary)
+            }
+        }
+    }
+
+    /// The handler asked for nothing to be kept of the action.
+    fn is_none(&self) -> bool {
+        self.record == proto::RecordLevel::RecordNone as i32
+    }
+
+    /// The record of the action, if any. The payload is kept only at [`RecordLevel::Full`].
+    fn record(
+        &self,
+        kind: &str,
+        recorded_by_default: bool,
+        summary: ActionSummary,
+        payload: Option<&[u8]>,
+    ) -> Option<RecordedAction> {
+        let level = self.level(recorded_by_default)?;
+        Some(RecordedAction {
+            kind: kind.to_owned(),
+            name: self.name.clone(),
+            parent_span_id: NonZeroU32::new(self.parent_span_id).map(NonZeroU32::get),
+            result_id: None,
+            invocation_id_result_id: None,
+            level,
+            summary,
+            payload: payload
+                .filter(|_| level == RecordLevel::Full)
+                .map(record_payload),
+            members: vec![],
+        })
+    }
+
+    /// The label of a result the attempt may wait for: the name, else `default`.
+    fn label(&self, default: impl FnOnce() -> String) -> String {
+        if self.name.is_empty() {
+            default()
+        } else {
+            self.name.clone()
+        }
+    }
+}
+
+macro_rules! display {
+    ($m:expr) => {
+        Display {
+            name: std::mem::take(&mut $m.name),
+            parent_span_id: $m.parent_span_id,
+            record: $m.record,
+        }
+    };
+}
+
+fn with_result_id(mut record: RecordedAction, result_id: u32) -> RecordedAction {
+    record.result_id = NonZeroU32::new(result_id).map(NonZeroU32::get);
+    record
+}
+
+fn recorded_scope(scope: ErStateScope) -> RecordedScope {
+    match scope {
+        ErStateScope::Object => RecordedScope::Object,
+        ErStateScope::Invocation => RecordedScope::Invocation,
+    }
+}
+
+fn state_summary(scope: ErStateScope, key: Option<&[u8]>) -> ActionSummary {
+    ActionSummary {
+        scope: Some(recorded_scope(scope)),
+        key: key.map(|k| String::from_utf8_lossy(k).into_owned()),
+        ..Default::default()
+    }
+}
+
+fn event_failure(failure: &proto::Failure) -> EventFailure {
+    EventFailure {
+        code: failure.code,
+        message: failure.message.clone(),
+    }
+}
+
+/// A span inside an atomic group, as a member of the group's record.
+fn span_member(record: ErRecord, display: &Display, level: RecordLevel) -> RecordedAction {
+    let (kind, summary, payload) = match record {
+        ErRecord::SpanStart { span_id, .. } => (
+            "SpanStart",
+            ActionSummary {
+                span_id: Some(span_id),
+                ..Default::default()
+            },
+            None,
+        ),
+        ErRecord::SpanEnd {
+            span_id,
+            outcome,
+            value,
+            failure,
+        } => (
+            "SpanEnd",
+            ActionSummary {
+                span_id: Some(span_id),
+                outcome: Some(outcome),
+                failure,
+                ..Default::default()
+            },
+            value,
+        ),
+        ErRecord::Action(_) | ErRecord::ResultDelivered { .. } => {
+            unreachable!("only spans are recorded this way")
+        }
+    };
+    RecordedAction {
+        kind: kind.to_owned(),
+        name: display.name.clone(),
+        parent_span_id: NonZeroU32::new(display.parent_span_id).map(NonZeroU32::get),
+        result_id: None,
+        invocation_id_result_id: None,
+        level,
+        summary,
+        payload,
+        members: vec![],
+    }
 }
 
 pub(crate) fn void() -> NotificationResult {
@@ -207,62 +362,128 @@ impl ActionContext<'_> {
         resolver: &impl InvocationTargetResolver,
     ) -> Result<Classified, Violation> {
         Ok(match message {
-            Message::GetStateAction(m) => {
+            Message::GetStateAction(mut m) => {
                 book.check_parent_span(m.parent_span_id)?;
                 let scope = scope_of(m.scope)?;
                 self.check_object_scope(scope, false)?;
                 let result_id = required(m.result_id, "GetState")?;
                 book.use_id(result_id)?;
-                Classified::Read(Read::GetState {
-                    scope,
-                    key: m.key,
-                    result_id,
-                })
+                let record = display!(m)
+                    .record("GetState", false, state_summary(scope, Some(&m.key)), None)
+                    .map(|r| Box::new(with_result_id(r, result_id)));
+                Classified::Read {
+                    read: Read::GetState {
+                        scope,
+                        key: m.key,
+                        result_id,
+                    },
+                    record,
+                }
             }
-            Message::GetStateKeysAction(m) => {
+            Message::GetStateKeysAction(mut m) => {
                 book.check_parent_span(m.parent_span_id)?;
                 let scope = scope_of(m.scope)?;
                 self.check_object_scope(scope, false)?;
                 let result_id = required(m.result_id, "GetStateKeys")?;
                 book.use_id(result_id)?;
-                Classified::Read(Read::GetStateKeys { scope, result_id })
+                let record = display!(m)
+                    .record("GetStateKeys", false, state_summary(scope, None), None)
+                    .map(|r| Box::new(with_result_id(r, result_id)));
+                Classified::Read {
+                    read: Read::GetStateKeys { scope, result_id },
+                    record,
+                }
             }
-            Message::ReadSignalAction(m) => {
+            Message::ReadSignalAction(mut m) => {
                 book.check_parent_span(m.parent_span_id)?;
                 let result_id = required(m.result_id, "ReadSignal")?;
                 book.use_id(result_id)?;
-                Classified::Read(Read::Signal {
-                    name: m.signal_name.into(),
-                    index: m.signal_index,
-                    result_id,
-                })
+                let display = display!(m);
+                let record = display
+                    .record(
+                        "ReadSignal",
+                        false,
+                        ActionSummary {
+                            signal_name: Some(m.signal_name.clone()),
+                            signal_index: Some(m.signal_index),
+                            ..Default::default()
+                        },
+                        None,
+                    )
+                    .map(|r| Box::new(with_result_id(r, result_id)));
+                if !display.is_none() {
+                    book.label(
+                        result_id,
+                        OutstandingKind::SignalRead,
+                        format!("{}#{}", m.signal_name, m.signal_index),
+                        record.is_some(),
+                    );
+                }
+                Classified::Read {
+                    read: Read::Signal {
+                        name: m.signal_name.into(),
+                        index: m.signal_index,
+                        result_id,
+                    },
+                    record,
+                }
             }
-            Message::FlushAction(m) => {
+            Message::FlushAction(mut m) => {
                 book.check_parent_span(m.parent_span_id)?;
                 let result_id = required(m.result_id, "Flush")?;
                 book.use_id(result_id)?;
-                Classified::Read(Read::Barrier { result_id })
+                let record = display!(m)
+                    .record("Flush", false, ActionSummary::default(), None)
+                    .map(|r| Box::new(with_result_id(r, result_id)));
+                Classified::Read {
+                    read: Read::Barrier { result_id },
+                    record,
+                }
             }
-            Message::SpanStartAction(m) => {
+            Message::SpanStartAction(mut m) => {
                 book.check_parent_span(m.parent_span_id)?;
                 book.start_span(m.span_id)?;
                 book.use_id(m.result_id)?;
-                Classified::Read(Read::Barrier {
-                    result_id: m.result_id,
-                })
+                let display = display!(m);
+                let record = ErRecord::SpanStart {
+                    span_id: m.span_id,
+                    parent_span_id: NonZeroU32::new(display.parent_span_id).map(NonZeroU32::get),
+                    name: display.name,
+                };
+                span(record, display.record, m.result_id)
             }
-            Message::SpanEndAction(m) => {
+            Message::SpanEndAction(mut m) => {
                 book.check_parent_span(m.parent_span_id)?;
                 book.end_span(m.span_id)?;
                 book.use_id(m.result_id)?;
-                Classified::Read(Read::Barrier {
-                    result_id: m.result_id,
-                })
+                let display = display!(m);
+                let full = display.level(true) == Some(RecordLevel::Full);
+                let (outcome, value, failure) = match &m.result {
+                    None | Some(proto::span_end_action_message::Result::Void(_)) => {
+                        (SpanOutcome::Ok, None, None)
+                    }
+                    Some(proto::span_end_action_message::Result::Value(v)) => (
+                        SpanOutcome::Value,
+                        full.then(|| record_payload(&v.content)),
+                        None,
+                    ),
+                    Some(proto::span_end_action_message::Result::Failure(f)) => {
+                        (SpanOutcome::Failure, None, Some(event_failure(f)))
+                    }
+                };
+                let record = ErRecord::SpanEnd {
+                    span_id: m.span_id,
+                    outcome,
+                    value,
+                    failure,
+                };
+                span(record, display.record, m.result_id)
             }
-            Message::AttachInvocationAction(m) => {
+            Message::AttachInvocationAction(mut m) => {
                 book.check_parent_span(m.parent_span_id)?;
                 let result_id = required(m.result_id, "AttachInvocation")?;
                 book.use_id(result_id)?;
+                let display = display!(m);
                 let query = attach_query(m.target)?;
                 if query.to_invocation_id() == self.invocation_id {
                     // D55: an attach to itself fails at once.
@@ -275,6 +496,27 @@ impl ActionContext<'_> {
                         }),
                     )]));
                 }
+                let target_id = query.to_invocation_id().to_string();
+                let record = display
+                    .record(
+                        "AttachInvocation",
+                        true,
+                        ActionSummary {
+                            invocation_id: Some(target_id.clone()),
+                            target: attach_target(&query),
+                            ..Default::default()
+                        },
+                        None,
+                    )
+                    .map(|r| Box::new(with_result_id(r, result_id)));
+                if !display.is_none() {
+                    book.label(
+                        result_id,
+                        OutstandingKind::Attach,
+                        display.label(|| target_id),
+                        record.is_some(),
+                    );
+                }
                 Classified::Propose {
                     action: ErAction::Attach {
                         query,
@@ -283,19 +525,37 @@ impl ActionContext<'_> {
                     highest_result_id: NonZeroU32::new(result_id),
                     internal: vec![],
                     external: vec![result_id],
+                    record,
                 }
             }
-            Message::AtomicGroupAction(m) => {
+            Message::AtomicGroupAction(mut m) => {
                 book.check_parent_span(m.parent_span_id)?;
                 if m.actions.is_empty() {
                     return Err(Violation::new("an atomic group with no member"));
                 }
+                let display = display!(m);
+                let level = display.level(true);
                 let mut members = Vec::with_capacity(m.actions.len());
+                let mut recorded_members = vec![];
                 let mut internal = vec![];
                 let mut external = vec![];
                 for member in m.actions {
                     let Some(member) = member.action else {
                         return Err(Violation::new("a member of a group with no action set"));
+                    };
+                    // A span's display fields, kept for its member record.
+                    let span_display = match &member {
+                        GroupMember::SpanStart(s) => Some(Display {
+                            name: s.name.clone(),
+                            parent_span_id: s.parent_span_id,
+                            record: s.record,
+                        }),
+                        GroupMember::SpanEnd(s) => Some(Display {
+                            name: s.name.clone(),
+                            parent_span_id: s.parent_span_id,
+                            record: s.record,
+                        }),
+                        _ => None,
                     };
                     let message = match member {
                         GroupMember::SetState(m) => Message::SetStateAction(m),
@@ -312,19 +572,34 @@ impl ActionContext<'_> {
                             action,
                             internal: member_internal,
                             external: member_external,
+                            record,
                             ..
                         } => {
                             members.push(action);
                             internal.extend(member_internal);
                             external.extend(member_external);
+                            recorded_members.extend(record.map(|r| *r));
                         }
-                        // A span in a group: its void result comes with the group's.
-                        Classified::Read(Read::Barrier { result_id }) => {
+                        // A span in a group: its void result comes with the group's, and it is
+                        // recorded as a member of the group (one event per record).
+                        Classified::Record {
+                            record,
+                            internal: member_internal,
+                        } => {
+                            internal.extend(member_internal);
+                            let display = span_display.expect("a span");
+                            let member_level = display.level(true).expect("recorded");
+                            recorded_members.push(span_member(record, &display, member_level));
+                        }
+                        Classified::Read {
+                            read: Read::Barrier { result_id },
+                            ..
+                        } => {
                             if result_id != 0 {
                                 internal.push((result_id, void()));
                             }
                         }
-                        Classified::Answer(_) | Classified::Read(_) => {
+                        Classified::Answer(_) | Classified::Read { .. } => {
                             unreachable!("only the members a group may hold are classified")
                         }
                     }
@@ -333,52 +608,99 @@ impl ActionContext<'_> {
                 if m.result_id != 0 {
                     internal.push((m.result_id, void()));
                 }
+                let record = level.map(|level| {
+                    Box::new(RecordedAction {
+                        kind: "AtomicGroup".to_owned(),
+                        name: display.name,
+                        parent_span_id: NonZeroU32::new(display.parent_span_id)
+                            .map(NonZeroU32::get),
+                        result_id: NonZeroU32::new(m.result_id).map(NonZeroU32::get),
+                        invocation_id_result_id: None,
+                        level,
+                        summary: ActionSummary::default(),
+                        payload: None,
+                        members: recorded_members,
+                    })
+                });
                 Classified::Propose {
                     action: ErAction::Group(members),
                     highest_result_id: NonZeroU32::new(book.last_result_id()),
                     internal,
                     external,
+                    record,
                 }
             }
-            Message::SetStateAction(m) => {
+            Message::SetStateAction(mut m) => {
                 book.check_parent_span(m.parent_span_id)?;
                 let scope = scope_of(m.scope)?;
                 self.check_object_scope(scope, true)?;
                 book.use_id(m.result_id)?;
+                let value = content(m.value.take());
+                let record = display!(m).record(
+                    "SetState",
+                    true,
+                    ActionSummary {
+                        bytes: Some(value.len() as u64),
+                        ..state_summary(scope, Some(&m.key))
+                    },
+                    Some(&value),
+                );
                 propose_void(
                     ErAction::SetState {
                         scope,
                         key: m.key,
-                        value: content(m.value),
+                        value,
                     },
                     m.result_id,
+                    record,
                 )
             }
-            Message::ClearStateAction(m) => {
+            Message::ClearStateAction(mut m) => {
                 book.check_parent_span(m.parent_span_id)?;
                 let scope = scope_of(m.scope)?;
                 self.check_object_scope(scope, true)?;
                 book.use_id(m.result_id)?;
-                propose_void(ErAction::ClearState { scope, key: m.key }, m.result_id)
+                let record = display!(m).record(
+                    "ClearState",
+                    true,
+                    state_summary(scope, Some(&m.key)),
+                    None,
+                );
+                propose_void(
+                    ErAction::ClearState { scope, key: m.key },
+                    m.result_id,
+                    record,
+                )
             }
-            Message::ClearAllStateAction(m) => {
+            Message::ClearAllStateAction(mut m) => {
                 book.check_parent_span(m.parent_span_id)?;
                 let scope = scope_of(m.scope)?;
                 self.check_object_scope(scope, true)?;
                 book.use_id(m.result_id)?;
-                propose_void(ErAction::ClearAllState { scope }, m.result_id)
+                let record =
+                    display!(m).record("ClearAllState", true, state_summary(scope, None), None);
+                propose_void(ErAction::ClearAllState { scope }, m.result_id, record)
             }
-            Message::CancelInvocationAction(m) => {
+            Message::CancelInvocationAction(mut m) => {
                 book.check_parent_span(m.parent_span_id)?;
                 let target = parse_invocation_id(&m.invocation_id)?;
                 book.use_id(m.result_id)?;
-                propose_void(ErAction::CancelInvocation { target }, m.result_id)
+                let record = display!(m).record(
+                    "CancelInvocation",
+                    true,
+                    ActionSummary {
+                        invocation_id: Some(m.invocation_id),
+                        ..Default::default()
+                    },
+                    None,
+                );
+                propose_void(ErAction::CancelInvocation { target }, m.result_id, record)
             }
-            Message::SendSignalAction(m) => {
+            Message::SendSignalAction(mut m) => {
                 book.check_parent_span(m.parent_span_id)?;
                 let target = parse_invocation_id(&m.target_invocation_id)?;
                 book.use_id(m.result_id)?;
-                let result = match m.result {
+                let result = match m.result.take() {
                     None | Some(proto::send_signal_action_message::Result::Void(_)) => {
                         SignalResult::Void
                     }
@@ -389,6 +711,21 @@ impl ActionContext<'_> {
                         SignalResult::Failure(to_signal_failure(f))
                     }
                 };
+                let value = match &result {
+                    SignalResult::Success(v) => Some(v.as_ref()),
+                    _ => None,
+                };
+                let record = display!(m).record(
+                    "SendSignal",
+                    true,
+                    ActionSummary {
+                        invocation_id: Some(m.target_invocation_id),
+                        signal_name: Some(m.signal_name.clone()),
+                        bytes: value.map(|v| v.len() as u64),
+                        ..Default::default()
+                    },
+                    value,
+                );
                 propose_void(
                     ErAction::SendSignal {
                         target,
@@ -396,16 +733,41 @@ impl ActionContext<'_> {
                         result,
                     },
                     m.result_id,
+                    record,
                 )
             }
-            Message::CallAction(m) => {
+            Message::CallAction(mut m) => {
                 book.check_parent_span(m.parent_span_id)?;
                 let id_result_id = required(m.invocation_id_result_id, "Call")?;
                 book.use_id_pair(id_result_id, m.result_id)?;
                 let result_id = NonZeroU32::new(m.result_id);
                 let execution_time =
                     (m.invoke_time != 0).then(|| MillisSinceEpoch::new(m.invoke_time));
+                let display = display!(m);
+                let target = RecordedTarget {
+                    service: m.service_name.clone(),
+                    handler: m.handler_name.clone(),
+                    key: (!m.key.is_empty()).then(|| m.key.clone()),
+                };
                 let (request, uninvokable) = self.resolve_call(resolver, m);
+                let parameter_len = request.parameter.len() as u64;
+                let record = display
+                    .record(
+                        "Call",
+                        true,
+                        ActionSummary {
+                            target: Some(target.clone()),
+                            invocation_id: Some(request.invocation_id.to_string()),
+                            bytes: Some(parameter_len),
+                            ..Default::default()
+                        },
+                        Some(&request.parameter),
+                    )
+                    .map(|mut r| {
+                        r.result_id = result_id.map(NonZeroU32::get);
+                        r.invocation_id_result_id = Some(id_result_id);
+                        Box::new(r)
+                    });
                 let mut internal = vec![(
                     id_result_id,
                     NotificationResult::InvocationId(request.invocation_id.to_string()),
@@ -419,7 +781,18 @@ impl ActionContext<'_> {
                             result_id.get(),
                             from_response_result(ResponseResult::Failure(err.clone())),
                         )),
-                        None => external.push(result_id.get()),
+                        None => {
+                            external.push(result_id.get());
+                            if !display.is_none() {
+                                book.label(
+                                    result_id.get(),
+                                    OutstandingKind::Call,
+                                    display
+                                        .label(|| format!("{}/{}", target.service, target.handler)),
+                                    record.is_some(),
+                                );
+                            }
+                        }
                     }
                 }
                 Classified::Propose {
@@ -432,6 +805,7 @@ impl ActionContext<'_> {
                     highest_result_id: NonZeroU32::new(id_result_id.max(m_result(result_id))),
                     internal,
                     external,
+                    record,
                 }
             }
             other => {
@@ -599,16 +973,53 @@ fn m_result(result_id: Option<NonZeroU32>) -> u32 {
     result_id.map(NonZeroU32::get).unwrap_or(0)
 }
 
-fn propose_void(action: ErAction, result_id: u32) -> Classified {
+fn void_result(result_id: u32) -> Vec<(u32, NotificationResult)> {
+    if result_id != 0 {
+        vec![(result_id, void())]
+    } else {
+        vec![]
+    }
+}
+
+fn propose_void(action: ErAction, result_id: u32, record: Option<RecordedAction>) -> Classified {
     Classified::Propose {
         action,
         highest_result_id: NonZeroU32::new(result_id),
-        internal: if result_id != 0 {
-            vec![(result_id, void())]
-        } else {
-            vec![]
-        },
+        internal: void_result(result_id),
         external: vec![],
+        record: record.map(|r| Box::new(with_result_id(r, result_id))),
+    }
+}
+
+/// A span: proposed for the record unless it is `RECORD_NONE`, else a barrier.
+fn span(record: ErRecord, level: i32, result_id: u32) -> Classified {
+    if level == proto::RecordLevel::RecordNone as i32 {
+        Classified::Read {
+            read: Read::Barrier { result_id },
+            record: None,
+        }
+    } else {
+        Classified::Record {
+            record,
+            internal: void_result(result_id),
+        }
+    }
+}
+
+/// The target of an attach by idempotency key or workflow, for the record.
+fn attach_target(query: &InvocationQuery) -> Option<RecordedTarget> {
+    match query {
+        InvocationQuery::Invocation(_) => None,
+        InvocationQuery::IdempotencyId(id) => Some(RecordedTarget {
+            service: id.service_name.to_string(),
+            handler: id.service_handler.to_string(),
+            key: id.service_key.as_ref().map(|k| k.to_string()),
+        }),
+        InvocationQuery::Workflow(service_id) => Some(RecordedTarget {
+            service: service_id.service_name.to_string(),
+            handler: String::new(),
+            key: Some(service_id.key.to_string()),
+        }),
     }
 }
 
@@ -654,6 +1065,7 @@ mod tests {
 
     use restate_types::invocation::ServiceType;
     use restate_types::invocation::VirtualObjectHandlerType;
+    use restate_types::journal_events::OutstandingResult;
     use restate_types::schema::invocation_target::InvocationTargetMetadata;
     use restate_types::schema::invocation_target::test_util::MockInvocationTargetResolver;
 
@@ -700,16 +1112,26 @@ mod tests {
             result_id: 7,
             ..Default::default()
         };
+        // The invocation-scope write is not recorded; the span is a member of the group's record.
         let group = proto::AtomicGroupActionMessage {
             actions: [
                 GroupMember::SetState(set_state(proto::StateScope::Object, 5)),
-                GroupMember::SetState(set_state(proto::StateScope::Invocation, 0)),
+                GroupMember::SetState(proto::SetStateActionMessage {
+                    record: proto::RecordLevel::RecordNone.into(),
+                    ..set_state(proto::StateScope::Invocation, 0)
+                }),
                 GroupMember::Call(call.clone()),
+                GroupMember::SpanStart(proto::SpanStartActionMessage {
+                    span_id: 1,
+                    name: "step".into(),
+                    ..Default::default()
+                }),
             ]
             .into_iter()
             .map(|a| proto::atomic_group_action_message::Action { action: Some(a) })
             .collect(),
             result_id: 9,
+            name: "commit".into(),
             ..Default::default()
         };
         let Classified::Propose {
@@ -717,6 +1139,7 @@ mod tests {
             highest_result_id,
             internal,
             external,
+            record: Some(record),
         } = ctx
             .classify(Message::AtomicGroupAction(group), &mut book, &resolver)
             .unwrap()
@@ -725,6 +1148,43 @@ mod tests {
         };
         assert_eq!(members.len(), 3);
         assert_eq!(highest_result_id, NonZeroU32::new(9));
+        assert_eq!(
+            (record.kind.as_str(), record.name.as_str(), record.result_id),
+            ("AtomicGroup", "commit", Some(9))
+        );
+        assert_eq!(
+            record
+                .members
+                .iter()
+                .map(|m| (m.kind.as_str(), m.summary.span_id))
+                .collect::<Vec<_>>(),
+            vec![("SetState", None), ("Call", None), ("SpanStart", Some(1))]
+        );
+        let call_record = &record.members[1];
+        assert_eq!(
+            (call_record.result_id, call_record.invocation_id_result_id),
+            (Some(7), Some(8))
+        );
+        assert_eq!(
+            call_record
+                .summary
+                .target
+                .as_ref()
+                .map(|t| t.key.as_deref()),
+            Some(Some("k"))
+        );
+        // Summary level: no payload.
+        assert!(record.members[0].payload.is_none());
+        // The call's result is outstanding once proposed, labelled by its target.
+        book.propose(vec![], external.clone());
+        assert_eq!(
+            book.outstanding(),
+            vec![OutstandingResult {
+                result_id: 7,
+                kind: OutstandingKind::Call,
+                label: "callee/h".to_owned(),
+            }]
+        );
         assert_eq!(
             internal.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
             vec![5, 8, 9]

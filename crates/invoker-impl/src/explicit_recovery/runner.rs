@@ -32,9 +32,12 @@ use restate_service_protocol_explicit_recovery::proto::{
 };
 use restate_types::errors::InvocationError;
 use restate_types::invocation::ResponseResult;
+use restate_types::journal_events::ResultVariant;
 use restate_types::journal_v2::SignalResult;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
-use restate_worker_api::invoker::explicit_recovery::{ErEffectKind, ErStateScope, ErToInvoker};
+use restate_worker_api::invoker::explicit_recovery::{
+    ErEffectKind, ErRecord, ErStateScope, ErToInvoker,
+};
 
 use super::actions::{
     ActionContext, Classified, Read, from_response_result, from_signal_result, state_keys,
@@ -161,6 +164,29 @@ impl<'a, RD: ErReads, RS: InvocationTargetResolver> Runner<'a, RD, RS> {
         }
     }
 
+    /// Proposes something only the record keeps. If the main loop is gone the attempt is about
+    /// to end, and the next proposal of an action reports it.
+    fn record(&mut self, record: ErRecord, internal: Vec<(u32, NotificationResult)>) {
+        let seq = self.book.propose(internal, []);
+        if !self.effects.effect(seq, ErEffectKind::Record(record)) {
+            trace!("Dropping a record of the attempt: the invoker is gone");
+        }
+    }
+
+    /// Writes the result of an action the attempt waited for, and records its delivery when the
+    /// action is recorded and the result can still reach the SDK.
+    fn deliver(&mut self, result_id: u32, result: NotificationResult) {
+        if self.book.delivered(result_id) && self.body.is_some() {
+            let variant = match &result {
+                NotificationResult::Void(_) => ResultVariant::Void,
+                NotificationResult::Failure(_) => ResultVariant::Failure,
+                _ => ResultVariant::Value,
+            };
+            self.record(ErRecord::ResultDelivered { result_id, variant }, vec![]);
+        }
+        self.write_result(result_id, result);
+    }
+
     async fn serve(&mut self, read: Read) -> Result<(), InvokerError> {
         trace!(?read, "Serving a read");
         match read {
@@ -186,7 +212,7 @@ impl<'a, RD: ErReads, RS: InvocationTargetResolver> Runner<'a, RD, RS> {
                 index,
                 result_id,
             } => match self.reads.read_signal(&name, index).await? {
-                Some(result) => self.write_result(result_id, from_signal_result(result)),
+                Some(result) => self.deliver(result_id, from_signal_result(result)),
                 None => self.book.wait_signal(name, index, result_id),
             },
             Read::Barrier { result_id } => {
@@ -214,7 +240,7 @@ impl<'a, RD: ErReads, RS: InvocationTargetResolver> Runner<'a, RD, RS> {
                 result_id, result, ..
             } => {
                 if self.book.on_result_forward(result_id) {
-                    self.write_result(result_id, from_response_result(result));
+                    self.deliver(result_id, from_response_result(result));
                 } else {
                     trace!("Dropping result {result_id}: the attempt does not wait for it");
                 }
@@ -226,7 +252,7 @@ impl<'a, RD: ErReads, RS: InvocationTargetResolver> Runner<'a, RD, RS> {
                 ..
             } => {
                 for result_id in self.book.on_signal_forward(&name, index) {
-                    self.write_result(result_id, from_signal_result(result.clone()));
+                    self.deliver(result_id, from_signal_result(result.clone()));
                 }
             }
             ErToInvoker::Cancel { .. } => {
@@ -273,6 +299,7 @@ impl<'a, RD: ErReads, RS: InvocationTargetResolver> Runner<'a, RD, RS> {
                 received_notifications,
             } => ErTaskOutput::Suspend {
                 received_notifications,
+                outstanding: self.book.outstanding(),
             },
             Decision::Violation(v) => ErTaskOutput::Failed(InvokerError::ErProtocolViolation(v)),
         }
@@ -358,6 +385,7 @@ impl<'a, RD: ErReads, RS: InvocationTargetResolver> Runner<'a, RD, RS> {
                         highest_result_id,
                         internal,
                         external,
+                        record,
                     }) => {
                         let seq = self.book.propose(internal, external);
                         self.propose(
@@ -365,9 +393,14 @@ impl<'a, RD: ErReads, RS: InvocationTargetResolver> Runner<'a, RD, RS> {
                             ErEffectKind::Action {
                                 action,
                                 highest_result_id,
+                                record,
                             },
                         )
                         .err()
+                    }
+                    Ok(Classified::Record { record, internal }) => {
+                        let seq = self.book.propose(internal, []);
+                        self.propose(seq, ErEffectKind::Record(record)).err()
                     }
                     Ok(Classified::Answer(results)) => {
                         for (result_id, result) in results {
@@ -375,8 +408,14 @@ impl<'a, RD: ErReads, RS: InvocationTargetResolver> Runner<'a, RD, RS> {
                         }
                         None
                     }
-                    Ok(Classified::Read(read)) => {
-                        if self.book.all_applied() {
+                    Ok(Classified::Read { read, record }) => {
+                        // A recorded read is proposed for the record; the read itself waits only
+                        // for what came before it.
+                        let ready = self.book.all_applied();
+                        if let Some(record) = record {
+                            self.record(ErRecord::Action(record), vec![]);
+                        }
+                        if ready {
                             self.serve(read).await.err().map(ErTaskOutput::Failed)
                         } else {
                             // Stop reading until every earlier action is applied (G6).
@@ -665,8 +704,9 @@ mod tests {
             matches!(
                 output,
                 ErTaskOutput::Suspend {
-                    received_notifications: 1
-                }
+                    received_notifications: 1,
+                    ref outstanding,
+                } if outstanding.len() == 1 && outstanding[0].result_id == 2
             ),
             "{output:?}"
         );
@@ -733,5 +773,62 @@ mod tests {
             matches!(output, ErTaskOutput::End(ResponseResult::Success(_))),
             "{output:?}"
         );
+    }
+
+    /// A recorded signal read is proposed for the record and waits; a span is proposed for the
+    /// record only; the signal's arrival is delivered, and its delivery recorded.
+    #[tokio::test(start_paused = true)]
+    async fn records_reads_spans_and_deliveries() {
+        let output = with_runner(|mut h| async move {
+            h.send(proto::ReadSignalActionMessage {
+                signal_name: "s".into(),
+                result_id: 1,
+                record: proto::RecordLevel::RecordSummary.into(),
+                ..Default::default()
+            });
+            assert!(matches!(
+                h.effect().await,
+                (2, ErEffectKind::Record(ErRecord::Action(r))) if r.kind == "ReadSignal" && r.result_id == Some(1)
+            ));
+            // The read waits for the attempt start (seq 1); then for the signal.
+            h.notify(ErToInvoker::Applied { attempt: 1, seq: 2 });
+            h.send(proto::SpanStartActionMessage {
+                span_id: 1,
+                name: "thinking".into(),
+                ..Default::default()
+            });
+            assert!(matches!(
+                h.effect().await,
+                (3, ErEffectKind::Record(ErRecord::SpanStart { span_id: 1, .. }))
+            ));
+            h.notify(ErToInvoker::Signal {
+                attempt: 1,
+                name: "s".into(),
+                index: 0,
+                result: SignalResult::Success(Bytes::from_static(b"yes")),
+            });
+            assert!(matches!(
+                h.effect().await,
+                (
+                    4,
+                    ErEffectKind::Record(ErRecord::ResultDelivered {
+                        result_id: 1,
+                        variant: ResultVariant::Value
+                    })
+                )
+            ));
+            assert!(matches!(
+                h.written().await,
+                Some(Message::ResultNotification(ResultNotificationMessage {
+                    result_id: 1,
+                    ..
+                }))
+            ));
+            h.send(proto::EndMessage {
+                output: Some(proto::end_message::Output::Value(proto::Value::default())),
+            });
+        })
+        .await;
+        assert!(matches!(output, ErTaskOutput::End(_)), "{output:?}");
     }
 }
