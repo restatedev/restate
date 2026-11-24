@@ -39,7 +39,6 @@ use restate_storage_api::StorageError;
 use restate_storage_api::migration_job::MigrationJobIds;
 use restate_storage_api::vqueue_table::{EntryChange, EntryContext, EntryStateRef};
 use restate_types::SemanticRestateVersion;
-use restate_types::config::Configuration;
 
 use crate::PartitionStoreTransaction;
 use crate::job::{MigrationJobRecords, MigrationJobs};
@@ -58,13 +57,10 @@ pub(crate) type ApplyEntryChange = fn(
     Option<&EntryStateRef<'_>>,
 );
 
-/// Definitions released together, switched on by the same configuration options.
+/// Definitions released together. Every family is maintained while
+/// `experimental-enable-indexes` is on, and dropped while it is off.
 pub(crate) struct Family {
     pub(crate) definitions: &'static [&'static IndexDefinition],
-    /// Register and maintain the definitions.
-    pub(crate) maintain: fn(&Configuration) -> bool,
-    /// Disable their indexes, overriding the other requests.
-    pub(crate) reset: fn(&Configuration) -> bool,
 }
 
 /// An entry-scoped index or statistic known to this binary.

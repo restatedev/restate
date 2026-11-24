@@ -441,14 +441,6 @@ async fn setup_with_scanners(
         scanners.register_offline_reads(Arc::clone(&manager), crate::mocks::query_io());
         register(node, &scanners);
         stats::register_scanners(&scanners, node, &reads);
-        scanners.register_declared_scanner::<crate::tables::index::EntryByServiceSource>(Arc::new(
-            CheckedScanner {
-                node,
-                check_owner: true,
-                inner: Arc::new(crate::tables::index::EntryByServiceTable::create_local_scanner()),
-                reads: Arc::clone(&reads),
-            },
-        ));
         scanners.register_partition_scanner::<LegacyStateSource>(Arc::new(CheckedScanner {
             node,
             check_owner: true,

@@ -363,9 +363,9 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
     })
     .await;
     let mut tracking = Configuration::default();
-    tracking.common.experimental.set_track_entry_indexes(true);
-    let mut reset = Configuration::default();
-    reset.common.experimental.set_entry_indexes_reset(true);
+    tracking.common.experimental.set_indexes(true);
+    // Indexes off on that replica: its indexes are dropped at the open.
+    let disabled = Configuration::default();
     Configuration::set(tracking.clone());
 
     const BASE: u64 = 1_744_010_000_000;
@@ -375,7 +375,7 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
     let partitions = fixture.stores.len() as u64;
     for (partition, store) in fixture.stores.iter_mut().enumerate() {
         let config = if partition == INCOMPLETE {
-            &reset
+            &disabled
         } else {
             &tracking
         };

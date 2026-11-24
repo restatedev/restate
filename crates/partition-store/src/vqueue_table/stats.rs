@@ -21,7 +21,6 @@
 //! affect these gauges.
 
 use restate_storage_api::vqueue_table::{EntryContext, EntryStateRef};
-use restate_types::config::Configuration;
 use restate_types::vqueues::EntryKind;
 
 use crate::PartitionStoreTransaction;
@@ -59,20 +58,10 @@ pub(crate) static VIRTUAL_OBJECT_STATS: IndexDefinition = IndexDefinition {
     can_fill: true,
 };
 
-/// The status gauges, released and controlled together.
+/// The status gauges, released together.
 pub(crate) const STATUS_GAUGES: Family = Family {
     definitions: &[&SERVICE_STATS, &DEPLOYMENT_STATS, &VIRTUAL_OBJECT_STATS],
-    maintain: track_status_gauges,
-    reset: status_gauges_reset,
 };
-
-fn track_status_gauges(config: &Configuration) -> bool {
-    config.common.experimental.is_track_status_gauges_enabled()
-}
-
-fn status_gauges_reset(config: &Configuration) -> bool {
-    config.common.experimental.is_status_gauges_reset_enabled()
-}
 
 fn kind(
     before: Option<&EntryStateRef<'_>>,

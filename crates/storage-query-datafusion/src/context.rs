@@ -86,10 +86,11 @@ impl DataFusionQueryEngine {
         if Configuration::pinned().common.disable_config_sql_table {
             opts.excluded_tables.push(ConfigTable::identity());
         }
+        // The statistics tables are shown where queries read indexes.
         if !Configuration::pinned()
             .common
             .experimental
-            .is_query_stats_tables_enabled()
+            .index_reads_enabled()
         {
             use crate::stats::{
                 SysDeploymentStatsTable, SysServiceStatsTable, SysVirtualObjectStatsTable,

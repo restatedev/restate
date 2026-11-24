@@ -83,7 +83,7 @@ async fn store_with_entries() -> PartitionStore {
         .await
         .unwrap();
     let mut config = Configuration::default();
-    config.common.experimental.set_track_entry_indexes(true);
+    config.common.experimental.set_indexes(true);
     store
         .verify_and_run_migrations(CancellationToken::new(), &config)
         .await
@@ -719,7 +719,7 @@ async fn store_with(entries: &[(&str, u64, u8)]) -> PartitionStore {
         .await
         .unwrap();
     let mut config = Configuration::default();
-    config.common.experimental.set_track_entry_indexes(true);
+    config.common.experimental.set_indexes(true);
     store
         .verify_and_run_migrations(CancellationToken::new(), &config)
         .await
