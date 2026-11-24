@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! The vqueue stage tables read as the `_idx_entry_by_queue` index.
+//! The vqueue stage tables read as the `vqueue_stages` index.
 //!
 //! Each stage has its own key kind: `kind | queue | has_lock | run_at | seq |
 //! entry_id`, where the queue ID's partition key forms the header. Every suffix

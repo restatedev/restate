@@ -165,11 +165,11 @@ async fn primary_access_codec_validates_keys_scope_and_capability() {
             bound: Some(51),
             candidates: vec![
                 IndexCandidate {
-                    index: ReString::from_static("_idx_entry_by_queue"),
+                    index: ReString::from_static("vqueue_stages"),
                     ordering: Vec::new(),
                 },
                 IndexCandidate {
-                    index: ReString::from_static("_idx_entry_status_by_status_created"),
+                    index: ReString::from_static("entry_by_status_created/1"),
                     ordering: Vec::new(),
                 },
             ],
@@ -208,7 +208,7 @@ async fn primary_access_codec_validates_keys_scope_and_capability() {
             .iter()
             .map(|candidate| candidate.index.as_ref())
             .collect::<Vec<&str>>(),
-        ["_idx_entry_by_queue", "_idx_entry_status_by_status_created"],
+        ["vqueue_stages", "entry_by_status_created/1"],
         "candidates_keep_their_order"
     );
     // The fallback bound travels apart from the source's limit; work without
@@ -504,7 +504,7 @@ async fn compact_partition_templates_preserve_keys_statistics_and_codec() {
         Access::Scan,
         Access::Index {
             candidates: vec![IndexCandidate {
-                index: ReString::from_static("_idx_test"),
+                index: ReString::from_static("test_index/1"),
                 ordering: Vec::new(),
             }],
             bound: None,
@@ -659,7 +659,7 @@ fn partition_reads_keep_template_order_only_with_a_lane_per_partition() {
             ),
             bound: None,
             candidates: vec![IndexCandidate {
-                index: ReString::from_static("_idx_test"),
+                index: ReString::from_static("test_index/1"),
                 ordering: vec![SortedColumn {
                     name: "created_at".into(),
                     descending: true,
@@ -1019,7 +1019,7 @@ async fn partition_reads_filter_before_emitting_only_without_a_fetch() {
             work: reads(),
             bound: Some(51),
             candidates: vec![IndexCandidate {
-                index: ReString::from_static("_idx_test"),
+                index: ReString::from_static("test_index/1"),
                 ordering: Vec::new(),
             }],
         }),

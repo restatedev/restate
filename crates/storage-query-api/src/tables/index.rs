@@ -102,8 +102,13 @@ crate::define_schema! {
     /// are in `sys_vqueue_entry_status`. The physical suffix after the queue is
     /// `has_lock | next_at | sequence_number | entry_id`; the declared key order is
     /// not an SQL ordering guarantee (stage and queue bytes are not text order).
+    ///
+    /// Named `vqueue_stages` in `EXPLAIN` and in index work. Unlike the entry
+    /// indexes below, whose names are their registry definitions, the stage
+    /// tables are maintained by the scheduler and aren't a registered
+    /// definition, so the name has no version.
     entry_by_queue {
-        name: "_idx_entry_by_queue",
+        name: "vqueue_stages",
         primary: vqueue_entry_status::VqueueEntryStatus,
         reference: canonical_id => |id| id.to_base_entry_id(),
         row: for<'a> EntryByQueueView<'a>, append: append_entry_by_queue,
@@ -157,13 +162,13 @@ fn append_entry_by_queue(builder: &mut EntryByQueueBatchBuilder, value: EntryByQ
 }
 
 crate::define_schema! {
-    /// Vqueue entries by target service and handler, newest created first: the
-    /// entry index `entry_by_service_created/1`, read instead of scanning
-    /// `sys_invocation_status`. Its columns are the invocation columns they
-    /// restrict. The index also holds state mutations, which have no handler and
-    /// name no invocation; reads skip them. Not shown as a table.
+    /// Vqueue entries by creation hour and service, newest created first, each
+    /// with its handler: the entry index `entry_by_created/1`, read instead of
+    /// scanning `sys_invocation_status`. Its columns are the invocation columns
+    /// they restrict. The index also holds state mutations, which have no
+    /// handler and name no invocation; reads skip them. Not shown as a table.
     entry_by_service_created {
-        name: "_idx_entry_by_service_created",
+        name: "entry_by_created/1",
         primary: invocation_status::InvocationStatus,
         // A locator only: a state mutation's names no invocation.
         reference: canonical_id => |id| InvocationId::from_parts(
@@ -200,7 +205,7 @@ crate::define_schema! {
     /// is newest created first. The index also holds state mutations, which
     /// name no invocation; reads skip them. Not shown as a table.
     entry_by_status_created {
-        name: "_idx_entry_by_status_created",
+        name: "entry_by_status_created/1",
         primary: invocation_status::InvocationStatus,
         // A locator only: a state mutation's names no invocation.
         reference: canonical_id => |id| InvocationId::from_parts(
@@ -234,7 +239,7 @@ crate::define_schema! {
     /// Each stage and status is newest created first; no column orders the
     /// index as a whole. Not shown as a table.
     entry_status_by_status_created {
-        name: "_idx_entry_status_by_status_created",
+        name: "entry_by_status_created/1",
         primary: vqueue_entry_status::VqueueEntryStatus,
         reference: canonical_id => |id| id.to_base_entry_id(),
         columns {
@@ -261,7 +266,7 @@ crate::define_schema! {
     /// transitioned first; no column orders the index as a whole. Not shown as
     /// a table.
     entry_status_by_status_transitioned {
-        name: "_idx_entry_status_by_status_transitioned",
+        name: "entry_by_status_transitioned/1",
         primary: vqueue_entry_status::VqueueEntryStatus,
         reference: canonical_id => |id| id.to_base_entry_id(),
         columns {
