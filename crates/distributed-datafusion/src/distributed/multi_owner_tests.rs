@@ -267,11 +267,14 @@ impl CheckedRead {
 }
 
 type PlacementCalls = Arc<Mutex<Vec<(GenerationalNodeId, PartitionId, PartitionPlacement)>>>;
+/// A change to run when a node next asks where a partition is read.
+type LookupHook = Arc<Mutex<Option<(GenerationalNodeId, PartitionId, Box<dyn FnOnce() + Send>)>>>;
 
 struct ObservedLocator {
     node: GenerationalNodeId,
     inner: Arc<dyn PartitionLocator>,
     calls: PlacementCalls,
+    before_lookup: LookupHook,
 }
 
 impl PartitionLocator for ObservedLocator {
@@ -281,6 +284,13 @@ impl PartitionLocator for ObservedLocator {
         placement: PartitionPlacement,
     ) -> anyhow::Result<PartitionLocation> {
         self.calls.lock().push((self.node, partition, placement));
+        let hook = self
+            .before_lookup
+            .lock()
+            .take_if(|(node, id, _)| *node == self.node && *id == partition);
+        if let Some((_, _, change)) = hook {
+            change();
+        }
         self.inner.get_partition_target_node(partition, placement)
     }
 }
@@ -356,6 +366,7 @@ struct MultiFixture<N> {
     reads: Arc<Mutex<Reads>>,
     node_reads: Arc<Mutex<Vec<GenerationalNodeId>>>,
     placements: PlacementCalls,
+    before_lookup: LookupHook,
     states: PartitionReplicaSetStates,
 }
 
@@ -424,6 +435,7 @@ async fn setup_with_scanners(
     let reads = Arc::new(Mutex::new(Reads::default()));
     let node_reads = Arc::new(Mutex::new(vec![]));
     let placements: PlacementCalls = Default::default();
+    let before_lookup: LookupHook = Default::default();
     let make_scanners = |metadata: Metadata, node: GenerationalNodeId| {
         let locator = create_partition_locator(
             PartitionRouting::new(states.clone(), TaskCenter::current()),
@@ -434,6 +446,7 @@ async fn setup_with_scanners(
                 node,
                 inner: locator,
                 calls: Arc::clone(&placements),
+                before_lookup: Arc::clone(&before_lookup),
             }),
             metadata,
             TaskCenter::current().cluster_state().clone(),
@@ -503,11 +516,45 @@ async fn setup_with_scanners(
         reads,
         node_reads,
         placements,
+        before_lookup,
         states,
     }
 }
 
 impl<N: NetworkSender> MultiFixture<N> {
+    /// Moves `partition`'s leader to `leader` when `owner` next asks where the
+    /// partition is read: after the coordinator chose `owner` while planning,
+    /// before `owner` admits its read.
+    ///
+    /// Execution starts when a query is executed, not when its stream is first
+    /// polled, so a change made after `execute` can come too late.
+    fn move_leader_before_admission(
+        &self,
+        owner: GenerationalNodeId,
+        partition: PartitionId,
+        leader: GenerationalNodeId,
+    ) {
+        assert_ne!(
+            owner,
+            self.metadata.my_node_id(),
+            "the coordinator also looks partitions up while planning"
+        );
+        let states = self.states.clone();
+        *self.before_lookup.lock() = Some((
+            owner,
+            partition,
+            Box::new(move || {
+                states.note_observed_leader(
+                    partition,
+                    LeadershipState {
+                        current_leader: leader,
+                        current_leader_epoch: LeaderEpoch::from(2),
+                    },
+                )
+            }),
+        ));
+    }
+
     fn engine(&self, parallelism: usize) -> Arc<QueryEngine> {
         self.engine_with_pushdown(parallelism, 2, true)
     }
@@ -926,17 +973,16 @@ async fn multi_owner_coverage_and_scoped_selection() {
 
     // Change observed ownership after selection. Execution must validate the
     // serialized placement contract rather than forward or silently omit work.
+    let partition = PartitionId::from(1);
+    fixture.move_leader_before_admission(
+        owner(partition),
+        partition,
+        GenerationalNodeId::new(3, 1),
+    );
     let result = session
         .execute("SELECT COUNT(*) FROM state", QueryOptions {})
         .await
         .unwrap();
-    fixture.states.note_observed_leader(
-        PartitionId::MIN,
-        LeadershipState {
-            current_leader: GenerationalNodeId::new(2, 1),
-            current_leader_epoch: LeaderEpoch::from(2),
-        },
-    );
     let error = result.stream.try_collect::<Vec<_>>().await.unwrap_err();
     assert!(
         error.to_string().contains("storage ownership changed"),
