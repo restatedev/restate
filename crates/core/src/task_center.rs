@@ -34,8 +34,8 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 #[cfg(debug_assertions)]
 use metrics::counter;
+use tokio::runtime::{LocalOptions, LocalRuntime};
 use tokio::sync::oneshot;
-use tokio::task::LocalSet;
 use tokio::task_local;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -247,8 +247,8 @@ impl TaskCenter {
         Self::with_current(|tc| tc.spawn_unmanaged(kind, name, future))
     }
 
-    /// Must be called within a Localset-scoped task, not from a normal spawned task.
-    /// If ran from a non-localset task, this will panic.
+    /// Must be called from a task running on a runtime started with `start_runtime`.
+    /// Panics on any other runtime.
     #[track_caller]
     pub fn spawn_local<F>(
         kind: TaskKind,
@@ -679,8 +679,8 @@ impl TaskCenterInner {
         Ok(self.spawn_on_runtime(kind, name, cancel, fut))
     }
 
-    /// Must be called within a Localset-scoped task, not from a normal spawned task.
-    /// If ran from a non-localset task, this will panic.
+    /// Must be called from a task running on a runtime started with `start_runtime`.
+    /// Panics on any other runtime.
     pub fn spawn_local<F>(
         self: &Arc<Self>,
         kind: TaskKind,
@@ -716,7 +716,7 @@ impl TaskCenterInner {
         let tokio_task = tokio::task::Builder::new().name(name);
         let inner_handle = tokio_task
             .spawn_local(fut)
-            .expect("must run from a LocalSet");
+            .expect("must run on a runtime started with start_runtime");
         *handle_mut = Some(TaskHandle {
             cancellation_token,
             inner_handle,
@@ -757,29 +757,7 @@ impl TaskCenterInner {
             return Err(RuntimeError::AlreadyExists(runtime_name));
         }
 
-        // todo: configure the runtime according to a new runtime kind perhaps?
-        let thread_builder = std::thread::Builder::new().name(format!("rt:{runtime_name}"));
-        let mut builder = tokio::runtime::Builder::new_current_thread();
-
-        #[cfg(any(test, feature = "test-util"))]
-        builder.start_paused(self.pause_time);
-
-        let rt = builder
-            .enable_all()
-            .build()
-            .expect("runtime builder succeeds");
         let tc = self.clone();
-
-        let rt_handle = Arc::new(rt);
-
-        runtimes_guard.insert(
-            runtime_name.clone(),
-            OwnedRuntimeHandle::new(cancel.clone(), rt_handle.clone()),
-        );
-
-        // release the lock.
-        drop(runtimes_guard);
-
         let id = TaskId::default();
         let context = TaskContext {
             id,
@@ -790,21 +768,30 @@ impl TaskCenterInner {
         };
 
         let (result_tx, result_rx) = oneshot::channel();
+        // `LocalRuntime` is !Send, so it is built on the thread that drives it. Only its handle
+        // comes back, to register the runtime before this function returns.
+        let (handle_tx, handle_rx) = std::sync::mpsc::sync_channel(1);
+        #[cfg(any(test, feature = "test-util"))]
+        let pause_time = self.pause_time;
 
         // start the work on the runtime
-        let _ = thread_builder
+        let _ = std::thread::Builder::new()
+            .name(format!("rt:{runtime_name}"))
             .spawn({
                 let runtime_name = runtime_name.clone();
                 move || {
-                    let local_set = LocalSet::new();
-                    let result = rt_handle.block_on(local_set.run_until(unmanaged_wrapper(
-                        tc.clone(),
-                        context,
-                        root_future(),
-                    )));
+                    // todo: configure the runtime according to a new runtime kind perhaps?
+                    let mut builder = tokio::runtime::Builder::new_current_thread();
+                    #[cfg(any(test, feature = "test-util"))]
+                    builder.start_paused(pause_time);
+                    let rt = builder
+                        .enable_all()
+                        .build_local(LocalOptions::default())
+                        .expect("runtime builder succeeds");
+                    let _ = handle_tx.send(rt.handle().clone());
 
-                    drop(rt_handle);
-                    tc.drop_runtime(runtime_name);
+                    let result = rt.block_on(unmanaged_wrapper(tc.clone(), context, root_future()));
+                    tc.drop_runtime(runtime_name, rt);
 
                     // need to use an oneshot here since we cannot await a thread::JoinHandle :-(
                     let _ = result_tx.send(result);
@@ -812,25 +799,28 @@ impl TaskCenterInner {
             })
             .unwrap();
 
+        // The registry lock is still held, so `drop_runtime` can't remove the entry before it
+        // is inserted, even if the root future completes right away.
+        let rt_handle = handle_rx.recv().expect("runtime builder succeeds");
+        runtimes_guard.insert(
+            runtime_name.clone(),
+            OwnedRuntimeHandle::new(cancel.clone(), rt_handle),
+        );
+        // release the lock.
+        drop(runtimes_guard);
+
         Ok(RuntimeTaskHandle::new(runtime_name, cancel, result_rx))
     }
 
-    /// Runs **only** after the inner main thread has completed work and no other owner exists for
-    /// the runtime handle.
-    fn drop_runtime(self: &Arc<Self>, name: ReString) {
+    /// Runs on the runtime's own thread once its root future has completed.
+    fn drop_runtime(self: &Arc<Self>, name: ReString, runtime: LocalRuntime) {
         // Shutdown can wait for blocking tasks and run arbitrary task destructors.
         // Release the registry lock first so other runtimes can start and stop.
         // Callers must await the runtime handle before starting a replacement.
-        let runtime = self.managed_runtimes.lock().remove(&name);
-        if let Some(runtime) = runtime {
-            // We must be the only owner of runtime at this point.
-            debug!("Runtime {} completed", name);
-            let owner = Arc::into_inner(runtime.into_inner());
-            if let Some(runtime) = owner {
-                runtime.shutdown_timeout(Duration::from_secs(2));
-                trace!("Runtime {} shutdown completed", name);
-            }
-        }
+        self.managed_runtimes.lock().remove(&name);
+        debug!("Runtime {} completed", name);
+        runtime.shutdown_timeout(Duration::from_secs(2));
+        trace!("Runtime {} shutdown completed", name);
     }
 
     #[cfg(not(all(
@@ -1284,16 +1274,9 @@ impl TaskCenterInner {
     }
 
     fn shutdown_managed_runtimes(self: &Arc<Self>) {
-        let mut runtimes = self.managed_runtimes.lock();
-        for (_, runtime) in runtimes.drain() {
-            if let Some(runtime) = Arc::into_inner(runtime.into_inner()) {
-                // This really isn't doing much, but it's left here for completion.
-                // The reason is: If the runtime is still running, then it'll hold the Arc until it
-                // finishes gracefully, yielding None here. If the runtime completed, it'll
-                // self-shutdown prior to reaching this point.
-                runtime.shutdown_background();
-            }
-        }
+        // Each runtime is owned by its thread and shuts itself down once its root future
+        // completes (see `drop_runtime`). This only forgets the remaining registrations.
+        self.managed_runtimes.lock().clear();
     }
 }
 

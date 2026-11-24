@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll, ready};
 
 use futures::FutureExt;
@@ -66,34 +65,28 @@ impl<T> std::future::Future for RuntimeTaskHandle<T> {
     }
 }
 
+/// Registry entry for a runtime started by `start_runtime`. The runtime itself is owned by its
+/// thread; this only gives access to its handle and root cancellation token.
 pub(super) struct OwnedRuntimeHandle {
     cancellation_token: CancellationToken,
-    inner: Arc<tokio::runtime::Runtime>,
+    handle: tokio::runtime::Handle,
 }
 
 impl OwnedRuntimeHandle {
-    pub fn new(
-        cancellation_token: CancellationToken,
-        runtime: Arc<tokio::runtime::Runtime>,
-    ) -> Self {
+    pub fn new(cancellation_token: CancellationToken, handle: tokio::runtime::Handle) -> Self {
         Self {
             cancellation_token,
-            inner: runtime,
+            handle,
         }
     }
 
-    // The runtime name
     pub fn runtime_handle(&self) -> &tokio::runtime::Handle {
-        self.inner.handle()
+        &self.handle
     }
 
     /// Trigger graceful shutdown of the runtime root task. Shutdown is not guaranteed, it depends
     /// on whether the root task awaits the cancellation token or not.
     pub fn cancel(&self) {
         self.cancellation_token.cancel()
-    }
-
-    pub fn into_inner(self) -> Arc<tokio::runtime::Runtime> {
-        self.inner
     }
 }

@@ -211,8 +211,8 @@ impl Handle {
         self.inner.spawn_unmanaged_child(kind, &name, future)
     }
 
-    /// Must be called within a Localset-scoped task, not from a normal spawned task.
-    /// If ran from a non-localset task, this will panic.
+    /// Must be called from a task running on a runtime started with `start_runtime`.
+    /// Panics on any other runtime.
     pub fn spawn_local<F>(
         &self,
         kind: TaskKind,
