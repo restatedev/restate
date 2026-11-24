@@ -57,6 +57,7 @@ use restate_worker_api::invoker::invocation_reader::{
 use super::Notification;
 use crate::TokenBucket;
 use crate::error::{InvocationMemoryExhausted, InvokerError};
+use crate::fair_channel;
 use crate::metric_definitions::{INVOKER_EAGER_STATE_TRUNCATED, INVOKER_TASK_DURATION};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
@@ -287,7 +288,7 @@ pub(super) struct InvocationTask<DMR> {
 
     // Invoker tx/rx
     schemas: Live<DMR>,
-    invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+    invoker_tx: fair_channel::Sender<InvocationTaskOutput>,
     invoker_rx: mpsc::UnboundedReceiver<Notification>,
 
     // throttling
@@ -364,7 +365,7 @@ where
         message_size_limit: NonZeroUsize,
         retry_count_since_last_stored_entry: u32,
         deployment_metadata_resolver: Live<Schemas>,
-        invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+        invoker_tx: fair_channel::Sender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         action_token_bucket: Option<TokenBucket>,
         limit_key: LimitKey<ReString>,
@@ -610,7 +611,7 @@ where
 impl<Schemas> InvocationTask<Schemas> {
     /// Send a non-terminal message to the invoker main loop.
     pub(crate) fn send_invoker_tx(&self, invocation_task_output_inner: InvocationTaskOutputInner) {
-        let _ = self.invoker_tx.send(InvocationTaskOutput {
+        self.invoker_tx.send(InvocationTaskOutput {
             invocation_id: self.invocation_id,
             fencing_token: self.fencing_token,
             inner: invocation_task_output_inner,
