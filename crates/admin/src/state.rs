@@ -10,6 +10,8 @@
 
 use std::sync::Arc;
 
+use tokio::sync::watch;
+
 use restate_core::network::TransportConnect;
 use restate_ingestion_client::IngestionClient;
 use restate_limiter::rule_book::RuleBookObserver;
@@ -18,6 +20,8 @@ use restate_service_protocol_v4::serdes::SerdesClient;
 use restate_storage_query_api::QueryEngine;
 use restate_types::schema::registry::SchemaRegistry;
 use restate_wal_protocol::v2::{Envelope, Raw};
+
+use crate::index_catalog::IndexCatalog;
 
 #[derive(Clone, derive_builder::Builder)]
 pub struct AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport> {
@@ -33,6 +37,8 @@ pub struct AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transp
     pub query_engine_v2_default: bool,
     #[builder(default)]
     pub query_operator_tables: bool,
+    /// The latest catalog the admin node's refresh task confirmed.
+    pub index_catalog: watch::Receiver<IndexCatalog>,
     pub rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
 }
 
@@ -59,6 +65,8 @@ where
             query_engine,
             query_engine_v2_default: false,
             query_operator_tables: false,
+            // The admin service replaces it with its refresh task's catalog.
+            index_catalog: watch::channel(IndexCatalog::initial()).1,
             rule_book_observer,
         }
     }

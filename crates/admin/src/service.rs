@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use axum::error_handling::HandleErrorLayer;
 use http::{Request, Response, StatusCode};
+use tokio::sync::watch;
 use tower::ServiceBuilder;
 use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::compression::CompressionLayer;
@@ -22,7 +23,7 @@ use tracing::{Span, debug, info, info_span};
 use restate_admin_rest_model::version::AdminApiVersion;
 use restate_core::network::misdirected_requests::MisdirectedRequestsLayer;
 use restate_core::network::{TransportConnect, net_util};
-use restate_core::{MetadataWriter, TaskCenter};
+use restate_core::{MetadataWriter, TaskCenter, TaskKind};
 use restate_ingestion_client::IngestionClient;
 use restate_limiter::rule_book::RuleBookObserver;
 use restate_metadata_store::MetadataStoreClient;
@@ -35,10 +36,12 @@ use restate_types::invocation::client::InvocationClient;
 use restate_types::live::LiveLoad;
 use restate_types::net::address::AdminPort;
 use restate_types::net::listener::Listeners;
+use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::schema::registry::SchemaRegistry;
 use restate_util_time::DurationExt;
 use restate_wal_protocol::v2::{Envelope, Raw};
 
+use crate::index_catalog::IndexCatalog;
 use crate::metric_definitions::describe_metrics;
 use crate::rest_api::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
 use crate::schema_registry_integration::{MetadataService, TelemetryClient};
@@ -57,6 +60,7 @@ pub struct AdminService<Metadata, Discovery, Telemetry, Invocations, Transport> 
     query_engine: Arc<QueryEngine>,
     metadata_client: MetadataStoreClient,
     rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
+    replica_sets: PartitionReplicaSetStates,
 }
 
 impl<Invocations, Transport>
@@ -92,6 +96,17 @@ where
             query_engine,
             metadata_client,
             rule_book_observer: None,
+            replica_sets: PartitionReplicaSetStates::default(),
+        }
+    }
+
+    /// The partitions' replica sets as this node observes them. The index catalog
+    /// uses them to find each partition's leader, which statistics reads go to;
+    /// without them it finds no evidence that the statistics tables fail.
+    pub fn with_replica_sets(self, replica_sets: PartitionReplicaSetStates) -> Self {
+        Self {
+            replica_sets,
+            ..self
         }
     }
 
@@ -115,6 +130,17 @@ where
                 .then(|| MisdirectedRequestsLayer::new(config.common.cluster_name()))
         };
 
+        let (index_catalog, catalog) = watch::channel(IndexCatalog::initial());
+        TaskCenter::spawn_child(
+            TaskKind::Background,
+            "index-catalog",
+            crate::index_catalog::refresh(
+                Arc::clone(&self.query_engine),
+                self.replica_sets.clone(),
+                index_catalog,
+            ),
+        )?;
+
         let mut rest_state = state::AdminServiceState::new(
             self.schema_registry,
             self.serdes_client,
@@ -124,6 +150,7 @@ where
             self.query_engine,
             self.rule_book_observer,
         );
+        rest_state.index_catalog = catalog;
         rest_state.query_engine_v2_default = Configuration::pinned()
             .common
             .experimental

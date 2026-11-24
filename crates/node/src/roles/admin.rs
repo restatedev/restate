@@ -127,6 +127,7 @@ impl<T: TransportConnect> AdminRole<T> {
         if let Some(observer) = local_rule_book_observer {
             admin = admin.with_rule_book_observer(observer);
         }
+        admin = admin.with_replica_sets(replica_set_states.clone());
 
         let controller = cluster_state_refresher.map(|refresher| {
             cluster_controller::Service::create(
