@@ -181,7 +181,7 @@ where
             SysVirtualObjectStatsTable::create_provider(
                 self.partition_selector.clone(),
                 &self.sources,
-            ),
+            )?,
         )?;
         inventory.add::<SysServiceStatsTable>(
             "public",

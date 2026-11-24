@@ -14,16 +14,17 @@
 //!
 //! Each partition stores its own counts. For example, if partitions 1 and 2
 //! count 2 and 3 running entries of `counter/inc`, the service table must show
-//! one row with 5. So the service and deployment tables are views that sum the
-//! partitions' rows first: a filter such as `num_entries > 4`, an `ORDER BY` or
-//! a `LIMIT` then sees 5, never 2 or 3. Queries can't see the per-partition
-//! rows behind the views. Virtual-object rows aren't summed: each keeps its
-//! entries' routing `partition_key`. Entries of one object can be routed by
-//! different keys, for example in custom queues, and their rows stay separate.
+//! one row with 5. So the tables are views that sum the partitions' rows first:
+//! a filter such as `num_entries > 4`, an `ORDER BY` or a `LIMIT` then sees 5,
+//! never 2 or 3. Queries can't see the per-partition rows behind the views.
+//! Virtual-object rows keep their entries' routing `partition_key`, so the sum
+//! leaves them as they are: entries of one object can be routed by different
+//! keys, for example in custom queues, and their rows stay separate.
 //!
 //! A scan reads only statistics that are Complete in its read snapshot. If a
-//! partition can't provide them, the query fails rather than return a partial
-//! total.
+//! partition can't provide them, the query fails. The sum waits for every
+//! partition before it returns a row, so the query fails before any row, also
+//! with a `LIMIT`: clients never get a partial result.
 
 use std::marker::PhantomData;
 use std::ops::Bound::Included;
@@ -88,10 +89,6 @@ pub(crate) trait StatTable: QueryEngineTable {
     /// Reads the stored statistic and builds the table's rows from it.
     type Binding: SchemaBinding<Schema: LogicalSchema<RowBuilder: Sync>>;
 
-    /// Whether queries see the partitions' rows summed; see the module
-    /// documentation.
-    const SUM_PARTITIONS: bool;
-
     /// What a scan of one partition reads: `range` is the part of the
     /// partition's keys the scan covers, and `initial` the query's filter as it
     /// was when the scan started. Later updates of the filter only drop rows.
@@ -100,8 +97,7 @@ pub(crate) trait StatTable: QueryEngineTable {
         initial: Option<&Arc<dyn PhysicalExpr>>,
     ) -> Selection<StatSchema<Self>>;
 
-    /// The table queries see: the rows of every partition, summed if
-    /// [`Self::SUM_PARTITIONS`].
+    /// The table queries see: the rows of every partition, summed.
     fn create_provider(
         partition_selector: impl SelectPartitions,
         manager: &RemoteScannerManager,
@@ -113,11 +109,7 @@ pub(crate) trait StatTable: QueryEngineTable {
             manager.create_distributed_scanner::<Self>(),
             FirstMatchingPartitionKeyExtractor::default(),
         ));
-        if Self::SUM_PARTITIONS {
-            Ok(Arc::new(sum_view(&Self::identity(), raw)?))
-        } else {
-            Ok(raw)
-        }
+        Ok(Arc::new(sum_view(&Self::identity(), raw)?))
     }
 
     /// Scans the table on the partitions this node holds.
@@ -135,7 +127,6 @@ pub(crate) trait StatTable: QueryEngineTable {
 
 impl StatTable for SysServiceStatsTable {
     type Binding = ServiceStatsBinding;
-    const SUM_PARTITIONS: bool = true;
 
     fn selection(
         _range: KeyRange,
@@ -147,7 +138,6 @@ impl StatTable for SysServiceStatsTable {
 
 impl StatTable for SysDeploymentStatsTable {
     type Binding = DeploymentStatsBinding;
-    const SUM_PARTITIONS: bool = true;
 
     fn selection(
         _range: KeyRange,
@@ -159,7 +149,6 @@ impl StatTable for SysDeploymentStatsTable {
 
 impl StatTable for SysVirtualObjectStatsTable {
     type Binding = VirtualObjectStatsBinding;
-    const SUM_PARTITIONS: bool = false;
 
     fn selection(
         range: KeyRange,
@@ -180,7 +169,8 @@ impl StatTable for SysVirtualObjectStatsTable {
 }
 
 /// The view that sums `raw`'s per-partition rows, as V2 does: one row for each
-/// combination of the other columns, with their `num_entries` added up.
+/// combination of the other columns, with their `num_entries` added up, in
+/// `raw`'s column order.
 fn sum_view(name: &str, raw: Arc<dyn TableProvider>) -> datafusion::common::Result<ViewTable> {
     let schema = raw.schema();
     let groups = schema
@@ -194,6 +184,7 @@ fn sum_view(name: &str, raw: Arc<dyn TableProvider>) -> datafusion::common::Resu
         None,
     )?
     .aggregate(groups, [sum(col("num_entries")).alias("num_entries")])?
+    .project(schema.fields().iter().map(|field| col(field.name())))?
     .build()?;
     Ok(ViewTable::new(plan, None))
 }

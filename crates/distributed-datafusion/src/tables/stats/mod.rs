@@ -20,4 +20,4 @@ pub(crate) mod service_stats;
 pub(crate) mod virtual_object_stats;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
