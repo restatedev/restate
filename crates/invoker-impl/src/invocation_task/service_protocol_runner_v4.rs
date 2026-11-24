@@ -616,7 +616,17 @@ where
         release_interval.tick().await; // consume initial immediate tick
         let mut inactivity_timeout =
             std::pin::pin!(tokio::time::sleep(self.invocation_task.inactivity_timeout));
+        let mut was_full = false;
         loop {
+            // Stop reading from the deployment while the invoker hasn't caught up.
+            let has_capacity = self.invocation_task.invoker_tx.has_capacity();
+            if was_full && has_capacity {
+                // Not reading while the output queue was full isn't deployment inactivity.
+                inactivity_timeout
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + self.invocation_task.inactivity_timeout);
+            }
+            was_full = !has_capacity;
             tokio::select! {
                 opt_completion = self.invocation_task.invoker_rx.recv() => {
                     match opt_completion {
@@ -678,7 +688,7 @@ where
 
                     inactivity_timeout.as_mut().reset(tokio::time::Instant::now() + self.invocation_task.inactivity_timeout);
                 },
-                chunk = http_stream_rx.next() => {
+                chunk = http_stream_rx.next(), if has_capacity => {
                     match shortcircuit!(chunk.transpose()) {
                         None => {
                             return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()));
@@ -698,10 +708,11 @@ where
 
                     inactivity_timeout.as_mut().reset(tokio::time::Instant::now() + self.invocation_task.inactivity_timeout);
                 },
+                _ = self.invocation_task.invoker_tx.capacity(), if !has_capacity => {},
                 _ = release_interval.tick() => {
                     outbound_budget.release_excess();
                 },
-                _ = &mut inactivity_timeout => {
+                _ = &mut inactivity_timeout, if has_capacity => {
                     debug!("Inactivity detected, going to suspend invocation");
                     // Just return. This will drop the invoker_rx and http_stream_tx,
                     // closing the request stream and the invoker input channel.
@@ -723,11 +734,10 @@ where
         IR: InvocationReader,
     {
         loop {
+            // Stop reading from the deployment while the invoker hasn't caught up.
+            let has_capacity = self.invocation_task.invoker_tx.has_capacity();
             tokio::select! {
-                chunk = http_stream_rx.next() => {
-                    // don't read again until all buffered messages has been consumed
-                    // to force a back pressure on the read stream
-
+                chunk = http_stream_rx.next(), if has_capacity => {
                     match shortcircuit!(chunk.transpose()) {
                         None => {
                             return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()));
@@ -745,7 +755,8 @@ where
                         }
                     }
                 },
-                _ = tokio::time::sleep(self.invocation_task.abort_timeout) => {
+                _ = self.invocation_task.invoker_tx.capacity(), if !has_capacity => {},
+                _ = tokio::time::sleep(self.invocation_task.abort_timeout), if has_capacity => {
                     warn!("Inactivity detected, going to close invocation");
                     return TerminalLoopState::Failed(InvokerError::AbortTimeoutFired(self.invocation_task.abort_timeout.into()))
                 },
