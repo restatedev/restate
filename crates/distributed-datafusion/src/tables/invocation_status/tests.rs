@@ -63,24 +63,40 @@ async fn persisted_invocations_match_v1_for_scans_lookups_and_projections() {
     let ids: Vec<_> = (0..32)
         .map(|index| InvocationId::from_parts(index, InvocationUuid::from_u128(index.into())))
         .collect();
+    // Every invocation was sent with a delay, so each status has a start time.
+    let due = MillisSinceEpoch::new(1_800_000_000_000);
+    let in_flight = || {
+        let mut metadata = InFlightInvocationMetadata::mock();
+        metadata.execution_time = Some(due);
+        metadata
+    };
+    let pre_flight = || {
+        let mut metadata = PreFlightInvocationMetadata::mock();
+        metadata.execution_time = Some(due);
+        metadata
+    };
     for (index, id) in ids.iter().enumerate() {
         let status = match index % 6 {
-            0 => InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
-            1 => InvocationStatus::Completed(CompletedInvocation::mock_neo()),
-            2 => InvocationStatus::Paused(InFlightInvocationMetadata::mock()),
+            0 => InvocationStatus::Invoked(in_flight()),
+            1 => {
+                let mut completed = CompletedInvocation::mock_neo();
+                completed.execution_time = Some(due);
+                InvocationStatus::Completed(completed)
+            }
+            2 => InvocationStatus::Paused(in_flight()),
             3 => InvocationStatus::Suspended {
-                metadata: InFlightInvocationMetadata::mock(),
+                metadata: in_flight(),
                 awaiting_on: restate_types::journal_v2::UnresolvedFuture::unknown_from_iter([
                     restate_types::journal_v2::NotificationId::for_completion(1),
                     restate_types::journal_v2::NotificationId::SignalIndex(10),
                 ]),
             },
             4 => InvocationStatus::Scheduled(ScheduledInvocation {
-                metadata: PreFlightInvocationMetadata::mock(),
+                metadata: pre_flight(),
             }),
             _ => InvocationStatus::Inboxed(InboxedInvocation {
                 inbox_sequence_number: 1,
-                metadata: PreFlightInvocationMetadata::mock(),
+                metadata: pre_flight(),
             }),
         };
         tx.put_invocation_status(id, &status).unwrap();
@@ -109,6 +125,18 @@ async fn persisted_invocations_match_v1_for_scans_lookups_and_projections() {
         rows(new.as_ref(), "SELECT COUNT(*) FROM sys_invocation_status").await,
         [["32"]]
     );
+    // `scheduled_start_at` shows whenever it is selected, without `scheduled_at`
+    // beside it: alone, in a filter, and through `sys_invocation`.
+    for engine in [new.as_ref(), old.as_ref()] {
+        for sql in [
+            "SELECT COUNT(scheduled_start_at) FROM sys_invocation_status",
+            "SELECT COUNT(scheduled_start_at) FROM sys_invocation",
+            "SELECT COUNT(*) FROM sys_invocation_status \
+             WHERE scheduled_start_at = to_timestamp_millis(1800000000000)",
+        ] {
+            assert_eq!(rows(engine, sql).await, [["32"]], "{sql}");
+        }
+    }
     // Without entries, no invocation has a stage or effective status, and
     // whether it `completed` comes from its status: one in six did. V1 agrees.
     for engine in [new.as_ref(), old.as_ref()] {

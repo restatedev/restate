@@ -156,7 +156,7 @@ pub(crate) fn append_invocation_status_row<'a>(
                     invocation_status.created_using_restate_version()?,
                 );
             }
-            if row.is_scheduled_at_defined()
+            if row.is_scheduled_start_at_defined()
                 && let Some(execution_time) = invocation_status.inner.execution_time
             {
                 row.scheduled_start_at(execution_time as i64)
@@ -181,7 +181,7 @@ pub(crate) fn append_invocation_status_row<'a>(
                     invocation_status.created_using_restate_version()?,
                 );
             }
-            if row.is_scheduled_at_defined()
+            if row.is_scheduled_start_at_defined()
                 && let Some(execution_time) = invocation_status.inner.execution_time
             {
                 row.scheduled_start_at(execution_time as i64)
@@ -247,7 +247,7 @@ pub(crate) fn append_invocation_status_row<'a>(
                     invocation_status.created_using_restate_version()?,
                 );
             }
-            if row.is_scheduled_at_defined()
+            if row.is_scheduled_start_at_defined()
                 && let Some(execution_time) = invocation_status.inner.execution_time
             {
                 row.scheduled_start_at(execution_time as i64)
