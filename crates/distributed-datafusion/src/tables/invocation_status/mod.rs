@@ -442,6 +442,15 @@ impl PreparedPartitionRead for StatusRead {
     ) -> anyhow::Result<SendableRecordBatchStream> {
         self.read(context, batch_size, metrics, None)
     }
+
+    /// An entry-index read can't where the index isn't Complete on the
+    /// snapshot, or the partition hasn't migrated to vqueues.
+    fn usable(&self, context: &PartitionReadContext) -> anyhow::Result<bool> {
+        Ok(match &self.access {
+            StatusAccess::EntryIndex { index, .. } => index.unusable(context.storage()?)?.is_none(),
+            _ => true,
+        })
+    }
 }
 
 impl StatusRead {

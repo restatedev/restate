@@ -181,6 +181,12 @@ impl StatusCreatedRead {
             partition_keys: PartitionKeyFilter::ALL,
         })
     }
+
+    /// Why a read on `snapshot` can't go through the index, if it can't: the
+    /// index isn't Complete on it. The read then scans instead.
+    pub fn unusable(&self, snapshot: &ReadSnapshot) -> Result<Option<ScanReason>> {
+        unusable::<EntryByStatusCreated>(snapshot)
+    }
 }
 
 impl StatusTransitionedRead {
@@ -199,6 +205,11 @@ impl StatusTransitionedRead {
             direction,
             partition_keys: PartitionKeyFilter::ALL,
         })
+    }
+
+    /// As [`StatusCreatedRead::unusable`].
+    pub fn unusable(&self, snapshot: &ReadSnapshot) -> Result<Option<ScanReason>> {
+        unusable::<EntryByStatusTransitioned>(snapshot)
     }
 }
 
