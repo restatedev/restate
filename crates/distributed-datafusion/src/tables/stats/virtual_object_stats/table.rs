@@ -26,6 +26,13 @@ use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 use super::schema::{SysVirtualObjectStatsTable, VirtualObjectStatsSource};
 
 impl SysVirtualObjectStatsTable {
+    /// The partitions' rows as they are read, not summed: each row keeps its
+    /// entries' routing `partition_key`. A query can therefore return rows
+    /// before it fails on a partition whose gauge isn't Complete. A known gap:
+    /// the Web UI reads the table only once `/version` reports
+    /// `query_engine.stats_tables`. The planned fix is a barrier that releases
+    /// rows only once every selected partition has passed its check, holding at
+    /// most one batch per partition.
     pub(crate) fn create_provider(
         partition_selector: impl SelectPartitions,
         sources: &SourceRegistry,

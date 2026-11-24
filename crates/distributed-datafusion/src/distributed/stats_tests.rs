@@ -35,6 +35,7 @@ use crate::tables::stats::deployment_stats::schema::{
     DeploymentStatsSource, SysDeploymentStatsTable,
 };
 use crate::tables::stats::service_stats::schema::{ServiceStatsSource, SysServiceStatsTable};
+use crate::tables::stats::tests::assert_queries_fail;
 use crate::tables::stats::virtual_object_stats::schema::{
     SysVirtualObjectStatsTable, VirtualObjectStatsSource,
 };
@@ -288,6 +289,15 @@ async fn statistics_queries_fail_until_every_replica_is_complete() {
         )
         .await;
     }
+
+    // That owner has rows, but another replica's gauges are reset: every query
+    // fails, and the summed tables fail before they return a row.
+    let last = fixture.stores.last_mut().unwrap();
+    reopen(last, |config| {
+        config.common.experimental.set_status_gauges_reset(true)
+    })
+    .await;
+    assert_queries_fail(session.as_ref(), "no maintained index").await;
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 4)]

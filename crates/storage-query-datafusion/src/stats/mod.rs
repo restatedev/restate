@@ -22,8 +22,16 @@
 //! different keys, for example in custom queues, and their rows stay separate.
 //!
 //! A scan reads only statistics that are Complete in its read snapshot. If a
-//! partition can't provide them, the query fails rather than return a partial
-//! total.
+//! partition can't provide them, the query fails:
+//! - The service and deployment views wait for every partition before they
+//!   return a row, so they fail before any row, whatever the query selects and
+//!   also with a `LIMIT`: never a partial total.
+//! - `sys_virtual_object_stats` streams each partition's rows as it reads them,
+//!   so a query can return rows before it fails on an incomplete partition. A
+//!   known gap: the Web UI reads it only once `/version` reports
+//!   `query_engine.stats_tables`. The planned fix is a barrier that releases
+//!   rows only once every selected partition has passed its check, holding at
+//!   most one batch per partition.
 
 use std::marker::PhantomData;
 use std::ops::Bound::Included;
@@ -194,6 +202,11 @@ fn sum_view(name: &str, raw: Arc<dyn TableProvider>) -> datafusion::common::Resu
         None,
     )?
     .aggregate(groups, [sum(col("num_entries")).alias("num_entries")])?
+    // Keeps the sum in every plan: a query that doesn't select `num_entries`
+    // would otherwise drop it, and a `LIMIT` on the remaining distinct aggregate
+    // stops reading once it has enough rows, maybe before an incomplete partition
+    // fails the query. The sum is never NULL here, so no row is filtered out.
+    .filter(col("num_entries").is_not_null())?
     .build()?;
     Ok(ViewTable::new(plan, None))
 }
