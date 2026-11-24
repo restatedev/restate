@@ -301,10 +301,10 @@ impl CompleteIndex for StatusCreatedIndex {
         never_null: true,
     }];
 
-    /// Only where the index is maintained, and only if the stage and status
-    /// leave fewer lanes than all of them.
+    /// Only where this coordinator reads indexes, and only if the stage and
+    /// status leave fewer lanes than all of them.
     fn useful(restriction: &EntryStatusByStatusCreatedDomains) -> bool {
-        tracked()
+        index_reads()
             && EntryByStatusCreatedKey::entry_lanes(&restriction.to_selection()).count()
                 < EntryByStatusCreatedKey::entry_lanes(&Selection::All).count()
     }
@@ -321,7 +321,7 @@ impl CompleteIndex for StatusCreatedIndex {
     /// queries. A selection policy, not a cost estimate; an ordered demand the
     /// index serves stays eligible whatever the time restriction.
     fn useful_covered(restriction: &EntryStatusByStatusCreatedDomains) -> bool {
-        tracked() && since(restriction.created_at.to_predicate())
+        index_reads() && since(restriction.created_at.to_predicate())
     }
 
     /// Every alternative fixes the stage to stages the index holds.
@@ -380,7 +380,7 @@ impl CompleteIndex for StatusTransitionedIndex {
 
     /// As [`StatusCreatedIndex::useful`].
     fn useful(restriction: &EntryStatusByStatusTransitionedDomains) -> bool {
-        tracked()
+        index_reads()
             && EntryByStatusTransitionedKey::entry_lanes(&restriction.to_selection()).count()
                 < EntryByStatusTransitionedKey::entry_lanes(&Selection::All).count()
     }
@@ -391,7 +391,7 @@ impl CompleteIndex for StatusTransitionedIndex {
 
     /// As [`StatusCreatedIndex::useful_covered`], by transition time.
     fn useful_covered(restriction: &EntryStatusByStatusTransitionedDomains) -> bool {
-        tracked() && since(restriction.transitioned_at.to_predicate())
+        index_reads() && since(restriction.transitioned_at.to_predicate())
     }
 
     fn admits(alternatives: &[VqueueEntryStatusDomains]) -> bool {
@@ -426,12 +426,12 @@ fn since<V>(predicate: Option<ValuePredicate<V>>) -> bool {
     }
 }
 
-/// Whether the entry indexes are maintained.
-fn tracked() -> bool {
+/// Whether this coordinator reads indexes (`experimental-enable-indexes`).
+fn index_reads() -> bool {
     Configuration::pinned()
         .common
         .experimental
-        .is_track_entry_indexes_enabled()
+        .index_reads_enabled()
 }
 
 /// Whether every alternative fixes the stage to a non-empty set of stages the

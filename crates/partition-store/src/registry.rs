@@ -164,10 +164,14 @@ pub enum IndexStatus {
 /// reason without a version floor. Never reuse a number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropReason {
-    /// Its family's reset was requested.
+    /// A reset option asked for it. Those options were removed before release;
+    /// development builds may have stored this reason.
     Reset = 1,
     /// The binary that opened the store doesn't know its definition.
     UnknownDefinition = 2,
+    /// The store was opened with indexes not enabled
+    /// (`experimental-enable-indexes` off).
+    NotEnabled = 3,
 }
 
 impl DropReason {
@@ -176,6 +180,7 @@ impl DropReason {
         match number {
             1 => Some(Self::Reset),
             2 => Some(Self::UnknownDefinition),
+            3 => Some(Self::NotEnabled),
             _ => None,
         }
     }

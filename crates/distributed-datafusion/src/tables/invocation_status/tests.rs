@@ -262,7 +262,7 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         .await
         .unwrap();
     let mut config = Configuration::default();
-    config.common.experimental.set_track_entry_indexes(true);
+    config.common.experimental.set_indexes(true);
     store
         .verify_and_run_migrations(CancellationToken::new(), &config)
         .await
@@ -1120,7 +1120,7 @@ async fn status_follows_the_entry() {
         .await
         .unwrap();
     let mut config = Configuration::default();
-    config.common.experimental.set_track_entry_indexes(true);
+    config.common.experimental.set_indexes(true);
     store
         .verify_and_run_migrations(CancellationToken::new(), &config)
         .await
@@ -1407,7 +1407,7 @@ async fn partitions_sharing_a_lane_bound_their_fallback() {
     RocksDbManager::init();
     let manager = PartitionStoreManager::create(true).await.unwrap();
     let mut config = Configuration::default();
-    config.common.experimental.set_track_entry_indexes(true);
+    config.common.experimental.set_indexes(true);
     Configuration::set(config.clone());
 
     const BASE: u64 = 1_744_010_000_000;

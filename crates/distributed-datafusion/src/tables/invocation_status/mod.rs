@@ -131,7 +131,7 @@ impl CompleteIndex for EntryIndex {
         if !Configuration::pinned()
             .common
             .experimental
-            .is_track_entry_indexes_enabled()
+            .index_reads_enabled()
         {
             return false;
         }
@@ -190,7 +190,7 @@ impl CompleteIndex for StatusIndex {
         if !Configuration::pinned()
             .common
             .experimental
-            .is_track_entry_indexes_enabled()
+            .index_reads_enabled()
         {
             return false;
         }

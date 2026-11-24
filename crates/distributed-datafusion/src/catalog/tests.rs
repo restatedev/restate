@@ -19,8 +19,12 @@ use restate_core::test_env::TestCoreEnv;
 use restate_limiter::RuleBook;
 use restate_limiter::rule_book::RuleBookObserver;
 use restate_platform::sync::Mutex;
+use restate_storage_query_api::tables::index::{
+    EntryByQueue, EntryByServiceCreated, EntryByStatusCreated, EntryStatusByStatusCreated,
+    EntryStatusByStatusTransitioned,
+};
 use restate_storage_query_api::{
-    QueryEngineVersion, QueryOptions, QuerySession, SessionOptions, SessionTable,
+    LogicalSchema, QueryEngineVersion, QueryOptions, QuerySession, SessionOptions, SessionTable,
 };
 use restate_storage_query_datafusion as v1;
 use restate_types::config::Configuration;
@@ -38,15 +42,13 @@ const STATS: [&str; 3] = [
     "sys_deployment_stats",
     "sys_virtual_object_stats",
 ];
-const INDEXES: [&str; 8] = [
-    "_idx_entry_by_queue",
-    "_idx_entry_by_service",
-    "_idx_entry_by_stage",
-    "_idx_entry_next_at_by_service",
-    "_idx_entry_by_virtual_object",
-    "_idx_entry_next_at_by_virtual_object",
-    "_idx_busy_vqueue",
-    "_idx_entry_next_at_by_stage",
+/// Every index the planner can read: none of them is a table.
+const INDEXES: [&str; 5] = [
+    EntryByQueue::NAME,
+    EntryByServiceCreated::NAME,
+    EntryByStatusCreated::NAME,
+    EntryStatusByStatusCreated::NAME,
+    EntryStatusByStatusTransitioned::NAME,
 ];
 
 async fn table_names(session: &dyn QuerySession, schema: &str) -> BTreeSet<String> {
@@ -630,10 +632,10 @@ async fn migration_tables_serve_the_default_engine_rows() {
     let core = TestCoreEnv::create_with_single_node(1, 1).await;
     RocksDbManager::init();
     let manager = PartitionStoreManager::create(true).await.unwrap();
-    // Two replicas track the status gauges: three statistics each, Ready at once
-    // over empty partitions, their jobs completed.
+    // Two replicas open with indexes: three statistics and three entry indexes
+    // each, Complete at once over empty partitions, their jobs completed.
     let mut config = Configuration::pinned().as_ref().clone();
-    config.common.experimental.set_track_status_gauges(true);
+    config.common.experimental.set_indexes(true);
     for id in [1, 2] {
         let mut store = manager
             .open(&Partition::new(PartitionId::from(id), KeyRange::FULL), None)
@@ -699,7 +701,7 @@ async fn migration_tables_serve_the_default_engine_rows() {
         let mut actual = rows(session.as_ref(), sql).await;
         actual.sort();
         assert_eq!(&actual, expected, "{sql}");
-        assert_eq!(actual.len(), 6, "{sql}");
+        assert_eq!(actual.len(), 12, "{sql}");
     }
     // Index sizes are estimated when the query selects them; completed jobs
     // aren't blocked.
@@ -709,7 +711,7 @@ async fn migration_tables_serve_the_default_engine_rows() {
         "SELECT COUNT(*) FROM cluster.migration_jobs
          WHERE status = 'completed' AND blocked_by IS NULL",
     ] {
-        assert_eq!(rows(session.as_ref(), sql).await, [["6"]], "{sql}");
+        assert_eq!(rows(session.as_ref(), sql).await, [["12"]], "{sql}");
     }
 }
 
@@ -1112,7 +1114,7 @@ async fn first_column_of_same_rows(
 }
 
 #[tokio::test]
-async fn experimental_table_visibility_is_fixed_at_session_creation_in_both_engines() {
+async fn stats_tables_follow_index_reads_and_index_tables_never_show() {
     let previous_config = Configuration::pinned().clone();
     let mut config = Configuration::default();
     Configuration::set(config.clone());
@@ -1145,25 +1147,13 @@ async fn experimental_table_visibility_is_fixed_at_session_creation_in_both_engi
         .await
         .unwrap();
     let v2 = Arc::new(DataFusionQueryEngine::from_env(query_env, None));
-    // Both engines show the statistics tables; only V2 shows index tables. V1 is
-    // linked as a normal library with its original catalog.
+    // Both engines show the statistics tables where queries read indexes, whatever
+    // the gauge options. Neither shows index tables: only the planner reads indexes.
+    // V1 is linked as a normal library with its original catalog.
     let engines = [("v1", v1, false), ("v2", v2, true)];
     let mut enabled_sessions = Vec::new();
-    for (stats, tracking, reset, indexes) in [
-        (false, false, false, false),
-        (false, true, false, false),
-        (true, false, false, false),
-        (true, true, false, false),
-        (true, false, true, false),
-        (true, true, true, false),
-        (false, false, false, true),
-        (true, false, false, true),
-        (false, false, false, false),
-    ] {
-        config.common.experimental.set_query_stats_tables(stats);
-        config.common.experimental.set_track_status_gauges(tracking);
-        config.common.experimental.set_status_gauges_reset(reset);
-        config.common.experimental.set_query_index_tables(indexes);
+    for reads in [false, true, false] {
+        config.common.experimental.set_indexes(reads);
         Configuration::set(config.clone());
         for (engine_name, engine, is_v2) in &engines {
             let session = engine.create_session(SessionOptions::default()).unwrap();
@@ -1185,25 +1175,17 @@ async fn experimental_table_visibility_is_fixed_at_session_creation_in_both_engi
                     "sys_vqueues",
                 ]
                 .into_iter()
-                .chain(STATS.into_iter().filter(|_| stats))
-                .chain(["_idx_entry_by_queue"].into_iter().filter(|_| indexes))
+                .chain(STATS.into_iter().filter(|_| reads))
                 .map(str::to_owned)
                 .collect();
-                assert_eq!(
-                    names, expected,
-                    "stats_visibility_is_independent_of_tracking_and_reset"
-                );
+                assert_eq!(names, expected, "stats_follow_index_reads");
             } else {
                 assert!(names.contains("state") && names.contains("sys_invocation"));
             }
             let selected: Vec<_> = STATS
                 .into_iter()
-                .map(|name| (name, stats))
-                .chain(
-                    INDEXES
-                        .into_iter()
-                        .map(|name| (name, indexes && *is_v2 && name == "_idx_entry_by_queue")),
-                )
+                .map(|name| (name, reads))
+                .chain(INDEXES.into_iter().map(|name| (name, false)))
                 .collect();
             for (name, visible) in &selected {
                 assert_eq!(names.contains(*name), *visible, "{engine_name}: {name}");
@@ -1217,7 +1199,7 @@ async fn experimental_table_visibility_is_fixed_at_session_creation_in_both_engi
                 }
             }
 
-            // Explicit selections, including renamed identities, cannot bypass a gate.
+            // Explicit selections, including renamed identities, cannot reach a hidden table.
             let aliases = engine
                 .create_session(SessionOptions {
                     tables: Some(
@@ -1241,22 +1223,20 @@ async fn experimental_table_visibility_is_fixed_at_session_creation_in_both_engi
                 expected,
                 "{engine_name}"
             );
-            if stats && indexes {
-                enabled_sessions.push((session, *is_v2));
+            if reads {
+                enabled_sessions.push(session);
             }
         }
     }
-    // Disabling a flag affects only new sessions, not catalogs already constructed.
-    for (session, is_v2) in enabled_sessions {
+    // Turning index reads off affects only new sessions, not catalogs already
+    // constructed.
+    for session in enabled_sessions {
         let names = table_names(session.as_ref(), "public").await;
         for table in STATS {
             assert!(names.contains(table));
         }
         for table in INDEXES {
-            assert_eq!(
-                names.contains(table),
-                is_v2 && table == "_idx_entry_by_queue"
-            );
+            assert!(!names.contains(table));
         }
     }
     Configuration::set(previous_config);

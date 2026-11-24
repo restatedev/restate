@@ -421,8 +421,7 @@ async fn vqueues_view_matches_v1_stage_reads() {
     tx.commit().await.unwrap();
     drop(tx);
     // V2 reads queue- and active-stage-restricted queries through the stage
-    // tables, whether or not SQL can see the index tables: showing them only adds
-    // the inspection table. Either way, results match V1.
+    // tables, and the results match V1.
     let plan = |session: Arc<dyn QuerySession>, filter: String| async move {
         rows(
             session.as_ref(),
@@ -432,155 +431,112 @@ async fn vqueues_view_matches_v1_stage_reads() {
         .concat()
         .join("\n")
     };
-    // The stage tables, read as an index, carry the same key-derived columns.
-    let columns = "stage, vqueue_id, has_lock, next_at, sequence_number, canonical_id, \
-                   entry_id, partition_key";
-    let inspect = |table: &str, filter: &str| {
-        format!("SELECT {columns} FROM {table} WHERE {filter} ORDER BY canonical_id")
-    };
-    for index_tables in [false, true] {
-        let mut config = Configuration::pinned().clone();
-        config
-            .common
-            .experimental
-            .set_query_index_tables(index_tables);
-        Configuration::set(config);
-        let [old, new] = differential_sessions(&manager).await;
-        for sql in [
-            "SELECT * FROM sys_vqueues ORDER BY canonical_id".to_owned(),
-            "SELECT id, stage, run_at FROM sys_vqueues WHERE stage = 'inbox' ORDER BY id".into(),
-            format!(
-                "SELECT * FROM sys_vqueues WHERE id = '{}' ORDER BY sequence_number",
-                queues[1]
-            ),
-            format!(
-                "SELECT id, stage, status, has_lock FROM sys_vqueues WHERE entry_id IN ('{}', '{}') \
-                 ORDER BY entry_id",
-                entries[2], entries[8]
-            ),
-            "SELECT stage, COUNT(*), COUNT(run_at) FROM sys_vqueues GROUP BY stage ORDER BY stage"
-                .into(),
-            "SELECT id, sequence_number FROM sys_vqueues WHERE has_lock \
-             ORDER BY id, sequence_number LIMIT 2 OFFSET 1"
-                .into(),
-            format!(
-                "SELECT * FROM sys_vqueues WHERE id IN ('{}', '{}') ORDER BY canonical_id",
-                queues[0], queues[1]
-            ),
-            format!(
-                "SELECT id, stage, entry_id FROM sys_vqueues WHERE (id = '{}' AND has_lock) \
-                 OR (id = '{}' AND stage = 'inbox') ORDER BY entry_id",
-                queues[0], queues[1]
-            ),
-            "SELECT id, stage, status FROM sys_vqueues WHERE stage IN ('running', 'paused') \
-             ORDER BY entry_id"
-                .into(),
-            format!(
-                "SELECT entry_id FROM sys_vqueues WHERE id = '{}' AND num_attempts > 0 \
-                 AND deployment = 'dp_1' ORDER BY sequence_number LIMIT 2 OFFSET 1",
-                queues[1]
-            ),
-        ] {
-            assert_eq!(
-                rows(new.as_ref(), &sql).await,
-                rows(old.as_ref(), &sql).await,
-                "index_tables={index_tables}: {sql}"
-            );
-        }
+    let [old, new] = differential_sessions(&manager).await;
+    for sql in [
+        "SELECT * FROM sys_vqueues ORDER BY canonical_id".to_owned(),
+        "SELECT id, stage, run_at FROM sys_vqueues WHERE stage = 'inbox' ORDER BY id".into(),
+        format!(
+            "SELECT * FROM sys_vqueues WHERE id = '{}' ORDER BY sequence_number",
+            queues[1]
+        ),
+        format!(
+            "SELECT id, stage, status, has_lock FROM sys_vqueues WHERE entry_id IN ('{}', '{}') \
+             ORDER BY entry_id",
+            entries[2], entries[8]
+        ),
+        "SELECT stage, COUNT(*), COUNT(run_at) FROM sys_vqueues GROUP BY stage ORDER BY stage"
+            .into(),
+        "SELECT id, sequence_number FROM sys_vqueues WHERE has_lock \
+         ORDER BY id, sequence_number LIMIT 2 OFFSET 1"
+            .into(),
+        format!(
+            "SELECT * FROM sys_vqueues WHERE id IN ('{}', '{}') ORDER BY canonical_id",
+            queues[0], queues[1]
+        ),
+        format!(
+            "SELECT id, stage, entry_id FROM sys_vqueues WHERE (id = '{}' AND has_lock) \
+             OR (id = '{}' AND stage = 'inbox') ORDER BY entry_id",
+            queues[0], queues[1]
+        ),
+        "SELECT id, stage, status FROM sys_vqueues WHERE stage IN ('running', 'paused') \
+         ORDER BY entry_id"
+            .into(),
+        format!(
+            "SELECT entry_id FROM sys_vqueues WHERE id = '{}' AND num_attempts > 0 \
+             AND deployment = 'dp_1' ORDER BY sequence_number LIMIT 2 OFFSET 1",
+            queues[1]
+        ),
+    ] {
+        assert_eq!(
+            rows(new.as_ref(), &sql).await,
+            rows(old.as_ref(), &sql).await,
+            "{sql}"
+        );
+    }
+    assert_eq!(
+        rows(
+            new.as_ref(),
+            "SELECT COUNT(*), COUNT(run_at) FROM sys_vqueues"
+        )
+        .await,
+        [["10", "2"]],
+        "run_at_is_present_only_for_inbox_entries"
+    );
+    // Each row shows its effective status, in both engines: the stage's own
+    // for running, suspended and paused entries whatever they stored, and
+    // NULL for a Finished entry without an outcome, the `unknown` sentinel,
+    // which no status name selects; a status condition selects by the rest.
+    for session in [&old, &new] {
         assert_eq!(
             rows(
-                new.as_ref(),
-                "SELECT COUNT(*), COUNT(run_at) FROM sys_vqueues"
+                session.as_ref(),
+                "SELECT DISTINCT stage, COALESCE(status, 'NULL') FROM sys_vqueues \
+                 ORDER BY stage"
             )
             .await,
-            [["10", "2"]],
-            "run_at_is_present_only_for_inbox_entries"
+            [
+                ["finished", "NULL"],
+                ["inbox", "new"],
+                ["paused", "paused"],
+                ["running", "running"],
+                ["suspended", "suspended"],
+            ],
+            "effective_status"
         );
-        // Each row shows its effective status, in both engines: the stage's own
-        // for running, suspended and paused entries whatever they stored, and
-        // NULL for a Finished entry without an outcome, the `unknown` sentinel,
-        // which no status name selects; a status condition selects by the rest.
-        for session in [&old, &new] {
-            assert_eq!(
-                rows(
-                    session.as_ref(),
-                    "SELECT DISTINCT stage, COALESCE(status, 'NULL') FROM sys_vqueues \
-                     ORDER BY stage"
-                )
-                .await,
-                [
-                    ["finished", "NULL"],
-                    ["inbox", "new"],
-                    ["paused", "paused"],
-                    ["running", "running"],
-                    ["suspended", "suspended"],
-                ],
-                "effective_status"
-            );
-            assert_eq!(
-                rows(
-                    session.as_ref(),
-                    "SELECT COUNT(*) FROM sys_vqueue_entry_status \
-                     WHERE status IN ('paused', 'yielded', 'unknown')"
-                )
-                .await,
-                [["2"]],
-                "status_conditions_select_effective_statuses"
-            );
-        }
+        assert_eq!(
+            rows(
+                session.as_ref(),
+                "SELECT COUNT(*) FROM sys_vqueue_entry_status \
+                 WHERE status IN ('paused', 'yielded', 'unknown')"
+            )
+            .await,
+            [["2"]],
+            "status_conditions_select_effective_statuses"
+        );
+    }
 
-        // Queue and active-stage restrictions read the stage tables; finished-only,
-        // unrestricted and entry-ID reads keep their access paths.
-        for (filter, access) in [
-            (format!("id = '{}'", queues[1]), "index=_idx_entry_by_queue"),
-            (
-                "stage IN ('inbox', 'suspended')".to_owned(),
-                "index=_idx_entry_by_queue",
-            ),
-            ("stage = 'finished'".into(), "TableScanExec"),
-            (
-                format!("id = '{}' OR num_attempts > 1", queues[1]),
-                "TableScanExec",
-            ),
-            (format!("entry_id = '{}'", entries[2]), "MultiGetExec"),
-        ] {
-            let plan = plan(Arc::clone(&new), filter.clone()).await;
-            assert!(
-                plan.contains(access),
-                "index_tables={index_tables}: {filter}: {plan}"
-            );
-            assert_eq!(
-                plan.contains("IndexScanExec"),
-                access.starts_with("index"),
-                "{plan}"
-            );
-        }
-
-        for filter in [
-            "TRUE".to_owned(),
-            format!("vqueue_id = '{}'", queues[1]),
-            "stage IN ('inbox', 'finished') AND has_lock".into(),
-        ] {
-            let sql = inspect("_idx_entry_by_queue", &filter);
-            if index_tables {
-                assert_eq!(
-                    rows(new.as_ref(), &sql).await,
-                    rows(new.as_ref(), &inspect("sys_vqueue_entry_status", &filter)).await,
-                    "stage_index_matches_entry_status: {filter}"
-                );
-            } else {
-                let error = new
-                    .execute(&sql, restate_storage_query_api::QueryOptions {})
-                    .await
-                    .err()
-                    .expect("hidden index tables can't be queried")
-                    .to_string();
-                assert!(
-                    error.contains("_idx_entry_by_queue") && error.contains("not found"),
-                    "hidden_index_table: {error}"
-                );
-            }
-        }
+    // Queue and active-stage restrictions read the stage tables; finished-only,
+    // unrestricted and entry-ID reads keep their access paths.
+    for (filter, access) in [
+        (format!("id = '{}'", queues[1]), "index=_idx_entry_by_queue"),
+        (
+            "stage IN ('inbox', 'suspended')".to_owned(),
+            "index=_idx_entry_by_queue",
+        ),
+        ("stage = 'finished'".into(), "TableScanExec"),
+        (
+            format!("id = '{}' OR num_attempts > 1", queues[1]),
+            "TableScanExec",
+        ),
+        (format!("entry_id = '{}'", entries[2]), "MultiGetExec"),
+    ] {
+        let plan = plan(Arc::clone(&new), filter.clone()).await;
+        assert!(plan.contains(access), "{filter}: {plan}");
+        assert_eq!(
+            plan.contains("IndexScanExec"),
+            access.starts_with("index"),
+            "{plan}"
+        );
     }
 
     // The UI's finished page: more terminal entries than it shows, newest
@@ -699,7 +655,7 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
         .await
         .unwrap();
     let mut config = Configuration::default();
-    config.common.experimental.set_track_entry_indexes(true);
+    config.common.experimental.set_indexes(true);
     store
         .verify_and_run_migrations(CancellationToken::new(), &config)
         .await
@@ -1223,7 +1179,7 @@ async fn active_entries_read_through_the_status_index_match_the_scan() {
         .await
         .unwrap();
     let mut config = Configuration::default();
-    config.common.experimental.set_track_entry_indexes(true);
+    config.common.experimental.set_indexes(true);
     store
         .verify_and_run_migrations(CancellationToken::new(), &config)
         .await

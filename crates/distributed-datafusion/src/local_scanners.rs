@@ -21,7 +21,6 @@ use restate_worker_api::ProcessorsManagerHandle;
 
 use crate::source_registry::SourceRegistry;
 use crate::tables::deployment::schema::SysDeploymentTable;
-use crate::tables::index::{EntryByQueueTable, EntryByServiceSource, EntryByServiceTable};
 use crate::tables::invocation_state::SysInvocationStateTable;
 use crate::tables::invocation_status::SysInvocationStatusTable;
 use crate::tables::journal::SysJournalTable;
@@ -133,10 +132,6 @@ fn register_storage_sources(sources: &SourceRegistry) {
     sources.register_declared_scanner::<SysVqueueMetaTable>(Arc::new(
         SysVqueueMetaTable::create_local_scanner(),
     ));
-    sources.register_declared_scanner::<EntryByServiceSource>(Arc::new(
-        EntryByServiceTable::create_local_scanner(),
-    ));
-    EntryByQueueTable::register_scanners(sources);
     sources.register_declared_scanner::<SysVqueueEntryStatusTable>(Arc::new(
         SysVqueueEntryStatusTable::create_local_scanner(),
     ));
