@@ -635,6 +635,14 @@ where
             {
                 feature_changes.push(PartitionFeatureChange::EnableVqLifecycleRefined);
             }
+            if config.common.experimental.is_write_blob_table_enabled()
+                && !processor
+                    .fsm()
+                    .features()
+                    .is_invocation_status_output_blob_enabled()
+            {
+                feature_changes.push(PartitionFeatureChange::EnableInvocationStatusOutputBlob);
+            }
 
             // Changes that cost no rollback ride along once every replica is held to their
             // minimum version: by the changes enabled before, or by the barrier this round
@@ -1434,6 +1442,7 @@ mod tests {
                 preflight_signal_recording: true,
                 byte_offsets: true,
                 vq_lifecycle_refined: true,
+                invocation_status_output_blob: true,
             },
         );
         let (leader_query_tx, _leader_query_rx) = restate_worker_api::channel();

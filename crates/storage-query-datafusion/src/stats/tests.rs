@@ -191,6 +191,31 @@ async fn query(session: &dyn QuerySession, sql: &str) -> anyhow::Result<Vec<Reco
         .await?)
 }
 
+/// Runs every statistics query that could return a partial result and checks
+/// that each fails, as not complete, before it returns any row: a client that
+/// already got rows couldn't tell them from a complete result.
+async fn assert_queries_fail_before_rows(session: &dyn QuerySession) {
+    for table in TABLES {
+        for sql in [
+            format!("SELECT * FROM {table}"),
+            format!("SELECT * FROM {table} LIMIT 1"),
+            format!("SELECT * FROM {table} ORDER BY service_name LIMIT 1"),
+        ] {
+            let mut stream = session.execute(&sql, QueryOptions {}).await.unwrap().stream;
+            let error = loop {
+                match stream.try_next().await {
+                    Ok(Some(batch)) => {
+                        assert_eq!(batch.num_rows(), 0, "{sql}: rows before the error")
+                    }
+                    Ok(None) => panic!("{sql}: no error"),
+                    Err(error) => break error,
+                }
+            };
+            assert!(error.to_string().contains("not complete"), "{sql}: {error}");
+        }
+    }
+}
+
 async fn assert_rows(session: &dyn QuerySession, sql: &str, expected: &[&[Option<&str>]]) {
     let batches = query(session, sql).await.unwrap();
     let actual: Vec<Vec<Option<String>>> = batches
@@ -316,11 +341,13 @@ async fn statistics_have_shared_shapes_and_sum_before_count_filters_and_limits()
     config.common.experimental.set_query_stats_tables(true);
     Configuration::set(config);
     let mut fixture = Fixture::new(true).await;
-    for (i, store) in fixture.stores.iter_mut().enumerate() {
-        complete(store).await;
-        populate(store, i == 1).await;
-    }
     let session = fixture.session();
+    complete(&mut fixture.stores[0]).await;
+    populate(&mut fixture.stores[0], false).await;
+    // The local partition has rows, but the remote one has no Complete gauges.
+    assert_queries_fail_before_rows(session.as_ref()).await;
+    complete(&mut fixture.stores[1]).await;
+    populate(&mut fixture.stores[1], true).await;
     for (table, schema) in TABLES.into_iter().zip([
         ServiceStats::arrow_schema(),
         DeploymentStats::arrow_schema(),

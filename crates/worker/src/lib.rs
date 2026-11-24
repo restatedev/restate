@@ -42,10 +42,17 @@ use restate_ingestion_client::SessionOptions;
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::snapshots::SnapshotRepository;
+use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
+use restate_storage_api::StorageError;
+use restate_storage_api::blob_table::{BlobDecoder, Header, ReadBlobTable};
+use restate_storage_api::invocation_status_table::{CompletedResult, ResponseResultRef};
 use restate_types::Version;
 use restate_types::Versioned;
 use restate_types::config::{AutomaticSnapshots, Configuration};
 use restate_types::health::HealthStatus;
+use restate_types::invocation::ResponseResult;
+use restate_types::journal_v2::raw::RawCommandSpecificMetadata;
+use restate_types::journal_v2::{Command, CommandType};
 use restate_types::net::connect_opts::GrpcConnectionOptions;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
@@ -256,5 +263,48 @@ where
         }
 
         Ok(())
+    }
+}
+
+pub(crate) trait ResolveResponseResult {
+    /// The full result, read from the output blob if needed. `None` if the blob is gone.
+    fn resolve<S: ReadBlobTable>(
+        &self,
+        storage: &mut S,
+    ) -> impl Future<Output = Result<Option<ResponseResult>, StorageError>>;
+}
+
+impl ResolveResponseResult for ResponseResultRef {
+    async fn resolve<S: ReadBlobTable>(
+        &self,
+        storage: &mut S,
+    ) -> Result<Option<ResponseResult>, StorageError> {
+        match self {
+            Self::Success(bytes) => Ok(Some(ResponseResult::Success(bytes.clone()))),
+            Self::Failure(err) => Ok(Some(ResponseResult::Failure(err.clone()))),
+            Self::Completed(CompletedResult { blob_id, .. }) => {
+                storage.get_blob::<OutputBlob>(*blob_id).await
+            }
+        }
+    }
+}
+
+/// The output blob holds the content of the Output entry, shared with the journal.
+struct OutputBlob;
+
+impl BlobDecoder for OutputBlob {
+    type Type = ResponseResult;
+
+    fn decode_blob(_header: impl Header, raw: &[u8]) -> Result<Self::Type, StorageError> {
+        let command = ServiceProtocolV4Codec::decode_command(
+            CommandType::Output,
+            &RawCommandSpecificMetadata::None,
+            raw,
+        )
+        .map_err(|err| StorageError::Conversion(err.into()))?;
+        let Command::Output(output) = command else {
+            unreachable!("decoding an Output command type yields an Output command");
+        };
+        Ok(output.result.into())
     }
 }

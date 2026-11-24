@@ -210,6 +210,11 @@ message InvocationStatusV2 {
     PAUSED = 7;
   }
 
+  enum CompletionStatus {
+    SUCCESS = 0;
+    FAILURE = 1;
+  }
+
   Status status = 1;
 
   // Common
@@ -262,8 +267,24 @@ message InvocationStatusV2 {
   repeated Future nested_futures = 32;
   CombinatorType combinator_type = 33;
 
+  // A completed output stored in the blob table.
+  message OutputBlob {
+    // Binary-encoded BlobId of the stored output.
+    bytes blob_id = 1;
+    CompletionStatus completion_status = 2;
+    // The failure status code. Set iff completion_status is FAILURE.
+    optional uint32 failure_status_code = 3;
+    // The failure message truncated to its first 200 characters. Set only if
+    // completion_status is FAILURE.
+    optional string failure_message = 4;
+  }
+
   // Completed
-  ResponseResult result = 18;
+  // The completed output: inlined (result) or stored in the blob table (blob).
+  oneof output {
+    ResponseResult result = 18;
+    OutputBlob blob = 39;
+  }
 
   // Binary-encoded vqueue id. Empty if this invocation was not migrated to vqueues.
   optional bytes vqueue_id = 34;
@@ -331,6 +352,7 @@ message InvocationStatusV2Lazy {
 
   // Completed
   // optional bytes result_lazy = 18;
+  // OutputBlob blob = 39; (decoded on demand)
 
   // Binary-encoded vqueue id. Empty if this invocation was not migrated to vqueues.
   optional bytes vqueue_id = 34;

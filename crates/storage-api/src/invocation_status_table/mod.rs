@@ -16,7 +16,9 @@ use std::time::Duration;
 use bytes::Bytes;
 use bytestring::ByteString;
 
+use restate_types::blob::BlobId;
 use restate_types::deployment::PinnedDeployment;
+use restate_types::errors::{InvocationError, InvocationErrorCode};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
     Header, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
@@ -27,7 +29,7 @@ use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::{Seq, VQueueId};
 use restate_types::{LimitKey, RestateVersion};
-use restate_util_string::ReString;
+use restate_util_string::{ReString, StringLike};
 
 use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
@@ -784,6 +786,121 @@ impl InFlightInvocationMetadata {
     }
 }
 
+#[derive(derive_more::Debug, Clone, PartialEq, Eq)]
+pub enum ExitStatus<'a> {
+    Success,
+    Failure((InvocationErrorCode, FailureMessage<'a>)),
+}
+
+/// The message of a failed invocation, as much of it as the completed status holds.
+#[derive(derive_more::Debug, Clone, PartialEq, Eq)]
+pub enum FailureMessage<'a> {
+    /// The whole message of an inlined result.
+    Full(&'a str),
+    /// The message of a result stored in the blob table, truncated to its first
+    /// [`COMPLETION_FAILURE_MESSAGE_MAX_CHARS`] characters.
+    Partial(&'a str),
+}
+
+impl<'a> FailureMessage<'a> {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Full(message) => message,
+            Self::Partial(message) => message,
+        }
+    }
+}
+
+/// Maximum number of characters of the failure message kept in [`CompletionStatus::Failure`].
+pub const COMPLETION_FAILURE_MESSAGE_MAX_CHARS: usize = 200;
+
+#[derive(derive_more::Debug, Clone, PartialEq, Eq)]
+pub enum CompletionStatus {
+    Success,
+    Failure {
+        code: InvocationErrorCode,
+        /// The failure message, truncated to [`COMPLETION_FAILURE_MESSAGE_MAX_CHARS`] characters.
+        /// The full message is stored with the output.
+        message: ByteString,
+    },
+}
+
+impl CompletionStatus {
+    pub fn failure(err: &InvocationError) -> Self {
+        let message = err.message();
+        let message = match message
+            .char_indices()
+            .nth(COMPLETION_FAILURE_MESSAGE_MAX_CHARS)
+        {
+            Some((end, _)) => &message[..end],
+            None => message,
+        };
+        Self::Failure {
+            code: err.code,
+            message: ByteString::from(message),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletedResult {
+    pub blob_id: BlobId,
+    pub status: CompletionStatus,
+}
+
+#[derive(derive_more::Debug, Clone, PartialEq, Eq)]
+pub enum ResponseResultRef {
+    /// The result is stored in the output blob.
+    Completed(CompletedResult),
+    // Inlined success/failure result: outputs too small for the blob table, or written while
+    // the blob table was disabled.
+    #[debug("Success(<data>)")]
+    Success(Bytes),
+    #[debug("Failure({_0})")]
+    Failure(InvocationError),
+}
+
+impl ResponseResultRef {
+    pub fn result(&self) -> ExitStatus<'_> {
+        match self {
+            Self::Success(_) => ExitStatus::Success,
+            Self::Failure(err) => {
+                ExitStatus::Failure((err.code, FailureMessage::Full(err.message.as_str())))
+            }
+            Self::Completed(status) => ExitStatus::from(status),
+        }
+    }
+}
+
+impl From<ResponseResult> for ResponseResultRef {
+    fn from(value: ResponseResult) -> Self {
+        match value {
+            ResponseResult::Success(bytes) => Self::Success(bytes),
+            ResponseResult::Failure(failure) => Self::Failure(failure),
+        }
+    }
+}
+
+impl From<ResponseResult> for CompletionStatus {
+    fn from(value: ResponseResult) -> Self {
+        match value {
+            ResponseResult::Success(_) => Self::Success,
+            ResponseResult::Failure(failure) => Self::failure(&failure),
+        }
+    }
+}
+
+impl<'a> From<&'a CompletedResult> for ExitStatus<'a> {
+    fn from(value: &'a CompletedResult) -> Self {
+        match &value.status {
+            CompletionStatus::Success => Self::Success,
+            CompletionStatus::Failure { code, message } => {
+                Self::Failure((*code, FailureMessage::Partial(message.as_str())))
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompletedInvocation {
     pub vqueue_id: Option<VQueueId>,
@@ -800,7 +917,7 @@ pub struct CompletedInvocation {
     pub execution_time: Option<MillisSinceEpoch>,
     pub idempotency_key: Option<ByteString>,
     pub timestamps: StatusTimestamps,
-    pub response_result: ResponseResult,
+    pub response_result: ResponseResultRef,
 
     pub completion_retention_duration: Duration,
     pub journal_retention_duration: Duration,
@@ -832,7 +949,7 @@ impl CompletedInvocation {
     pub fn from_pre_flight_invocation_metadata(
         mut metadata: PreFlightInvocationMetadata,
         journal_retention_policy: JournalRetentionPolicy,
-        response_result: ResponseResult,
+        response_result: impl Into<ResponseResultRef>,
         timestamp: MillisSinceEpoch,
     ) -> Self {
         metadata
@@ -863,7 +980,7 @@ impl CompletedInvocation {
             execution_time: metadata.execution_time,
             idempotency_key: metadata.idempotency_key,
             timestamps: metadata.timestamps,
-            response_result,
+            response_result: response_result.into(),
             completion_retention_duration: metadata.completion_retention_duration,
             journal_retention_duration: metadata.journal_retention_duration,
             journal_metadata,
@@ -876,7 +993,7 @@ impl CompletedInvocation {
     pub fn from_in_flight_invocation_metadata(
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
         journal_retention_policy: JournalRetentionPolicy,
-        response_result: ResponseResult,
+        response_result: impl Into<ResponseResultRef>,
         timestamp: MillisSinceEpoch,
     ) -> Self {
         in_flight_invocation_metadata
@@ -893,7 +1010,7 @@ impl CompletedInvocation {
             execution_time: in_flight_invocation_metadata.execution_time,
             idempotency_key: in_flight_invocation_metadata.idempotency_key,
             timestamps: in_flight_invocation_metadata.timestamps,
-            response_result,
+            response_result: response_result.into(),
             completion_retention_duration: in_flight_invocation_metadata
                 .completion_retention_duration,
             journal_retention_duration: in_flight_invocation_metadata.journal_retention_duration,
@@ -983,8 +1100,7 @@ mod test_util {
     use super::*;
     use restate_sharding::PartitionKey;
     use restate_types::identifiers::PartitionProcessorRpcRequestId;
-
-    use restate_types::invocation::VirtualObjectHandlerType;
+    use restate_types::invocation::{ResponseResult, VirtualObjectHandlerType};
 
     impl StatusTimestamps {
         pub fn mock() -> Self {
@@ -1124,7 +1240,7 @@ mod test_util {
                 execution_time: None,
                 idempotency_key: None,
                 timestamps,
-                response_result: ResponseResult::Success(Bytes::from_static(b"123")),
+                response_result: ResponseResult::Success(Bytes::from_static(b"123")).into(),
                 completion_retention_duration: Duration::from_secs(60 * 60),
                 journal_retention_duration: Duration::ZERO,
                 journal_metadata: JournalMetadata::empty(),
@@ -1153,7 +1269,7 @@ mod test_util {
                 execution_time: None,
                 idempotency_key: None,
                 timestamps,
-                response_result: ResponseResult::Success(Bytes::from_static(b"123")),
+                response_result: ResponseResult::Success(Bytes::from_static(b"123")).into(),
                 completion_retention_duration: Duration::from_secs(60 * 60),
                 journal_retention_duration: Duration::ZERO,
                 journal_metadata: JournalMetadata::empty(),
@@ -1176,4 +1292,64 @@ pub struct InvocationLite {
 
 impl PartitionStoreProtobufValue for InvocationLite {
     type ProtobufType = crate::protobuf_types::v1::InvocationV2Lite;
+}
+
+#[cfg(test)]
+mod tests {
+    use restate_clock::UniqueTimestamp;
+    use restate_types::errors::{InvocationError, codes};
+
+    use super::*;
+    use crate::protobuf_types::v1::InvocationStatusV2;
+    use crate::protobuf_types::v1::invocation_status_v2::{Output, OutputBlob};
+
+    #[test]
+    fn completed_output_round_trip() {
+        let blob_id = BlobId::new(
+            UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::new(1_700_000_000_000)),
+            7u64,
+            42,
+            [1; 16],
+        );
+        let cases = [
+            ResponseResultRef::Success(Bytes::from_static(b"ok")),
+            ResponseResultRef::Failure(InvocationError::new(codes::INTERNAL, "boom")),
+            ResponseResultRef::Completed(CompletedResult {
+                blob_id,
+                status: CompletionStatus::Failure {
+                    code: codes::INTERNAL,
+                    message: "boom".into(),
+                },
+            }),
+        ];
+
+        for response_result in cases {
+            let status = InvocationStatus::Completed(CompletedInvocation {
+                response_result: response_result.clone(),
+                ..CompletedInvocation::mock_neo()
+            });
+            let proto = InvocationStatusV2::from(status.clone());
+            match &response_result {
+                ResponseResultRef::Success(_) | ResponseResultRef::Failure(_) => {
+                    assert!(matches!(proto.output, Some(Output::Result(_))));
+                }
+                ResponseResultRef::Completed(_) => {
+                    assert!(matches!(proto.output, Some(Output::Blob(_))));
+                }
+            }
+            assert_eq!(InvocationStatus::try_from(proto.clone()).unwrap(), status);
+
+            // A failed blob output without a failure status code is rejected
+            if let Some(Output::Blob(blob)) = proto.output.clone() {
+                let invalid = InvocationStatusV2 {
+                    output: Some(Output::Blob(OutputBlob {
+                        failure_status_code: None,
+                        ..blob
+                    })),
+                    ..proto
+                };
+                assert!(InvocationStatus::try_from(invalid).is_err());
+            }
+        }
+    }
 }

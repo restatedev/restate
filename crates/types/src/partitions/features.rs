@@ -96,6 +96,13 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.8.2*
     EnableVqLifecycleRefined = 9,
+    /// The invocation status of a completed invocation refers to the blob of its Output journal
+    /// entry instead of holding a copy of the result. Independent of the partition store's
+    /// journal-entry-blobs storage feature, which decides where entry contents are stored.
+    /// Proposed by the leader when `experimental-enable-write-blob-table` is set.
+    ///
+    /// *Since v1.8.2*
+    EnableInvocationStatusOutputBlob = 10,
 }
 
 impl PartitionFeatureChange {
@@ -118,6 +125,7 @@ impl PartitionFeatureChange {
             Self::EnablePreflightSignalRecording => &RESTATE_VERSION_1_8_1,
             Self::EnableByteOffsets => &RESTATE_VERSION_1_8_2,
             Self::EnableVqLifecycleRefined => &RESTATE_VERSION_1_8_2,
+            Self::EnableInvocationStatusOutputBlob => &RESTATE_VERSION_1_8_2,
         }
     }
 
@@ -137,7 +145,8 @@ impl PartitionFeatureChange {
             | Self::EnablePreflightInvocationTerminationRetention
             | Self::EnableInconsistentStateMutationCleanup
             | Self::EnablePreflightSignalRecording
-            | Self::EnableByteOffsets => false,
+            | Self::EnableByteOffsets
+            | Self::EnableInvocationStatusOutputBlob => false,
         }
     }
 
@@ -171,6 +180,9 @@ impl PartitionFeatureChange {
             Self::EnableByteOffsets => !std::mem::replace(&mut features.byte_offsets, true),
             Self::EnableVqLifecycleRefined => {
                 !std::mem::replace(&mut features.vq_lifecycle_refined, true)
+            }
+            Self::EnableInvocationStatusOutputBlob => {
+                !std::mem::replace(&mut features.invocation_status_output_blob, true)
             }
         }
     }
@@ -255,6 +267,15 @@ pub struct PersistedFeatures {
     /// *Since v1.8.2*
     #[bilrost(tag(9))]
     pub vq_lifecycle_refined: bool,
+
+    /// The invocation status of a completed invocation refers to the blob of its Output journal
+    /// entry instead of holding a copy of the result. Independent of the partition store's
+    /// journal-entry-blobs storage feature, which decides where entry contents are stored.
+    /// Proposed by the leader when `experimental-enable-write-blob-table` is set.
+    ///
+    /// *Since v1.8.2*
+    #[bilrost(tag(10))]
+    pub invocation_status_output_blob: bool,
 }
 
 impl PersistedFeatures {
@@ -276,6 +297,8 @@ impl PersistedFeatures {
                 .then_some("preflight_signal_recording"),
             self.byte_offsets.then_some("byte_offsets"),
             self.vq_lifecycle_refined.then_some("vq_lifecycle_refined"),
+            self.invocation_status_output_blob
+                .then_some("invocation_status_output_blob"),
         ]
         .into_iter()
         .flatten()

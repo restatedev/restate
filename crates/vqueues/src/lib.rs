@@ -33,7 +33,7 @@ use restate_clock::RoughTimestamp;
 use restate_clock::time::MillisSinceEpoch;
 use restate_limiter::LimitKey;
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, InFlightInvocationMetadata,
+    CompletedInvocation, ExitStatus, InFlightInvocationMetadata,
 };
 use restate_storage_api::lock_table::{LockState, WriteLockTable};
 use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
@@ -1397,16 +1397,17 @@ where
         let stage = Stage::Finished;
 
         // How do we know if the invocation was "killed" or cancelled?
-        let status = match completed.response_result {
-            restate_types::invocation::ResponseResult::Success(_) => Status::Succeeded,
-            restate_types::invocation::ResponseResult::Failure(ref e) => {
-                if e.code() == restate_types::errors::codes::ABORTED {
+        let status = match completed.response_result.result() {
+            ExitStatus::Success => Status::Succeeded,
+            ExitStatus::Failure((code, message)) => {
+                if code == restate_types::errors::codes::ABORTED {
                     // Special handling for cancel/kill. Definitely not ideal, but the current
                     // design leaves me with no other options.
                     //
                     // This takes the same approach as what the UI does to determine if the
-                    // invocation was killed or cancelled.
-                    match e.message.as_ref() {
+                    // invocation was killed or cancelled. A partial message is only truncated
+                    // past its first 200 characters, so it can be matched the same way.
+                    match message.as_str() {
                         "cancelled" | "Cancelled" | "canceled" | "Canceled" => Status::Cancelled,
                         "killed" | "Killed" => Status::Killed,
                         _ => Status::Failed,

@@ -17,11 +17,13 @@ use restate_storage_query_api::tables::stats::virtual_object_stats::{
     VirtualObjectStats, VirtualObjectStatsColumn,
 };
 
+use crate::QuerySource;
 use crate::context::SelectPartitions;
 use crate::schema_scan::SchemaScanner;
 use crate::source_registry::SourceRegistry;
 use crate::statistics::{RowEstimate, SERVICE_ROW_ESTIMATE, TableStatisticsBuilder};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
+use crate::tables::stats::aggregated_stat_table::gauge_stat_sum_view;
 
 use super::schema::{SysVirtualObjectStatsTable, VirtualObjectStatsSource};
 
@@ -29,18 +31,19 @@ impl SysVirtualObjectStatsTable {
     pub(crate) fn create_provider(
         partition_selector: impl SelectPartitions,
         sources: &SourceRegistry,
-    ) -> Arc<dyn TableProvider> {
+    ) -> datafusion::common::Result<Arc<dyn TableProvider>> {
         let statistics = TableStatisticsBuilder::<VirtualObjectStats>::new()
             .with_num_rows_estimate(RowEstimate::Large)
             .with_foreign_key(VirtualObjectStatsColumn::ServiceName, SERVICE_ROW_ESTIMATE);
 
-        let table = PartitionedTableProvider::declared::<VirtualObjectStatsSource>(
+        let raw_table = PartitionedTableProvider::declared::<VirtualObjectStatsSource>(
             partition_selector,
             sources,
         )
         .with_statistics(statistics.build());
+        let table = gauge_stat_sum_view(&Self::identity(), Arc::new(raw_table))?;
 
-        Arc::new(table)
+        Ok(Arc::new(table))
     }
 
     pub(crate) fn create_local_scanner() -> impl ScanPartition {

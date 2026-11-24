@@ -13,7 +13,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use assert2::assert;
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use bytestring::ByteString;
 use prost::Message;
 
@@ -672,302 +672,315 @@ macro_rules! decode_or_bail {
     };
 }
 
+impl ServiceProtocolV4Codec {
+    /// Decodes a command from its parts, without requiring the content to be owned as [`Bytes`].
+    pub fn decode_command(
+        command_type: CommandType,
+        command_specific_metadata: &RawCommandSpecificMetadata,
+        mut serialized_content: impl Buf,
+    ) -> Result<Command, DecodingError> {
+        Ok(match command_type {
+            CommandType::Input => {
+                let proto::InputCommandMessage {
+                    headers,
+                    value,
+                    name,
+                } = decode_or_bail!(serialized_content, InputCommandMessage);
+                InputCommand {
+                    headers: headers.into_iter().map(Into::into).collect(),
+                    payload: get_or_bail!(value).content,
+                    name: name.into(),
+                }
+                .into()
+            }
+            CommandType::Output => {
+                let proto::OutputCommandMessage { name, result } =
+                    decode_or_bail!(serialized_content, OutputCommandMessage);
+                OutputCommand {
+                    result: get_or_bail!(result).try_into()?,
+                    name: name.into(),
+                }
+                .into()
+            }
+            CommandType::Run => {
+                let proto::RunCommandMessage {
+                    result_completion_id,
+                    name,
+                } = decode_or_bail!(serialized_content, RunCommandMessage);
+                RunCommand {
+                    completion_id: result_completion_id,
+                    name: name.into(),
+                }
+                .into()
+            }
+            CommandType::Sleep => {
+                let proto::SleepCommandMessage {
+                    wake_up_time,
+                    result_completion_id,
+                    name,
+                } = decode_or_bail!(serialized_content, SleepCommandMessage);
+                SleepCommand {
+                    wake_up_time: wake_up_time.into(),
+                    completion_id: result_completion_id,
+                    name: name.into(),
+                }
+                .into()
+            }
+            CommandType::Call => {
+                let proto::CallCommandMessage {
+                    parameter,
+                    headers,
+                    idempotency_key,
+                    limit_key,
+                    invocation_id_notification_idx,
+                    result_completion_id,
+                    name,
+                    ..
+                } = decode_or_bail!(serialized_content, CallCommandMessage);
+                assert!(let
+                    RawCommandSpecificMetadata::CallOrSend(metadata) =
+                        command_specific_metadata
+                );
+                // Scope is part of the InvocationTarget in the stored metadata
+                CallCommand {
+                    request: CallRequest {
+                        invocation_id: metadata.invocation_id,
+                        invocation_target: metadata.invocation_target.clone(),
+                        span_context: metadata.span_context.clone(),
+                        parameter,
+                        headers: headers.into_iter().map(Into::into).collect(),
+                        idempotency_key: idempotency_key.map(|s| s.into()),
+                        completion_retention_duration: metadata.completion_retention_duration,
+                        journal_retention_duration: metadata.journal_retention_duration,
+                        limit_key: if let Some(limit_key) = limit_key {
+                            limit_key.parse().map_err(GenericError::from)?
+                        } else {
+                            LimitKey::None
+                        },
+                    },
+                    invocation_id_completion_id: invocation_id_notification_idx,
+                    result_completion_id,
+                    name: name.into(),
+                }
+                .into()
+            }
+            CommandType::OneWayCall => {
+                let proto::OneWayCallCommandMessage {
+                    parameter,
+                    invoke_time,
+                    headers,
+                    idempotency_key,
+                    limit_key,
+                    invocation_id_notification_idx,
+                    name,
+                    ..
+                } = decode_or_bail!(serialized_content, OneWayCallCommandMessage);
+                assert!(let
+                    RawCommandSpecificMetadata::CallOrSend(metadata) =
+                        command_specific_metadata
+                );
+                // Scope is part of the InvocationTarget in the stored metadata
+                OneWayCallCommand {
+                    request: CallRequest {
+                        invocation_id: metadata.invocation_id,
+                        invocation_target: metadata.invocation_target.clone(),
+                        span_context: metadata.span_context.clone(),
+                        parameter,
+                        headers: headers.into_iter().map(Into::into).collect(),
+                        idempotency_key: idempotency_key.map(|s| s.into()),
+                        completion_retention_duration: metadata.completion_retention_duration,
+                        journal_retention_duration: metadata.journal_retention_duration,
+                        limit_key: if let Some(limit_key) = limit_key {
+                            limit_key.parse().map_err(GenericError::from)?
+                        } else {
+                            LimitKey::None
+                        },
+                    },
+                    invoke_time: invoke_time.into(),
+                    invocation_id_completion_id: invocation_id_notification_idx,
+                    name: name.into(),
+                }
+                .into()
+            }
+            CommandType::GetLazyState => {
+                let proto::GetLazyStateCommandMessage {
+                    key,
+                    result_completion_id,
+                    name,
+                } = decode_or_bail!(serialized_content, GetLazyStateCommandMessage);
+                GetLazyStateCommand {
+                    key: to_string_or_bail!(key).into(),
+                    completion_id: result_completion_id,
+                    name: name.into(),
+                }
+                .into()
+            }
+            CommandType::SetState => {
+                let proto::SetStateCommandMessage { key, value, name } =
+                    decode_or_bail!(serialized_content, SetStateCommandMessage);
+                SetStateCommand {
+                    key: to_string_or_bail!(key).into(),
+                    name: name.into(),
+                    value: get_or_bail!(value).content,
+                }
+                .into()
+            }
+            CommandType::ClearState => {
+                let proto::ClearStateCommandMessage { key, name } =
+                    decode_or_bail!(serialized_content, ClearStateCommandMessage);
+                ClearStateCommand {
+                    key: to_string_or_bail!(key).into(),
+                    name: name.into(),
+                }
+                .into()
+            }
+            CommandType::ClearAllState => {
+                let proto::ClearAllStateCommandMessage { name } =
+                    decode_or_bail!(serialized_content, ClearAllStateCommandMessage);
+                ClearAllStateCommand { name: name.into() }.into()
+            }
+            CommandType::GetLazyStateKeys => {
+                let proto::GetLazyStateKeysCommandMessage {
+                    result_completion_id,
+                    name,
+                } = decode_or_bail!(serialized_content, GetLazyStateKeysCommandMessage);
+                GetLazyStateKeysCommand {
+                    completion_id: result_completion_id,
+                    name: name.into(),
+                }
+                .into()
+            }
+            CommandType::GetEagerState => {
+                let proto::GetEagerStateCommandMessage { key, name, result } =
+                    decode_or_bail!(serialized_content, GetEagerStateCommandMessage);
+                GetEagerStateCommand {
+                    key: to_string_or_bail!(key).into(),
+                    name: name.into(),
+                    result: get_or_bail!(result).try_into()?,
+                }
+                .into()
+            }
+            CommandType::GetEagerStateKeys => {
+                let proto::GetEagerStateKeysCommandMessage { value, name } =
+                    decode_or_bail!(serialized_content, GetEagerStateKeysCommandMessage);
+                GetEagerStateKeysCommand {
+                    state_keys: get_or_bail!(value)
+                        .keys
+                        .into_iter()
+                        .map(|state_key| Ok::<_, DecodingError>(to_string_or_bail!(state_key)))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    name: name.into(),
+                }
+                .into()
+            }
+            CommandType::GetPromise => {
+                let proto::GetPromiseCommandMessage {
+                    key,
+                    result_completion_id,
+                    name,
+                } = decode_or_bail!(serialized_content, GetPromiseCommandMessage);
+                GetPromiseCommand {
+                    key: key.into(),
+                    completion_id: result_completion_id,
+                    name: name.into(),
+                }
+                .into()
+            }
+            CommandType::PeekPromise => {
+                let proto::PeekPromiseCommandMessage {
+                    key,
+                    result_completion_id,
+                    name,
+                } = decode_or_bail!(serialized_content, PeekPromiseCommandMessage);
+                PeekPromiseCommand {
+                    key: key.into(),
+                    completion_id: result_completion_id,
+                    name: name.into(),
+                }
+                .into()
+            }
+            CommandType::CompletePromise => {
+                let proto::CompletePromiseCommandMessage {
+                    key,
+                    result_completion_id,
+                    name,
+                    completion,
+                } = decode_or_bail!(serialized_content, CompletePromiseCommandMessage);
+                CompletePromiseCommand {
+                    key: key.into(),
+                    value: get_or_bail!(completion).try_into()?,
+                    completion_id: result_completion_id,
+                    name: name.into(),
+                }
+                .into()
+            }
+            CommandType::SendSignal => {
+                let proto::SendSignalCommandMessage {
+                    target_invocation_id,
+                    entry_name,
+                    signal_id,
+                    result,
+                } = decode_or_bail!(serialized_content, SendSignalCommandMessage);
+                SendSignalCommand {
+                    target_invocation_id: to_invocation_id_or_bail!(target_invocation_id),
+                    signal_id: get_or_bail!(signal_id).try_into()?,
+                    name: entry_name.into(),
+                    result: get_or_bail!(result).try_into()?,
+                }
+                .into()
+            }
+            CommandType::AttachInvocation => {
+                let proto::AttachInvocationCommandMessage {
+                    result_completion_id,
+                    name,
+                    target,
+                } = decode_or_bail!(serialized_content, AttachInvocationCommandMessage);
+                AttachInvocationCommand {
+                    target: get_or_bail!(target).try_into()?,
+                    name: name.into(),
+                    completion_id: result_completion_id,
+                }
+                .into()
+            }
+            CommandType::GetInvocationOutput => {
+                let proto::GetInvocationOutputCommandMessage {
+                    result_completion_id,
+                    name,
+                    target,
+                } = decode_or_bail!(serialized_content, GetInvocationOutputCommandMessage);
+                GetInvocationOutputCommand {
+                    target: get_or_bail!(target).try_into()?,
+                    name: name.into(),
+                    completion_id: result_completion_id,
+                }
+                .into()
+            }
+            CommandType::CompleteAwakeable => {
+                let proto::CompleteAwakeableCommandMessage {
+                    awakeable_id,
+                    name,
+                    result,
+                } = decode_or_bail!(serialized_content, CompleteAwakeableCommandMessage);
+                CompleteAwakeableCommand {
+                    id: parse_complete_awakeable_id(awakeable_id)?,
+                    result: get_or_bail!(result).try_into()?,
+                    name: name.into(),
+                }
+                .into()
+            }
+        })
+    }
+}
+
 impl Decoder for ServiceProtocolV4Codec {
     fn decode_entry(entry: &RawEntry) -> Result<Entry, DecodingError> {
         Ok(match &entry {
-            RawEntry::Command(cmd) => match cmd.command_type() {
-                CommandType::Input => {
-                    let proto::InputCommandMessage {
-                        headers,
-                        value,
-                        name,
-                    } = decode_or_bail!(cmd.serialized_content(), InputCommandMessage);
-                    InputCommand {
-                        headers: headers.into_iter().map(Into::into).collect(),
-                        payload: get_or_bail!(value).content,
-                        name: name.into(),
-                    }
-                    .into()
-                }
-                CommandType::Output => {
-                    let proto::OutputCommandMessage { name, result } =
-                        decode_or_bail!(cmd.serialized_content(), OutputCommandMessage);
-                    OutputCommand {
-                        result: get_or_bail!(result).try_into()?,
-                        name: name.into(),
-                    }
-                    .into()
-                }
-                CommandType::Run => {
-                    let proto::RunCommandMessage {
-                        result_completion_id,
-                        name,
-                    } = decode_or_bail!(cmd.serialized_content(), RunCommandMessage);
-                    RunCommand {
-                        completion_id: result_completion_id,
-                        name: name.into(),
-                    }
-                    .into()
-                }
-                CommandType::Sleep => {
-                    let proto::SleepCommandMessage {
-                        wake_up_time,
-                        result_completion_id,
-                        name,
-                    } = decode_or_bail!(cmd.serialized_content(), SleepCommandMessage);
-                    SleepCommand {
-                        wake_up_time: wake_up_time.into(),
-                        completion_id: result_completion_id,
-                        name: name.into(),
-                    }
-                    .into()
-                }
-                CommandType::Call => {
-                    let proto::CallCommandMessage {
-                        parameter,
-                        headers,
-                        idempotency_key,
-                        limit_key,
-                        invocation_id_notification_idx,
-                        result_completion_id,
-                        name,
-                        ..
-                    } = decode_or_bail!(cmd.serialized_content(), CallCommandMessage);
-                    assert!(let
-                        RawCommandSpecificMetadata::CallOrSend(metadata) =
-                            cmd.command_specific_metadata()
-                    );
-                    // Scope is part of the InvocationTarget in the stored metadata
-                    CallCommand {
-                        request: CallRequest {
-                            invocation_id: metadata.invocation_id,
-                            invocation_target: metadata.invocation_target.clone(),
-                            span_context: metadata.span_context.clone(),
-                            parameter,
-                            headers: headers.into_iter().map(Into::into).collect(),
-                            idempotency_key: idempotency_key.map(|s| s.into()),
-                            completion_retention_duration: metadata.completion_retention_duration,
-                            journal_retention_duration: metadata.journal_retention_duration,
-                            limit_key: if let Some(limit_key) = limit_key {
-                                limit_key.parse().map_err(GenericError::from)?
-                            } else {
-                                LimitKey::None
-                            },
-                        },
-                        invocation_id_completion_id: invocation_id_notification_idx,
-                        result_completion_id,
-                        name: name.into(),
-                    }
-                    .into()
-                }
-                CommandType::OneWayCall => {
-                    let proto::OneWayCallCommandMessage {
-                        parameter,
-                        invoke_time,
-                        headers,
-                        idempotency_key,
-                        limit_key,
-                        invocation_id_notification_idx,
-                        name,
-                        ..
-                    } = decode_or_bail!(cmd.serialized_content(), OneWayCallCommandMessage);
-                    assert!(let
-                        RawCommandSpecificMetadata::CallOrSend(metadata) =
-                            cmd.command_specific_metadata()
-                    );
-                    // Scope is part of the InvocationTarget in the stored metadata
-                    OneWayCallCommand {
-                        request: CallRequest {
-                            invocation_id: metadata.invocation_id,
-                            invocation_target: metadata.invocation_target.clone(),
-                            span_context: metadata.span_context.clone(),
-                            parameter,
-                            headers: headers.into_iter().map(Into::into).collect(),
-                            idempotency_key: idempotency_key.map(|s| s.into()),
-                            completion_retention_duration: metadata.completion_retention_duration,
-                            journal_retention_duration: metadata.journal_retention_duration,
-                            limit_key: if let Some(limit_key) = limit_key {
-                                limit_key.parse().map_err(GenericError::from)?
-                            } else {
-                                LimitKey::None
-                            },
-                        },
-                        invoke_time: invoke_time.into(),
-                        invocation_id_completion_id: invocation_id_notification_idx,
-                        name: name.into(),
-                    }
-                    .into()
-                }
-                CommandType::GetLazyState => {
-                    let proto::GetLazyStateCommandMessage {
-                        key,
-                        result_completion_id,
-                        name,
-                    } = decode_or_bail!(cmd.serialized_content(), GetLazyStateCommandMessage);
-                    GetLazyStateCommand {
-                        key: to_string_or_bail!(key).into(),
-                        completion_id: result_completion_id,
-                        name: name.into(),
-                    }
-                    .into()
-                }
-                CommandType::SetState => {
-                    let proto::SetStateCommandMessage { key, value, name } =
-                        decode_or_bail!(cmd.serialized_content(), SetStateCommandMessage);
-                    SetStateCommand {
-                        key: to_string_or_bail!(key).into(),
-                        name: name.into(),
-                        value: get_or_bail!(value).content,
-                    }
-                    .into()
-                }
-                CommandType::ClearState => {
-                    let proto::ClearStateCommandMessage { key, name } =
-                        decode_or_bail!(cmd.serialized_content(), ClearStateCommandMessage);
-                    ClearStateCommand {
-                        key: to_string_or_bail!(key).into(),
-                        name: name.into(),
-                    }
-                    .into()
-                }
-                CommandType::ClearAllState => {
-                    let proto::ClearAllStateCommandMessage { name } =
-                        decode_or_bail!(cmd.serialized_content(), ClearAllStateCommandMessage);
-                    ClearAllStateCommand { name: name.into() }.into()
-                }
-                CommandType::GetLazyStateKeys => {
-                    let proto::GetLazyStateKeysCommandMessage {
-                        result_completion_id,
-                        name,
-                    } = decode_or_bail!(cmd.serialized_content(), GetLazyStateKeysCommandMessage);
-                    GetLazyStateKeysCommand {
-                        completion_id: result_completion_id,
-                        name: name.into(),
-                    }
-                    .into()
-                }
-                CommandType::GetEagerState => {
-                    let proto::GetEagerStateCommandMessage { key, name, result } =
-                        decode_or_bail!(cmd.serialized_content(), GetEagerStateCommandMessage);
-                    GetEagerStateCommand {
-                        key: to_string_or_bail!(key).into(),
-                        name: name.into(),
-                        result: get_or_bail!(result).try_into()?,
-                    }
-                    .into()
-                }
-                CommandType::GetEagerStateKeys => {
-                    let proto::GetEagerStateKeysCommandMessage { value, name } =
-                        decode_or_bail!(cmd.serialized_content(), GetEagerStateKeysCommandMessage);
-                    GetEagerStateKeysCommand {
-                        state_keys: get_or_bail!(value)
-                            .keys
-                            .into_iter()
-                            .map(|state_key| Ok::<_, DecodingError>(to_string_or_bail!(state_key)))
-                            .collect::<Result<Vec<_>, _>>()?,
-                        name: name.into(),
-                    }
-                    .into()
-                }
-                CommandType::GetPromise => {
-                    let proto::GetPromiseCommandMessage {
-                        key,
-                        result_completion_id,
-                        name,
-                    } = decode_or_bail!(cmd.serialized_content(), GetPromiseCommandMessage);
-                    GetPromiseCommand {
-                        key: key.into(),
-                        completion_id: result_completion_id,
-                        name: name.into(),
-                    }
-                    .into()
-                }
-                CommandType::PeekPromise => {
-                    let proto::PeekPromiseCommandMessage {
-                        key,
-                        result_completion_id,
-                        name,
-                    } = decode_or_bail!(cmd.serialized_content(), PeekPromiseCommandMessage);
-                    PeekPromiseCommand {
-                        key: key.into(),
-                        completion_id: result_completion_id,
-                        name: name.into(),
-                    }
-                    .into()
-                }
-                CommandType::CompletePromise => {
-                    let proto::CompletePromiseCommandMessage {
-                        key,
-                        result_completion_id,
-                        name,
-                        completion,
-                    } = decode_or_bail!(cmd.serialized_content(), CompletePromiseCommandMessage);
-                    CompletePromiseCommand {
-                        key: key.into(),
-                        value: get_or_bail!(completion).try_into()?,
-                        completion_id: result_completion_id,
-                        name: name.into(),
-                    }
-                    .into()
-                }
-                CommandType::SendSignal => {
-                    let proto::SendSignalCommandMessage {
-                        target_invocation_id,
-                        entry_name,
-                        signal_id,
-                        result,
-                    } = decode_or_bail!(cmd.serialized_content(), SendSignalCommandMessage);
-                    SendSignalCommand {
-                        target_invocation_id: to_invocation_id_or_bail!(target_invocation_id),
-                        signal_id: get_or_bail!(signal_id).try_into()?,
-                        name: entry_name.into(),
-                        result: get_or_bail!(result).try_into()?,
-                    }
-                    .into()
-                }
-                CommandType::AttachInvocation => {
-                    let proto::AttachInvocationCommandMessage {
-                        result_completion_id,
-                        name,
-                        target,
-                    } = decode_or_bail!(cmd.serialized_content(), AttachInvocationCommandMessage);
-                    AttachInvocationCommand {
-                        target: get_or_bail!(target).try_into()?,
-                        name: name.into(),
-                        completion_id: result_completion_id,
-                    }
-                    .into()
-                }
-                CommandType::GetInvocationOutput => {
-                    let proto::GetInvocationOutputCommandMessage {
-                        result_completion_id,
-                        name,
-                        target,
-                    } = decode_or_bail!(
-                        cmd.serialized_content(),
-                        GetInvocationOutputCommandMessage
-                    );
-                    GetInvocationOutputCommand {
-                        target: get_or_bail!(target).try_into()?,
-                        name: name.into(),
-                        completion_id: result_completion_id,
-                    }
-                    .into()
-                }
-                CommandType::CompleteAwakeable => {
-                    let proto::CompleteAwakeableCommandMessage {
-                        awakeable_id,
-                        name,
-                        result,
-                    } = decode_or_bail!(cmd.serialized_content(), CompleteAwakeableCommandMessage);
-                    CompleteAwakeableCommand {
-                        id: parse_complete_awakeable_id(awakeable_id)?,
-                        result: get_or_bail!(result).try_into()?,
-                        name: name.into(),
-                    }
-                    .into()
-                }
-            },
+            RawEntry::Command(cmd) => Self::decode_command(
+                cmd.command_type(),
+                cmd.command_specific_metadata(),
+                cmd.serialized_content(),
+            )?
+            .into(),
 
             RawEntry::Notification(notif) => match notif.ty() {
                 NotificationType::Completion(CompletionType::GetLazyState) => {

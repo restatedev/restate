@@ -35,6 +35,7 @@ use crate::tables::stats::deployment_stats::schema::{
     DeploymentStatsSource, SysDeploymentStatsTable,
 };
 use crate::tables::stats::service_stats::schema::{ServiceStatsSource, SysServiceStatsTable};
+use crate::tables::stats::tests::assert_queries_fail_before_rows;
 use crate::tables::stats::virtual_object_stats::schema::{
     SysVirtualObjectStatsTable, VirtualObjectStatsSource,
 };
@@ -288,6 +289,15 @@ async fn statistics_queries_fail_until_every_replica_is_complete() {
         )
         .await;
     }
+
+    // That owner has rows, but another replica's gauges are reset: every query
+    // fails before it returns a row, also with a LIMIT.
+    let last = fixture.stores.last_mut().unwrap();
+    reopen(last, |config| {
+        config.common.experimental.set_status_gauges_reset(true)
+    })
+    .await;
+    assert_queries_fail_before_rows(session.as_ref(), "no maintained index").await;
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
@@ -596,10 +606,10 @@ async fn schema_statistics_preserve_sql_pruning_and_owner_execution() {
         assert_sql(session, invariant, sql, expected).await;
     }
 
-    // Object statistics aren't grouped by a view, so COUNT(*) sends an empty
-    // projection to the real stats reader. With a batch target of 1, the reader
+    // The view groups object statistics by every dimension, so the reader gets
+    // all 8 dimension columns, also for COUNT(*). With a batch target of 1, it
     // must split keys that hold two buckets (alpha's inbox and running entries)
-    // across batches, with or without projected columns.
+    // across batches.
     let env = environment(2, 1).with_distributed_execution(fixture.network.clone());
     env.register_tables(UserTables::new(
         fixture.partitions.clone(),
@@ -611,12 +621,11 @@ async fn schema_statistics_preserve_sql_pruning_and_owner_execution() {
     let single_row_session = single_row_engine
         .create_session(SessionOptions::default())
         .unwrap();
-    for (sql, expected, columns) in [
-        ("SELECT COUNT(*) FROM sys_virtual_object_stats", "40", 0),
+    for (sql, expected) in [
+        ("SELECT COUNT(*) FROM sys_virtual_object_stats", "40"),
         (
             "SELECT COUNT(DISTINCT stage || status) FROM sys_virtual_object_stats",
             "3",
-            2,
         ),
     ] {
         fixture.reads.lock().batches.clear();
@@ -636,7 +645,7 @@ async fn schema_statistics_preserve_sql_pruning_and_owner_execution() {
         assert!(
             batches
                 .iter()
-                .all(|&(cols, rows, target)| cols == columns && target == 1 && rows <= 1),
+                .all(|&(cols, rows, target)| cols == 8 && target == 1 && rows <= 1),
             "bucket_expansion_respects_the_batch_target: {sql}: {batches:?}"
         );
     }
@@ -780,9 +789,8 @@ async fn schema_statistics_preserve_sql_pruning_and_owner_execution() {
             "limit_keeps_owner_residual"
         );
         assert!(
-            !tasks[0].plan.contains("AggregateExec")
-                && !tasks[0].plan.contains("partitioning=Hash("),
-            "partition_local_object_counts_need_no_aggregation_or_hash_exchange: {}",
+            !tasks[0].plan.contains("partitioning=Hash("),
+            "partition_local_object_rows_need_no_hash_exchange: {}",
             tasks[0].plan
         );
     }
