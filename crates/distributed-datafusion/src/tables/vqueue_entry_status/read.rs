@@ -758,6 +758,26 @@ impl PreparedPartitionRead for EntryStatusRead {
     ) -> anyhow::Result<SendableRecordBatchStream> {
         self.read(context, batch_size, metrics, None)
     }
+
+    /// A status index read can't where the index isn't Complete on the
+    /// snapshot. The stage tables are always there.
+    fn usable(&self, context: &PartitionReadContext) -> anyhow::Result<bool> {
+        let unusable = match &self.access {
+            EntryStatusAccess::StatusCreated { read, .. }
+            | EntryStatusAccess::Keys(Keys::StatusCreated { read, .. }) => {
+                read.unusable(context.storage()?)?
+            }
+            EntryStatusAccess::StatusTransitioned { read, .. }
+            | EntryStatusAccess::Keys(Keys::StatusTransitioned { read, .. }) => {
+                read.unusable(context.storage()?)?
+            }
+            EntryStatusAccess::Scan(_)
+            | EntryStatusAccess::MultiGet(_)
+            | EntryStatusAccess::Stages(_)
+            | EntryStatusAccess::Covered(_) => None,
+        };
+        Ok(unusable.is_none())
+    }
 }
 
 impl EntryStatusRead {

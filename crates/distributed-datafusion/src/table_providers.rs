@@ -110,10 +110,127 @@ pub trait PreparedPartitionRead: Send + Sync + Debug + 'static {
             Box::pin(std::future::ready(true)),
         ))
     }
+
+    /// Whether the read can take its own access path on `context`'s snapshot.
+    /// An index read can't where its index isn't Complete or the partition
+    /// hasn't migrated: it would scan instead. Among several candidate reads, a
+    /// partition reads the first that can ([`IndexCandidates`]). Checked before
+    /// the read executes, on the snapshot it executes on.
+    fn usable(&self, _context: &PartitionReadContext) -> anyhow::Result<bool> {
+        Ok(true)
+    }
 }
 
 /// Whether a read's rows come in its declared order, known before its first row.
 pub(crate) type InOrder = futures::future::BoxFuture<'static, bool>;
+
+/// The reads of several candidate indexes of one source, in the planner's
+/// preference order, each prepared by the source's scanner: a partition reads
+/// the first one usable on its snapshot ([`PreparedPartitionRead::usable`]). If
+/// none is, it reads the first, which scans instead and says so as it opens.
+/// Every candidate returns rows in the same order, so the plan above holds
+/// whichever one a partition reads.
+#[derive(Debug)]
+pub(crate) struct IndexCandidates(pub(crate) Vec<Arc<dyn PreparedPartitionRead>>);
+
+impl IndexCandidates {
+    /// The read for `context`'s snapshot, counting the candidates it skipped.
+    fn choose(
+        &self,
+        context: &PartitionReadContext,
+        metrics: &ReadMetrics,
+    ) -> anyhow::Result<&Arc<dyn PreparedPartitionRead>> {
+        for (skipped, read) in self.0.iter().enumerate() {
+            if read.usable(context)? {
+                if skipped > 0 {
+                    metrics.counter("index_candidates_skipped").add(skipped);
+                }
+                return Ok(read);
+            }
+        }
+        self.0
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("index read without candidates"))
+    }
+}
+
+impl PreparedPartitionRead for IndexCandidates {
+    fn capture_requirements(&self) -> restate_worker_api::PartitionCaptureRequirements {
+        // The candidates read the same source's storage.
+        self.0
+            .first()
+            .map(|read| read.capture_requirements())
+            .unwrap_or_default()
+    }
+
+    fn execute(
+        &self,
+        context: PartitionReadContext,
+        batch_size: usize,
+        metrics: ReadMetrics,
+    ) -> anyhow::Result<SendableRecordBatchStream> {
+        let read = Arc::clone(self.choose(&context, &metrics)?);
+        read.execute(context, batch_size, metrics)
+    }
+
+    fn execute_in_order(
+        &self,
+        context: PartitionReadContext,
+        batch_size: usize,
+        metrics: ReadMetrics,
+    ) -> anyhow::Result<(SendableRecordBatchStream, InOrder)> {
+        let read = Arc::clone(self.choose(&context, &metrics)?);
+        read.execute_in_order(context, batch_size, metrics)
+    }
+
+    fn usable(&self, context: &PartitionReadContext) -> anyhow::Result<bool> {
+        for read in &self.0 {
+            if read.usable(context)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+/// A scan in place of an index read that a worker can't prepare, because it
+/// knows none of the candidate indexes. Its rows aren't in the index's order,
+/// so the engine sorts them, under the fallback bound, as for an index read
+/// that scans instead.
+#[derive(Debug)]
+pub(crate) struct ScanInstead(pub(crate) Arc<dyn PreparedPartitionRead>);
+
+impl PreparedPartitionRead for ScanInstead {
+    fn capture_requirements(&self) -> restate_worker_api::PartitionCaptureRequirements {
+        self.0.capture_requirements()
+    }
+
+    fn execute(
+        &self,
+        context: PartitionReadContext,
+        batch_size: usize,
+        metrics: ReadMetrics,
+    ) -> anyhow::Result<SendableRecordBatchStream> {
+        self.0.execute(context, batch_size, metrics)
+    }
+
+    fn execute_in_order(
+        &self,
+        context: PartitionReadContext,
+        batch_size: usize,
+        metrics: ReadMetrics,
+    ) -> anyhow::Result<(SendableRecordBatchStream, InOrder)> {
+        metrics.counter("index_candidates_unknown").add(1);
+        Ok((
+            self.0.execute(context, batch_size, metrics)?,
+            Box::pin(std::future::ready(false)),
+        ))
+    }
+
+    fn usable(&self, _context: &PartitionReadContext) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+}
 
 /// A read's charge on the query's memory pool, released when dropped.
 struct PoolMemory(MemoryReservation);

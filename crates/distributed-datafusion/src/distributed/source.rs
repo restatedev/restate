@@ -56,7 +56,9 @@ use restate_types::identifiers::PartitionId;
 use restate_types::partition_table::Partition;
 use restate_util_string::ReString;
 
-use crate::access::{Access, IndexRead, PrimaryKeys, PrimaryRead, SortedColumn, select_access};
+use crate::access::{
+    Access, IndexCandidate, IndexRead, PrimaryKeys, PrimaryRead, SortedColumn, select_access,
+};
 use crate::order_key::order_key;
 use crate::placement::PartitionPlacement;
 use crate::source_registry::{
@@ -65,7 +67,8 @@ use crate::source_registry::{
 };
 use crate::statistics::estimate_source_statistics;
 use crate::table_providers::{
-    PartitionReadContext, PreparedPartitionRead, ProjectedColumns, ReadMetrics, Scan,
+    IndexCandidates, PartitionReadContext, PreparedPartitionRead, ProjectedColumns, ReadMetrics,
+    Scan, ScanInstead, ScanPartition,
 };
 use crate::{decode_schema, encode_schema};
 
@@ -139,26 +142,47 @@ impl<T> PartitionWork<T> {
     }
 }
 
-/// Partition reads through a complete index of the source, chosen by the planner.
-/// Workers derive the index restriction from the shipped predicate.
+/// Partition reads through one of the source's complete indexes. Workers derive
+/// each index's restriction from the shipped predicate.
+///
+/// The contract, for every worker version that reads this:
+/// - every candidate can answer the query: its restriction holds every row the
+///   predicate can match, and the predicate is checked on every row it returns;
+/// - every candidate returns each partition's rows in the order of the first,
+///   the order the plan above relies on, or the first has none;
+/// - a partition may read any candidate usable on its snapshot, or scan, keeping
+///   that order by sorting under `bound`;
+/// - the list is the planner's preference, most preferred first.
+///
+/// A worker of this version reads the first candidate it knows that is usable on
+/// its snapshot (`IndexCandidates`); a later one may choose by its own estimates
+/// instead.
 #[derive(Debug, Clone, bilrost::Message)]
 struct IndexWork {
-    #[bilrost(1)]
-    index: ReString,
     #[bilrost(2)]
     work: PartitionWork<PartitionScan>,
-    /// The order of each partition's rows: the index's declared order, or its
-    /// exact reverse for a read backwards, except that a never-NULL column's
-    /// null placement follows the query
-    /// ([`IndexOrder::never_null`](crate::access::IndexOrder::never_null)). The
-    /// worker reads in the direction this order says ([`IndexRead::direction`]).
-    #[bilrost(3)]
-    ordering: Vec<SortedColumn>,
     /// How many rows a partition that can't keep the order keeps, sorted: the
     /// query's bound, proven where the partition's predicate is every condition
     /// above it. Unbounded otherwise.
     #[bilrost(4)]
     bound: Option<u64>,
+    /// The candidate indexes, each with the order of its read: the index's
+    /// declared order, or its exact reverse for a read backwards, except that a
+    /// never-NULL column's null placement follows the query
+    /// ([`IndexOrder::never_null`](crate::access::IndexOrder::never_null)). The
+    /// worker reads in the direction this order says ([`IndexRead::direction`]).
+    /// Never empty.
+    #[bilrost(5)]
+    candidates: Vec<IndexCandidate>,
+}
+
+impl IndexWork {
+    /// The order every partition's rows come in: the first candidate's.
+    fn ordering(&self) -> &[SortedColumn] {
+        self.candidates
+            .first()
+            .map_or(&[], |candidate| candidate.ordering.as_slice())
+    }
 }
 
 /// Workers that predate a variant decode it as `Unknown` and fail the query.
@@ -469,15 +493,10 @@ pub(crate) fn plan_partition_access(
                         .collect(),
                 )),
                 Access::Scan => SourceWork::TableScan(scans(reads)),
-                Access::Index {
-                    index,
-                    ordering,
-                    bound,
-                } => SourceWork::IndexScan(IndexWork {
-                    index: index.clone(),
+                Access::Index { candidates, bound } => SourceWork::IndexScan(IndexWork {
                     work: scans(reads),
-                    ordering: ordering.clone(),
                     bound: bound.map(|bound| bound as u64),
+                    candidates: candidates.clone(),
                 }),
             };
             let descriptor = SourceDescriptor {
@@ -609,8 +628,9 @@ impl SourcePlan {
                 key_orderings(&descriptor.orders(), &schema)
             }
             // An index read's order is its own, up to the first unprojected column.
-            SourceWork::IndexScan(IndexWork { ordering, .. }) => vec![
-                ordering
+            SourceWork::IndexScan(index) => vec![
+                index
+                    .ordering()
                     .iter()
                     .map_while(|column| {
                         Some(PhysicalSortExpr {
@@ -652,6 +672,32 @@ impl SourcePlan {
         })
     }
 
+    /// The read of `work`'s candidates this worker knows, prepared once:
+    /// [`IndexCandidates`] chooses among several per partition. A worker that
+    /// knows none of them scans, and the engine sorts the rows ([`ScanInstead`]).
+    fn prepare_candidates(
+        reader: &Arc<dyn ScanPartition>,
+        work: &IndexWork,
+        prepare: impl Fn(PrimaryRead) -> Result<Arc<dyn PreparedPartitionRead>>,
+    ) -> Result<Arc<dyn PreparedPartitionRead>> {
+        let mut reads = work
+            .candidates
+            .iter()
+            .filter(|candidate| reader.supports_index(&candidate.index))
+            .map(|candidate| {
+                prepare(PrimaryRead::Index(IndexRead::new(
+                    candidate.index.clone(),
+                    candidate.ordering.as_slice().into(),
+                )))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(match reads.len() {
+            0 => Arc::new(ScanInstead(prepare(PrimaryRead::Scan)?)),
+            1 => reads.pop().expect("one read"),
+            _ => Arc::new(IndexCandidates(reads)),
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn bind_partition(
         manager: &SourceRegistry,
@@ -671,83 +717,55 @@ impl SourcePlan {
         if matches!(work, SourceWork::MultiGet(_)) && !reader.supports_primary_lookup() {
             return exec_err!("local query source has incompatible primary lookup capability");
         }
-        if let SourceWork::IndexScan(IndexWork { index, .. }) = work
-            && !reader.supports_index(index)
-        {
-            return exec_err!("local query source '{table}' cannot read index '{index}'");
-        }
-        // An index read, with the order it is planned for.
-        let index_read = |IndexWork {
-                              index, ordering, ..
-                          }: &IndexWork| {
-            IndexRead::new(index.clone(), ordering.as_slice().into())
+        let prepare = |access| {
+            Arc::clone(&reader)
+                .prepare_read(
+                    access,
+                    Arc::clone(schema),
+                    predicate.clone(),
+                    limit.map(|l| l as usize),
+                )
+                .map_err(external)
         };
-        let mut requests: Vec<_> = match work {
-            SourceWork::TableScan(work) => work
-                .reads
-                .iter()
-                .map(|read| (read.partition, PrimaryRead::Scan))
-                .collect(),
-            SourceWork::IndexScan(index) => {
-                let read = index_read(index);
+        // Scans prepare once from the predicate and share it across partitions;
+        // lookups prepare each partition's keys.
+        let (shared, mut requests): (Option<Arc<dyn PreparedPartitionRead>>, Vec<_>) = match work {
+            SourceWork::TableScan(work) => (
+                Some(prepare(PrimaryRead::Scan)?),
+                work.reads
+                    .iter()
+                    .map(|read| (read.partition, None))
+                    .collect(),
+            ),
+            SourceWork::IndexScan(index) => (
+                Some(Self::prepare_candidates(&reader, index, prepare)?),
                 index
                     .work
                     .reads
                     .iter()
-                    .map(|partition| (partition.partition, PrimaryRead::Index(read.clone())))
-                    .collect()
-            }
-            SourceWork::MultiGet(work) => work
-                .reads
-                .iter()
-                .map(|lookup| {
-                    (
-                        lookup.partition,
-                        PrimaryRead::MultiGet(Arc::clone(&lookup.keys)),
-                    )
-                })
-                .collect(),
+                    .map(|read| (read.partition, None))
+                    .collect(),
+            ),
+            SourceWork::MultiGet(work) => (
+                None,
+                work.reads
+                    .iter()
+                    .map(|lookup| (lookup.partition, Some(Arc::clone(&lookup.keys))))
+                    .collect(),
+            ),
             _ => return plan_err!("partition binding requires partition work"),
         };
         requests.sort_unstable_by_key(|(partition, _)| *partition);
-        // Scans prepare once from the predicate and share it across partitions.
-        let shared = match work {
-            SourceWork::TableScan(_) => Some(PrimaryRead::Scan),
-            SourceWork::IndexScan(index) => Some(PrimaryRead::Index(index_read(index))),
-            _ => None,
-        };
-        let scan = shared
-            .map(|access| {
-                Arc::clone(&reader)
-                    .prepare_read(
-                        access,
-                        Arc::clone(schema),
-                        predicate.clone(),
-                        limit.map(|l| l as usize),
-                    )
-                    .map_err(external)
-            })
-            .transpose()?;
         let reads = requests
             .into_iter()
-            .map(|(partition, access)| {
-                let requested_keys = match &access {
-                    PrimaryRead::MultiGet(keys) => keys.len(),
-                    _ => 0,
-                };
+            .map(|(partition, keys)| {
                 Ok(BoundPartitionRead {
                     partition,
-                    requested_keys,
-                    read: match &scan {
-                        Some(scan) => Arc::clone(scan),
-                        None => Arc::clone(&reader)
-                            .prepare_read(
-                                access,
-                                Arc::clone(schema),
-                                predicate.clone(),
-                                limit.map(|l| l as usize),
-                            )
-                            .map_err(external)?,
+                    requested_keys: keys.as_ref().map_or(0, |keys| keys.len()),
+                    read: match (&shared, keys) {
+                        (Some(shared), _) => Arc::clone(shared),
+                        (None, Some(keys)) => prepare(PrimaryRead::MultiGet(keys))?,
+                        (None, None) => return plan_err!("a lookup without keys"),
                     },
                 })
             })
@@ -1109,9 +1127,22 @@ macro_rules! impl_access_exec {
                         Some(work.placement)
                     }
                     SourceWork::IndexScan(IndexWork {
-                        index, work, bound, ..
+                        candidates,
+                        work,
+                        bound,
                     }) => {
-                        write!(f, ", index={index}")?;
+                        // The preferred index, then those a partition reads
+                        // where it can't read the ones before.
+                        if let [first, rest @ ..] = candidates.as_slice() {
+                            write!(f, ", index={}", first.index)?;
+                            if !rest.is_empty() {
+                                let rest: Vec<String> = rest
+                                    .iter()
+                                    .map(|candidate| candidate.index.to_string())
+                                    .collect();
+                                write!(f, ", alternatives=[{}]", rest.join(", "))?;
+                            }
+                        }
                         if let Some(bound) = bound {
                             write!(f, ", fallback_fetch={bound}")?;
                         }
