@@ -248,6 +248,13 @@ impl PreparedPartitionRead for CheckedRead {
             .observe(partition, self.access.clone(), batch_size, stream);
         Ok((stream, in_order))
     }
+
+    fn usable(
+        &self,
+        context: &crate::table_providers::PartitionReadContext,
+    ) -> anyhow::Result<bool> {
+        self.prepared.usable(context)
+    }
 }
 
 impl CheckedRead {

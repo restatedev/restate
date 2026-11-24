@@ -1040,8 +1040,8 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
         "{explained}"
     );
     assert_eq!(rows(&conditioned).await, counted);
-    // Where the index isn't Complete, the count scans the entry statuses
-    // instead, with the same counts.
+    // Where the index isn't Complete, the count reads the next candidate, the
+    // stage tables, with the same counts.
     let unready = crate::mocks::v2_session(
         &manager,
         vec![(
@@ -1058,8 +1058,10 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
         .concat()
         .join("\n");
     assert!(
-        analyzed.contains("index=_idx_entry_status_by_status_transitioned")
-            && analyzed.contains("entry_index_scans_not_complete=1"),
+        analyzed.contains(
+            "index=_idx_entry_status_by_status_transitioned, alternatives=[_idx_entry_by_queue]"
+        ) && analyzed.contains("index_candidates_skipped=1")
+            && !analyzed.contains("entry_index_scans_not_complete"),
         "{analyzed}"
     );
     // Without a time bound, or until a time only, which leaves most of the
@@ -1423,12 +1425,13 @@ async fn active_entries_read_through_the_status_index_match_the_scan() {
         let explained = plan(sql, false).await;
         assert!(!explained.contains(INDEX), "{sql}: {explained}");
     }
-    // A few queues read the stage tables first; without the order, a few
-    // active stages read the status index's lanes.
+    // A few queues read the stage tables first, and the status index's lanes,
+    // in the same order, where a partition can't; without the order, a few
+    // active stages read the lanes.
     let sql = format!("{select} WHERE vqueue_id = '{queue}' AND stage = 'inbox' {newest} LIMIT 5");
     let explained = plan(&sql, false).await;
     assert!(
-        explained.contains(STAGES) && !explained.contains(INDEX),
+        explained.contains(&format!("index={STAGES}, alternatives=[{INDEX}]")),
         "{sql}: {explained}"
     );
     let all = scanned(&sql.replace(" LIMIT", " LIMIT 1000000 --")).await;
