@@ -753,6 +753,17 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
             } else {
                 HandlerRef::UserHandler(["call", "run"][(n % 2) as usize])
             };
+            // As in production, the entry's stage table holds it too.
+            tx.put_vqueue_inbox(
+                &qid,
+                stage,
+                &key,
+                &EntryValue {
+                    status,
+                    metadata: EntryMetadata::default(),
+                    stats: stats.clone(),
+                },
+            );
             tx.create_vqueue_entry_status(
                 &EntryContext {
                     qid: &qid,
@@ -1092,6 +1103,23 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
         "{analyzed}"
     );
 
+    // The queue's entries read through its stage tables equal the scan's: the
+    // fixture writes each entry's stage key with its status, as production does.
+    let by_queue = format!(
+        "SELECT entry_id, stage, status FROM sys_vqueue_entry_status WHERE vqueue_id = '{qid}'"
+    );
+    let explained = plan(&by_queue, false).await;
+    assert!(
+        explained.contains("index=_idx_entry_by_queue"),
+        "{explained}"
+    );
+    let mut read = rows(&by_queue).await;
+    let mut expected = scanned(&by_queue).await;
+    read.sort();
+    expected.sort();
+    assert_eq!(read.len(), 140);
+    assert_eq!(read, expected);
+
     // More runs than one read merges in its first hour, 260 services in one
     // lane: the partition scans and sorts instead, before returning anything,
     // and says why and what discovery examined.
@@ -1127,6 +1155,17 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
             ),
         );
         let name = format!("s{service}");
+        let stats = EntryStatistics::new(created, key.run_at());
+        tx.put_vqueue_inbox(
+            &qid,
+            Stage::Finished,
+            &key,
+            &EntryValue {
+                status: Status::Succeeded,
+                metadata: EntryMetadata::default(),
+                stats: stats.clone(),
+            },
+        );
         tx.create_vqueue_entry_status(
             &EntryContext {
                 qid: &qid,
@@ -1141,7 +1180,7 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
                 status: Status::Succeeded,
                 entry_key: &key,
                 metadata: &EntryMetadata::default(),
-                stats: &EntryStatistics::new(created, key.run_at()),
+                stats: &stats,
             },
         );
     }
@@ -1223,6 +1262,18 @@ async fn active_entries_read_through_the_status_index_match_the_scan() {
         } else {
             HandlerRef::UserHandler(["call", "run"][(n % 2) as usize])
         };
+        // As in production, the entry's stage table holds it too.
+        let stats = EntryStatistics::new(created, key.run_at());
+        tx.put_vqueue_inbox(
+            &qid,
+            stage,
+            &key,
+            &EntryValue {
+                status,
+                metadata: EntryMetadata::default(),
+                stats: stats.clone(),
+            },
+        );
         tx.create_vqueue_entry_status(
             &EntryContext {
                 qid: &qid,
@@ -1238,7 +1289,7 @@ async fn active_entries_read_through_the_status_index_match_the_scan() {
                 status,
                 entry_key: &key,
                 metadata: &EntryMetadata::default(),
-                stats: &EntryStatistics::new(created, key.run_at()),
+                stats: &stats,
             },
         );
     }
@@ -1380,6 +1431,10 @@ async fn active_entries_read_through_the_status_index_match_the_scan() {
         explained.contains(STAGES) && !explained.contains(INDEX),
         "{sql}: {explained}"
     );
+    let all = scanned(&sql.replace(" LIMIT", " LIMIT 1000000 --")).await;
+    let read = rows(&sql).await;
+    assert!(!read.is_empty(), "{sql}");
+    same(&read, &scanned(&sql).await, &all, &sql);
     let sql = format!("{select} WHERE stage IN ('inbox', 'paused') LIMIT 5");
     let explained = plan(&sql, false).await;
     assert!(
@@ -1419,6 +1474,17 @@ async fn active_entries_read_through_the_status_index_match_the_scan() {
             EntryId::new(EntryKind::Invocation, remainder),
         );
         let name = format!("s{service}");
+        let stats = EntryStatistics::new(created, key.run_at());
+        tx.put_vqueue_inbox(
+            &qid,
+            Stage::Inbox,
+            &key,
+            &EntryValue {
+                status: Status::New,
+                metadata: EntryMetadata::default(),
+                stats: stats.clone(),
+            },
+        );
         tx.create_vqueue_entry_status(
             &EntryContext {
                 qid: &qid,
@@ -1433,7 +1499,7 @@ async fn active_entries_read_through_the_status_index_match_the_scan() {
                 status: Status::New,
                 entry_key: &key,
                 metadata: &EntryMetadata::default(),
-                stats: &EntryStatistics::new(created, key.run_at()),
+                stats: &stats,
             },
         );
     }
