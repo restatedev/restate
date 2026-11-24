@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_partition_store::invocation_status_table::InvocationEntry;
-use restate_storage_api::protobuf_types::v1::invocation_status_v2::Status;
+use restate_storage_api::protobuf_types::v1::invocation_status_v2::{CompletionStatus, Status};
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use restate_storage_api::protobuf_types::v1::source::Source;
 use restate_storage_query_api::tables::invocation_status::{
@@ -219,25 +219,67 @@ pub(super) fn append_row(
         row.completion_result(result);
     }
     let stored_result = told.is_none() && row.is_completion_result_defined();
-    if state == Status::Completed && (stored_result || row.is_completion_failure_defined()) {
-        use restate_storage_api::protobuf_types::v1::response_result::ResponseResult;
-        match status.response_result()? {
-            ResponseResult::ResponseSuccess(_) => {
-                if stored_result {
-                    row.completion_result("success");
+    if state == Status::Completed
+        && (stored_result
+            || row.is_completion_failure_defined()
+            || row.is_completion_failure_code_defined())
+    {
+        match status.output_blob()? {
+            Some(blob) => {
+                match CompletionStatus::try_from(blob.completion_status).map_err(|err| {
+                    ConversionError::unexpected_enum_variant("completion_status", err.0)
+                })? {
+                    CompletionStatus::Success => {
+                        if stored_result {
+                            row.completion_result("success");
+                        }
+                    }
+                    CompletionStatus::Failure => {
+                        if stored_result {
+                            row.completion_result("failure");
+                        }
+                        let code = blob.failure_status_code();
+                        if row.is_completion_failure_defined() {
+                            match blob.failure_message.as_deref() {
+                                Some(message) if !message.is_empty() => {
+                                    row.fmt_completion_failure(format_args!("[{code}] {message}"))
+                                }
+                                _ => row.fmt_completion_failure(format_args!("[{code}]")),
+                            }
+                        }
+                        if row.is_completion_failure_code_defined() {
+                            row.completion_failure_code(code);
+                        }
+                    }
                 }
             }
-            ResponseResult::ResponseFailure(failure) => {
-                if stored_result {
-                    row.completion_result("failure");
-                }
-                if row.is_completion_failure_defined() {
-                    let message = str::from_utf8(failure.failure_message.as_ref())
-                        .map_err(|_| ConversionError::invalid_data_static("failure_message"))?;
-                    row.fmt_completion_failure(format_args!(
-                        "[{}] {}",
-                        failure.failure_code, message
-                    ));
+            // The result is embedded in statuses written without the blob table
+            None => {
+                use restate_storage_api::protobuf_types::v1::response_result::ResponseResult;
+                match status.response_result()? {
+                    ResponseResult::ResponseSuccess(_) => {
+                        if stored_result {
+                            row.completion_result("success");
+                        }
+                    }
+                    ResponseResult::ResponseFailure(failure) => {
+                        if stored_result {
+                            row.completion_result("failure");
+                        }
+                        if row.is_completion_failure_defined() {
+                            let message = str::from_utf8(failure.failure_message.as_ref())
+                                .map_err(|_| {
+                                    ConversionError::invalid_data_static("failure_message")
+                                })?;
+                            row.fmt_completion_failure(format_args!(
+                                "[{}] {}",
+                                failure.failure_code, message
+                            ));
+                        }
+                        if row.is_completion_failure_code_defined() {
+                            row.completion_failure_code(failure.failure_code);
+                        }
+                    }
                 }
             }
         }

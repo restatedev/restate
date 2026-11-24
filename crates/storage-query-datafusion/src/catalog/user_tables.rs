@@ -107,7 +107,8 @@ pub(super) const SYS_INVOCATION_VIEW: &str = "CREATE VIEW restate.public.sys_inv
             ss.completion_failure,
             ss.stage,
             ss.effective_status,
-            ss.completed
+            ss.completed,
+            ss.completion_failure_code
         FROM restate.public.sys_invocation_state sis
         RIGHT JOIN restate.public.sys_invocation_status ss ON ss.id = sis.id";
 

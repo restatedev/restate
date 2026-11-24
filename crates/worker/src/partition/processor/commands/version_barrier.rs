@@ -222,6 +222,7 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
                             "Removed {removed} pending state mutations",
                         );
                     }
+                    PartitionFeatureChange::EnableInvocationStatusOutputBlob => {}
                 }
             }
         }

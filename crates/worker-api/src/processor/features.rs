@@ -125,6 +125,14 @@ pub trait PartitionFeatures {
             })
             .collect()
     }
+
+    /// The invocation status of a completed invocation refers to the blob of its Output journal
+    /// entry instead of holding a copy of the result. Independent of the partition store's
+    /// journal-entry-blobs storage feature, which decides where entry contents are stored.
+    /// Proposed by the leader when `experimental-enable-write-blob-table` is set.
+    ///
+    /// *Since v1.8.2*
+    fn is_invocation_status_output_blob_enabled(&self) -> bool;
 }
 
 impl PartitionFeatures for PersistedFeatures {
@@ -146,6 +154,9 @@ impl PartitionFeatures for PersistedFeatures {
             }
             PartitionFeatureChange::EnableByteOffsets => self.byte_offsets,
             PartitionFeatureChange::EnableVqLifecycleRefined => self.vq_lifecycle_refined,
+            PartitionFeatureChange::EnableInvocationStatusOutputBlob => {
+                self.invocation_status_output_blob
+            }
         }
     }
 
@@ -172,6 +183,11 @@ impl PartitionFeatures for PersistedFeatures {
     #[inline]
     fn is_preflight_invocation_termination_retention_enabled(&self) -> bool {
         self.preflight_invocation_termination_retention
+    }
+
+    #[inline]
+    fn is_invocation_status_output_blob_enabled(&self) -> bool {
+        self.invocation_status_output_blob
     }
 }
 
@@ -201,6 +217,10 @@ impl<T: PartitionFeatures> PartitionFeatures for &T {
     fn is_preflight_invocation_termination_retention_enabled(&self) -> bool {
         (**self).is_preflight_invocation_termination_retention_enabled()
     }
+
+    fn is_invocation_status_output_blob_enabled(&self) -> bool {
+        (**self).is_invocation_status_output_blob_enabled()
+    }
 }
 
 impl<T: PartitionFeatures> PartitionFeatures for &mut T {
@@ -226,6 +246,10 @@ impl<T: PartitionFeatures> PartitionFeatures for &mut T {
 
     fn is_preflight_invocation_termination_retention_enabled(&self) -> bool {
         (**self).is_preflight_invocation_termination_retention_enabled()
+    }
+
+    fn is_invocation_status_output_blob_enabled(&self) -> bool {
+        (**self).is_invocation_status_output_blob_enabled()
     }
 }
 

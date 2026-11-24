@@ -73,6 +73,8 @@ define_schema! {
             completion_result: Option<ReString> => DataType::LargeUtf8,
             /// If `status = 'completed' AND completion_result = 'failure'`, this contains the error cause
             completion_failure: Option<ReString> => DataType::LargeUtf8,
+            /// If `status = 'completed' AND completion_result = 'failure'`, this contains the error code
+            completion_failure_code: Option<u32> => DataType::UInt32,
             /// Invocation Target. Format for plain services: `ServiceName/HandlerName`, e.g.
             /// `Greeter/greet`. Format for virtual objects/workflows: `VirtualObjectName/Key/HandlerName`,
             /// e.g. `Greeter/Francesco/greet`.
