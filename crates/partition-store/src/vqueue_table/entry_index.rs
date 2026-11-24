@@ -87,11 +87,10 @@ use restate_storage_api::vqueue_table::{EntryContext, EntryStateRef, Stage, Stat
 use restate_storage_query_api::SelectionSchema;
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
 use restate_storage_query_api::tables::index::{
-    EntryByServiceCreated as InvocationsByCreation, EntryByServiceCreatedClause,
-    EntryByServiceCreatedColumn, EntryByStatusCreated as InvocationsByStatus,
-    EntryByStatusCreatedClause, EntryByStatusCreatedColumn,
-    EntryStatusByStatusCreated as EntriesByStatusCreated, EntryStatusByStatusCreatedClause,
-    EntryStatusByStatusCreatedColumn,
+    EntryByCreated as InvocationsByCreation, EntryByCreatedClause, EntryByCreatedColumn,
+    EntryByStatusCreated as InvocationsByStatus, EntryByStatusCreatedClause,
+    EntryByStatusCreatedColumn, EntryStatusByStatusCreated as EntriesByStatusCreated,
+    EntryStatusByStatusCreatedClause, EntryStatusByStatusCreatedColumn,
     EntryStatusByStatusTransitioned as EntriesByStatusTransitioned,
     EntryStatusByStatusTransitionedClause, EntryStatusByStatusTransitionedColumn,
 };
@@ -100,8 +99,6 @@ use restate_util_string::ReString;
 
 use crate::PartitionStoreTransaction;
 use crate::index::{IndexValue, IndexValueRef, RegisteredIndex, SecondaryIndex, SecondaryIndexKey};
-#[cfg(test)]
-use crate::keys::codecs::StringCodec;
 use crate::keys::codecs::{
     CanonicalEntryIdCodec, ReverseRoughTimestampCodec, ReverseUniqueTimestampCodec,
     ServiceNameCodec, StageRankCodec, StatusCodec,
@@ -110,48 +107,6 @@ use crate::keys::header::IndexScope;
 use crate::keys::selection::codec::{FieldPredicateCodec, prepare_hour_buckets};
 use crate::keys::selection::{KeySelection, PrepareKeySelection, PreparedFieldPredicate};
 use crate::registry::{Family, IndexDefinition, IndexKind};
-
-// `entry_by_service_created/1`, the first entry index, keyed every entry by
-// service and handler, newest created first. `entry_by_created/1` replaced it
-// for the invocation list, and nothing reads it: stores retire it at open
-// (README rule 1). Kept for tests only: its runs, a service and handler each,
-// are the run merge's fixture, and a store holding it shows the retirement.
-#[cfg(test)]
-crate::index::macros::define_secondary_index!(
-    /// Entries by service and handler, newest created first.
-    EntryByServiceCreated,
-    definition: "entry_by_service_created/1",
-    introduced: (1, 8, 2),
-    key: EntryByServiceCreatedKey {
-        target_service_name: ServiceNameCodec => str,
-        target_handler_name: Option<StringCodec> => str,
-        created_at: ReverseUniqueTimestampCodec,
-        canonical_id: CanonicalEntryIdCodec (primary_key),
-    }
-);
-
-// A query on invocations restricts the index through the invocation columns its
-// fields are named after. Every invocation's key has a handler; only state
-// mutations, which a query on invocations skips, have none.
-#[cfg(test)]
-crate::keys::macros::define_key_selection!(
-    EntryByServiceCreatedKey;
-    [restate_storage_query_api::tables::index::EntryByServiceCreated];
-    target_service_name,
-    target_handler_name => present,
-    created_at,
-);
-
-/// Every entry by service and handler, newest created first. Retired; for
-/// tests only.
-#[cfg(test)]
-pub(crate) static ENTRY_BY_SERVICE_CREATED: IndexDefinition = IndexDefinition {
-    name: EntryByServiceCreated::DEFINITION,
-    introduced: EntryByServiceCreated::INTRODUCED,
-    kind: IndexKind::Secondary,
-    apply: apply_entry_by_service_created,
-    can_fill: true,
-};
 
 /// Every entry by creation hour and service, newest created first, with its
 /// handler and scope.
@@ -192,39 +147,6 @@ pub(crate) const ENTRY_INDEXES: Family = Family {
     ],
 };
 
-/// Removes the key of `before` and adds the key of `after`. Both share the
-/// entry's target, and the rest of the key never changes after creation, so an
-/// update writes nothing.
-#[cfg(test)]
-fn apply_entry_by_service_created(
-    storage: &mut PartitionStoreTransaction<'_>,
-    id: u32,
-    context: &EntryContext<'_>,
-    before: Option<&EntryStateRef<'_>>,
-    after: Option<&EntryStateRef<'_>>,
-) {
-    let project = |entry: &EntryStateRef<'_>| {
-        (
-            Reverse(entry.stats.created_at),
-            entry
-                .entry_key
-                .to_canonical_entry_id(context.qid.partition_key()),
-        )
-    };
-    let (old, new) = (before.map(project), after.map(project));
-    if old != new {
-        let key = |(created_at, canonical_id)| {
-            EntryByServiceCreatedKey::borrowed(
-                context.target.service(),
-                context.target.handler(),
-                created_at,
-                canonical_id,
-            )
-        };
-        storage.update_secondary_index_with_id(id, old.map(key).as_ref(), new.map(key).as_ref());
-    }
-}
-
 crate::index::macros::define_secondary_index!(
     /// Entries by creation hour and service, newest created first; each key
     /// holds the entry's handler and scope ([`EntryTargetValue`]).
@@ -253,10 +175,10 @@ impl PrepareKeySelection<InvocationsByCreation> for EntryByCreatedKey {
         KeySelection::for_key_fields_with(
             selection,
             |clause, literals| match clause {
-                EntryByServiceCreatedClause::TargetServiceName(predicate) => {
+                EntryByCreatedClause::TargetServiceName(predicate) => {
                     ServiceNameCodec::try_prepare_value(predicate, literals)
                 }
-                EntryByServiceCreatedClause::CreatedAt(predicate) => {
+                EntryByCreatedClause::CreatedAt(predicate) => {
                     ReverseUniqueTimestampCodec::try_prepare_value(predicate, literals)
                 }
                 _ => Ok(None),
@@ -265,14 +187,15 @@ impl PrepareKeySelection<InvocationsByCreation> for EntryByCreatedKey {
                 if tag != "created_hour" {
                     return Ok(None);
                 }
-                let times = created_times(
-                    selection,
-                    EntryByServiceCreatedColumn::CreatedAt,
-                    |clause| match clause {
-                        EntryByServiceCreatedClause::CreatedAt(times) => Some(times),
-                        _ => None,
-                    },
-                );
+                let times =
+                    created_times(
+                        selection,
+                        EntryByCreatedColumn::CreatedAt,
+                        |clause| match clause {
+                            EntryByCreatedClause::CreatedAt(times) => Some(times),
+                            _ => None,
+                        },
+                    );
                 Ok(hour_buckets(times, literals))
             },
         )

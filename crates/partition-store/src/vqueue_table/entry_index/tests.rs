@@ -294,9 +294,7 @@ async fn keys_order_entries_and_change_only_on_create_and_delete() {
 /// Backfilling existing entries gives the same keys as maintaining the indexes
 /// from the start: invocations through their invocation status, state
 /// mutations through their input. A reset deletes the keys; tracking again
-/// rebuilds them under new IDs. A store of an earlier build that has only the
-/// retired `entry_by_service_created/1`, Complete, drops it and its keys at open,
-/// and the current indexes get their own full pass. Values are compared too.
+/// rebuilds them under new IDs. Values are compared too.
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     RocksDbManager::init();
@@ -349,39 +347,6 @@ async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     assert_eq!(status, IndexStatus::Complete);
     assert!(rebuilt > built);
     assert_eq!(payloads(&store), payloads(&reference));
-
-    // A store of an earlier build: only `entry_by_service_created/1`, the first
-    // entry index, Complete.
-    let mut late = manager
-        .open(&Partition::new(PartitionId::from(3), KeyRange::FULL), None)
-        .await
-        .unwrap();
-    open(&mut late, &Configuration::default()).await;
-    seed(&mut late).await;
-    unusual(&mut late).await;
-    late.maintain_only(&[&ENTRY_BY_SERVICE_CREATED]).await;
-    engine::run_all(&mut late, 3).await.unwrap();
-    let retired = maintained(&late, &ENTRY_BY_SERVICE_CREATED);
-    let registry = get_registry(late.partition_db()).unwrap().unwrap();
-    assert_eq!(registry.get(retired).unwrap().state, IndexStatus::Complete);
-    assert_eq!(keys_of(&late, retired).len(), 149);
-    assert!(payloads(&late).iter().all(|(_, keys)| keys.is_empty()));
-    // This release doesn't know it: the open retires it and deletes its keys,
-    // and the current indexes backfill on their own.
-    open(&mut late, &tracking()).await;
-    let registry = get_registry(late.partition_db()).unwrap().unwrap();
-    assert!(registry.maintained(ENTRY_BY_SERVICE_CREATED.name).is_none());
-    assert!(keys_of(&late, retired).is_empty());
-    for definition in [
-        &ENTRY_BY_CREATED,
-        &ENTRY_BY_STATUS_CREATED,
-        &ENTRY_BY_STATUS_TRANSITIONED,
-    ] {
-        let id = maintained(&late, definition);
-        let registry = get_registry(late.partition_db()).unwrap().unwrap();
-        assert_eq!(registry.get(id).unwrap().state, IndexStatus::Complete);
-    }
-    assert_eq!(payloads(&late), payloads(&reference));
 }
 
 /// Two entries the shared seed lacks, with resolvable invocations: one Finished

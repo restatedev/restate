@@ -167,7 +167,7 @@ crate::define_schema! {
     /// scanning `sys_invocation_status`. Its columns are the invocation columns
     /// they restrict. The index also holds state mutations, which have no
     /// handler and name no invocation; reads skip them. Not shown as a table.
-    entry_by_service_created {
+    entry_by_created {
         name: "entry_by_created/1",
         primary: invocation_status::InvocationStatus,
         // A locator only: a state mutation's names no invocation.

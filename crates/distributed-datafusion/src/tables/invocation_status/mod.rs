@@ -36,8 +36,7 @@ use restate_storage_query_api::schema::index::index_restriction;
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
 use restate_storage_query_api::tables::index::{
-    EntryByServiceCreated, EntryByServiceCreatedDomains, EntryByStatusCreated,
-    EntryByStatusCreatedDomains,
+    EntryByCreated, EntryByCreatedDomains, EntryByStatusCreated, EntryByStatusCreatedDomains,
 };
 use restate_storage_query_api::tables::invocation_status::{
     InvocationStatus, InvocationStatusColumn,
@@ -105,7 +104,7 @@ impl PartitionSource for SysInvocationStatusTable {
 struct EntryIndex;
 
 impl CompleteIndex for EntryIndex {
-    type Index = EntryByServiceCreated;
+    type Index = EntryByCreated;
     const INTRODUCED: SemanticRestateVersion = <StoredEntryIndex as RegisteredIndex>::INTRODUCED;
 
     /// The read merges its runs by creation time, newest first. The index keeps
@@ -127,7 +126,7 @@ impl CompleteIndex for EntryIndex {
     /// with an invocation in that hour, so pages of all services qualify, as
     /// do pages of any number of named ones. Where the index isn't maintained, every
     /// partition would scan and sort instead, so the planner then scans.
-    fn useful(restriction: &EntryByServiceCreatedDomains) -> bool {
+    fn useful(restriction: &EntryByCreatedDomains) -> bool {
         if !Configuration::pinned()
             .common
             .experimental
@@ -150,7 +149,7 @@ impl CompleteIndex for EntryIndex {
     /// creation time: the read visits only their runs or hours. Without either,
     /// it would visit every service's runs, and the scan, which stops at the
     /// LIMIT too, reads instead.
-    fn useful_unordered(restriction: &EntryByServiceCreatedDomains) -> bool {
+    fn useful_unordered(restriction: &EntryByCreatedDomains) -> bool {
         (restriction.target_service_name.to_predicate().is_some()
             || restriction.created_at.to_predicate().is_some())
             && Self::useful(restriction)
@@ -301,7 +300,7 @@ impl ScanPartition for StatusScanner {
     }
 
     fn supports_index(&self, index: &str) -> bool {
-        index == EntryByServiceCreated::NAME || index == EntryByStatusCreated::NAME
+        index == EntryByCreated::NAME || index == EntryByStatusCreated::NAME
     }
 
     fn prepare_read(
@@ -336,9 +335,8 @@ impl ScanPartition for StatusScanner {
                             .map_or(Selection::Empty, |domains| domains.to_selection());
                     EntryIndexRead::prepare_by_status(&selection, read.direction::<StatusIndex>()?)?
                 } else {
-                    let selection =
-                        index_restriction::<EntryByServiceCreated>(predicate.as_slice())?
-                            .map_or(Selection::Empty, |domains| domains.to_selection());
+                    let selection = index_restriction::<EntryByCreated>(predicate.as_slice())?
+                        .map_or(Selection::Empty, |domains| domains.to_selection());
                     EntryIndexRead::prepare(&selection, read.direction::<EntryIndex>()?)?
                 };
                 // An entry of another partition key is skipped before its status

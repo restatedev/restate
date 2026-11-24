@@ -35,10 +35,6 @@ pub use entry::{EntryStatusKey, EntryStatusKeyRef};
 pub(crate) use entry_index::{
     ENTRY_BY_CREATED, ENTRY_BY_STATUS_CREATED, ENTRY_BY_STATUS_TRANSITIONED, ENTRY_INDEXES,
 };
-#[cfg(test)]
-pub(crate) use entry_index::{
-    ENTRY_BY_SERVICE_CREATED, EntryByServiceCreated, EntryByServiceCreatedKey,
-};
 pub use entry_index::{
     EntryByCreated, EntryByCreatedKey, EntryByStatusCreated, EntryByStatusCreatedKey,
     EntryByStatusTransitioned, EntryByStatusTransitionedKey, EntryTargetValue, EntryTargetValueRef,
