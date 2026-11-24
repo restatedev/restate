@@ -19,6 +19,7 @@ use restate_storage_api::vqueue_table::stats::EntryStatistics;
 use restate_storage_api::vqueue_table::{
     EntryKey, EntryMetadata, ReadVQueueTable, Stage, Status, StoredEntryRef, WriteVQueueTable,
 };
+use restate_types::config::Configuration;
 use restate_types::identifiers::PartitionId;
 use restate_types::partitions::Partition;
 use restate_types::sharding::KeyRange;
@@ -123,7 +124,7 @@ fn counts(store: &PartitionStore) -> Vec<(&'static str, usize)> {
 
 fn tracking() -> Configuration {
     let mut config = Configuration::default();
-    config.common.experimental.set_track_entry_indexes(true);
+    config.common.experimental.set_indexes(true);
     config
 }
 
@@ -335,14 +336,14 @@ async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     );
     assert_eq!(payloads(&store), payloads(&reference));
 
-    // A reset deletes the keys and the maintained index.
-    config.common.experimental.set_entry_indexes_reset(true);
+    // Turning indexes off deletes the keys and the maintained index.
+    config.common.experimental.set_indexes(false);
     open(&mut store, &config).await;
     assert_eq!(index(&store), None);
     assert!(index_keys(&store).is_empty());
 
-    // Tracking again rebuilds the same keys under a new ID.
-    config.common.experimental.set_entry_indexes_reset(false);
+    // Turning them on again rebuilds the same keys under a new ID.
+    config.common.experimental.set_indexes(true);
     open(&mut store, &config).await;
     let (rebuilt, status) = index(&store).unwrap();
     assert_eq!(status, IndexStatus::Complete);

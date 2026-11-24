@@ -66,8 +66,10 @@ define_table!(
         /// When it was dropped; NULL unless dropped, or if unknown.
         dropped_at: TimestampMillisecond,
 
-        /// Why it was dropped: `reset`, `unknown-definition`, or `unknown(N)` for a
-        /// reason this binary doesn't know. NULL unless dropped.
+        /// Why it was dropped: `not-enabled` (indexes were off when the partition
+        /// opened), `unknown-definition` (this binary doesn't know it), `reset`
+        /// (by a development build), or `unknown(N)` for a reason this binary
+        /// doesn't know. NULL unless dropped.
         drop_reason: DataType::Utf8,
 
         /// RocksDB's estimate of the storage the index's keys take on this replica,

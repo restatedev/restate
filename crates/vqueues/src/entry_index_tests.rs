@@ -97,7 +97,7 @@ async fn tracking_store() -> (PartitionStore, Scopes) {
         .await
         .unwrap();
     let mut config = Configuration::default();
-    config.common.experimental.set_track_entry_indexes(true);
+    config.common.experimental.set_indexes(true);
     store
         .verify_and_run_migrations(Default::default(), &config)
         .await
@@ -185,6 +185,16 @@ fn expected_key(
     vec![key]
 }
 
+/// The writes a stage or status change of an entry of `target` makes to the
+/// status gauges, which indexes maintain too: one to the service gauge, and one
+/// more to the virtual-object gauge for a virtual object's entry.
+fn gauge_writes(target: &EntryTargetRef<'_>) -> u64 {
+    match target {
+        EntryTargetRef::VirtualObject { .. } => 2,
+        _ => 1,
+    }
+}
+
 /// RocksDB's latest sequence number: each write in a batch takes one, so a
 /// commit that writes only the entry status advances it by one.
 fn sequence(store: &PartitionStore) -> u64 {
@@ -249,7 +259,7 @@ async fn entry_index_follows_vqueue_operations() {
 
         // A metadata change writes only the entry status; a status change also
         // moves the entry's key in each of the two status indexes, a delete and
-        // a put each.
+        // a put each, and updates its status gauges.
         let before = sequence(&store);
         let mut tx = store.transaction();
         let header = tx.get_vqueue_entry_status(&base_id).await.unwrap().unwrap();
@@ -279,7 +289,11 @@ async fn entry_index_follows_vqueue_operations() {
         );
         tx.commit().await.unwrap();
         drop(tx);
-        assert_eq!(sequence(&store), before + 5, "case {case}: status");
+        assert_eq!(
+            sequence(&store),
+            before + 5 + gauge_writes(&target),
+            "case {case}: status"
+        );
         assert_eq!(index_keys(&store, scope), expected, "case {case}: updated");
         assert_eq!(
             index_keys(&store, scopes.by_status),
@@ -516,14 +530,24 @@ async fn entry_index_moves_with_the_sequence_and_ignores_the_rest() {
         for (change, after, writes, state) in [
             ("unchanged", states[2], 1, (Stage::Inbox, Status::New)),
             ("schedule", rescheduled, 1, (Stage::Inbox, Status::New)),
-            ("status", scheduled, 5, (Stage::Inbox, Status::Scheduled)),
+            (
+                "status",
+                scheduled,
+                5 + gauge_writes(&target),
+                (Stage::Inbox, Status::Scheduled),
+            ),
             (
                 "transition time",
                 later,
                 3,
                 (Stage::Inbox, Status::Scheduled),
             ),
-            ("stage", running, 5, (Stage::Running, Status::Scheduled)),
+            (
+                "stage",
+                running,
+                5 + gauge_writes(&target),
+                (Stage::Running, Status::Scheduled),
+            ),
         ] {
             assert_eq!(
                 update(&mut store, after).await,

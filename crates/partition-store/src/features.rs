@@ -759,10 +759,9 @@ mod tests {
             ]
         );
 
-        // The status-gauge options control registered instances, not the
-        // retired legacy feature.
-        config.common.experimental.set_track_status_gauges(true);
-        config.common.experimental.set_status_gauges_reset(true);
+        // The indexes option controls registered instances, not the retired
+        // legacy feature.
+        config.common.experimental.set_indexes(true);
         for empty in [false, true] {
             assert!(
                 !features
@@ -785,7 +784,7 @@ mod tests {
         // Opening detects the marker, and deletes it with the legacy gauges.
         assert!(reloaded.enabled().is_track_status_gauges);
         let mut config = Configuration::default();
-        config.common.experimental.set_track_status_gauges(true);
+        config.common.experimental.set_indexes(true);
         for (features, empty) in [(&features, true), (&reloaded, false)] {
             assert!(
                 !features

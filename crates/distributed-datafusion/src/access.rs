@@ -795,7 +795,7 @@ mod tests {
 
         let env = TestCoreEnv::create_with_single_node(1, 1).await;
         let mut config = Configuration::default();
-        config.common.experimental.set_track_entry_indexes(true);
+        config.common.experimental.set_indexes(true);
         Configuration::set(config);
         let sources = SourceRegistry::local_only(env.metadata.clone());
         let source = sources.create_declared_source::<SysInvocationStatusTable>();
@@ -1085,7 +1085,7 @@ mod tests {
 
         let env = TestCoreEnv::create_with_single_node(1, 1).await;
         let mut config = Configuration::default();
-        config.common.experimental.set_track_entry_indexes(true);
+        config.common.experimental.set_indexes(true);
         Configuration::set(config);
         let sources = SourceRegistry::local_only(env.metadata);
         let source = sources.create_declared_source::<SysInvocationStatusTable>();
@@ -1188,7 +1188,7 @@ mod tests {
 
         let env = TestCoreEnv::create_with_single_node(1, 1).await;
         let mut config = Configuration::default();
-        config.common.experimental.set_track_entry_indexes(true);
+        config.common.experimental.set_indexes(true);
         Configuration::set(config);
         let sources = SourceRegistry::local_only(env.metadata);
         let source = sources.create_declared_source::<SysVqueueEntryStatusTable>();

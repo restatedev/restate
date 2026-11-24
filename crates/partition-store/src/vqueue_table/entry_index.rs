@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 //! The entry indexes: secondary indexes over VQueue entries, released together
-//! and switched on by `experimental-enable-track-entry-indexes`.
+//! and switched on by `experimental-enable-indexes`.
 //!
 //! Each index takes the entry's service, handler and scope from its target,
 //! which every write passes (`EntryContext`), so the entry header stays as it
@@ -95,7 +95,6 @@ use restate_storage_query_api::tables::index::{
     EntryStatusByStatusTransitioned as EntriesByStatusTransitioned,
     EntryStatusByStatusTransitionedClause, EntryStatusByStatusTransitionedColumn,
 };
-use restate_types::config::Configuration;
 use restate_types::vqueues::{CanonicalEntryId, EffectiveStatus};
 use restate_util_string::ReString;
 
@@ -184,24 +183,14 @@ pub(crate) static ENTRY_BY_STATUS_TRANSITIONED: IndexDefinition = IndexDefinitio
     can_fill: true,
 };
 
-/// The entry indexes, released and controlled together.
+/// The entry indexes, released together.
 pub(crate) const ENTRY_INDEXES: Family = Family {
     definitions: &[
         &ENTRY_BY_CREATED,
         &ENTRY_BY_STATUS_CREATED,
         &ENTRY_BY_STATUS_TRANSITIONED,
     ],
-    maintain: track_entry_indexes,
-    reset: entry_indexes_reset,
 };
-
-fn track_entry_indexes(config: &Configuration) -> bool {
-    config.common.experimental.is_track_entry_indexes_enabled()
-}
-
-fn entry_indexes_reset(config: &Configuration) -> bool {
-    config.common.experimental.is_entry_indexes_reset_enabled()
-}
 
 /// Removes the key of `before` and adds the key of `after`. Both share the
 /// entry's target, and the rest of the key never changes after creation, so an
