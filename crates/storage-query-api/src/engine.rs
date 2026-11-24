@@ -97,10 +97,21 @@ pub enum QueryEngineVersion {
 }
 
 impl QueryEngineVersion {
+    const V1_NAME: ReString = ReString::from_static("v1");
+    const V2_NAME: ReString = ReString::from_static("v2");
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::V1 => "v1",
             Self::V2 => "v2",
+        }
+    }
+
+    /// The engine's name, `v1` or `v2`, without allocating.
+    pub const fn name(self) -> ReString {
+        match self {
+            Self::V1 => Self::V1_NAME,
+            Self::V2 => Self::V2_NAME,
         }
     }
 }
