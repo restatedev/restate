@@ -175,7 +175,7 @@ impl Fixture {
 
 async fn complete(store: &mut PartitionStore) {
     let mut config = Configuration::pinned().as_ref().clone();
-    config.common.experimental.set_track_status_gauges(true);
+    config.common.experimental.set_indexes(true);
     store
         .verify_and_run_migrations(Default::default(), &config)
         .await
@@ -338,7 +338,7 @@ async fn populate(store: &mut PartitionStore, second: bool) {
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn statistics_have_shared_shapes_and_sum_before_count_filters_and_limits() {
     let mut config = Configuration::default();
-    config.common.experimental.set_query_stats_tables(true);
+    config.common.experimental.set_indexes(true);
     Configuration::set(config);
     let mut fixture = Fixture::new(true).await;
     let session = fixture.session();
@@ -493,7 +493,8 @@ async fn statistics_have_shared_shapes_and_sum_before_count_filters_and_limits()
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn exposure_is_session_scoped_and_remote_failures_never_become_partial_totals() {
+async fn visibility_follows_index_reads_per_session_and_remote_failures_never_become_partial_totals()
+ {
     let mut config = Configuration::default();
     Configuration::set(config.clone());
     let mut fixture = Fixture::new(false).await;
@@ -523,18 +524,8 @@ async fn exposure_is_session_scoped_and_remote_failures_never_become_partial_tot
         &[&[Some("0")]],
     )
     .await;
-    config.common.experimental.set_track_status_gauges(true);
-    Configuration::set(config.clone());
-    assert!(
-        fixture
-            .session()
-            .execute("SELECT * FROM sys_service_stats", QueryOptions {})
-            .await
-            .is_err()
-    );
-    // Exposure alone makes tables visible, without enabling maintenance.
-    config.common.experimental.set_track_status_gauges(false);
-    config.common.experimental.set_query_stats_tables(true);
+    // Enabling indexes makes the tables visible to new sessions.
+    config.common.experimental.set_indexes(true);
     Configuration::set(config.clone());
     let visible = fixture.session();
     let visible_aliases = fixture.engine.create_session(aliases()).unwrap();
@@ -628,7 +619,7 @@ async fn exposure_is_session_scoped_and_remote_failures_never_become_partial_tot
     )
     .await;
 
-    config.common.experimental.set_query_stats_tables(false);
+    config.common.experimental.set_indexes(false);
     Configuration::set(config);
     assert!(
         fixture

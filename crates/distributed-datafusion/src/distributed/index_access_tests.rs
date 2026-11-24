@@ -217,7 +217,7 @@ async fn stage_index_access_matches_scans_across_windows_and_owners() {
                         .accesses
                         .iter()
                         .all(|(_, access)| matches!(access, PrimaryRead::Index(index)
-                            if index.name() == "_idx_entry_by_queue")),
+                            if index.name() == "vqueue_stages")),
                     indexed,
                     "owners_receive_the_planned_access: {sql}: {:?}",
                     reads.accesses
@@ -340,7 +340,7 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
 
     use crate::tables::invocation_status::SysInvocationStatusTable;
 
-    const INDEX: &str = "_idx_entry_by_service_created";
+    const INDEX: &str = "entry_by_created/1";
     /// Not migrated, and no Complete index: these partitions scan.
     const UNMIGRATED: usize = 5;
     const INCOMPLETE: usize = 6;
@@ -363,9 +363,9 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
     })
     .await;
     let mut tracking = Configuration::default();
-    tracking.common.experimental.set_track_entry_indexes(true);
-    let mut reset = Configuration::default();
-    reset.common.experimental.set_entry_indexes_reset(true);
+    tracking.common.experimental.set_indexes(true);
+    // Indexes off on that replica: its indexes are dropped at the open.
+    let disabled = Configuration::default();
     Configuration::set(tracking.clone());
 
     const BASE: u64 = 1_744_010_000_000;
@@ -375,7 +375,7 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
     let partitions = fixture.stores.len() as u64;
     for (partition, store) in fixture.stores.iter_mut().enumerate() {
         let config = if partition == INCOMPLETE {
-            &reset
+            &disabled
         } else {
             &tracking
         };
@@ -608,7 +608,7 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
         assert!(
             accesses.iter().all(|(_, access)| matches!(
                 access,
-                PrimaryRead::Index(index) if index.name() == "_idx_entry_by_status_created"
+                PrimaryRead::Index(index) if index.name() == "entry_by_status_created/1"
             )),
             "{running}: {accesses:?}"
         );
@@ -786,8 +786,8 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
     };
     let unspelled = |plan: String| plan.replace(" NULLS FIRST", "").replace(" NULLS LAST", "");
     for (sql, index) in [
-        (finished, "_idx_entry_status_by_status_transitioned"),
-        (active, "_idx_entry_status_by_status_created"),
+        (finished, "entry_by_status_transitioned/1"),
+        (active, "entry_by_status_created/1"),
     ] {
         let explained = async |sql: &str| {
             let plan = crate::mocks::rows(session.as_ref(), &format!("EXPLAIN {sql}"))
@@ -857,9 +857,7 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
         .join("\n");
     eprintln!("index candidates\n{plan}");
     assert!(
-        plan.contains(
-            "index=_idx_entry_status_by_status_transitioned, alternatives=[_idx_entry_by_queue]"
-        ),
+        plan.contains("index=entry_by_status_transitioned/1, alternatives=[vqueue_stages]"),
         "{plan}"
     );
     // Only the reset partition's owner skips a candidate, and reads that

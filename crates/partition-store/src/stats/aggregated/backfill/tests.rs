@@ -46,7 +46,7 @@ use crate::fsm_table::{
 };
 use crate::keys::KeyKind;
 use crate::registry::records::get_registry;
-use crate::registry::{IndexNotComplete, IndexStatus, Registry};
+use crate::registry::{DropReason, IndexNotComplete, IndexStatus, Registry};
 use crate::stats::aggregated::{
     DeploymentStatsBinding, ServiceStatsBinding, StageStatusCounts, VirtualObjectStatsBinding,
 };
@@ -316,7 +316,7 @@ async fn backfilled_gauges_match_live_maintenance_and_rebuild_after_reset() {
     // backfills its gauges over existing entries.
     let mut config = Configuration::default();
     open(&mut store, &config).await;
-    config.common.experimental.set_track_status_gauges(true);
+    config.common.experimental.set_indexes(true);
     open(&mut reference, &config).await;
     let (last_id, last_status) = seed(&mut store).await;
     seed(&mut reference).await;
@@ -331,7 +331,7 @@ async fn backfilled_gauges_match_live_maintenance_and_rebuild_after_reset() {
         "gauges_of_an_empty_partition_are_complete_at_once"
     );
 
-    config.common.experimental.set_track_status_gauges(true);
+    config.common.experimental.set_indexes(true);
     for store in [&mut store, &mut reference] {
         open(store, &config).await;
         assert!(
@@ -380,15 +380,30 @@ async fn backfilled_gauges_match_live_maintenance_and_rebuild_after_reset() {
     assert_eq!(ids(&store), completed);
     assert_eq!(read_all(&store), read_all(&reference));
 
-    // Reset deletes the gauges, and queries fail instead of reading nothing.
-    config.common.experimental.set_status_gauges_reset(true);
+    // Turning indexes off deletes the gauges, and queries fail instead of
+    // reading nothing.
+    config.common.experimental.set_indexes(false);
     open(&mut store, &config).await;
     assert!(keys(&store, KeyKind::Stats).is_empty());
-    assert_eq!(totals(&store).await, None, "reset_gauges_are_not_complete");
+    assert_eq!(
+        totals(&store).await,
+        None,
+        "dropped_gauges_are_not_complete"
+    );
+    let registry = get_registry(store.partition_db()).unwrap().unwrap();
+    for (id, _) in &completed {
+        let index = registry.get(*id).unwrap();
+        assert_eq!(index.state, IndexStatus::Dropped);
+        assert_eq!(
+            index.timeline.drop_reason,
+            DropReason::NotEnabled as u32,
+            "dropped_because_indexes_are_off"
+        );
+    }
 
-    // Turned off again, the gauges are rebuilt under fresh IDs, which differ
+    // Turned on again, the gauges are rebuilt under fresh IDs, which differ
     // from the reference replica's without changing what queries read.
-    config.common.experimental.set_status_gauges_reset(false);
+    config.common.experimental.set_indexes(true);
     open(&mut store, &config).await;
     let rebuilt = ids(&store);
     assert!(
@@ -407,7 +422,7 @@ async fn legacy_gauges_are_deleted_before_any_instance_is_built() {
     RocksDbManager::init();
     let manager = PartitionStoreManager::create(true).await.unwrap();
     let mut config = Configuration::default();
-    config.common.experimental.set_track_status_gauges(true);
+    config.common.experimental.set_indexes(true);
     let legacy = |partition: PartitionId, id: u16| {
         let mut key = crate::features::legacy_status_gauge_key(partition, id);
         key.extend_from_slice(b"payload");
@@ -475,7 +490,7 @@ async fn legacy_gauges_are_deleted_before_any_instance_is_built() {
         let min_version = get_min_restate_version_from_partition_db(store.partition_db()).unwrap();
 
         let mut reopened = Configuration::default();
-        reopened.common.experimental.set_track_status_gauges(true);
+        reopened.common.experimental.set_indexes(true);
         open(&mut store, &reopened).await;
         let ledger = serde_json::to_value(
             get_storage_features_from_partition_db(store.partition_db())
@@ -498,10 +513,11 @@ async fn legacy_gauges_are_deleted_before_any_instance_is_built() {
         );
         assert_eq!(ids(&store), registered, "instances_are_kept: case {case}");
         assert_eq!(read_all(&store), expected);
+        // The three gauges and the three entry indexes, none added twice.
         assert!(
             get_registry(store.partition_db())
                 .unwrap()
-                .is_some_and(|registry: Registry| registry.indexes().len() == 3)
+                .is_some_and(|registry: Registry| registry.indexes().len() == 6)
         );
     }
 }

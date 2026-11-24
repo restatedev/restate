@@ -2767,7 +2767,7 @@ mod tests {
         );
         seed_finished_entries(stores, &partition, entries, position).await;
         let mut config = Configuration::default();
-        config.common.experimental.set_track_status_gauges(true);
+        config.common.experimental.set_indexes(true);
         (config, stores.faults(&partition))
     }
 

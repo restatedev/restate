@@ -1,0 +1,182 @@
+// Copyright (c) 2026 Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::watch;
+use tracing::debug;
+
+use restate_core::cancellation_watcher;
+use restate_storage_query_api::QueryEngine;
+use restate_storage_query_datafusion::stats_tables_ready;
+use restate_types::config::Configuration;
+use restate_types::partitions::state::PartitionReplicaSetStates;
+
+/// What this admin node knows about the indexes queries read. `/version` shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexCatalog {
+    /// The statistics tables answer: shown, because queries read indexes, and
+    /// without evidence that a read would fail (see [`stats_tables_ready`]).
+    pub stats_tables: bool,
+}
+
+impl IndexCatalog {
+    /// Before the first check: the statistics tables are assumed to answer
+    /// wherever they are shown.
+    pub fn initial() -> Self {
+        Self {
+            stats_tables: Configuration::pinned()
+                .common
+                .experimental
+                .index_reads_enabled(),
+        }
+    }
+
+    /// Where queries don't read indexes, the statistics tables aren't shown.
+    const HIDDEN: Self = Self {
+        stats_tables: false,
+    };
+}
+
+/// The delay before the first retry of a failed check; it doubles with each
+/// further failure, up to the refresh interval.
+const FIRST_RETRY: Duration = Duration::from_secs(5);
+
+/// Checks the indexes through `query_engine` every
+/// `admin.query-engine.index-catalog-refresh-interval` and publishes the result
+/// to `catalog`. A check that fails as a whole keeps the last catalog and is
+/// retried sooner; workers that don't answer only leave their replicas unknown.
+/// Where queries don't read indexes, the statistics tables aren't shown: the
+/// catalog is then all `false`, without a check.
+pub(crate) async fn refresh(
+    query_engine: Arc<QueryEngine>,
+    replica_sets: PartitionReplicaSetStates,
+    catalog: watch::Sender<IndexCatalog>,
+) -> anyhow::Result<()> {
+    let mut cancelled = std::pin::pin!(cancellation_watcher());
+    let mut retry = FIRST_RETRY;
+    loop {
+        let (interval, index_reads) = {
+            let config = Configuration::pinned();
+            (
+                config
+                    .admin
+                    .query_engine
+                    .index_catalog_refresh_interval
+                    .to_std(),
+                config.common.experimental.index_reads_enabled(),
+            )
+        };
+        let delay = if !index_reads {
+            catalog.send_replace(IndexCatalog::HIDDEN);
+            retry = FIRST_RETRY;
+            interval
+        } else {
+            tokio::select! {
+            ready = stats_tables_ready(&query_engine, &replica_sets) => match ready {
+                Ok(stats_tables) => {
+                    catalog.send_replace(IndexCatalog { stats_tables });
+                    retry = FIRST_RETRY;
+                    interval
+                }
+                Err(error) => {
+                    debug!(%error, "Index catalog check failed, keeping the last catalog");
+                    let delay = retry.min(interval);
+                    retry = retry.saturating_mul(2);
+                    delay
+                }
+            },
+            _ = &mut cancelled => return Ok(()),
+            }
+        };
+        tokio::select! {
+            _ = tokio::time::sleep(delay) => {}
+            _ = &mut cancelled => return Ok(()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use restate_core::{TaskCenter, TaskKind};
+    use restate_storage_query_api::QueryEngineVersion;
+    use restate_storage_query_api::errors::SessionError;
+
+    use super::*;
+
+    #[restate_core::test(start_paused = true)]
+    async fn starts_true_keeps_it_through_failed_checks_and_index_reads_off_skips_the_check() {
+        let mut config = Configuration::default();
+        config.common.experimental.set_indexes(true);
+        Configuration::set(config.clone());
+        // With index reads on, the tables are assumed to answer until a check
+        // finds evidence otherwise.
+        assert_eq!(IndexCatalog::initial(), IndexCatalog { stats_tables: true });
+        let checks = Arc::new(AtomicUsize::new(0));
+        let engine = QueryEngine::new(QueryEngineVersion::V1, {
+            let checks = Arc::clone(&checks);
+            move |_| {
+                checks.fetch_add(1, Ordering::Relaxed);
+                Err(SessionError::EngineDisabled)
+            }
+        });
+        let (sender, catalog) = watch::channel(IndexCatalog::initial());
+        let start = tokio::time::Instant::now();
+        TaskCenter::spawn(
+            TaskKind::Background,
+            "index-catalog",
+            refresh(
+                Arc::new(engine),
+                PartitionReplicaSetStates::default(),
+                sender,
+            ),
+        )
+        .unwrap();
+        // A check that fails as a whole keeps the last value. It is retried 5 s
+        // after the first failure, then after 10, 20 and 40 s, then every minute,
+        // the default refresh interval.
+        for (seconds, expected) in [
+            (0, 1),
+            (5, 2),
+            (15, 3),
+            (35, 4),
+            (75, 5),
+            (135, 6),
+            (195, 7),
+        ] {
+            tokio::time::sleep_until(
+                start + Duration::from_secs(seconds) + Duration::from_millis(1),
+            )
+            .await;
+            assert_eq!(
+                checks.load(Ordering::Relaxed),
+                expected,
+                "checks after {seconds} s"
+            );
+        }
+        assert_eq!(*catalog.borrow(), IndexCatalog { stats_tables: true });
+
+        // Without index reads the statistics tables aren't shown: the next turn,
+        // a minute later, publishes `false` without a check.
+        config.common.experimental.set_indexes(false);
+        Configuration::set(config);
+        tokio::time::sleep_until(start + Duration::from_secs(255) + Duration::from_millis(1)).await;
+        assert_eq!(
+            checks.load(Ordering::Relaxed),
+            7,
+            "no check without index reads"
+        );
+        assert_eq!(*catalog.borrow(), IndexCatalog::HIDDEN);
+        assert_eq!(IndexCatalog::initial(), IndexCatalog::HIDDEN);
+    }
+}

@@ -9,9 +9,10 @@ executed by `datafusion-distributed` over Restate RPC. Register
 
 The planner reads a table through a complete index when a query restricts the
 indexed columns. For example, `sys_vqueues` filtered by queue reads the
-scheduler's queue stages, the `_idx_entry_by_queue` index. This needs no option:
-`experimental-enable-query-index-tables` only shows the index tables in SQL, for
-inspecting them.
+scheduler's queue stages, the `vqueue_stages` index. This needs no option.
+The entry indexes, such as invocations by creation time, are built and read only
+with `experimental-enable-indexes`. Indexes aren't tables in SQL: `EXPLAIN` shows
+which index a query reads.
 
 Distributed query tasks require network protocol V7 or later. The network fabric
 negotiates compatibility; the coordinator rejects an unsupported node before

@@ -82,16 +82,8 @@ impl DataFusionQueryEngine {
             opts.excluded_tables
                 .push(crate::tables::config::ConfigTable::identity());
         }
-        // The service index's definition isn't in this build yet (#5856).
-        opts.excluded_tables
-            .push(crate::tables::index::EntryByServiceTable::identity());
-        // Hiding an index table hides it from SQL only: the planner still reads
-        // the index for queries on its primary table.
-        if !config.common.experimental.is_query_index_tables_enabled() {
-            opts.excluded_tables
-                .push(crate::tables::index::EntryByQueueTable::identity());
-        }
-        if !config.common.experimental.is_query_stats_tables_enabled() {
+        // The statistics tables are shown where queries read indexes.
+        if !config.common.experimental.index_reads_enabled() {
             use crate::tables::stats::deployment_stats::schema::SysDeploymentStatsTable;
             use crate::tables::stats::service_stats::schema::SysServiceStatsTable;
             use crate::tables::stats::virtual_object_stats::schema::SysVirtualObjectStatsTable;

@@ -1093,7 +1093,7 @@ mod tests {
             .await
             .unwrap();
         let mut config = Configuration::default();
-        config.common.experimental.set_track_entry_indexes(true);
+        config.common.experimental.set_indexes(true);
         store
             .verify_and_run_migrations(CancellationToken::new(), &config)
             .await
@@ -1469,7 +1469,7 @@ mod tests {
         RocksDbManager::init();
         let manager = PartitionStoreManager::create(true).await.unwrap();
         let mut config = Configuration::default();
-        config.common.experimental.set_track_entry_indexes(true);
+        config.common.experimental.set_indexes(true);
         let mut next = 0u64;
         // Stores an invocation of `service` and its entry in `stage` and `status`.
         let mut put = |tx: &mut crate::PartitionStoreTransaction<'_>,

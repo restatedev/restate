@@ -333,6 +333,7 @@ fn append_entry(
         (0, _) => {}
         (_, Some(DropReason::Reset)) => row.drop_reason("reset"),
         (_, Some(DropReason::UnknownDefinition)) => row.drop_reason("unknown-definition"),
+        (_, Some(DropReason::NotEnabled)) => row.drop_reason("not-enabled"),
         (number, None) => row.fmt_drop_reason(format_args!("unknown({number})")),
     }
     if let Some(size) = replica.index_sizes.get(&index.id) {

@@ -11,9 +11,9 @@ service, deployment and virtual object, by stage and status, including
 completed entries until they're deleted. Service and deployment counts are
 summed over all partitions.
 
-The tables are off by default. Enable them with
-`experimental-enable-query-stats-tables` on the nodes that run queries. New
-query sessions see them; sessions already open keep their tables.
+Both engines show the tables only with `experimental-enable-indexes` on the
+nodes that run queries. This is off by default. Their queries fail until the
+statistics are complete on every partition.
 
 ### Why This Matters
 
@@ -21,11 +21,14 @@ You can query statistics without switching to the V2 engine.
 
 ### Impact on Users
 
-- The statistics must exist first: enable
-  `experimental-enable-track-status-gauges` on workers and wait until they're
-  complete on every partition (status `complete` in `restate.cluster.registry`).
-  Enabling the tables doesn't start that, or wait for it.
+- The tables appear only with `experimental-enable-indexes` on the nodes that
+  run queries. New query sessions see a change; sessions already open keep
+  their tables.
+- The statistics are built by the same option on workers. Queries succeed once
+  they're complete on every partition (status `complete` in
+  `restate.cluster.registry`).
 - A query fails if any partition it reads has missing or incomplete
-  statistics, instead of returning a partial total.
-- Enable the tables only after upgrading all nodes. An older node can't serve
+  statistics, before it returns any row. It never returns a partial result,
+  also with a `LIMIT`.
+- Query the tables only after upgrading all nodes. An older node can't serve
   them, and queries that need it fail.

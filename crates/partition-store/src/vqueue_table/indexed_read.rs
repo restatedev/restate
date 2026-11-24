@@ -957,7 +957,7 @@ mod tests {
             .await
             .unwrap();
         let mut config = Configuration::default();
-        config.common.experimental.set_track_entry_indexes(true);
+        config.common.experimental.set_indexes(true);
         store
             .verify_and_run_migrations(CancellationToken::new(), &config)
             .await
@@ -1255,7 +1255,7 @@ mod tests {
             .await
             .unwrap();
         let mut config = Configuration::default();
-        config.common.experimental.set_track_entry_indexes(true);
+        config.common.experimental.set_indexes(true);
         tracked
             .verify_and_run_migrations(CancellationToken::new(), &config)
             .await

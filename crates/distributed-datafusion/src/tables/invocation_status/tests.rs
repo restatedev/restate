@@ -262,7 +262,7 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         .await
         .unwrap();
     let mut config = Configuration::default();
-    config.common.experimental.set_track_entry_indexes(true);
+    config.common.experimental.set_indexes(true);
     store
         .verify_and_run_migrations(CancellationToken::new(), &config)
         .await
@@ -601,13 +601,13 @@ async fn invocations_read_through_the_entry_index_match_v1() {
     for sql in [&outcomes, &not_completed, &not_completed_or_paused] {
         let plan = explained(sql).await;
         assert!(
-            plan.contains("index=_idx_entry_by_status_created"),
+            plan.contains("index=entry_by_status_created/1"),
             "{sql}: {plan}"
         );
     }
     let plan = explained(every_lane).await;
     assert!(
-        plan.contains("index=_idx_entry_by_service_created"),
+        plan.contains("index=entry_by_created/1"),
         "{every_lane}: {plan}"
     );
     for sql in &scans {
@@ -685,8 +685,8 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         "v1 scan"
     );
     for (condition, index) in [
-        ("", "_idx_entry_by_service_created"),
-        ("AND status = 'completed'", "_idx_entry_by_status_created"),
+        ("", "entry_by_created/1"),
+        ("AND status = 'completed'", "entry_by_status_created/1"),
     ] {
         let sql = promises_by(condition, "");
         let plan = explained(&sql).await;
@@ -775,22 +775,18 @@ async fn invocations_read_through_the_entry_index_match_v1() {
     let original_all = original.replace("\n      LIMIT 250", "");
     assert_ne!(original_all, original);
     let unordered = [
-        (
-            original,
-            "_idx_entry_by_status_created",
-            original_all.as_str(),
-        ),
+        (original, "entry_by_status_created/1", original_all.as_str()),
         (
             "SELECT ss.id AS id FROM sys_invocation_status ss \
              WHERE ss.target_service_name IN ('Utils') LIMIT 25",
-            "_idx_entry_by_service_created",
+            "entry_by_created/1",
             "SELECT id FROM sys_invocation_status WHERE target_service_name = 'Utils'",
         ),
         (
             "SELECT ss.id AS id FROM sys_invocation_status ss \
              WHERE ss.status = 'invoked' AND ss.target_service_name IN ('Promises') \
              AND ss.partition_key BETWEEN 0 AND 18446744073709551615 LIMIT 10",
-            "_idx_entry_by_status_created",
+            "entry_by_status_created/1",
             "SELECT id FROM sys_invocation_status \
              WHERE status = 'invoked' AND target_service_name = 'Promises'",
         ),
@@ -799,7 +795,7 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         (
             "SELECT ss.id AS id FROM sys_invocation_status ss \
              WHERE ss.status != 'completed' AND ss.target_service_name IN ('Utils') LIMIT 10",
-            "_idx_entry_by_status_created",
+            "entry_by_status_created/1",
             "SELECT id FROM sys_invocation_status \
              WHERE status <> 'completed' AND target_service_name = 'Utils'",
         ),
@@ -807,14 +803,14 @@ async fn invocations_read_through_the_entry_index_match_v1() {
             "SELECT ss.id AS id FROM sys_invocation_status ss \
              WHERE ss.status NOT IN ('completed', 'paused') \
              AND ss.target_service_name IN ('Utils') LIMIT 10",
-            "_idx_entry_by_status_created",
+            "entry_by_status_created/1",
             "SELECT id FROM sys_invocation_status \
              WHERE status NOT IN ('completed', 'paused') AND target_service_name = 'Utils'",
         ),
         (
             "SELECT id FROM sys_invocation_status \
              WHERE target_service_name IN ('Utils') AND idempotency_key IS NULL LIMIT 25",
-            "_idx_entry_by_service_created",
+            "entry_by_created/1",
             "SELECT id FROM sys_invocation_status \
              WHERE target_service_name = 'Utils' AND idempotency_key IS NULL",
         ),
@@ -865,7 +861,7 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         count("WHERE target_service_name = 'Counter' AND status <> 'completed'").await;
     let status_source = |plan: &str| {
         plan.lines()
-            .find(|line| line.contains("index=_idx_entry_by_status_created"))
+            .find(|line| line.contains("index=entry_by_status_created/1"))
             .unwrap()
             .to_owned()
     };
@@ -931,7 +927,7 @@ async fn invocations_read_through_the_entry_index_match_v1() {
     // statuses of the windows it needed rather than all 300.
     let plan = explained(oldest).await;
     assert!(
-        plan.contains("index=_idx_entry_by_service_created")
+        plan.contains("index=entry_by_created/1")
             && plan.contains("SortPreservingMergeExec")
             && !plan.contains("SortExec:"),
         "{plan}"
@@ -984,7 +980,7 @@ async fn invocations_read_through_the_entry_index_match_v1() {
     let plan = explained(page).await;
     assert!(
         plan.contains("IndexScanExec")
-            && plan.contains("index=_idx_entry_by_service_created")
+            && plan.contains("index=entry_by_created/1")
             && plan.contains("SortPreservingMergeExec")
             && !plan.contains("SortExec:"),
         "{plan}"
@@ -1037,7 +1033,7 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         ORDER BY created_at DESC NULLS LAST LIMIT 5";
     let plan = explained(all_services).await;
     assert!(
-        plan.contains("IndexScanExec") && plan.contains("index=_idx_entry_by_service_created"),
+        plan.contains("IndexScanExec") && plan.contains("index=entry_by_created/1"),
         "{plan}"
     );
     assert_eq!(
@@ -1120,7 +1116,7 @@ async fn status_follows_the_entry() {
         .await
         .unwrap();
     let mut config = Configuration::default();
-    config.common.experimental.set_track_entry_indexes(true);
+    config.common.experimental.set_indexes(true);
     store
         .verify_and_run_migrations(CancellationToken::new(), &config)
         .await
@@ -1371,7 +1367,7 @@ async fn status_follows_the_entry() {
             .concat()
             .join("\n");
         assert!(
-            plan.contains("index=_idx_entry_by_status_created"),
+            plan.contains("index=entry_by_status_created/1"),
             "{page}: {plan}"
         );
         let mut scanned: Vec<_> = rows(
@@ -1407,7 +1403,7 @@ async fn partitions_sharing_a_lane_bound_their_fallback() {
     RocksDbManager::init();
     let manager = PartitionStoreManager::create(true).await.unwrap();
     let mut config = Configuration::default();
-    config.common.experimental.set_track_entry_indexes(true);
+    config.common.experimental.set_indexes(true);
     Configuration::set(config.clone());
 
     const BASE: u64 = 1_744_010_000_000;

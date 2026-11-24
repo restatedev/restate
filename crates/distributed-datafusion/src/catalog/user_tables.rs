@@ -11,7 +11,6 @@
 use crate::context::SelectPartitions;
 use crate::source_registry::SourceRegistry;
 use crate::tables::deployment::schema::SysDeploymentTable;
-use crate::tables::index::{EntryByQueueTable, EntryByServiceTable};
 use crate::tables::invocation_state::SysInvocationStateTable;
 use crate::tables::invocation_status::SysInvocationStatusTable;
 use crate::tables::journal::SysJournalTable;
@@ -121,16 +120,6 @@ where
                 self.partition_selector.clone(),
                 &self.sources,
             ),
-        )?;
-        inventory.add::<EntryByServiceTable>(
-            "public",
-            &EntryByServiceTable::identity(),
-            EntryByServiceTable::create_provider(self.partition_selector.clone(), &self.sources),
-        )?;
-        inventory.add::<EntryByQueueTable>(
-            "public",
-            &EntryByQueueTable::identity(),
-            EntryByQueueTable::create_provider(self.partition_selector.clone(), &self.sources),
         )?;
         inventory.add::<StateTable>(
             "public",

@@ -21,7 +21,8 @@
 //! 1. **Retire** maintained indexes of definitions this binary does not know (a
 //!    rollback, or another build): their keys are range-deleted and they become
 //!    Dropped, keeping their IDs reserved.
-//! 2. **Reset** the indexes of families whose reset is requested, the same way.
+//! 2. **Drop** the indexes of every family while indexes aren't enabled
+//!    (`experimental-enable-indexes` off), the same way.
 //! 3. **Register** each requested definition that has no maintained index, under
 //!    a fresh ID, with a `Pending` build job.
 //!    Running out of IDs skips the request with an error log.
@@ -48,7 +49,7 @@
 //!    feature is in the store's ledger, so older binaries cannot open it.
 //!
 //! ```text
-//! open ─▶ load (one scan) + validate ─▶ retire · reset · register · start walks
+//! open ─▶ load (one scan) + validate ─▶ retire · drop · register · start walks
 //!          (an invalid state fails the open)              │
 //!                          one batch: the changed records (see `records`) + fence
 //!                                                         │
@@ -124,8 +125,9 @@ pub(crate) const FAMILIES: &[Family] = &[
 pub(crate) struct Requests {
     /// Definitions to register when they have no maintained index.
     pub(crate) maintain: Vec<&'static IndexDefinition>,
-    /// Definitions whose maintained index is dropped.
-    pub(crate) reset: Vec<&'static IndexDefinition>,
+    /// Definitions whose maintained index is dropped, because indexes aren't
+    /// enabled.
+    pub(crate) disabled: Vec<&'static IndexDefinition>,
     /// How long the record of a job that finishes is kept
     /// (`worker.storage.finished-migration-jobs-retention`).
     pub(crate) retention: Duration,
@@ -139,7 +141,7 @@ impl Default for Requests {
     fn default() -> Self {
         Self {
             maintain: Vec::new(),
-            reset: Vec::new(),
+            disabled: Vec::new(),
             retention: StorageOptions::default()
                 .finished_migration_jobs_retention
                 .to_std(),
@@ -159,12 +161,11 @@ impl Requests {
             migrations: ONLINE_MIGRATIONS,
             ..Self::default()
         };
-        for family in families {
-            if (family.reset)(config) {
-                requests.reset.extend(family.definitions);
-            } else if (family.maintain)(config) {
-                requests.maintain.extend(family.definitions);
-            }
+        let definitions = families.iter().flat_map(|family| family.definitions);
+        if config.common.experimental.is_indexes_enabled() {
+            requests.maintain.extend(definitions);
+        } else {
+            requests.disabled.extend(definitions);
         }
         requests
     }
@@ -431,12 +432,15 @@ impl PartitionStore {
             );
         }
 
-        for definition in &requests.reset {
+        for definition in &requests.disabled {
             if let Some(id) = registry.maintained(definition.name).map(|active| active.id) {
                 append_instance_delete(&db, &mut batch, definition.kind, id)?;
-                drop_and_record(&mut registry, &mut jobs, id, DropReason::Reset, &stamp)
+                drop_and_record(&mut registry, &mut jobs, id, DropReason::NotEnabled, &stamp)
                     .map_err(registry_error)?;
-                info!(definition = definition.name, id, "Reset the index");
+                info!(
+                    definition = definition.name,
+                    id, "Dropped the index: indexes are not enabled"
+                );
             }
         }
         // A walk whose members were all dropped has nothing left to backfill;
@@ -921,16 +925,20 @@ mod tests {
                 );
             }
         }
-        // Nothing is requested by default; a reset overrides maintenance.
+        // By default indexes aren't enabled: every family is dropped. Enabled,
+        // every family is maintained.
+        let all = FAMILIES
+            .iter()
+            .map(|family| family.definitions.len())
+            .sum::<usize>();
         let mut config = Configuration::default();
         let requests = Requests::from_config(FAMILIES, &config);
-        assert!(requests.maintain.is_empty() && requests.reset.is_empty());
-        config.common.experimental.set_track_status_gauges(true);
-        assert_eq!(Requests::from_config(FAMILIES, &config).maintain.len(), 3);
-        config.common.experimental.set_status_gauges_reset(true);
-        let requests = Requests::from_config(FAMILIES, &config);
         assert!(requests.maintain.is_empty());
-        assert_eq!(requests.reset.len(), 3);
+        assert_eq!(requests.disabled.len(), all);
+        config.common.experimental.set_indexes(true);
+        let requests = Requests::from_config(FAMILIES, &config);
+        assert!(requests.disabled.is_empty());
+        assert_eq!(requests.maintain.len(), all);
     }
 
     fn ignore(
@@ -1130,7 +1138,7 @@ mod tests {
             &mut store,
             &[&INDEX, &STAT],
             Requests {
-                reset: vec![&STAT],
+                disabled: vec![&STAT],
                 ..Default::default()
             },
         )
@@ -1938,7 +1946,7 @@ mod backfill_tests {
         reconcile(
             &mut store,
             Requests {
-                reset: vec![&RESUMED],
+                disabled: vec![&RESUMED],
                 ..Requests::default()
             },
         )
@@ -2630,7 +2638,7 @@ mod backfill_tests {
         reconcile(
             &mut store,
             Requests {
-                reset: vec![&ADOPTED],
+                disabled: vec![&ADOPTED],
                 ..Default::default()
             },
         )
@@ -3946,7 +3954,7 @@ mod backfill_tests {
         reconcile(
             &mut store,
             Requests {
-                reset: vec![&COUNT],
+                disabled: vec![&COUNT],
                 ..Default::default()
             },
         )
@@ -4181,7 +4189,7 @@ mod open_tests {
         // the index nor publish, whether it has a change to make or not.
         manager.close(partition.id()).await;
         let reset = Requests {
-            reset: vec![&STAT],
+            disabled: vec![&STAT],
             ..Default::default()
         };
         for requests in [reset, maintain()] {
@@ -4286,7 +4294,7 @@ mod open_tests {
         let before = ledger(&db);
         let entries = read_chunk(&store, None, usize::MAX).unwrap().len();
         let mut config = Configuration::default();
-        config.common.experimental.set_track_status_gauges(true);
+        config.common.experimental.set_indexes(true);
         let error = store
             .verify_and_run_migrations(CancellationToken::new(), &config)
             .await

@@ -48,10 +48,11 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         .await;
     RocksDbManager::init();
     let manager = PartitionStoreManager::create(true).await.unwrap();
-    // Two replicas open with the status gauges: three statistics each, Complete at
-    // once over empty partitions, their jobs completed without a pass.
+    // Two replicas open with indexes: three statistics and three entry indexes
+    // each, Complete at once over empty partitions, their jobs completed without
+    // a pass.
     let mut config = Configuration::default();
-    config.common.experimental.set_track_status_gauges(true);
+    config.common.experimental.set_indexes(true);
     for id in [1, 2] {
         let mut store = manager
             .open(&Partition::new(PartitionId::from(id), KeyRange::FULL), None)
@@ -137,7 +138,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
                AND passes = 0 AND progress_percent IS NULL AND finished_at IS NOT NULL"
         )
         .await,
-        6
+        12
     );
     // Without sizes, every index renders NULL: a report that skips them has
     // none, as one for a query that doesn't select the column.
@@ -159,7 +160,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
     };
     let rendered = render(&report);
     let sizes = rendered[0].column_by_name("approx_size_bytes").unwrap();
-    assert_eq!((sizes.len(), sizes.null_count()), (6, 6));
+    assert_eq!((sizes.len(), sizes.null_count()), (12, 12));
 
     // Migrations follow a replica's indexes: one in progress, with its job, and
     // one complete, with its completion time; neither has a size.
@@ -183,7 +184,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
     let (kind, status) = (text("kind"), text("status"));
     let (job, completed) = (column("job_id"), column("completed_at"));
     assert_eq!(
-        [3, 4].map(|row| (kind.value(row), status.value(row), job.is_null(row))),
+        [6, 7].map(|row| (kind.value(row), status.value(row), job.is_null(row))),
         [
             ("migration", "in_progress", false),
             ("migration", "complete", true)
@@ -191,16 +192,16 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
     );
     assert_eq!(
         job.as_primitive::<datafusion::arrow::datatypes::UInt32Type>()
-            .value(3),
+            .value(6),
         running
     );
     assert_eq!(
         completed
             .as_primitive::<datafusion::arrow::datatypes::TimestampMillisecondType>()
-            .value(4),
+            .value(7),
         2_000
     );
-    assert!(completed.is_null(3) && column("approx_size_bytes").is_null(4));
+    assert!(completed.is_null(6) && column("approx_size_bytes").is_null(7));
 
     // `blocked_by` renders the reason the replica's driver reports for an
     // unfinished job, and NULL for a finished one. A job whose migration this
@@ -270,7 +271,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         (&jobs, MigrationJobsBuilder::schema()),
     ] {
         for (batch_size, limit, expected) in [
-            (4, None, vec![4, 2]),
+            (8, None, vec![8, 4]),
             (2, Some(3), vec![2, 1]),
             (4, Some(0), vec![]),
         ] {
@@ -282,7 +283,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
             assert_eq!(rows, expected);
         }
         let rows: Vec<_> = scanner
-            .scan(Arc::new(Schema::empty()), &[], 4, None)
+            .scan(Arc::new(Schema::empty()), &[], 8, None)
             .map(|batch| {
                 let batch = batch.unwrap();
                 assert_eq!(batch.num_columns(), 0);
@@ -290,7 +291,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
             })
             .collect()
             .await;
-        assert_eq!(rows, [4, 2]);
+        assert_eq!(rows, [8, 4]);
     }
 
     // A corrupt record on the second replica: a fully consumed scan of either
@@ -309,10 +310,10 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         ("registry", &registry, RegistryBuilder::schema()),
         ("migration_jobs", &jobs, MigrationJobsBuilder::schema()),
     ] {
-        let items: Vec<_> = scanner.scan(schema, &[], 2, None).collect().await;
+        let items: Vec<_> = scanner.scan(schema, &[], 4, None).collect().await;
         assert_eq!(items.len(), 3, "two healthy batches followed by one error");
-        assert_eq!(items[0].as_ref().unwrap().num_rows(), 2);
-        assert_eq!(items[1].as_ref().unwrap().num_rows(), 1);
+        assert_eq!(items[0].as_ref().unwrap().num_rows(), 4);
+        assert_eq!(items[1].as_ref().unwrap().num_rows(), 2);
         assert!(
             items[2]
                 .as_ref()
@@ -339,7 +340,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         let batches = collect(plan, ctx.task_ctx()).await.unwrap();
         assert_eq!(
             batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
-            3
+            6
         );
         let warnings = warnings[0].lock();
         assert_eq!(warnings.len(), 1);
@@ -364,7 +365,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         .unwrap();
     assert_eq!(
         count("SELECT count(*) FROM registry WHERE partition_id = 3").await,
-        3
+        6
     );
     assert_eq!(
         count("SELECT count(*) FROM migration_jobs WHERE partition_id = 3").await,
