@@ -17,7 +17,7 @@ use bytes::Bytes;
 
 use crate::GenerationalNodeId;
 use crate::logs::{LogletOffset, Record};
-use crate::net::codec::{EncodeError, WireDecode, WireEncode, encode_as_bilrost};
+use crate::net::codec::{EncodeError, EncodedPayload, WireDecode, WireEncode, encode_as_bilrost};
 use crate::net::{ProtocolVersion, RpcRequest};
 use crate::time::MillisSinceEpoch;
 
@@ -33,6 +33,21 @@ pub struct PreparedPayloads {
 }
 
 impl PreparedPayloads {
+    /// Decode and validate records from the retained nested Payloads encoding.
+    /// The pair cannot be constructed from independently supplied records/bytes.
+    pub(crate) fn decode(encoded: Bytes) -> Result<Self, bilrost::DecodeError> {
+        // Decode the owned buffer directly. OwnedMessage::decode's debug-only
+        // Counted wrapper does not forward copy_to_bytes and copies record bodies.
+        let payloads = bilrost::OwnedMessage::decode_capped(bilrost::encoding::Capped::new(
+            &mut encoded.clone(),
+        ))?;
+        Ok(Self { payloads, encoded })
+    }
+
+    pub(crate) fn encoded(&self) -> &Bytes {
+        &self.encoded
+    }
+
     /// Encode a batch once before handing it to appenders or replica tasks.
     pub fn new(records: Arc<[Record]>) -> Self {
         let payloads = records.into();
@@ -61,7 +76,7 @@ pub struct PreparedStore {
 
 // Keep tags aligned with Store. A nested Payloads message and opaque Bytes
 // have the same length-delimited representation, including empty payloads.
-#[derive(bilrost::Message)]
+#[derive(Debug, bilrost::Message)]
 struct EncodedStore {
     #[bilrost(1)]
     header: LogServerRequestHeader,
@@ -79,6 +94,20 @@ struct EncodedStore {
     payloads: Bytes,
 }
 
+impl PreparedStore {
+    fn encoded(&self) -> EncodedStore {
+        EncodedStore {
+            header: self.header.clone(),
+            timeout_at: self.timeout_at,
+            flags: self.flags.clone(),
+            first_offset: self.first_offset,
+            sequencer: self.sequencer,
+            known_archived: self.known_archived,
+            payloads: self.payloads.encoded.clone(),
+        }
+    }
+}
+
 impl WireEncode for PreparedStore {
     fn encode_to_bytes(&self, protocol_version: ProtocolVersion) -> Result<Bytes, EncodeError> {
         match protocol_version {
@@ -88,16 +117,26 @@ impl WireEncode for PreparedStore {
                 actual: protocol_version,
             }),
             ProtocolVersion::V3 | ProtocolVersion::V4 | ProtocolVersion::V6 => {
-                Ok(bilrost::Message::encode_to_bytes(&EncodedStore {
-                    header: self.header.clone(),
-                    timeout_at: self.timeout_at,
-                    flags: self.flags.clone(),
-                    first_offset: self.first_offset,
-                    sequencer: self.sequencer,
-                    known_archived: self.known_archived,
-                    payloads: self.payloads.encoded.clone(),
-                }))
+                Ok(bilrost::Message::encode_to_bytes(&self.encoded()))
             }
+        }
+    }
+
+    fn encode_payload(
+        &self,
+        protocol_version: ProtocolVersion,
+    ) -> Result<EncodedPayload, EncodeError> {
+        match protocol_version {
+            ProtocolVersion::V3 | ProtocolVersion::V4 | ProtocolVersion::V6
+                if self.payloads.encoded.len() >= 8 * 1024 =>
+            {
+                Ok(EncodedPayload::from_bilrost(self.encoded()))
+            }
+            // For small payloads, exact-sized encoding is cheaper than boxing
+            // and invoking the deferred encoder.
+            _ => self
+                .encode_to_bytes(protocol_version)
+                .map(EncodedPayload::from),
         }
     }
 }
@@ -130,12 +169,116 @@ impl RpcRequest for PreparedStore {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Buf;
+
     use restate_clock::time::NanosSinceEpoch;
 
-    use crate::logs::{Keys, LogletId, SequenceNumber};
+    use crate::logs::{Keys, LogId, LogletId, SequenceNumber};
+    use crate::net::replicated_loglet::{Append, CommonRequestHeader, PreparedAppend};
     use crate::storage::PolyBytes;
 
     use super::*;
+
+    #[test]
+    fn received_append_retains_validated_backing_and_store_wire_format() {
+        let records: Arc<[Record]> = (0..3)
+            .map(|i| {
+                Record::from_parts(
+                    NanosSinceEpoch::new(42 + i),
+                    Keys::Single(i),
+                    PolyBytes::Bytes(Bytes::from(vec![i as u8; 4096])),
+                )
+            })
+            .collect();
+        let append = Append {
+            header: CommonRequestHeader {
+                log_id: LogId::new(1),
+                segment_index: 1.into(),
+                loglet_id: LogletId::new_unchecked(123),
+            },
+            payloads: records.clone().into(),
+        };
+        for version in [
+            ProtocolVersion::V3,
+            ProtocolVersion::V4,
+            ProtocolVersion::V6,
+        ] {
+            let wire = append.encode_to_bytes(version).unwrap();
+            let received = PreparedAppend::try_decode(wire.clone(), version).unwrap();
+            let payloads = received.payloads;
+            let start = wire.as_ptr() as usize;
+            let end = start + wire.len();
+            assert!((start..end).contains(&(payloads.encoded.as_ptr() as usize)));
+            assert!(payloads.encoded.as_ptr() as usize + payloads.encoded.len() <= end);
+            assert_eq!(payloads.encoded, encode_as_bilrost(&append.payloads));
+            for (decoded, original) in payloads.records().iter().zip(records.iter()) {
+                assert_eq!(decoded.created_at(), original.created_at());
+                assert_eq!(decoded.keys(), original.keys());
+                let PolyBytes::Bytes(body) = decoded.body() else {
+                    panic!("expected bytes")
+                };
+                let PolyBytes::Bytes(expected) = original.body() else {
+                    unreachable!()
+                };
+                assert_eq!(body, expected);
+                let batch_start = payloads.encoded.as_ptr() as usize;
+                assert!(
+                    (batch_start..batch_start + payloads.encoded.len())
+                        .contains(&(body.as_ptr() as usize))
+                );
+            }
+            // Non-contiguous input is supported, but may require copying to retain Bytes.
+            let split = wire.len() / 2;
+            let segmented = wire.slice(..split).chain(wire.slice(split..));
+            let segmented = PreparedAppend::try_decode(segmented, version).unwrap();
+            assert_eq!(segmented.payloads.encoded, payloads.encoded);
+            assert_eq!(segmented.payloads.records().len(), records.len());
+            drop(wire);
+
+            for attempt in 0..3 {
+                let request = PreparedStore {
+                    header: LogServerRequestHeader::new(
+                        LogletId::new_unchecked(123),
+                        LogletOffset::from(attempt),
+                    ),
+                    timeout_at: Some(MillisSinceEpoch::new(100 + attempt as u64)),
+                    flags: StoreFlags::empty(),
+                    first_offset: LogletOffset::OLDEST,
+                    sequencer: GenerationalNodeId::new(1, 1),
+                    known_archived: LogletOffset::INVALID,
+                    payloads: payloads.clone(),
+                };
+                let ordinary = Store {
+                    header: request.header.clone(),
+                    timeout_at: request.timeout_at,
+                    flags: request.flags.clone(),
+                    first_offset: request.first_offset,
+                    sequencer: request.sequencer,
+                    known_archived: request.known_archived,
+                    payloads: append.payloads.clone(),
+                };
+                assert_eq!(request.payloads.encoded.as_ptr(), payloads.encoded.as_ptr());
+                assert_eq!(
+                    request.payloads.records().as_ptr(),
+                    payloads.records().as_ptr()
+                );
+                let expected = ordinary.encode_to_bytes(version).unwrap();
+                assert_eq!(request.encode_to_bytes(version).unwrap(), expected);
+                assert_eq!(
+                    request.encode_payload(version).unwrap().into_bytes(),
+                    expected
+                );
+            }
+        }
+        // Arbitrary/malformed bytes cannot be paired with an unrelated valid record list.
+        assert!(PreparedPayloads::decode(Bytes::from_static(&[0xff])).is_err());
+        assert!(
+            PreparedPayloads::decode(Bytes::new())
+                .unwrap()
+                .records()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn prepared_store_preserves_wire_format_and_reuses_records() {
@@ -165,6 +308,7 @@ mod tests {
                 payloads: payloads.clone(),
             };
             assert!(request.encode_to_bytes(ProtocolVersion::Unknown).is_err());
+            assert!(request.encode_payload(ProtocolVersion::Unknown).is_err());
             for version in [
                 ProtocolVersion::V3,
                 ProtocolVersion::V4,
@@ -196,6 +340,15 @@ mod tests {
                         payloads: records.clone().into(),
                     };
                     let encoded = request.encode_to_bytes(version).unwrap();
+                    let deferred = request.encode_payload(version).unwrap();
+                    assert_eq!(deferred.len(), encoded.len());
+                    assert_eq!(deferred.into_bytes(), encoded);
+                    let boxed: Box<dyn WireEncode + Send> = Box::new(request.clone());
+                    let deferred = boxed.encode_payload(version).unwrap();
+                    assert_eq!(
+                        deferred.try_into_bytes().is_ok(),
+                        payloads.encoded.len() < 8 * 1024
+                    );
                     assert_eq!(encoded, ordinary.encode_to_bytes(version).unwrap());
                     let decoded = Store::try_decode(encoded.clone(), version).unwrap();
                     assert_eq!(decoded.payloads.len(), record_count);
