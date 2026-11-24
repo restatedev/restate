@@ -18,10 +18,12 @@
 //!     TableScanExec: sys_invocation_status
 //! ```
 //!
-//! Only filters and column-only projections may separate the sort from the
-//! source: neither reorders rows or adds any. Everything is carried into the
-//! source's own columns. Anything else in between, or a sort without a fetch,
-//! demands nothing.
+//! Only filters and projections may separate the sort from the source: neither
+//! reorders rows or adds any. Everything is carried into the source's own
+//! columns, so a projection passes the demand only if every column it needs,
+//! its order's and its conditions', is a plain column of the projection's input;
+//! the projection's other columns may be anything. Anything else in between, or
+//! a sort without a fetch, demands nothing.
 //!
 //! A LIMIT without an ORDER BY demands any `fetch` rows that meet the
 //! conditions, in no order: an **unordered** demand, with an empty ordering.
@@ -162,12 +164,13 @@ fn follow(
         return Some((Arc::clone(plan), demand));
     }
     if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
-        let inputs = projection
+        // A computed column is no input column: a demand that needs one stops.
+        let inputs: Vec<_> = projection
             .expr()
             .iter()
             .map(|expr| expr.expr.downcast_ref::<Column>().cloned())
-            .collect::<Option<Vec<_>>>()?;
-        demand = remap(demand, |index| inputs.get(index).cloned())?;
+            .collect();
+        demand = remap(demand, |index| inputs.get(index).cloned().flatten())?;
         return follow(projection.input(), demand);
     }
     if let Some(filter) = plan.downcast_ref::<FilterExec>() {
