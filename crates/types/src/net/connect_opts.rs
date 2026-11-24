@@ -20,6 +20,15 @@ use crate::config::{MetadataClientOptions, NetworkingOptions};
 /// when messages are transmitted over the internal message fabric.
 pub const MESSAGE_SIZE_OVERHEAD: usize = 1024 * 1024; // 1 MiB
 
+/// Overhead the Bifrost record size limit adds to the user-facing max_message_size for the
+/// envelope of a record.
+///
+/// It is smaller than [`MESSAGE_SIZE_OVERHEAD`] so that the largest record still fits into a
+/// network message together with the framing of the message that replicates it. Limits that
+/// bound what ends up in a record (e.g. the invoker's message size limit) are derived from it.
+pub const RECORD_SIZE_OVERHEAD: usize = MESSAGE_SIZE_OVERHEAD.div_ceil(2);
+const _: () = assert!(RECORD_SIZE_OVERHEAD < MESSAGE_SIZE_OVERHEAD);
+
 pub trait GrpcConnectionOptions {
     /// The maximum message size for tonic gRPC configuration.
     /// Implementations should add [`MESSAGE_SIZE_OVERHEAD`] to account for message
