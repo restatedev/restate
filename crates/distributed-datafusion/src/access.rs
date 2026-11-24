@@ -428,7 +428,8 @@ pub(crate) struct DeclaredIndex {
 }
 
 impl DeclaredIndex {
-    /// The index schema's name, sent with index work.
+    /// The index schema's name: the storage definition it reads, such as
+    /// `entry_by_created/1`. `EXPLAIN` shows it, and index work carries it.
     pub(crate) fn identity(&self) -> &'static str {
         self.identity
     }
@@ -717,17 +718,26 @@ mod tests {
 
     use super::*;
 
-    /// A source's declared indexes, as registered for planning, carry the version
-    /// that introduced reading them: the entry index its storage definition's.
+    /// A source's declared indexes, as registered for planning, are named after
+    /// their storage definition and carry the version that introduced reading
+    /// them. The name is what `EXPLAIN` shows and index work carries, so the
+    /// schema's literal name can't drift from the definition it reads. The
+    /// scheduler's stage tables aren't a registered definition: `vqueue_stages`.
     #[restate_core::test]
-    async fn registered_index_declarations_carry_their_versions() {
+    async fn registered_index_declarations_are_their_storage_definitions() {
         use restate_partition_store::index::RegisteredIndex;
-        use restate_partition_store::vqueue_table::{EntryByCreated, EntryByStatusCreated};
+        use restate_partition_store::vqueue_table::{
+            EntryByCreated, EntryByStatusCreated, EntryByStatusTransitioned,
+        };
 
         use crate::source_registry::SourceRegistry;
         use crate::tables::invocation_status::SysInvocationStatusTable;
         use crate::tables::vqueue_entry_status::schema::SysVqueueEntryStatusTable;
 
+        fn stored<I: RegisteredIndex>() -> (&'static str, SemanticRestateVersion) {
+            (I::DEFINITION, I::INTRODUCED)
+        }
+        let stages = || ("vqueue_stages", SemanticRestateVersion::new(1, 8, 2));
         let sources =
             SourceRegistry::local_only(restate_core::MetadataBuilder::default().to_metadata());
         let declared = |indexes: &[DeclaredIndex]| {
@@ -742,13 +752,7 @@ mod tests {
                     .create_declared_source::<SysInvocationStatusTable>()
                     .indexes
             ),
-            [
-                (
-                    "_idx_entry_by_status_created",
-                    EntryByStatusCreated::INTRODUCED
-                ),
-                ("_idx_entry_by_service_created", EntryByCreated::INTRODUCED)
-            ]
+            [stored::<EntryByStatusCreated>(), stored::<EntryByCreated>()]
         );
         assert_eq!(
             declared(
@@ -757,16 +761,10 @@ mod tests {
                     .indexes
             ),
             [
-                ("_idx_entry_by_queue", SemanticRestateVersion::new(1, 8, 2)),
-                (
-                    "_idx_entry_status_by_status_created",
-                    restate_partition_store::vqueue_table::EntryByStatusCreated::INTRODUCED
-                ),
-                (
-                    "_idx_entry_status_by_status_transitioned",
-                    restate_partition_store::vqueue_table::EntryByStatusTransitioned::INTRODUCED
-                ),
-                ("_idx_entry_by_queue", SemanticRestateVersion::new(1, 8, 2)),
+                stages(),
+                stored::<EntryByStatusCreated>(),
+                stored::<EntryByStatusTransitioned>(),
+                stages(),
             ]
         );
     }
@@ -867,7 +865,7 @@ mod tests {
                 Access::Scan => "scan".to_owned(),
             }
         };
-        let index = "index _idx_entry_by_service_created Some(51)";
+        let index = "index entry_by_created/1 Some(51)";
         use Role::{Admin, MetadataServer, Worker};
         for (nodes, expected) in [
             (&[(Worker, Some("1.8.2"), false)][..], index),
@@ -1132,7 +1130,7 @@ mod tests {
                 col("target_service_name").eq(lit(ScalarValue::LargeUtf8(Some("Utils".into())))),
             )
         };
-        let creation = "_idx_entry_by_service_created".to_owned();
+        let creation = "entry_by_created/1".to_owned();
         assert_eq!(chosen(utils(), false), (creation.clone(), 0, None));
         assert_eq!(chosen(utils(), true), (creation, 1, Some(25)));
         assert_eq!(
@@ -1261,7 +1259,7 @@ mod tests {
                 other => (format!("{other:?}"), 0, None),
             }
         };
-        let transitioned = "_idx_entry_status_by_status_transitioned".to_owned();
+        let transitioned = "entry_by_status_transitioned/1".to_owned();
         let covered = ["stage", "status", "transitioned_at"];
         let queues = ["vqueue_id", "stage", "status", "transitioned_at"];
         // A count of finished entries since a time: no demand, no order, no
@@ -1319,7 +1317,7 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        let stages = "_idx_entry_by_queue".to_owned();
+        let stages = "vqueue_stages".to_owned();
         assert_eq!(
             candidates(since("finished"), false),
             [(transitioned.clone(), 0), (stages.clone(), 0)]
