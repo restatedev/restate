@@ -8,5 +8,5 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub(crate) type InvokerEffect = restate_worker_api::invoker::FencedEffect;
+pub(crate) type InvokerEffect = restate_worker_api::invoker::InvokerProposal;
 pub(crate) type InvokerEffectKind = restate_worker_api::invoker::EffectKind;

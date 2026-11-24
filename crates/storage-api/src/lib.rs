@@ -66,6 +66,7 @@ impl From<OutOfMemory> for BudgetedReadError {
 
 pub mod blob_table;
 pub mod deduplication_table;
+pub mod explicit_recovery_table;
 pub mod fsm_table;
 pub mod inbox_table;
 pub mod invocation_status_table;
@@ -118,6 +119,8 @@ pub trait Transaction:
     + lock_table::WriteLockTable
     + blob_table::WriteBlobTable
     + blob_table::ReadBlobTable
+    + explicit_recovery_table::ReadExplicitRecoveryTable
+    + explicit_recovery_table::WriteExplicitRecoveryTable
     + Send
 {
     fn commit(&mut self) -> impl Future<Output = Result<()>> + Send;

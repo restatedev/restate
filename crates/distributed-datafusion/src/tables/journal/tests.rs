@@ -135,6 +135,7 @@ async fn journal_matches_v1_and_id_lookups_skip_other_invocations() {
                 completion_retention_duration: Default::default(),
                 journal_retention_duration: Default::default(),
                 limit_key: Default::default(),
+                protocol_family: Default::default(),
             },
             invocation_id_completion_id: 1,
             name: Default::default(),

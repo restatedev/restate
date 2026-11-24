@@ -194,6 +194,8 @@ pub enum TableKind {
     Stats,
     /// The registry, its walks and its migration jobs.
     Registry,
+    /// Invocation state and signals of the explicit recovery protocol family.
+    ExplicitRecovery,
 }
 
 impl TableKind {
@@ -232,6 +234,7 @@ impl TableKind {
             Self::SecondaryIndex => &[KeyKind::SecondaryIndex],
             Self::Stats => &[KeyKind::Stats],
             Self::Registry => &[KeyKind::Registry],
+            Self::ExplicitRecovery => &[KeyKind::ExplicitRecovery],
         }
     }
 

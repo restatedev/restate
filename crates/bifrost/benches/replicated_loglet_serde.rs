@@ -87,6 +87,7 @@ fn invoke_cmd() -> Command {
             restate_types::invocation::SubmitNotificationSink::Ingress { request_id },
         ),
         restate_version: RestateVersion::current(),
+        protocol_family: Default::default(),
     }))
 }
 

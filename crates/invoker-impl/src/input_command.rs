@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroU32;
+
 use tokio::sync::mpsc;
 
 use restate_errors::NotRunningError;
@@ -19,6 +21,7 @@ use restate_types::sharding::KeyRange;
 use restate_types::vqueues::VQueueId;
 use restate_util_string::ReString;
 use restate_worker_api::invoker::InvocationStatusReport;
+use restate_worker_api::invoker::explicit_recovery::ErToInvoker;
 use restate_worker_api::resources::ReservedResources;
 // -- Input messages
 
@@ -32,6 +35,8 @@ pub(crate) struct VQueueInvokeCommand {
     pub(super) invocation_target: InvocationTarget,
     pub(super) limit_key: LimitKey<ReString>,
     pub(super) idempotency_key: Option<ReString>,
+    /// `Some` for an invocation on the explicit recovery family: the number of the attempt.
+    pub(super) explicit_recovery_attempt: Option<NonZeroU32>,
 }
 
 #[derive(Debug)]
@@ -59,6 +64,12 @@ pub(crate) enum InputCommand {
 
     /// Command used to clean up internal state when a partition leader is going away
     AbortAll,
+
+    /// Forward to a running explicit recovery attempt.
+    ExplicitRecovery {
+        invocation_id: InvocationId,
+        message: ErToInvoker,
+    },
 }
 
 // -- Handles implementations. This is just glue code between the Input<Command> and the interfaces
@@ -78,6 +89,7 @@ impl restate_worker_api::invoker::InvokerHandle for InvokerHandle {
         invocation_target: InvocationTarget,
         limit_key: LimitKey<ReString>,
         idempotency_key: Option<ReString>,
+        explicit_recovery_attempt: Option<NonZeroU32>,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::VQInvoke(Box::new(VQueueInvokeCommand {
@@ -88,7 +100,21 @@ impl restate_worker_api::invoker::InvokerHandle for InvokerHandle {
                 invocation_target,
                 limit_key,
                 idempotency_key,
+                explicit_recovery_attempt,
             })))
+            .map_err(|_| NotRunningError)
+    }
+
+    fn notify_explicit_recovery(
+        &mut self,
+        invocation_id: InvocationId,
+        message: ErToInvoker,
+    ) -> Result<(), NotRunningError> {
+        self.input
+            .send(InputCommand::ExplicitRecovery {
+                invocation_id,
+                message,
+            })
             .map_err(|_| NotRunningError)
     }
 

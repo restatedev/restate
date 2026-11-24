@@ -120,6 +120,15 @@ impl InvokerHandle for MockInvokerHandle {
         _invocation_target: InvocationTarget,
         _limit_key: LimitKey<ReString>,
         _idempotency_key: Option<ReString>,
+        _explicit_recovery_attempt: Option<std::num::NonZeroU32>,
+    ) -> Result<(), NotRunningError> {
+        Ok(())
+    }
+
+    fn notify_explicit_recovery(
+        &mut self,
+        _invocation_id: InvocationId,
+        _message: restate_worker_api::invoker::explicit_recovery::ErToInvoker,
     ) -> Result<(), NotRunningError> {
         Ok(())
     }
@@ -151,5 +160,88 @@ impl InvokerHandle for MockInvokerHandle {
 
     fn pause_invocation(&mut self, _invocation_id: InvocationId) -> Result<(), NotRunningError> {
         Ok(())
+    }
+}
+
+impl restate_worker_api::invoker::explicit_recovery::ExplicitRecoveryReader for EmptyStorageReader {
+    type ErTransaction<'a> = EmptyStorageReaderTransaction;
+
+    fn er_transaction(&mut self) -> Result<Self::ErTransaction<'_>, Self::Error> {
+        Ok(EmptyStorageReaderTransaction)
+    }
+
+    async fn read_object_state(
+        &mut self,
+        _: &ServiceId,
+        _: &Bytes,
+    ) -> Result<Option<Bytes>, Infallible> {
+        Ok(None)
+    }
+
+    async fn read_object_state_keys(&mut self, _: &ServiceId) -> Result<Vec<Bytes>, Infallible> {
+        Ok(vec![])
+    }
+
+    async fn read_invocation_state(
+        &mut self,
+        _: &InvocationId,
+        _: &Bytes,
+    ) -> Result<Option<Bytes>, Infallible> {
+        Ok(None)
+    }
+
+    async fn read_invocation_state_keys(
+        &mut self,
+        _: &InvocationId,
+    ) -> Result<Vec<Bytes>, Infallible> {
+        Ok(vec![])
+    }
+
+    async fn read_signal(
+        &mut self,
+        _: &InvocationId,
+        _: &str,
+        _: u32,
+    ) -> Result<Option<restate_types::journal_v2::SignalResult>, Infallible> {
+        Ok(None)
+    }
+}
+
+impl restate_worker_api::invoker::explicit_recovery::ExplicitRecoveryReaderTransaction
+    for EmptyStorageReaderTransaction
+{
+    type Error = Infallible;
+
+    async fn read_er_metadata(
+        &mut self,
+        _: &InvocationId,
+    ) -> Result<Option<restate_worker_api::invoker::explicit_recovery::ErAttemptMetadata>, Infallible>
+    {
+        Ok(None)
+    }
+
+    async fn read_input(
+        &mut self,
+        _: &InvocationId,
+    ) -> Result<Option<(Vec<restate_types::invocation::Header>, Bytes)>, Infallible> {
+        Ok(None)
+    }
+
+    async fn read_object_state_preload(
+        &mut self,
+        _: &ServiceId,
+        _: &StatePreloadPolicy,
+        _: usize,
+    ) -> Result<(Vec<(Bytes, Bytes)>, bool), Infallible> {
+        Ok((vec![], false))
+    }
+
+    async fn read_invocation_state_preload(
+        &mut self,
+        _: &InvocationId,
+        _: &StatePreloadPolicy,
+        _: usize,
+    ) -> Result<(Vec<(Bytes, Bytes)>, bool), Infallible> {
+        Ok((vec![], false))
     }
 }

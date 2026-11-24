@@ -883,24 +883,41 @@ impl LeaderEventHandler for UpdatePartitionDurabilityCommand {
 
 impl LeaderEventHandler for InvokerEffect {
     fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<WrittenRecords, Error> {
-        let invocation_id = self.effect.invocation_id;
+        let (invocation_id, fencing_token, is_terminal) = match &self {
+            InvokerEffect::Durable(fenced) => (
+                fenced.effect.invocation_id,
+                fenced.fencing_token,
+                fenced.effect.kind.is_terminal(),
+            ),
+            InvokerEffect::ExplicitRecovery(fenced) => (
+                fenced.effect.invocation_id,
+                fenced.fencing_token,
+                fenced.effect.kind.is_terminal(),
+            ),
+        };
         // Fence stale effects at write time: only self-propose if the effect carries
         // the token of the invocation's *current* attempt. A mismatch (or a missing
         // entry) means the effect is a straggler from a previous attempt that has
         // since been re-invoked / paused / aborted, so it must not be written -- this
         // is what stops it from being applied to a newer attempt.
-        if state
-            .fencing_tokens
-            .accepts(&invocation_id, self.fencing_token)
-        {
+        if state.fencing_tokens.accepts(&invocation_id, fencing_token) {
             // A terminal effect ends this attempt: stop accepting its token (GC). A
             // later re-invoke mints a fresh one.
-            if self.effect.kind.is_terminal() {
+            if is_terminal {
                 state.fencing_tokens.clear(&invocation_id);
             }
-            state
-                .self_proposer
-                .self_propose(commands::InvokerEffectCommand::from(*self.effect))
+            match self {
+                InvokerEffect::Durable(fenced) => state
+                    .self_proposer
+                    .self_propose(commands::InvokerEffectCommand::from(*fenced.effect)),
+                InvokerEffect::ExplicitRecovery(fenced) => {
+                    state
+                        .self_proposer
+                        .self_propose(commands::ExplicitRecoveryEffectCommand::from(
+                            *fenced.effect,
+                        ))
+                }
+            }
         } else {
             debug!(
                 restate.invocation.id = %invocation_id,
@@ -1083,6 +1100,7 @@ impl LeaderState {
                 key,
                 invocation_target,
                 idempotency_key,
+                explicit_recovery_attempt,
             } => {
                 let metas = processor.vqueues();
                 let slot = metas.get(vq_handle).expect("vqueue meta must be in cache");
@@ -1111,8 +1129,17 @@ impl LeaderState {
                         invocation_target,
                         slot.meta().limit_key().clone(),
                         idempotency_key,
+                        explicit_recovery_attempt,
                     )
                     .map_err(Error::Invoker)?
+            }
+            Action::ForwardExplicitRecovery {
+                invocation_id,
+                message,
+            } => {
+                self.invoker_handle
+                    .notify_explicit_recovery(invocation_id, message)
+                    .map_err(Error::Invoker)?;
             }
             Action::RulesUpdated(updates) => {
                 self.scheduler.on_rules_updated(updates);

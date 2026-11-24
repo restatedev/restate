@@ -1,0 +1,22 @@
+[package]
+name = "restate-service-protocol-explicit-recovery"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+restate-workspace-hack = { workspace = true }
+
+bytes = { workspace = true }
+bytes-utils = { workspace = true }
+prost = { workspace = true }
+thiserror = { workspace = true }
+
+[build-dependencies]
+prost-build = { workspace = true }
+
+[lints]
+workspace = true

@@ -1241,6 +1241,7 @@ where
                             span_context: request.span_context,
                             completion_retention_duration: request.completion_retention_duration,
                             journal_retention_duration: request.journal_retention_duration,
+                            protocol_family: request.protocol_family,
                         })),
                     ),
                     attempt_span,
@@ -1290,6 +1291,7 @@ where
                             span_context: request.span_context,
                             completion_retention_duration: request.completion_retention_duration,
                             journal_retention_duration: request.journal_retention_duration,
+                            protocol_family: request.protocol_family,
                         })),
                     ),
                     attempt_span,
@@ -1762,6 +1764,7 @@ fn resolve_call_request(
         completion_retention_duration: invocation_retention.completion_retention,
         journal_retention_duration: invocation_retention.journal_retention,
         limit_key,
+        protocol_family: meta.protocol_family,
     })
 }
 

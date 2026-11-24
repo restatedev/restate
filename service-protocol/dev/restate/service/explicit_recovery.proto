@@ -1,0 +1,677 @@
+// DRAFT 2026-11-24. Explicit recovery protocol, version 1.
+//
+// The behavior of every message, versioning and features are specified in
+// the explicit recovery protocol specification. This file only fixes the
+// shapes.
+//
+// A message on the stream is this 8-byte header, followed by the protobuf
+// payload:
+//
+//    0                   1                   2                   3
+//    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+//   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+//   |              Type             |            Reserved           |
+//   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+//   |                             Length                            |
+//   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+//
+// Message types:
+//
+//   0x0000 - 0x03FF  control messages
+//   0x0400 - 0x7FFF  actions        (SDK -> runtime)
+//   0x8000 - 0xFFFF  notifications  (runtime -> SDK)
+
+syntax = "proto3";
+
+package dev.restate.service.explicitrecovery;
+
+option java_package = "dev.restate.generated.service.explicitrecovery";
+option go_package = "restate.dev/sdk-go/pb/service/explicitrecovery";
+
+// Version of the explicit recovery protocol, negotiated with
+// `content-type: application/vnd.restate.invocation.explicitrecovery.vN`.
+//
+// A version fixes the framing, what each message means, and a baseline: the
+// features (see Feature) that are supported whenever the version is spoken.
+//
+// What is in a version's baseline is decided when the version is defined,
+// feature by feature, and written next to it below. Nothing is in a baseline
+// because of its age or its number.
+enum ProtocolVersion {
+  PROTOCOL_VERSION_UNSPECIFIED = 0;
+  // Every message in this file. Baseline features: none.
+  V1 = 1;
+}
+
+// A capability added to the protocol without a new version.
+//
+// A feature is supported in an attempt if the negotiated version has it in its
+// baseline, or if the runtime lists it in StartMessage.features. The SDK uses
+// a feature only if it is supported, and ignores the numbers it does not know.
+//
+// Numbers are never reused, and a feature keeps its number across versions.
+//
+//   1 - 32767      stable features
+//   32768 - 65535  experimental features: their shape may change, and a
+//                  feature gets a new stable number when it is done
+enum Feature {
+  FEATURE_UNSPECIFIED = 0;
+  // None yet.
+}
+
+// --- Control messages ---
+
+// Type: 0x0000
+// Runtime -> SDK. The first message of every attempt.
+message StartMessage {
+  // A state key, with its value.
+  message StateEntry {
+    // The state key: its scope, and the key in that scope.
+    StateScope scope = 1;
+    bytes key = 2;
+    // Unset: the key is known to have no value.
+    Value value = 3;
+  }
+
+  // -- The invocation: the same in every attempt.
+
+  // Id of the invocation, in bytes.
+  bytes id = 1;
+  // The same id as the admin API, the UI and the CLI show it.
+  string debug_id = 2;
+  // Key of the target, when the service is keyed. Empty otherwise.
+  string key = 3;
+  // Headers of the invocation.
+  repeated Header headers = 4;
+  // Input of the handler.
+  Value input = 5;
+  // Scope, limit key and idempotency key the invocation was made with, if any.
+  optional string scope = 6;
+  optional string limit_key = 7;
+  optional string idempotency_key = 8;
+
+  // -- The attempt.
+
+  // Number of this attempt. The first is 1; a later attempt has a higher
+  // number.
+  uint32 attempt = 16;
+  // The next free result id of the invocation: the lowest one this attempt
+  // may use. At least 1.
+  uint32 next_result_id = 17;
+  // The invocation received the cancel signal before this attempt started.
+  bool cancelled = 18;
+
+  // -- State, preloaded: what the preload policy of each state scope asks
+  // for, as far as it fits.
+
+  // State keys of any scope.
+  // protolint:disable:next REPEATED_FIELD_NAMES_PLURALIZED
+  repeated StateEntry state_map = 24;
+  // False: state_map holds every key of the object scope that has a value.
+  // True: other keys of that scope may exist.
+  bool is_object_scope_partial_state = 25;
+  // False: state_map holds every key of the invocation scope that has a
+  // value. True: other keys of that scope may exist.
+  bool is_invocation_scope_partial_state = 26;
+
+  // -- The runtime serving this attempt.
+
+  // Features (see Feature) the runtime supports in this attempt, beyond the
+  // baseline of the negotiated version.
+  repeated uint32 features = 32;
+}
+
+// Type: 0x0001
+// SDK -> runtime. Answers a shutdown: the runtime closed its side of the
+// stream, and the SDK says what it had seen. The last message of the stream.
+message ShutdownMessage {
+  // How many of the notifications the runtime sent in this attempt the SDK
+  // had processed when the shutdown reached it. Notifications are processed
+  // in the order they arrive.
+  uint32 processed_notifications = 1;
+}
+
+// Type: 0x0002
+// SDK -> runtime. Ends the attempt with a failure. The last message of the
+// stream.
+message ErrorMessage {
+  // An HTTP status code, or one of:
+  // * 571, PROTOCOL_VIOLATION: the SDK received a message it did not expect.
+  // * 573, UNSUPPORTED_FEATURE: the handler needs a feature the attempt does
+  //   not support. The metadata says which.
+  uint32 code = 1;
+  string message = 2;
+  string stacktrace = 3;
+
+  // The action that failed, if one did: its message type, its name and, if it
+  // has a result, its result id.
+  optional uint32 related_action_type = 4;
+  optional string related_action_name = 5;
+  optional uint32 related_result_id = 6;
+
+  // Milliseconds to wait before the next attempt, instead of what the retry
+  // policy says. Only with behavior = RETRY.
+  optional uint64 next_retry_delay = 7;
+
+  ErrorBehavior behavior = 8;
+
+  // More about the failure, as a Failure has.
+  //
+  // Keys that start with "restate." are defined by the protocol:
+  // * "restate.missing_features", with code 573: the features (see Feature)
+  //   the handler needed and the attempt did not support, as their numbers
+  //   separated by commas. For example "3,7".
+  repeated FailureMetadata metadata = 9;
+}
+
+enum ErrorBehavior {
+  // Start a new attempt, as the retry policy says.
+  RETRY = 0;
+  // Pause the invocation.
+  PAUSE = 1;
+  // Fail the invocation, with this error as its output.
+  FAIL = 2;
+}
+
+// Type: 0x0003
+// SDK -> runtime. Ends the invocation with its output: a value, or a terminal
+// failure. The last message of the stream.
+//
+// An invocation always has an output: exactly one of value and failure is set.
+message EndMessage {
+  oneof output {
+    Value value = 1;
+    Failure failure = 2;
+  }
+}
+
+// Type: 0x0004
+// SDK -> runtime. The handler is working, and should not be shut down.
+message HeartbeatMessage {
+}
+
+// --- Actions ---
+//
+// Every action can have a result. An action carries a result id, and the
+// runtime answers it with a ResultNotificationMessage.
+//
+// Each action documents its result on the result_id field:
+// * Optional: whether the id can be absent. An absent id says the SDK does
+//   not want the result.
+// * Semantics: when the runtime sends the result.
+// * Allowed result variants: which fields of ResultNotificationMessage.result
+//   it can be.
+//
+// An id is absent when it is 0. That holds for every id in this file: no
+// result id and no span id is ever 0.
+
+// Every action message is shaped like this one. Whatever else it holds, it
+// has these fields, at these numbers. Its own fields use the numbers 1 to
+// 10, and 15 and up.
+message ActionTemplate {
+  // The id of the action's result. Each action says whether it is optional,
+  // the semantics of the result, and its allowed variants.
+  uint32 result_id = 11;
+
+  // -- How the action appears in the runtime's record of the attempt. These
+  // change nothing about what the action does.
+
+  // Name to show for the action.
+  string name = 12;
+  // The span the action is inside of. When absent, the action is directly
+  // inside the attempt.
+  uint32 parent_span_id = 13;
+  // How much of the action the runtime records.
+  RecordLevel record = 14;
+}
+
+// How much of an action the runtime keeps in the record of the attempt.
+enum RecordLevel {
+  // What the runtime keeps for this kind of action when the SDK does not say.
+  RECORD_DEFAULT = 0;
+  // Nothing: the action does not appear in the record.
+  RECORD_NONE = 1;
+  // That it happened: its kind, its name, its target or key, its sizes. No
+  // payload.
+  RECORD_SUMMARY = 2;
+  // The action with its payloads.
+  RECORD_FULL = 3;
+}
+
+// -- State.
+//
+// A state key has two parts: a scope, and a key in that scope. The same key
+// in two scopes names two values. In a message that holds a state key, the
+// scope is field 1 and the key is field 2. A state action without a key is
+// about one whole scope.
+
+// The scope of a state key: whose state it is.
+enum StateScope {
+  // Not a scope: an action that carries it violates the protocol.
+  STATE_SCOPE_UNSPECIFIED = 0;
+  // The state of the object the invocation targets. Every invocation of that
+  // object sees it, and it outlives them. Only when the target has a key.
+  OBJECT = 1;
+  // The state of the invocation. Only this invocation sees it, in every one
+  // of its attempts, and it ends with the invocation.
+  INVOCATION = 2;
+}
+
+// Type: 0x0410
+// Reads the value of a state key.
+message GetStateActionMessage {
+  StateScope scope = 1;
+  bytes key = 2;
+
+  // Optional: no.
+  // Semantics: sent once every action sent before this one is applied.
+  // Allowed result variants:
+  // * value: the value of the key.
+  // * void: the key has no value.
+  uint32 result_id = 11;
+
+  // See ActionTemplate.
+  string name = 12;
+  uint32 parent_span_id = 13;
+  RecordLevel record = 14;
+}
+
+// Type: 0x0411
+// Lists the keys of a state scope that have a value.
+message GetStateKeysActionMessage {
+  StateScope scope = 1;
+
+  // Optional: no.
+  // Semantics: sent once every action sent before this one is applied.
+  // Allowed result variants: state_keys: the keys of that scope.
+  uint32 result_id = 11;
+
+  // See ActionTemplate.
+  string name = 12;
+  uint32 parent_span_id = 13;
+  RecordLevel record = 14;
+}
+
+// Type: 0x0412
+// Sets the value of a state key.
+message SetStateActionMessage {
+  StateScope scope = 1;
+  bytes key = 2;
+  Value value = 3;
+
+  // Optional: yes.
+  // Semantics: sent once the action is applied.
+  // Allowed result variants: void.
+  uint32 result_id = 11;
+
+  // See ActionTemplate.
+  string name = 12;
+  uint32 parent_span_id = 13;
+  RecordLevel record = 14;
+}
+
+// Type: 0x0413
+// Clears a state key.
+message ClearStateActionMessage {
+  StateScope scope = 1;
+  bytes key = 2;
+
+  // Optional: yes.
+  // Semantics: sent once the action is applied.
+  // Allowed result variants: void.
+  uint32 result_id = 11;
+
+  // See ActionTemplate.
+  string name = 12;
+  uint32 parent_span_id = 13;
+  RecordLevel record = 14;
+}
+
+// Type: 0x0414
+// Clears every key of a state scope. The other scope is not touched.
+message ClearAllStateActionMessage {
+  StateScope scope = 1;
+
+  // Optional: yes.
+  // Semantics: sent once the action is applied.
+  // Allowed result variants: void.
+  uint32 result_id = 11;
+
+  // See ActionTemplate.
+  string name = 12;
+  uint32 parent_span_id = 13;
+  RecordLevel record = 14;
+}
+
+// Type: 0x0420
+// Makes an invocation. It has two results: the id of the invocation, and what
+// the invocation returned.
+message CallActionMessage {
+  string service_name = 1;
+  string handler_name = 2;
+  // Key of the target, when the service is keyed. Empty otherwise.
+  string key = 3;
+  Value parameter = 4;
+  repeated Header headers = 5;
+  // Not empty, if present.
+  optional string idempotency_key = 6;
+  optional string scope = 7;
+  // Only with a scope.
+  optional string limit_key = 8;
+  // When to make the invocation, in milliseconds since the UNIX epoch. When
+  // absent, or in the past: as soon as possible.
+  uint64 invoke_time = 9;
+
+  // Optional: no.
+  // Semantics: sent once the action is applied.
+  // Allowed result variants: invocation_id. Always, also when the target cannot
+  //   be invoked.
+  uint32 invocation_id_result_id = 10;
+
+  // Optional: yes. When absent, the call is a send: nobody waits for the
+  //   invocation.
+  // Semantics: sent once the invocation ends.
+  // Allowed result variants:
+  // * value: what the invocation returned.
+  // * failure: the invocation failed, or its target cannot be invoked: the
+  //   service or the handler does not exist, the key does not fit, the scope or
+  //   the limit key is invalid.
+  uint32 result_id = 11;
+
+  // See ActionTemplate.
+  string name = 12;
+  uint32 parent_span_id = 13;
+  RecordLevel record = 14;
+}
+
+// Type: 0x0421
+// Waits for an invocation someone else made.
+message AttachInvocationActionMessage {
+  oneof target {
+    string invocation_id = 1;
+    IdempotentRequestTarget idempotent_request_target = 2;
+    WorkflowTarget workflow_target = 3;
+  }
+
+  // Optional: no.
+  // Semantics: sent once the target invocation ends. At once, if it already
+  //   has.
+  // Allowed result variants:
+  // * value: what the invocation returned.
+  // * failure: the invocation failed, or there is no such invocation.
+  uint32 result_id = 11;
+
+  // See ActionTemplate.
+  string name = 12;
+  uint32 parent_span_id = 13;
+  RecordLevel record = 14;
+}
+
+// Type: 0x0422
+// Cancels another invocation.
+message CancelInvocationActionMessage {
+  string invocation_id = 1;
+
+  // Optional: yes.
+  // Semantics: sent once the action is applied. The cancellation is then on its
+  //   way, not yet received.
+  // Allowed result variants: void.
+  uint32 result_id = 11;
+
+  // See ActionTemplate.
+  string name = 12;
+  uint32 parent_span_id = 13;
+  RecordLevel record = 14;
+}
+
+// Type: 0x0430
+// Reads a signal this invocation received, by its name and index.
+message ReadSignalActionMessage {
+  string signal_name = 1;
+  // Which signal of that name: 0 is the first this invocation received.
+  uint32 signal_index = 2;
+
+  // Optional: no.
+  // Semantics: sent once the invocation has received that signal. At once, if
+  //   it already has.
+  // Allowed result variants: void, value or failure: what the signal carried.
+  uint32 result_id = 11;
+
+  // See ActionTemplate.
+  string name = 12;
+  uint32 parent_span_id = 13;
+  RecordLevel record = 14;
+}
+
+// Type: 0x0431
+// Sends a signal to another invocation.
+message SendSignalActionMessage {
+  string target_invocation_id = 1;
+  string signal_name = 2;
+
+  oneof result {
+    Void void = 3;
+    Value value = 4;
+    Failure failure = 5;
+  }
+
+  // Optional: yes.
+  // Semantics: sent once the action is applied. The signal is then on its way,
+  //   not yet received.
+  // Allowed result variants: void.
+  uint32 result_id = 11;
+
+  // See ActionTemplate.
+  string name = 12;
+  uint32 parent_span_id = 13;
+  RecordLevel record = 14;
+}
+
+// Type: 0x0440
+// Does nothing. It is there for its result.
+message FlushActionMessage {
+  // Optional: no.
+  // Semantics: sent once every action sent before this one is applied.
+  // Allowed result variants: void.
+  uint32 result_id = 11;
+
+  // See ActionTemplate.
+  string name = 12;
+  uint32 parent_span_id = 13;
+  RecordLevel record = 14;
+}
+
+// Type: 0x0441
+// Holds other actions. The runtime applies all of them, or none of them.
+//
+// The actions in the group keep their own result ids, each as its own message
+// says. None of their results is sent before the group is applied.
+message AtomicGroupActionMessage {
+  message Action {
+    oneof action {
+      SetStateActionMessage set_state = 1;
+      ClearStateActionMessage clear_state = 2;
+      ClearAllStateActionMessage clear_all_state = 3;
+      CallActionMessage call = 4;
+      CancelInvocationActionMessage cancel_invocation = 5;
+      SendSignalActionMessage send_signal = 6;
+      SpanStartActionMessage span_start = 7;
+      SpanEndActionMessage span_end = 8;
+    }
+  }
+
+  // Applied in this order. At least one.
+  repeated Action actions = 1;
+
+  // Optional: yes.
+  // Semantics: sent once the group is applied.
+  // Allowed result variants: void.
+  uint32 result_id = 11;
+
+  // See ActionTemplate.
+  string name = 12;
+  uint32 parent_span_id = 13;
+  RecordLevel record = 14;
+}
+
+// Type: 0x0450
+// Starts a span: name is its name, and parent_span_id the span it is inside of.
+message SpanStartActionMessage {
+  // Always present, and not used by another span of this attempt.
+  uint32 span_id = 1;
+
+  // Optional: yes.
+  // Semantics: sent once the action is applied.
+  // Allowed result variants: void.
+  uint32 result_id = 11;
+
+  // See ActionTemplate.
+  string name = 12;
+  uint32 parent_span_id = 13;
+  RecordLevel record = 14;
+}
+
+// Type: 0x0451
+// Ends a span this attempt started.
+message SpanEndActionMessage {
+  uint32 span_id = 1;
+
+  oneof result {
+    Void void = 2;
+    Value value = 3;
+    Failure failure = 4;
+  }
+
+  // Optional: yes.
+  // Semantics: sent once the action is applied.
+  // Allowed result variants: void.
+  uint32 result_id = 11;
+
+  // See ActionTemplate.
+  string name = 12;
+  uint32 parent_span_id = 13;
+  RecordLevel record = 14;
+}
+
+// --- Notifications ---
+//
+// What the runtime sends a running attempt: the result of an action, or a
+// signal. The SDK counts the ones it has processed, and reports the count in
+// ShutdownMessage.
+
+// Every notification message is shaped like this one. It says what it is about
+// with one of the id fields, and can carry one of the result fields.
+message NotificationTemplate {
+  // Kept for the name of a signal.
+  reserved 3;
+
+  oneof id {
+    // The result of an action.
+    uint32 result_id = 1;
+    // A built-in signal.
+    BuiltInSignal signal_id = 2;
+  }
+
+  oneof result {
+    Void void = 4;
+    Value value = 5;
+    Failure failure = 6;
+    string invocation_id = 7;
+    StateKeys state_keys = 8;
+  }
+}
+
+// Type: 0x8000
+// Runtime -> SDK. The result of an action this attempt sent.
+message ResultNotificationMessage {
+  // See NotificationTemplate.
+  reserved 2, 3;
+
+  // The result_id, or the invocation_id_result_id, of the action.
+  uint32 result_id = 1;
+
+  oneof result {
+    Void void = 4;
+    Value value = 5;
+    Failure failure = 6;
+    string invocation_id = 7;
+    StateKeys state_keys = 8;
+  }
+}
+
+// Type: 0x8001
+// Runtime -> SDK. A signal the invocation received during this attempt, which
+// the runtime delivers without being asked.
+//
+// In this version only the built-in signals are delivered this way. A signal
+// with a name is read with ReadSignalActionMessage.
+message SignalNotificationMessage {
+  // See NotificationTemplate. Fields 4 to 6 are free for what a signal
+  // carries: no signal of this version uses them.
+  reserved 1, 3, 7, 8;
+
+  BuiltInSignal signal_id = 2;
+}
+
+// On the wire an enum is a varint, as a uint32 is: a field of this type can
+// become a plain number later without breaking anything.
+enum BuiltInSignal {
+  SIGNAL_UNKNOWN = 0;
+  // The invocation was cancelled.
+  CANCEL = 1;
+}
+
+// --- Nested messages ---
+
+message Void {
+}
+
+// A payload of user code: an input, an output, a state value, the parameter
+// of a call and what it returned, the value of a signal, the result of a span.
+//
+// It is a message, and not bytes, so that it can grow without touching the
+// messages that carry it: a content type, a compression flag, a reference to
+// a value stored elsewhere.
+//
+// An unset Value is an empty one, except in StartMessage.StateEntry.
+message Value {
+  bytes content = 1;
+}
+
+// Keys of one state scope: the one the action asked for.
+message StateKeys {
+  repeated bytes keys = 1;
+}
+
+// A failure user code sees: the output of an invocation, what a call returned,
+// what a signal carried.
+message Failure {
+  // An HTTP status code.
+  uint32 code = 1;
+  string message = 2;
+  repeated FailureMetadata metadata = 3;
+}
+
+message FailureMetadata {
+  string key = 1;
+  string value = 2;
+}
+
+message Header {
+  string key = 1;
+  string value = 2;
+}
+
+message WorkflowTarget {
+  string workflow_name = 1;
+  string workflow_key = 2;
+  optional string scope = 3;
+}
+
+message IdempotentRequestTarget {
+  string service_name = 1;
+  optional string service_key = 2;
+  string handler_name = 3;
+  string idempotency_key = 4;
+  optional string scope = 5;
+}

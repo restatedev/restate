@@ -14,9 +14,9 @@ use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
-    InvocationStatus, JournalMetadata, PreFlightInvocationArgument, PreFlightInvocationJournal,
-    PreFlightInvocationMetadata, ReadInvocationStatusTable, StatusTimestamps,
-    WriteInvocationStatusTable,
+    ExplicitRecoveryStatus, InvocationStatus, JournalMetadata, PreFlightInvocationArgument,
+    PreFlightInvocationJournal, PreFlightInvocationMetadata, ReadInvocationStatusTable,
+    StatusTimestamps, WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_table_v2::ReadJournalTable;
 use restate_storage_api::lock_table::WriteLockTable;
@@ -118,7 +118,11 @@ where
             }
         };
 
-        if copy_prefix_up_to_index_included >= completed_invocation.journal_metadata.length {
+        // D38: an explicit recovery invocation restarts from its input only.
+        if copy_prefix_up_to_index_included >= completed_invocation.journal_metadata.length
+            || (completed_invocation.explicit_recovery.is_some()
+                && copy_prefix_up_to_index_included > 0)
+        {
             ctx.reply(
                 response_sink,
                 RestartAsNewInvocationResponse::JournalIndexOutOfRange,
@@ -314,6 +318,10 @@ where
             random_seed,
             // The new invocation is created by the record being applied
             creation_seq: Some(ctx.record_lsn.into()),
+            // The family is copied, the explicit recovery progress is not.
+            explicit_recovery: completed_invocation
+                .explicit_recovery
+                .map(|_| ExplicitRecoveryStatus::new()),
 
             // We don't set those
             idempotency_key: None,

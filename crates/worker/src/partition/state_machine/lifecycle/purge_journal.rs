@@ -12,6 +12,7 @@ use metrics::histogram;
 use tracing::trace;
 
 use restate_clock::time::MillisSinceEpoch;
+use restate_storage_api::explicit_recovery_table::WriteExplicitRecoveryTable;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
@@ -46,7 +47,8 @@ where
         + WriteInvocationStatusTable
         + journal_table::ReadJournalTable
         + journal_table::WriteJournalTable
-        + WriteJournalEventsTable,
+        + WriteJournalEventsTable
+        + WriteExplicitRecoveryTable,
     P: ProcessorContext,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {

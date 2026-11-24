@@ -86,6 +86,7 @@ impl Header {
             | CommandKind::PauseInvocation
             | CommandKind::RestartAsNewInvocation
             | CommandKind::InvokerEffect
+            | CommandKind::ExplicitRecoveryEffect
             | CommandKind::Timer
             | CommandKind::ScheduleTimer
             | CommandKind::InvocationResponse
@@ -405,6 +406,10 @@ pub enum CommandKind {
     // * This command was _never_ produced by production code.
     //
     // __RESERVED__ PurgeVQueueMeta = 26,
+    /// An effect of an attempt of an invocation on the explicit recovery protocol family.
+    /// payload is flexbuffers encoded [`commands::ExplicitRecoveryEffectCommand`]
+    /// *Since v1.8.2
+    ExplicitRecoveryEffect = 27,
 }
 
 impl From<CommandKind> for u16 {
@@ -443,6 +448,7 @@ impl TryFrom<u16> for CommandKind {
             23 => Self::VQueuesPause,
             24 => Self::VQueuesResume,
             25 => Self::PauseInvocation,
+            27 => Self::ExplicitRecoveryEffect,
             other => {
                 return Err(ConversionError::unexpected_enum_variant(
                     "CommandKind",
@@ -751,6 +757,56 @@ mod test {
         let (_, loaded_payload) = typed.split().expect("to decode");
 
         assert_announce_leader_eq(&payload, &loaded_payload);
+    }
+
+    #[test]
+    fn explicit_recovery_effect_envelope_round_trip() {
+        use std::num::NonZeroU32;
+
+        use bytes::Bytes;
+
+        use restate_types::identifiers::{InvocationId, WithPartitionKey};
+        use restate_types::logs::HasRecordKeys;
+        use restate_worker_api::invoker::explicit_recovery::{
+            ErAction, ErEffect, ErEffectKind, ErStateScope,
+        };
+
+        use crate::v2::commands::ExplicitRecoveryEffectCommand;
+
+        let invocation_id = InvocationId::mock_random();
+        let payload = ExplicitRecoveryEffectCommand::from(ErEffect {
+            invocation_id,
+            attempt: 2,
+            seq: 7,
+            kind: ErEffectKind::Action {
+                action: ErAction::Group(vec![ErAction::SetState {
+                    scope: ErStateScope::Invocation,
+                    key: Bytes::from_static(b"k"),
+                    value: Bytes::from_static(b"v"),
+                }]),
+                highest_result_id: NonZeroU32::new(5),
+            },
+        });
+        assert_eq!(
+            payload.record_keys(),
+            Keys::Single(invocation_id.partition_key())
+        );
+
+        let mut buf = BytesMut::new();
+        StorageCodec::encode(&Envelope::new(Dedup::None, payload), &mut buf).expect("to encode");
+        let envelope: Envelope<Raw> = StorageCodec::decode(&mut buf).expect("to decode");
+        assert_eq!(envelope.kind(), CommandKind::ExplicitRecoveryEffect);
+        let (_, decoded) = envelope
+            .into_typed::<ExplicitRecoveryEffectCommand>()
+            .split()
+            .expect("to decode");
+        assert_eq!(decoded.invocation_id, invocation_id);
+        assert_eq!((decoded.attempt, decoded.seq), (2, 7));
+        assert!(matches!(
+            &decoded.kind,
+            ErEffectKind::Action { action: ErAction::Group(members), highest_result_id }
+                if members.len() == 1 && *highest_result_id == NonZeroU32::new(5)
+        ));
     }
 
     #[test]

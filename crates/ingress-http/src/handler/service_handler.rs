@@ -303,6 +303,7 @@ where
             }
             invocation_request_header.limit_key = limit_key;
             invocation_request_header.headers = headers;
+            invocation_request_header.protocol_family = invocation_target_meta.protocol_family;
 
             match invoke_ty {
                 InvokeType::Call => {

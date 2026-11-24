@@ -38,6 +38,9 @@ fn greeter_service_greet_handler() -> endpoint_manifest::Handler {
         workflow_completion_retention: None,
         enable_lazy_state: None,
         eager_state_keys_whitelist: vec![],
+        protocol_family: None,
+        enable_lazy_invocation_state: None,
+        eager_invocation_state_keys_whitelist: vec![],
         ingress_private: None,
         retry_policy_on_max_attempts: None,
     }
@@ -61,6 +64,9 @@ fn greeter_service() -> endpoint_manifest::Service {
         metadata: Default::default(),
         enable_lazy_state: None,
         eager_state_keys_whitelist: vec![],
+        protocol_family: None,
+        enable_lazy_invocation_state: None,
+        eager_invocation_state_keys_whitelist: vec![],
         retry_policy_on_max_attempts: None,
     }
 }

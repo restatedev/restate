@@ -27,4 +27,7 @@ enum ServiceDiscoveryProtocolVersion {
   V4 = 4;
   // add alwaysEagerStateKeys (eager-preload whitelist when lazy state is enabled)
   V5 = 5;
+  // add the explicit recovery protocol family (protocolFamily, explicitRecoveryProtocol)
+  // and the invocation state preload policy
+  V6 = 6;
 }

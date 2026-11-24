@@ -330,7 +330,7 @@ impl WaitDuration {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RetryIter<'a> {
     policy: Cow<'a, RetryPolicy>,
     attempts: usize,

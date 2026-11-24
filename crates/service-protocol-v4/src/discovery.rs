@@ -57,6 +57,8 @@ const SERVICE_DISCOVERY_PROTOCOL_V4_HEADER_VALUE: &str =
     "application/vnd.restate.endpointmanifest.v4+json";
 const SERVICE_DISCOVERY_PROTOCOL_V5_HEADER_VALUE: &str =
     "application/vnd.restate.endpointmanifest.v5+json";
+const SERVICE_DISCOVERY_PROTOCOL_V6_HEADER_VALUE: &str =
+    "application/vnd.restate.endpointmanifest.v6+json";
 static SUPPORTED_SERVICE_DISCOVERY_PROTOCOL_VERSIONS: LazyLock<HeaderValue> = LazyLock::new(|| {
     let supported_versions = ServiceDiscoveryProtocolVersion::iter()
         .skip_while(|version| version < &MIN_SERVICE_DISCOVERY_PROTOCOL_VERSION)
@@ -81,6 +83,7 @@ fn service_discovery_protocol_to_content_type(
         ServiceDiscoveryProtocolVersion::V3 => SERVICE_DISCOVERY_PROTOCOL_V3_HEADER_VALUE,
         ServiceDiscoveryProtocolVersion::V4 => SERVICE_DISCOVERY_PROTOCOL_V4_HEADER_VALUE,
         ServiceDiscoveryProtocolVersion::V5 => SERVICE_DISCOVERY_PROTOCOL_V5_HEADER_VALUE,
+        ServiceDiscoveryProtocolVersion::V6 => SERVICE_DISCOVERY_PROTOCOL_V6_HEADER_VALUE,
     }
 }
 
@@ -93,6 +96,7 @@ fn parse_service_discovery_protocol_version_from_content_type(
         SERVICE_DISCOVERY_PROTOCOL_V3_HEADER_VALUE => Some(ServiceDiscoveryProtocolVersion::V3),
         SERVICE_DISCOVERY_PROTOCOL_V4_HEADER_VALUE => Some(ServiceDiscoveryProtocolVersion::V4),
         SERVICE_DISCOVERY_PROTOCOL_V5_HEADER_VALUE => Some(ServiceDiscoveryProtocolVersion::V5),
+        SERVICE_DISCOVERY_PROTOCOL_V6_HEADER_VALUE => Some(ServiceDiscoveryProtocolVersion::V6),
         _ => None,
     }
 }
@@ -267,7 +271,8 @@ impl DiscoveryClient for ServiceDiscovery {
             | ServiceDiscoveryProtocolVersion::V2
             | ServiceDiscoveryProtocolVersion::V3
             | ServiceDiscoveryProtocolVersion::V4
-            | ServiceDiscoveryProtocolVersion::V5 => {
+            | ServiceDiscoveryProtocolVersion::V5
+            | ServiceDiscoveryProtocolVersion::V6 => {
                 serde_json::from_slice(&body).map_err(|e| DiscoveryError::Decode(e, body))?
             }
         };
@@ -279,7 +284,10 @@ impl DiscoveryClient for ServiceDiscovery {
             x_restate_server,
         )?;
 
-        if discovery_response.supported_protocol_versions.end() < &4i32 {
+        // 0..=0 means the endpoint advertised no durable execution range: every handler is on the
+        // explicit recovery family, so there is no durable protocol version to deprecate.
+        let durable_range = &discovery_response.supported_protocol_versions;
+        if *durable_range.start() > 0 && *durable_range.end() < 4 {
             warn!(
                 "The registered endpoint is using a service protocol version that will be removed in the future releases. \
                      Please update the SDK to the latest release and re-register the deployment. \
@@ -362,9 +370,66 @@ impl ServiceDiscovery {
             }
         }
 
-        // Sanity checks for the service protocol version
-        if endpoint_response.min_protocol_version.get() > MAX_SERVICE_PROTOCOL_VERSION_VALUE as u64
+        // A deployment whose handlers are all on the explicit recovery family is judged by its
+        // explicit recovery range: it does not need a durable execution range.
+        let only_explicit_recovery = endpoint_response.services.iter().all(|svc| {
+            svc.handlers.iter().all(|h| {
+                h.protocol_family.or(svc.protocol_family)
+                    == Some(endpoint_manifest::ProtocolFamily::ExplicitRecovery)
+            })
+        }) && endpoint_response
+            .services
+            .iter()
+            .any(|svc| !svc.handlers.is_empty());
+
+        let explicit_recovery_protocol_versions = match &endpoint_response
+            .explicit_recovery_protocol
         {
+            Some(range) => {
+                let (min, max) = (range.min_version.get(), range.max_version.get());
+                if min > MAX_SERVICE_PROTOCOL_VERSION_VALUE as u64
+                    || max > MAX_SERVICE_PROTOCOL_VERSION_VALUE as u64
+                    || min > max
+                {
+                    return Err(DiscoveryError::BadResponse(
+                        format!("Expected 1 <= explicitRecoveryProtocol.minVersion <= explicitRecoveryProtocol.maxVersion <= {MAX_SERVICE_PROTOCOL_VERSION_VALUE}. Received minVersion '{min}', maxVersion '{max}'").into(),
+                    ));
+                }
+                Some(min as i32..=max as i32)
+            }
+            None => None,
+        };
+
+        let (min_protocol_version, max_protocol_version) = match (
+            endpoint_response.min_protocol_version,
+            endpoint_response.max_protocol_version,
+        ) {
+            (Some(min), Some(max)) => (min, max),
+            (None, None) if only_explicit_recovery => {
+                return Ok(DiscoveryResponse {
+                    deployment_type_parameters: Self::deployment_type_parameters(
+                        endpoint,
+                        protocol_type,
+                        response_http_version,
+                        endpoint_response.lambda_compression,
+                    ),
+                    services: endpoint_response.services,
+                    // No durable execution range: an empty one, never acceptable.
+                    supported_protocol_versions: 0..=0,
+                    explicit_recovery_protocol_versions,
+                    sdk_version: x_restate_server
+                        .and_then(|h| h.to_str().ok().map(ToOwned::to_owned)),
+                });
+            }
+            _ => {
+                return Err(DiscoveryError::BadResponse(
+                    "minProtocolVersion and maxProtocolVersion are required, unless every handler uses the EXPLICIT_RECOVERY protocol family".into(),
+                ));
+            }
+        };
+
+        // Sanity checks for the service protocol version
+        if min_protocol_version.get() > MAX_SERVICE_PROTOCOL_VERSION_VALUE as u64 {
             return Err(DiscoveryError::BadResponse(
                 format!(
                     "min protocol version must be in [1, {MAX_SERVICE_PROTOCOL_VERSION_VALUE}]"
@@ -373,8 +438,7 @@ impl ServiceDiscovery {
             ));
         }
 
-        if endpoint_response.max_protocol_version.get() > MAX_SERVICE_PROTOCOL_VERSION_VALUE as u64
-        {
+        if max_protocol_version.get() > MAX_SERVICE_PROTOCOL_VERSION_VALUE as u64 {
             return Err(DiscoveryError::BadResponse(
                 format!(
                     "max protocol version must be in [1, {MAX_SERVICE_PROTOCOL_VERSION_VALUE}]"
@@ -383,14 +447,14 @@ impl ServiceDiscovery {
             ));
         }
 
-        if endpoint_response.min_protocol_version > endpoint_response.max_protocol_version {
+        if min_protocol_version > max_protocol_version {
             return Err(DiscoveryError::BadResponse(
-                format!("Expected min protocol version to be <= max protocol version. Received min protocol version '{}', max protocol version '{}'", endpoint_response.min_protocol_version, endpoint_response.max_protocol_version).into(),
+                format!("Expected min protocol version to be <= max protocol version. Received min protocol version '{min_protocol_version}', max protocol version '{max_protocol_version}'").into(),
             ));
         }
 
-        let min_version = endpoint_response.min_protocol_version.get() as i32;
-        let mut max_version = endpoint_response.max_protocol_version.get() as i32;
+        let min_version = min_protocol_version.get() as i32;
+        let mut max_version = max_protocol_version.get() as i32;
         let mut sdk_version = None;
 
         // Fix for the SDK-Typescript bad protocol version,
@@ -410,7 +474,9 @@ impl ServiceDiscovery {
             sdk_version = Some(x_restate_server.to_owned());
         }
 
-        if !ServiceProtocolVersion::is_acceptable_for_discovery(min_version, max_version) {
+        if !only_explicit_recovery
+            && !ServiceProtocolVersion::is_acceptable_for_discovery(min_version, max_version)
+        {
             return Err(DiscoveryError::UnsupportedServiceProtocol {
                 min_version,
                 max_version,
@@ -418,27 +484,40 @@ impl ServiceDiscovery {
         }
 
         Ok(DiscoveryResponse {
-            deployment_type_parameters: match endpoint {
-                Endpoint::Http { .. } => DeploymentConnectionParameters::Http {
-                    protocol_type,
-                    http_version: response_http_version,
-                },
-                Endpoint::Lambda { .. } => DeploymentConnectionParameters::Lambda {
-                    compression: endpoint_response.lambda_compression.map(|compression| {
-                        match compression {
-                            endpoint_manifest::EndpointLambdaCompression::Zstd => {
-                                EndpointLambdaCompression::Zstd
-                            }
-                        }
-                    }),
-                },
-            },
+            deployment_type_parameters: Self::deployment_type_parameters(
+                endpoint,
+                protocol_type,
+                response_http_version,
+                endpoint_response.lambda_compression,
+            ),
             services: endpoint_response.services,
             // we need to store the raw representation since the runtime might not know the latest
             // version yet.
             supported_protocol_versions: min_version..=max_version,
+            explicit_recovery_protocol_versions,
             sdk_version,
         })
+    }
+
+    fn deployment_type_parameters(
+        endpoint: Endpoint,
+        protocol_type: ProtocolType,
+        response_http_version: Version,
+        lambda_compression: Option<endpoint_manifest::EndpointLambdaCompression>,
+    ) -> DeploymentConnectionParameters {
+        match endpoint {
+            Endpoint::Http { .. } => DeploymentConnectionParameters::Http {
+                protocol_type,
+                http_version: response_http_version,
+            },
+            Endpoint::Lambda { .. } => DeploymentConnectionParameters::Lambda {
+                compression: lambda_compression.map(|compression| match compression {
+                    endpoint_manifest::EndpointLambdaCompression::Zstd => {
+                        EndpointLambdaCompression::Zstd
+                    }
+                }),
+            },
+        }
     }
 
     async fn invoke_discovery_endpoint(
@@ -519,15 +598,18 @@ mod tests {
     use restate_service_client::Endpoint;
     use restate_types::endpoint_manifest;
     use restate_types::service_discovery::ServiceDiscoveryProtocolVersion;
-    use restate_types::service_protocol::MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION;
+    use restate_types::service_protocol::{
+        MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION, ServiceProtocolVersion,
+    };
     use std::num::NonZeroU64;
 
     #[test]
     fn fail_on_invalid_min_protocol_version_with_bad_response() {
         let response = endpoint_manifest::Endpoint {
             lambda_compression: None,
-            min_protocol_version: NonZeroU64::MAX,
-            max_protocol_version: NonZeroU64::MAX,
+            min_protocol_version: Some(NonZeroU64::MAX),
+            max_protocol_version: Some(NonZeroU64::MAX),
+            explicit_recovery_protocol: None,
             services: Vec::new(),
             protocol_mode: Some(ProtocolMode::BidiStream),
         };
@@ -547,8 +629,9 @@ mod tests {
     fn fail_on_bidirectional_with_lambda() {
         let response = endpoint_manifest::Endpoint {
             lambda_compression: None,
-            min_protocol_version: NonZeroU64::MIN,
-            max_protocol_version: NonZeroU64::MIN,
+            min_protocol_version: Some(NonZeroU64::MIN),
+            max_protocol_version: Some(NonZeroU64::MIN),
+            explicit_recovery_protocol: None,
             services: Vec::new(),
             protocol_mode: Some(ProtocolMode::BidiStream),
         };
@@ -574,8 +657,9 @@ mod tests {
     fn fail_on_invalid_max_protocol_version_with_bad_response() {
         let response = endpoint_manifest::Endpoint {
             lambda_compression: None,
-            min_protocol_version: NonZeroU64::MIN,
-            max_protocol_version: NonZeroU64::MAX,
+            min_protocol_version: Some(NonZeroU64::MIN),
+            max_protocol_version: Some(NonZeroU64::MAX),
+            explicit_recovery_protocol: None,
             services: Vec::new(),
             protocol_mode: Some(ProtocolMode::BidiStream),
         };
@@ -595,8 +679,9 @@ mod tests {
     fn fail_on_max_protocol_version_smaller_than_min_protocol_version_with_bad_response() {
         let response = endpoint_manifest::Endpoint {
             lambda_compression: None,
-            min_protocol_version: NonZeroU64::new(10).unwrap(),
-            max_protocol_version: NonZeroU64::new(9).unwrap(),
+            min_protocol_version: Some(NonZeroU64::new(10).unwrap()),
+            max_protocol_version: Some(NonZeroU64::new(9).unwrap()),
+            explicit_recovery_protocol: None,
             services: Vec::new(),
             protocol_mode: Some(ProtocolMode::BidiStream),
         };
@@ -617,8 +702,9 @@ mod tests {
         let unsupported_version = MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION.as_repr() + 1;
         let response = endpoint_manifest::Endpoint {
             lambda_compression: None,
-            min_protocol_version: NonZeroU64::new(unsupported_version as u64).unwrap(),
-            max_protocol_version: NonZeroU64::new(unsupported_version as u64).unwrap(),
+            min_protocol_version: Some(NonZeroU64::new(unsupported_version as u64).unwrap()),
+            max_protocol_version: Some(NonZeroU64::new(unsupported_version as u64).unwrap()),
+            explicit_recovery_protocol: None,
             services: Vec::new(),
             protocol_mode: Some(ProtocolMode::BidiStream),
         };
@@ -656,5 +742,75 @@ mod tests {
             parse_service_discovery_protocol_version_from_content_type("foobar"),
             None
         );
+    }
+
+    #[test]
+    fn explicit_recovery_manifest_v6() {
+        assert_eq!(
+            parse_service_discovery_protocol_version_from_content_type(
+                "application/vnd.restate.endpointmanifest.v6+json"
+            ),
+            Some(ServiceDiscoveryProtocolVersion::V6)
+        );
+
+        // Every handler on the explicit recovery family: no durable execution range needed.
+        let manifest = |durable_range: &str| -> endpoint_manifest::Endpoint {
+            serde_json::from_str(&format!(
+                r#"{{
+                    "protocolMode": "BIDI_STREAM",
+                    {durable_range}
+                    "explicitRecoveryProtocol": {{"minVersion": 1, "maxVersion": 1}},
+                    "services": [{{
+                        "name": "notes",
+                        "ty": "VIRTUAL_OBJECT",
+                        "protocolFamily": "EXPLICIT_RECOVERY",
+                        "enableLazyInvocationState": true,
+                        "eagerInvocationStateKeysWhitelist": ["cursor"],
+                        "handlers": [{{"name": "add"}}, {{"name": "list", "ty": "SHARED"}}]
+                    }}]
+                }}"#
+            ))
+            .unwrap()
+        };
+        let response = ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
+            Endpoint::Http(Uri::default(), None, None),
+            Version::HTTP_2,
+            manifest(""),
+            None,
+        )
+        .unwrap();
+        assert_eq!(response.explicit_recovery_protocol_versions, Some(1..=1));
+        assert!(!ServiceProtocolVersion::is_acceptable_for_discovery(
+            *response.supported_protocol_versions.start(),
+            *response.supported_protocol_versions.end()
+        ));
+        assert_eq!(
+            response.services[0].eager_invocation_state_keys_whitelist,
+            vec!["cursor".to_owned()]
+        );
+
+        // Also with an old durable range, which the explicit recovery range overrides.
+        assert!(
+            ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
+                Endpoint::Http(Uri::default(), None, None),
+                Version::HTTP_2,
+                manifest(r#""minProtocolVersion": 1, "maxProtocolVersion": 1,"#),
+                None,
+            )
+            .is_ok()
+        );
+
+        // A durable handler needs the durable range.
+        let mut durable = manifest("");
+        durable.services[0].protocol_family = None;
+        assert!(matches!(
+            ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
+                Endpoint::Http(Uri::default(), None, None),
+                Version::HTTP_2,
+                durable,
+                None,
+            ),
+            Err(DiscoveryError::BadResponse(_))
+        ));
     }
 }

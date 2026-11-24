@@ -134,6 +134,7 @@ async fn complete_already_completed_invocation() {
             pinned_deployment: None,
             random_seed: None,
             creation_seq: None,
+            explicit_recovery: None,
         }),
     )
     .unwrap();

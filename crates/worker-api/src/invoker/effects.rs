@@ -138,3 +138,27 @@ impl EffectKind {
         }
     }
 }
+
+/// What the invoker proposes to the partition processor, in one ordered channel: an effect of
+/// the durable execution family, or one of the explicit recovery family.
+#[derive(Debug)]
+pub enum InvokerProposal {
+    Durable(FencedEffect),
+    ExplicitRecovery(super::explicit_recovery::FencedErEffect),
+}
+
+impl InvokerProposal {
+    /// The durable execution effect, if this is one.
+    pub fn into_durable(self) -> Option<FencedEffect> {
+        match self {
+            InvokerProposal::Durable(effect) => Some(effect),
+            InvokerProposal::ExplicitRecovery(_) => None,
+        }
+    }
+}
+
+impl From<FencedEffect> for InvokerProposal {
+    fn from(value: FencedEffect) -> Self {
+        InvokerProposal::Durable(value)
+    }
+}

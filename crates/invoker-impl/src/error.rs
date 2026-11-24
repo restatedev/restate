@@ -24,7 +24,7 @@ use restate_types::journal::{EntryIndex, EntryType};
 use restate_types::journal_v2;
 use restate_types::journal_v2::CommandIndex;
 use restate_types::service_protocol::{
-    MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION, MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION,
+    MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION, MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION, ProtocolFamily,
     ServiceProtocolVersion,
 };
 use restate_util_bytecount::NonZeroByteCount;
@@ -182,6 +182,35 @@ pub(crate) enum InvokerError {
     #[error("maximum awaited future depth limit of {limit} has been reached.")]
     #[code(restate_errors::RT0025)]
     MaxFutureDepthReached { limit: usize },
+    #[error("explicit recovery protocol violation: {0}")]
+    #[code(unknown)]
+    ErProtocolViolation(String),
+    #[error("cannot decode an explicit recovery protocol message: {0}")]
+    #[code(unknown)]
+    ErDecode(#[from] restate_service_protocol_explicit_recovery::codec::DecodeError),
+    #[error(
+        "the deployment {0} does not speak a version of the explicit recovery protocol this server speaks (declared: {1:?})"
+    )]
+    #[code(unknown)]
+    ErNoCommonVersion(DeploymentId, Option<RangeInclusive<i32>>),
+    #[error(
+        "the deployment {0} cannot run the explicit recovery protocol: it needs HTTP/2 with protocol mode BIDI_STREAM"
+    )]
+    #[code(unknown)]
+    ErNeedsHttp2Bidi(DeploymentId),
+    #[error("the input of the invocation was not found")]
+    #[code(unknown)]
+    ErMissingInput,
+    #[error(
+        "the handler {service}/{handler} is on the {expected:?} protocol family, but the invocation was created for the {actual:?} family. The family of an invocation is fixed at creation"
+    )]
+    #[code(unknown)]
+    WrongProtocolFamily {
+        service: String,
+        handler: String,
+        expected: ProtocolFamily,
+        actual: ProtocolFamily,
+    },
 }
 
 /// Describes a memory budget exhaustion that occurred during invocation

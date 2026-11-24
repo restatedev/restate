@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod error;
+mod explicit_recovery;
 mod input_command;
 mod invocation_state_machine;
 mod invocation_task;
@@ -16,7 +17,8 @@ mod metric_definitions;
 mod state_machine_manager;
 mod status_store;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::num::NonZeroU32;
 use std::ops::RangeBounds;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -57,9 +59,16 @@ use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
 use restate_util_time::DurationExt;
 use restate_worker_api::invoker::capacity::TokenBucket;
+use restate_worker_api::invoker::explicit_recovery::{
+    ErEffect, ErEffectKind, ErToInvoker, ExplicitRecoveryReader, FencedErEffect,
+};
+
+use crate::explicit_recovery::{
+    EffectSink, ErInvocationStateMachine, ErTask, ErTaskEvent, ErTaskMessage, ErTaskOutput,
+};
 use restate_worker_api::invoker::invocation_reader::InvocationReader;
 use restate_worker_api::invoker::{
-    Effect, EffectKind, FencedEffect, InvocationStatusReport, YieldReason,
+    Effect, EffectKind, FencedEffect, InvocationStatusReport, InvokerProposal, YieldReason,
 };
 
 use crate::error::InvocationMemoryExhausted;
@@ -87,11 +96,11 @@ use restate_util_string::ReString;
 ///
 /// The partition processor checks the token against its in-memory `fencing_tokens` map before
 /// self-proposing the effect and then strips it, so the token never reaches Bifrost.
-fn fence(token: FencingToken, effect: Effect) -> FencedEffect {
-    FencedEffect {
+fn fence(token: FencingToken, effect: Effect) -> InvokerProposal {
+    InvokerProposal::Durable(FencedEffect {
         fencing_token: token,
         effect: Box::new(effect),
-    }
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,7 +258,7 @@ impl<StorageReader, Schemas> Service<StorageReader, Schemas> {
         invoker_id: impl Into<InvokerId>,
         key_range: KeyRange,
         storage_reader: StorageReader,
-        sender: mpsc::Sender<FencedEffect>,
+        sender: mpsc::Sender<InvokerProposal>,
         schemas: Live<Schemas>,
         client: ServiceClient,
         action_token_bucket: Option<TokenBucket>,
@@ -264,11 +273,17 @@ impl<StorageReader, Schemas> Service<StorageReader, Schemas> {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (status_tx, status_rx) = mpsc::unbounded_channel();
         let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
+        let (er_tasks_tx, er_tasks_rx) = mpsc::unbounded_channel();
+        let er_client = Some(client.clone());
 
         Self {
             input_tx,
             status_tx,
             inner: ServiceInner {
+                er_state_machines: Default::default(),
+                er_tasks_tx,
+                er_tasks_rx,
+                er_client,
                 input_rx,
                 status_rx,
                 invocation_tasks_tx,
@@ -302,7 +317,7 @@ impl<StorageReader, Schemas> Service<StorageReader, Schemas> {
         invoker_id: impl Into<InvokerId>,
         key_range: KeyRange,
         storage_reader: StorageReader,
-        sender: mpsc::Sender<FencedEffect>,
+        sender: mpsc::Sender<InvokerProposal>,
         service_client_options: &ServiceClientOptions,
         schemas: Live<Schemas>,
         action_token_bucket: Option<TokenBucket>,
@@ -335,7 +350,7 @@ pub enum BuildError {
 
 impl<IR, Schemas> Service<IR, Schemas>
 where
-    IR: InvocationReader + Clone + Send + Sync + 'static,
+    IR: InvocationReader + ExplicitRecoveryReader + Clone + Send + Sync + 'static,
     Schemas: DeploymentResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
 {
     pub fn handle(&self) -> InvokerHandle {
@@ -396,13 +411,20 @@ struct ServiceInner<InvocationTaskRunner, Schemas, StorageReader> {
     status_store: InvocationStatusStore,
     invocation_state_machine_manager:
         state_machine_manager::InvocationStateMachineManager<StorageReader>,
+
+    // -- The explicit recovery protocol family: its own state machines and task channel.
+    er_state_machines: HashMap<InvocationId, ErInvocationStateMachine>,
+    er_tasks_tx: mpsc::UnboundedSender<ErTaskMessage>,
+    er_tasks_rx: mpsc::UnboundedReceiver<ErTaskMessage>,
+    /// `None` in tests that never run an explicit recovery attempt.
+    er_client: Option<ServiceClient>,
 }
 
 impl<ITR, Schemas, IR> ServiceInner<ITR, Schemas, IR>
 where
     ITR: InvocationTaskRunner<IR>,
-    IR: InvocationReader + Clone + Send + Sync + 'static,
-    Schemas: InvocationTargetResolver,
+    IR: InvocationReader + ExplicitRecoveryReader + Clone + Send + Sync + 'static,
+    Schemas: DeploymentResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
 {
     // Returns true if we should execute another step, false if we should stop executing steps
     async fn step(&mut self, options: &InvokerOptions) {
@@ -443,6 +465,9 @@ where
                     },
                     InputCommand::StoredCommandAck { invocation_id, command_index } => {
                         self.handle_stored_command_ack(options, invocation_id, command_index);
+                    }
+                    InputCommand::ExplicitRecovery { invocation_id, message } => {
+                        self.handle_explicit_recovery_input(invocation_id, message);
                     }
                 }
             },
@@ -512,6 +537,9 @@ where
                 };
                 }
             },
+            Some(message) = self.er_tasks_rx.recv() => {
+                self.handle_er_task_message(message).await;
+            },
             Some(expired) = self.retry_timers.next() => {
                 let timer_key = expired.key();
                 let invocation_id = expired.into_inner();
@@ -549,6 +577,9 @@ where
         )
     )]
     fn handle_vqueue_invoke(&mut self, options: &InvokerOptions, mut command: VQueueInvokeCommand) {
+        if let Some(attempt) = command.explicit_recovery_attempt {
+            return self.handle_er_invoke(options, command, attempt);
+        }
         let (mut retry_iter, on_max_attempts) =
             self.schemas.live_load().resolve_invocation_retry_policy(
                 None,
@@ -604,6 +635,194 @@ where
         self.handle_retry_event(options, invocation_id, |sm| {
             sm.notify_retry_timer_fired(timer_key)
         });
+    }
+
+    // --- The explicit recovery protocol family
+
+    fn handle_explicit_recovery_input(
+        &mut self,
+        invocation_id: InvocationId,
+        message: ErToInvoker,
+    ) {
+        match self.er_state_machines.get(&invocation_id) {
+            Some(sm) if sm.attempt == message.attempt() => {
+                let _ = sm.notifications_tx.send(message);
+            }
+            _ => {
+                trace!(restate.invocation.id = %invocation_id, ?message, "Dropping explicit recovery message: its attempt does not run");
+            }
+        }
+    }
+
+    fn handle_er_invoke(
+        &mut self,
+        options: &InvokerOptions,
+        command: VQueueInvokeCommand,
+        attempt: NonZeroU32,
+    ) {
+        let invocation_id = command.invocation_id;
+        // A new attempt replaces whatever ran for the invocation.
+        self.abort_er(&invocation_id);
+        if let Some((_, _, mut old_ism)) = self
+            .invocation_state_machine_manager
+            .remove_invocation(&invocation_id)
+        {
+            if let Some(timer_key) = old_ism.take_retry_timer_key() {
+                self.retry_timers.try_remove(&timer_key);
+            }
+            old_ism.abort();
+        }
+        let Some(client) = self.er_client.clone() else {
+            warn!(restate.invocation.id = %invocation_id, "No service client to run an explicit recovery attempt");
+            return;
+        };
+
+        let (mut retry_iter, on_max_attempts) =
+            self.schemas.live_load().resolve_invocation_retry_policy(
+                None,
+                command.invocation_target.service_name(),
+                command.invocation_target.handler_name(),
+            );
+        retry_iter.fast_forward(command.permit.metadata.retry_attempts as usize);
+
+        let (notifications_tx, notifications_rx) = mpsc::unbounded_channel();
+        let task = ErTask {
+            client,
+            schemas: self.schemas.clone(),
+            invocation_id,
+            invocation_target: command.invocation_target.clone(),
+            attempt: attempt.get(),
+            limit_key: (!command.limit_key.is_none()).then(|| command.limit_key.to_string().into()),
+            idempotency_key: command.idempotency_key.clone(),
+            default_inactivity_timeout: options.inactivity_timeout.into(),
+            shutdown_timeout: options.explicit_recovery_shutdown_timeout.into(),
+            eager_state_size_limit: options.eager_state_size_limit(),
+            message_size_limit: options.message_size_limit().get(),
+            effects: EffectSink {
+                tx: self.er_tasks_tx.clone(),
+                invocation_id,
+                fencing_token: command.fencing_token,
+            },
+            notifications: notifications_rx,
+        };
+        let reader = self
+            .invocation_state_machine_manager
+            .storage_reader()
+            .clone();
+        let abort_handle = spawn_invocation_task(
+            &mut self.invocation_tasks,
+            "explicit-recovery-task",
+            task.run(reader),
+        );
+        debug!(
+            restate.invocation.id = %invocation_id,
+            "Started explicit recovery attempt {attempt}"
+        );
+        self.status_store.on_start(invocation_id);
+        self.er_state_machines.insert(
+            invocation_id,
+            ErInvocationStateMachine {
+                _permit: command.permit,
+                fencing_token: command.fencing_token,
+                invocation_target: command.invocation_target,
+                attempt: attempt.get(),
+                retry_iter,
+                on_max_attempts,
+                notifications_tx,
+                abort_handle,
+            },
+        );
+    }
+
+    /// Aborts the running explicit recovery attempt of the invocation, if any.
+    fn abort_er(&mut self, invocation_id: &InvocationId) -> bool {
+        if let Some(sm) = self.er_state_machines.remove(invocation_id) {
+            trace!(restate.invocation.id = %invocation_id, "Aborting explicit recovery attempt {}", sm.attempt);
+            sm.abort_handle.abort();
+            self.status_store.on_end(invocation_id);
+            true
+        } else {
+            false
+        }
+    }
+
+    async fn handle_er_task_message(&mut self, message: ErTaskMessage) {
+        let ErTaskMessage {
+            invocation_id,
+            fencing_token,
+            event,
+        } = message;
+        let Some(sm) = self.er_state_machines.get_mut(&invocation_id) else {
+            trace!(restate.invocation.id = %invocation_id, "Dropping output of an explicit recovery task without state machine");
+            return;
+        };
+        if sm.fencing_token != fencing_token {
+            trace!(restate.invocation.id = %invocation_id, "Dropping output of a stale explicit recovery task");
+            return;
+        }
+        let attempt = sm.attempt;
+        let (seq, kind) = match event {
+            ErTaskEvent::Effect { seq, kind } => (seq, kind),
+            ErTaskEvent::Terminal(output) => {
+                let mut sm = self
+                    .er_state_machines
+                    .remove(&invocation_id)
+                    .expect("checked above");
+                self.status_store.on_end(&invocation_id);
+                let kind = match output {
+                    ErTaskOutput::End(result) => ErEffectKind::End(result),
+                    ErTaskOutput::Restart(rule) => ErEffectKind::Restart {
+                        rule,
+                        idle_fallback: sm.idle_fallback(),
+                    },
+                    ErTaskOutput::Suspend {
+                        received_notifications,
+                    } => ErEffectKind::Suspend {
+                        received_notifications,
+                        idle_fallback: sm.idle_fallback(),
+                    },
+                    ErTaskOutput::Failed(error) => {
+                        let outcome = sm.on_task_error(&error);
+                        warn_it!(
+                            error,
+                            restate.invocation.id = %invocation_id,
+                            restate.invocation.target = %sm.invocation_target,
+                            "Explicit recovery attempt {attempt} failed: {outcome:?}"
+                        );
+                        let report = error.into_invocation_error_report();
+                        let event = TransientErrorEvent {
+                            error_code: report.err.code(),
+                            error_message: report.err.message().to_owned(),
+                            error_stacktrace: report.err.stacktrace().map(|s| s.to_owned()),
+                            restate_doc_error_code: report
+                                .doc_error_code
+                                .map(|c| c.code().to_owned()),
+                            related_command_index: None,
+                            related_command_name: None,
+                            related_command_type: None,
+                        };
+                        ErEffectKind::Failed {
+                            error_event: Some(RawEvent::from(Event::TransientError(event))),
+                            outcome,
+                        }
+                    }
+                };
+                (u64::MAX, kind)
+            }
+        };
+        let _ = self
+            .invocation_state_machine_manager
+            .partition_sender()
+            .send(InvokerProposal::ExplicitRecovery(FencedErEffect {
+                fencing_token,
+                effect: Box::new(ErEffect {
+                    invocation_id,
+                    attempt,
+                    seq,
+                    kind,
+                }),
+            }))
+            .await;
     }
 
     #[instrument(
@@ -1120,6 +1339,9 @@ where
         )
     )]
     fn handle_abort_invocation(&mut self, invocation_id: &InvocationId) {
+        if self.abort_er(invocation_id) {
+            return;
+        }
         if let Some((_, _, mut ism)) = self
             .invocation_state_machine_manager
             .remove_invocation(invocation_id)
@@ -1148,6 +1370,11 @@ where
         )
     )]
     async fn handle_pause_invocation(&mut self, invocation_id: InvocationId) {
+        // The partition processor pauses an explicit recovery invocation itself: the running
+        // attempt only has to stop.
+        if self.abort_er(&invocation_id) {
+            return;
+        }
         if let Some((sender, _, mut ism)) = self
             .invocation_state_machine_manager
             .remove_invocation(&invocation_id)
@@ -1185,6 +1412,9 @@ where
 
     #[instrument(level = "trace", skip_all)]
     fn handle_abort_all(&mut self) {
+        for (_, sm) in self.er_state_machines.drain() {
+            sm.abort_handle.abort();
+        }
         let invocation_state_machines = self.invocation_state_machine_manager.remove_all();
 
         for (fid, mut ism) in invocation_state_machines.into_iter() {
@@ -1666,8 +1896,8 @@ mod tests {
 
     impl<ITR, Schemas, IR> ServiceInner<ITR, Schemas, IR>
     where
-        IR: InvocationReader + Clone + Send + Sync + 'static,
-        Schemas: InvocationTargetResolver,
+        IR: InvocationReader + ExplicitRecoveryReader + Clone + Send + Sync + 'static,
+        Schemas: DeploymentResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
     {
         #[allow(clippy::type_complexity)]
         fn mock(
@@ -1679,7 +1909,7 @@ mod tests {
             mpsc::UnboundedSender<
                 restate_futures_util::command::Command<KeyRange, Vec<InvocationStatusReport>>,
             >,
-            mpsc::Receiver<FencedEffect>,
+            mpsc::Receiver<InvokerProposal>,
             Self,
         ) {
             let (input_tx, input_rx) = mpsc::unbounded_channel();
@@ -1704,6 +1934,10 @@ mod tests {
                     storage_reader,
                     output_tx,
                 ),
+                er_state_machines: Default::default(),
+                er_tasks_tx: mpsc::unbounded_channel().0,
+                er_tasks_rx: mpsc::unbounded_channel().1,
+                er_client: None,
             };
             (input_tx, status_tx, output_rx, service_inner)
         }
@@ -1728,6 +1962,7 @@ mod tests {
                     invocation_target,
                     limit_key: LimitKey::None,
                     idempotency_key: None,
+                    explicit_recovery_attempt: None,
                 },
             )
         }
@@ -1984,6 +2219,7 @@ mod tests {
                 invocation_target,
                 LimitKey::None,
                 None,
+                None,
             )
             .unwrap();
 
@@ -2198,6 +2434,8 @@ mod tests {
             *effects_rx
                 .try_recv()
                 .expect("expected a proposed transient error event")
+                .into_durable()
+                .unwrap()
                 .effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
@@ -2248,6 +2486,8 @@ mod tests {
             *effects_rx
                 .try_recv()
                 .expect("expected a newly proposed transient error event for different content")
+                .into_durable()
+                .unwrap()
                 .effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
@@ -2309,6 +2549,8 @@ mod tests {
             *effects_rx
                 .try_recv()
                 .expect("expected a proposed transient error event")
+                .into_durable()
+                .unwrap()
                 .effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
@@ -2367,7 +2609,11 @@ mod tests {
             .handle_invocation_task_failed(invocation_id, error, LocalMemoryPool::unlimited())
             .await;
         assert_that!(
-            effects_rx.try_recv().expect("expected a Failed effect"),
+            effects_rx
+                .try_recv()
+                .expect("expected a Failed effect")
+                .into_durable()
+                .unwrap(),
             pat!(FencedEffect {
                 effect: pat!(Effect {
                     invocation_id: eq(invocation_id),
@@ -2465,7 +2711,9 @@ mod tests {
 
         let effect = effects_rx
             .try_recv()
-            .expect("expected an effect to be emitted after pause");
+            .expect("expected an effect to be emitted after pause")
+            .into_durable()
+            .unwrap();
         assert_that!(
             *effect.effect,
             pat!(Effect {
@@ -2484,6 +2732,33 @@ mod tests {
         // Create custom resolver that switches behavior based on presence of deployment id
         #[derive(Clone)]
         struct SwitchingResolver;
+        impl DeploymentResolver for SwitchingResolver {
+            fn resolve_latest_deployment_for_service(
+                &self,
+                _: impl AsRef<str>,
+            ) -> Option<Deployment> {
+                None
+            }
+            fn find_deployment(
+                &self,
+                _: &DeploymentAddress,
+                _: &Headers,
+            ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
+                None
+            }
+            fn get_deployment(&self, _: &DeploymentId) -> Option<Deployment> {
+                None
+            }
+            fn get_deployment_and_services(
+                &self,
+                _: &DeploymentId,
+            ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
+                None
+            }
+            fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)> {
+                vec![]
+            }
+        }
         impl InvocationTargetResolver for SwitchingResolver {
             fn resolve_latest_invocation_target(
                 &self,
@@ -2573,7 +2848,9 @@ mod tests {
 
         let effect = effects_rx
             .try_recv()
-            .expect("expected an effect to be emitted after kill");
+            .expect("expected an effect to be emitted after kill")
+            .into_durable()
+            .unwrap();
         assert_that!(
             *effect.effect,
             pat!(Effect {
@@ -2626,7 +2903,9 @@ mod tests {
         // Should emit Paused effect immediately with no last_failure
         let effect = effects_rx
             .try_recv()
-            .expect("expected Paused effect to be emitted");
+            .expect("expected Paused effect to be emitted")
+            .into_durable()
+            .unwrap();
         assert_that!(
             *effect.effect,
             pat!(Effect {
@@ -2690,7 +2969,9 @@ mod tests {
         // Should emit Paused effect (not Suspended) with no last_failure
         let effect = effects_rx
             .try_recv()
-            .expect("expected Paused effect to be emitted");
+            .expect("expected Paused effect to be emitted")
+            .into_durable()
+            .unwrap();
         assert_that!(
             *effect.effect,
             pat!(Effect {
@@ -2746,7 +3027,9 @@ mod tests {
         // Should emit Paused effect (not Kill or ScheduleRetry) with last_failure set
         let effect = effects_rx
             .try_recv()
-            .expect("expected Paused effect to be emitted");
+            .expect("expected Paused effect to be emitted")
+            .into_durable()
+            .unwrap();
         assert_that!(
             *effect.effect,
             pat!(Effect {
@@ -2804,7 +3087,9 @@ mod tests {
         // Should emit Paused effect immediately with last_failure populated from the error
         let effect = effects_rx
             .try_recv()
-            .expect("expected Paused effect to be emitted");
+            .expect("expected Paused effect to be emitted")
+            .into_durable()
+            .unwrap();
         assert_that!(
             *effect.effect,
             pat!(Effect {
@@ -2866,7 +3151,9 @@ mod tests {
         // Should emit EffectKind::Yield
         let effect = effects_rx
             .try_recv()
-            .expect("expected Yield effect to be emitted");
+            .expect("expected Yield effect to be emitted")
+            .into_durable()
+            .unwrap();
         assert_that!(
             *effect.effect,
             pat!(Effect {

@@ -308,6 +308,7 @@ impl InvocationBuilder {
         service_invocation.headers = headers;
         service_invocation.limit_key = limit_key;
         service_invocation.with_retention(invocation_retention);
+        service_invocation.protocol_family = target.protocol_family;
 
         Ok(service_invocation)
     }

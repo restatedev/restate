@@ -22,6 +22,7 @@ use crate::journal_v2::encoding::DecodingError;
 use crate::journal_v2::{
     CommandType, Decoder, Entry, EntryMetadata, EntryType, NotificationId, NotificationType,
 };
+use crate::service_protocol::ProtocolFamily;
 
 #[derive(Debug, thiserror::Error)]
 #[error(
@@ -149,6 +150,9 @@ pub struct CallOrSendMetadata {
     // matches the default behaviour of <= 1.3.x.
     #[serde(default)]
     pub journal_retention_duration: Duration,
+    /// Protocol family of the target handler. Since v1.8.2
+    #[serde(default, skip_serializing_if = "ProtocolFamily::is_durable_execution")]
+    pub protocol_family: ProtocolFamily,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

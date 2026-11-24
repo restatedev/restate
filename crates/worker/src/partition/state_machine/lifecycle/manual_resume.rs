@@ -24,6 +24,7 @@ use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::vqueues::EntryTargetExt;
 
 use crate::partition::processor::{FsmAccess, ProcessorContext};
+use crate::partition::state_machine::explicit_recovery;
 use crate::partition::state_machine::lifecycle::ResumeInvocationCommand;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
@@ -121,7 +122,21 @@ where
             run_at,
             response_sink,
         } = self;
-        match ctx.get_invocation_status(&invocation_id).await? {
+        let status = ctx.get_invocation_status(&invocation_id).await?;
+        if status.explicit_recovery().is_some() {
+            return explicit_recovery::OnManualResume {
+                invocation_id,
+                status,
+                patches_deployment: update_deployment_id
+                    .as_ref()
+                    .is_some_and(|patch| *patch != PatchDeploymentId::KeepPinned)
+                    || update_pinned_deployment_id.is_some(),
+                response_sink,
+            }
+            .apply(ctx)
+            .await;
+        }
+        match status {
             InvocationStatus::Invoked(mut metadata) => {
                 // For VQueue invocations the resume RPC proposes this command instead of poking the
                 // invoker. A backing-off attempt is parked in the VQueue inbox with a future

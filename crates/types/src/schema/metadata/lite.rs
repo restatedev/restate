@@ -145,6 +145,9 @@ pub(super) struct DeploymentLite {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[bilrost(tag = 10)]
     limits: Option<DeploymentLimits>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag = 11)]
+    explicit_recovery_protocol_versions: Option<RangeInclusive<i32>>,
 }
 
 impl DeploymentLite {
@@ -159,6 +162,7 @@ impl DeploymentLite {
             metadata,
             services,
             limits,
+            explicit_recovery_protocol_versions,
         }: &Deployment,
     ) -> Self {
         Self {
@@ -179,6 +183,7 @@ impl DeploymentLite {
                 })
                 .collect(),
             limits: *limits,
+            explicit_recovery_protocol_versions: explicit_recovery_protocol_versions.clone(),
         }
     }
 }
@@ -195,6 +200,7 @@ impl From<DeploymentLite> for Deployment {
             metadata,
             services,
             limits,
+            explicit_recovery_protocol_versions,
         }: DeploymentLite,
     ) -> Self {
         Self {
@@ -210,6 +216,7 @@ impl From<DeploymentLite> for Deployment {
                 .map(|(name, service)| (name, Arc::new(Arc::unwrap_or_clone(service).into())))
                 .collect(),
             limits,
+            explicit_recovery_protocol_versions,
         }
     }
 }
@@ -275,6 +282,9 @@ struct ServiceRevisionLite {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[bilrost(tag(19))]
     state_preload_policy: Option<StatePreloadPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag(20))]
+    invocation_state_preload_policy: Option<StatePreloadPolicy>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -325,6 +335,7 @@ impl ServiceRevisionLite {
             abort_timeout,
             enable_lazy_state,
             state_preload_policy,
+            invocation_state_preload_policy,
             retry_policy_initial_interval,
             retry_policy_exponentiation_factor,
             retry_policy_max_attempts,
@@ -351,6 +362,7 @@ impl ServiceRevisionLite {
             abort_timeout: *abort_timeout,
             enable_lazy_state: *enable_lazy_state,
             state_preload_policy: state_preload_policy.clone(),
+            invocation_state_preload_policy: invocation_state_preload_policy.clone(),
             retry_policy_initial_interval: *retry_policy_initial_interval,
             retry_policy_exponentiation_factor: *retry_policy_exponentiation_factor,
             retry_policy_max_attempts: *retry_policy_max_attempts,
@@ -377,6 +389,7 @@ impl From<ServiceRevisionLite> for ServiceRevision {
             abort_timeout,
             enable_lazy_state,
             state_preload_policy,
+            invocation_state_preload_policy,
             retry_policy_initial_interval,
             retry_policy_exponentiation_factor,
             retry_policy_max_attempts,
@@ -402,6 +415,7 @@ impl From<ServiceRevisionLite> for ServiceRevision {
             abort_timeout,
             enable_lazy_state,
             state_preload_policy,
+            invocation_state_preload_policy,
             retry_policy_initial_interval,
             retry_policy_exponentiation_factor,
             retry_policy_max_attempts,
@@ -450,6 +464,12 @@ struct HandlerLite {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[bilrost(tag = 19)]
     state_preload_policy: Option<StatePreloadPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag = 20)]
+    protocol_family: Option<ProtocolFamily>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag = 21)]
+    invocation_state_preload_policy: Option<StatePreloadPolicy>,
     #[bilrost(tag = 13)]
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     metadata: HashMap<String, String>,
@@ -502,6 +522,8 @@ impl HandlerLite {
             documentation,
             enable_lazy_state,
             state_preload_policy,
+            protocol_family,
+            invocation_state_preload_policy,
             metadata,
             retry_policy_initial_interval,
             retry_policy_exponentiation_factor,
@@ -524,6 +546,8 @@ impl HandlerLite {
             documentation: documentation.clone(),
             enable_lazy_state: *enable_lazy_state,
             state_preload_policy: state_preload_policy.clone(),
+            protocol_family: *protocol_family,
+            invocation_state_preload_policy: invocation_state_preload_policy.clone(),
             metadata: metadata.clone(),
             retry_policy_initial_interval: *retry_policy_initial_interval,
             retry_policy_exponentiation_factor: *retry_policy_exponentiation_factor,
@@ -550,6 +574,8 @@ impl From<HandlerLite> for Handler {
             documentation,
             enable_lazy_state,
             state_preload_policy,
+            protocol_family,
+            invocation_state_preload_policy,
             metadata,
             retry_policy_initial_interval,
             retry_policy_exponentiation_factor,
@@ -572,6 +598,8 @@ impl From<HandlerLite> for Handler {
             documentation,
             enable_lazy_state,
             state_preload_policy,
+            protocol_family,
+            invocation_state_preload_policy,
             metadata,
             retry_policy_initial_interval,
             retry_policy_exponentiation_factor,

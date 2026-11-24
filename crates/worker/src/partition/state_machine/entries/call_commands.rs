@@ -109,6 +109,7 @@ where
             completion_retention_duration,
             journal_retention_duration,
             limit_key,
+            protocol_family,
         } = self.request;
 
         // Prepare the service invocation to propose
@@ -127,6 +128,7 @@ where
             journal_retention_duration,
             idempotency_key,
             limit_key,
+            protocol_family,
             ..ServiceInvocation::initialize(
                 invocation_id,
                 invocation_target,

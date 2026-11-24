@@ -828,6 +828,19 @@ where
                     false,
                 )
             }
+            YieldReason::ExplicitRecoveryRestart => {
+                // A restart is not a failure (D46): the retry counters start over.
+                let current_metadata = header.metadata().clone();
+                (
+                    Status::Yielded,
+                    EntryMetadata {
+                        retry_attempts: 0,
+                        retry_count_since_last_stored_command: 0,
+                        ..current_metadata
+                    },
+                    false,
+                )
+            }
             YieldReason::TransientError {
                 retry_attempts,
                 retry_count_since_last_stored_command,

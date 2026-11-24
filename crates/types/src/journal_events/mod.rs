@@ -35,6 +35,8 @@ pub enum EventType {
     TransientError = 1,
     Paused = 2,
     Suspended = 3,
+    AttemptStarted = 4,
+    AttemptEnded = 5,
 }
 
 #[derive(
@@ -45,6 +47,10 @@ pub enum Event {
     TransientError(TransientErrorEvent),
     Paused(PausedEvent),
     Suspended(SuspendedEvent),
+    /// An attempt of an explicit recovery invocation started.
+    AttemptStarted(AttemptStartedEvent),
+    /// An attempt of an explicit recovery invocation ended.
+    AttemptEnded(AttemptEndedEvent),
     /// This is used when it's not possible to parse in this Restate version the event.
     Unknown,
 }
@@ -77,4 +83,17 @@ pub struct PausedEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SuspendedEvent {
     pub awaiting_on: UnresolvedFuture,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptStartedEvent {
+    pub attempt: u32,
+    pub deployment_id: String,
+    pub protocol_version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptEndedEvent {
+    pub attempt: u32,
+    pub reason: String,
 }

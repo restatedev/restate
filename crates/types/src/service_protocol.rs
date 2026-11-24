@@ -25,6 +25,42 @@ pub const MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion =
 
 pub const MAX_SERVICE_PROTOCOL_VERSION_VALUE: i32 = i32::MAX;
 
+pub const MIN_EXPLICIT_RECOVERY_PROTOCOL_VERSION: i32 = 1;
+pub const MAX_EXPLICIT_RECOVERY_PROTOCOL_VERSION: i32 = 1;
+
+/// The protocol family a handler, and every invocation of it, runs on.
+///
+/// The family of an invocation is fixed when the invocation is created.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    bilrost::Enumeration,
+)]
+pub enum ProtocolFamily {
+    /// The durable execution protocol, with a journal replayed at every attempt.
+    #[default]
+    DurableExecution = 0,
+    /// The explicit recovery protocol: no journal, every attempt starts from the first line.
+    ExplicitRecovery = 1,
+}
+
+impl ProtocolFamily {
+    pub fn is_durable_execution(&self) -> bool {
+        *self == ProtocolFamily::DurableExecution
+    }
+
+    pub fn is_explicit_recovery(&self) -> bool {
+        *self == ProtocolFamily::ExplicitRecovery
+    }
+}
+
 include!(concat!(env!("OUT_DIR"), "/dev.restate.service.protocol.rs"));
 
 impl ServiceProtocolVersion {

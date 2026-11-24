@@ -80,6 +80,25 @@ fn decode(ty: EventType, value: Bytes) -> Result<Event, EventDecodingError> {
         EventType::Suspended => Ok(Event::Suspended(
             pb::SuspendedEvent::decode(value)?.try_into()?,
         )),
+        EventType::AttemptStarted => {
+            let pb::AttemptStartedEvent {
+                attempt,
+                deployment_id,
+                protocol_version,
+            } = pb::AttemptStartedEvent::decode(value)?;
+            Ok(Event::AttemptStarted(super::AttemptStartedEvent {
+                attempt,
+                deployment_id,
+                protocol_version,
+            }))
+        }
+        EventType::AttemptEnded => {
+            let pb::AttemptEndedEvent { attempt, reason } = pb::AttemptEndedEvent::decode(value)?;
+            Ok(Event::AttemptEnded(super::AttemptEndedEvent {
+                attempt,
+                reason,
+            }))
+        }
         EventType::Unknown => Ok(Event::Unknown),
     }
 }
@@ -97,6 +116,26 @@ fn encode(event: Event) -> RawEvent {
         Event::Suspended(e) => RawEvent::new(
             EventType::Suspended,
             pb::SuspendedEvent::from(e).encode_to_vec().into(),
+        ),
+        Event::AttemptStarted(super::AttemptStartedEvent {
+            attempt,
+            deployment_id,
+            protocol_version,
+        }) => RawEvent::new(
+            EventType::AttemptStarted,
+            pb::AttemptStartedEvent {
+                attempt,
+                deployment_id,
+                protocol_version,
+            }
+            .encode_to_vec()
+            .into(),
+        ),
+        Event::AttemptEnded(super::AttemptEndedEvent { attempt, reason }) => RawEvent::new(
+            EventType::AttemptEnded,
+            pb::AttemptEndedEvent { attempt, reason }
+                .encode_to_vec()
+                .into(),
         ),
         Event::Unknown => RawEvent::unknown(),
     }

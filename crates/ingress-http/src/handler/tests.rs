@@ -51,6 +51,7 @@ use restate_types::schema::invocation_target::{
     InputContentType, InputRules, InputValidationRule, InvocationTargetMetadata,
     OutputContentTypeRule, OutputRules,
 };
+use restate_types::service_protocol::ProtocolFamily;
 
 #[restate_core::test]
 #[traced_test]
@@ -313,6 +314,11 @@ async fn call_virtual_object() {
             );
             assert_eq!(invocation_request.header.target.key().unwrap(), &"my-key");
             assert_eq!(invocation_request.header.target.handler_name(), "greet");
+            // The family resolved from the schema is carried in the request.
+            assert_eq!(
+                invocation_request.header.protocol_family,
+                ProtocolFamily::ExplicitRecovery
+            );
 
             let greeting_req: GreetingRequest =
                 serde_json::from_slice(&invocation_request.body).unwrap();
@@ -333,7 +339,21 @@ async fn call_virtual_object() {
             })))
         });
 
-    let response = handle(req, mock_dispatcher).await;
+    let response = handle_with_schemas_and_dispatcher(
+        req,
+        MockSchemas::default().with_service_and_target(
+            "greeter.GreeterObject",
+            "greet",
+            InvocationTargetMetadata {
+                protocol_family: ProtocolFamily::ExplicitRecovery,
+                ..InvocationTargetMetadata::mock(InvocationTargetType::VirtualObject(
+                    VirtualObjectHandlerType::Exclusive,
+                ))
+            },
+        ),
+        mock_dispatcher,
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let (_, response_body) = response.into_parts();

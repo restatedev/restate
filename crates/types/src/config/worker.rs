@@ -471,6 +471,17 @@ pub struct InvokerOptions {
     /// gracefully terminate, then this value needs to be set accordingly.
     pub abort_timeout: FriendlyDuration,
 
+    /// # Explicit recovery shutdown timeout
+    ///
+    /// How long the runtime waits for the `ShutdownMessage` of an attempt on the explicit
+    /// recovery protocol, after it closed its side of the stream. Without an answer in time the
+    /// attempt is restarted. Only that wait: the abort timeout does not apply to the explicit
+    /// recovery protocol.
+    ///
+    /// Since v1.8.2
+    #[serde(default = "default_explicit_recovery_shutdown_timeout")]
+    pub explicit_recovery_shutdown_timeout: FriendlyDuration,
+
     /// # Message size warning
     ///
     /// Threshold to log a warning in case protocol messages coming from a service are larger than the specified amount.
@@ -708,11 +719,16 @@ impl InvokerOptions {
     }
 }
 
+fn default_explicit_recovery_shutdown_timeout() -> FriendlyDuration {
+    FriendlyDuration::from_secs(5)
+}
+
 impl Default for InvokerOptions {
     fn default() -> Self {
         Self {
             inactivity_timeout: FriendlyDuration::new(DEFAULT_INACTIVITY_TIMEOUT),
             abort_timeout: FriendlyDuration::new(DEFAULT_ABORT_TIMEOUT),
+            explicit_recovery_shutdown_timeout: default_explicit_recovery_shutdown_timeout(),
             message_size_warning: NonZeroByteCount::new(
                 NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
             ),

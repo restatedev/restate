@@ -103,6 +103,7 @@ fn invoked_status(invocation_target: InvocationTarget) -> InvocationStatus {
         hotfix_apply_cancellation_after_deployment_is_pinned: false,
         random_seed: None,
         creation_seq: Some(Seq::new(42)),
+        explicit_recovery: None,
     })
 }
 
@@ -132,6 +133,7 @@ fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
             hotfix_apply_cancellation_after_deployment_is_pinned: false,
             random_seed: None,
             creation_seq: Some(Seq::new(42)),
+            explicit_recovery: None,
         },
         awaiting_on: UnresolvedFuture::Unknown(Vec::default()),
     }

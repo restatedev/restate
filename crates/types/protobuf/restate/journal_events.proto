@@ -53,6 +53,20 @@ message SuspendedEvent {
   Future awaiting_on = 1;
 }
 
+// An attempt of an invocation on the explicit recovery protocol family started.
+message AttemptStartedEvent {
+  uint32 attempt = 1;
+  string deployment_id = 2;
+  uint32 protocol_version = 3;
+}
+
+// An attempt of an invocation on the explicit recovery protocol family ended.
+message AttemptEndedEvent {
+  uint32 attempt = 1;
+  // Why: "end", "failed", "restart (rule N)", "suspend", "restart loop".
+  string reason = 2;
+}
+
 // Mirrors dev.restate.service.protocol.Future. Kept independent so this
 // package owns its own wire format.
 message Future {

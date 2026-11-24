@@ -59,7 +59,7 @@ use crate::schema::subscriptions::{
     KafkaSource, ListSubscriptionFilter, Subscription, SubscriptionResolver,
 };
 use crate::schema::{Redaction, deployment, service};
-use crate::service_protocol::ServiceProtocolVersion;
+use crate::service_protocol::{ProtocolFamily, ServiceProtocolVersion};
 use crate::time::MillisSinceEpoch;
 use crate::{Version, Versioned, identifiers};
 
@@ -420,6 +420,12 @@ struct Deployment {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[bilrost(tag = 10)]
     limits: Option<DeploymentLimits>,
+
+    /// Versions of the explicit recovery protocol the deployment speaks, if any.
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag = 11)]
+    explicit_recovery_protocol_versions: Option<RangeInclusive<i32>>,
 }
 
 impl MapAsVecItem for Deployment {
@@ -444,6 +450,7 @@ impl Deployment {
             id: self.id,
             ty: self.ty.clone().expect("required field"),
             supported_protocol_versions: self.supported_protocol_versions.clone(),
+            explicit_recovery_protocol_versions: self.explicit_recovery_protocol_versions.clone(),
             sdk_version: self.sdk_version.clone(),
             created_at: self.created_at,
             metadata: self.metadata.clone(),
@@ -595,6 +602,12 @@ struct ServiceRevision {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[bilrost(tag(19))]
     state_preload_policy: Option<StatePreloadPolicy>,
+
+    /// Service-level preload policy of invocation state (explicit recovery handlers only).
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag(20))]
+    invocation_state_preload_policy: Option<StatePreloadPolicy>,
 
     #[serde(
         default,
@@ -837,6 +850,16 @@ struct Handler {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[bilrost(tag = 19)]
     state_preload_policy: Option<StatePreloadPolicy>,
+    /// Protocol family of the handler. `None` is the durable execution family.
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag = 20)]
+    protocol_family: Option<ProtocolFamily>,
+    /// Preload policy of invocation state, resolved at registration (explicit recovery only).
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag = 21)]
+    invocation_state_preload_policy: Option<StatePreloadPolicy>,
     #[bilrost(tag = 13)]
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     metadata: HashMap<String, String>,
@@ -863,6 +886,13 @@ struct Handler {
     #[bilrost(tag = 18)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retry_policy_on_max_attempts: Option<OnMaxAttempts>,
+}
+
+/// True when the deployment's explicit recovery range has a version this server speaks.
+pub(crate) fn is_acceptable_explicit_recovery_range(range: &RangeInclusive<i32>) -> bool {
+    *range.start() <= crate::service_protocol::MAX_EXPLICIT_RECOVERY_PROTOCOL_VERSION
+        && *range.end() >= crate::service_protocol::MIN_EXPLICIT_RECOVERY_PROTOCOL_VERSION
+        && range.start() <= range.end()
 }
 
 impl MapAsVecItem for Handler {
@@ -1096,14 +1126,26 @@ impl InvocationTargetResolver for Schema {
             .0
             .unwrap_or(Duration::ZERO);
 
+        let protocol_family = handler.protocol_family.unwrap_or_default();
         let deployment_status = self
             .deployments
             .get(deployment_id)
             .map(|dp| {
-                if ServiceProtocolVersion::is_acceptable_for_new_invocations(
-                    *dp.supported_protocol_versions.start(),
-                    *dp.supported_protocol_versions.end(),
-                ) {
+                // A handler on the explicit recovery family is judged by the deployment's
+                // explicit recovery range, never by its durable execution range.
+                let acceptable = match protocol_family {
+                    ProtocolFamily::DurableExecution => {
+                        ServiceProtocolVersion::is_acceptable_for_new_invocations(
+                            *dp.supported_protocol_versions.start(),
+                            *dp.supported_protocol_versions.end(),
+                        )
+                    }
+                    ProtocolFamily::ExplicitRecovery => dp
+                        .explicit_recovery_protocol_versions
+                        .as_ref()
+                        .is_some_and(is_acceptable_explicit_recovery_range),
+                };
+                if acceptable {
                     DeploymentStatus::Enabled
                 } else {
                     DeploymentStatus::Deprecated(dp.id)
@@ -1122,6 +1164,7 @@ impl InvocationTargetResolver for Schema {
             input_rules: Arc::clone(&handler.input_rules),
             output_rules: Arc::clone(&handler.output_rules),
             deployment_status,
+            protocol_family,
         })
     }
 
@@ -1166,6 +1209,12 @@ impl InvocationTargetResolver for Schema {
                 .inactivity_timeout
                 .or(service_revision.inactivity_timeout),
             state_preload_policy,
+            protocol_family: handler.protocol_family.unwrap_or_default(),
+            invocation_state_preload_policy: handler
+                .invocation_state_preload_policy
+                .clone()
+                .or_else(|| service_revision.invocation_state_preload_policy.clone())
+                .unwrap_or_default(),
         })
     }
 

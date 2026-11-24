@@ -46,7 +46,7 @@ use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::{
     InvocationAttemptOptions, InvocationTargetResolver, StatePreloadPolicy,
 };
-use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_types::service_protocol::{ProtocolFamily, ServiceProtocolVersion};
 use restate_util_bytecount::{ByteCount, NonZeroByteCount};
 use restate_util_string::ReString;
 use restate_worker_api::invoker::InvocationReaderError;
@@ -227,10 +227,11 @@ pub(super) enum InvocationTaskOutputInner {
 /// channel capacity. Each frame's [`Bytes`] may embed a [`LocalMemoryLease`] via
 /// [`Bytes::from_owner`], tying the budget lifetime to the bytes themselves — the
 /// lease is released when hyper (and the network stack) drops the `Bytes`.
-type InvokerBodySender = mpsc::UnboundedSender<Result<Frame<Bytes>, Infallible>>;
+pub(crate) type InvokerBodySender = mpsc::UnboundedSender<Result<Frame<Bytes>, Infallible>>;
 
 /// The HTTP request body type sent to hyper.
-type InvokerBodyType = StreamBody<UnboundedReceiverStream<Result<Frame<Bytes>, Infallible>>>;
+pub(crate) type InvokerBodyType =
+    StreamBody<UnboundedReceiverStream<Result<Frame<Bytes>, Infallible>>>;
 
 /// Combines encoded frame data with a memory budget lease so the lease is
 /// released when hyper drops the [`Bytes`] (after sending on the wire).
@@ -260,7 +261,7 @@ fn leased_frame(data: Bytes, lease: Option<LocalMemoryLease>) -> Frame<Bytes> {
     }
 }
 
-fn new_invoker_body(
+pub(crate) fn new_invoker_body(
     rx: mpsc::UnboundedReceiver<Result<Frame<Bytes>, Infallible>>,
 ) -> InvokerBodyType {
     StreamBody::new(UnboundedReceiverStream::new(rx))
@@ -556,7 +557,20 @@ where
                 abort_timeout: None,
                 inactivity_timeout: None,
                 state_preload_policy: StatePreloadPolicy::All,
+                protocol_family: ProtocolFamily::DurableExecution,
+                invocation_state_preload_policy: StatePreloadPolicy::All,
             });
+
+        // D36: this task runs the durable execution family only. An invocation of a handler
+        // on the explicit recovery family that reaches it was created without its family.
+        if invocation_attempt_options.protocol_family != ProtocolFamily::DurableExecution {
+            shortcircuit!(Err(InvokerError::WrongProtocolFamily {
+                service: self.invocation_target.service_name().to_string(),
+                handler: self.invocation_target.handler_name().to_string(),
+                expected: invocation_attempt_options.protocol_family,
+                actual: ProtocolFamily::DurableExecution,
+            }));
+        }
 
         // Override the inactivity timeout and abort timeout, if available
         if let Some(inactivity_timeout) = invocation_attempt_options.inactivity_timeout {
@@ -643,14 +657,14 @@ fn invocation_id_to_header_value(invocation_id: &InvocationId) -> HeaderValue {
         .unwrap_or_else(|_| unreachable!("invocation id should be always valid"))
 }
 
-enum ResponseChunk {
+pub(crate) enum ResponseChunk {
     Parts(ResponseParts),
     Data(Bytes),
 }
 
 pin_project_lite::pin_project! {
     #[project = ResponseStreamProj]
-    enum ResponseStream<F>{
+    pub(crate) enum ResponseStream<F>{
         WaitingHeaders {
             #[pin]
             fut: F
@@ -667,7 +681,7 @@ impl<F> ResponseStream<F>
 where
     F: Future<Output = Result<Response<ResponseBody>, ServiceClientError>>,
 {
-    fn new(fut: F) -> Self {
+    pub(crate) fn new(fut: F) -> Self {
         Self::WaitingHeaders { fut }
     }
 }

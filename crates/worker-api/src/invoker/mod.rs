@@ -10,6 +10,7 @@
 
 pub mod capacity;
 mod effects;
+pub mod explicit_recovery;
 mod handle;
 pub mod invocation_reader;
 pub mod status_handle;

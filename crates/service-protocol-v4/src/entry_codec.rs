@@ -127,6 +127,7 @@ impl Encoder for ServiceProtocolV4Codec {
                         completion_retention_duration,
                         journal_retention_duration,
                         limit_key,
+                        protocol_family,
                     },
                 invocation_id_completion_id,
                 result_completion_id,
@@ -162,6 +163,7 @@ impl Encoder for ServiceProtocolV4Codec {
                     span_context,
                     completion_retention_duration,
                     journal_retention_duration,
+                    protocol_family,
                 },
             )))
             .into(),
@@ -178,6 +180,7 @@ impl Encoder for ServiceProtocolV4Codec {
                         completion_retention_duration,
                         journal_retention_duration,
                         limit_key,
+                        protocol_family,
                     },
                 invoke_time,
                 invocation_id_completion_id,
@@ -213,6 +216,7 @@ impl Encoder for ServiceProtocolV4Codec {
                     span_context,
                     completion_retention_duration,
                     journal_retention_duration,
+                    protocol_family,
                 },
             )))
             .into(),
@@ -753,6 +757,7 @@ impl Decoder for ServiceProtocolV4Codec {
                             } else {
                                 LimitKey::None
                             },
+                            protocol_family: metadata.protocol_family,
                         },
                         invocation_id_completion_id: invocation_id_notification_idx,
                         result_completion_id,
@@ -791,6 +796,7 @@ impl Decoder for ServiceProtocolV4Codec {
                             } else {
                                 LimitKey::None
                             },
+                            protocol_family: metadata.protocol_family,
                         },
                         invoke_time: invoke_time.into(),
                         invocation_id_completion_id: invocation_id_notification_idx,

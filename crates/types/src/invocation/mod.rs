@@ -39,6 +39,7 @@ use crate::identifiers::{
 use crate::invocation::client::PatchDeploymentId;
 use crate::journal_v2::{CompletionId, GetInvocationOutputResult, Signal};
 use crate::limit_key::LimitKey;
+use crate::service_protocol::ProtocolFamily;
 use crate::time::MillisSinceEpoch;
 use crate::{GenerationalNodeId, LockName, RestateVersion, ServiceName};
 
@@ -483,6 +484,11 @@ pub struct InvocationRequestHeader {
     /// If `completion_retention_duration < journal_retention_duration`, then completion retention is used as journal retention.
     #[serde(default, skip_serializing_if = "Duration::is_zero")]
     journal_retention_duration: Duration,
+
+    /// Protocol family of the target handler, resolved when the request is made.
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "ProtocolFamily::is_durable_execution")]
+    pub protocol_family: ProtocolFamily,
 }
 
 impl InvocationRequestHeader {
@@ -497,6 +503,7 @@ impl InvocationRequestHeader {
             limit_key: LimitKey::None,
             completion_retention_duration: Duration::ZERO,
             journal_retention_duration: Duration::ZERO,
+            protocol_family: ProtocolFamily::DurableExecution,
         }
     }
 
@@ -603,6 +610,9 @@ pub struct ServiceInvocation {
 
     /// Restate version at the moment of the invocation creation.
     pub restate_version: RestateVersion,
+
+    /// Protocol family of the target handler, fixed at creation.
+    pub protocol_family: ProtocolFamily,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -636,6 +646,7 @@ impl ServiceInvocation {
             response_sink: None,
             submit_notification_sink: None,
             restate_version: RestateVersion::current(),
+            protocol_family: request.header.protocol_family,
         }
     }
 
@@ -659,6 +670,7 @@ impl ServiceInvocation {
             limit_key: LimitKey::None,
             submit_notification_sink: None,
             restate_version: RestateVersion::current(),
+            protocol_family: ProtocolFamily::DurableExecution,
         }
     }
 
@@ -1597,6 +1609,9 @@ mod serde_hacks {
 
         // TODO(slinkydeveloper) this field is here because serde doesn't like much when I change the shape of an enum variant from empty to tuple/named fields
         pub source_ingress_rpc_id: Option<PartitionProcessorRpcRequestId>,
+
+        #[serde(default, skip_serializing_if = "ProtocolFamily::is_durable_execution")]
+        pub protocol_family: ProtocolFamily,
     }
 
     #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1628,9 +1643,11 @@ mod serde_hacks {
                 submit_notification_sink,
                 restate_version,
                 source_ingress_rpc_id,
+                protocol_family,
             }: ServiceInvocation,
         ) -> Self {
             Self {
+                protocol_family,
                 invocation_id,
                 invocation_target,
                 argument,
@@ -1675,6 +1692,7 @@ mod serde_hacks {
                 response_sink,
                 submit_notification_sink,
                 restate_version,
+                protocol_family,
             }: super::ServiceInvocation,
         ) -> Self {
             let source_ingress_rpc_id = if let super::Source::Ingress(rpc_id) = &source {
@@ -1698,6 +1716,7 @@ mod serde_hacks {
                 submit_notification_sink: submit_notification_sink.map(Into::into),
                 restate_version,
                 source_ingress_rpc_id,
+                protocol_family,
                 source: match source {
                     super::Source::Ingress(_) => Source::Ingress,
                     super::Source::Subscription(subid) => Source::Subscription(subid),
@@ -1925,6 +1944,7 @@ mod mocks {
                 limit_key: LimitKey::None,
                 submit_notification_sink: None,
                 restate_version: RestateVersion::current(),
+                protocol_family: ProtocolFamily::DurableExecution,
             }
         }
     }
@@ -1950,6 +1970,7 @@ mod mocks {
                 limit_key: LimitKey::None,
                 completion_retention_duration: Default::default(),
                 journal_retention_duration: Default::default(),
+                protocol_family: ProtocolFamily::DurableExecution,
             }
         }
     }
@@ -1958,6 +1979,26 @@ mod mocks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protocol_family_flexbuffers_roundtrip() {
+        let er = ServiceInvocation {
+            protocol_family: ProtocolFamily::ExplicitRecovery,
+            ..ServiceInvocation::mock()
+        };
+        let decoded: ServiceInvocation =
+            flexbuffers::from_slice(&flexbuffers::to_vec(&er).unwrap()).unwrap();
+        assert_eq!(decoded, er);
+
+        // A durable invocation is encoded without the field, as before the field existed,
+        // and decodes as durable.
+        let durable = ServiceInvocation::mock();
+        let bytes = flexbuffers::to_vec(&durable).unwrap();
+        let reader = flexbuffers::Reader::get_root(bytes.as_slice()).unwrap();
+        assert!(reader.as_map().index("protocol_family").is_err());
+        let decoded: ServiceInvocation = flexbuffers::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.protocol_family, ProtocolFamily::DurableExecution);
+    }
 
     mod restate_version {
         use super::*;

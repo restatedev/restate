@@ -22,7 +22,7 @@ use crate::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use crate::schema::Redaction;
-use crate::schema::deployment::DeploymentType;
+use crate::schema::deployment::{DeploymentType, ProtocolType};
 use crate::schema::invocation_target::{
     BadInputContentType, InputRules, InputValidationRule, OnMaxAttempts, OutputContentTypeRule,
     OutputRules, StatePreloadPolicy,
@@ -32,6 +32,7 @@ use crate::schema::registry::{DeploymentConnectionParameters, DiscoveryResponse}
 use crate::schema::subscriptions::{
     EventInvocationTargetTemplate, KafkaSource, Sink, Subscription,
 };
+use crate::service_protocol::ProtocolFamily;
 use crate::time::MillisSinceEpoch;
 use crate::{deployment, endpoint_manifest, identifiers};
 use bilrost::encoding::Collection;
@@ -159,6 +160,38 @@ pub(in crate::schema) enum ServiceError {
         size: usize,
         limit: usize,
     },
+    #[error(
+        "the handler '{0}' uses the explicit recovery protocol, which is disabled. Enable it with the experimental option 'experimental-enable-explicit-recovery-protocol'"
+    )]
+    #[code(unknown)]
+    ExplicitRecoveryDisabled(String),
+    #[error(
+        "the handler '{0}' uses the explicit recovery protocol, which is not supported on workflows"
+    )]
+    #[code(unknown)]
+    ExplicitRecoveryOnWorkflow(String),
+    #[error(
+        "the handler '{0}' uses the explicit recovery protocol, which requires a deployment discovered over HTTP/2 with protocol mode BIDI_STREAM"
+    )]
+    #[code(unknown)]
+    ExplicitRecoveryNeedsHttp2Bidi(String),
+    #[error(
+        "the handler '{handler}' uses the explicit recovery protocol, but the deployment declares {versions}. This server supports the explicit recovery protocol versions [{min}, {max}]",
+        min = crate::service_protocol::MIN_EXPLICIT_RECOVERY_PROTOCOL_VERSION,
+        max = crate::service_protocol::MAX_EXPLICIT_RECOVERY_PROTOCOL_VERSION
+    )]
+    #[code(unknown)]
+    ExplicitRecoveryVersions { handler: String, versions: String },
+    #[error(
+        "'{0}' sets enableLazyInvocationState or eagerInvocationStateKeysWhitelist, which only apply to handlers of the explicit recovery protocol"
+    )]
+    #[code(unknown)]
+    InvocationStateOnDurableHandler(String),
+    #[error(
+        "detected a new service revision for '{0}' changing the protocol family of the handler '{1}'. The protocol family of a handler cannot be changed across revisions, unless breaking changes are allowed"
+    )]
+    #[code(unknown)]
+    DifferentProtocolFamily(String, String),
 }
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
@@ -365,6 +398,7 @@ impl SchemaUpdater {
             overwrite,
         }: AddDeploymentRequest,
     ) -> Result<(AddDeploymentResult, DeploymentId), SchemaError> {
+        validate_explicit_recovery(&discovery_response)?;
         let mut add_deployment_result = AddDeploymentResult::Created;
 
         let proposed_services: HashMap<_, _> = discovery_response
@@ -475,6 +509,8 @@ impl SchemaUpdater {
                 metadata,
                 services: computed_services,
                 limits: None,
+                explicit_recovery_protocol_versions: discovery_response
+                    .explicit_recovery_protocol_versions,
             },
         );
 
@@ -538,6 +574,39 @@ impl SchemaUpdater {
                     service_name,
                     existing_service.ty,
                     service_type
+                );
+            }
+        }
+
+        let service_family = new_service_manifest
+            .protocol_family
+            .map(ProtocolFamily::from);
+        for new_handler in &new_service_manifest.handlers {
+            let Some(old_handler) = existing_service.handlers.get(new_handler.name.as_str()) else {
+                continue;
+            };
+            let new_family = new_handler
+                .protocol_family
+                .map(ProtocolFamily::from)
+                .or(service_family)
+                .unwrap_or_default();
+            let old_family = old_handler.protocol_family.unwrap_or_default();
+            if new_family != old_family {
+                if service_type_mismatch_behavior == ServiceTypeMismatchBehavior::Fail {
+                    return Err(SchemaError::Service(ServiceError::DifferentProtocolFamily(
+                        service_name.clone(),
+                        new_handler.name.to_string(),
+                    )));
+                }
+                warn!(
+                    restate.deployment.id = %deployment_id,
+                    restate.deployment.address = %deployment_address,
+                    "Going to change the protocol family of {}/{} due to an update: {:?} != {:?}. \
+                    In-flight invocations keep the family they were created with.",
+                    service_name,
+                    new_handler.name.as_str(),
+                    old_family,
+                    new_family
                 );
             }
         }
@@ -632,13 +701,20 @@ impl SchemaUpdater {
             retry_policy_on_max_attempts
         );
 
+        let service_protocol_family = service.protocol_family.map(ProtocolFamily::from);
         let handlers = service
             .handlers
             .into_iter()
             .map(|h| {
                 Ok((
                     h.name.to_string(),
-                    Handler::from_schema(service_name.as_ref(), service_type, public, h)?,
+                    Handler::from_schema(
+                        service_name.as_ref(),
+                        service_type,
+                        public,
+                        service_protocol_family,
+                        h,
+                    )?,
                 ))
             })
             .collect::<Result<HashMap<_, _>, SchemaError>>()?;
@@ -667,6 +743,10 @@ impl SchemaUpdater {
             .map(ByteString::from)
             .unique()
             .collect();
+        let invocation_state_preload_policy = invocation_state_preload_policy_discovery(
+            service.enable_lazy_invocation_state,
+            service.eager_invocation_state_keys_whitelist,
+        );
 
         Ok(ServiceRevision {
             name: service_name.to_string(),
@@ -686,6 +766,7 @@ impl SchemaUpdater {
                 service.enable_lazy_state,
                 eager_state_keys_whitelist,
             ),
+            invocation_state_preload_policy,
             retry_policy_initial_interval,
             retry_policy_exponentiation_factor,
             retry_policy_max_attempts,
@@ -705,6 +786,7 @@ impl SchemaUpdater {
             overwrite,
         }: UpdateDeploymentRequest,
     ) -> Result<(), SchemaError> {
+        validate_explicit_recovery(&discovery_response)?;
         // Look for an existing deployment with this ID
         let Some(existing_deployment) = self.schema.deployments.get(&deployment_id) else {
             return Err(SchemaError::NotFound(format!(
@@ -751,6 +833,9 @@ impl SchemaUpdater {
                     // discovery_response once it has it, for now
                     // we keep original value.
                     limits: existing_deployment.limits,
+                    explicit_recovery_protocol_versions: existing_deployment
+                        .explicit_recovery_protocol_versions
+                        .clone(),
                 },
             );
 
@@ -856,6 +941,8 @@ impl SchemaUpdater {
                     // discovery_response once it has it, for now
                     // we keep original value.
                     limits: existing_deployment.limits,
+                    explicit_recovery_protocol_versions: discovery_response
+                        .explicit_recovery_protocol_versions,
                 },
             );
 
@@ -1281,6 +1368,7 @@ impl Handler {
         service_name: &str,
         service_type: ServiceType,
         is_service_public: bool,
+        service_protocol_family: Option<ProtocolFamily>,
         handler: endpoint_manifest::Handler,
     ) -> Result<Self, ServiceError> {
         let ty = match (service_type, handler.ty) {
@@ -1370,6 +1458,17 @@ impl Handler {
             .unique()
             .collect();
 
+        // The handler's family wins over the service's. The durable family is stored as `None`.
+        let protocol_family = handler
+            .protocol_family
+            .map(ProtocolFamily::from)
+            .or(service_protocol_family)
+            .filter(ProtocolFamily::is_explicit_recovery);
+        let invocation_state_preload_policy = invocation_state_preload_policy_discovery(
+            handler.enable_lazy_invocation_state,
+            handler.eager_invocation_state_keys_whitelist,
+        );
+
         Ok(Self {
             name: handler.name.to_string(),
             target_ty: ty,
@@ -1407,6 +1506,8 @@ impl Handler {
             ),
             public: handler.ingress_private.map(bool::not),
             retry_policy_on_max_attempts,
+            protocol_family,
+            invocation_state_preload_policy,
         })
     }
 
@@ -1546,6 +1647,93 @@ impl jsonschema::Retrieve for UnsupportedExternalRefRetriever {
     ) -> Result<Value, Box<dyn Error + Send + Sync>> {
         Err(UnsupportedExternalRefRetrieveError(uri.to_string()).into())
     }
+}
+
+fn invocation_state_preload_policy_discovery(
+    enable_lazy_invocation_state: Option<bool>,
+    eager_invocation_state_keys: Vec<String>,
+) -> Option<StatePreloadPolicy> {
+    state_preload_policy_discovery(
+        enable_lazy_invocation_state,
+        eager_invocation_state_keys
+            .into_iter()
+            .filter(|k| !k.is_empty())
+            .map(ByteString::from)
+            .unique()
+            .collect(),
+    )
+}
+
+/// Validates the use of the explicit recovery protocol family in a discovered deployment.
+fn validate_explicit_recovery(discovery_response: &DiscoveryResponse) -> Result<(), ServiceError> {
+    let mut enabled = None;
+    for service in &discovery_response.services {
+        let service_family = service.protocol_family.map(ProtocolFamily::from);
+        let mut any_explicit_recovery = false;
+        for handler in &service.handlers {
+            let target = format!("{}/{}", service.name.as_str(), handler.name.as_str());
+            let family = handler
+                .protocol_family
+                .map(ProtocolFamily::from)
+                .or(service_family)
+                .unwrap_or_default();
+
+            if family.is_durable_execution() {
+                if handler.enable_lazy_invocation_state.is_some()
+                    || !handler.eager_invocation_state_keys_whitelist.is_empty()
+                {
+                    return Err(ServiceError::InvocationStateOnDurableHandler(target));
+                }
+                continue;
+            }
+            any_explicit_recovery = true;
+
+            if !*enabled.get_or_insert_with(|| {
+                Configuration::pinned()
+                    .common
+                    .experimental
+                    .is_explicit_recovery_protocol_enabled()
+            }) {
+                return Err(ServiceError::ExplicitRecoveryDisabled(target));
+            }
+            if service.ty == endpoint_manifest::ServiceType::Workflow {
+                return Err(ServiceError::ExplicitRecoveryOnWorkflow(target));
+            }
+            if !matches!(
+                discovery_response.deployment_type_parameters,
+                DeploymentConnectionParameters::Http {
+                    protocol_type: ProtocolType::BidiStream,
+                    http_version: http::Version::HTTP_2,
+                }
+            ) {
+                return Err(ServiceError::ExplicitRecoveryNeedsHttp2Bidi(target));
+            }
+            match &discovery_response.explicit_recovery_protocol_versions {
+                Some(range) if super::is_acceptable_explicit_recovery_range(range) => {}
+                Some(range) => {
+                    return Err(ServiceError::ExplicitRecoveryVersions {
+                        handler: target,
+                        versions: format!("the range [{}, {}]", range.start(), range.end()),
+                    });
+                }
+                None => {
+                    return Err(ServiceError::ExplicitRecoveryVersions {
+                        handler: target,
+                        versions: "no explicitRecoveryProtocol range".to_owned(),
+                    });
+                }
+            }
+        }
+        if !any_explicit_recovery
+            && (service.enable_lazy_invocation_state.is_some()
+                || !service.eager_invocation_state_keys_whitelist.is_empty())
+        {
+            return Err(ServiceError::InvocationStateOnDurableHandler(
+                service.name.to_string(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn state_preload_policy_discovery(

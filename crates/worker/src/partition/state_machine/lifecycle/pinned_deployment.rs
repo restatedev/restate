@@ -10,6 +10,7 @@
 
 use tracing::trace;
 
+use restate_storage_api::explicit_recovery_table::WriteExplicitRecoveryTable;
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
@@ -63,7 +64,8 @@ where
         + ReadVQueueTable
         + WriteVQueueTable
         + WriteLockTable
-        + WritePromiseTable,
+        + WritePromiseTable
+        + WriteExplicitRecoveryTable,
     P: ProcessorContext,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {

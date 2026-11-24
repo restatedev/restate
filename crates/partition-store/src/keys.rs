@@ -301,6 +301,9 @@ pub enum KeyKind {
     /// The partition's registry records: the registry, its walks and its
     /// migration jobs, one key each (see `crate::registry::records`).
     Registry,
+
+    /// Invocation state and signals of invocations on the explicit recovery protocol family.
+    ExplicitRecovery,
 }
 
 impl KeyKind {
@@ -375,6 +378,9 @@ impl KeyKind {
 
             // The registry, its walks and its migration jobs.
             KeyKind::Registry => b"rg",
+
+            // Invocation state and signals of the explicit recovery protocol family.
+            KeyKind::ExplicitRecovery => b"eR",
         }
     }
 
@@ -423,6 +429,7 @@ impl KeyKind {
             b"zR" => Some(KeyKind::Stats),
             b"zS" => Some(KeyKind::LegacyStats),
             b"rg" => Some(KeyKind::Registry),
+            b"eR" => Some(KeyKind::ExplicitRecovery),
             _ => None,
         }
     }

@@ -248,6 +248,20 @@ impl HasRecordKeys for InvokerEffectCommand {
     }
 }
 
+/// An effect of an attempt of an invocation on the explicit recovery protocol family.
+#[derive(
+    Clone, Serialize, Deserialize, derive_more::Deref, derive_more::Into, derive_more::From,
+)]
+pub struct ExplicitRecoveryEffectCommand(restate_worker_api::invoker::explicit_recovery::ErEffect);
+
+flexbuffers_storage_encode_decode!(ExplicitRecoveryEffectCommand);
+
+impl HasRecordKeys for ExplicitRecoveryEffectCommand {
+    fn record_keys(&self) -> restate_types::logs::Keys {
+        Keys::Single(self.invocation_id.partition_key())
+    }
+}
+
 #[derive(
     Clone,
     Eq,
@@ -454,6 +468,11 @@ command! {
 command! {
     @kind=CommandKind::Invoke,
     @command=InvokeCommand
+}
+
+command! {
+    @kind=CommandKind::ExplicitRecoveryEffect,
+    @command=ExplicitRecoveryEffectCommand
 }
 
 command! {

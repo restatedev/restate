@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroU32;
+
 use crate::resources::ReservedResources;
 use restate_errors::NotRunningError;
 use restate_types::LimitKey;
@@ -28,6 +30,8 @@ pub trait InvokerHandle {
         invocation_target: InvocationTarget,
         limit_key: LimitKey<ReString>,
         idempotency_key: Option<ReString>,
+        // `Some` for an invocation on the explicit recovery family: the number of the attempt.
+        explicit_recovery_attempt: Option<NonZeroU32>,
     ) -> Result<(), NotRunningError>;
 
     fn notify_notification(
@@ -46,6 +50,14 @@ pub trait InvokerHandle {
     ) -> Result<(), NotRunningError>;
 
     fn abort_all(&mut self) -> Result<(), NotRunningError>;
+
+    /// Forwards to the running explicit recovery attempt of `invocation_id`: an applied ack, a
+    /// result, a signal or the cancel signal. Dropped when no attempt with that number runs.
+    fn notify_explicit_recovery(
+        &mut self,
+        invocation_id: InvocationId,
+        message: crate::invoker::explicit_recovery::ErToInvoker,
+    ) -> Result<(), NotRunningError>;
 
     /// Aborts the running task for `invocation_id`.
     ///

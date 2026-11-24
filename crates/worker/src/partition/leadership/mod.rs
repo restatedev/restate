@@ -1150,6 +1150,7 @@ mod tests {
     use restate_wal_protocol::invocation::PauseInvocationCommand;
     use restate_wal_protocol::v2::{CommandKind, Envelope, Raw, commands};
     use restate_worker_api::invoker::capacity::InvokerCapacity;
+    use restate_worker_api::invoker::explicit_recovery::{ErEffect, ErEffectKind, FencedErEffect};
     use restate_worker_api::invoker::{Effect, EffectKind, FencedEffect};
 
     use crate::partition::leadership::{LeadershipState, RpcReciprocal, State};
@@ -1537,11 +1538,33 @@ mod tests {
             dep_attempt2,
         ))?;
 
+        // The explicit recovery family goes through the same fence.
+        let dep_er_stale = DeploymentId::from_parts(1, 5);
+        let dep_er = DeploymentId::from_parts(1, 6);
+        let er_effect = |fencing_token, deployment_id| {
+            InvokerEffect::ExplicitRecovery(FencedErEffect {
+                fencing_token,
+                effect: Box::new(ErEffect {
+                    invocation_id,
+                    attempt: 1,
+                    seq: 1,
+                    kind: ErEffectKind::AttemptStarted {
+                        deployment_id,
+                        protocol_version: 1,
+                    },
+                }),
+            })
+        };
+        leader_state.handle_invoker_effect(er_effect(t1, dep_er_stale))?;
+        leader_state.handle_invoker_effect(er_effect(t2, dep_er))?;
+
         // The committed log after AnnounceLeader must be exactly: InvokerEffect(attempt1),
-        // PauseInvocation, InvokerEffect(attempt2) -- the two stale stragglers were fenced.
+        // PauseInvocation, InvokerEffect(attempt2), ExplicitRecoveryEffect -- the three stale
+        // stragglers were fenced.
         let mut invoker_effect_deployments = Vec::new();
+        let mut er_effect_deployments = Vec::new();
         let mut saw_pause = false;
-        for _ in 0..3 {
+        for _ in 0..4 {
             let record = reader.next().await.unwrap()?;
             let envelope = record.try_decode::<Envelope<Raw>>().unwrap()?;
             match envelope.kind() {
@@ -1556,10 +1579,22 @@ mod tests {
                     invoker_effect_deployments.push(pinned.deployment_id);
                 }
                 CommandKind::PauseInvocation => saw_pause = true,
+                CommandKind::ExplicitRecoveryEffect => {
+                    let effect = envelope
+                        .into_typed::<commands::ExplicitRecoveryEffectCommand>()
+                        .into_inner()?;
+                    let ErEffectKind::AttemptStarted { deployment_id, .. } =
+                        ErEffect::from(effect).kind
+                    else {
+                        panic!("expected only AttemptStarted effect kinds")
+                    };
+                    er_effect_deployments.push(deployment_id);
+                }
                 other => panic!("unexpected command appended: {other:?}"),
             }
         }
         assert!(saw_pause, "the pause command should have been appended");
+        assert_eq!(er_effect_deployments, vec![dep_er]);
         assert_eq!(
             invoker_effect_deployments,
             vec![dep_attempt1, dep_attempt2],
@@ -1578,7 +1613,7 @@ mod tests {
         fencing_token: FencingToken,
         deployment_id: DeploymentId,
     ) -> InvokerEffect {
-        FencedEffect {
+        InvokerEffect::Durable(FencedEffect {
             fencing_token,
             effect: Box::new(Effect {
                 invocation_id,
@@ -1587,6 +1622,6 @@ mod tests {
                     ServiceProtocolVersion::V4,
                 )),
             }),
-        }
+        })
     }
 }

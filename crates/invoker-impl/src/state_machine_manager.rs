@@ -14,14 +14,14 @@ use tracing::trace;
 use restate_platform::hash::HashMap;
 use restate_types::identifiers::InvocationId;
 use restate_types::sharding::KeyRange;
-use restate_worker_api::invoker::{FencedEffect, invocation_reader::InvocationReader};
+use restate_worker_api::invoker::{InvokerProposal, invocation_reader::InvocationReader};
 
 use crate::InvocationStateMachine;
 
 /// Tree of [InvocationStateMachine] held by the [Service].
 #[derive(Debug)]
 pub(super) struct InvocationStateMachineManager<SR> {
-    output_tx: mpsc::Sender<FencedEffect>,
+    output_tx: mpsc::Sender<InvokerProposal>,
     invocation_state_machines: HashMap<InvocationId, InvocationStateMachine>,
     _partition_key_range: KeyRange,
     storage_reader: SR,
@@ -35,7 +35,7 @@ where
     pub(super) fn new(
         partition_key_range: KeyRange,
         storage_reader: SR,
-        sender: mpsc::Sender<FencedEffect>,
+        sender: mpsc::Sender<InvokerProposal>,
     ) -> Self {
         Self {
             output_tx: sender,
@@ -51,7 +51,7 @@ where
     }
 
     #[inline]
-    pub(super) fn partition_sender(&self) -> &mpsc::Sender<FencedEffect> {
+    pub(super) fn partition_sender(&self) -> &mpsc::Sender<InvokerProposal> {
         &self.output_tx
     }
 
@@ -59,7 +59,7 @@ where
     pub(super) fn resolve_invocation(
         &mut self,
         invocation_id: &InvocationId,
-    ) -> Option<(&mpsc::Sender<FencedEffect>, &mut InvocationStateMachine)> {
+    ) -> Option<(&mpsc::Sender<InvokerProposal>, &mut InvocationStateMachine)> {
         self.invocation_state_machines
             .get_mut(invocation_id)
             .map(|ism| (&self.output_tx, ism))
@@ -87,7 +87,7 @@ where
     pub(super) fn handle_for_invocation<R>(
         &mut self,
         invocation_id: &InvocationId,
-        f: impl FnOnce(&mpsc::Sender<FencedEffect>, &mut InvocationStateMachine) -> R,
+        f: impl FnOnce(&mpsc::Sender<InvokerProposal>, &mut InvocationStateMachine) -> R,
     ) -> Option<R> {
         if let Some((tx, ism)) = self.resolve_invocation(invocation_id) {
             Some(f(tx, ism))
@@ -101,7 +101,7 @@ where
     pub(super) fn remove_invocation(
         &mut self,
         invocation_id: &InvocationId,
-    ) -> Option<(&mpsc::Sender<FencedEffect>, &SR, InvocationStateMachine)> {
+    ) -> Option<(&mpsc::Sender<InvokerProposal>, &SR, InvocationStateMachine)> {
         self.invocation_state_machines
             .remove(invocation_id)
             .map(|ism| (&self.output_tx, &self.storage_reader, ism))

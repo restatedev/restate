@@ -29,6 +29,7 @@ use crate::journal_v2::{
     CompletionId, Entry, EntryMetadata, EntryType, Failure, GetStateResult, SignalId, SignalResult,
 };
 use crate::limit_key::LimitKey;
+use crate::service_protocol::ProtocolFamily;
 use crate::time::MillisSinceEpoch;
 
 #[enum_dispatch]
@@ -279,6 +280,9 @@ pub struct CallRequest {
     /// Since v1.7.0
     #[serde(default, skip_serializing_if = "LimitKey::is_none")]
     pub limit_key: LimitKey<ReString>,
+    /// Protocol family of the target handler. Since v1.8.2
+    #[serde(default, skip_serializing_if = "ProtocolFamily::is_durable_execution")]
+    pub protocol_family: ProtocolFamily,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -431,6 +435,7 @@ mod test_util {
                 completion_retention_duration: Default::default(),
                 journal_retention_duration: Default::default(),
                 limit_key: Default::default(),
+                protocol_family: Default::default(),
             }
         }
     }

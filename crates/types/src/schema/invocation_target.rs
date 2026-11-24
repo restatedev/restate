@@ -25,6 +25,7 @@ use crate::invocation::{
     InvocationRetention, InvocationTargetType, ServiceType, WorkflowHandlerType,
 };
 use crate::retries::RetryIter;
+use crate::service_protocol::ProtocolFamily;
 
 pub const DEFAULT_IDEMPOTENCY_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
 pub const DEFAULT_WORKFLOW_COMPLETION_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
@@ -101,6 +102,9 @@ pub struct InvocationTargetMetadata {
     pub output_rules: Arc<OutputRules>,
 
     pub deployment_status: DeploymentStatus,
+
+    /// Protocol family of the handler.
+    pub protocol_family: ProtocolFamily,
 }
 
 impl InvocationTargetMetadata {
@@ -132,6 +136,10 @@ pub struct InvocationAttemptOptions {
     pub inactivity_timeout: Option<Duration>,
     /// State preload policy for this invocation.
     pub state_preload_policy: StatePreloadPolicy,
+    /// Protocol family of the handler.
+    pub protocol_family: ProtocolFamily,
+    /// Preload policy of invocation state (explicit recovery family only).
+    pub invocation_state_preload_policy: StatePreloadPolicy,
 }
 
 // --- Input rules
@@ -624,10 +632,12 @@ pub mod test_util {
         ) -> Option<InvocationAttemptOptions> {
             self.0.get(service_name.as_ref()).and_then(|c| {
                 c.1.get(handler_name.as_ref())
-                    .map(|_| InvocationAttemptOptions {
+                    .map(|meta| InvocationAttemptOptions {
                         abort_timeout: None,
                         inactivity_timeout: None,
                         state_preload_policy: StatePreloadPolicy::All,
+                        protocol_family: meta.protocol_family,
+                        invocation_state_preload_policy: StatePreloadPolicy::All,
                     })
             })
         }
@@ -657,6 +667,7 @@ pub mod test_util {
                 input_rules: Default::default(),
                 output_rules: Default::default(),
                 deployment_status: DeploymentStatus::Enabled,
+                protocol_family: ProtocolFamily::DurableExecution,
             }
         }
     }

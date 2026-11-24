@@ -870,6 +870,7 @@ where
         invocation.with_retention(invocation_retention);
         invocation.execution_time = execution_time;
         invocation.limit_key = limit_key;
+        invocation.protocol_family = target_meta.protocol_family;
 
         let dedup = match state.dedup_mode {
             DedupMode::None => Dedup::None,

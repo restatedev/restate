@@ -11,6 +11,7 @@
 use super::*;
 
 mod delayed_send;
+mod explicit_recovery;
 pub mod fixtures;
 mod idempotency;
 mod kill_cancel;

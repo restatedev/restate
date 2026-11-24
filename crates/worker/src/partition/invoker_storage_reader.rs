@@ -13,7 +13,7 @@ use std::pin::Pin;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::future::Either;
-use futures::{Stream, StreamExt};
+use futures::{Stream, StreamExt, TryStreamExt};
 
 use restate_memory::{
     ClaimedMemoryPool, LocalMemoryLease, LocalMemoryPool, NonZeroByteCount, OutOfMemory,
@@ -21,11 +21,21 @@ use restate_memory::{
 };
 use restate_partition_store::{PartitionStore, PartitionStoreSnapshot};
 use restate_rocksdb::SinglePoolExecutor;
+use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
+use restate_storage_api::explicit_recovery_table::ReadExplicitRecoveryTable;
 use restate_storage_api::invocation_status_table::InvocationStatus;
-use restate_storage_api::{BudgetedReadError, StorageError, journal_table as journal_table_v1};
+use restate_storage_api::state_table::ReadStateTable;
+use restate_storage_api::{
+    BudgetedReadError, StorageError, journal_table as journal_table_v1, journal_table_v2,
+};
 use restate_types::identifiers::{InvocationId, ServiceId};
+use restate_types::invocation::Header;
+use restate_types::journal_v2::{InputCommand, SignalResult};
 use restate_types::schema::invocation_target::StatePreloadPolicy;
 use restate_worker_api::invoker::JournalMetadata;
+use restate_worker_api::invoker::explicit_recovery::{
+    ErAttemptMetadata, ExplicitRecoveryReader, ExplicitRecoveryReaderTransaction,
+};
 use restate_worker_api::invoker::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
     JournalKind,
@@ -284,5 +294,339 @@ impl InvocationReaderTransaction for InvokerStorageReaderTransaction<'_> {
         } else {
             EagerState::new_complete(stream)
         })
+    }
+}
+
+impl ExplicitRecoveryReaderTransaction for InvokerStorageReaderTransaction<'_> {
+    type Error = InvokerStorageReaderError;
+
+    async fn read_er_metadata(
+        &mut self,
+        invocation_id: &InvocationId,
+    ) -> Result<Option<ErAttemptMetadata>, Self::Error> {
+        let status = self
+            .snapshot
+            .get_invocation_status_cached_or_offload(invocation_id, self.executor)
+            .await?;
+        let InvocationStatus::Invoked(metadata) = status else {
+            return Ok(None);
+        };
+        Ok(metadata.explicit_recovery.map(|status| ErAttemptMetadata {
+            status,
+            span_context: metadata.journal_metadata.span_context,
+            journal_length: metadata.journal_metadata.length,
+        }))
+    }
+
+    async fn read_input(
+        &mut self,
+        invocation_id: &InvocationId,
+    ) -> Result<Option<(Vec<Header>, Bytes)>, Self::Error> {
+        let Some(entry) = journal_table_v2::ReadJournalTable::get_journal_entry(
+            &mut self.snapshot,
+            *invocation_id,
+            0,
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
+        let entry =
+            journal_table_v2::ReadJournalTable::hydrate_journal_entry(&self.snapshot, entry)?;
+        let input = entry
+            .decode::<ServiceProtocolV4Codec, InputCommand>()
+            .map_err(|e| StorageError::Conversion(e.into()))?;
+        Ok(Some((input.headers, input.payload)))
+    }
+
+    async fn read_object_state_preload(
+        &mut self,
+        service_id: &ServiceId,
+        policy: &StatePreloadPolicy,
+        size_limit: usize,
+    ) -> Result<(Vec<(Bytes, Bytes)>, bool), Self::Error> {
+        let entries = match policy {
+            StatePreloadPolicy::All => {
+                ReadStateTable::get_all_user_states_for_service(&self.snapshot, service_id)?
+                    .try_collect()
+                    .await?
+            }
+            StatePreloadPolicy::Partial(keys) => {
+                let mut entries = Vec::with_capacity(keys.len());
+                for key in keys {
+                    let key = key.as_bytes().clone();
+                    if let Some(value) =
+                        ReadStateTable::get_user_state(&mut self.snapshot, service_id, &key).await?
+                    {
+                        entries.push((key, value));
+                    }
+                }
+                entries
+            }
+        };
+        Ok(preload_within(entries, policy, size_limit))
+    }
+
+    async fn read_invocation_state_preload(
+        &mut self,
+        invocation_id: &InvocationId,
+        policy: &StatePreloadPolicy,
+        size_limit: usize,
+    ) -> Result<(Vec<(Bytes, Bytes)>, bool), Self::Error> {
+        let entries = match policy {
+            StatePreloadPolicy::All => {
+                ReadExplicitRecoveryTable::get_all_invocation_state(
+                    &mut self.snapshot,
+                    invocation_id,
+                )
+                .await?
+            }
+            StatePreloadPolicy::Partial(keys) => {
+                let mut entries = Vec::with_capacity(keys.len());
+                for key in keys {
+                    let key = key.as_bytes().clone();
+                    if let Some(value) = ReadExplicitRecoveryTable::get_invocation_state(
+                        &mut self.snapshot,
+                        invocation_id,
+                        &key,
+                    )
+                    .await?
+                    {
+                        entries.push((key, value));
+                    }
+                }
+                entries
+            }
+        };
+        Ok(preload_within(entries, policy, size_limit))
+    }
+}
+
+/// The entries, in order, as long as they fit `size_limit` bytes. Complete only when the policy
+/// preloads everything and nothing was left out.
+fn preload_within(
+    entries: Vec<(Bytes, Bytes)>,
+    policy: &StatePreloadPolicy,
+    size_limit: usize,
+) -> (Vec<(Bytes, Bytes)>, bool) {
+    let mut size = 0usize;
+    let total = entries.len();
+    let kept: Vec<_> = entries
+        .into_iter()
+        .take_while(|(k, v)| {
+            size += k.len() + v.len();
+            size <= size_limit
+        })
+        .collect();
+    let partial = kept.len() < total || !matches!(policy, StatePreloadPolicy::All);
+    (kept, partial)
+}
+
+impl ExplicitRecoveryReader for InvokerStorageReader {
+    type ErTransaction<'a> = InvokerStorageReaderTransaction<'a>;
+
+    fn er_transaction(&mut self) -> Result<Self::ErTransaction<'_>, Self::Error> {
+        self.transaction()
+    }
+
+    async fn read_object_state(
+        &mut self,
+        service_id: &ServiceId,
+        key: &Bytes,
+    ) -> Result<Option<Bytes>, Self::Error> {
+        Ok(ReadStateTable::get_user_state(&mut self.storage, service_id, key).await?)
+    }
+
+    async fn read_object_state_keys(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> Result<Vec<Bytes>, Self::Error> {
+        Ok(
+            ReadStateTable::get_all_user_states_for_service(&self.storage, service_id)?
+                .map(|entry| entry.map(|(key, _)| key))
+                .try_collect()
+                .await?,
+        )
+    }
+
+    async fn read_invocation_state(
+        &mut self,
+        invocation_id: &InvocationId,
+        key: &Bytes,
+    ) -> Result<Option<Bytes>, Self::Error> {
+        Ok(
+            ReadExplicitRecoveryTable::get_invocation_state(&mut self.storage, invocation_id, key)
+                .await?,
+        )
+    }
+
+    async fn read_invocation_state_keys(
+        &mut self,
+        invocation_id: &InvocationId,
+    ) -> Result<Vec<Bytes>, Self::Error> {
+        Ok(
+            ReadExplicitRecoveryTable::get_all_invocation_state(&mut self.storage, invocation_id)
+                .await?
+                .into_iter()
+                .map(|(key, _)| key)
+                .collect(),
+        )
+    }
+
+    async fn read_signal(
+        &mut self,
+        invocation_id: &InvocationId,
+        name: &str,
+        index: u32,
+    ) -> Result<Option<SignalResult>, Self::Error> {
+        Ok(
+            ReadExplicitRecoveryTable::get_signal(&mut self.storage, invocation_id, name, index)
+                .await?,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+    use bytestring::ByteString;
+
+    use super::InvokerStorageReader;
+    use restate_partition_store::PartitionStoreManager;
+    use restate_rocksdb::RocksDbManager;
+    use restate_storage_api::Transaction;
+    use restate_storage_api::explicit_recovery_table::WriteExplicitRecoveryTable;
+    use restate_storage_api::invocation_status_table::{
+        ExplicitRecoveryStatus, InFlightInvocationMetadata, InvocationStatus,
+        WriteInvocationStatusTable,
+    };
+    use restate_storage_api::state_table::WriteStateTable;
+    use restate_types::identifiers::{InvocationId, PartitionId};
+    use restate_types::invocation::InvocationTarget;
+    use restate_types::journal_v2::SignalResult;
+    use restate_types::partitions::Partition;
+    use restate_types::schema::invocation_target::StatePreloadPolicy;
+    use restate_types::sharding::KeyRange;
+    use restate_worker_api::invoker::explicit_recovery::{
+        ExplicitRecoveryReader, ExplicitRecoveryReaderTransaction,
+    };
+
+    #[restate_core::test]
+    async fn explicit_recovery_reads() {
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        let mut store = manager
+            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+            .await
+            .unwrap();
+
+        let target = InvocationTarget::mock_virtual_object();
+        let service_id = target.as_keyed_service_id().unwrap();
+        let invocation_id = InvocationId::mock_generate(&target);
+        let er = ExplicitRecoveryStatus {
+            attempt: 2,
+            ..ExplicitRecoveryStatus::new()
+        };
+        let (a, b) = (Bytes::from_static(b"a"), Bytes::from_static(b"b"));
+        let mut txn = store.transaction();
+        txn.put_invocation_status(
+            &invocation_id,
+            &InvocationStatus::Invoked(InFlightInvocationMetadata {
+                invocation_target: target,
+                explicit_recovery: Some(er.clone()),
+                ..InFlightInvocationMetadata::mock()
+            }),
+        )
+        .unwrap();
+        txn.put_user_state(&service_id, &a, Bytes::from_static(b"object"))
+            .unwrap();
+        txn.put_invocation_state(&invocation_id, &a, &Bytes::from_static(b"1"))
+            .unwrap();
+        txn.put_invocation_state(&invocation_id, &b, &Bytes::from_static(b"2"))
+            .unwrap();
+        txn.put_signal(&invocation_id, "approval", 0, &SignalResult::Void)
+            .unwrap();
+        txn.commit().await.unwrap();
+
+        let executor = store.partition_db().rocksdb().executor().low_pri().clone();
+        let mut reader = InvokerStorageReader::new(store, executor);
+
+        // In the snapshot an attempt starts from.
+        {
+            let mut txn = reader.er_transaction().unwrap();
+            let metadata = txn.read_er_metadata(&invocation_id).await.unwrap().unwrap();
+            assert_eq!(metadata.status, er);
+            assert_eq!(
+                txn.read_invocation_state_preload(
+                    &invocation_id,
+                    &StatePreloadPolicy::All,
+                    usize::MAX
+                )
+                .await
+                .unwrap(),
+                (
+                    vec![
+                        (a.clone(), Bytes::from_static(b"1")),
+                        (b.clone(), Bytes::from_static(b"2"))
+                    ],
+                    false
+                )
+            );
+            // Cut by the size limit: partial.
+            assert_eq!(
+                txn.read_invocation_state_preload(&invocation_id, &StatePreloadPolicy::All, 2)
+                    .await
+                    .unwrap(),
+                (vec![(a.clone(), Bytes::from_static(b"1"))], true)
+            );
+            // A whitelist: only the keys with a value, and partial.
+            let whitelist = StatePreloadPolicy::Partial(vec![
+                ByteString::from_static("b"),
+                ByteString::from_static("zzz"),
+            ]);
+            assert_eq!(
+                txn.read_invocation_state_preload(&invocation_id, &whitelist, usize::MAX)
+                    .await
+                    .unwrap(),
+                (vec![(b.clone(), Bytes::from_static(b"2"))], true)
+            );
+            assert_eq!(
+                txn.read_object_state_preload(&service_id, &StatePreloadPolicy::All, usize::MAX)
+                    .await
+                    .unwrap(),
+                (vec![(a.clone(), Bytes::from_static(b"object"))], false)
+            );
+        }
+
+        // While the attempt runs: the latest committed state.
+        assert_eq!(
+            reader.read_object_state(&service_id, &a).await.unwrap(),
+            Some(Bytes::from_static(b"object"))
+        );
+        assert_eq!(
+            reader.read_object_state_keys(&service_id).await.unwrap(),
+            vec![a.clone()]
+        );
+        assert_eq!(
+            reader
+                .read_invocation_state_keys(&invocation_id)
+                .await
+                .unwrap(),
+            vec![a, b]
+        );
+        assert_eq!(
+            reader
+                .read_signal(&invocation_id, "approval", 0)
+                .await
+                .unwrap(),
+            Some(SignalResult::Void)
+        );
+        assert_eq!(
+            reader
+                .read_signal(&invocation_id, "approval", 1)
+                .await
+                .unwrap(),
+            None
+        );
     }
 }

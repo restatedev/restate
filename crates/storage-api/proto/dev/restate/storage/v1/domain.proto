@@ -272,6 +272,24 @@ message InvocationStatusV2 {
   // Sequence number of the record that created this invocation. Combined with
   // the invocation id, it forms the canonical id of this invocation.
   optional uint64 creation_seq = 36;
+
+  // Present iff the invocation is on the explicit recovery protocol family.
+  message ExplicitRecoveryStatus {
+    // Pinned at the first attempt. No protocol version: it is negotiated per attempt.
+    optional string pinned_deployment_id = 1;
+    // Number of the current (or last) attempt. 0 before the first Run.
+    uint32 attempt = 2;
+    // No result id at or above it was ever applied. At least 1.
+    uint32 next_result_id = 3;
+    bool cancelled = 4;
+    // Notifications forwarded to the invoker in the current attempt (D34).
+    uint32 forwarded_notifications = 5;
+    // Idle restarts in a row (D63).
+    uint32 idle_restart_streak = 6;
+    // An action of the current attempt was applied (D63).
+    bool action_applied = 7;
+  }
+  ExplicitRecoveryStatus explicit_recovery = 37;
 }
 
 
@@ -418,6 +436,22 @@ message ServiceInvocation {
   // "level1" or "level1/level2" which requires parsing on read. Check whether a dedicated
   // Protobuf message would be faster to serialize/deserialize.
   string limit_key = 15;
+  ProtocolFamily protocol_family = 16;
+}
+
+// A signal received by an invocation on the explicit recovery protocol family.
+message ExplicitRecoverySignal {
+  oneof result {
+    bool void = 1;
+    bytes value = 2;
+    EntryResult.Failure failure = 3;
+  }
+}
+
+// Protocol family of an invocation, fixed at creation.
+enum ProtocolFamily {
+  DURABLE_EXECUTION = 0;
+  EXPLICIT_RECOVERY = 1;
 }
 
 message StateMutation {
@@ -588,6 +622,7 @@ message Entry {
     SpanContext span_context = 3;
     Duration completion_retention_duration = 4;
     Duration journal_retention_duration = 5;
+    ProtocolFamily protocol_family = 6;
   }
 
   enum EntryType {

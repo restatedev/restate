@@ -330,6 +330,45 @@ pub mod v1 {
             }
         }
 
+        impl TryFrom<super::ExplicitRecoverySignal> for crate::explicit_recovery_table::StoredSignal {
+            type Error = ConversionError;
+
+            fn try_from(value: super::ExplicitRecoverySignal) -> Result<Self, ConversionError> {
+                use super::explicit_recovery_signal::Result as PbResult;
+                Ok(Self(match value.result {
+                    None | Some(PbResult::Void(_)) => journal_v2::SignalResult::Void,
+                    Some(PbResult::Value(value)) => journal_v2::SignalResult::Success(value),
+                    Some(PbResult::Failure(failure)) => {
+                        journal_v2::SignalResult::Failure(journal_v2::Failure {
+                            code: failure.error_code.into(),
+                            message: ByteString::try_from(failure.message)
+                                .map_err(ConversionError::invalid_data)?,
+                            metadata: failure.metadata.into_iter().map(Into::into).collect(),
+                        })
+                    }
+                }))
+            }
+        }
+
+        impl From<crate::explicit_recovery_table::StoredSignal> for super::ExplicitRecoverySignal {
+            fn from(value: crate::explicit_recovery_table::StoredSignal) -> Self {
+                use super::explicit_recovery_signal::Result as PbResult;
+                Self {
+                    result: Some(match value.0 {
+                        journal_v2::SignalResult::Void => PbResult::Void(true),
+                        journal_v2::SignalResult::Success(value) => PbResult::Value(value),
+                        journal_v2::SignalResult::Failure(failure) => {
+                            PbResult::Failure(super::entry_result::Failure {
+                                error_code: failure.code.into(),
+                                message: failure.message.into_bytes(),
+                                metadata: failure.metadata.into_iter().map(Into::into).collect(),
+                            })
+                        }
+                    }),
+                }
+            }
+        }
+
         impl From<FailureMetadata> for journal_v2::FailureMetadata {
             fn from(value: FailureMetadata) -> Self {
                 Self {
@@ -440,11 +479,15 @@ pub mod v1 {
                     combinator_type,
                     result,
                     hotfix_apply_cancellation_after_deployment_is_pinned,
+                    explicit_recovery,
                 } = value;
 
                 let invocation_target = expect_or_fail!(invocation_target)?.try_into()?;
                 let vqueue_id = vqueue_id.map(|buf| VQueueId::from_raw_bytes(&mut buf.as_ref()));
                 let creation_seq = creation_seq.map(Seq::new);
+                let explicit_recovery = explicit_recovery
+                    .map(crate::invocation_status_table::ExplicitRecoveryStatus::try_from)
+                    .transpose()?;
 
                 let limit_key = LimitKey::from_str(&limit_key).expect("valid limit key format");
                 let created_using_restate_version =
@@ -520,6 +563,7 @@ pub mod v1 {
                                         idempotency_key: idempotency_key.map(ByteString::from),
                                         random_seed,
                                         creation_seq,
+                                        explicit_recovery,
                                     },
                             },
                         ))
@@ -571,6 +615,7 @@ pub mod v1 {
                                         idempotency_key: idempotency_key.map(ByteString::from),
                                         random_seed,
                                         creation_seq,
+                                        explicit_recovery,
                                     },
                             },
                         ))
@@ -605,6 +650,7 @@ pub mod v1 {
                                 hotfix_apply_cancellation_after_deployment_is_pinned,
                                 random_seed,
                                 creation_seq,
+                                explicit_recovery,
                             },
                         ))
                     }
@@ -615,6 +661,20 @@ pub mod v1 {
                             waiting_named_signals: waiting_for_signal_names,
                             combinator_type,
                             nested_futures,
+                        };
+                        // A suspended explicit recovery invocation waits on nothing in
+                        // particular: anything that arrives wakes it, so its future is empty.
+                        let awaiting_on = if explicit_recovery.is_some()
+                            && awaiting_on.waiting_completions.is_empty()
+                            && awaiting_on.waiting_signals.is_empty()
+                            && awaiting_on.waiting_named_signals.is_empty()
+                            && awaiting_on.nested_futures.is_empty()
+                        {
+                            UnresolvedFuture::unknown_from_iter(std::iter::empty::<
+                                restate_types::journal_v2::NotificationId,
+                            >())
+                        } else {
+                            awaiting_on.try_into()?
                         };
 
                         Ok(
@@ -651,8 +711,9 @@ pub mod v1 {
                                         hotfix_apply_cancellation_after_deployment_is_pinned,
                                         random_seed,
                                         creation_seq,
+                                        explicit_recovery,
                                     },
-                                awaiting_on: awaiting_on.try_into()?,
+                                awaiting_on,
                             },
                         )
                     }
@@ -686,6 +747,7 @@ pub mod v1 {
                                 hotfix_apply_cancellation_after_deployment_is_pinned,
                                 random_seed,
                                 creation_seq,
+                                explicit_recovery,
                             },
                         ))
                     }
@@ -718,6 +780,7 @@ pub mod v1 {
                                 )?,
                                 random_seed,
                                 creation_seq,
+                                explicit_recovery,
                             },
                         ))
                     }
@@ -748,6 +811,7 @@ pub mod v1 {
                                     idempotency_key,
                                     random_seed,
                                     creation_seq,
+                                    explicit_recovery,
                                     input:
                                         PreFlightInvocationArgument::Input(PreFlightInvocationInput {
                                             argument,
@@ -802,6 +866,7 @@ pub mod v1 {
                         result: None,
                         random_seed,
                         creation_seq: creation_seq.map(Seq::as_u64),
+                        explicit_recovery: explicit_recovery.map(Into::into),
                     },
                     crate::invocation_status_table::InvocationStatus::Scheduled(
                         crate::invocation_status_table::ScheduledInvocation {
@@ -827,6 +892,7 @@ pub mod v1 {
                                         ),
                                     random_seed,
                                     creation_seq,
+                                    explicit_recovery,
                                 },
                         },
                     ) => {
@@ -888,6 +954,7 @@ pub mod v1 {
                             result: None,
                             random_seed,
                             creation_seq: creation_seq.map(Seq::as_u64),
+                            explicit_recovery: explicit_recovery.map(Into::into),
                         }
                     }
                     crate::invocation_status_table::InvocationStatus::Inboxed(
@@ -907,6 +974,7 @@ pub mod v1 {
                                     idempotency_key,
                                     random_seed,
                                     creation_seq,
+                                    explicit_recovery,
                                     input:
                                         PreFlightInvocationArgument::Input(PreFlightInvocationInput {
                                             argument,
@@ -962,6 +1030,7 @@ pub mod v1 {
                         result: None,
                         random_seed,
                         creation_seq: creation_seq.map(Seq::as_u64),
+                        explicit_recovery: explicit_recovery.map(Into::into),
                     },
                     crate::invocation_status_table::InvocationStatus::Inboxed(
                         crate::invocation_status_table::InboxedInvocation {
@@ -987,6 +1056,7 @@ pub mod v1 {
                                         ),
                                     random_seed,
                                     creation_seq,
+                                    explicit_recovery,
                                 },
                             inbox_sequence_number,
                         },
@@ -1048,6 +1118,7 @@ pub mod v1 {
                             result: None,
                             random_seed,
                             creation_seq: creation_seq.map(Seq::as_u64),
+                            explicit_recovery: explicit_recovery.map(Into::into),
                         }
                     }
                     crate::invocation_status_table::InvocationStatus::Invoked(
@@ -1068,6 +1139,7 @@ pub mod v1 {
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             random_seed,
                             creation_seq,
+                            explicit_recovery,
                         },
                     ) => {
                         let (deployment_id, service_protocol_version) = match pinned_deployment {
@@ -1128,6 +1200,7 @@ pub mod v1 {
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             random_seed,
                             creation_seq: creation_seq.map(Seq::as_u64),
+                            explicit_recovery: explicit_recovery.map(Into::into),
                         }
                     }
                     crate::invocation_status_table::InvocationStatus::Suspended {
@@ -1149,6 +1222,7 @@ pub mod v1 {
                                 hotfix_apply_cancellation_after_deployment_is_pinned,
                                 random_seed,
                                 creation_seq,
+                                explicit_recovery,
                             },
                         awaiting_on,
                     } => {
@@ -1231,6 +1305,7 @@ pub mod v1 {
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             random_seed,
                             creation_seq: creation_seq.map(Seq::as_u64),
+                            explicit_recovery: explicit_recovery.map(Into::into),
                         }
                     }
                     crate::invocation_status_table::InvocationStatus::Paused(
@@ -1251,6 +1326,7 @@ pub mod v1 {
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             random_seed,
                             creation_seq,
+                            explicit_recovery,
                         },
                     ) => {
                         let (deployment_id, service_protocol_version) = match pinned_deployment {
@@ -1311,6 +1387,7 @@ pub mod v1 {
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             random_seed,
                             creation_seq: creation_seq.map(Seq::as_u64),
+                            explicit_recovery: explicit_recovery.map(Into::into),
                         }
                     }
                     crate::invocation_status_table::InvocationStatus::Completed(
@@ -1330,6 +1407,7 @@ pub mod v1 {
                             pinned_deployment,
                             random_seed,
                             creation_seq,
+                            explicit_recovery,
                         },
                     ) => {
                         let (deployment_id, service_protocol_version) = match pinned_deployment {
@@ -1387,6 +1465,7 @@ pub mod v1 {
                             result: Some(response_result.into()),
                             random_seed,
                             creation_seq: creation_seq.map(Seq::as_u64),
+                            explicit_recovery: explicit_recovery.map(Into::into),
                         }
                     }
                     crate::invocation_status_table::InvocationStatus::Free => {
@@ -1394,6 +1473,64 @@ pub mod v1 {
                             "Unexpected serialization of Free status. This is a bug of the invocation status table"
                         )
                     }
+                }
+            }
+        }
+
+        impl TryFrom<invocation_status_v2::ExplicitRecoveryStatus>
+            for crate::invocation_status_table::ExplicitRecoveryStatus
+        {
+            type Error = ConversionError;
+
+            fn try_from(
+                value: invocation_status_v2::ExplicitRecoveryStatus,
+            ) -> Result<Self, ConversionError> {
+                let invocation_status_v2::ExplicitRecoveryStatus {
+                    pinned_deployment_id,
+                    attempt,
+                    next_result_id,
+                    cancelled,
+                    forwarded_notifications,
+                    idle_restart_streak,
+                    action_applied,
+                } = value;
+                Ok(Self {
+                    pinned_deployment_id: pinned_deployment_id
+                        .map(|id| id.parse())
+                        .transpose()
+                        .map_err(ConversionError::invalid_data)?,
+                    attempt,
+                    next_result_id: std::num::NonZeroU32::new(next_result_id)
+                        .ok_or_else(|| ConversionError::invalid_data_static("next_result_id"))?,
+                    cancelled,
+                    forwarded_notifications,
+                    idle_restart_streak,
+                    action_applied,
+                })
+            }
+        }
+
+        impl From<crate::invocation_status_table::ExplicitRecoveryStatus>
+            for invocation_status_v2::ExplicitRecoveryStatus
+        {
+            fn from(value: crate::invocation_status_table::ExplicitRecoveryStatus) -> Self {
+                let crate::invocation_status_table::ExplicitRecoveryStatus {
+                    pinned_deployment_id,
+                    attempt,
+                    next_result_id,
+                    cancelled,
+                    forwarded_notifications,
+                    idle_restart_streak,
+                    action_applied,
+                } = value;
+                Self {
+                    pinned_deployment_id: pinned_deployment_id.map(|id| id.to_string()),
+                    attempt,
+                    next_result_id: next_result_id.get(),
+                    cancelled,
+                    forwarded_notifications,
+                    idle_restart_streak,
+                    action_applied,
                 }
             }
         }
@@ -1716,6 +1853,7 @@ pub mod v1 {
                     submit_notification_sink,
                     restate_version,
                     limit_key,
+                    protocol_family,
                 } = value;
 
                 let invocation_id = restate_types::identifiers::InvocationId::try_from(
@@ -1787,6 +1925,7 @@ pub mod v1 {
                     limit_key,
                     submit_notification_sink,
                     restate_version: restate_version_from_pb(restate_version),
+                    protocol_family: protocol_family_from_pb(protocol_family)?,
                 })
             }
         }
@@ -1816,6 +1955,7 @@ pub mod v1 {
                     submit_notification_sink: value.submit_notification_sink.map(Into::into),
                     restate_version: value.restate_version.into_string(),
                     limit_key,
+                    protocol_family: protocol_family_to_pb(value.protocol_family),
                 }
             }
         }
@@ -1850,6 +1990,7 @@ pub mod v1 {
                     submit_notification_sink: value.submit_notification_sink.map(Into::into),
                     restate_version: value.restate_version.clone().into_string(),
                     limit_key: value.limit_key.to_string(),
+                    protocol_family: protocol_family_to_pb(value.protocol_family),
                 }
             }
         }
@@ -2976,6 +3117,7 @@ pub mod v1 {
                     invocation_target,
                     completion_retention_duration,
                     journal_retention_duration,
+                    protocol_family: protocol_family_from_pb(value.protocol_family)?,
                 })
             }
         }
@@ -2992,6 +3134,7 @@ pub mod v1 {
                     journal_retention_duration: Some(Duration::from(
                         value.journal_retention_duration,
                     )),
+                    protocol_family: protocol_family_to_pb(value.protocol_family),
                 }
             }
         }
@@ -4250,6 +4393,32 @@ pub mod v1 {
             }
         }
 
+        fn protocol_family_from_pb(
+            value: i32,
+        ) -> Result<restate_types::service_protocol::ProtocolFamily, ConversionError> {
+            match super::ProtocolFamily::try_from(value)
+                .map_err(|_| ConversionError::unexpected_enum_variant("protocol_family", value))?
+            {
+                super::ProtocolFamily::DurableExecution => {
+                    Ok(restate_types::service_protocol::ProtocolFamily::DurableExecution)
+                }
+                super::ProtocolFamily::ExplicitRecovery => {
+                    Ok(restate_types::service_protocol::ProtocolFamily::ExplicitRecovery)
+                }
+            }
+        }
+
+        fn protocol_family_to_pb(value: restate_types::service_protocol::ProtocolFamily) -> i32 {
+            match value {
+                restate_types::service_protocol::ProtocolFamily::DurableExecution => {
+                    super::ProtocolFamily::DurableExecution as i32
+                }
+                restate_types::service_protocol::ProtocolFamily::ExplicitRecovery => {
+                    super::ProtocolFamily::ExplicitRecovery as i32
+                }
+            }
+        }
+
         fn restate_version_from_pb(restate_version: String) -> restate_types::RestateVersion {
             if restate_version.is_empty() {
                 restate_types::RestateVersion::unknown()
@@ -4843,6 +5012,89 @@ pub mod v1 {
                 // Safety: Storage is trusted. Data is validated on the write path.
                 f.write_str(unsafe { str::from_utf8_unchecked(self.0) })
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU32;
+
+    use prost::Message;
+
+    use restate_types::identifiers::DeploymentId;
+    use restate_types::invocation::ServiceInvocation;
+    use restate_types::journal_v2::UnresolvedFuture;
+    use restate_types::service_protocol::ProtocolFamily;
+
+    use super::v1;
+    use crate::invocation_status_table::{
+        CompletedInvocation, ExplicitRecoveryStatus, InFlightInvocationMetadata, InvocationStatus,
+    };
+
+    fn roundtrip(status: InvocationStatus) -> InvocationStatus {
+        let bytes = v1::InvocationStatusV2::from(status).encode_to_vec();
+        v1::InvocationStatusV2::decode(bytes.as_slice())
+            .unwrap()
+            .try_into()
+            .unwrap()
+    }
+
+    #[test]
+    fn explicit_recovery_status_roundtrip() {
+        let er = ExplicitRecoveryStatus {
+            pinned_deployment_id: Some(DeploymentId::new()),
+            attempt: 3,
+            next_result_id: NonZeroU32::new(300).unwrap(),
+            cancelled: true,
+            forwarded_notifications: 2,
+            idle_restart_streak: 1,
+            action_applied: true,
+        };
+        let metadata = InFlightInvocationMetadata {
+            explicit_recovery: Some(er.clone()),
+            ..InFlightInvocationMetadata::mock()
+        };
+
+        let invoked = InvocationStatus::Invoked(metadata.clone());
+        assert_eq!(roundtrip(invoked.clone()), invoked);
+
+        // A suspended explicit recovery invocation waits on nothing: the empty future must decode.
+        let suspended = InvocationStatus::Suspended {
+            metadata,
+            awaiting_on: UnresolvedFuture::unknown_from_iter(std::iter::empty::<
+                restate_types::journal_v2::NotificationId,
+            >()),
+        };
+        let decoded = roundtrip(suspended);
+        assert_eq!(decoded.explicit_recovery(), Some(&er));
+        assert!(matches!(decoded, InvocationStatus::Suspended { .. }));
+
+        let completed = InvocationStatus::Completed(CompletedInvocation {
+            explicit_recovery: Some(er),
+            ..CompletedInvocation::mock_neo()
+        });
+        assert_eq!(roundtrip(completed.clone()), completed);
+
+        // An encoding without the field (any status written before it existed) is durable.
+        let durable = InvocationStatus::Invoked(InFlightInvocationMetadata::mock());
+        let pb = v1::InvocationStatusV2::from(durable.clone());
+        assert!(pb.explicit_recovery.is_none());
+        assert_eq!(roundtrip(durable).explicit_recovery(), None);
+    }
+
+    #[test]
+    fn service_invocation_protocol_family_roundtrip() {
+        for family in [
+            ProtocolFamily::DurableExecution,
+            ProtocolFamily::ExplicitRecovery,
+        ] {
+            let si = ServiceInvocation {
+                protocol_family: family,
+                ..ServiceInvocation::mock()
+            };
+            let pb = v1::ServiceInvocation::from(si.clone());
+            assert_eq!(ServiceInvocation::try_from(pb).unwrap(), si);
         }
     }
 }

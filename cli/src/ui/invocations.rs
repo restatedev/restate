@@ -611,6 +611,13 @@ pub fn journal_event_lines(
                 describe_future(&suspended.awaiting_on, completion, false)
             ),
         ],
+        Event::AttemptStarted(started) => vec![format!(
+            "Attempt {} started on deployment {} (explicit recovery protocol v{})",
+            started.attempt, started.deployment_id, started.protocol_version
+        )],
+        Event::AttemptEnded(ended) => {
+            vec![format!("Attempt {} ended: {}", ended.attempt, ended.reason)]
+        }
         Event::Unknown => vec![format!("{} {anchor}", event.event_type)],
     }
 }

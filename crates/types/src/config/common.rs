@@ -1392,6 +1392,16 @@ experimental! {
     ///
     /// Since v1.8.2
     write_blob_table,
+
+    /// # Explicit recovery protocol
+    ///
+    /// Lets a deployment register handlers on the explicit recovery protocol family, a second
+    /// service protocol where every attempt runs the handler from its first line and the
+    /// handler recovers its progress from state. Checked at registration only. Experimental:
+    /// the protocol, and what it stores, may change in incompatible ways.
+    ///
+    /// Since v1.8.2
+    explicit_recovery_protocol,
 }
 
 impl Experimental {

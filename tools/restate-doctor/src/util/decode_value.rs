@@ -232,6 +232,8 @@ pub fn decode_value(key_kind: KeyKind, key: &[u8], value: &[u8]) -> DecodedValue
         KeyKind::Fsm => decode_fsm_value(key, value),
         // The registry, its walks and its jobs, by the record kind in the key.
         KeyKind::Registry => decode_registry_record(key, value),
+        // Invocation state is raw bytes; a signal is a protobuf value.
+        KeyKind::ExplicitRecovery => decode_with_codec_info(value),
         KeyKind::Stats => unreachable!("handled before empty-value decoding"),
         #[allow(deprecated)]
         KeyKind::LegacyStats => DecodedValue::decoded(

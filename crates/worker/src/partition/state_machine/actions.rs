@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroU32;
+
 use restate_limiter::RuleUpdate;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::TimerKey;
@@ -24,6 +26,7 @@ use restate_types::message::MessageIndex;
 use restate_util_string::ReString;
 use restate_vqueues::{VQueueEvent, VQueueHandle};
 use restate_wal_protocol::timer::TimerKeyValue;
+use restate_worker_api::invoker::explicit_recovery::ErToInvoker;
 
 pub type ActionCollector = Vec<Action>;
 
@@ -50,6 +53,13 @@ pub enum Action {
         key: EntryKey,
         invocation_target: InvocationTarget,
         idempotency_key: Option<ReString>,
+        /// `Some` for an invocation on the explicit recovery family: the number of the attempt.
+        explicit_recovery_attempt: Option<NonZeroU32>,
+    },
+    /// Forward a message to the running attempt of an explicit recovery invocation.
+    ForwardExplicitRecovery {
+        invocation_id: InvocationId,
+        message: ErToInvoker,
     },
     NewOutboxMessage {
         seq_number: MessageIndex,

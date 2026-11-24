@@ -10,6 +10,7 @@
 
 mod actions;
 mod entries;
+mod explicit_recovery;
 mod lifecycle;
 mod utils;
 
@@ -36,6 +37,9 @@ use restate_clock::RoughTimestamp;
 use restate_limiter::LimitKey;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
+use restate_storage_api::explicit_recovery_table::{
+    ReadExplicitRecoveryTable, WriteExplicitRecoveryTable,
+};
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::{InboxEntry, ReadInboxTable, WriteInboxTable};
 use restate_storage_api::invocation_status_table::{
@@ -106,7 +110,7 @@ use restate_types::journal_v2::{
 };
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
-use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_types::service_protocol::{ProtocolFamily, ServiceProtocolVersion};
 use restate_types::state_mut::StateMutationVersion;
 use restate_types::state_mut::{ExternalStateMutation, StateMutationInput};
 use restate_types::storage::{
@@ -433,7 +437,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteLockTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
-            + WriteJournalEventsTable,
+            + WriteJournalEventsTable
+            + ReadExplicitRecoveryTable
+            + WriteExplicitRecoveryTable,
     {
         match envelope.kind() {
             CommandKind::Unknown => Err(Error::UnknownCommandKind),
@@ -496,6 +502,19 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     .into();
                 let status = self.get_invocation_status(&target.caller_id).await?;
 
+                // An explicit recovery caller has no journal: its result goes to the attempt.
+                // This comes before the journal checks, which would route it to journal v1 (F1).
+                if status.explicit_recovery().is_some() {
+                    return explicit_recovery::OnResponse {
+                        invocation_id: target.caller_id,
+                        status,
+                        result_id: target.caller_completion_id,
+                        result,
+                    }
+                    .apply(self)
+                    .await;
+                }
+
                 if should_use_journal_table_v2(&status) {
                     lifecycle::OnNotifyInvocationResponse {
                         invocation_id: target.caller_id,
@@ -533,6 +552,16 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     .into_typed::<commands::InvokerEffectCommand>()
                     .into_inner()?;
                 self.try_invoker_effect(inner.into()).await
+            }
+            CommandKind::ExplicitRecoveryEffect => {
+                let inner = envelope
+                    .into_typed::<commands::ExplicitRecoveryEffectCommand>()
+                    .into_inner()?;
+                explicit_recovery::OnExplicitRecoveryEffect {
+                    effect: inner.into(),
+                }
+                .apply(self)
+                .await
             }
             CommandKind::Timer => {
                 let inner = envelope
@@ -657,11 +686,27 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     .into_inner()?
                     .into();
 
+                let invocation_status = self
+                    .get_invocation_status(&notify_signal_request.invocation_id)
+                    .await?;
+                // The cancel signal goes through the cancel path, for both families.
+                if invocation_status.explicit_recovery().is_some()
+                    && notify_signal_request.signal.id
+                        != journal_v2::SignalId::for_builtin_signal(
+                            journal_v2::BuiltInSignal::Cancel,
+                        )
+                {
+                    return explicit_recovery::OnSignal {
+                        invocation_id: notify_signal_request.invocation_id,
+                        status: invocation_status,
+                        signal: notify_signal_request.signal,
+                    }
+                    .apply(self)
+                    .await;
+                }
                 lifecycle::OnNotifySignalCommand {
                     invocation_id: notify_signal_request.invocation_id,
-                    invocation_status: self
-                        .get_invocation_status(&notify_signal_request.invocation_id)
-                        .await?,
+                    invocation_status,
                     signal: notify_signal_request.signal,
                 }
                 .apply(self)
@@ -1463,6 +1508,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 key: *key,
                 invocation_target,
                 idempotency_key: invocation_metadata.idempotency_key.map(ReString::new),
+                explicit_recovery_attempt: None,
             });
         }
 
@@ -1555,7 +1601,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteVQueueTable
             + WriteLockTable
-            + WriteJournalEventsTable,
+            + WriteJournalEventsTable
+            + WriteExplicitRecoveryTable,
     {
         match termination_flavor {
             TerminationFlavor::Kill => self.on_kill_invocation(invocation_id, response_sink).await,
@@ -1589,9 +1636,20 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteVQueueTable
             + WriteLockTable
-            + WriteJournalEventsTable,
+            + WriteJournalEventsTable
+            + WriteExplicitRecoveryTable,
     {
         let status = self.get_invocation_status(&invocation_id).await?;
+
+        if status.explicit_recovery().is_some() {
+            return explicit_recovery::OnKill {
+                invocation_id,
+                status,
+                response_sink,
+            }
+            .apply(self)
+            .await;
+        }
 
         match status {
             InvocationStatus::Invoked(metadata) => {
@@ -1664,9 +1722,22 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteVQueueTable
             + WriteLockTable
-            + WriteTimerTable,
+            + WriteTimerTable
+            + WriteExplicitRecoveryTable,
     {
         let mut status = self.get_invocation_status(&invocation_id).await?;
+
+        // Before the pinned-protocol checks: an explicit recovery invocation has a journal
+        // entry 0, and must not get a cancel entry appended to it (F2).
+        if status.explicit_recovery().is_some() {
+            return explicit_recovery::OnCancel {
+                invocation_id,
+                status,
+                response_sink,
+            }
+            .apply(self)
+            .await;
+        }
 
         let pinned_service_protocol = status.get_invocation_metadata().and_then(|meta| {
             meta.pinned_deployment
@@ -1823,7 +1894,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteLockTable
             + ReadJournalTable
             + journal_table_v2::ReadJournalTable
-            + WriteTimerTable,
+            + WriteTimerTable
+            + WriteExplicitRecoveryTable,
     {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
@@ -1980,7 +2052,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + journal_table_v2::WriteJournalTable
             + WriteJournalEventsTable
             + ReadJournalTable
-            + journal_table_v2::ReadJournalTable,
+            + journal_table_v2::ReadJournalTable
+            + WriteExplicitRecoveryTable,
     {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
@@ -2142,7 +2215,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteVQueueTable
             + WriteLockTable
             + WriteJournalEventsTable
-            + WriteTimerTable,
+            + WriteTimerTable
+            + WriteExplicitRecoveryTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
@@ -2181,7 +2255,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteVQueueTable
             + WriteLockTable
             + WriteJournalEventsTable
-            + WriteTimerTable,
+            + WriteTimerTable
+            + WriteExplicitRecoveryTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
@@ -2413,7 +2488,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteLockTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
-            + WriteJournalEventsTable,
+            + WriteJournalEventsTable
+            + WriteExplicitRecoveryTable,
     {
         let (key, value) = timer_value.into_inner();
         self.do_delete_timer(key).await?;
@@ -2543,7 +2619,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteVQueueTable
             + WriteLockTable
-            + WriteJournalEventsTable,
+            + WriteJournalEventsTable
+            + WriteExplicitRecoveryTable,
     {
         let status = self
             .get_invocation_status(&invoker_effect.invocation_id)
@@ -2577,7 +2654,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteJournalEventsTable
             + ReadVQueueTable
             + WriteVQueueTable
-            + WriteLockTable,
+            + WriteLockTable
+            + WriteExplicitRecoveryTable,
     {
         let is_status_invoked = matches!(invocation_status, InvocationStatus::Invoked(_));
 
@@ -2841,7 +2919,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteVQueueTable
             + WriteLockTable
             + WriteJournalEventsTable
-            + WriteTimerTable,
+            + WriteTimerTable
+            + WriteExplicitRecoveryTable,
     {
         let invocation_target = invocation_metadata.invocation_target.clone();
         let journal_length = invocation_metadata.journal_metadata.length;
@@ -3251,11 +3330,24 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             return Ok(());
         }
 
+        let status = self.get_invocation_status(&invocation_id).await?;
+        if status.explicit_recovery().is_some() {
+            return explicit_recovery::OnRun {
+                qid,
+                entry_key,
+                header: &header,
+                invocation_id,
+                status,
+                wait_stats,
+            }
+            .apply(self)
+            .await;
+        }
+
         if header.has_started() {
             // We fallthrough if the invocation was never started so we can initialize the journal.
             debug_if_leader!(self.is_leader(), "Invoke");
 
-            let status = self.get_invocation_status(&invocation_id).await?;
             // Once the partition refines its vqueue lifecycle, every run records started, so
             // that pausing or suspending the entry carries its latest attempt's status. Before,
             // a later run kept the status it had in the inbox, such as backing-off.
@@ -3298,14 +3390,13 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     // todo(tillrohrmann) avoid the transformation from ByteString to ReString by
                     //  storing the idempotency key as ReString in the first place
                     idempotency_key: status.idempotency_key().map(ReString::new),
+                    explicit_recovery_attempt: None,
                 });
             }
             return Ok(());
         }
 
         // legacy status maintenance
-        let status = self.get_invocation_status(&invocation_id).await?;
-
         match status {
             InvocationStatus::Scheduled(ScheduledInvocation { mut metadata, .. })
             | InvocationStatus::Inboxed(InboxedInvocation { mut metadata, .. }) => {
@@ -3815,6 +3906,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                         limit_key: Default::default(),
                         submit_notification_sink: None,
                         restate_version: RestateVersion::current(),
+                        protocol_family: ProtocolFamily::DurableExecution,
                     };
 
                     self.do_enqueue_into_outbox(commands::InvokeCommand::from(service_invocation))?;
@@ -3864,6 +3956,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     limit_key: Default::default(),
                     submit_notification_sink: None,
                     restate_version: RestateVersion::current(),
+                    protocol_family: ProtocolFamily::DurableExecution,
                 };
 
                 self.do_enqueue_into_outbox(commands::InvokeCommand::from(service_invocation))?;
@@ -5048,7 +5141,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + journal_table_v2::ReadJournalTable
             + journal_table_v2::WriteJournalTable
             + WriteJournalEventsTable
-            + WriteTimerTable,
+            + WriteTimerTable
+            + WriteExplicitRecoveryTable,
     {
         debug_if_leader!(
             self.is_leader(),
@@ -5077,6 +5171,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .map_err(Error::Storage)?
         };
         WriteJournalEventsTable::delete_journal_events(self.storage, invocation_id)
+            .map_err(Error::Storage)?;
+        // Invocation state and signals of the explicit recovery family go with the journal
+        // (D28). A no-op for invocations of the durable family.
+        WriteExplicitRecoveryTable::delete_all_explicit_recovery(self.storage, invocation_id)
             .map_err(Error::Storage)?;
         Ok(())
     }

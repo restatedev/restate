@@ -30,6 +30,19 @@ impl From<ServiceType> for crate::invocation::ServiceType {
     }
 }
 
+impl From<ProtocolFamily> for crate::service_protocol::ProtocolFamily {
+    fn from(value: ProtocolFamily) -> Self {
+        match value {
+            ProtocolFamily::DurableExecution => {
+                crate::service_protocol::ProtocolFamily::DurableExecution
+            }
+            ProtocolFamily::ExplicitRecovery => {
+                crate::service_protocol::ProtocolFamily::ExplicitRecovery
+            }
+        }
+    }
+}
+
 impl Service {
     pub fn inactivity_timeout_duration(&self) -> Option<Duration> {
         self.inactivity_timeout.map(Duration::from_millis)

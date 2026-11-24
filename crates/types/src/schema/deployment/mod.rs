@@ -61,6 +61,8 @@ pub struct Deployment {
     pub ty: DeploymentType,
     pub additional_headers: HashMap<HeaderName, HeaderValue>,
     pub supported_protocol_versions: RangeInclusive<i32>,
+    /// Versions of the explicit recovery protocol the deployment speaks, if any.
+    pub explicit_recovery_protocol_versions: Option<RangeInclusive<i32>>,
     /// Declared SDK during discovery
     pub sdk_version: Option<String>,
     pub created_at: MillisSinceEpoch,
@@ -548,6 +550,7 @@ pub mod test_util {
                     auth: None,
                 },
                 supported_protocol_versions: 1..=MAX_SERVICE_PROTOCOL_VERSION_VALUE,
+                explicit_recovery_protocol_versions: Some(1..=1),
                 sdk_version: None,
                 created_at: MillisSinceEpoch::now(),
                 metadata: Default::default(),
@@ -569,6 +572,7 @@ pub mod test_util {
                     auth: None,
                 },
                 supported_protocol_versions: 1..=MAX_SERVICE_PROTOCOL_VERSION_VALUE,
+                explicit_recovery_protocol_versions: Some(1..=1),
                 sdk_version: None,
                 created_at: MillisSinceEpoch::now(),
                 metadata: Default::default(),

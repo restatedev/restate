@@ -21,6 +21,7 @@ use restate_types::journal_events::raw::RawEvent;
 use restate_types::journal_events::{Event, PausedEvent};
 
 use crate::partition::processor::ProcessorContext;
+use crate::partition::state_machine::explicit_recovery;
 use crate::partition::state_machine::lifecycle::pause_invocation;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
@@ -53,7 +54,17 @@ where
             response_sink,
         } = self;
 
-        let response = match ctx.get_invocation_status(&invocation_id).await? {
+        let status = ctx.get_invocation_status(&invocation_id).await?;
+        if status.explicit_recovery().is_some() {
+            return explicit_recovery::OnManualPause {
+                invocation_id,
+                status,
+                response_sink,
+            }
+            .apply(ctx)
+            .await;
+        }
+        let response = match status {
             InvocationStatus::Invoked(metadata) => {
                 // A user-requested pause carries no failure, so synthesize an empty PausedEvent.
                 pause_invocation(

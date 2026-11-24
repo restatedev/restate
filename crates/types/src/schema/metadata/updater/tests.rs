@@ -52,6 +52,9 @@ fn greeter_service_greet_handler() -> endpoint_manifest::Handler {
         workflow_completion_retention: None,
         enable_lazy_state: None,
         eager_state_keys_whitelist: vec![],
+        protocol_family: None,
+        enable_lazy_invocation_state: None,
+        eager_invocation_state_keys_whitelist: vec![],
         ingress_private: None,
         retry_policy_on_max_attempts: None,
     }
@@ -76,6 +79,9 @@ fn greeter_workflow_greet_handler() -> endpoint_manifest::Handler {
         workflow_completion_retention: None,
         enable_lazy_state: None,
         eager_state_keys_whitelist: vec![],
+        protocol_family: None,
+        enable_lazy_invocation_state: None,
+        eager_invocation_state_keys_whitelist: vec![],
         ingress_private: None,
         retry_policy_on_max_attempts: None,
     }
@@ -99,6 +105,9 @@ fn greeter_service() -> endpoint_manifest::Service {
         metadata: Default::default(),
         enable_lazy_state: None,
         eager_state_keys_whitelist: vec![],
+        protocol_family: None,
+        enable_lazy_invocation_state: None,
+        eager_invocation_state_keys_whitelist: vec![],
         retry_policy_on_max_attempts: None,
     }
 }
@@ -132,6 +141,9 @@ fn greeter_virtual_object() -> endpoint_manifest::Service {
             workflow_completion_retention: None,
             enable_lazy_state: None,
             eager_state_keys_whitelist: vec![],
+            protocol_family: None,
+            enable_lazy_invocation_state: None,
+            eager_invocation_state_keys_whitelist: vec![],
             ingress_private: None,
             retry_policy_on_max_attempts: None,
         }],
@@ -141,6 +153,9 @@ fn greeter_virtual_object() -> endpoint_manifest::Service {
         metadata: Default::default(),
         enable_lazy_state: None,
         eager_state_keys_whitelist: vec![],
+        protocol_family: None,
+        enable_lazy_invocation_state: None,
+        eager_invocation_state_keys_whitelist: vec![],
         retry_policy_on_max_attempts: None,
     }
 }
@@ -163,6 +178,9 @@ fn greeter_workflow() -> endpoint_manifest::Service {
         metadata: Default::default(),
         enable_lazy_state: None,
         eager_state_keys_whitelist: vec![],
+        protocol_family: None,
+        enable_lazy_invocation_state: None,
+        eager_invocation_state_keys_whitelist: vec![],
         retry_policy_on_max_attempts: None,
     }
 }
@@ -196,6 +214,9 @@ fn another_greeter_service() -> endpoint_manifest::Service {
             workflow_completion_retention: None,
             enable_lazy_state: None,
             eager_state_keys_whitelist: vec![],
+            protocol_family: None,
+            enable_lazy_invocation_state: None,
+            eager_invocation_state_keys_whitelist: vec![],
             ingress_private: None,
             retry_policy_on_max_attempts: None,
         }],
@@ -205,6 +226,9 @@ fn another_greeter_service() -> endpoint_manifest::Service {
         metadata: Default::default(),
         enable_lazy_state: None,
         eager_state_keys_whitelist: vec![],
+        protocol_family: None,
+        enable_lazy_invocation_state: None,
+        eager_invocation_state_keys_whitelist: vec![],
         retry_policy_on_max_attempts: None,
     }
 }
@@ -221,6 +245,7 @@ fn add_deployment_request(services: Vec<endpoint_manifest::Service>) -> AddDeplo
             },
             supported_protocol_versions: (MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION as i32)
                 ..=(MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION as i32),
+            explicit_recovery_protocol_versions: None,
             sdk_version: None,
             services,
         },
@@ -244,6 +269,7 @@ fn update_deployment_request(
             },
             supported_protocol_versions: (MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION as i32)
                 ..=(MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION as i32),
+            explicit_recovery_protocol_versions: None,
             sdk_version: None,
             services,
         },
@@ -1072,6 +1098,9 @@ fn update_latest_deployment_add_handler() {
             workflow_completion_retention: None,
             enable_lazy_state: None,
             eager_state_keys_whitelist: vec![],
+            protocol_family: None,
+            enable_lazy_invocation_state: None,
+            eager_invocation_state_keys_whitelist: vec![],
             ingress_private: None,
             retry_policy_on_max_attempts: None,
         });
@@ -1147,6 +1176,9 @@ fn update_draining_deployment_add_handler() {
             workflow_completion_retention: None,
             enable_lazy_state: None,
             eager_state_keys_whitelist: vec![],
+            protocol_family: None,
+            enable_lazy_invocation_state: None,
+            eager_invocation_state_keys_whitelist: vec![],
             ingress_private: None,
             retry_policy_on_max_attempts: None,
         });
@@ -2189,6 +2221,8 @@ mod endpoint_manifest_options_propagation {
                 abort_timeout: Some(Duration::from_secs(120)),
                 inactivity_timeout: Some(Duration::from_secs(60)),
                 state_preload_policy: StatePreloadPolicy::All,
+                protocol_family: ProtocolFamily::DurableExecution,
+                invocation_state_preload_policy: StatePreloadPolicy::All,
             })
         )
     }
@@ -2214,6 +2248,8 @@ mod endpoint_manifest_options_propagation {
                 abort_timeout: Some(Duration::from_secs(120)),
                 inactivity_timeout: Some(Duration::from_secs(30)),
                 state_preload_policy: StatePreloadPolicy::All,
+                protocol_family: ProtocolFamily::DurableExecution,
+                invocation_state_preload_policy: StatePreloadPolicy::All,
             })
         )
     }
@@ -2253,6 +2289,7 @@ mod endpoint_manifest_options_propagation {
                         },
                         supported_protocol_versions: (MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION as i32)
                             ..=(MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION as i32),
+                        explicit_recovery_protocol_versions: None,
                         sdk_version: None,
                         services: vec![endpoint_manifest::Service {
                             inactivity_timeout: Some(60 * 1000), // 60 seconds
@@ -3499,5 +3536,177 @@ fn uncompressed_size_is_tracked_on_decode_and_cleared_on_update() {
         .unwrap();
         assert!(updated.version() > version);
         assert_eq!(updated.uncompressed_size(), None);
+    }
+}
+
+mod explicit_recovery {
+    use super::*;
+
+    use restate_test_util::{assert, assert_eq};
+    use test_log::test;
+
+    use crate::config::Configuration;
+    use crate::schema::invocation_target::DeploymentStatus;
+    use crate::schema::metadata::SchemaUnindexedLite;
+
+    fn er_virtual_object() -> endpoint_manifest::Service {
+        endpoint_manifest::Service {
+            protocol_family: Some(endpoint_manifest::ProtocolFamily::ExplicitRecovery),
+            enable_lazy_invocation_state: Some(true),
+            eager_invocation_state_keys_whitelist: vec!["cursor".to_owned()],
+            ..greeter_virtual_object()
+        }
+    }
+
+    fn er_request(uri: &str, services: Vec<endpoint_manifest::Service>) -> AddDeploymentRequest {
+        let mut request = add_deployment_request(services);
+        request.deployment_address = DeploymentAddress::mock_uri(uri);
+        request
+            .discovery_response
+            .explicit_recovery_protocol_versions = Some(1..=1);
+        request
+    }
+
+    fn set_flag(enable: bool) {
+        let mut config = Configuration::default();
+        config
+            .common
+            .experimental
+            .set_explicit_recovery_protocol(enable);
+        Configuration::set(config);
+    }
+
+    // All the explicit recovery registration tests are in one function: they toggle the global
+    // configuration.
+    #[test]
+    fn register_validate_and_change_family() {
+        // Flag off: refused.
+        set_flag(false);
+        assert!(let Err(SchemaError::Service(ServiceError::ExplicitRecoveryDisabled(_))) =
+            SchemaUpdater::new(Schema::default())
+                .add_deployment(er_request("http://localhost:9080", vec![er_virtual_object()])));
+
+        set_flag(true);
+
+        // (a) Registers, without a durable execution range, and resolves the family and both
+        // preload policies.
+        let mut request = er_request("http://localhost:9080", vec![er_virtual_object()]);
+        request.discovery_response.supported_protocol_versions = 0..=0;
+        let mut updater = SchemaUpdater::new(Schema::default());
+        let (_, deployment_id) = updater.add_deployment(request).unwrap();
+        let schema = updater.into_inner();
+
+        let target = schema
+            .resolve_latest_invocation_target(GREETER_SERVICE_NAME, GREET_HANDLER_NAME)
+            .unwrap();
+        assert_eq!(target.protocol_family, ProtocolFamily::ExplicitRecovery);
+        assert!(let DeploymentStatus::Enabled = target.deployment_status);
+        let options = schema
+            .resolve_invocation_attempt_options(
+                &deployment_id,
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME,
+            )
+            .unwrap();
+        assert_eq!(options.protocol_family, ProtocolFamily::ExplicitRecovery);
+        assert_eq!(options.state_preload_policy, StatePreloadPolicy::All);
+        assert_eq!(
+            options.invocation_state_preload_policy,
+            StatePreloadPolicy::Partial(vec![ByteString::from_static("cursor")])
+        );
+
+        // (d) The schema round-trips through the lite schema.
+        let lite = SchemaUnindexedLite::clone_from_schema(&schema);
+        let lite: SchemaUnindexedLite =
+            bilrost::OwnedMessage::decode(bilrost::Message::encode_to_bytes(&lite)).unwrap();
+        let roundtripped = Schema::from(lite);
+        assert_eq!(
+            roundtripped
+                .resolve_invocation_attempt_options(
+                    &deployment_id,
+                    GREETER_SERVICE_NAME,
+                    GREET_HANDLER_NAME
+                )
+                .unwrap(),
+            options
+        );
+        assert_eq!(
+            roundtripped
+                .get_deployment(&deployment_id)
+                .unwrap()
+                .explicit_recovery_protocol_versions,
+            Some(1..=1)
+        );
+
+        // (b) The refusals.
+        let workflow = endpoint_manifest::Service {
+            protocol_family: Some(endpoint_manifest::ProtocolFamily::ExplicitRecovery),
+            ..greeter_workflow()
+        };
+        let mut http11 = er_request("http://localhost:9081", vec![er_virtual_object()]);
+        http11.discovery_response.deployment_type_parameters =
+            DeploymentConnectionParameters::Http {
+                protocol_type: ProtocolType::BidiStream,
+                http_version: http::Version::HTTP_11,
+            };
+        let mut request_response = er_request("http://localhost:9081", vec![er_virtual_object()]);
+        request_response
+            .discovery_response
+            .deployment_type_parameters = DeploymentConnectionParameters::Http {
+            protocol_type: ProtocolType::RequestResponse,
+            http_version: http::Version::HTTP_2,
+        };
+        let mut no_versions = er_request("http://localhost:9081", vec![er_virtual_object()]);
+        no_versions
+            .discovery_response
+            .explicit_recovery_protocol_versions = None;
+        let mut bad_versions = er_request("http://localhost:9081", vec![er_virtual_object()]);
+        bad_versions
+            .discovery_response
+            .explicit_recovery_protocol_versions = Some(2..=3);
+        let mut durable_with_invocation_state = greeter_virtual_object();
+        durable_with_invocation_state.handlers[0].enable_lazy_invocation_state = Some(true);
+
+        for (request, expected) in [
+            (
+                er_request("http://localhost:9081", vec![workflow]),
+                "ExplicitRecoveryOnWorkflow",
+            ),
+            (http11, "ExplicitRecoveryNeedsHttp2Bidi"),
+            (request_response, "ExplicitRecoveryNeedsHttp2Bidi"),
+            (no_versions, "ExplicitRecoveryVersions"),
+            (bad_versions, "ExplicitRecoveryVersions"),
+            (
+                er_request("http://localhost:9081", vec![durable_with_invocation_state]),
+                "InvocationStateOnDurableHandler",
+            ),
+        ] {
+            let err = SchemaUpdater::new(Schema::default())
+                .add_deployment(request)
+                .unwrap_err();
+            assert!(
+                format!("{err:?}").contains(expected),
+                "expected {expected}, got {err:?}"
+            );
+        }
+
+        // (c) Changing the family of a handler needs breaking changes.
+        let mut updater = SchemaUpdater::new(schema);
+        assert!(let Err(SchemaError::Service(ServiceError::DifferentProtocolFamily(_, _))) =
+        updater.add_deployment(er_request(
+            "http://localhost:9082",
+            vec![greeter_virtual_object()]
+        )));
+        let mut breaking = er_request("http://localhost:9082", vec![greeter_virtual_object()]);
+        breaking.allow_breaking_changes = AllowBreakingChanges::Yes;
+        updater.add_deployment(breaking).unwrap();
+        let schema = updater.into_inner();
+        assert_eq!(
+            schema
+                .resolve_latest_invocation_target(GREETER_SERVICE_NAME, GREET_HANDLER_NAME)
+                .unwrap()
+                .protocol_family,
+            ProtocolFamily::DurableExecution
+        );
     }
 }

@@ -197,6 +197,25 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
                 });
             }
         }
+        KeyKind::ExplicitRecovery => {
+            // InvocationUuid (16 bytes) + kind (1 byte), then the state key or signal name
+            if remaining >= 16 {
+                segments.push(Segment {
+                    kind: KeySegment::FixedField,
+                    start: 10,
+                    len: 16,
+                    label: "invocation_uuid",
+                });
+            }
+            if remaining >= 17 {
+                segments.push(Segment {
+                    kind: KeySegment::FixedField,
+                    start: 26,
+                    len: 1,
+                    label: "kind",
+                });
+            }
+        }
         KeyKind::JournalEvent => {
             // InvocationUuid (16 bytes) + event_index (4 bytes)
             if remaining >= 16 {

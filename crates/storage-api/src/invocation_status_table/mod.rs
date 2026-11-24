@@ -10,6 +10,7 @@
 
 use std::collections::HashSet;
 use std::future::Future;
+use std::num::NonZeroU32;
 use std::ops::ControlFlow;
 use std::time::Duration;
 
@@ -17,7 +18,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 
 use restate_types::deployment::PinnedDeployment;
-use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::{DeploymentId, InvocationId};
 use restate_types::invocation::{
     Header, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
@@ -311,6 +312,31 @@ impl InvocationStatus {
         }
     }
 
+    /// The explicit recovery part of the status, present iff the invocation is on that family.
+    pub fn explicit_recovery(&self) -> Option<&ExplicitRecoveryStatus> {
+        match self {
+            InvocationStatus::Scheduled(s) => s.metadata.explicit_recovery.as_ref(),
+            InvocationStatus::Inboxed(s) => s.metadata.explicit_recovery.as_ref(),
+            InvocationStatus::Invoked(m)
+            | InvocationStatus::Suspended { metadata: m, .. }
+            | InvocationStatus::Paused(m) => m.explicit_recovery.as_ref(),
+            InvocationStatus::Completed(c) => c.explicit_recovery.as_ref(),
+            InvocationStatus::Free => None,
+        }
+    }
+
+    pub fn explicit_recovery_mut(&mut self) -> Option<&mut ExplicitRecoveryStatus> {
+        match self {
+            InvocationStatus::Scheduled(s) => s.metadata.explicit_recovery.as_mut(),
+            InvocationStatus::Inboxed(s) => s.metadata.explicit_recovery.as_mut(),
+            InvocationStatus::Invoked(m)
+            | InvocationStatus::Suspended { metadata: m, .. }
+            | InvocationStatus::Paused(m) => m.explicit_recovery.as_mut(),
+            InvocationStatus::Completed(c) => c.explicit_recovery.as_mut(),
+            InvocationStatus::Free => None,
+        }
+    }
+
     #[inline]
     pub fn get_invocation_metadata(&self) -> Option<&InFlightInvocationMetadata> {
         match self {
@@ -433,6 +459,47 @@ pub enum InvocationStatusDiscriminants {
     Paused,
     Killed,
     Completed,
+}
+
+/// What the status keeps of an invocation on the explicit recovery protocol family.
+///
+/// Present iff the invocation is on that family.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExplicitRecoveryStatus {
+    /// Pinned at the first attempt. No protocol version: it is negotiated per attempt.
+    pub pinned_deployment_id: Option<DeploymentId>,
+    /// Number of the current (or last) attempt. 0 before the first run.
+    pub attempt: u32,
+    /// No result id at or above it was ever applied.
+    pub next_result_id: NonZeroU32,
+    /// The invocation received the cancel signal.
+    pub cancelled: bool,
+    /// Notifications forwarded to the invoker in the current attempt (D34).
+    pub forwarded_notifications: u32,
+    /// Idle restarts in a row (D63).
+    pub idle_restart_streak: u32,
+    /// An action of the current attempt was applied (D63).
+    pub action_applied: bool,
+}
+
+impl ExplicitRecoveryStatus {
+    pub fn new() -> Self {
+        Self {
+            pinned_deployment_id: None,
+            attempt: 0,
+            next_result_id: NonZeroU32::MIN,
+            cancelled: false,
+            forwarded_notifications: 0,
+            idle_restart_streak: 0,
+            action_applied: false,
+        }
+    }
+}
+
+impl Default for ExplicitRecoveryStatus {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Metadata associated with a journal
@@ -562,6 +629,9 @@ pub struct PreFlightInvocationMetadata {
     ///
     /// None for invocations created before this field was introduced.
     pub creation_seq: Option<Seq>,
+
+    /// Present iff the invocation is on the explicit recovery protocol family.
+    pub explicit_recovery: Option<ExplicitRecoveryStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -604,6 +674,10 @@ impl PreFlightInvocationMetadata {
             created_using_restate_version: service_invocation.restate_version,
             random_seed,
             creation_seq: Some(creation_seq),
+            explicit_recovery: service_invocation
+                .protocol_family
+                .is_explicit_recovery()
+                .then(ExplicitRecoveryStatus::new),
             input: PreFlightInvocationArgument::Input(PreFlightInvocationInput {
                 argument: service_invocation.argument,
                 headers: service_invocation.headers,
@@ -693,6 +767,9 @@ pub struct InFlightInvocationMetadata {
     ///
     /// None for invocations created before this field was introduced.
     pub creation_seq: Option<Seq>,
+
+    /// Present iff the invocation is on the explicit recovery protocol family.
+    pub explicit_recovery: Option<ExplicitRecoveryStatus>,
 }
 
 impl InFlightInvocationMetadata {
@@ -730,6 +807,7 @@ impl InFlightInvocationMetadata {
                     hotfix_apply_cancellation_after_deployment_is_pinned: false,
                     random_seed: pre_flight_invocation_metadata.random_seed,
                     creation_seq: pre_flight_invocation_metadata.creation_seq,
+                    explicit_recovery: pre_flight_invocation_metadata.explicit_recovery,
                 },
                 Some(InvocationInput { argument, headers }),
             ),
@@ -757,6 +835,7 @@ impl InFlightInvocationMetadata {
                     hotfix_apply_cancellation_after_deployment_is_pinned: false,
                     random_seed: pre_flight_invocation_metadata.random_seed,
                     creation_seq: pre_flight_invocation_metadata.creation_seq,
+                    explicit_recovery: pre_flight_invocation_metadata.explicit_recovery,
                 },
                 None,
             ),
@@ -820,6 +899,9 @@ pub struct CompletedInvocation {
     ///
     /// None for invocations created before this field was introduced.
     pub creation_seq: Option<Seq>,
+
+    /// Present iff the invocation is on the explicit recovery protocol family.
+    pub explicit_recovery: Option<ExplicitRecoveryStatus>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -870,6 +952,7 @@ impl CompletedInvocation {
             pinned_deployment,
             random_seed: metadata.random_seed,
             creation_seq: metadata.creation_seq,
+            explicit_recovery: metadata.explicit_recovery,
         }
     }
 
@@ -905,6 +988,7 @@ impl CompletedInvocation {
             pinned_deployment: in_flight_invocation_metadata.pinned_deployment,
             random_seed: in_flight_invocation_metadata.random_seed,
             creation_seq: in_flight_invocation_metadata.creation_seq,
+            explicit_recovery: in_flight_invocation_metadata.explicit_recovery,
         }
     }
 
@@ -1018,6 +1102,7 @@ mod test_util {
                 }),
                 random_seed: None,
                 creation_seq: None,
+                explicit_recovery: None,
             }
         }
 
@@ -1046,6 +1131,7 @@ mod test_util {
                 }),
                 random_seed: None,
                 creation_seq: None,
+                explicit_recovery: None,
             }
         }
     }
@@ -1074,6 +1160,7 @@ mod test_util {
                 hotfix_apply_cancellation_after_deployment_is_pinned: false,
                 random_seed: None,
                 creation_seq: None,
+                explicit_recovery: None,
             }
         }
         pub fn mock() -> Self {
@@ -1099,6 +1186,7 @@ mod test_util {
                 hotfix_apply_cancellation_after_deployment_is_pinned: false,
                 random_seed: None,
                 creation_seq: None,
+                explicit_recovery: None,
             }
         }
     }
@@ -1131,6 +1219,7 @@ mod test_util {
                 pinned_deployment: None,
                 random_seed: None,
                 creation_seq: None,
+                explicit_recovery: None,
             }
         }
         pub fn mock_neo() -> Self {
@@ -1160,6 +1249,7 @@ mod test_util {
                 pinned_deployment: None,
                 random_seed: None,
                 creation_seq: None,
+                explicit_recovery: None,
             }
         }
     }

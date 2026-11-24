@@ -42,7 +42,11 @@ pub struct DiscoveryResponse {
     pub deployment_type_parameters: DeploymentConnectionParameters,
     // type is i32 because the generated ServiceProtocolVersion enum uses this as its representation
     // and we need to represent unknown later versions
+    // An empty range (`0..=0`) when the manifest declared no durable execution range, which is
+    // allowed only when every handler is on the explicit recovery family.
     pub supported_protocol_versions: RangeInclusive<i32>,
+    /// Range of explicit recovery protocol versions declared by the manifest, if any.
+    pub explicit_recovery_protocol_versions: Option<RangeInclusive<i32>>,
     pub sdk_version: Option<String>,
     pub services: Vec<endpoint_manifest::Service>,
 }
@@ -74,6 +78,7 @@ mod mocks {
                 },
                 supported_protocol_versions: MIN_DISCOVERABLE_SERVICE_PROTOCOL_VERSION.as_repr()
                     ..=MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION.as_repr(),
+                explicit_recovery_protocol_versions: None,
                 sdk_version: None,
                 services,
             }

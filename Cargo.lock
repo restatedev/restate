@@ -8307,6 +8307,7 @@ dependencies = [
  "restate-platform",
  "restate-service-client",
  "restate-service-protocol",
+ "restate-service-protocol-explicit-recovery",
  "restate-service-protocol-v4",
  "restate-test-util",
  "restate-tracing-instrumentation",
@@ -8954,6 +8955,18 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "restate-service-protocol-explicit-recovery"
+version = "1.8.2-dev"
+dependencies = [
+ "bytes",
+ "bytes-utils",
+ "prost",
+ "prost-build",
+ "restate-workspace-hack",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

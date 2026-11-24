@@ -63,6 +63,10 @@ pub enum YieldReason {
     /// due to capacity constraints.
     #[bilrost(tag(4), message)]
     InvokerLoadShedding,
+    /// An attempt of an invocation on the explicit recovery protocol family was shut down and
+    /// restarts. Not a failure: the retry counters are reset.
+    #[bilrost(tag(5), message)]
+    ExplicitRecoveryRestart,
     /// A yield reason not recognized by this node version or a yield that triggered
     /// through a path that doesn't expect yields (harmless).
     #[serde(other)]
@@ -81,6 +85,7 @@ impl std::fmt::Display for YieldReason {
             }
             YieldReason::TransientError { .. } => write!(f, "transient error"),
             YieldReason::InvokerLoadShedding => write!(f, "invoker load shedding"),
+            YieldReason::ExplicitRecoveryRestart => write!(f, "restart"),
             YieldReason::PartitionLeaderChange => write!(f, "partition leader change"),
             YieldReason::Unknown => write!(f, "unknown"),
         }

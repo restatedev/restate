@@ -452,6 +452,8 @@ fn decode_key(key: &[u8]) -> (String, Option<String>, Option<KeyKind>) {
         KeyKind::LegacyStats => None,
         KeyKind::SecondaryIndex => decode_secondary_index_key(key),
         KeyKind::Registry => decode_registry_key(key),
+        // Invocation state (kind 0) or signal (kind 1) of an explicit recovery invocation.
+        KeyKind::ExplicitRecovery => None,
     };
 
     (kind_name, decoded, Some(key_kind))
