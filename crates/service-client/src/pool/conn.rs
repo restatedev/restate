@@ -27,7 +27,7 @@ use http_body_util::BodyExt;
 use metrics::{counter, histogram};
 use parking_lot::Mutex;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_util::sync::{CancellationToken, DropGuard};
+use tokio_util::sync::{CancellationToken, DropGuard, WaitForCancellationFutureOwned};
 use tower::Service;
 use tracing::{debug, trace};
 
@@ -609,6 +609,9 @@ enum ResponseFutureState {
     },
     InFlight {
         fut: H2ResponseFuture,
+        /// Stops the request pump when the response is dropped. `None` if the request has no
+        /// body to pump.
+        request_pump_guard: Option<DropGuard>,
     },
     Error {
         err: Option<Error>,
@@ -816,15 +819,26 @@ where
                         .send_request(req, end_stream)
                         .map_err(Error::from)?;
 
-                    if !end_stream {
+                    let request_pump_guard = (!end_stream).then(|| {
+                        let response_dropped = CancellationToken::new();
                         tokio::task::Builder::new()
                             .name("h2:request-pump")
-                            .spawn(RequestPumpTask::new(send_stream, body).run())
+                            .spawn(
+                                RequestPumpTask::new(send_stream, body)
+                                    .run(response_dropped.clone().cancelled_owned()),
+                            )
                             .unwrap();
-                    }
-                    this.state = ResponseFutureState::InFlight { fut };
+                        response_dropped.drop_guard()
+                    });
+                    this.state = ResponseFutureState::InFlight {
+                        fut,
+                        request_pump_guard,
+                    };
                 }
-                ResponseFutureState::InFlight { ref mut fut } => {
+                ResponseFutureState::InFlight {
+                    ref mut fut,
+                    ref mut request_pump_guard,
+                } => {
                     let resp = ready!(fut.poll_unpin(cx))
                         .map_err(Error::from)
                         .inspect_err(|_| {
@@ -833,8 +847,14 @@ where
 
                     counter!(CONNECTION_POOL_STREAM_OPENED).increment(1);
                     let permit = this.permit.take().expect("available permit");
+                    let request_pump_guard = request_pump_guard.take();
                     let resp = resp.map(|recv| {
-                        PermittedRecvStream::new(recv, Arc::clone(&this.shared), permit)
+                        PermittedRecvStream::new(
+                            recv,
+                            Arc::clone(&this.shared),
+                            permit,
+                            request_pump_guard,
+                        )
                     });
                     return Poll::Ready(Ok(resp));
                 }
@@ -848,6 +868,12 @@ where
 /// Spawned by [`RequestFuture`] once the H2 stream is established. Reads frames from
 /// the body, respects H2 flow-control by reserving and polling capacity before each
 /// write, and sends trailers (or empty trailers) once the body is exhausted.
+///
+/// The task holds a handle of the H2 stream, and H2 only resets a stream on its own once
+/// all of its handles are dropped. A pump that waits for send capacity would therefore keep
+/// the stream open, and the frames it couldn't send yet alive, for as long as the peer
+/// doesn't read the body. To avoid that, the pump resets the stream if the caller drops the
+/// response before the body was sent.
 struct RequestPumpTask<B> {
     send_stream: SendStream<Bytes>,
     body: B,
@@ -862,8 +888,20 @@ where
         Self { send_stream, body }
     }
 
-    async fn run(mut self) {
-        if let Err(err) = self.run_inner().await {
+    /// Pumps the body until it's exhausted, or until `response_dropped` completes.
+    async fn run(mut self, response_dropped: WaitForCancellationFutureOwned) {
+        let result = tokio::select! {
+            // Prefer ending the stream gracefully if the body is done as well.
+            biased;
+            result = self.run_inner() => result,
+            _ = response_dropped => {
+                debug!("h2 request pump stopped because the response was dropped");
+                self.send_stream.send_reset(Reason::CANCEL);
+                return;
+            }
+        };
+
+        if let Err(err) = result {
             debug!("h2 request pump error: {err}");
 
             let reason = match err {
@@ -952,6 +990,7 @@ pub struct PermittedRecvStream {
     start_time: MillisSinceEpoch,
     _permit: Permit,
     _connection: Arc<ConnectionShared>,
+    _request_pump_guard: Option<DropGuard>,
 }
 
 impl Drop for PermittedRecvStream {
@@ -962,13 +1001,19 @@ impl Drop for PermittedRecvStream {
 }
 
 impl PermittedRecvStream {
-    fn new(stream: RecvStream, connection: Arc<ConnectionShared>, permit: Permit) -> Self {
+    fn new(
+        stream: RecvStream,
+        connection: Arc<ConnectionShared>,
+        permit: Permit,
+        request_pump_guard: Option<DropGuard>,
+    ) -> Self {
         Self {
             stream,
             data_done: false,
             start_time: MillisSinceEpoch::now(),
             _permit: permit,
             _connection: connection,
+            _request_pump_guard: request_pump_guard,
         }
     }
 }
@@ -1010,10 +1055,16 @@ impl Body for PermittedRecvStream {
 
 #[cfg(test)]
 mod test {
+    use std::future::poll_fn;
+    use std::sync::Arc;
+    use std::time::Duration;
+
     use bytes::Bytes;
-    use http::Request;
+    use h2::Reason;
+    use http::{Request, Response, Uri};
     use http_body::Frame;
     use http_body_util::BodyExt;
+    use parking_lot::Mutex;
     use tokio::sync::mpsc;
     use tokio::task::JoinSet;
 
@@ -1071,6 +1122,92 @@ mod test {
             drop(active);
             assert_eq!(shared.concurrency.acquired(), 0);
         }
+    }
+
+    /// A caller that gives up on a request drops the response. The pump must then reset the
+    /// stream and release the frames it couldn't send, even though the body isn't finished.
+    #[tokio::test]
+    async fn dropping_response_stops_request_pump() {
+        struct TrackedFrame(Vec<u8>, Option<tokio::sync::oneshot::Sender<()>>);
+        impl AsRef<[u8]> for TrackedFrame {
+            fn as_ref(&self) -> &[u8] {
+                &self.0
+            }
+        }
+        impl Drop for TrackedFrame {
+            fn drop(&mut self) {
+                let _ = self.1.take().unwrap().send(());
+            }
+        }
+
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let socket = Arc::new(Mutex::new(Some(client)));
+        let connector = tower::service_fn(move |_: Uri| {
+            let socket = socket.lock().take().unwrap();
+            async move { Ok::<_, std::io::Error>(socket) }
+        });
+        let server = tokio::spawn(async move {
+            let mut server = h2::server::handshake(server).await.unwrap();
+            let (request, mut response) = server.accept().await.unwrap().unwrap();
+            // Respond and end the response without reading the request body, and without
+            // resetting the stream.
+            response.send_response(Response::new(()), true).unwrap();
+            // Keeps driving the connection until the client resets the stream.
+            let mut request_body = request.into_body();
+            tokio::select! {
+                _ = server.accept() => panic!("unexpected second request or closed connection"),
+                reset = poll_fn(|cx| response.poll_reset(cx)) => {
+                    let _ = request_body.data().await;
+                    reset.unwrap()
+                }
+            }
+        });
+
+        let mut connection = Connection::new(
+            connector,
+            ConnectionConfigBuilder::default().build().unwrap(),
+        );
+        connection.ready().await.unwrap();
+
+        let (released_tx, released_rx) = tokio::sync::oneshot::channel();
+        let (body_tx, body_rx) =
+            mpsc::unbounded_channel::<Result<Frame<Bytes>, std::convert::Infallible>>();
+        // Larger than the stream's send window, the pump has to wait for capacity.
+        body_tx
+            .send(Ok(Frame::data(Bytes::from_owner(TrackedFrame(
+                vec![0u8; 1024 * 1024],
+                Some(released_tx),
+            )))))
+            .unwrap();
+        let body = http_body_util::StreamBody::new(
+            tokio_stream::wrappers::UnboundedReceiverStream::new(body_rx),
+        );
+        let response = connection
+            .request(
+                Request::builder()
+                    .method("POST")
+                    .uri("http://test-host")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut response_body = response.into_body();
+        assert!(response_body.frame().await.is_none());
+
+        // The request body stays open, only the response is dropped.
+        drop(response_body);
+
+        tokio::time::timeout(Duration::from_secs(10), released_rx)
+            .await
+            .expect("the pump should release the unsent frame")
+            .unwrap();
+        let reset_reason = tokio::time::timeout(Duration::from_secs(10), server)
+            .await
+            .expect("the server should see the stream reset")
+            .unwrap();
+        assert_eq!(reset_reason, Reason::CANCEL);
+        drop(body_tx);
     }
 
     #[tokio::test]

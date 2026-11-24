@@ -22,6 +22,7 @@ static PREFIX: &str = "restate";
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum MetricUnit {
     Micros,
+    Seconds,
     Bytes,
     Count,
 }
@@ -33,6 +34,7 @@ impl MetricUnit {
             // (fractions) when convenient.
             // See https://prometheus.io/docs/practices/naming/
             MetricUnit::Micros => value / 1_000_000.0,
+            MetricUnit::Seconds => value,
             MetricUnit::Bytes => value,
             MetricUnit::Count => value,
         }
@@ -40,7 +42,7 @@ impl MetricUnit {
 
     fn normalized_unit(&self) -> Unit {
         match self {
-            MetricUnit::Micros => Unit::Seconds,
+            MetricUnit::Micros | MetricUnit::Seconds => Unit::Seconds,
             MetricUnit::Bytes => Unit::Bytes,
             MetricUnit::Count => Unit::Count,
         }

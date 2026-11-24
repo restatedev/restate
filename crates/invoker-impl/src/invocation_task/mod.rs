@@ -279,6 +279,9 @@ pub(super) struct InvocationTask<DMR> {
     idempotency_key: Option<ReString>,
     inactivity_timeout: Duration,
     abort_timeout: Duration,
+    /// Bounds the replay phase, during which the task holds a storage snapshot. Unlike the
+    /// timeouts above, it cannot be overridden per service or handler.
+    replay_timeout: Duration,
     eager_state_size_limit: usize,
     message_size_warning: NonZeroUsize,
     message_size_limit: NonZeroUsize,
@@ -359,6 +362,7 @@ where
         invocation_target: InvocationTarget,
         default_inactivity_timeout: Duration,
         default_abort_timeout: Duration,
+        replay_timeout: Duration,
         eager_state_size_limit: usize,
         message_size_warning: NonZeroUsize,
         message_size_limit: NonZeroUsize,
@@ -379,6 +383,7 @@ where
             invocation_target,
             inactivity_timeout: default_inactivity_timeout,
             abort_timeout: default_abort_timeout,
+            replay_timeout,
             // Make sure eager_state_size_limit is capped to message size limit
             eager_state_size_limit: cmp::min(eager_state_size_limit, message_size_limit.get()),
             schemas: deployment_metadata_resolver,

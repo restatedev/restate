@@ -438,6 +438,8 @@ pub enum DurabilityMode {
 pub const DEFAULT_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(60);
 // Changed from 60s to 10min in response to issue #3961
 pub const DEFAULT_ABORT_TIMEOUT: Duration = Duration::from_secs(600);
+pub const DEFAULT_REPLAY_TIMEOUT: NonZeroFriendlyDuration =
+    NonZeroFriendlyDuration::new_unchecked(Duration::from_secs(600));
 /// Default per-invocation initial memory for the outbound budget.
 pub const DEFAULT_PER_INVOCATION_INITIAL_MEMORY: NonZeroByteCount =
     NonZeroByteCount::new(NonZeroUsize::new(32 * 1024).unwrap());
@@ -515,6 +517,22 @@ pub struct InvokerOptions {
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub disable_eager_state: bool,
+
+    /// # Replay timeout
+    ///
+    /// Maximum time an invocation attempt may take to send the invocation's state and
+    /// journal to the service deployment. The attempt reads both from a consistent storage
+    /// snapshot, which is held until everything has been handed over. If the timeout expires,
+    /// the attempt fails and is retried, which releases the snapshot.
+    ///
+    /// This bound is independent of the inactivity and abort timeouts, and it cannot be
+    /// overridden per service or handler. It must be greater than zero.
+    ///
+    /// Default: 10 minutes
+    ///
+    /// Since v1.8.2
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub replay_timeout: NonZeroFriendlyDuration,
 
     /// # Invocation throttling
     ///
@@ -720,6 +738,7 @@ impl Default for InvokerOptions {
             concurrent_invocations_limit: Some(NonZeroUsize::new(24000).expect("is non zero")),
             eager_state_size_limit: None,
             disable_eager_state: false,
+            replay_timeout: DEFAULT_REPLAY_TIMEOUT,
             invocation_throttling: None,
             action_throttling: None,
             memory_limit: NonZeroByteCount::new(

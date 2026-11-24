@@ -183,6 +183,9 @@ const ROCKSDB_DB_PROPERTIES: &[(&str, MetricUnit)] = &[
     ("rocksdb.is-write-stopped", MetricUnit::Count),
     ("rocksdb.num-running-compactions", MetricUnit::Count),
     ("rocksdb.num-running-flushes", MetricUnit::Count),
+    ("rocksdb.num-snapshots", MetricUnit::Count),
+    // Unix timestamp of the oldest unreleased snapshot, 0 if there is none.
+    ("rocksdb.oldest-snapshot-time", MetricUnit::Seconds),
 ];
 
 // Per column-family properties
