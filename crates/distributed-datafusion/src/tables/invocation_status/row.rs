@@ -158,16 +158,9 @@ pub(super) fn append_row(
     if row.is_created_using_restate_version_defined() {
         row.created_using_restate_version(status.created_using_restate_version()?);
     }
-    // Keep V1's projection-dependent scheduled-start behavior for now.
-    let scheduled_start = if matches!(
-        state,
-        Status::Scheduled | Status::Inboxed | Status::Completed
-    ) {
-        row.is_scheduled_at_defined()
-    } else {
-        row.is_scheduled_start_at_defined()
-    };
-    if scheduled_start && let Some(at) = status.inner.execution_time {
+    if row.is_scheduled_start_at_defined()
+        && let Some(at) = status.inner.execution_time
+    {
         row.scheduled_start_at(at as i64);
     }
     if row.is_completion_retention_defined() {
