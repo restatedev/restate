@@ -26,6 +26,9 @@ use crate::net::codec::{WireDecode, WireEncode, encode_as_bilrost};
 use crate::net::{ProtocolVersion, define_service};
 use crate::time::MillisSinceEpoch;
 
+mod prepared_store;
+pub use prepared_store::{PreparedPayloads, PreparedStore};
+
 pub struct LogServerDataService;
 define_service! {
     @service = LogServerDataService,
