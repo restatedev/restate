@@ -68,8 +68,11 @@ use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 use crate::table_util::SchemaBuilder;
 
+mod readiness;
 #[cfg(test)]
 mod tests;
+
+pub use readiness::stats_tables_ready;
 
 macro_rules! table_identity {
     ($table:ident, $schema:ty) => {
