@@ -215,7 +215,7 @@ pub(super) fn covered_prefilter(
     })))
 }
 
-/// The scheduler's stage tables, read as `_idx_entry_by_queue` for a finite set
+/// The scheduler's stage tables, read as `vqueue_stages` for a finite set
 /// of queues. They hold exactly one key per current entry status, maintained
 /// unconditionally by the scheduler. A conservative policy: a queue's entries
 /// are taken to be few, which is not a measurement.

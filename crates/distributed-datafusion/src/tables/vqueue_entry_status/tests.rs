@@ -518,10 +518,10 @@ async fn vqueues_view_matches_v1_stage_reads() {
     // Queue and active-stage restrictions read the stage tables; finished-only,
     // unrestricted and entry-ID reads keep their access paths.
     for (filter, access) in [
-        (format!("id = '{}'", queues[1]), "index=_idx_entry_by_queue"),
+        (format!("id = '{}'", queues[1]), "index=vqueue_stages"),
         (
             "stage IN ('inbox', 'suspended')".to_owned(),
-            "index=_idx_entry_by_queue",
+            "index=vqueue_stages",
         ),
         ("stage = 'finished'".into(), "TableScanExec"),
         (
@@ -620,7 +620,7 @@ async fn vqueues_view_matches_v1_stage_reads() {
         .find(|line| line.contains("IndexScanExec"))
         .unwrap_or_else(|| panic!("{plan}"));
     assert!(
-        source.contains("index=_idx_entry_by_queue")
+        source.contains("index=vqueue_stages")
             && source.contains("stage_values_decoded=302")
             && !source.contains("primary_keys_fetched"),
         "{plan}"
@@ -770,7 +770,7 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
         ))
         .await
     };
-    const INDEX: &str = "_idx_entry_status_by_status_transitioned";
+    const INDEX: &str = "entry_by_status_transitioned/1";
     let select = "SELECT entry_id, status, transitioned_at FROM sys_vqueue_entry_status";
     let indexed = [
         format!(
@@ -880,8 +880,8 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
     let running = "SELECT entry_id, status, transitioned_at FROM sys_vqueue_entry_status \
         WHERE stage = 'running' ORDER BY transitioned_at DESC NULLS LAST LIMIT 5";
     for (sql, index) in [
-        (by_created, "_idx_entry_status_by_status_created"),
-        (running, "_idx_entry_status_by_status_transitioned"),
+        (by_created, "entry_by_status_created/1"),
+        (running, "entry_by_status_transitioned/1"),
     ] {
         let explained = plan(sql, false).await;
         assert!(
@@ -894,7 +894,7 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
     let ui = include_str!("../../ui_queries/vqueues_finished_newest.sql");
     let explained = plan(ui, false).await;
     assert!(
-        explained.contains("index=_idx_entry_status_by_status_created"),
+        explained.contains("index=entry_by_status_created/1"),
         "{explained}"
     );
     let ui_scanned = ui.replacen(
@@ -910,7 +910,7 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
         ORDER BY created_at DESC NULLS LAST LIMIT 9";
     let explained = plan(every_column, false).await;
     assert!(
-        explained.contains("index=_idx_entry_status_by_status_created"),
+        explained.contains("index=entry_by_status_created/1"),
         "{explained}"
     );
     assert_eq!(
@@ -934,7 +934,7 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
     for sql in [failed, undeployed, finished] {
         let explained = plan(sql, false).await;
         assert!(
-            explained.contains("index=_idx_entry_status_by_status_created"),
+            explained.contains("index=entry_by_status_created/1"),
             "{sql}: {explained}"
         );
     }
@@ -972,7 +972,7 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
     );
     let explained = plan(&count, false).await;
     assert!(
-        explained.contains("index=_idx_entry_status_by_status_transitioned"),
+        explained.contains("index=entry_by_status_transitioned/1"),
         "{explained}"
     );
     let counted = rows(&count).await;
@@ -992,7 +992,7 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
         .replace("GROUP BY", "AND needed_memory IS NULL GROUP BY");
     let explained = plan(&conditioned, false).await;
     assert!(
-        !explained.contains("_idx_entry_status") && !explained.contains("_idx_entry_by_queue"),
+        !explained.contains("entry_by_status_") && !explained.contains("vqueue_stages"),
         "{explained}"
     );
     assert_eq!(rows(&conditioned).await, counted);
@@ -1014,9 +1014,8 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
         .concat()
         .join("\n");
     assert!(
-        analyzed.contains(
-            "index=_idx_entry_status_by_status_transitioned, alternatives=[_idx_entry_by_queue]"
-        ) && analyzed.contains("index_candidates_skipped=1")
+        analyzed.contains("index=entry_by_status_transitioned/1, alternatives=[vqueue_stages]")
+            && analyzed.contains("index_candidates_skipped=1")
             && !analyzed.contains("entry_index_scans_not_complete"),
         "{analyzed}"
     );
@@ -1032,13 +1031,13 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
     );
     for sql in [unbounded, until.as_str()] {
         let explained = plan(sql, false).await;
-        assert!(!explained.contains("_idx_entry_status"), "{explained}");
+        assert!(!explained.contains("entry_by_status_"), "{explained}");
     }
     let fetched = by_created.replace("entry_id, status", "entry_id, vqueue_id, status");
     assert_eq!(rows(&fetched).await, scanned(&fetched).await, "{fetched}");
     let analyzed = plan(&fetched, true).await;
     assert!(
-        analyzed.contains("index=_idx_entry_status_by_status_created")
+        analyzed.contains("index=entry_by_status_created/1")
             && !analyzed.contains("entry_index_statuses=0"),
         "{analyzed}"
     );
@@ -1067,10 +1066,7 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
         "SELECT entry_id, stage, status FROM sys_vqueue_entry_status WHERE vqueue_id = '{qid}'"
     );
     let explained = plan(&by_queue, false).await;
-    assert!(
-        explained.contains("index=_idx_entry_by_queue"),
-        "{explained}"
-    );
+    assert!(explained.contains("index=vqueue_stages"), "{explained}");
     let mut read = rows(&by_queue).await;
     let mut expected = scanned(&by_queue).await;
     read.sort();
@@ -1282,8 +1278,8 @@ async fn active_entries_read_through_the_status_index_match_the_scan() {
         .await
     };
     let queue = rows("SELECT vqueue_id FROM sys_vqueue_entry_status LIMIT 1").await[0][0].clone();
-    const INDEX: &str = "_idx_entry_status_by_status_created";
-    const STAGES: &str = "_idx_entry_by_queue";
+    const INDEX: &str = "entry_by_status_created/1";
+    const STAGES: &str = "vqueue_stages";
     let select = "SELECT entry_id, status, created_at FROM sys_vqueue_entry_status";
     let newest = "ORDER BY created_at DESC NULLS LAST";
     let indexed = [
@@ -1397,7 +1393,7 @@ async fn active_entries_read_through_the_status_index_match_the_scan() {
     let sql = format!("{select} WHERE stage IN ('inbox', 'paused') LIMIT 5");
     let explained = plan(&sql, false).await;
     assert!(
-        explained.contains("index=_idx_entry_status_by_status_created"),
+        explained.contains("index=entry_by_status_created/1"),
         "{sql}: {explained}"
     );
     // The read went through the index and skipped nothing.
@@ -1482,7 +1478,7 @@ async fn active_entries_read_through_the_status_index_match_the_scan() {
     );
 }
 
-/// `_idx_entry_by_queue`, the scheduler's stage records, holds every column of
+/// `vqueue_stages`, the scheduler's stage records, holds every column of
 /// an entry status but the metadata exactly as the status does, so a query of
 /// `sys_vqueue_entry_status` or `sys_vqueues` that restricts stages or queues
 /// and needs no metadata column reads the records alone: the same rows as the
@@ -1782,7 +1778,7 @@ async fn the_stage_index_covers_both_tables() {
         assert_eq!(sorted(&sql).await, expected, "{sql}");
         let plan = analyze(&sql).await;
         assert!(
-            plan.contains("index=_idx_entry_by_queue")
+            plan.contains("index=vqueue_stages")
                 && plan.contains(&format!("stage_values_decoded={decoded}"))
                 && !plan.contains("primary_keys_fetched"),
             "covered: {sql}: {plan}"
@@ -1815,7 +1811,7 @@ async fn the_stage_index_covers_both_tables() {
     assert_eq!(sorted(&sql).await, sorted(&scanned(&sql)).await);
     let plan = analyze(&sql).await;
     assert!(
-        plan.contains("index=_idx_entry_by_queue")
+        plan.contains("index=vqueue_stages")
             && plan.contains("primary_keys_fetched=5")
             && !plan.contains("stage_keys_visited"),
         "fetched: {plan}"
