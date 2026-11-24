@@ -23,6 +23,8 @@ type AttributeArgs = syn::punctuated::Punctuated<syn::Meta, syn::Token![,]>;
 enum RuntimeFlavor {
     CurrentThread,
     Threaded,
+    /// A current-thread `LocalRuntime`, which also runs `spawn_local` tasks.
+    Local,
 }
 
 impl RuntimeFlavor {
@@ -30,6 +32,7 @@ impl RuntimeFlavor {
         match s {
             "current_thread" => Ok(RuntimeFlavor::CurrentThread),
             "multi_thread" => Ok(RuntimeFlavor::Threaded),
+            "local" => Ok(RuntimeFlavor::Local),
             "single_thread" => {
                 Err("The single threaded runtime flavor is called `current_thread`.".to_string())
             }
@@ -42,7 +45,7 @@ impl RuntimeFlavor {
                     .to_string(),
             ),
             _ => Err(format!(
-                "No such runtime flavor `{s}`. The runtime flavors are `current_thread` and `multi_thread`."
+                "No such runtime flavor `{s}`. The runtime flavors are `current_thread`, `multi_thread` and `local`."
             )),
         }
     }
@@ -194,14 +197,14 @@ impl Configuration {
 
         let flavor = self.flavor.unwrap_or(self.default_flavor);
         let worker_threads = match (flavor, self.worker_threads) {
-            (F::CurrentThread, Some((_, worker_threads_span))) => {
+            (F::CurrentThread | F::Local, Some((_, worker_threads_span))) => {
                 let msg = format!(
                     "The `worker_threads` option requires the `multi_thread` runtime flavor. Use `#[{}(flavor = \"multi_thread\")]`",
                     self.macro_name(),
                 );
                 return Err(syn::Error::new(worker_threads_span, msg));
             }
-            (F::CurrentThread, None) => None,
+            (F::CurrentThread | F::Local, None) => None,
             (F::Threaded, worker_threads) if self.rt_multi_thread_available => {
                 worker_threads.map(|(val, _span)| val)
             }
@@ -223,7 +226,7 @@ impl Configuration {
                 );
                 return Err(syn::Error::new(start_paused_span, msg));
             }
-            (F::CurrentThread, Some((start_paused, _))) => Some(start_paused),
+            (F::CurrentThread | F::Local, Some((start_paused, _))) => Some(start_paused),
             (_, None) => None,
         };
 
@@ -235,7 +238,7 @@ impl Configuration {
                 );
                 return Err(syn::Error::new(unhandled_panic_span, msg));
             }
-            (F::CurrentThread, Some((unhandled_panic, _))) => Some(unhandled_panic),
+            (F::CurrentThread | F::Local, Some((unhandled_panic, _))) => Some(unhandled_panic),
             (_, None) => None,
         };
 
@@ -429,9 +432,11 @@ fn parse_knobs(mut input: ItemFn, config: FinalConfig) -> TokenStream {
             .default_runtime_handle(rt.handle().clone())
     };
     let mut rt = match config.flavor {
-        RuntimeFlavor::CurrentThread => quote_spanned! {last_stmt_start_span=>
-            ::tokio::runtime::Builder::new_current_thread()
-        },
+        RuntimeFlavor::CurrentThread | RuntimeFlavor::Local => {
+            quote_spanned! {last_stmt_start_span=>
+                ::tokio::runtime::Builder::new_current_thread()
+            }
+        }
         RuntimeFlavor::Threaded => quote_spanned! {last_stmt_start_span=>
             ::tokio::runtime::Builder::new_multi_thread()
         },
@@ -447,6 +452,15 @@ fn parse_knobs(mut input: ItemFn, config: FinalConfig) -> TokenStream {
         let unhandled_panic = v.into_tokens(&crate_path);
         rt = quote_spanned! {last_stmt_start_span=> #rt.unhandled_panic(#unhandled_panic) };
     }
+
+    let build = match config.flavor {
+        RuntimeFlavor::Local => quote_spanned! {last_stmt_start_span=>
+            build_local(::tokio::runtime::LocalOptions::default())
+        },
+        RuntimeFlavor::CurrentThread | RuntimeFlavor::Threaded => {
+            quote_spanned! {last_stmt_start_span=> build() }
+        }
+    };
 
     let generated_attrs = quote! {
         #[::core::prelude::v1::test]
@@ -466,7 +480,7 @@ fn parse_knobs(mut input: ItemFn, config: FinalConfig) -> TokenStream {
             }));
             let rt = #rt
                 .enable_all()
-                .build()
+                .#build
                 .expect("Failed building the Runtime");
 
             let task_center = #tc_builder

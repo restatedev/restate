@@ -190,6 +190,22 @@ impl Handle {
         self.inner.spawn_unmanaged(kind, &name, future)
     }
 
+    /// Like [`Self::spawn_unmanaged`], for futures that aren't `Send`. Must be called from a task
+    /// running on a runtime started with `start_runtime`. Panics on any other runtime.
+    pub fn spawn_unmanaged_local<F, T>(
+        &self,
+        kind: TaskKind,
+        name: impl Into<ReString>,
+        future: F,
+    ) -> Result<TaskHandle<T>, ShutdownError>
+    where
+        F: Future<Output = T> + 'static,
+        T: 'static,
+    {
+        let name = name.into();
+        self.inner.spawn_unmanaged_local(kind, &name, future)
+    }
+
     /// An unmanaged task is one that is not automatically cancelled by the task center on
     /// shutdown. Moreover, the task ID will not be registered with task center and therefore
     /// cannot be "taken" by calling [`TaskCenter::take_task`].
@@ -211,8 +227,8 @@ impl Handle {
         self.inner.spawn_unmanaged_child(kind, &name, future)
     }
 
-    /// Must be called within a Localset-scoped task, not from a normal spawned task.
-    /// If ran from a non-localset task, this will panic.
+    /// Must be called from a task running on a runtime started with `start_runtime`.
+    /// Panics on any other runtime.
     pub fn spawn_local<F>(
         &self,
         kind: TaskKind,
