@@ -228,7 +228,8 @@ impl<'a, RD: ErReads, RS: InvocationTargetResolver> Runner<'a, RD, RS> {
         match notification {
             ErToInvoker::Applied { seq, .. } => {
                 for (result_id, result) in self.book.applied(seq) {
-                    self.write_result(result_id, result);
+                    // Only a call's failure for a target that cannot be invoked is recorded.
+                    self.deliver(result_id, result);
                 }
                 if self.book.all_applied()
                     && let Some(read) = self.blocked.take()
@@ -824,6 +825,54 @@ mod tests {
                     ..
                 }))
             ));
+
+            // D22: the failure of a call to a target that cannot be invoked comes once the call
+            // is applied, and is recorded as delivered when the call is recorded.
+            for (record, first_seq) in [(proto::RecordLevel::RecordDefault, 5), (proto::RecordLevel::RecordNone, 7)] {
+                let id = first_seq as u32 - 3;
+                h.send(proto::CallActionMessage {
+                    service_name: "unknown".into(),
+                    handler_name: "h".into(),
+                    invocation_id_result_id: id,
+                    result_id: id + 1,
+                    record: record.into(),
+                    ..Default::default()
+                });
+                assert!(matches!(
+                    h.effect().await,
+                    (seq, ErEffectKind::Action { .. }) if seq == first_seq
+                ));
+                h.notify(ErToInvoker::Applied { attempt: 1, seq: first_seq });
+                assert!(matches!(
+                    h.written().await,
+                    Some(Message::ResultNotification(ResultNotificationMessage {
+                        result: Some(NotificationResult::InvocationId(_)),
+                        ..
+                    }))
+                ));
+                assert!(matches!(
+                    h.written().await,
+                    Some(Message::ResultNotification(ResultNotificationMessage {
+                        result_id,
+                        result: Some(NotificationResult::Failure(_)),
+                    })) if result_id == id + 1
+                ));
+                if record == proto::RecordLevel::RecordDefault {
+                    assert!(matches!(
+                        h.effect().await,
+                        (
+                            6,
+                            ErEffectKind::Record(ErRecord::ResultDelivered {
+                                result_id: 3,
+                                variant: ResultVariant::Failure
+                            })
+                        )
+                    ));
+                    h.notify(ErToInvoker::Applied { attempt: 1, seq: 6 });
+                }
+            }
+            // Nothing is recorded of the `RECORD_NONE` call's result.
+            assert!(h.effects.try_recv().is_err());
             h.send(proto::EndMessage {
                 output: Some(proto::end_message::Output::Value(proto::Value::default())),
             });

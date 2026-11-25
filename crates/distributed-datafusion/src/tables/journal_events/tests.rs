@@ -44,11 +44,13 @@ async fn journal_events_match_v1_and_id_lookups_skip_other_invocations() {
         related_command_index: Some(2),
         related_command_name: Some("call".to_owned()),
         related_command_type: None,
+        lsn: None,
     };
     let events = [
         Event::TransientError(error.clone()),
         Event::Paused(PausedEvent {
             last_failure: Some(error),
+            lsn: None,
         }),
     ];
     let mut tx = store.transaction();

@@ -129,7 +129,10 @@ async fn key_ordered_reads_come_out_in_their_declared_orders() {
             WriteJournalTable::put_journal_entry(&mut tx, id, index, &entry, &[]).unwrap();
         }
         for lsn in 0..2 {
-            let event = Event::Paused(PausedEvent { last_failure: None });
+            let event = Event::Paused(PausedEvent {
+                last_failure: None,
+                lsn: None,
+            });
             let view = EventView::new(now, lsn as u32, RawEvent::from(event));
             tx.put_journal_event(id, view, lsn).unwrap();
         }

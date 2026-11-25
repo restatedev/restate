@@ -25,7 +25,7 @@ use restate_types::journal_events::raw::RawEvent;
 use restate_types::journal_events::{AttemptCause, AttemptOutcome, Event, PausedEvent};
 use restate_types::vqueues::EntryTargetExt;
 
-use super::{AttemptEnd, record_attempt_ended, set_wake_up};
+use super::{AttemptEnd, lsn, record_attempt_ended, set_wake_up};
 use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::lifecycle::pause_invocation;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
@@ -53,7 +53,10 @@ where
             status,
             response_sink,
         } = self;
-        let paused_event = || RawEvent::from(Event::Paused(PausedEvent { last_failure: None }));
+        let paused_event = RawEvent::from(Event::Paused(PausedEvent {
+            last_failure: None,
+            lsn: lsn(ctx),
+        }));
         let response = match status {
             InvocationStatus::Invoked(mut metadata) => {
                 // A running attempt ends here; one backing off already recorded its end.
@@ -70,13 +73,13 @@ where
                         None,
                     )?;
                 }
-                pause_invocation(ctx, &invocation_id, metadata, paused_event()).await?;
+                pause_invocation(ctx, &invocation_id, metadata, paused_event).await?;
                 // The running attempt is aborted; what it applied stays.
                 ctx.send_abort_invocation_to_invoker(invocation_id);
                 PauseInvocationResponse::Accepted
             }
             InvocationStatus::Suspended { metadata, .. } => {
-                pause_invocation(ctx, &invocation_id, metadata, paused_event()).await?;
+                pause_invocation(ctx, &invocation_id, metadata, paused_event).await?;
                 PauseInvocationResponse::Accepted
             }
             InvocationStatus::Paused(_) => PauseInvocationResponse::AlreadyPaused,

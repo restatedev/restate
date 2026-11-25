@@ -43,10 +43,15 @@ message TransientErrorEvent {
   optional uint32 related_command_index = 5;
   optional string related_command_name = 6;
   optional CommandType related_command_type = 7;
+  // Set only for an invocation on the explicit recovery protocol family: the log position of
+  // the record that wrote the event, to order it among the attempt record.
+  optional uint64 lsn = 8;
 }
 
 message PausedEvent {
   TransientErrorEvent last_failure = 1;
+  // As in TransientErrorEvent.
+  optional uint64 lsn = 2;
 }
 
 message SuspendedEvent {

@@ -163,6 +163,7 @@ mod pb {
                 related_command_index,
                 related_command_name,
                 related_command_type,
+                lsn,
             }: event::TransientErrorEvent,
         ) -> Self {
             TransientErrorEvent {
@@ -174,6 +175,7 @@ mod pb {
                 related_command_name,
                 related_command_type: related_command_type
                     .map(|ct| transient_error_event::CommandType::from(ct).into()),
+                lsn,
             }
         }
     }
@@ -190,6 +192,7 @@ mod pb {
                 related_command_index,
                 related_command_name,
                 related_command_type,
+                lsn,
             }: TransientErrorEvent,
         ) -> Result<Self, Self::Error> {
             Ok(event::TransientErrorEvent {
@@ -206,6 +209,7 @@ mod pb {
                             .map(Into::into)
                     })
                     .transpose()?,
+                lsn,
             })
         }
     }
@@ -267,9 +271,10 @@ mod pb {
     }
 
     impl From<event::PausedEvent> for PausedEvent {
-        fn from(event::PausedEvent { last_failure }: event::PausedEvent) -> Self {
+        fn from(event::PausedEvent { last_failure, lsn }: event::PausedEvent) -> Self {
             PausedEvent {
                 last_failure: last_failure.map(Into::into),
+                lsn,
             }
         }
     }
@@ -277,9 +282,10 @@ mod pb {
     impl TryFrom<PausedEvent> for event::PausedEvent {
         type Error = anyhow::Error;
 
-        fn try_from(PausedEvent { last_failure }: PausedEvent) -> Result<Self, Self::Error> {
+        fn try_from(PausedEvent { last_failure, lsn }: PausedEvent) -> Result<Self, Self::Error> {
             Ok(event::PausedEvent {
                 last_failure: last_failure.map(|f| f.try_into()).transpose()?,
+                lsn,
             })
         }
     }

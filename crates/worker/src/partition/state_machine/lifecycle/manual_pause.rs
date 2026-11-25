@@ -71,7 +71,10 @@ where
                     ctx,
                     &invocation_id,
                     metadata,
-                    RawEvent::from(Event::Paused(PausedEvent { last_failure: None })),
+                    RawEvent::from(Event::Paused(PausedEvent {
+                        last_failure: None,
+                        lsn: None,
+                    })),
                 )
                 .await?;
 
@@ -90,7 +93,10 @@ where
                     ctx,
                     &invocation_id,
                     metadata,
-                    RawEvent::from(Event::Paused(PausedEvent { last_failure: None })),
+                    RawEvent::from(Event::Paused(PausedEvent {
+                        last_failure: None,
+                        lsn: None,
+                    })),
                 )
                 .await?;
 

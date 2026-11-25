@@ -802,6 +802,7 @@ where
                             related_command_index: None,
                             related_command_name: None,
                             related_command_type: None,
+                            lsn: None,
                         };
                         ErEffectKind::Failed {
                             error_event: Some(RawEvent::from(Event::TransientError(event))),
@@ -1148,6 +1149,7 @@ where
                             kind: EffectKind::Paused {
                                 paused_event: RawEvent::from(Event::Paused(PausedEvent {
                                     last_failure: None,
+                                    lsn: None,
                                 })),
                             },
                         },
@@ -1216,6 +1218,7 @@ where
                             kind: EffectKind::Paused {
                                 paused_event: RawEvent::from(Event::Paused(PausedEvent {
                                     last_failure: None,
+                                    lsn: None,
                                 })),
                             },
                         },
@@ -1396,6 +1399,7 @@ where
                             kind: EffectKind::Paused {
                                 paused_event: RawEvent::from(Event::Paused(PausedEvent {
                                     last_failure: ism.last_transient_error_event,
+                                    lsn: None,
                                 })),
                             },
                         },
@@ -1520,6 +1524,7 @@ where
                     related_command_index: invocation_error_report.related_entry_index,
                     related_command_name: invocation_error_report.related_entry_name.clone(),
                     related_command_type: journal_v2_related_command_type,
+                    lsn: None,
                 };
 
                 // Some trivial deduplication here: if we already sent this transient error in the previous retry, don't send it again
@@ -1596,6 +1601,7 @@ where
                     related_command_index: invocation_error_report.related_entry_index,
                     related_command_name: invocation_error_report.related_entry_name.clone(),
                     related_command_type: journal_v2_related_command_type,
+                    lsn: None,
                 };
 
                 // Some trivial deduplication here: if we already sent this transient error in the previous retry, don't send it again
@@ -1672,7 +1678,9 @@ where
                         related_command_index: invocation_error_report.related_entry_index,
                         related_command_name: invocation_error_report.related_entry_name.clone(),
                         related_command_type: journal_v2_related_command_type,
+                        lsn: None,
                     }),
+                    lsn: None,
                 };
 
                 let _ = self

@@ -781,18 +781,17 @@ impl ActionContext<'_> {
                             result_id.get(),
                             from_response_result(ResponseResult::Failure(err.clone())),
                         )),
-                        None => {
-                            external.push(result_id.get());
-                            if !display.is_none() {
-                                book.label(
-                                    result_id.get(),
-                                    OutstandingKind::Call,
-                                    display
-                                        .label(|| format!("{}/{}", target.service, target.handler)),
-                                    record.is_some(),
-                                );
-                            }
-                        }
+                        None => external.push(result_id.get()),
+                    }
+                    // Labelled either way: the failure of a target that cannot be invoked is
+                    // delivered, and recorded, like what a callee returned.
+                    if !display.is_none() {
+                        book.label(
+                            result_id.get(),
+                            OutstandingKind::Call,
+                            display.label(|| format!("{}/{}", target.service, target.handler)),
+                            record.is_some(),
+                        );
                     }
                 }
                 Classified::Propose {

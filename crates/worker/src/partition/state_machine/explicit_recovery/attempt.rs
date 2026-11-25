@@ -33,7 +33,7 @@ use restate_worker_api::invoker::explicit_recovery::{ErFailureOutcome, RestartRu
 
 use super::end_invocation::end_invocation;
 use super::{
-    AttemptEnd, ErStorage, MAX_IDLE_RESTARTS, er_of, lsn, put_event, record_attempt_ended,
+    AttemptEnd, ErStorage, MAX_IDLE_RESTARTS, er_of, lsn, put_event, record_attempt_ended, with_lsn,
 };
 use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::lifecycle::{
@@ -124,7 +124,7 @@ where
                 ApplyEventCommand {
                     invocation_id: &invocation_id,
                     invocation_status: &InvocationStatus::Invoked(metadata.clone()),
-                    event,
+                    event: with_lsn(ctx, event),
                 }
                 .apply(ctx)
                 .await?;
@@ -150,7 +150,10 @@ where
                 ctx,
                 &invocation_id,
                 metadata,
-                RawEvent::from(Event::Paused(PausedEvent { last_failure })),
+                RawEvent::from(Event::Paused(PausedEvent {
+                    last_failure,
+                    lsn: lsn(ctx),
+                })),
             )
             .await
         }
@@ -199,6 +202,7 @@ where
                 related_command_index: None,
                 related_command_name: None,
                 related_command_type: None,
+                lsn: None,
             };
             let failure = EventFailure {
                 code: u32::from(u16::from(event.error_code)),

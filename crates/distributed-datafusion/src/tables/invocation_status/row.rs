@@ -146,7 +146,7 @@ pub(super) fn append_row(
     }
     row.status(public);
     if row.is_pinned_deployment_id_defined()
-        && let Some(deployment) = status.deployment_id()?
+        && let Some(deployment) = status.pinned_deployment_id()?
     {
         row.fmt_pinned_deployment_id(deployment);
     }

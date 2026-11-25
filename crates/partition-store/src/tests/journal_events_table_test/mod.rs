@@ -35,6 +35,7 @@ async fn event() {
         related_command_index: None,
         related_command_name: Some("Input".to_string()),
         related_command_type: None,
+        lsn: None,
     })
     .into();
     let event_view = EventView::new(MillisSinceEpoch::now(), 0, event);

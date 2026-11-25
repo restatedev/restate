@@ -332,7 +332,7 @@ fn fill_pinned_deployment(
     status: &InvocationStatusV2Lazy,
 ) -> Result<(), ConversionError> {
     if row.is_pinned_deployment_id_defined()
-        && let Some(deployment_id) = status.deployment_id()?
+        && let Some(deployment_id) = status.pinned_deployment_id()?
     {
         row.fmt_pinned_deployment_id(deployment_id);
     }

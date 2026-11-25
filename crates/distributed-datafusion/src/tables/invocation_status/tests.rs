@@ -23,8 +23,9 @@ use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, InvocationStatus,
-    PreFlightInvocationMetadata, ScheduledInvocation, StatusTimestamps, WriteInvocationStatusTable,
+    CompletedInvocation, ExplicitRecoveryStatus, InFlightInvocationMetadata, InboxedInvocation,
+    InvocationStatus, PreFlightInvocationMetadata, ScheduledInvocation, StatusTimestamps,
+    WriteInvocationStatusTable,
 };
 use restate_storage_api::vqueue_table::stats::EntryStatistics;
 use restate_storage_api::vqueue_table::{
@@ -35,7 +36,7 @@ use restate_storage_query_api::tables::invocation_status::InvocationStatus as In
 use restate_types::config::Configuration;
 use restate_types::errors::KILLED_INVOCATION_ERROR;
 use restate_types::identifiers::{
-    InvocationId, InvocationUuid, PartitionId, ServiceId, WithPartitionKey,
+    DeploymentId, InvocationId, InvocationUuid, PartitionId, ServiceId, WithPartitionKey,
 };
 use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType, WorkflowHandlerType};
 use restate_types::partition_table::Partition;
@@ -63,8 +64,9 @@ async fn persisted_invocations_match_v1_for_scans_lookups_and_projections() {
     let ids: Vec<_> = (0..32)
         .map(|index| InvocationId::from_parts(index, InvocationUuid::from_u128(index.into())))
         .collect();
+    let er_deployment = DeploymentId::new();
     for (index, id) in ids.iter().enumerate() {
-        let status = match index % 6 {
+        let mut status = match index % 6 {
             0 => InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
             1 => InvocationStatus::Completed(CompletedInvocation::mock_neo()),
             2 => InvocationStatus::Paused(InFlightInvocationMetadata::mock()),
@@ -83,6 +85,18 @@ async fn persisted_invocations_match_v1_for_scans_lookups_and_projections() {
                 metadata: PreFlightInvocationMetadata::mock(),
             }),
         };
+        // The explicit recovery family keeps its pin in its own part of the status.
+        if index < 2 {
+            let er = Some(ExplicitRecoveryStatus {
+                pinned_deployment_id: Some(er_deployment),
+                ..Default::default()
+            });
+            match &mut status {
+                InvocationStatus::Invoked(metadata) => metadata.explicit_recovery = er,
+                InvocationStatus::Completed(completed) => completed.explicit_recovery = er,
+                _ => unreachable!(),
+            }
+        }
         tx.put_invocation_status(id, &status).unwrap();
     }
     tx.commit().await.unwrap();
@@ -120,6 +134,21 @@ async fn persisted_invocations_match_v1_for_scans_lookups_and_projections() {
             )
             .await,
             [["", "", "false", "26"], ["", "", "true", "6"]]
+        );
+    }
+    // Both show the pin of the explicit recovery invocations (running and completed), with no
+    // protocol version: the family negotiates it at every attempt.
+    for engine in [new.as_ref(), old.as_ref()] {
+        assert_eq!(
+            rows(
+                engine,
+                &format!(
+                    "SELECT id FROM sys_invocation WHERE pinned_deployment_id = \
+                     '{er_deployment}' AND pinned_service_protocol_version IS NULL ORDER BY id"
+                )
+            )
+            .await,
+            [[ids[0].to_string()], [ids[1].to_string()]]
         );
     }
     // `sys_invocation` shows each invocation's `canonical_id` as its status does.

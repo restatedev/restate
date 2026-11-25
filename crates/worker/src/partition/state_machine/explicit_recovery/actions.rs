@@ -12,7 +12,10 @@ use std::num::NonZeroU32;
 
 use tracing::warn;
 
-use restate_storage_api::invocation_status_table::{InFlightInvocationMetadata, InvocationStatus};
+use restate_storage_api::invocation_status_table::{
+    ExplicitRecoveryStatus, InFlightInvocationMetadata, InvocationStatus,
+    WriteInvocationStatusTable,
+};
 use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
@@ -51,16 +54,7 @@ where
     }
 
     let er = er_of(&mut metadata);
-    let mut changed = false;
-    if !er.action_applied {
-        er.action_applied = true;
-        changed = true;
-    }
-    if er.idle_restart_streak != 0 {
-        // D63: an applied action ends the streak of idle restarts.
-        er.idle_restart_streak = 0;
-        changed = true;
-    }
+    let mut changed = note_applied(er);
     if let Some(highest) = highest_result_id
         && highest >= er.next_result_id
     {
@@ -73,6 +67,31 @@ where
             .put_invocation_status(&invocation_id, &InvocationStatus::Invoked(metadata))?;
     }
     Ok(())
+}
+
+/// D63: an action of the attempt was applied, which ends the streak of idle restarts. Every
+/// action the partition processor applies counts; reads and `Flush`, which change nothing, do
+/// not, even when recorded. Returns whether the status changed.
+fn note_applied(er: &mut ExplicitRecoveryStatus) -> bool {
+    let changed = !er.action_applied || er.idle_restart_streak != 0;
+    er.action_applied = true;
+    er.idle_restart_streak = 0;
+    changed
+}
+
+/// Applies a record proposed alone: a recorded read or `Flush`, a span, or a delivered result.
+/// None of them is an applied action for the idle-restart streak (D63): reads and `Flush` change
+/// nothing durable, and spans are for display only, whatever their record level.
+pub(super) fn on_record_effect<S, P>(
+    ctx: &mut StateMachineApplyContext<'_, S, P>,
+    invocation_id: &InvocationId,
+    metadata: InFlightInvocationMetadata,
+    record: ErRecord,
+) -> Result<(), Error>
+where
+    S: WriteJournalEventsTable + WriteInvocationStatusTable,
+{
+    on_record(ctx, invocation_id, &metadata, record)
 }
 
 /// Writes what the record of the attempt keeps of an action, a span or a delivered result: one

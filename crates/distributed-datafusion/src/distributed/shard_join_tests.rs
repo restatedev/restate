@@ -1641,7 +1641,10 @@ async fn id_joins_merge_on_native_orders() {
         // Events of both new invocations.
         for uuid in [1, 256] {
             for lsn in 0..2 {
-                let event = RawEvent::from(Event::Paused(PausedEvent { last_failure: None }));
+                let event = RawEvent::from(Event::Paused(PausedEvent {
+                    last_failure: None,
+                    lsn: None,
+                }));
                 tx.put_journal_event(
                     &invocation(uuid),
                     EventView::new(now, lsn as u32, event),

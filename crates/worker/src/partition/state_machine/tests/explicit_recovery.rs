@@ -867,12 +867,36 @@ async fn idle_restarts_are_bounded() {
         },
     };
 
-    // Three idle restarts in a row restart.
-    for attempt in 1..=3 {
+    // Three idle restarts in a row restart. Reads and `Flush` are not applied actions, even
+    // when recorded, and neither is a delivered result.
+    let read = |kind| ErRecord::Action(Box::new(recorded(kind, "", ActionSummary::default())));
+    let not_actions = [
+        vec![read("GetState"), read("Flush")],
+        vec![read("GetStateKeys"), read("ReadSignal")],
+        vec![ErRecord::ResultDelivered {
+            result_id: 1,
+            variant: ResultVariant::Value,
+        }],
+    ];
+    for (attempt, records) in (1..=3).zip(not_actions) {
         run(&mut test_env, inv.id).await;
+        let mut seq = 0;
+        for record in records {
+            seq += 1;
+            apply_effect(
+                &mut test_env,
+                effect(inv.id, attempt, seq, ErEffectKind::Record(record)),
+            )
+            .await;
+        }
         apply_effect(
             &mut test_env,
-            effect(inv.id, attempt, 1, restart(RestartRule::NothingOutstanding)),
+            effect(
+                inv.id,
+                attempt,
+                seq + 1,
+                restart(RestartRule::NothingOutstanding),
+            ),
         )
         .await;
         assert_eq!(
@@ -880,13 +904,21 @@ async fn idle_restarts_are_bounded() {
             (Stage::Inbox, Status::Yielded, 0)
         );
     }
-    // The fourth is a failure: the retry policy applies.
+    // The fourth is a failure: the retry policy applies. Its error event carries the log
+    // position, as the attempt record does.
     run(&mut test_env, inv.id).await;
-    apply_effect(
-        &mut test_env,
-        effect(inv.id, 4, 1, restart(RestartRule::NoAnswer)),
-    )
-    .await;
+    test_env
+        .apply_at(
+            commands::ExplicitRecoveryEffectCommand::test_envelope(effect(
+                inv.id,
+                4,
+                1,
+                restart(RestartRule::NoAnswer),
+            )),
+            MillisSinceEpoch::now(),
+            Lsn::new(42),
+        )
+        .await;
     assert_eq!(
         stage_and_status(&mut test_env, inv.id).await,
         (Stage::Inbox, Status::BackingOff, 2)
@@ -894,6 +926,12 @@ async fn idle_restarts_are_bounded() {
     assert_eq!(
         er_status(&mut test_env, inv.id).await.idle_restart_streak,
         4
+    );
+    assert_that!(
+        test_env.read_journal_events(&inv.id).await,
+        contains(pat!(Event::TransientError(pat!(
+            restate_types::journal_events::TransientErrorEvent { lsn: eq(Some(42)) }
+        ))))
     );
 
     // A restart for a reason of the runtime's own never counts, and resets the retry counters.
@@ -937,6 +975,38 @@ async fn idle_restarts_are_bounded() {
         er_status(&mut test_env, inv.id).await.idle_restart_streak,
         0
     );
+
+    // A span is for display only: it does not end the streak (D63).
+    run(&mut test_env, inv.id).await;
+    apply_effect(
+        &mut test_env,
+        effect(inv.id, 7, 1, restart(RestartRule::NothingOutstanding)),
+    )
+    .await;
+    assert_eq!(
+        er_status(&mut test_env, inv.id).await.idle_restart_streak,
+        1
+    );
+    run(&mut test_env, inv.id).await;
+    let span = ErRecord::SpanStart {
+        span_id: 1,
+        parent_span_id: None,
+        name: "working".to_owned(),
+    };
+    apply_effect(
+        &mut test_env,
+        effect(inv.id, 8, 1, ErEffectKind::Record(span)),
+    )
+    .await;
+    apply_effect(
+        &mut test_env,
+        effect(inv.id, 8, 2, restart(RestartRule::NothingOutstanding)),
+    )
+    .await;
+    assert_eq!(
+        er_status(&mut test_env, inv.id).await.idle_restart_streak,
+        2
+    );
     test_env.shutdown().await;
 }
 
@@ -964,6 +1034,14 @@ async fn kill_pause_resume_and_purge() {
     assert_that!(
         status(&mut test_env, inv.id).await,
         pat!(InvocationStatus::Paused(_))
+    );
+    // The pause's event carries the log position, as the attempt record does (`apply` applies
+    // at position 1).
+    assert_that!(
+        test_env.read_journal_events(&inv.id).await,
+        contains(pat!(Event::Paused(pat!(
+            restate_types::journal_events::PausedEvent { lsn: eq(Some(1)) }
+        ))))
     );
     test_env
         .apply(commands::ResumeInvocationCommand::test_envelope(

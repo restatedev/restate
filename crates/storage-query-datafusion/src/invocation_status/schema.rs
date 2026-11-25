@@ -103,11 +103,14 @@ define_table!(sys_invocation_status(
 
     /// The ID of the service deployment that started processing this invocation, and will continue
     /// to do so (e.g. for retries). This gets set after the first journal entry has been stored for
-    /// this invocation.
+    /// this invocation. For an invocation on the explicit recovery protocol, it gets set when its
+    /// first attempt starts.
     pinned_deployment_id: DataType::LargeUtf8,
 
     /// The negotiated protocol version used for this invocation.
-    /// This gets set after the first journal entry has been stored for this invocation.
+    /// This gets set after the first journal entry has been stored for this invocation. Always
+    /// empty for an invocation on the explicit recovery protocol, which negotiates its version at
+    /// every attempt.
     pinned_service_protocol_version: DataType::UInt32,
 
     /// The ID of the trace that is assigned to this invocation. Only relevant when tracing is

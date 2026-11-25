@@ -4530,6 +4530,8 @@ pub mod v1 {
             pub vqueue_id: Option<&'a [u8]>,
             // 35
             pub limit_key: &'a [u8],
+            // 37
+            pub explicit_recovery_lazy: Option<&'a [u8]>,
         }
 
         impl<'a> InvocationStatusV2Lazy<'a> {
@@ -4646,6 +4648,15 @@ pub mod v1 {
                             error.push(STRUCT_NAME, "limit_key");
                             error
                         })
+                    }
+                    37u32 => {
+                        let value = &mut self.explicit_recovery_lazy;
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
+                                error.push(STRUCT_NAME, "explicit_recovery_lazy");
+                                error
+                            },
+                        )
                     }
                     _ => prost::Message::merge_field(&mut self.inner, tag, wire_type, buf, ctx),
                 }
@@ -4784,6 +4795,27 @@ pub mod v1 {
                         .map(Some),
                     None => Ok(None),
                 }
+            }
+
+            /// The pinned deployment: the status' own, or, on the explicit recovery family,
+            /// the one its first attempt pinned.
+            pub fn pinned_deployment_id(
+                &self,
+            ) -> std::result::Result<Option<DeploymentId>, ConversionError> {
+                if self.deployment_id.is_some() {
+                    return self.deployment_id();
+                }
+                let Some(explicit_recovery) = self.explicit_recovery_lazy else {
+                    return Ok(None);
+                };
+                super::invocation_status_v2::ExplicitRecoveryStatus::decode(explicit_recovery)
+                    .map_err(|_| ConversionError::invalid_data_static("explicit_recovery"))?
+                    .pinned_deployment_id
+                    .map(|id| {
+                        id.parse()
+                            .map_err(|_| ConversionError::invalid_data_static("deployment_id"))
+                    })
+                    .transpose()
             }
 
             pub fn response_result(

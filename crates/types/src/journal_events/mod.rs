@@ -83,6 +83,10 @@ pub struct TransientErrorEvent {
     pub related_command_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub related_command_type: Option<CommandType>,
+    /// Set only for an invocation on the explicit recovery protocol family, as in its attempt
+    /// record: the log position of the record that wrote the event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lsn: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +94,9 @@ pub struct PausedEvent {
     /// This is potentially empty if the service was manually paused
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_failure: Option<TransientErrorEvent>,
+    /// As in [`TransientErrorEvent`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lsn: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

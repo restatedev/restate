@@ -169,7 +169,9 @@ mod tests {
                 related_command_index: None,
                 related_command_name: Some("my command".to_string()),
                 related_command_type: None,
+                lsn: None,
             }),
+            lsn: None,
         });
 
         // Check we just pause
@@ -219,7 +221,9 @@ mod tests {
                 related_command_index: None,
                 related_command_name: Some("my command".to_string()),
                 related_command_type: None,
+                lsn: None,
             }),
+            lsn: None,
         })
         .into();
 

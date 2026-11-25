@@ -56,6 +56,7 @@ use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::ResponseResult;
+use restate_types::journal_events::raw::RawEvent;
 use restate_types::journal_events::{
     AttemptCause, AttemptEndedEvent, AttemptOutcome, Event, EventFailure, OutstandingResult,
     WokenBy,
@@ -180,6 +181,26 @@ where
 /// The log position of the record being applied, for the events of the attempt record.
 pub(super) fn lsn<S, P>(ctx: &StateMachineApplyContext<'_, S, P>) -> Option<u64> {
     Some(ctx.record_lsn.as_u64())
+}
+
+/// An event of durable execution written for an invocation of this family, with the log
+/// position of its record, so that it can be ordered among the attempt record (docs/14).
+pub(super) fn with_lsn<S, P>(
+    ctx: &StateMachineApplyContext<'_, S, P>,
+    event: RawEvent,
+) -> RawEvent {
+    let lsn = lsn(ctx);
+    match Event::try_from(event.clone()) {
+        Ok(Event::TransientError(mut e)) => {
+            e.lsn = lsn;
+            Event::TransientError(e).into()
+        }
+        Ok(Event::Paused(mut e)) => {
+            e.lsn = lsn;
+            Event::Paused(e).into()
+        }
+        _ => event,
+    }
 }
 
 /// How an attempt ended, for its [`AttemptEndedEvent`].
@@ -369,7 +390,7 @@ where
                 forward(ctx, invocation_id, ErToInvoker::Applied { attempt, seq });
             }
             ErEffectKind::Record(record) => {
-                actions::on_record(ctx, &invocation_id, &metadata, record)?;
+                actions::on_record_effect(ctx, &invocation_id, metadata, record)?;
                 forward(ctx, invocation_id, ErToInvoker::Applied { attempt, seq });
             }
             ErEffectKind::End(output) => {
