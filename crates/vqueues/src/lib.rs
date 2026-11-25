@@ -497,9 +497,18 @@ where
         // Update vqueue meta in storage
         self.update_vqueue(&update);
 
-        // We can be asked to wake up but not run immediately (or get a lower run_at for priority
-        // boosting). If that's the case, we mutate the entry key to reflect that.
-        let modified_key = header.entry_key().set_run_at(run_at);
+        // We can be asked to wake up at a specific `run_at` (e.g., retry backoff or priority
+        // boosting). When `run_at` is `None` (e.g., partition leader failover), keep the original
+        // `run_at` for FIFO ordering unless it lies ahead of `at` (for example, after a backward
+        // wall-clock step), in which case clamp it to `at`.
+        let effective_run_at = match run_at {
+            Some(ts) => Some(ts),
+            None => {
+                let at_rough = RoughTimestamp::from(at);
+                (header.entry_key().run_at() > at_rough).then_some(at_rough)
+            }
+        };
+        let modified_key = header.entry_key().set_run_at(effective_run_at);
 
         let stats = Self::mark_transition(at, header.stats());
 
@@ -805,9 +814,16 @@ where
 
         self.update_vqueue(&update);
 
-        // We can be asked to wake up but not run immediately (or get a lower run_at for priority
-        // boosting). If that's the case, we mutate the entry key to reflect that.
-        let modified_key = header.entry_key().set_run_at(run_at);
+        // Same clamping as `yield_entry`: when waking up to run immediately (`run_at: None`), do
+        // not leave a `run_at` from before a backward clock step in the future relative to `at`.
+        let effective_run_at = match run_at {
+            Some(ts) => Some(ts),
+            None => {
+                let at_rough = RoughTimestamp::from(at);
+                (header.entry_key().run_at() > at_rough).then_some(at_rough)
+            }
+        };
+        let modified_key = header.entry_key().set_run_at(effective_run_at);
 
         let (status, metadata, is_error) = match reason {
             YieldReason::Unknown

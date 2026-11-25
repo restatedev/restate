@@ -20,7 +20,9 @@ use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::EntryMetadata;
 use restate_storage_api::vqueue_table::metadata::VQueueMeta;
 use restate_storage_api::vqueue_table::scheduler::YieldReason;
-use restate_storage_api::vqueue_table::{EntryKey, EntryValue, VQueueStore, stats::WaitStats};
+use restate_storage_api::vqueue_table::{
+    EntryKey, EntryValue, Status, VQueueStore, stats::WaitStats,
+};
 use restate_types::vqueues::{EntryId, VQueueId};
 use restate_worker_api::ResourceKind;
 
@@ -342,9 +344,9 @@ impl<S: VQueueStore> VQueueState<S> {
     }
 
     pub fn check_eligibility(&self, meta: &VQueueMeta) -> DetailedEligibility {
-        let inbox_head_key = match self.queue.head() {
+        let (inbox_head_key, inbox_head_value) = match self.queue.head() {
             Some(QueueItem::Running { .. }) => return DetailedEligibility::EligibleRunning,
-            Some(QueueItem::Inbox { key, .. }) => key,
+            Some(QueueItem::Inbox { key, value }) => (key, value),
             Some(QueueItem::None) => return DetailedEligibility::Empty,
             None if self.queue.remaining_in_running_stage() > 0 => {
                 return DetailedEligibility::EligibleRunning;
@@ -353,8 +355,17 @@ impl<S: VQueueStore> VQueueState<S> {
             None => return DetailedEligibility::Empty,
         };
 
-        // Only applies to inboxed items.
-        if inbox_head_key.run_at() > SchedulerClock.now_millis() {
+        // Only entries that were explicitly delayed (`Scheduled`) or are waiting for a retry
+        // backoff (`BackingOff`) are gated by `SchedulerClock`. Entries with `New`, `Started`, or
+        // `Yielded` status carry `run_at` purely as an ASAP/FIFO ordering timestamp (typically the
+        // HLC record creation time); gating them on `SchedulerClock` would stall running/ASAP
+        // invocations — while holding any virtual-object lock — whenever the wall clock steps
+        // backward (e.g., an NTP correction followed by a restart).
+        if matches!(
+            inbox_head_value.status,
+            Status::Scheduled | Status::BackingOff
+        ) && inbox_head_key.run_at() > SchedulerClock.now_millis()
+        {
             return DetailedEligibility::Scheduled(inbox_head_key.run_at());
         }
 
