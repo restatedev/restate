@@ -16,6 +16,7 @@ mod network_server;
 mod query;
 mod republish;
 mod roles;
+mod status_metrics;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -500,6 +501,10 @@ impl Node {
     pub async fn start(self) -> Result<(), anyhow::Error> {
         assert!(TaskCenter::try_set_address_book(self.address_book));
         let config = self.updateable_config.snapshot();
+
+        TaskCenter::with_current(|tc| {
+            status_metrics::spawn_status_reporters(tc.health(), &config)
+        })?;
 
         let metadata_writer = self.metadata_manager.writer();
         let metadata = Metadata::current();
