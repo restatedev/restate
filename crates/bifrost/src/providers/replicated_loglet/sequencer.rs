@@ -28,6 +28,7 @@ use restate_types::{
     GenerationalNodeId,
     config::Configuration,
     logs::{LogletId, LogletOffset, Record, RecordCache, SequenceNumber, TailOffsetWatch},
+    net::log_server::PreparedPayloads,
     replicated_loglet::ReplicatedLogletParams,
     replication::{NodeSet, ReplicationProperty},
 };
@@ -292,12 +293,13 @@ impl<T: TransportConnect> Sequencer<T> {
             .extend(*self.sequencer_shared_state.loglet_id(), offset, &payloads);
 
         let (loglet_commit, commit_resolver) = LogletCommit::deferred();
+        let prepared_payloads = PreparedPayloads::new(payloads);
 
         let appender = SequencerAppender::new(
             Arc::clone(&self.sequencer_shared_state),
             self.networking.clone(),
             offset,
-            payloads,
+            prepared_payloads,
             permit,
             commit_resolver,
         );
