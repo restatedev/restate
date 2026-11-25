@@ -182,9 +182,9 @@ impl Loglet for LocalLoglet {
             // lock dropped
         };
 
-        let _ = receiver.await.map_err(|_| {
+        receiver.await.unwrap_or_else(|_| {
             warn!("Unsure if the local loglet record was written, the ack channel was dropped");
-            ShutdownError
+            Err(ShutdownError.into())
         })?;
 
         // Publish the offset, to `find_tail` and to the tail watch, before reading `sealed`.
@@ -293,20 +293,23 @@ impl Loglet for LocalLoglet {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use futures::TryStreamExt;
-    use googletest::prelude::eq;
-    use googletest::{IntoTestResult, assert_that, elements_are};
+    use googletest::prelude::{elements_are, eq, err, pat};
+    use googletest::{IntoTestResult, assert_that};
     use test_log::test;
 
-    use crate::loglet::Loglet;
-    use restate_core::TestCoreEnvBuilder;
+    use restate_core::{TaskCenter, TestCoreEnvBuilder};
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::Configuration;
+    use restate_types::config::{Configuration, LocalLogletOptionsBuilder};
+    use restate_types::errors::MaybeRetryableError;
     use restate_types::live::{Live, LiveLoadExt};
     use restate_types::logs::Keys;
     use restate_types::logs::metadata::{LogletParams, ProviderKind};
 
     use super::*;
+    use crate::loglet::Loglet;
 
     macro_rules! run_test {
         ($test:ident) => {
@@ -377,6 +380,130 @@ mod tests {
             )?);
             crate::loglet::loglet_tests::append_after_seal_concurrent(loglet).await?;
         }
+
+        Ok(())
+    }
+
+    /// A failed RocksDB write fails its append, drops already-queued and subsequent writes across
+    /// all loglets sharing the writer (avoiding offset holes), triggers node shutdown, and leaves
+    /// durable state at the last committed record for restart recovery.
+    #[test(restate_core::test)]
+    async fn append_is_not_acked_when_write_fails() -> googletest::Result<()> {
+        let _node_env = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_provider_kind(ProviderKind::Local)
+            .build()
+            .await;
+        RocksDbManager::init();
+
+        // Batch size of 1 ensures the second concurrent append queues into the next batch rather
+        // than coalescing into the failing write batch.
+        let mut config = Configuration::default();
+        config.bifrost.local = LocalLogletOptionsBuilder::default()
+            .writer_batch_commit_count(1)
+            .build()?;
+        let local_loglet_config = Live::from_value(config).map(|config| &config.bifrost.local);
+
+        let log_store = RocksDbLogStore::create(local_loglet_config.clone()).await?;
+        let writer = log_store.create_writer();
+        let fail_next_commit = writer.fail_next_commit();
+        let log_writer = writer.start(local_loglet_config)?;
+        let loglet = Arc::new(LocalLoglet::create(
+            42,
+            log_store.clone(),
+            log_writer.clone(),
+        )?);
+        let other_loglet = LocalLoglet::create(43, log_store.clone(), log_writer.clone())?;
+
+        // Baseline: a healthy append commits at offset 1 and moves the tail to 2.
+        let first_offset = loglet
+            .enqueue_batch(vec![Record::from("first")].into())
+            .await?
+            .await?;
+        assert_that!(first_offset, eq(LogletOffset::OLDEST));
+        assert_that!(
+            loglet.find_tail(FindTailOptions::default()).await?,
+            eq(TailState::Open(LogletOffset::from(2)))
+        );
+
+        // One-shot write failure: the failing append returns a terminal error, and an append
+        // already queued behind it fails with Shutdown instead of committing at offset 3.
+        fail_next_commit.store(true, Ordering::Release);
+        let (lost, queued) = tokio::join!(
+            loglet.enqueue_batch(vec![Record::from("lost")].into()),
+            loglet.enqueue_batch(vec![Record::from("queued")].into()),
+        );
+        let lost_err = lost
+            .map(|_| ())
+            .expect_err("failed RocksDB write must not be acknowledged");
+        assert!(
+            !lost_err.retryable(),
+            "write error should be terminal: {lost_err}"
+        );
+        assert_that!(lost_err, pat!(OperationError::Other(_)));
+        assert_that!(queued.map(|_| ()), err(pat!(OperationError::Shutdown(_))));
+        assert!(
+            !fail_next_commit.load(Ordering::Acquire),
+            "one-shot failure was consumed so RocksDB would accept subsequent writes"
+        );
+
+        // Subsequent operations fail with Shutdown even though RocksDB would now accept writes —
+        // both on this loglet and on other loglets sharing the writer.
+        assert_that!(
+            loglet
+                .enqueue_batch(vec![Record::from("after-lost")].into())
+                .await
+                .map(|_| ()),
+            err(pat!(OperationError::Shutdown(_)))
+        );
+        assert_that!(
+            other_loglet
+                .enqueue_batch(vec![Record::from("other")].into())
+                .await
+                .map(|_| ()),
+            err(pat!(OperationError::Shutdown(_)))
+        );
+        assert_that!(loglet.seal().await, err(pat!(OperationError::Shutdown(_))));
+
+        // In-memory tail and readable records cover only the committed record.
+        let tail = loglet.find_tail(FindTailOptions::default()).await?;
+        assert_that!(tail, eq(TailState::Open(LogletOffset::from(2))));
+        let read_records: Vec<_> = loglet
+            .clone()
+            .create_read_stream(
+                KeyFilter::Any,
+                LogletOffset::OLDEST,
+                Some(tail.offset().prev()),
+            )
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?
+            .into_iter()
+            .map(|entry| (entry.sequence_number(), entry.decode_unchecked::<String>()))
+            .collect();
+        assert_that!(
+            read_records,
+            elements_are![eq((LogletOffset::OLDEST, "first".to_owned()))]
+        );
+
+        // The writer task failure triggers node shutdown.
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            TaskCenter::current().shutdown_token().cancelled(),
+        )
+        .await
+        .expect("writer failure should trigger node shutdown");
+
+        // Reopening from RocksDB recovers the last durable offset (1), so after a restart writing
+        // resumes at offset 2 with neither a hole nor reuse of an acknowledged offset.
+        let reopened = LocalLoglet::create(42, log_store, log_writer)?;
+        assert_that!(
+            reopened.find_tail(FindTailOptions::default()).await?,
+            eq(TailState::Open(LogletOffset::from(2)))
+        );
+        assert_that!(
+            *reopened.next_write_offset.lock().await,
+            eq(LogletOffset::from(2))
+        );
 
         Ok(())
     }

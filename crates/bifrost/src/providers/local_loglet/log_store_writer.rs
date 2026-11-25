@@ -9,6 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bytes::BytesMut;
@@ -63,6 +65,8 @@ pub(crate) struct LogStoreWriter {
     rocksdb: Arc<RocksDb>,
     batch_acks_buf: Vec<Ack>,
     buffer: BytesMut,
+    #[cfg(test)]
+    fail_next_commit: Arc<AtomicBool>,
 }
 
 impl LogStoreWriter {
@@ -71,7 +75,14 @@ impl LogStoreWriter {
             rocksdb,
             batch_acks_buf: Vec::default(),
             buffer: BytesMut::with_capacity(INITIAL_SERDE_BUFFER_SIZE),
+            #[cfg(test)]
+            fail_next_commit: Arc::default(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_commit(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.fail_next_commit)
     }
 
     /// Must be called from task_center context
@@ -115,7 +126,10 @@ impl LogStoreWriter {
                         }
                         Some(cmds) = TokioStreamExt::next(&mut receiver) => {
                                 let opts = updateable.live_load();
-                                self.handle_commands(opts, cmds).await;
+                                if !self.handle_commands(opts, cmds).await {
+                                    // Later batches would commit offsets past the failed ones.
+                                    anyhow::bail!("Local loglet writer stopped after a failed commit");
+                                }
                         }
                     }
                 }
@@ -130,7 +144,7 @@ impl LogStoreWriter {
         &mut self,
         opts: &LocalLogletOptions,
         commands: Vec<LogStoreWriteCommand>,
-    ) {
+    ) -> bool {
         let mut write_batch = WriteBatch::default();
         self.batch_acks_buf.clear();
         self.batch_acks_buf.reserve(commands.len());
@@ -195,7 +209,7 @@ impl LogStoreWriter {
 
         histogram!(BIFROST_LOCAL_WRITE_BATCH_SIZE_BYTES).record(write_batch.size_in_bytes() as f64);
         histogram!(BIFROST_LOCAL_WRITE_BATCH_COUNT).record(write_batch.len() as f64);
-        self.commit(opts, write_batch).await;
+        self.commit(opts, write_batch).await
     }
 
     fn update_log_state(
@@ -256,7 +270,8 @@ impl LogStoreWriter {
         write_batch.delete_range_cf(data_cf, from_bytes, to_bytes);
     }
 
-    async fn commit(&mut self, opts: &LocalLogletOptions, write_batch: WriteBatch) {
+    /// Returns true if the write batch was committed successfully.
+    async fn commit(&mut self, opts: &LocalLogletOptions, write_batch: WriteBatch) -> bool {
         let mut write_opts = rocksdb::WriteOptions::new();
         write_opts.disable_wal(opts.rocksdb_disable_wal());
         write_opts.set_sync(!opts.rocksdb_disable_wal_fsync());
@@ -270,24 +285,32 @@ impl LogStoreWriter {
         } else {
             IoMode::Default
         };
-        let result = self
-            .rocksdb
-            .write_batch(
-                "local-loglet-write-batch",
-                Priority::High,
-                io_mode,
-                write_opts,
-                write_batch,
-            )
-            .await;
+        let result = async {
+            #[cfg(test)]
+            if self.fail_next_commit.swap(false, Ordering::AcqRel) {
+                return Err(restate_rocksdb::RocksError::ReadOnly);
+            }
+            self.rocksdb
+                .write_batch(
+                    "local-loglet-write-batch",
+                    Priority::High,
+                    io_mode,
+                    write_opts,
+                    write_batch,
+                )
+                .await
+        }
+        .await;
 
         match result {
             Ok(_batch) => {
                 self.send_acks(Ok(()));
+                true
             }
             Err(e) => {
                 error!("Failed to commit local loglet write batch: {}", e);
                 self.send_acks(Err(OperationError::terminal(e)));
+                false
             }
         }
     }
