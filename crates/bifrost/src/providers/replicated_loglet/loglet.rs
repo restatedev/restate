@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use metrics::Counter;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 use tracing::{debug, instrument, trace};
@@ -24,13 +25,14 @@ use restate_types::logs::{
     KeyFilter, LogId, LogletId, LogletOffset, Record, RecordCache, SequenceNumber, TailOffsetWatch,
     TailState,
 };
+use restate_types::net::log_server::PreparedPayloads;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 
 use crate::loglet::{
     FindTailOptions, Loglet, LogletCommit, OperationError, SendableLogletReadStream,
 };
 use crate::providers::replicated_loglet::replication::spread_selector::SelectorStrategy;
-use crate::providers::replicated_loglet::sequencer::Sequencer;
+use crate::providers::replicated_loglet::sequencer::{AppendBatch, Sequencer};
 use crate::providers::replicated_loglet::tasks::{
     FindTailTask, GetTrimPointTask, SealTask, TrimTask,
 };
@@ -61,6 +63,10 @@ pub(super) struct ReplicatedLoglet<T> {
     sequencer: SequencerAccess<T>,
     #[debug(skip)]
     seal_in_progress: Mutex<()>,
+    #[debug(skip)]
+    records_enqueued: Counter,
+    #[debug(skip)]
+    bytes_enqueued: Counter,
 }
 
 impl<T: TransportConnect> ReplicatedLoglet<T> {
@@ -110,6 +116,8 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
             known_global_tail,
             sequencer,
             seal_in_progress: Mutex::new(()),
+            records_enqueued: metrics::counter!(BIFROST_RECORDS_ENQUEUED_TOTAL),
+            bytes_enqueued: metrics::counter!(BIFROST_RECORDS_ENQUEUED_BYTES),
         }
     }
 
@@ -123,6 +131,32 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
 
     pub(crate) fn known_global_tail(&self) -> &TailOffsetWatch {
         &self.known_global_tail
+    }
+
+    pub(super) async fn enqueue_prepared_batch(
+        &self,
+        payloads: PreparedPayloads,
+    ) -> Result<LogletCommit, OperationError> {
+        if self.known_global_tail().is_sealed() {
+            return Ok(LogletCommit::sealed());
+        }
+        let SequencerAccess::Local { ref handle } = self.sequencer else {
+            return Ok(LogletCommit::reconfiguration_needed(
+                "node is not the sequencer",
+            ));
+        };
+        self.record_enqueued(payloads.records());
+        handle.enqueue_batch(AppendBatch::Prepared(payloads)).await
+    }
+
+    fn record_enqueued(&self, records: &[Record]) {
+        self.records_enqueued.increment(records.len() as u64);
+        self.bytes_enqueued.increment(
+            records
+                .iter()
+                .map(|r| r.estimated_encode_size())
+                .sum::<usize>() as u64,
+        );
     }
 }
 
@@ -324,16 +358,12 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         if self.known_global_tail().is_sealed() {
             return Ok(LogletCommit::sealed());
         }
-        metrics::counter!(BIFROST_RECORDS_ENQUEUED_TOTAL).increment(payloads.len() as u64);
-        metrics::counter!(BIFROST_RECORDS_ENQUEUED_BYTES).increment(
-            payloads
-                .iter()
-                .map(|r| r.estimated_encode_size())
-                .sum::<usize>() as u64,
-        );
+        self.record_enqueued(&payloads);
 
         match self.sequencer {
-            SequencerAccess::Local { ref handle } => handle.enqueue_batch(payloads).await,
+            SequencerAccess::Local { ref handle } => {
+                handle.enqueue_batch(AppendBatch::Local(payloads)).await
+            }
             SequencerAccess::Remote { ref handle } => handle.append(payloads).await,
         }
     }
