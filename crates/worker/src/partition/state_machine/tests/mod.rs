@@ -101,14 +101,6 @@ impl TestEnv {
         TaskCenter::shutdown_node("test complete", 0).await;
     }
 
-    /// Stores the content of every journal entry in the blob table however small, so every
-    /// output too. Takes effect with the write blob table feature.
-    pub fn always_write_output_blobs() {
-        let mut config = Configuration::pinned().as_ref().clone();
-        config.worker.inline_journal_entry_threshold = restate_memory::ByteCount::ZERO;
-        restate_types::config::set_current_config(config);
-    }
-
     pub async fn create() -> Self {
         Self::create_with_features(PersistedFeatures::default()).await
     }

@@ -495,7 +495,7 @@ impl PartitionStore {
         // this will fetch the value and cache it.
         let storage_features = self.storage_features();
         let published_registry = self.published_registry();
-        let settings = TransactionSettings::new(&Configuration::pinned().worker, storage_features);
+        let settings = TransactionSettings::new(&Configuration::pinned().worker);
 
         PartitionStoreTransaction {
             write_batch_with_index: Some(rocksdb::WriteBatchWithIndex::new(0, true)),
@@ -937,20 +937,15 @@ impl ScanMode {
 pub(crate) struct TransactionSettings {
     /// Probability that a vqueue metadata update is written as a full value instead of a merge.
     pub vqueue_meta_full_write_probability: f64,
-    /// Journal entries with a larger content store it in a blob, if set.
-    pub inline_entry_threshold: Option<usize>,
 }
 
 impl TransactionSettings {
-    pub fn new(opts: &WorkerOptions, storage_features: StorageFeatures) -> Self {
+    pub fn new(opts: &WorkerOptions) -> Self {
         Self {
             vqueue_meta_full_write_probability: opts
                 .storage
                 .vqueue_meta_full_write_probability
                 .clamp(0.0, 1.0),
-            inline_entry_threshold: storage_features
-                .is_journal_entry_blobs
-                .then(|| opts.inline_journal_entry_threshold.as_usize()),
         }
     }
 }

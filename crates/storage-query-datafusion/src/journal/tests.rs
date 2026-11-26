@@ -218,8 +218,8 @@ async fn get_blob_output_entry() {
 
     let mut tx = engine.partition_store().transaction();
     let invocation_id = InvocationId::mock_random();
-    let threshold = config.worker.inline_journal_entry_threshold.as_usize();
-    let output = Bytes::from(vec![b'a'; threshold + 1]);
+    // Well above the blob overhead, so the output is stored in a blob
+    let output = Bytes::from(vec![b'a'; 1024]);
     let raw_entry = journal_v2::Entry::from(OutputCommand {
         result: OutputResult::Success(output.clone()),
         name: "my-output".into(),

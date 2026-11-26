@@ -163,7 +163,6 @@ mod tests {
     async fn purge_journal_then_invocation(
         #[values(false, true)] invocation_status_output_blob: bool,
     ) {
-        TestEnv::always_write_output_blobs();
         let mut test_env = TestEnv::create_with_features(PersistedFeatures {
             invocation_status_output_blob,
             ..Default::default()
@@ -176,7 +175,8 @@ mod tests {
         let invocation_target = InvocationTarget::mock_virtual_object();
         let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
         let request_id = PartitionProcessorRpcRequestId::default();
-        let response_bytes = Bytes::from_static(b"123");
+        // Large enough to be stored in a blob
+        let response_bytes = Bytes::from(vec![b'a'; 1024]);
 
         // Create and complete a fresh invocation
         let actions = test_env

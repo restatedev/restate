@@ -264,23 +264,6 @@ pub struct WorkerOptions {
         skip_serializing_if = "serde_helpers::is_vqueue_metadata_cache_default"
     )]
     vqueue_metadata_cache_size: u32,
-
-    /// # Inline journal entry threshold
-    ///
-    /// On partition stores that enabled `experimental-enable-write-blob-table`, journal entries
-    /// up to this size are stored inline. Larger ones are stored separately. Set to `0` to always
-    /// store them separately.
-    ///
-    /// Changes take effect after a restart.
-    ///
-    /// Default: 4 KiB
-    ///
-    /// Since v1.8.2
-    #[serde(
-        default = "serde_helpers::inline_journal_entry_threshold_default",
-        skip_serializing_if = "serde_helpers::is_inline_journal_entry_threshold_default"
-    )]
-    pub inline_journal_entry_threshold: ByteCount,
 }
 
 impl WorkerOptions {
@@ -364,7 +347,6 @@ impl Default for WorkerOptions {
             ),
             vqueue_metadata_cache_size: serde_helpers::vqueue_metadata_cache_size_default(),
             self_proposer_congestion_control: SelfProposerCongestionControl::default(),
-            inline_journal_entry_threshold: serde_helpers::inline_journal_entry_threshold_default(),
         }
     }
 }
@@ -1672,14 +1654,6 @@ mod serde_helpers {
 
     use restate_util_bytecount::ByteCount;
     use restate_util_time::FriendlyDuration;
-
-    pub const fn inline_journal_entry_threshold_default() -> ByteCount {
-        ByteCount::<true>::new(4 * 1024)
-    }
-
-    pub fn is_inline_journal_entry_threshold_default(value: &ByteCount) -> bool {
-        *value == inline_journal_entry_threshold_default()
-    }
 
     pub const fn cleanup_max_in_flight_purges_default() -> NonZeroU32 {
         NonZeroU32::new(32).unwrap()

@@ -824,7 +824,6 @@ mod tests {
     /// prefixes including it. This tests the copying of blob-backed entries in general.
     #[restate_core::test]
     async fn restart_shares_content_blob() {
-        TestEnv::always_write_output_blobs();
         let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
             PartitionFeatureChange::EnableJournalV2,
             PartitionFeatureChange::EnableInvocationStatusOutputBlob,
@@ -834,7 +833,8 @@ mod tests {
         let invocation_target = InvocationTarget::mock_service();
         let original_invocation_id = InvocationId::generate(&invocation_target, None);
         let output = OutputCommand {
-            result: OutputResult::Success(Bytes::from_static(b"done")),
+            // Large enough to be stored in a blob
+            result: OutputResult::Success(Bytes::from(vec![b'a'; 1024])),
             name: "my-output".into(),
         };
         let _ = test_env

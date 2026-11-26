@@ -37,11 +37,13 @@ use restate_types::blob::{BlobId, BlobKind, RelatedBlob};
 use restate_types::identifiers::{
     EntryIndex, InvocationId, InvocationUuid, PartitionKey, WithPartitionKey,
 };
-use restate_types::journal_v2::{CompletionId, EntryMetadata, EntryType, NotificationId};
+use restate_types::journal_v2::{
+    CommandType, CompletionId, EntryMetadata, EntryType, NotificationId,
+};
 use restate_types::storage::StoredRawEntry;
 
 use crate::TableKind::Journal;
-use crate::blob_table::{get_blob_payload, get_blob_payload_cached_or_offload};
+use crate::blob_table::{BLOB_OVERHEAD, get_blob_payload, get_blob_payload_cached_or_offload};
 use crate::budgeted_reads::{MAX_INLINE_ROWS, budgeted_get};
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
 use crate::offloaded_reads::OffloadedRead;
@@ -150,7 +152,20 @@ fn write_journal_entry_key(invocation_id: &InvocationId, journal_index: u32) -> 
     }
 }
 
-/// Writes the entry, storing its content in a blob if it's larger than `inline_entry_threshold`.
+/// Returns whether entries of type `ty` may be stored in a blob instead of inline.
+///
+/// Only `Output` commands qualify today, because the invocation status can reference their
+/// blob id. Other entries gain nothing from offloading;
+/// internal entries such as side effects stay inline so replay doesn't pay to load a blob.
+///
+/// Add entry types here as they find a use for offloading.
+#[inline]
+fn is_blob_eligible(ty: EntryType) -> bool {
+    matches!(ty, EntryType::Command(CommandType::Output))
+}
+
+/// Writes the entry, storing its content in a blob if blobs are enabled and it's
+/// [eligible](is_blob_eligible) and larger than [`BLOB_OVERHEAD`].
 ///
 /// See [`WriteJournalTable::put_journal_entry`]: an entry must be written only once, as the blob id
 /// is derived from it.
@@ -160,25 +175,28 @@ fn put_journal_entry<S: StorageAccess + WriteBlobTable>(
     journal_index: u32,
     journal_entry: &StoredRawEntry,
     related_completion_ids: &[CompletionId],
-    inline_entry_threshold: Option<usize>,
+    is_journal_entry_blobs: bool,
 ) -> Result<Option<BlobId>> {
-    let entry = match inline_entry_threshold {
-        Some(threshold) if journal_entry.inner.serialized_length() > threshold => {
-            StoredUnhydratedRawEntry::store_content(journal_entry.clone(), |content| {
-                let id = BlobId::generate_journal_entry_blob_id(
-                    journal_entry.header.append_time,
-                    journal_index,
-                    invocation_id,
-                );
-                let size = storage.put_blob(
-                    id,
-                    BlobBuilder::new(BlobKind::Journal).build(content.as_ref()),
-                )?;
-                Ok::<_, StorageError>(RelatedBlob { id, size })
-            })?
-        }
-        _ => journal_entry.clone().into(),
+    let entry = if is_journal_entry_blobs
+        && journal_entry.inner.serialized_length() > BLOB_OVERHEAD
+        && is_blob_eligible(journal_entry.ty())
+    {
+        StoredUnhydratedRawEntry::store_content(journal_entry.clone(), |content| {
+            let id = BlobId::generate_journal_entry_blob_id(
+                journal_entry.header.append_time,
+                journal_index,
+                invocation_id,
+            );
+            let size = storage.put_blob(
+                id,
+                BlobBuilder::new(BlobKind::Journal).build(content.as_ref()),
+            )?;
+            Ok::<_, StorageError>(RelatedBlob { id, size })
+        })?
+    } else {
+        journal_entry.clone().into()
     };
+
     let blob_id = entry.content_blob().map(|blob| blob.id);
     put_stored_entry(
         storage,
@@ -888,14 +906,13 @@ impl WriteJournalTable for PartitionStoreTransaction<'_> {
         related_completion_ids: &[CompletionId],
     ) -> Result<Option<BlobId>> {
         self.assert_partition_key(invocation_id)?;
-        let inline_entry_threshold = self.settings().inline_entry_threshold;
         put_journal_entry(
             self,
             invocation_id,
             index,
             entry,
             related_completion_ids,
-            inline_entry_threshold,
+            self.storage_features().is_journal_entry_blobs,
         )
     }
 
