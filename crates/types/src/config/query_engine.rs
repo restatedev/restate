@@ -81,8 +81,9 @@ pub struct QueryEngineOptions {
     /// How often an admin node checks which indexes queries can read, from
     /// `restate.cluster.registry`. The `/version` endpoint reports the result: for
     /// example, `query_engine.stats_tables` turns false when a partition's leader,
-    /// which statistics reads go to, answers and lacks a complete status gauge,
-    /// and true again once no such leader is left. Partitions without a known
+    /// which statistics reads go to, answers with its store open and lacks a
+    /// complete status gauge, for instance before the partition has fully
+    /// migrated to vqueues, and true again once no such leader is left. Partitions without a known
     /// leader, and leaders that are down, don't answer or have no open store, don't
     /// count.
     /// A check that fails as a whole, or takes longer than this interval, keeps

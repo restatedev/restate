@@ -145,6 +145,7 @@ pub(crate) const ENTRY_INDEXES: Family = Family {
         &ENTRY_BY_STATUS_CREATED,
         &ENTRY_BY_STATUS_TRANSITIONED,
     ],
+    requires_vqueues: true,
 };
 
 crate::index::macros::define_secondary_index!(

@@ -21,8 +21,10 @@ The admin API's `/version` response has a new `query_engine` object:
     `experimental-enable-indexes` on the nodes that run queries.
   - Otherwise `true`, also right after the admin node starts, until a check
     finds a partition whose statistics read would fail: its leader, which the
-    read goes to, answered, and one of its status gauges isn't complete. It
-    turns `true` again once no such partition is left.
+    read goes to, answered with the partition open, and one of its status
+    gauges isn't complete, also when none exists yet because the partition
+    hasn't finished its vqueues migration. It turns `true` again once no such
+    partition is left.
   - Partitions without a known leader, and leaders that are down, don't answer,
     or are still opening the partition, don't count either way. So while a
     cluster starts, `stats_tables` doesn't flip to `false` just because

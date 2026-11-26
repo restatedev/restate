@@ -58,6 +58,20 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
             .open(&Partition::new(PartitionId::from(id), KeyRange::FULL), None)
             .await
             .unwrap();
+        {
+            // A partition fully migrated to vqueues, which the indexes need.
+            use restate_storage_api::Transaction as _;
+            use restate_storage_api::fsm_table::WriteFsmTable as _;
+            let mut tx = store.transaction();
+            tx.put_state_machine_features(
+                &restate_types::partitions::features::PersistedFeatures {
+                    vqueues: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            tx.commit().await.unwrap();
+        }
         store
             .verify_and_run_migrations(restate_core::cancellation_token(), &config)
             .await
@@ -160,10 +174,11 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
     };
     let rendered = render(&report);
     let sizes = rendered[0].column_by_name("approx_size_bytes").unwrap();
-    assert_eq!((sizes.len(), sizes.null_count()), (12, 12));
+    assert_eq!((sizes.len(), sizes.null_count()), (14, 14));
 
-    // Migrations follow a replica's indexes: one in progress, with its job, and
-    // one complete, with its completion time; neither has a size.
+    // A replica's registry row comes first, then its indexes, then its
+    // migrations: one in progress, with its job, and one complete, with its
+    // completion time; none of them has a size.
     let mut replica = report.replicas[0].clone();
     let entries = &mut replica.registry;
     let by = || ReString::from_static("1.8.2");
@@ -184,24 +199,26 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
     let (kind, status) = (text("kind"), text("status"));
     let (job, completed) = (column("job_id"), column("completed_at"));
     assert_eq!(
-        [6, 7].map(|row| (kind.value(row), status.value(row), job.is_null(row))),
+        [0, 7, 8].map(|row| (kind.value(row), status.value(row), job.is_null(row))),
         [
+            ("registry", "present", true),
             ("migration", "in_progress", false),
             ("migration", "complete", true)
         ]
     );
+    assert_eq!(text("definition").value(0), "registry");
     assert_eq!(
         job.as_primitive::<datafusion::arrow::datatypes::UInt32Type>()
-            .value(6),
+            .value(7),
         running
     );
     assert_eq!(
         completed
             .as_primitive::<datafusion::arrow::datatypes::TimestampMillisecondType>()
-            .value(7),
+            .value(8),
         2_000
     );
-    assert!(completed.is_null(6) && column("approx_size_bytes").is_null(7));
+    assert!(completed.is_null(7) && column("approx_size_bytes").is_null(8));
 
     // `blocked_by` renders the reason the replica's driver reports for an
     // unfinished job, and NULL for a finished one. A job whose migration this
@@ -265,13 +282,14 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         .unwrap();
     assert_eq!(partitions[0].column(0).len(), 2);
     // Both tables honor the row batch size and the total fetch limit, including
-    // an empty projection used for counts.
-    for (scanner, schema) in [
-        (&registry, RegistryBuilder::schema()),
-        (&jobs, MigrationJobsBuilder::schema()),
+    // an empty projection used for counts. `registry` has one more row per
+    // replica, the registry's own.
+    for (scanner, schema, all) in [
+        (&registry, RegistryBuilder::schema(), vec![8, 6]),
+        (&jobs, MigrationJobsBuilder::schema(), vec![8, 4]),
     ] {
         for (batch_size, limit, expected) in [
-            (8, None, vec![8, 4]),
+            (8, None, all.clone()),
             (2, Some(3), vec![2, 1]),
             (4, Some(0), vec![]),
         ] {
@@ -291,7 +309,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
             })
             .collect()
             .await;
-        assert_eq!(rows, [8, 4]);
+        assert_eq!(rows, all);
     }
 
     // A corrupt record on the second replica: a fully consumed scan of either
@@ -306,14 +324,14 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
     tx.raw_put_cf(KeyKind::Registry, key, b"not a job");
     tx.commit().await.unwrap();
     drop(tx);
-    for (table, scanner, schema) in [
-        ("registry", &registry, RegistryBuilder::schema()),
-        ("migration_jobs", &jobs, MigrationJobsBuilder::schema()),
+    for (table, scanner, schema, first) in [
+        ("registry", &registry, RegistryBuilder::schema(), 7),
+        ("migration_jobs", &jobs, MigrationJobsBuilder::schema(), 6),
     ] {
         let items: Vec<_> = scanner.scan(schema, &[], 4, None).collect().await;
         assert_eq!(items.len(), 3, "two healthy batches followed by one error");
         assert_eq!(items[0].as_ref().unwrap().num_rows(), 4);
-        assert_eq!(items[1].as_ref().unwrap().num_rows(), 2);
+        assert_eq!(items[1].as_ref().unwrap().num_rows(), first - 4);
         assert!(
             items[2]
                 .as_ref()
@@ -340,7 +358,7 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         let batches = collect(plan, ctx.task_ctx()).await.unwrap();
         assert_eq!(
             batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
-            6
+            first
         );
         let warnings = warnings[0].lock();
         assert_eq!(warnings.len(), 1);
@@ -359,16 +377,51 @@ async fn worker_nodes_list_their_replicas_indexes_and_jobs() {
         .open(&Partition::new(PartitionId::from(3), KeyRange::FULL), None)
         .await
         .unwrap();
+    {
+        // A partition fully migrated to vqueues, which the indexes need.
+        use restate_storage_api::Transaction as _;
+        use restate_storage_api::fsm_table::WriteFsmTable as _;
+        let mut tx = store.transaction();
+        tx.put_state_machine_features(&restate_types::partitions::features::PersistedFeatures {
+            vqueues: true,
+            ..Default::default()
+        })
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
     store
         .verify_and_run_migrations(restate_core::cancellation_token(), &config)
         .await
         .unwrap();
     assert_eq!(
-        count("SELECT count(*) FROM registry WHERE partition_id = 3").await,
+        count("SELECT count(*) FROM registry WHERE partition_id = 3 AND kind <> 'registry'").await,
         6
     );
     assert_eq!(
         count("SELECT count(*) FROM migration_jobs WHERE partition_id = 3").await,
         0
+    );
+
+    // A replica opened with indexes before its partition fully migrated to
+    // vqueues registers nothing, but its registry row shows the store is open.
+    manager
+        .open(&Partition::new(PartitionId::from(4), KeyRange::FULL), None)
+        .await
+        .unwrap()
+        .verify_and_run_migrations(restate_core::cancellation_token(), &config)
+        .await
+        .unwrap();
+    assert_eq!(
+        count(
+            "SELECT count(*) FROM registry WHERE partition_id = 4
+               AND kind = 'registry' AND definition = 'registry' AND id = 0
+               AND status = 'present' AND job_id IS NULL"
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM registry WHERE partition_id = 4").await,
+        1
     );
 }
