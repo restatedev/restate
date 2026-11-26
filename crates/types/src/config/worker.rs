@@ -583,6 +583,8 @@ pub struct InvokerOptions {
     ///
     /// Memory (in bytes) reserved from the global memory pool before an invocation
     /// starts. Used for the outbound budget and acts as the minimum reserved floor.
+    /// Also bounds how many bytes of output an invocation queues for the invoker
+    /// before it stops reading from the deployment.
     ///
     /// Smaller values allow more concurrent invocations but may cause frequent
     /// round-trips to the global pool. Larger values reduce contention but limit
