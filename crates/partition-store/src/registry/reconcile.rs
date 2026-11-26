@@ -27,6 +27,10 @@
 //!    vqueues (see [`Family::requires_vqueues`]): such a family registers once
 //!    the migration is applied, at the next open, or at the walk driver's next
 //!    step after the processor applied it ([`PartitionDb::request_vqueue_indexes`]).
+//!    A dropped index's entry expires like a finished job's record, one
+//!    retention after the drop, and the open leaves the expired entries out of
+//!    the registry, at once with a retention of 0; their IDs stay reserved
+//!    ([`Registry::expire_dropped`]).
 //! 3. **Register** each requested definition that has no maintained index, under
 //!    a fresh ID, with a `Pending` build job.
 //!    Running out of IDs skips the request with an error log.
@@ -92,7 +96,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rocksdb::WriteBatch;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use zerocopy::IntoBytes;
 
 use restate_clock::WallClock;
@@ -137,8 +141,8 @@ pub(crate) struct Requests {
     /// Definitions whose maintained index is dropped, because indexes aren't
     /// enabled.
     pub(crate) disabled: Vec<&'static IndexDefinition>,
-    /// How long the record of a job that finishes is kept
-    /// (`worker.storage.finished-migration-jobs-retention`).
+    /// How long the record of a job that finishes, and the entry of an index
+    /// that is dropped, is kept (`worker.storage.finished-migration-jobs-retention`).
     pub(crate) retention: Duration,
     /// The one-time migrations this binary knows. Each registers once, on a
     /// fenced store; entries of any other migration follow their policy.
@@ -552,6 +556,13 @@ impl PartitionStore {
                 );
             }
         }
+        // The entries of dropped indexes that expired leave the registry; one
+        // dropped above expires at once with a retention of 0, its keys being
+        // deleted in this batch. The counter keeps their IDs reserved.
+        let expired = registry.expire_dropped(stamp.at, requests.retention);
+        if !expired.is_empty() {
+            debug!(indexes = ?expired, "Removed the expired entries of dropped indexes");
+        }
         // A walk whose members were all dropped has nothing left to backfill;
         // surviving members keep their walk, its position and their evidence,
         // and the dropped members' evidence goes with them. A migration's walk
@@ -729,7 +740,8 @@ impl PartitionStore {
 }
 
 /// Drops index `id` and records why: its timeline gets the time and `reason`,
-/// and its build job, if unfinished, finishes Cancelled.
+/// and its build job, if unfinished, finishes Cancelled. The index's entry
+/// expires with that job's record, one retention later.
 fn drop_and_record(
     registry: &mut Registry,
     jobs: &mut MigrationJobRecords,
@@ -754,7 +766,7 @@ fn drop_and_record(
     }
     registry.drop_index(id)?;
     if let Some(timeline) = registry.timeline_mut(id) {
-        timeline.dropped(stamp.at, reason);
+        timeline.dropped(stamp.at, reason, jobs.retention());
     }
     jobs.finish(
         job_id,
@@ -1306,6 +1318,64 @@ mod tests {
             (66, 67)
         );
         assert_eq!(registry.get(66).unwrap().walk, Some(2));
+
+        // Each drop set its entry's expiry, a retention after the drop, as for a
+        // finished job; until then the entry stays.
+        let day = Requests::default().retention.as_millis() as u64;
+        for id in [64, 65] {
+            let timeline = &registry.get(id).unwrap().timeline;
+            assert!(timeline.dropped_at.is_some(), "{id}");
+            assert_eq!(timeline.expires_at, timeline.dropped_at.map(|at| at + day));
+        }
+
+        // Once 64 expired, the next open leaves its entry out of the registry. 65,
+        // planted without an expiry as a development build dropped it, gets one
+        // from its drop. The counter keeps every ID it issued.
+        let mut planted = registry.clone();
+        planted.timeline_mut(64).unwrap().expires_at = Some(1);
+        planted.timeline_mut(65).unwrap().expires_at = None;
+        records::testing::overwrite(&db, &planted, &walks(&store));
+        reconcile(&mut store, &[&INDEX, &STAT], maintain(&[&INDEX, &STAT]))
+            .await
+            .unwrap();
+        let expired = persisted(&store);
+        assert!(expired.get(64).is_none());
+        assert_eq!(expired.get(65), registry.get(65));
+        assert_eq!(expired.next_id, registry.next_id);
+
+        // With a retention of 0, an index dropped by an open expires at once: that
+        // open deletes its keys, cancels its build and removes its entry; the
+        // walk it shared keeps its other member. 65 keeps the expiry its drop
+        // set, from the retention configured then. The definition registers again
+        // under a fresh ID, and the next open accepts what this one wrote.
+        raw.put_cf(
+            db.cf_handle(),
+            [index(66), b"payload".to_vec()].concat(),
+            b"",
+        )
+        .unwrap();
+        reconcile(
+            &mut store,
+            &[&INDEX, &STAT],
+            Requests {
+                disabled: vec![&INDEX],
+                retention: Duration::ZERO,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let dropped = persisted(&store);
+        assert!(dropped.get(66).is_none());
+        assert_eq!(keys(&store, &index(66)), 0);
+        assert_eq!(dropped.get(65), registry.get(65));
+        assert_eq!(dropped.get(67).unwrap().walk, Some(2));
+        let cancelled = records::get_job(&db, 66).unwrap();
+        assert_eq!(cancelled.status, MigrationJobStatus::Cancelled);
+        reconcile(&mut store, &[&INDEX, &STAT], maintain(&[&INDEX, &STAT]))
+            .await
+            .unwrap();
+        assert_eq!(persisted(&store).maintained("index/1").unwrap().id, 68);
     }
 
     #[restate_core::test]
@@ -1834,6 +1904,28 @@ mod backfill_tests {
             registry(&store).get(index.id).unwrap().state,
             IndexStatus::Complete
         );
+
+        // With a retention of 0, dropping COUNT removes its entry in the same
+        // open, while the entries keep its token until their next write. The
+        // next build gets a fresh ID, so a write finds no token of it on a filled
+        // entry and adopts the entry instead of replacing what the old build
+        // counted; the walk then counts every other entry once.
+        let first = read_chunk(&store, None, 1).unwrap();
+        assert!(listed(&first[0]));
+        let disable = Requests {
+            disabled: vec![&COUNT],
+            retention: Duration::ZERO,
+            ..Default::default()
+        };
+        reconcile(&mut store, disable).await;
+        assert!(registry(&store).get(index.id).is_none());
+        reconcile(&mut store, maintain(&COUNT)).await;
+        let rebuilt = registry(&store).maintained(COUNT.name).unwrap().id;
+        assert_eq!(rebuilt, index.id + 1);
+        update(&mut store, &first[0].1).await;
+        assert_eq!(count(&store, rebuilt), 1, "adopted, not replaced");
+        run_walks(&mut store).await;
+        assert_eq!(count(&store, rebuilt), SEEDED - 2);
     }
 
     /// Flushes `store`, so that [`testing::written`] then lists the records the
@@ -2108,8 +2200,11 @@ mod backfill_tests {
 
         // COUNT's build completed and ADOPTED was dropped without their jobs
         // being updated: the open finishes both, at an unknown time, writing
-        // their two records and nothing else. They expire a retention after the
-        // open, here at once: a retention of 0 keeps no finished job.
+        // their two records. They expire a retention after the open, here at
+        // once: a retention of 0 keeps no finished job. ADOPTED's entry, dropped
+        // without an expiry and at an unknown time, as by a development build,
+        // expires from the open too, so the open also writes the registry without
+        // it. RESUMED's entry keeps the day its drop gave it.
         let mut registry_now = registry(&store);
         let mut walks_now = walks(&store);
         registry_now.set_complete(count).unwrap();
@@ -2125,8 +2220,18 @@ mod backfill_tests {
             },
         )
         .await;
-        assert_eq!(testing::sequence(&db) - sequence, 2, "two job records");
+        assert_eq!(
+            testing::sequence(&db) - sequence,
+            3,
+            "two job records and the registry"
+        );
         assert!(unfinished(&store).entries().is_empty());
+        let settled = registry(&store);
+        assert!(settled.get(adopted).is_none());
+        assert_eq!(
+            settled.get(reset_index).unwrap().state,
+            IndexStatus::Dropped
+        );
         let now = WallClock::now_ms().as_u64();
         for (id, status) in [
             (count, MigrationJobStatus::Completed),
@@ -3401,6 +3506,29 @@ mod backfill_tests {
             .unwrap();
         assert!(skipped.replicas[0].index_sizes.is_empty());
 
+        // A dropped index is listed until its entry expires. A report then hides
+        // it, before the next open removes it from the registry.
+        let disable = Requests {
+            disabled: vec![&PASSIVE],
+            ..Default::default()
+        };
+        try_reconcile(&mut store, known, disable).await.unwrap();
+        let listed = report().await;
+        let dropped = listed.replicas[0].registry.get(passive).unwrap();
+        assert_eq!(dropped.state, IndexStatus::Dropped);
+        let mut planted = registry(&store);
+        planted.timeline_mut(passive).unwrap().expires_at = Some(WallClock::now_ms().as_u64());
+        write_state(&store, &planted, &walks(&store));
+        assert!(report().await.replicas[0].registry.get(passive).is_none());
+        assert!(
+            registry(&store).get(passive).is_some(),
+            "until the next open"
+        );
+        try_reconcile(&mut store, known, Requests::default())
+            .await
+            .unwrap();
+        assert!(registry(&store).get(passive).is_none());
+
         // An unreadable record is reported with its replica, never as a replica
         // without indexes.
         let db = store.partition_db();
@@ -4314,10 +4442,14 @@ mod open_tests {
         // An attempt that wrote registry state but did not flush it: a retry on
         // the same physical store, with nothing left to change, still flushes.
         let mut later = completed.clone();
-        later.register("other/1", IndexKind::Secondary).unwrap();
-        later
-            .drop_index(later.maintained("other/1").unwrap().id)
-            .unwrap();
+        let other = later.register("other/1", IndexKind::Secondary).unwrap();
+        later.drop_index(other).unwrap();
+        // Dropped as this binary records it, with its expiry a day later.
+        later.timeline_mut(other).unwrap().dropped(
+            WallClock::now_ms().as_u64(),
+            DropReason::NotEnabled,
+            Requests::default().retention,
+        );
         write_unflushed(&db, &later, &Walks::default());
         drop(store);
         let mut retry = manager.open(&partition, None).await.unwrap();

@@ -40,7 +40,7 @@
 //!
 //! | Operation | Keys written |
 //! |---|---|
-//! | Open (reconcile) | the registry if it changed, walks and jobs it added, changed or removed, unreadable jobs (replaced or deleted) |
+//! | Open (reconcile) | the registry if it changed, for example when a dropped index's entry expired; walks and jobs it added, changed or removed; unreadable jobs (replaced or deleted) |
 //! | Slice that progressed | its walk, its jobs |
 //! | Slice that finished | the registry, its walk (deleted), its jobs (finished) |
 //! | Pass start | the registry, the new walk, its jobs |
@@ -53,14 +53,27 @@
 //! as configured then; only unfinished jobs stay in memory. Readers hide an
 //! expired job, and the compaction filter ([`compaction_filter`]) removes it.
 //! RocksDB turns that removal into a tombstone, so an older, unfinished version
-//! of the job can't reappear. The registry, walks and unfinished jobs never
-//! expire.
+//! of the job can't reappear.
+//!
+//! A dropped index expires the same way: its entry in the registry gets
+//! `expires_at = dropped_at + retention`, and readers hide it once expired. The
+//! next open removes it, not compaction: the registry is one record holding
+//! every index, which each open loads, reconciles and rewrites anyway, so
+//! leaving the entry out there is simpler than editing the record during
+//! compaction. Its ID stays reserved: the registry's counter never issues it
+//! again. The registry record, its counters, its migrations, the walks and
+//! unfinished jobs never expire.
 //!
 //! ```text
 //! job 70:  Pending ─▶ Running … ─▶ Completed, expires_at = 10:30 + 24h
 //!          (each slice rewrites)        │
 //!                                       ├─ before expiry: listed, not loaded at open
 //!                                       └─ after expiry: hidden; compaction drops it
+//!
+//! index 70:  Complete ─▶ Dropped, expires_at = 10:30 + 24h
+//!                           │
+//!                           ├─ before expiry: listed
+//!                           └─ after expiry: hidden; the next open removes its entry
 //! ```
 //!
 //! # Compatibility
