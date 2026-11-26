@@ -50,8 +50,10 @@ once with `v1` and once with `v2`, should return the same rows.
   also works with V1 alone.
 - V2 uses the scheduler's queue stages on its own, with no option to set: for
   example, `sys_vqueues` filtered by a queue reads only that queue's entries.
-  The entry indexes need `experimental-enable-indexes`. Indexes aren't tables
-  you can query; `EXPLAIN` shows which one a query reads.
+  The entry indexes need `experimental-enable-indexes`;
+  `admin.query-engine.disable-index-reads` stops queries from reading them
+  without dropping them. Indexes aren't tables you can query; `EXPLAIN` shows
+  which one a query reads.
 - A query that names specific queues, such as
   `SELECT * FROM sys_vqueue_meta WHERE id IN (…)`, makes V2 read those queues'
   metadata directly instead of scanning the metadata stored between them.

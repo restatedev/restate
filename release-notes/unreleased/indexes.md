@@ -39,8 +39,8 @@ On the nodes that run queries, the same option makes queries use them:
 - Both query engines show the statistics tables `sys_service_stats`, `sys_deployment_stats` and
   `sys_virtual_object_stats`.
 
-The option takes effect when partition processors start; on the query side, new query sessions see
-the change.
+The option takes effect when partition processors start. On the query side, the next query reads the
+indexes, or stops reading them; the statistics tables appear or disappear in new query sessions.
 
 ### Why This Matters
 
@@ -65,6 +65,17 @@ serving while they are built.
   counts are deleted (`drop_reason` `not-enabled` in `restate.cluster.registry`), and queries read
   as before. Turning it on again builds them from scratch. Invocation and entry data are never
   affected.
+- **To stop queries from reading the indexes without dropping them**, for example if an index read
+  misbehaves, set this on the nodes that run queries:
+
+  ```toml
+  [admin.query-engine]
+  disable-index-reads = true
+  ```
+
+  Queries then read as before, while the indexes and counts stay built and up to date, so
+  removing the setting uses them again right away. The statistics tables stay available. The
+  next query sees the change, also in an existing session.
 - **Turning the option on raises the partition's minimum Restate version to v1.8.2, for good:** a
   node that has run with it cannot be rolled back to an older version, also after the option is
   turned off.

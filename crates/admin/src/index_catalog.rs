@@ -20,10 +20,10 @@ use restate_storage_query_datafusion::stats_tables_ready;
 use restate_types::config::Configuration;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 
-/// What this admin node knows about the indexes queries read. `/version` shows it.
+/// What this admin node knows about the indexes and statistics. `/version` shows it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IndexCatalog {
-    /// The statistics tables answer: shown, because queries read indexes, and
+    /// The statistics tables answer: shown, because indexing is enabled, and
     /// without evidence that a read would fail (see [`stats_tables_ready`]).
     pub stats_tables: bool,
 }
@@ -36,11 +36,11 @@ impl IndexCatalog {
             stats_tables: Configuration::pinned()
                 .common
                 .experimental
-                .index_reads_enabled(),
+                .is_indexes_enabled(),
         }
     }
 
-    /// Where queries don't read indexes, the statistics tables aren't shown.
+    /// Without indexing, the statistics tables aren't shown.
     const HIDDEN: Self = Self {
         stats_tables: false,
     };
@@ -56,8 +56,10 @@ const FIRST_RETRY: Duration = Duration::from_secs(5);
 /// interval, keeps the last catalog and is retried sooner. A worker whose
 /// registry scan fails, named in the query's warnings, only leaves its replicas
 /// unknown; one that never answers stalls the check until that deadline.
-/// Where queries don't read indexes, the statistics tables aren't shown: the
-/// catalog is then all `false`, without a check.
+/// Without `experimental-enable-indexes` the statistics tables aren't shown:
+/// the catalog is then all `false`, without a check. They don't depend on
+/// `admin.query-engine.disable-index-reads`, which only turns off the planner's
+/// index reads.
 pub(crate) async fn refresh(
     query_engine: Arc<QueryEngine>,
     replica_sets: PartitionReplicaSetStates,
@@ -66,7 +68,7 @@ pub(crate) async fn refresh(
     let mut cancelled = std::pin::pin!(cancellation_watcher());
     let mut retry = FIRST_RETRY;
     loop {
-        let (interval, index_reads) = {
+        let (interval, indexes) = {
             let config = Configuration::pinned();
             (
                 config
@@ -74,10 +76,10 @@ pub(crate) async fn refresh(
                     .query_engine
                     .index_catalog_refresh_interval
                     .to_std(),
-                config.common.experimental.index_reads_enabled(),
+                config.common.experimental.is_indexes_enabled(),
             )
         };
-        let delay = if !index_reads {
+        let delay = if !indexes {
             catalog.send_replace(IndexCatalog::HIDDEN);
             retry = FIRST_RETRY;
             interval
@@ -125,12 +127,14 @@ mod tests {
     use super::*;
 
     #[restate_core::test(start_paused = true)]
-    async fn starts_true_keeps_it_through_failed_checks_and_index_reads_off_skips_the_check() {
+    async fn starts_true_keeps_it_through_failed_checks_and_indexes_off_skips_the_check() {
         let mut config = Configuration::default();
         config.common.experimental.set_indexes(true);
+        // Turning off the planner's index reads leaves the statistics tables alone.
+        config.admin.query_engine.disable_index_reads = true;
         Configuration::set(config.clone());
-        // With index reads on, the tables are assumed to answer until a check
-        // finds evidence otherwise.
+        // With indexing on, the tables are assumed to answer until a check finds
+        // evidence otherwise.
         assert_eq!(IndexCatalog::initial(), IndexCatalog { stats_tables: true });
         let checks = Arc::new(AtomicUsize::new(0));
         let engine = QueryEngine::new(QueryEngineVersion::V1, {
@@ -176,15 +180,15 @@ mod tests {
         }
         assert_eq!(*catalog.borrow(), IndexCatalog { stats_tables: true });
 
-        // Without index reads the statistics tables aren't shown: the next turn,
-        // a minute later, publishes `false` without a check.
+        // Without indexing the statistics tables aren't shown: the next turn, a
+        // minute later, publishes `false` without a check.
         config.common.experimental.set_indexes(false);
         Configuration::set(config);
         tokio::time::sleep_until(start + Duration::from_secs(255) + Duration::from_millis(1)).await;
         assert_eq!(
             checks.load(Ordering::Relaxed),
             7,
-            "no check without index reads"
+            "no check without indexing"
         );
         assert_eq!(*catalog.borrow(), IndexCatalog::HIDDEN);
         assert_eq!(IndexCatalog::initial(), IndexCatalog::HIDDEN);
