@@ -104,7 +104,7 @@ pub struct QueryEngineInformation {
     /// # Statistics tables
     ///
     /// Whether the statistics tables (`sys_service_stats`, `sys_deployment_stats` and
-    /// `sys_virtual_object_stats`) answer queries. `false` while queries don't read indexes,
+    /// `sys_virtual_object_stats`) answer queries. `false` without `experimental-enable-indexes`,
     /// because the tables aren't shown then. Otherwise `true`, from the admin node's start, unless
     /// its last check found a partition whose leader answered with its store open and lacks a
     /// complete status gauge, as before the partition has fully migrated to vqueues. Partitions

@@ -369,6 +369,14 @@ impl Configuration {
         config
     }
 
+    /// Whether the V2 planner on this node reads indexes:
+    /// `experimental-enable-indexes` is on and
+    /// `admin.query-engine.disable-index-reads` is off.
+    pub fn index_reads_enabled(&self) -> bool {
+        self.common.experimental.is_indexes_enabled()
+            && !self.admin.query_engine.disable_index_reads
+    }
+
     #[cfg(any(test, feature = "test-util"))]
     pub fn set(c: Configuration) {
         set_current_config(c);

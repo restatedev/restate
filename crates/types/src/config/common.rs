@@ -1276,10 +1276,11 @@ experimental! {
     ///   again builds them from scratch. Invocation and VQueue entry data are never
     ///   affected.
     /// - **On a query coordinator**, the V2 planner reads the entry indexes where
-    ///   they are complete, and both engines show the statistics tables
-    ///   (`sys_service_stats`, `sys_deployment_stats`, `sys_virtual_object_stats`).
-    ///   Their queries fail until the statistics are complete on every partition.
-    ///   Only new query sessions see a change.
+    ///   they are complete, unless `admin.query-engine.disable-index-reads` is set,
+    ///   and both engines show the statistics tables (`sys_service_stats`,
+    ///   `sys_deployment_stats`, `sys_virtual_object_stats`). Their queries fail
+    ///   until the statistics are complete on every partition. Only new query
+    ///   sessions see a change.
     ///
     /// Enabling this option raises the partition's minimum Restate version to
     /// v1.8.2. That stays after the option is turned off: a node that has ever run
@@ -1319,13 +1320,6 @@ impl Experimental {
     /// the default for admin queries, which implies it.
     pub fn is_query_engine_v2_running(&self) -> bool {
         self.is_query_engine_v2_enabled() || self.is_query_engine_v2_default_enabled()
-    }
-
-    /// Whether queries on this coordinator read indexes: the planner considers
-    /// index reads, and the statistics tables are shown. This is
-    /// `experimental-enable-indexes`.
-    pub fn index_reads_enabled(&self) -> bool {
-        self.is_indexes_enabled()
     }
 }
 

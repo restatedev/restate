@@ -82,8 +82,10 @@ impl DataFusionQueryEngine {
             opts.excluded_tables
                 .push(crate::tables::config::ConfigTable::identity());
         }
-        // The statistics tables are shown where queries read indexes.
-        if !config.common.experimental.index_reads_enabled() {
+        // The statistics tables are shown where indexing is enabled, also when
+        // `disable-index-reads` turns off the planner's index reads: they read the
+        // gauges through their own reader.
+        if !config.common.experimental.is_indexes_enabled() {
             use crate::tables::stats::deployment_stats::schema::SysDeploymentStatsTable;
             use crate::tables::stats::service_stats::schema::SysServiceStatsTable;
             use crate::tables::stats::virtual_object_stats::schema::SysVirtualObjectStatsTable;
