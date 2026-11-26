@@ -56,7 +56,7 @@ use crate::table::{MultiGetCursor, MultiGetTable, PhysicalTable, TableCursor};
 use crate::{ReadSnapshot, Result};
 
 use super::indexed_read::{
-    EntryIndex, IndexedCursor, KeySteps, StatusCreatedRead, StatusTransitionedRead,
+    CreatedRead, EntryIndex, IndexedCursor, KeySteps, StatusCreatedRead, StatusTransitionedRead,
 };
 use super::stage_reads::{StageReadCounters, StageReads, StagesCursor};
 use super::{ENTRY_STATUS_MULTI_GET_BATCH_SIZE, EntryStatusKey};
@@ -186,6 +186,13 @@ pub enum EntryStatusScan {
         fallback: Arc<KeySelection<EntryStatusKey>>,
         execution: Arc<EntryIndexExecution>,
     },
+    /// As [`Self::StatusCreated`], through `entry_by_created/1`: entries of
+    /// every stage, newest created first.
+    Created {
+        read: Arc<CreatedRead>,
+        fallback: Arc<KeySelection<EntryStatusKey>>,
+        execution: Arc<EntryIndexExecution>,
+    },
 }
 
 impl From<ScanEntryIdFilter> for EntryStatusScan {
@@ -287,6 +294,14 @@ impl ReadSnapshot {
             } => {
                 let cursor =
                     IndexedCursor::status_transitioned(self, &read, &execution, window, false)?;
+                return self.indexed_or(cursor, fallback);
+            }
+            EntryStatusScan::Created {
+                read,
+                fallback,
+                execution,
+            } => {
+                let cursor = IndexedCursor::created(self, &read, &execution, window, false)?;
                 return self.indexed_or(cursor, fallback);
             }
         };
@@ -419,23 +434,24 @@ impl ReadCursor<EntryStatusRecords> for EntryStatusCursor {
     }
 }
 
-/// An entry as a status index's key holds it, for a query that needs no other
-/// column: its incarnation, stage and status, and the index's time. A read that
-/// scans instead has both times.
+/// An entry as an entry index's key holds it, for a query that needs no other
+/// column: its incarnation and the index's time and, in a status index, its
+/// stage and status. A read that scans instead has all of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EntryKeyRow {
     pub id: CanonicalEntryId,
-    pub stage: Stage,
-    pub status: Status,
+    /// The entry's stage and stored status, a status index's lane. `None`
+    /// through `entry_by_created/1`, whose keys don't hold them.
+    pub lane: Option<(Stage, Status)>,
     pub created_at: Option<UniqueTimestamp>,
     pub transitioned_at: Option<UniqueTimestamp>,
 }
 
-/// A keys-only read of a status index, in the order of the index's time
-/// ([`StatusCreatedRead`], [`StatusTransitionedRead`]), or the `fallback`
-/// iteration of entry statuses if the index can't stand in for it on the
-/// snapshot. `execution` is charged for the index read and learns which path
-/// it took.
+/// A keys-only read of an entry index, in the order of the index's time
+/// ([`StatusCreatedRead`], [`StatusTransitionedRead`], [`CreatedRead`]), or the
+/// `fallback` iteration of entry statuses if the index can't stand in for it
+/// on the snapshot. `execution` is charged for the index read and learns which
+/// path it took.
 #[derive(Clone)]
 pub enum EntryKeyScan {
     StatusCreated {
@@ -448,9 +464,14 @@ pub enum EntryKeyScan {
         fallback: Arc<KeySelection<EntryStatusKey>>,
         execution: Arc<EntryIndexExecution>,
     },
+    Created {
+        read: Arc<CreatedRead>,
+        fallback: Arc<KeySelection<EntryStatusKey>>,
+        execution: Arc<EntryIndexExecution>,
+    },
 }
 
-/// Entries read through a status index's keys alone ([`EntryKeyScan`]).
+/// Entries read through an entry index's keys alone ([`EntryKeyScan`]).
 pub enum EntryKeyRecords {}
 
 impl Table for EntryKeyRecords {
@@ -499,6 +520,15 @@ impl CursorScan<EntryKeyRecords> for ReadSnapshot {
                 .map(|cursor| Box::new(cursor) as Box<dyn KeySteps>),
                 fallback,
             ),
+            EntryKeyScan::Created {
+                read,
+                fallback,
+                execution,
+            } => (
+                IndexedCursor::created(self, &read, &execution, NonZeroUsize::MIN, true)?
+                    .map(|cursor| Box::new(cursor) as Box<dyn KeySteps>),
+                fallback,
+            ),
         };
         let mode = match cursor {
             Some(cursor) => KeyMode::Indexed(cursor),
@@ -532,8 +562,7 @@ impl ReadCursor<EntryKeyRecords> for EntryKeyCursor {
                 let header = RawStatusHeaderRef::decode_stored(&mut value)?;
                 Ok(EntryKeyRow {
                     id: id.canonicalize(header.seq),
-                    stage: header.stage,
-                    status: header.status,
+                    lane: Some((header.stage, header.status)),
                     created_at: Some(header.stats.created_at),
                     transitioned_at: Some(header.stats.transitioned_at),
                 })

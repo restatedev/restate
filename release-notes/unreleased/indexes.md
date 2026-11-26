@@ -34,8 +34,9 @@ On the nodes that run queries, the same option makes queries use them:
 - With query engine V2, a query on `sys_invocation_status` that asks for the newest or oldest
   invocations under a `LIMIT`, of every service or of the ones it names, like the UI's invocation
   list, reads only those invocations through an entry index instead of every invocation of every
-  partition. On `sys_vqueue_entry_status`, a query for the newest or oldest entries of some stages
-  under a `LIMIT` reads the stage-and-status indexes. Other queries read as before.
+  partition. On `sys_vqueue_entry_status` and `sys_vqueues`, a query for the newest or oldest
+  entries under a `LIMIT`, of every stage or of some, reads an entry index too. Other queries read
+  as before.
 - Both query engines show the statistics tables `sys_service_stats`, `sys_deployment_stats` and
   `sys_virtual_object_stats`.
 

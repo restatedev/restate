@@ -20,8 +20,8 @@ use restate_limiter::RuleBook;
 use restate_limiter::rule_book::RuleBookObserver;
 use restate_platform::sync::Mutex;
 use restate_storage_query_api::tables::index::{
-    EntryByCreated, EntryByQueue, EntryByStatusCreated, EntryStatusByStatusCreated,
-    EntryStatusByStatusTransitioned,
+    EntryByCreated, EntryByQueue, EntryByStatusCreated, EntryStatusByCreated,
+    EntryStatusByStatusCreated, EntryStatusByStatusTransitioned,
 };
 use restate_storage_query_api::{
     LogicalSchema, QueryEngineVersion, QueryOptions, QuerySession, SessionOptions, SessionTable,
@@ -43,10 +43,11 @@ const STATS: [&str; 3] = [
     "sys_virtual_object_stats",
 ];
 /// Every index the planner can read: none of them is a table.
-const INDEXES: [&str; 5] = [
+const INDEXES: [&str; 6] = [
     EntryByQueue::NAME,
     EntryByCreated::NAME,
     EntryByStatusCreated::NAME,
+    EntryStatusByCreated::NAME,
     EntryStatusByStatusCreated::NAME,
     EntryStatusByStatusTransitioned::NAME,
 ];

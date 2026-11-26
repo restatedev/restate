@@ -232,6 +232,27 @@ crate::define_schema! {
 }
 
 crate::define_schema! {
+    /// Every vqueue entry by creation hour and service, newest created first:
+    /// the entry index `entry_by_created/1`, read instead of scanning
+    /// `sys_vqueue_entry_status` for the newest or oldest entries. The services
+    /// split each hour into runs, so no column orders the index as a whole; a
+    /// read merges an hour's runs into creation order. Not shown as a table.
+    entry_status_by_created {
+        name: "entry_by_created/1",
+        primary: vqueue_entry_status::VqueueEntryStatus,
+        reference: canonical_id => |id| id.to_base_entry_id(),
+        columns {
+            /// When the entry was created. The index keeps its full timestamp;
+            /// this column compares at millisecond precision.
+            created_at => TimestampMillisecond,
+            /// The complete indexed entry incarnation.
+            canonical_id => DataType::LargeUtf8,
+        }
+        key {}
+    }
+}
+
+crate::define_schema! {
     /// Vqueue entries in a known stage by stage, status, creation hour and
     /// service, newest created first: the entry index
     /// `entry_by_status_created/1`, read instead of scanning

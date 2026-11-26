@@ -91,11 +91,11 @@ pub(crate) fn covered_row(
     }
 }
 
-/// Appends the row of an entry as a status index's key holds it: only the
+/// Appends the row of an entry as an entry index's key holds it: only the
 /// columns the key holds, written as [`append_entry_row`] writes them from an
 /// entry status. The caller projects no other column.
 #[inline]
-pub(crate) fn append_status_key_row(builder: &mut SysVqueueEntryStatusBuilder, key: &EntryKeyRow) {
+pub(crate) fn append_index_key_row(builder: &mut SysVqueueEntryStatusBuilder, key: &EntryKeyRow) {
     let mut row = builder.row();
     let id = key.id.to_base_entry_id();
     if row.is_partition_key_defined() {
@@ -116,12 +116,14 @@ pub(crate) fn append_status_key_row(builder: &mut SysVqueueEntryStatusBuilder, k
         row.entry_kind(name);
     }
     if row.is_stage_defined()
-        && let Some(name) = key.stage.name()
+        && let Some(name) = key.lane.and_then(|(stage, _)| stage.name())
     {
         row.stage(name);
     }
     if row.is_status_defined()
-        && let Some(name) = EffectiveStatus::new(key.stage, key.status).name()
+        && let Some(name) = key
+            .lane
+            .and_then(|(stage, status)| EffectiveStatus::new(stage, status).name())
     {
         row.status(name);
     }
