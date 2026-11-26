@@ -364,6 +364,24 @@ impl PartitionStore {
         published_registry
     }
 
+    /// Marks the partition fully migrated to vqueues, as the processor does when
+    /// it applies the migration. With indexes enabled, the indexes over the
+    /// vqueue entries then register at the next open, or at the walk driver's
+    /// next step after [`PartitionDb::request_vqueue_indexes`].
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn mark_fully_migrated_to_vqueues(&mut self) {
+        use restate_storage_api::Transaction;
+        use restate_storage_api::fsm_table::WriteFsmTable;
+
+        let mut features =
+            crate::fsm_table::get_state_machine_features_from_partition_db(self.partition_db())
+                .unwrap();
+        features.vqueues = true;
+        let mut tx = self.transaction();
+        tx.put_state_machine_features(&features).unwrap();
+        tx.commit().await.unwrap();
+    }
+
     /// Publishes `published_registry` to every handle of this partition, as opening
     /// does after reconciling the registry. Tests publish indexes of test definitions.
     #[cfg(test)]
@@ -753,10 +771,18 @@ impl PartitionStore {
 
         // Before the processor starts writing: retire, reset and register
         // indexes, start their walks, fence the store, and install the indexes
-        // maintained on writes.
+        // maintained on writes. Families over the vqueue entries register only
+        // once the partition has fully migrated to vqueues.
+        let vqueues_migrated =
+            crate::fsm_table::get_state_machine_features_from_partition_db(self.partition_db())?
+                .vqueues;
         self.reconcile_registry(
             crate::registry::INDEX_DEFINITIONS,
-            &crate::registry::Requests::from_config(crate::registry::FAMILIES, config),
+            &crate::registry::Requests::from_config(
+                crate::registry::FAMILIES,
+                config,
+                vqueues_migrated,
+            ),
             crate::registry::FenceState {
                 features: &mut storage_features,
                 current_version: current_restate_version,

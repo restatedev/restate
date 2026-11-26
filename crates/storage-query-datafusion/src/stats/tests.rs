@@ -176,6 +176,18 @@ impl Fixture {
 async fn complete(store: &mut PartitionStore) {
     let mut config = Configuration::pinned().as_ref().clone();
     config.common.experimental.set_indexes(true);
+    {
+        // A partition fully migrated to vqueues, which the indexes need.
+        use restate_storage_api::Transaction as _;
+        use restate_storage_api::fsm_table::WriteFsmTable as _;
+        let mut tx = store.transaction();
+        tx.put_state_machine_features(&restate_types::partitions::features::PersistedFeatures {
+            vqueues: true,
+            ..Default::default()
+        })
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
     store
         .verify_and_run_migrations(Default::default(), &config)
         .await

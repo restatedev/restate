@@ -14,7 +14,8 @@ background jobs doing that work:
   flushed (`approx_size_bytes`). One-time migrations are listed too, with kind
   `migration`, status `in_progress` or `complete`, when they completed, and
   when a rollback last set them back to in progress so that they run again
-  (`reset_at`).
+  (`reset_at`). Each replica open with indexes enabled also has one row of kind
+  `registry` (status `present`), even before it has any index.
 - `restate.cluster.migration_jobs`: one row per background job on each
   replica, building an index (`index_backfill`) or running a one-time
   migration (`migration`), with its status (`pending`, `running`, `waiting`,

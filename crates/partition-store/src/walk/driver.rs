@@ -73,7 +73,7 @@ use tracing::{info, warn};
 
 use restate_clock::WallClock;
 use restate_storage_api::StorageError;
-use restate_types::config::StorageOptions;
+use restate_types::config::{Configuration, StorageOptions};
 
 use crate::faults::{self, FaultPoint};
 use crate::job::{MigrationJobStatus, RECHECK_CAP_MS};
@@ -271,6 +271,12 @@ pub struct WalkDriver {
     throttled_until: Option<Instant>,
     /// Whether a constraint changed since the driver last published them.
     dirty: bool,
+    /// Whether the driver waits for the processor to ask for the indexes over
+    /// the vqueue entries ([`PartitionDb::request_vqueue_indexes`]): only on a
+    /// store opened with indexes enabled, fenced, and not yet fully migrated to
+    /// vqueues. Cleared once they are registered; every other driver never
+    /// looks at the request, so its wait costs nothing.
+    pub(crate) awaiting_vqueues: bool,
 }
 
 impl Drop for WalkDriver {
@@ -305,6 +311,16 @@ impl PartitionStore {
         } else if pending {
             info!(started, "Running migration walks in the background");
         }
+        // The same facts the open-time reconcile decides on: only such a store
+        // registers the indexes over the vqueue entries later, when the processor
+        // applies the migration.
+        let awaiting_vqueues = Configuration::pinned()
+            .common
+            .experimental
+            .is_indexes_enabled()
+            && self.storage_features().is_registry
+            && !crate::fsm_table::get_state_machine_features_from_partition_db(&db)
+                .is_ok_and(|features| features.vqueues);
         let now = Instant::now();
         let mut driver = WalkDriver {
             db,
@@ -330,6 +346,7 @@ impl PartitionStore {
             fenced: false,
             throttled_until: None,
             dirty: true,
+            awaiting_vqueues,
         };
         driver.publish();
         driver
@@ -340,6 +357,9 @@ impl WalkDriver {
     /// Resolves once a [`Self::step`] is due, and never while there is nothing to
     /// do. Cancellation safe: awaiting it again resumes the same wait.
     pub async fn ready(&mut self) {
+        if self.awaiting_vqueues {
+            return self.ready_or_vqueues_requested().await;
+        }
         let Some(due) = self.due else {
             // Only signals: resumes right away.
             let _ = self.db.faults().arrive(FaultPoint::WalksIdle);
@@ -349,6 +369,42 @@ impl WalkDriver {
             self.sleep.as_mut().reset(due);
         }
         self.sleep.as_mut().await;
+        self.hold().await;
+    }
+
+    /// [`Self::ready`] of a driver awaiting the vqueues migration: the processor
+    /// asking for the indexes over the vqueue entries
+    /// ([`PartitionDb::request_vqueue_indexes`]) also makes a step due at once.
+    /// An event, so the processor's loop checks nothing per command batch.
+    async fn ready_or_vqueues_requested(&mut self) {
+        // The request's flag is set before its wake-up, so a wake-up consumed by
+        // a cancelled wait still leaves the flag for the next one.
+        let requested = self.db.vqueue_indexes_wakeup();
+        if self.db.vqueue_indexes_requested() {
+            // A step that found commits held back kept the request and is due
+            // again at its fence recheck: wait for that, not for the request.
+            if self.fenced
+                && let Some(due) = self.due
+            {
+                if self.sleep.deadline() != due {
+                    self.sleep.as_mut().reset(due);
+                }
+                self.sleep.as_mut().await;
+            }
+            return;
+        }
+        let Some(due) = self.due else {
+            // Only signals: resumes right away.
+            let _ = self.db.faults().arrive(FaultPoint::WalksIdle);
+            return requested.await;
+        };
+        if self.sleep.deadline() != due {
+            self.sleep.as_mut().reset(due);
+        }
+        tokio::select! {
+            () = self.sleep.as_mut() => {}
+            () = requested => return,
+        }
         self.hold().await;
     }
 
@@ -398,6 +454,40 @@ impl WalkDriver {
         write_bytes: usize,
     ) -> Result<(), StorageError> {
         let started = Instant::now();
+        if self.awaiting_vqueues && self.db.vqueue_indexes_requested() {
+            // Registering writes and flushes the registry records outside `tx`, so
+            // it waits while commits are held back, for example during a snapshot
+            // export, like a slice does below: the request stays, and the step is
+            // due again at the fence recheck.
+            let fenced = tx.commits_held();
+            if fenced != self.fenced {
+                self.fenced = fenced;
+                self.dirty = true;
+            }
+            if fenced {
+                add(&self.db.walk_stats().fence_skips, 1);
+                self.due = Some(started + self.pacing.tuning.fence_recheck);
+                return Ok(());
+            }
+            self.db.take_vqueue_indexes_request();
+            let mut store = PartitionStore::from(self.db.clone());
+            let registered = store.register_vqueue_indexes(tx).await?;
+            if registered {
+                info!("Registered the indexes over the vqueue entries after the migration");
+                // Registered and the walk scheduled: back to waiting at no cost.
+                self.awaiting_vqueues = false;
+                self.dirty = true;
+            }
+            // A fence above may have left its recheck as the deadline. With
+            // background migrations disabled nothing else is due, registered or
+            // not; enabled, the walk just registered starts now.
+            if self.disabled {
+                self.due = None;
+            } else if registered {
+                self.due = Some(started);
+            }
+            return Ok(());
+        }
         if self.due.is_none_or(|due| due > started) {
             return Ok(());
         }
