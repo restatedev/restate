@@ -44,10 +44,12 @@ const GAUGES: [&str; 3] = [
 /// a leader's `cluster.registry` rows are its real state, while another replica
 /// can answer before its store is open, for example while the cluster starts.
 ///
-/// The leader is evidence when its node answered, it has at least one registry
-/// row for the partition, and one of the three gauges has no `complete` row
-/// there (only `backfilling` or `dropped` rows, or none). A replica without any
-/// row is unknown: the registry scan reads only the stores open on a node
+/// The leader is evidence when its node answered, its store is open, which its
+/// registry rows show, and one of the three gauges has no `complete` row there
+/// (only `backfilling` or `dropped` rows, or none). Every store opened with
+/// indexes enabled has a row of its registry, also while its partition hasn't
+/// fully migrated to vqueues and so has no gauges yet: such a leader is evidence
+/// too. A replica without any row is unknown: the registry scan reads only the stores open on a node
 /// (`PartitionStoreManager::migration_report` in
 /// `crates/partition-store/src/query_read/report.rs`), so a store that is
 /// opening or closing has none. A worker that never enabled indexes has none
@@ -194,8 +196,9 @@ mod tests {
     use crate::remote_query_scanner_server::RemoteQueryScannerServer;
     use crate::{ClusterTables, DataFusionEnv};
 
-    /// Opens `store` with indexes on or off: on, its gauges complete at once
-    /// (it has no entries); off, they are dropped.
+    /// Opens `store` with indexes on or off: on, a migrated partition's gauges
+    /// complete at once (it has no entries), and any partition gets its registry
+    /// row; off, the gauges are dropped.
     async fn open(store: &mut PartitionStore, indexes: bool) {
         let mut config = Configuration::pinned().as_ref().clone();
         config.common.experimental.set_indexes(indexes);
@@ -281,7 +284,16 @@ mod tests {
             stats_tables_ready(&engine, &replicas).await.unwrap(),
             "no_registry_rows_is_unknown"
         );
+        // An open leader whose partition hasn't migrated to vqueues has only its
+        // registry row, and no gauges.
+        stores[0].mark_fully_migrated_to_vqueues().await;
         open(&mut stores[0], true).await;
+        open(&mut stores[1], true).await;
+        assert!(
+            !stats_tables_ready(&engine, &replicas).await.unwrap(),
+            "unmigrated_leader_with_its_registry_row"
+        );
+        stores[1].mark_fully_migrated_to_vqueues().await;
         open(&mut stores[1], true).await;
         assert!(
             stats_tables_ready(&engine, &replicas).await.unwrap(),

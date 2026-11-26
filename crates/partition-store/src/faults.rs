@@ -106,7 +106,7 @@ impl FaultPoint {
 #[derive(Clone, Default)]
 pub struct Faults {
     #[cfg(any(test, feature = "faults"))]
-    armed: std::sync::Arc<parking_lot::Mutex<Vec<(FaultPoint, Fault)>>>,
+    armed: std::sync::Arc<restate_platform::sync::Mutex<Vec<(FaultPoint, Fault)>>>,
 }
 
 /// Resolves once the work paused at a point may go ahead.

@@ -729,7 +729,7 @@ pub(crate) async fn commit(
         .reach(crate::faults::FaultPoint::WalkPublication)
         .await;
     let next = Arc::new(active.successor(registry, walks, jobs));
-    db.install_published_registry(Arc::clone(&next));
+    db.shared_registry().publish(Arc::clone(&next));
     tx.set_published_registry(next);
     Ok(())
 }

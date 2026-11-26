@@ -263,10 +263,19 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         .unwrap();
     let mut config = Configuration::default();
     config.common.experimental.set_indexes(true);
+    // The indexes register on a migrated partition; the read checks the
+    // migration again in its own snapshot, which the test then takes back to
+    // show the scan.
+    store.mark_fully_migrated_to_vqueues().await;
     store
         .verify_and_run_migrations(CancellationToken::new(), &config)
         .await
         .unwrap();
+    let mut tx = store.transaction();
+    tx.put_state_machine_features(&PersistedFeatures::default())
+        .unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
     // The planner reads the index only where it's maintained.
     Configuration::set(config.clone());
 
@@ -1117,6 +1126,7 @@ async fn status_follows_the_entry() {
         .unwrap();
     let mut config = Configuration::default();
     config.common.experimental.set_indexes(true);
+    store.mark_fully_migrated_to_vqueues().await;
     store
         .verify_and_run_migrations(CancellationToken::new(), &config)
         .await
@@ -1421,6 +1431,7 @@ async fn partitions_sharing_a_lane_bound_their_fallback() {
     let mut page = Vec::new();
     for ((_, partition), (count, migrated)) in partitions.iter().zip([(61u64, false), (30, true)]) {
         let mut store = manager.open(partition, None).await.unwrap();
+        store.mark_fully_migrated_to_vqueues().await;
         store
             .verify_and_run_migrations(CancellationToken::new(), &config)
             .await

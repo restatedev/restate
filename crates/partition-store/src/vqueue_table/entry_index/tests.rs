@@ -39,6 +39,7 @@ use super::*;
 /// Opens as a partition does, then runs the walks the open started to their
 /// ends, as the background driver does in time.
 async fn open(store: &mut PartitionStore, config: &Configuration) {
+    store.mark_fully_migrated_to_vqueues().await;
     store
         .verify_and_run_migrations(CancellationToken::new(), config)
         .await
@@ -1023,4 +1024,170 @@ fn entry_conditions_select_exactly_their_effective_lanes() {
         assert!(!expected.is_empty(), "{wanted}");
         assert_eq!(read, expected, "{wanted}");
     }
+}
+
+/// The entry indexes and status gauges register only once the partition has
+/// fully migrated to vqueues. Before that, an open with indexes enabled fences
+/// the store and keeps a registry, but registers nothing and starts no walk; a
+/// migration that skipped completed invocations isn't enough. The processor's
+/// request after the full migration wakes the walk driver, whose next step
+/// registers them: the walk covers the entries that exist, and the processor's
+/// transaction maintains them.
+/// While commits are held back, the registration waits and keeps the request.
+#[restate_core::test]
+async fn entry_indexes_register_only_after_the_full_vqueues_migration() {
+    use restate_storage_api::fsm_table::WriteFsmTable;
+    use restate_types::partitions::features::PersistedFeatures;
+
+    use crate::registry::FAMILIES;
+    use crate::stats::aggregated::{ServiceStats, complete_index_scope};
+
+    RocksDbManager::init();
+    let manager = PartitionStoreManager::create(true).await.unwrap();
+    let mut store = manager
+        .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+        .await
+        .unwrap();
+    let config = tracking();
+    Configuration::set(config.clone());
+    store
+        .verify_and_run_migrations(CancellationToken::new(), &config)
+        .await
+        .unwrap();
+    seed(&mut store).await;
+    assert!(store.storage_features().is_registry, "fenced");
+    let registered = |store: &PartitionStore| {
+        get_registry(store.partition_db())
+            .unwrap()
+            .expect("a fenced store has a registry")
+            .indexes()
+            .len()
+    };
+    assert_eq!(registered(&store), 0);
+    assert!(store.published_registry().walks().entries().is_empty());
+
+    let mut writer = store.clone();
+    let mut tx = writer.transaction();
+    let mut driver = store.walk_driver(&config.worker.storage);
+    assert!(
+        driver.awaiting_vqueues,
+        "an unmigrated partition's driver awaits"
+    );
+    // A request is taken by the next step, which registers only after the full
+    // migration: a skip-completed one isn't enough.
+    let mut skipped = store.clone();
+    let mut features_tx = skipped.transaction();
+    features_tx
+        .put_state_machine_features(&PersistedFeatures {
+            vqueues_skip_completed: true,
+            ..PersistedFeatures::default()
+        })
+        .unwrap();
+    features_tx.commit().await.unwrap();
+    for (case, migrated, indexes) in [
+        ("skip-completed migration", false, 0),
+        (
+            "full migration",
+            true,
+            FAMILIES.iter().map(|family| family.definitions.len()).sum(),
+        ),
+    ] {
+        if migrated {
+            store.mark_fully_migrated_to_vqueues().await;
+        }
+        store.partition_db().request_vqueue_indexes();
+        driver.ready().await;
+        if migrated {
+            // While commits are held back, as for a snapshot export, the
+            // registration waits and keeps the request.
+            let fence = tx.fence_commits().unwrap();
+            driver.step(&mut tx, usize::MAX).await.unwrap();
+            assert_eq!(registered(&store), 0, "{case}: fenced");
+            assert!(
+                store
+                    .partition_db()
+                    .shared_registry()
+                    .vqueue_indexes_requested(),
+                "{case}: fenced"
+            );
+            drop(fence);
+        }
+        driver.step(&mut tx, usize::MAX).await.unwrap();
+        assert!(
+            !store
+                .partition_db()
+                .shared_registry()
+                .vqueue_indexes_requested(),
+            "{case}"
+        );
+        assert_eq!(registered(&store), indexes, "{case}");
+        assert_eq!(driver.awaiting_vqueues, !migrated, "{case}");
+    }
+    // A driver for a migrated partition never arms the wake-up.
+    assert!(!store.walk_driver(&config.worker.storage).awaiting_vqueues);
+    assert!(
+        tx.published_registry()
+            .registry()
+            .maintained(ENTRY_BY_CREATED.name)
+            .is_some(),
+        "the processor's transaction maintains the registered indexes"
+    );
+    engine::run_all(&mut store, 3).await.unwrap();
+    let registry = get_registry(store.partition_db()).unwrap().unwrap();
+    for definition in FAMILIES.iter().flat_map(|family| family.definitions) {
+        assert_eq!(
+            registry
+                .maintained(definition.name)
+                .map(|index| index.state),
+            Some(IndexStatus::Complete),
+            "{}",
+            definition.name
+        );
+    }
+    complete_index_scope::<ServiceStats>(&store);
+    assert!(counts(&store).iter().all(|(_, keys)| *keys > 0));
+}
+
+/// With background migrations disabled, a registration delayed by held-back
+/// commits still registers once they're released, and then leaves nothing due:
+/// the fence's retry deadline doesn't start the backfill the configuration
+/// keeps off.
+#[restate_core::test(start_paused = true)]
+async fn disabled_background_migrations_stay_off_after_a_fenced_registration() {
+    use futures::FutureExt;
+
+    RocksDbManager::init();
+    let manager = PartitionStoreManager::create(true).await.unwrap();
+    let mut store = manager
+        .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+        .await
+        .unwrap();
+    let mut config = tracking();
+    config.worker.storage.disable_background_migrations = true;
+    Configuration::set(config.clone());
+    store
+        .verify_and_run_migrations(CancellationToken::new(), &config)
+        .await
+        .unwrap();
+    seed(&mut store).await;
+    let mut writer = store.clone();
+    let mut tx = writer.transaction();
+    let mut driver = store.walk_driver(&config.worker.storage);
+
+    store.mark_fully_migrated_to_vqueues().await;
+    store.partition_db().request_vqueue_indexes();
+    let fence = tx.fence_commits().unwrap();
+    driver.step(&mut tx, usize::MAX).await.unwrap();
+    drop(fence);
+    driver.step(&mut tx, usize::MAX).await.unwrap();
+    assert!(index(&store).is_some(), "registered once the fence lifted");
+
+    tokio::time::advance(std::time::Duration::from_secs(60)).await;
+    assert!(driver.ready().now_or_never().is_none(), "nothing is due");
+    driver.step(&mut tx, usize::MAX).await.unwrap();
+    assert_eq!(store.walk_stats().examined, 0, "no backfill slice ran");
+    assert_eq!(
+        index(&store).map(|(_, status)| status),
+        Some(IndexStatus::Backfilling)
+    );
 }

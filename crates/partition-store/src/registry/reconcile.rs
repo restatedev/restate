@@ -22,7 +22,11 @@
 //!    rollback, or another build): their keys are range-deleted and they become
 //!    Dropped, keeping their IDs reserved.
 //! 2. **Drop** the indexes of every family while indexes aren't enabled
-//!    (`experimental-enable-indexes` off), the same way.
+//!    (`experimental-enable-indexes` off), the same way, and those of a family
+//!    over the vqueue entries while the partition hasn't fully migrated to
+//!    vqueues (see [`Family::requires_vqueues`]): such a family registers once
+//!    the migration is applied, at the next open, or at the walk driver's next
+//!    step after the processor applied it ([`PartitionDb::request_vqueue_indexes`]).
 //! 3. **Register** each requested definition that has no maintained index, under
 //!    a fresh ID, with a `Pending` build job.
 //!    Running out of IDs skips the request with an error log.
@@ -45,8 +49,10 @@
 //!    registrations, indexes whose definition can fill now, and passive ones
 //!    whose wait is over. A partition without entries has nothing to walk: those
 //!    indexes become Complete instead.
-//! 7. **Fence:** once an index was ever registered, the `registry` storage
-//!    feature is in the store's ledger, so older binaries cannot open it.
+//! 7. **Fence:** while indexes are enabled, or once an index was ever
+//!    registered, the `registry` storage feature is in the store's ledger, with
+//!    a registry record, so older binaries cannot open it. Indexes enabled fence
+//!    the store even before any family registers.
 //!
 //! ```text
 //! open ─▶ load (one scan) + validate ─▶ retire · drop · register · start walks
@@ -123,6 +129,9 @@ pub(crate) const FAMILIES: &[Family] = &[
 
 /// What opening a partition asks of its registry.
 pub(crate) struct Requests {
+    /// Whether indexes are enabled: the store gets the `registry` fence, and its
+    /// version floor, even before any definition registers.
+    pub(crate) fence: bool,
     /// Definitions to register when they have no maintained index.
     pub(crate) maintain: Vec<&'static IndexDefinition>,
     /// Definitions whose maintained index is dropped, because indexes aren't
@@ -140,6 +149,7 @@ impl Default for Requests {
     /// No requests and no migrations, with the default retention.
     fn default() -> Self {
         Self {
+            fence: false,
             maintain: Vec::new(),
             disabled: Vec::new(),
             retention: StorageOptions::default()
@@ -151,8 +161,17 @@ impl Default for Requests {
 }
 
 impl Requests {
-    pub(crate) fn from_config(families: &[Family], config: &Configuration) -> Self {
+    /// What an open asks: every family while indexes are enabled, except those
+    /// over the vqueue entries while the partition hasn't fully migrated to
+    /// vqueues (`vqueues_migrated`); the others are dropped.
+    pub(crate) fn from_config(
+        families: &[Family],
+        config: &Configuration,
+        vqueues_migrated: bool,
+    ) -> Self {
+        let enabled = config.common.experimental.is_indexes_enabled();
         let mut requests = Self {
+            fence: enabled,
             retention: config
                 .worker
                 .storage
@@ -161,12 +180,31 @@ impl Requests {
             migrations: ONLINE_MIGRATIONS,
             ..Self::default()
         };
-        let definitions = families.iter().flat_map(|family| family.definitions);
-        if config.common.experimental.is_indexes_enabled() {
-            requests.maintain.extend(definitions);
-        } else {
-            requests.disabled.extend(definitions);
+        for family in families {
+            if enabled && (vqueues_migrated || !family.requires_vqueues) {
+                requests.maintain.extend(family.definitions);
+            } else {
+                requests.disabled.extend(family.definitions);
+            }
         }
+        requests
+    }
+
+    /// What the processor asks once the partition has fully migrated to
+    /// vqueues: the families over the vqueue entries, while indexes are
+    /// enabled. Drops nothing.
+    pub(crate) fn vqueue_families(families: &[Family], config: &Configuration) -> Self {
+        let mut requests = Self::from_config(families, config, true);
+        requests.maintain.retain(|definition| {
+            families.iter().any(|family| {
+                family.requires_vqueues
+                    && family
+                        .definitions
+                        .iter()
+                        .any(|member| std::ptr::eq(*member, *definition))
+            })
+        });
+        requests.disabled.clear();
         requests
     }
 }
@@ -325,6 +363,75 @@ impl PartitionStore {
         Ok((records, unreadable_jobs))
     }
 
+    /// Registers the families over the vqueue entries once the partition has
+    /// fully migrated to vqueues, as the next open would, and starts their walk.
+    /// Returns whether it registered: indexes are enabled, the store was fenced
+    /// at open, and the committed state-machine features show the full
+    /// migration. A store opened while indexes were off waits for its next open,
+    /// which fences it.
+    ///
+    /// The walk driver calls it when the processor asked for these indexes
+    /// ([`PartitionDb::request_vqueue_indexes`]), between command batches, with
+    /// `tx` holding no pending writes: the batch that applied the migration is
+    /// committed, and every entry it or an earlier batch wrote lies within the
+    /// walk, which starts at the source's first key and ends at its last key now.
+    /// The processor is the store's only writer, so no entry changes while the
+    /// registry is reconciled; afterwards `tx` maintains the registered indexes,
+    /// so later writes are covered by themselves. Registering again registers
+    /// nothing.
+    pub(crate) async fn register_vqueue_indexes(
+        &mut self,
+        tx: &mut crate::PartitionStoreTransaction<'_>,
+    ) -> Result<bool, StorageError> {
+        use crate::fsm_table::{
+            get_state_machine_features_from_partition_db, get_storage_features_from_partition_db,
+            get_storage_version_from_partition_db,
+        };
+
+        let db = self.partition_db().clone();
+        let requests = {
+            let config = Configuration::pinned();
+            if !config.common.experimental.is_indexes_enabled() {
+                return Ok(false);
+            }
+            Requests::vqueue_families(FAMILIES, &config)
+        };
+        if !self.storage_features().is_registry
+            || !get_state_machine_features_from_partition_db(&db)?.vqueues
+        {
+            return Ok(false);
+        }
+        let current_version = SemanticRestateVersion::current();
+        let mut features = LoadedStorageFeatures::load(
+            get_storage_features_from_partition_db(&db)?,
+            get_storage_version_from_partition_db(&db)?,
+            current_version,
+        )
+        .map_err(|barrier| {
+            StorageError::Generic(anyhow::anyhow!(
+                "storage features require Restate {}",
+                barrier.required_min_version
+            ))
+        })?;
+        let mut min_restate_version = get_min_restate_version_from_partition_db(&db)?;
+        self.reconcile_registry(
+            crate::registry::INDEX_DEFINITIONS,
+            &requests,
+            FenceState {
+                features: &mut features,
+                current_version,
+                min_restate_version: &mut min_restate_version,
+            },
+        )
+        .await
+        .map_err(|err| match err {
+            MigrationError::StorageError(err) => err,
+            err => StorageError::Generic(err.into()),
+        })?;
+        tx.set_published_registry(self.published_registry());
+        Ok(true)
+    }
+
     /// Reconciles the registry with `known` definitions and `requests`; see the
     /// module documentation. Fails the open on an unreadable or invalid registry.
     pub(crate) async fn reconcile_registry(
@@ -439,7 +546,9 @@ impl PartitionStore {
                     .map_err(registry_error)?;
                 info!(
                     definition = definition.name,
-                    id, "Dropped the index: indexes are not enabled"
+                    id,
+                    "Dropped the index: indexes are not enabled, or the partition hasn't fully \
+                     migrated to vqueues"
                 );
             }
         }
@@ -493,8 +602,9 @@ impl PartitionStore {
         }
 
         // Migrations run on a fenced store only: fenced before this open, or by
-        // its registrations above. A migration never sets the fence itself.
-        if features.enabled().is_registry || !registry.indexes().is_empty() {
+        // this open, because indexes are enabled or it registered some. A
+        // migration never sets the fence itself.
+        if features.enabled().is_registry || requests.fence || !registry.indexes().is_empty() {
             super::migration::reconcile(
                 &db,
                 &mut registry,
@@ -544,7 +654,7 @@ impl PartitionStore {
         }
 
         let partition = db.partition().id();
-        let fenced = !registry.indexes().is_empty()
+        let fenced = (requests.fence || !registry.indexes().is_empty())
             && features.append_registry_fence(
                 current_version,
                 current_min_restate_version,
@@ -552,8 +662,9 @@ impl PartitionStore {
                 &mut batch,
                 partition,
             )?;
-        // Only what changed: a store where nothing was ever registered gets no
-        // registry, and an unreadable job record that nothing replaced goes.
+        // Only what changed: a store that is not fenced and where nothing was
+        // ever registered gets no registry, and an unreadable job record that
+        // nothing replaced goes. A fenced store always has a registry record.
         let mut sink = BatchSink {
             batch: &mut batch,
             cf: db.cf_handle(),
@@ -567,7 +678,9 @@ impl PartitionStore {
                 jobs: &persisted.jobs,
             },
             View {
-                registry: (persisted.registry.is_some() || registry != Registry::default())
+                registry: (persisted.registry.is_some()
+                    || registry != Registry::default()
+                    || features.enabled().is_registry)
                     .then_some(&registry),
                 walks: &walks,
                 jobs: &jobs.unfinished,
@@ -594,14 +707,19 @@ impl PartitionStore {
 
         // Whatever this or an earlier attempt wrote becomes durable before
         // anything depends on it: registry changes, walks, fence, deletions,
-        // effects.
-        if !registry.indexes().is_empty() || !registry.migrations().is_empty() {
+        // effects. A fenced store flushes even with nothing registered: an
+        // earlier attempt may have written its fence and empty registry without
+        // finishing the flush, and the writes skip the WAL.
+        if features.enabled().is_registry
+            || !registry.indexes().is_empty()
+            || !registry.migrations().is_empty()
+        {
             flush(&db).await?;
         }
 
         // Writes maintain the reconciled indexes from here on, and walks run on
         // the records as committed.
-        db.install_published_registry(Arc::new(
+        db.shared_registry().publish(Arc::new(
             PublishedRegistry::new(&registry, &walks, known)
                 .with_jobs(jobs.unfinished, requests.retention)
                 .with_migrations(requests.migrations),
@@ -925,20 +1043,37 @@ mod tests {
                 );
             }
         }
-        // By default indexes aren't enabled: every family is dropped. Enabled,
-        // every family is maintained.
+        // Every released family reads the vqueue entries. Each is maintained only
+        // with indexes enabled on a partition fully migrated to vqueues, and
+        // dropped otherwise; indexes enabled fence the store either way. The
+        // processor's registration after the migration asks for the same
+        // families and drops nothing.
+        assert!(FAMILIES.iter().all(|family| family.requires_vqueues));
         let all = FAMILIES
             .iter()
             .map(|family| family.definitions.len())
             .sum::<usize>();
         let mut config = Configuration::default();
-        let requests = Requests::from_config(FAMILIES, &config);
-        assert!(requests.maintain.is_empty());
-        assert_eq!(requests.disabled.len(), all);
-        config.common.experimental.set_indexes(true);
-        let requests = Requests::from_config(FAMILIES, &config);
-        assert!(requests.disabled.is_empty());
-        assert_eq!(requests.maintain.len(), all);
+        for (indexes, migrated, fence, maintained) in [
+            (false, false, false, 0),
+            (false, true, false, 0),
+            (true, false, true, 0),
+            (true, true, true, all),
+        ] {
+            config.common.experimental.set_indexes(indexes);
+            let requests = Requests::from_config(FAMILIES, &config, migrated);
+            let case = format!("indexes {indexes}, migrated {migrated}");
+            assert_eq!(requests.fence, fence, "{case}");
+            assert_eq!(requests.maintain.len(), maintained, "{case}");
+            assert_eq!(requests.disabled.len(), all - maintained, "{case}");
+            let after_migration = Requests::vqueue_families(FAMILIES, &config);
+            assert_eq!(
+                after_migration.maintain.len(),
+                if indexes { all } else { 0 },
+                "{case}"
+            );
+            assert!(after_migration.disabled.is_empty(), "{case}");
+        }
     }
 
     fn ignore(
@@ -2880,13 +3015,14 @@ mod backfill_tests {
     ) -> Option<&'static str> {
         let active = tx.published_registry();
         let replica = ReplicaMigrations {
+            has_registry: true,
             partition_id: db.partition().id(),
             key_range: db.partition().key_range,
             registry: active.registry().clone(),
             walks: active.walks().clone(),
             jobs: active.jobs().clone(),
             index_sizes: Default::default(),
-            driver: db.driver_state().get(),
+            driver: db.shared_registry().driver_state().get(),
             unknown_migrations: active.unknown_migrations(active.registry()),
         };
         let job = active.jobs().get(MigrationJobId::for_entry(id))?;
@@ -3075,7 +3211,13 @@ mod backfill_tests {
             Some("throttled")
         );
         assert_eq!(blocked_by(&db, &tx, passive, Instant::now()), None);
-        let refill = db.driver_state().get().unwrap().throttled_until.unwrap();
+        let refill = db
+            .shared_registry()
+            .driver_state()
+            .get()
+            .unwrap()
+            .throttled_until
+            .unwrap();
         assert_eq!(blocked_by(&db, &tx, count, refill), None);
         drive(&mut driver, &mut tx, 1).await;
         assert!(
@@ -3133,6 +3275,7 @@ mod backfill_tests {
         };
         assert_eq!(replica.progress_percent(&unstarted), None);
         let single = ReplicaMigrations {
+            has_registry: true,
             key_range: KeyRange::new(5, 5),
             ..replica.clone()
         };
@@ -3147,6 +3290,7 @@ mod backfill_tests {
             .id
             .partition_key();
         let quarter = ReplicaMigrations {
+            has_registry: true,
             key_range: KeyRange::new(key - 5, key + 15),
             ..replica.clone()
         };
@@ -3159,6 +3303,7 @@ mod backfill_tests {
         assert_eq!(quarter.eta(&unstarted, start, start + 15 * minute), None);
         assert_eq!(quarter.eta(running, start, start - 1), None);
         let at_start = ReplicaMigrations {
+            has_registry: true,
             key_range: KeyRange::new(key, key + 20),
             ..replica.clone()
         };
@@ -3166,6 +3311,7 @@ mod backfill_tests {
         // 1 of 200 keys: the percent rounds down to 0, but the estimate uses the
         // exact position.
         let early = ReplicaMigrations {
+            has_registry: true,
             key_range: KeyRange::new(key - 1, key + 199),
             ..replica.clone()
         };
@@ -3338,7 +3484,7 @@ mod backfill_tests {
         }
         let db = store.partition_db();
         testing::put_jobs(db, jobs.entries());
-        db.install_published_registry(Arc::new(active.successor(
+        db.shared_registry().publish(Arc::new(active.successor(
             None,
             active.walks().clone(),
             jobs,
@@ -3365,7 +3511,7 @@ mod backfill_tests {
             let faults = manager.faults(&partition);
             faults.fail(FaultPoint::PassStart, RocksError::ReadOnly);
             drive(&mut driver, &mut tx, 1).await;
-            let state = db.driver_state().get().unwrap();
+            let state = db.shared_registry().driver_state().get().unwrap();
             let retry = state
                 .backoff_starts
                 .iter()
@@ -3407,7 +3553,7 @@ mod backfill_tests {
             [first, second].map(|id| blocked_by(&db, &tx, id, Instant::now())),
             [Some("snapshot-export"), None]
         );
-        let state = db.driver_state().get().unwrap();
+        let state = db.shared_registry().driver_state().get().unwrap();
         let due = state
             .eligible_at
             .iter()
@@ -3498,7 +3644,12 @@ mod backfill_tests {
             Some("failure-backoff")
         );
         assert_eq!(blocked_by(&db, &tx, count, Instant::now()), None);
-        let (_, retry) = db.driver_state().get().unwrap().backoff_starts[0];
+        let (_, retry) = db
+            .shared_registry()
+            .driver_state()
+            .get()
+            .unwrap()
+            .backoff_starts[0];
         assert_eq!(blocked_by(&db, &tx, adopted, retry), None);
         // COUNT's walk takes the next turn while the start waits out its backoff;
         // then the start succeeds, with no reopen.
@@ -3509,7 +3660,14 @@ mod backfill_tests {
             "a turn for COUNT"
         );
         drive(&mut driver, &mut tx, 10_000).await;
-        assert!(db.driver_state().get().unwrap().backoff_starts.is_empty());
+        assert!(
+            db.shared_registry()
+                .driver_state()
+                .get()
+                .unwrap()
+                .backoff_starts
+                .is_empty()
+        );
         drop(tx);
         for id in [resumed, adopted, count] {
             assert_eq!(
@@ -3582,7 +3740,10 @@ mod backfill_tests {
             .await;
         }
         assert!(
-            Arc::ptr_eq(&tx.published_registry(), &db.published_registry().unwrap()),
+            Arc::ptr_eq(
+                &tx.published_registry(),
+                &db.shared_registry().published().unwrap()
+            ),
             "the processor's transaction and the partition share the committed set"
         );
 
@@ -3681,7 +3842,10 @@ mod backfill_tests {
         let mut driver = store.walk_driver(&StorageOptions::default());
         drop(idle);
         assert_eq!(
-            db.driver_state().get().map(|state| state.disabled),
+            db.shared_registry()
+                .driver_state()
+                .get()
+                .map(|state| state.disabled),
             Some(false)
         );
         let recheck = driver.tuning_mut().fence_recheck;
@@ -3746,15 +3910,27 @@ mod backfill_tests {
             blocked_by(&db, &tx, id, Instant::now()),
             Some("failure-backoff")
         );
-        let (_, retry) = db.driver_state().get().unwrap().backoff_walks[0];
+        let (_, retry) = db
+            .shared_registry()
+            .driver_state()
+            .get()
+            .unwrap()
+            .backoff_walks[0];
         assert_eq!(blocked_by(&db, &tx, id, retry), None);
         tx.put_invocation_status(&invocation, &status).unwrap();
         tx.commit().await.unwrap();
         drive(&mut driver, &mut tx, 1_000).await;
         // Recovered, nothing is reported; without a driver, nothing is either.
-        assert!(db.driver_state().get().unwrap().backoff_walks.is_empty());
+        assert!(
+            db.shared_registry()
+                .driver_state()
+                .get()
+                .unwrap()
+                .backoff_walks
+                .is_empty()
+        );
         drop(driver);
-        assert_eq!(db.driver_state().get(), None);
+        assert_eq!(db.shared_registry().driver_state().get(), None);
         drop(tx);
         assert_eq!(count(&store, id), SEEDED);
         assert_eq!(
@@ -4179,7 +4355,7 @@ mod open_tests {
         key.extend_from_slice(b"payload");
         let raw = db.rocksdb().inner().as_raw_db();
         raw.put_cf(db.cf_handle(), &key, b"value").unwrap();
-        let installed = db.published_registry().unwrap();
+        let installed = db.shared_registry().published().unwrap();
         let ledger = |db: &PartitionDb| {
             serde_json::to_value(get_storage_features_from_partition_db(db).unwrap()).unwrap()
         };
@@ -4206,7 +4382,7 @@ mod open_tests {
         assert_eq!(records::load(&db).unwrap().0.walks, walks);
         assert_eq!(ledger(&db), fenced, "the_fence_stays");
         assert!(
-            Arc::ptr_eq(&db.published_registry().unwrap(), &installed),
+            Arc::ptr_eq(&db.shared_registry().published().unwrap(), &installed),
             "nothing_was_published"
         );
 
@@ -4229,9 +4405,10 @@ mod open_tests {
         let db = store.partition_db().clone();
         let faults = manager.faults(&partition);
         // Seeding installed the empty set a store without reconciliation uses.
-        let empty = db.published_registry().unwrap();
+        let empty = db.shared_registry().published().unwrap();
         assert!(empty.registry().indexes().is_empty());
-        let unpublished = |db: &PartitionDb| Arc::ptr_eq(&db.published_registry().unwrap(), &empty);
+        let unpublished =
+            |db: &PartitionDb| Arc::ptr_eq(&db.shared_registry().published().unwrap(), &empty);
 
         // A failed flush fails the open and publishes nothing: the registration
         // is written, but not installed.
@@ -4260,9 +4437,43 @@ mod open_tests {
         assert!(unpublished(&db), "unpublished_while_the_flush_is_pending");
         drop(resume);
         retry.await.unwrap();
-        let installed = db.published_registry().unwrap();
+        let installed = db.shared_registry().published().unwrap();
         assert_eq!(installed.registry(), &written);
         assert!(!installed.touched_by_on_write().is_empty());
+    }
+
+    /// A store opened with indexes enabled but nothing to register still gets
+    /// its fence and registry made durable: a retry after a failed flush flushes
+    /// again, though the earlier attempt's writes are already visible.
+    #[restate_core::test]
+    async fn a_registry_only_store_flushes_again_after_a_failed_flush() {
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
+        let mut store = manager.open(&partition, None).await.unwrap();
+        let faults = manager.faults(&partition);
+        let mut config = Configuration::default();
+        config.common.experimental.set_indexes(true);
+        for attempt in ["first", "retry"] {
+            faults.fail(FaultPoint::RegistryFlush, RocksError::ReadOnly);
+            assert!(
+                store
+                    .verify_and_run_migrations(CancellationToken::new(), &config)
+                    .await
+                    .is_err(),
+                "{attempt}: the flush fails the open"
+            );
+            assert!(
+                get_registry(store.partition_db())
+                    .unwrap()
+                    .is_some_and(|registry| registry.indexes().is_empty()),
+                "{attempt}: an empty registry is written"
+            );
+        }
+        store
+            .verify_and_run_migrations(CancellationToken::new(), &config)
+            .await
+            .unwrap();
     }
 
     #[restate_core::test]

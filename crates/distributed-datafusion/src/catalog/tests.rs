@@ -641,6 +641,7 @@ async fn migration_tables_serve_the_default_engine_rows() {
             .open(&Partition::new(PartitionId::from(id), KeyRange::FULL), None)
             .await
             .unwrap();
+        store.mark_fully_migrated_to_vqueues().await;
         store
             .verify_and_run_migrations(Default::default(), &config)
             .await
@@ -694,14 +695,15 @@ async fn migration_tables_serve_the_default_engine_rows() {
             ..Default::default()
         })
         .unwrap();
-    for (sql, expected) in [
-        ("SELECT * FROM cluster.registry", &legacy[0]),
-        ("SELECT * FROM cluster.migration_jobs", &legacy[1]),
+    // The registry has one more row per replica: the registry's own.
+    for (sql, expected, len) in [
+        ("SELECT * FROM cluster.registry", &legacy[0], 14),
+        ("SELECT * FROM cluster.migration_jobs", &legacy[1], 12),
     ] {
         let mut actual = rows(session.as_ref(), sql).await;
         actual.sort();
         assert_eq!(&actual, expected, "{sql}");
-        assert_eq!(actual.len(), 12, "{sql}");
+        assert_eq!(actual.len(), len, "{sql}");
     }
     // Index sizes are estimated when the query selects them; completed jobs
     // aren't blocked.

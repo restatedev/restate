@@ -68,6 +68,7 @@ mod backfill;
 pub mod migration;
 mod reconcile;
 pub mod records;
+mod shared;
 
 #[cfg(test)]
 pub(crate) use active::TEST_INTRODUCED;
@@ -75,6 +76,7 @@ pub(crate) use active::{Family, INDEX_DEFINITIONS, IndexDefinition, PublishedReg
 pub(crate) use backfill::{IndexBackfill, start as start_backfill};
 pub use migration::{Migration, MigrationOnUnknown, MigrationState, MigrationTimeline};
 pub(crate) use reconcile::{FAMILIES, FenceState, Requests};
+pub(crate) use shared::SharedRegistry;
 
 /// Whether this binary's definition `name` fills rows itself (`Some(true)`, an
 /// active one) or relies on writes and deletions (`Some(false)`, a passive one);
