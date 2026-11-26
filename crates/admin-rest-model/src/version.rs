@@ -106,8 +106,9 @@ pub struct QueryEngineInformation {
     /// Whether the statistics tables (`sys_service_stats`, `sys_deployment_stats` and
     /// `sys_virtual_object_stats`) answer queries. `false` while queries don't read indexes,
     /// because the tables aren't shown then. Otherwise `true`, from the admin node's start, unless
-    /// its last check found a partition whose leader answered and lacks a complete status gauge.
-    /// Partitions without a known leader, leaders that are down or don't answer, and leaders whose
+    /// its last check found a partition whose leader answered with its store open and lacks a
+    /// complete status gauge, as before the partition has fully migrated to vqueues. Partitions
+    /// without a known leader, leaders that are down or don't answer, and leaders whose
     /// partition store isn't open (no registry rows) don't count. The admin node checks every
     /// `admin.query-engine.index-catalog-refresh-interval`.
     pub stats_tables: bool,

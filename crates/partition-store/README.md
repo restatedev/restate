@@ -91,7 +91,16 @@ key kind (`src/registry/records.rs`), so a slice writes only the records it
 changes.
 
 **Definition families.** Definitions released together are grouped in a
-*family*, switched on by the same configuration options.
+*family*, switched on by the same configuration options. A family over the
+virtual queues' entries registers only once the partition has fully migrated
+to vqueues: the `vqueues` state-machine feature, applied by the processor at a
+log position; a migration that skipped completed invocations is not enough.
+Until then the entries don't hold every invocation, so no walk starts and no
+index exists to read. The store registers such a family at the open after the
+migration, or when the processor applies the migration: the version barrier
+asks for it (`PartitionDb::request_vqueue_indexes`), which wakes the walk
+driver, and the driver's next step, after the barrier's batch is committed,
+registers the family and starts its walk.
 
 **Migration job.** The general unit of maintenance work: building an index or
 running a one-time migration. Each index and each migration in progress has a
@@ -143,11 +152,13 @@ are their foundation.
    change meaning. The registry, walks and jobs are stored under `rg` keys
    (`src/registry/records.rs`); their key layout and record kinds are
    append-only too. Rename in code freely; never renumber.
-9. **The `registry` storage feature fences older binaries.** It is set with
-   the first index registration and records a minimum Restate version, so an
+9. **The `registry` storage feature fences older binaries.** It is set at
+   open whenever indexes are enabled, even before any family registers, or with
+   the first index registration, and records a minimum Restate version, so an
    older binary, which doesn't know tokens and index keys, refuses to open the
-   store because of that version floor rather than ignoring them. Migrations
-   register only on a store that has it, and never set it.
+   store because of that version floor rather than ignoring them. A fenced store
+   always has a registry record. Migrations register only on a store that has
+   it, and never set it.
 10. **Every definition declares the Restate version that introduced it**
     (`introduced:` next to `definition:`). A node of an older version can't
     maintain or read the definition's indexes, so a query coordinator must
@@ -162,6 +173,11 @@ are their foundation.
     never visits rows written behind its cursor or after its end. Each replica
     migrates at its own pace, so what a command does must never depend on
     whether a row is migrated yet.
+12. **Indexes over the vqueue entries wait for the full vqueues migration.**
+    Their families register only on a partition whose `vqueues` feature is
+    applied, and a read of invocations through them also checks it in its own
+    snapshot (`ReadSnapshot::fully_migrated_to_vqueues`): before the migration,
+    an invocation has no entry, and an index would silently miss it.
 
 ## Don'ts
 

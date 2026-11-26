@@ -1268,8 +1268,9 @@ experimental! {
     ///
     /// - **On workers**, each partition maintains the VQueue entry indexes (such as
     ///   entries newest created first, or by status) and the status gauges behind
-    ///   the statistics tables. It counts and indexes the entries written from then
-    ///   on, and backfills the entries that existed before in the background;
+    ///   the statistics tables, once it has fully migrated its invocations to
+    ///   VQueues. It then counts and indexes the entries written from then on, and
+    ///   backfills the entries that existed before in the background;
     ///   `restate.cluster.registry` shows each one's progress. Turning the option
     ///   off drops all of them when each partition next starts, and turning it on
     ///   again builds them from scratch. Invocation and VQueue entry data are never
