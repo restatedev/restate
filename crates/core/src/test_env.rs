@@ -11,7 +11,7 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use futures::Stream;
+use futures::{Stream, StreamExt};
 
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::logs::metadata::{ProviderKind, bootstrap_logs_metadata};
@@ -234,6 +234,7 @@ impl<T: TransportConnect> TestCoreEnv<T> {
             .connection_manager()
             .accept_incoming_connection(incoming)
             .await
+            .map(|stream| stream.map(crate::network::OutgoingMessage::into_message))
     }
 }
 
