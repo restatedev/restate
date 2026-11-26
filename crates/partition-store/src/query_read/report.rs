@@ -234,8 +234,8 @@ impl PartitionStoreManager {
                 let now = WallClock::now_ms().as_u64();
                 match read_replica(&snapshot, partition.id(), partition.key_range, now) {
                     Ok(mut replica) => {
-                        replica.driver = db.driver_state().get();
-                        if let Some(published) = db.published_registry() {
+                        replica.driver = db.shared_registry().driver_state().get();
+                        if let Some(published) = db.shared_registry().published() {
                             replica.unknown_migrations =
                                 published.unknown_migrations(&replica.registry);
                         }

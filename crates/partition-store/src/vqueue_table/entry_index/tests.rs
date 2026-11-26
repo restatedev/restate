@@ -1104,13 +1104,22 @@ async fn entry_indexes_register_only_after_the_full_vqueues_migration() {
             driver.step(&mut tx, usize::MAX).await.unwrap();
             assert_eq!(registered(&store), 0, "{case}: fenced");
             assert!(
-                store.partition_db().vqueue_indexes_requested(),
+                store
+                    .partition_db()
+                    .shared_registry()
+                    .vqueue_indexes_requested(),
                 "{case}: fenced"
             );
             drop(fence);
         }
         driver.step(&mut tx, usize::MAX).await.unwrap();
-        assert!(!store.partition_db().vqueue_indexes_requested(), "{case}");
+        assert!(
+            !store
+                .partition_db()
+                .shared_registry()
+                .vqueue_indexes_requested(),
+            "{case}"
+        );
         assert_eq!(registered(&store), indexes, "{case}");
         assert_eq!(driver.awaiting_vqueues, !migrated, "{case}");
     }

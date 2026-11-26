@@ -719,7 +719,7 @@ impl PartitionStore {
 
         // Writes maintain the reconciled indexes from here on, and walks run on
         // the records as committed.
-        db.install_published_registry(Arc::new(
+        db.shared_registry().publish(Arc::new(
             PublishedRegistry::new(&registry, &walks, known)
                 .with_jobs(jobs.unfinished, requests.retention)
                 .with_migrations(requests.migrations),
@@ -3022,7 +3022,7 @@ mod backfill_tests {
             walks: active.walks().clone(),
             jobs: active.jobs().clone(),
             index_sizes: Default::default(),
-            driver: db.driver_state().get(),
+            driver: db.shared_registry().driver_state().get(),
             unknown_migrations: active.unknown_migrations(active.registry()),
         };
         let job = active.jobs().get(MigrationJobId::for_entry(id))?;
@@ -3211,7 +3211,13 @@ mod backfill_tests {
             Some("throttled")
         );
         assert_eq!(blocked_by(&db, &tx, passive, Instant::now()), None);
-        let refill = db.driver_state().get().unwrap().throttled_until.unwrap();
+        let refill = db
+            .shared_registry()
+            .driver_state()
+            .get()
+            .unwrap()
+            .throttled_until
+            .unwrap();
         assert_eq!(blocked_by(&db, &tx, count, refill), None);
         drive(&mut driver, &mut tx, 1).await;
         assert!(
@@ -3478,7 +3484,7 @@ mod backfill_tests {
         }
         let db = store.partition_db();
         testing::put_jobs(db, jobs.entries());
-        db.install_published_registry(Arc::new(active.successor(
+        db.shared_registry().publish(Arc::new(active.successor(
             None,
             active.walks().clone(),
             jobs,
@@ -3505,7 +3511,7 @@ mod backfill_tests {
             let faults = manager.faults(&partition);
             faults.fail(FaultPoint::PassStart, RocksError::ReadOnly);
             drive(&mut driver, &mut tx, 1).await;
-            let state = db.driver_state().get().unwrap();
+            let state = db.shared_registry().driver_state().get().unwrap();
             let retry = state
                 .backoff_starts
                 .iter()
@@ -3547,7 +3553,7 @@ mod backfill_tests {
             [first, second].map(|id| blocked_by(&db, &tx, id, Instant::now())),
             [Some("snapshot-export"), None]
         );
-        let state = db.driver_state().get().unwrap();
+        let state = db.shared_registry().driver_state().get().unwrap();
         let due = state
             .eligible_at
             .iter()
@@ -3638,7 +3644,12 @@ mod backfill_tests {
             Some("failure-backoff")
         );
         assert_eq!(blocked_by(&db, &tx, count, Instant::now()), None);
-        let (_, retry) = db.driver_state().get().unwrap().backoff_starts[0];
+        let (_, retry) = db
+            .shared_registry()
+            .driver_state()
+            .get()
+            .unwrap()
+            .backoff_starts[0];
         assert_eq!(blocked_by(&db, &tx, adopted, retry), None);
         // COUNT's walk takes the next turn while the start waits out its backoff;
         // then the start succeeds, with no reopen.
@@ -3649,7 +3660,14 @@ mod backfill_tests {
             "a turn for COUNT"
         );
         drive(&mut driver, &mut tx, 10_000).await;
-        assert!(db.driver_state().get().unwrap().backoff_starts.is_empty());
+        assert!(
+            db.shared_registry()
+                .driver_state()
+                .get()
+                .unwrap()
+                .backoff_starts
+                .is_empty()
+        );
         drop(tx);
         for id in [resumed, adopted, count] {
             assert_eq!(
@@ -3722,7 +3740,10 @@ mod backfill_tests {
             .await;
         }
         assert!(
-            Arc::ptr_eq(&tx.published_registry(), &db.published_registry().unwrap()),
+            Arc::ptr_eq(
+                &tx.published_registry(),
+                &db.shared_registry().published().unwrap()
+            ),
             "the processor's transaction and the partition share the committed set"
         );
 
@@ -3821,7 +3842,10 @@ mod backfill_tests {
         let mut driver = store.walk_driver(&StorageOptions::default());
         drop(idle);
         assert_eq!(
-            db.driver_state().get().map(|state| state.disabled),
+            db.shared_registry()
+                .driver_state()
+                .get()
+                .map(|state| state.disabled),
             Some(false)
         );
         let recheck = driver.tuning_mut().fence_recheck;
@@ -3886,15 +3910,27 @@ mod backfill_tests {
             blocked_by(&db, &tx, id, Instant::now()),
             Some("failure-backoff")
         );
-        let (_, retry) = db.driver_state().get().unwrap().backoff_walks[0];
+        let (_, retry) = db
+            .shared_registry()
+            .driver_state()
+            .get()
+            .unwrap()
+            .backoff_walks[0];
         assert_eq!(blocked_by(&db, &tx, id, retry), None);
         tx.put_invocation_status(&invocation, &status).unwrap();
         tx.commit().await.unwrap();
         drive(&mut driver, &mut tx, 1_000).await;
         // Recovered, nothing is reported; without a driver, nothing is either.
-        assert!(db.driver_state().get().unwrap().backoff_walks.is_empty());
+        assert!(
+            db.shared_registry()
+                .driver_state()
+                .get()
+                .unwrap()
+                .backoff_walks
+                .is_empty()
+        );
         drop(driver);
-        assert_eq!(db.driver_state().get(), None);
+        assert_eq!(db.shared_registry().driver_state().get(), None);
         drop(tx);
         assert_eq!(count(&store, id), SEEDED);
         assert_eq!(
@@ -4319,7 +4355,7 @@ mod open_tests {
         key.extend_from_slice(b"payload");
         let raw = db.rocksdb().inner().as_raw_db();
         raw.put_cf(db.cf_handle(), &key, b"value").unwrap();
-        let installed = db.published_registry().unwrap();
+        let installed = db.shared_registry().published().unwrap();
         let ledger = |db: &PartitionDb| {
             serde_json::to_value(get_storage_features_from_partition_db(db).unwrap()).unwrap()
         };
@@ -4346,7 +4382,7 @@ mod open_tests {
         assert_eq!(records::load(&db).unwrap().0.walks, walks);
         assert_eq!(ledger(&db), fenced, "the_fence_stays");
         assert!(
-            Arc::ptr_eq(&db.published_registry().unwrap(), &installed),
+            Arc::ptr_eq(&db.shared_registry().published().unwrap(), &installed),
             "nothing_was_published"
         );
 
@@ -4369,9 +4405,10 @@ mod open_tests {
         let db = store.partition_db().clone();
         let faults = manager.faults(&partition);
         // Seeding installed the empty set a store without reconciliation uses.
-        let empty = db.published_registry().unwrap();
+        let empty = db.shared_registry().published().unwrap();
         assert!(empty.registry().indexes().is_empty());
-        let unpublished = |db: &PartitionDb| Arc::ptr_eq(&db.published_registry().unwrap(), &empty);
+        let unpublished =
+            |db: &PartitionDb| Arc::ptr_eq(&db.shared_registry().published().unwrap(), &empty);
 
         // A failed flush fails the open and publishes nothing: the registration
         // is written, but not installed.
@@ -4400,7 +4437,7 @@ mod open_tests {
         assert!(unpublished(&db), "unpublished_while_the_flush_is_pending");
         drop(resume);
         retry.await.unwrap();
-        let installed = db.published_registry().unwrap();
+        let installed = db.shared_registry().published().unwrap();
         assert_eq!(installed.registry(), &written);
         assert!(!installed.touched_by_on_write().is_empty());
     }
