@@ -8693,6 +8693,7 @@ version = "1.8.2-dev"
 dependencies = [
  "ahash",
  "anyhow",
+ "arc-swap",
  "async-trait",
  "bilrost",
  "bytes",
@@ -9449,8 +9450,8 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "1.1.8"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v1.1.8#0e3cce8c1d13619f7401681d033cfa102e4286d2"
+version = "1.1.9"
+source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v1.1.9#bc109ac99b7906168173ced877648b3b66f6b96b"
 
 [[package]]
 name = "restate-worker"

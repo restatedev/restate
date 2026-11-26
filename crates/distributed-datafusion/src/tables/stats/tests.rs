@@ -48,6 +48,62 @@ impl SelectPartitions for Partitions {
     }
 }
 
+/// Checks that statistics queries fail, with an error containing `reason`, when
+/// a partition they read has no Complete gauge. The summed service and
+/// deployment tables must fail before they return any row, whatever they select
+/// and also with a `LIMIT`: a client that already got rows couldn't tell them
+/// from a complete total. `sys_virtual_object_stats` streams each partition's
+/// rows, so it may return rows first; it must still fail.
+pub(crate) async fn assert_queries_fail(session: &dyn QuerySession, reason: &str) {
+    for table in ["sys_service_stats", "sys_deployment_stats"] {
+        for sql in [
+            format!("SELECT * FROM {table}"),
+            format!("SELECT * FROM {table} LIMIT 1"),
+            format!("SELECT * FROM {table} ORDER BY service_name LIMIT 1"),
+            // Without `num_entries`, the view must still keep the sum and wait.
+            format!("SELECT service_name FROM {table} LIMIT 1"),
+        ] {
+            let mut stream = session.execute(&sql, QueryOptions {}).await.unwrap().stream;
+            let error = loop {
+                match stream.try_next().await {
+                    Ok(Some(batch)) => {
+                        assert_eq!(batch.num_rows(), 0, "{sql}: rows before the error")
+                    }
+                    Ok(None) => panic!("{sql}: no error"),
+                    Err(error) => break error,
+                }
+            };
+            assert!(error.to_string().contains(reason), "{sql}: {error}");
+        }
+        // The sum stays in the plan, so the view waits for every partition
+        // whatever the query selects; a distinct aggregate under a `LIMIT`
+        // could stop early.
+        let explain = format!("EXPLAIN SELECT service_name FROM {table} LIMIT 1");
+        let batches: Vec<_> = session
+            .execute(&explain, QueryOptions {})
+            .await
+            .unwrap()
+            .stream
+            .try_collect()
+            .await
+            .unwrap();
+        let plan = datafusion::arrow::util::pretty::pretty_format_batches(&batches)
+            .unwrap()
+            .to_string();
+        assert!(plan.contains("sum("), "{explain}: {plan}");
+    }
+    let sql = "SELECT * FROM sys_virtual_object_stats";
+    let mut stream = session.execute(sql, QueryOptions {}).await.unwrap().stream;
+    let error = loop {
+        match stream.try_next().await {
+            Ok(Some(_)) => {}
+            Ok(None) => panic!("{sql}: no error"),
+            Err(error) => break error,
+        }
+    };
+    assert!(error.to_string().contains(reason), "{sql}: {error}");
+}
+
 async fn assert_rows(session: &dyn QuerySession, sql: &str, expected: &[&[&str]]) {
     let batches: Vec<_> = session
         .execute(sql, QueryOptions {})
@@ -94,8 +150,7 @@ async fn stats_tables_aggregate_filter_and_follow_lifecycle_across_stores() {
     ]);
     let mut config = Configuration::default();
     // Tracked from the start, over empty partitions, the gauges are Complete at once.
-    config.common.experimental.set_track_status_gauges(true);
-    config.common.experimental.set_query_stats_tables(true);
+    config.common.experimental.set_indexes(true);
     Configuration::set(config.clone());
     let deployment = DeploymentId::new().to_string();
     let now = MillisSinceEpoch::new(1_744_010_000_000);
@@ -103,6 +158,7 @@ async fn stats_tables_aggregate_filter_and_follow_lifecycle_across_stores() {
     let mut stores = Vec::new();
     for (_, partition) in &partitions.0 {
         let mut store = manager.open(partition, None).await.unwrap();
+        store.mark_fully_migrated_to_vqueues().await;
         store
             .verify_and_run_migrations(Default::default(), &config)
             .await
@@ -161,7 +217,7 @@ async fn stats_tables_aggregate_filter_and_follow_lifecycle_across_stores() {
 
     let scanners =
         SourceRegistry::local_only(restate_core::MetadataBuilder::default().to_metadata());
-    register_partition_scanners(manager, crate::mocks::query_io(), &scanners);
+    register_partition_scanners(manager.clone(), crate::mocks::query_io(), &scanners);
     let env = DataFusionEnv::from_options(&QueryEngineOptions::default())
         .unwrap()
         .with_mock_clock(MockClock::new())
@@ -250,18 +306,50 @@ async fn stats_tables_aggregate_filter_and_follow_lifecycle_across_stores() {
     )
     .await;
 
+    let session_over = |partitions, options: QueryEngineOptions| {
+        let scanners = scanners.clone();
+        async move {
+            let env = DataFusionEnv::from_options(&options)
+                .unwrap()
+                .with_mock_clock(MockClock::new())
+                .unwrap();
+            env.register_tables(UserTables::new(partitions, scanners))
+                .await
+                .unwrap();
+            DataFusionQueryEngine::from_env(env, None)
+                .create_session(SessionOptions::default())
+                .unwrap()
+        }
+    };
+
+    // Partition 0 has rows, but a partition opened without gauges has none
+    // Complete: every statistics query fails. One lane reads the partitions in
+    // order, so partition 0 returns its rows first, and only the summed tables
+    // hold them back.
+    let untracked = Partition::new(PartitionId::from(2), KeyRange::new(10000, 14999));
+    let _untracked = manager.open(&untracked, None).await.unwrap();
+    let mut one_lane = QueryEngineOptions::default();
+    one_lane.datafusion_options.insert(
+        "datafusion.execution.target_partitions".to_owned(),
+        "1".to_owned(),
+    );
+    let incomplete = session_over(
+        Partitions(vec![
+            partitions.0[0].clone(),
+            (PartitionId::from(2), untracked),
+        ]),
+        one_lane,
+    )
+    .await;
+    assert_queries_fail(incomplete.as_ref(), "not complete").await;
+
     // Targeting a partition selects its identity. Narrowing within that partition
     // is an independent SQL selection consumed by physical preparation.
-    let subset = Partitions(vec![partitions.0[0].clone()]);
-    let env = DataFusionEnv::from_options(&QueryEngineOptions::default())
-        .unwrap()
-        .with_mock_clock(MockClock::new())
-        .unwrap();
-    env.register_tables(UserTables::new(subset, scanners))
-        .await
-        .unwrap();
-    let subset = DataFusionQueryEngine::from_env(env, None);
-    let subset = subset.create_session(SessionOptions::default()).unwrap();
+    let subset = session_over(
+        Partitions(vec![partitions.0[0].clone()]),
+        QueryEngineOptions::default(),
+    )
+    .await;
     assert_rows(
         subset.as_ref(),
         "SELECT stage, SUM(num_entries) FROM sys_virtual_object_stats GROUP BY stage",

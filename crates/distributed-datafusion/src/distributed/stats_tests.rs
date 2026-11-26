@@ -35,6 +35,7 @@ use crate::tables::stats::deployment_stats::schema::{
     DeploymentStatsSource, SysDeploymentStatsTable,
 };
 use crate::tables::stats::service_stats::schema::{ServiceStatsSource, SysServiceStatsTable};
+use crate::tables::stats::tests::assert_queries_fail;
 use crate::tables::stats::virtual_object_stats::schema::{
     SysVirtualObjectStatsTable, VirtualObjectStatsSource,
 };
@@ -69,6 +70,7 @@ pub(super) fn register_scanners(
 async fn reopen(store: &mut PartitionStore, configure: impl FnOnce(&mut Configuration)) {
     let mut config = Configuration::pinned().as_ref().clone();
     configure(&mut config);
+    store.mark_fully_migrated_to_vqueues().await;
     store
         .verify_and_run_migrations(Default::default(), &config)
         .await
@@ -79,10 +81,7 @@ async fn reopen(store: &mut PartitionStore, configure: impl FnOnce(&mut Configur
 /// service, deployment and virtual-object gauges. `store` has no entries, so
 /// there's nothing to backfill and the gauges are Complete at once.
 async fn complete(store: &mut PartitionStore) -> [IndexScope; 3] {
-    reopen(store, |config| {
-        config.common.experimental.set_track_status_gauges(true)
-    })
-    .await;
+    reopen(store, |config| config.common.experimental.set_indexes(true)).await;
     indexes(store)
 }
 
@@ -182,7 +181,7 @@ const TABLES: [&str; 3] = [
 #[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
 async fn statistics_queries_fail_until_every_replica_is_complete() {
     let mut config = Configuration::default();
-    config.common.experimental.set_query_stats_tables(true);
+    config.common.experimental.set_indexes(true);
     Configuration::set(config);
     let mut fixture = setup().await;
     let env = environment(2, 2).with_distributed_execution(fixture.network.clone());
@@ -233,18 +232,12 @@ async fn statistics_queries_fail_until_every_replica_is_complete() {
         complete(store).await;
     }
     set_entry(last, true).await;
-    reopen(last, |config| {
-        config.common.experimental.set_track_status_gauges(true)
-    })
-    .await;
+    reopen(last, |config| config.common.experimental.set_indexes(true)).await;
     let not_complete = format!("is not complete on partition {}", last.partition_id());
     fails(&[&not_complete, "is still being completed"]).await;
-    // Reset on that replica, its rebuilt gauges get index IDs that differ
-    // from the other replicas'; each read resolves its own.
-    reopen(last, |config| {
-        config.common.experimental.set_status_gauges_reset(true)
-    })
-    .await;
+    // Indexes turned off on that replica drop its gauges; rebuilt, they get
+    // index IDs that differ from the other replicas'; each read resolves its own.
+    reopen(last, |config| config.common.experimental.set_indexes(false)).await;
     fails(&[&not_complete, "no maintained index"]).await;
     set_entry(last, false).await;
     let rebuilt = complete(last).await;
@@ -288,12 +281,18 @@ async fn statistics_queries_fail_until_every_replica_is_complete() {
         )
         .await;
     }
+
+    // That owner has rows, but another replica's gauges are dropped: every
+    // query fails, and the summed tables fail before they return a row.
+    let last = fixture.stores.last_mut().unwrap();
+    reopen(last, |config| config.common.experimental.set_indexes(false)).await;
+    assert_queries_fail(session.as_ref(), "no maintained index").await;
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
 async fn workers_without_ready_admission_reject_statistics_work() {
     let mut config = Configuration::default();
-    config.common.experimental.set_query_stats_tables(true);
+    config.common.experimental.set_indexes(true);
     Configuration::set(config);
     for (source, table) in [
         (
@@ -368,7 +367,7 @@ async fn workers_without_ready_admission_reject_statistics_work() {
 #[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ordered_count_limits_apply_after_cross_partition_sums() {
     let mut config = Configuration::default();
-    config.common.experimental.set_query_stats_tables(true);
+    config.common.experimental.set_indexes(true);
     Configuration::set(config);
     let mut fixture = setup().await;
     // Uneven counts: the first partition's largest bucket (gamma, 3) isn't the
@@ -423,7 +422,7 @@ async fn ordered_count_limits_apply_after_cross_partition_sums() {
 #[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
 async fn schema_statistics_preserve_sql_pruning_and_owner_execution() {
     let mut config = Configuration::pinned().as_ref().clone();
-    config.common.experimental.set_query_stats_tables(true);
+    config.common.experimental.set_indexes(true);
     Configuration::set(config);
     let mut fixture = setup().await;
     let deployment = DeploymentId::new().to_string();

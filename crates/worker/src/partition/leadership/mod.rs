@@ -635,6 +635,14 @@ where
             {
                 feature_changes.push(PartitionFeatureChange::EnableVqLifecycleRefined);
             }
+            if config.common.experimental.is_write_blob_table_enabled()
+                && !processor
+                    .fsm()
+                    .features()
+                    .is_invocation_status_output_blob_enabled()
+            {
+                feature_changes.push(PartitionFeatureChange::EnableInvocationStatusOutputBlob);
+            }
 
             // Changes that cost no rollback ride along once every replica is held to their
             // minimum version: by the changes enabled before, or by the barrier this round
@@ -755,12 +763,15 @@ where
 
             let invoker_name = format_restring!("invoker-{}", processor.partition_id());
             let invoker_config = Configuration::live().map(|c| &c.worker.invoker);
-            let invoker_task_guard =
-                TaskCenter::spawn_unmanaged(TaskKind::SystemService, invoker_name, async move {
+            let invoker_task_guard = TaskCenter::spawn_unmanaged_local(
+                TaskKind::SystemService,
+                invoker_name,
+                async move {
                     let _invoker_status_guard = invoker_status_guard;
                     invoker.run(invoker_config).await
-                })?
-                .into_guard();
+                },
+            )?
+            .into_guard();
 
             let scheduler_service = if config.worker.disable_scheduler {
                 warn!(
@@ -1164,7 +1175,7 @@ mod tests {
     const PARTITION_KEY_RANGE: KeyRange = KeyRange::FULL;
     const PARTITION: Partition = Partition::new(PARTITION_ID, PARTITION_KEY_RANGE);
 
-    #[test(restate_core::test)]
+    #[test(restate_core::test(flavor = "local"))]
     async fn become_leader_then_step_down() -> googletest::Result<()> {
         let env = TestCoreEnv::create_with_single_node(0, 0).await;
 
@@ -1396,7 +1407,7 @@ mod tests {
     /// Pausing a vqueue invocation fences invoker activity: after the leader appends the pause
     /// command and clears the fencing token, effects carrying the paused attempt's token are
     /// dropped at write time while the resumed attempt's effects are accepted.
-    #[test(restate_core::test)]
+    #[test(restate_core::test(flavor = "local"))]
     async fn pause_fences_stale_invoker_effects() -> googletest::Result<()> {
         let env = TestCoreEnv::create_with_single_node(0, 0).await;
 
@@ -1434,6 +1445,7 @@ mod tests {
                 preflight_signal_recording: true,
                 byte_offsets: true,
                 vq_lifecycle_refined: true,
+                invocation_status_output_blob: true,
             },
         );
         let (leader_query_tx, _leader_query_rx) = restate_worker_api::channel();

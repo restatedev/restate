@@ -215,7 +215,7 @@ pub(super) fn covered_prefilter(
     })))
 }
 
-/// The scheduler's stage tables, read as `_idx_entry_by_queue` for a finite set
+/// The scheduler's stage tables, read as `vqueue_stages` for a finite set
 /// of queues. They hold exactly one key per current entry status, maintained
 /// unconditionally by the scheduler. A conservative policy: a queue's entries
 /// are taken to be few, which is not a measurement.
@@ -301,10 +301,10 @@ impl CompleteIndex for StatusCreatedIndex {
         never_null: true,
     }];
 
-    /// Only where the index is maintained, and only if the stage and status
-    /// leave fewer lanes than all of them.
+    /// Only where this coordinator reads indexes, and only if the stage and
+    /// status leave fewer lanes than all of them.
     fn useful(restriction: &EntryStatusByStatusCreatedDomains) -> bool {
-        tracked()
+        index_reads()
             && EntryByStatusCreatedKey::entry_lanes(&restriction.to_selection()).count()
                 < EntryByStatusCreatedKey::entry_lanes(&Selection::All).count()
     }
@@ -321,7 +321,7 @@ impl CompleteIndex for StatusCreatedIndex {
     /// queries. A selection policy, not a cost estimate; an ordered demand the
     /// index serves stays eligible whatever the time restriction.
     fn useful_covered(restriction: &EntryStatusByStatusCreatedDomains) -> bool {
-        tracked() && since(restriction.created_at.to_predicate())
+        index_reads() && since(restriction.created_at.to_predicate())
     }
 
     /// Every alternative fixes the stage to stages the index holds.
@@ -380,7 +380,7 @@ impl CompleteIndex for StatusTransitionedIndex {
 
     /// As [`StatusCreatedIndex::useful`].
     fn useful(restriction: &EntryStatusByStatusTransitionedDomains) -> bool {
-        tracked()
+        index_reads()
             && EntryByStatusTransitionedKey::entry_lanes(&restriction.to_selection()).count()
                 < EntryByStatusTransitionedKey::entry_lanes(&Selection::All).count()
     }
@@ -391,7 +391,7 @@ impl CompleteIndex for StatusTransitionedIndex {
 
     /// As [`StatusCreatedIndex::useful_covered`], by transition time.
     fn useful_covered(restriction: &EntryStatusByStatusTransitionedDomains) -> bool {
-        tracked() && since(restriction.transitioned_at.to_predicate())
+        index_reads() && since(restriction.transitioned_at.to_predicate())
     }
 
     fn admits(alternatives: &[VqueueEntryStatusDomains]) -> bool {
@@ -426,12 +426,12 @@ fn since<V>(predicate: Option<ValuePredicate<V>>) -> bool {
     }
 }
 
-/// Whether the entry indexes are maintained.
-fn tracked() -> bool {
+/// Whether this coordinator reads indexes (`experimental-enable-indexes`).
+fn index_reads() -> bool {
     Configuration::pinned()
         .common
         .experimental
-        .is_track_entry_indexes_enabled()
+        .index_reads_enabled()
 }
 
 /// Whether every alternative fixes the stage to a non-empty set of stages the
@@ -533,14 +533,15 @@ impl ScanPartition for EntryStatusScanner {
         predicate: Option<Arc<dyn PhysicalExpr>>,
         limit: Option<usize>,
     ) -> anyhow::Result<Arc<dyn PreparedPartitionRead>> {
+        // The partition keys the predicate allows, such as those of the entry or
+        // queue IDs it names.
+        let partition_keys = VqueueEntryStatus::candidate_shard_keys(predicate.as_slice())?;
         // The scan of the predicate's keys: a scan's access, and an index read's
         // fallback, which reads the same rows.
         let scan = || -> anyhow::Result<_> {
             Ok(Arc::new(EntryStatusKeys::prepare(
                 &compile_selection::<VqueueEntryStatus>(predicate.as_ref())?,
-                crate::selection::key_range(&VqueueEntryStatus::candidate_shard_keys(
-                    predicate.as_slice(),
-                )?),
+                &partition_keys,
             )?))
         };
         let access = match access {
@@ -552,10 +553,15 @@ impl ScanPartition for EntryStatusScanner {
                 let selection =
                     index_restriction::<EntryStatusByStatusCreated>(predicate.as_slice())?
                         .map_or(Selection::Empty, |domains| domains.to_selection());
-                let read = Arc::new(StatusCreatedRead::prepare(
-                    &selection,
-                    index.direction::<StatusCreatedIndex>()?,
-                )?);
+                // An index key of another partition key is skipped before its
+                // entry status is fetched.
+                let read = Arc::new(
+                    StatusCreatedRead::prepare(
+                        &selection,
+                        index.direction::<StatusCreatedIndex>()?,
+                    )?
+                    .with_partition_keys(crate::selection::partition_key_filter(&partition_keys)),
+                );
                 let fallback = scan()?;
                 // The coordinator and the worker read the same projection, so
                 // they agree on a keys-only read.
@@ -570,10 +576,15 @@ impl ScanPartition for EntryStatusScanner {
                 let selection =
                     index_restriction::<EntryStatusByStatusTransitioned>(predicate.as_slice())?
                         .map_or(Selection::Empty, |domains| domains.to_selection());
-                let read = Arc::new(StatusTransitionedRead::prepare(
-                    &selection,
-                    index.direction::<StatusTransitionedIndex>()?,
-                )?);
+                // An index key of another partition key is skipped before its
+                // entry status is fetched.
+                let read = Arc::new(
+                    StatusTransitionedRead::prepare(
+                        &selection,
+                        index.direction::<StatusTransitionedIndex>()?,
+                    )?
+                    .with_partition_keys(crate::selection::partition_key_filter(&partition_keys)),
+                );
                 let fallback = scan()?;
                 if covers::<StatusTransitionedIndex>(&projection) {
                     EntryStatusAccess::Keys(Keys::StatusTransitioned { read, fallback })
@@ -746,6 +757,26 @@ impl PreparedPartitionRead for EntryStatusRead {
         metrics: ReadMetrics,
     ) -> anyhow::Result<SendableRecordBatchStream> {
         self.read(context, batch_size, metrics, None)
+    }
+
+    /// A status index read can't where the index isn't Complete on the
+    /// snapshot. The stage tables are always there.
+    fn usable(&self, context: &PartitionReadContext) -> anyhow::Result<bool> {
+        let unusable = match &self.access {
+            EntryStatusAccess::StatusCreated { read, .. }
+            | EntryStatusAccess::Keys(Keys::StatusCreated { read, .. }) => {
+                read.unusable(context.storage()?)?
+            }
+            EntryStatusAccess::StatusTransitioned { read, .. }
+            | EntryStatusAccess::Keys(Keys::StatusTransitioned { read, .. }) => {
+                read.unusable(context.storage()?)?
+            }
+            EntryStatusAccess::Scan(_)
+            | EntryStatusAccess::MultiGet(_)
+            | EntryStatusAccess::Stages(_)
+            | EntryStatusAccess::Covered(_) => None,
+        };
+        Ok(unusable.is_none())
     }
 }
 

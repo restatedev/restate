@@ -39,7 +39,6 @@ use restate_storage_api::StorageError;
 use restate_storage_api::migration_job::MigrationJobIds;
 use restate_storage_api::vqueue_table::{EntryChange, EntryContext, EntryStateRef};
 use restate_types::SemanticRestateVersion;
-use restate_types::config::Configuration;
 
 use crate::PartitionStoreTransaction;
 use crate::job::{MigrationJobRecords, MigrationJobs};
@@ -58,13 +57,17 @@ pub(crate) type ApplyEntryChange = fn(
     Option<&EntryStateRef<'_>>,
 );
 
-/// Definitions released together, switched on by the same configuration options.
+/// Definitions released together. A family is maintained while
+/// `experimental-enable-indexes` is on, and, if it reads the vqueue entries, once
+/// the partition has fully migrated to vqueues; otherwise it is dropped.
 pub(crate) struct Family {
     pub(crate) definitions: &'static [&'static IndexDefinition],
-    /// Register and maintain the definitions.
-    pub(crate) maintain: fn(&Configuration) -> bool,
-    /// Disable their indexes, overriding the other requests.
-    pub(crate) reset: fn(&Configuration) -> bool,
+    /// Whether the definitions are computed from the vqueue entries, which hold
+    /// every invocation only once the partition has fully migrated to vqueues
+    /// (the `vqueues` state-machine feature; a migration that skipped completed
+    /// invocations isn't enough). Until then the family isn't registered, so no
+    /// walk starts and no query reads an index that misses invocations.
+    pub(crate) requires_vqueues: bool,
 }
 
 /// An entry-scoped index or statistic known to this binary.

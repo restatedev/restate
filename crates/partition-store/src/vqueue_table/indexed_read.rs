@@ -60,7 +60,7 @@ use restate_storage_query_api::tables::index::{
 };
 use restate_types::identifiers::{BaseEntryId, CanonicalEntryId};
 
-use crate::index::RegisteredIndex;
+use crate::index::{PartitionKeyFilter, RegisteredIndex};
 use crate::invocation_status_table::entry_index_read::{
     EntryIndexExecution, EntryIndexPath, Execution, Held, ScanReason, SharedMemory,
 };
@@ -144,6 +144,17 @@ const KEY_LEN: usize = EntryStatusKey::serialized_length_fixed();
 pub struct LanesRead<K> {
     lanes: StatusLanes<K>,
     direction: ReadDirection,
+    partition_keys: PartitionKeyFilter,
+}
+
+impl<K> LanesRead<K> {
+    /// Restricts the read to entries under the partition keys `keys` admits,
+    /// such as those of the queried entry or queue IDs: an index key of another
+    /// partition key is skipped before its entry status is fetched.
+    pub fn with_partition_keys(mut self, keys: PartitionKeyFilter) -> Self {
+        self.partition_keys = keys;
+        self
+    }
 }
 
 /// Entries by stage and status, newest created first:
@@ -164,7 +175,17 @@ impl StatusCreatedRead {
                 EntryByStatusCreatedKey::prepare_entry_lanes(selection, stages, statuses)
             },
         )?;
-        Ok(Self { lanes, direction })
+        Ok(Self {
+            lanes,
+            direction,
+            partition_keys: PartitionKeyFilter::ALL,
+        })
+    }
+
+    /// Why a read on `snapshot` can't go through the index, if it can't: the
+    /// index isn't Complete on it. The read then scans instead.
+    pub fn unusable(&self, snapshot: &ReadSnapshot) -> Result<Option<ScanReason>> {
+        unusable::<EntryByStatusCreated>(snapshot)
     }
 }
 
@@ -179,7 +200,16 @@ impl StatusTransitionedRead {
                 EntryByStatusTransitionedKey::prepare_entry_lanes(selection, stages, statuses)
             },
         )?;
-        Ok(Self { lanes, direction })
+        Ok(Self {
+            lanes,
+            direction,
+            partition_keys: PartitionKeyFilter::ALL,
+        })
+    }
+
+    /// As [`StatusCreatedRead::unusable`].
+    pub fn unusable(&self, snapshot: &ReadSnapshot) -> Result<Option<ScanReason>> {
+        unusable::<EntryByStatusTransitioned>(snapshot)
     }
 }
 
@@ -234,6 +264,8 @@ pub(super) struct IndexedCursor<I: EntryIndex> {
     ended: Option<Ended>,
     /// Whether the read hands out its keys alone, fetching no status.
     keys_only: bool,
+    /// The partition keys whose index keys the read uses; others are skipped.
+    partition_keys: PartitionKeyFilter,
     /// Last: the runs and the fetched window are dropped before the snapshot.
     snapshot: Option<ReadSnapshot>,
 }
@@ -256,14 +288,7 @@ impl IndexedCursor<EntryByStatusCreated> {
         window: NonZeroUsize,
         keys_only: bool,
     ) -> Result<Option<Self>> {
-        Self::open(
-            snapshot,
-            &read.lanes,
-            read.direction,
-            execution,
-            window,
-            keys_only,
-        )
+        Self::open(snapshot, read, execution, window, keys_only)
     }
 }
 
@@ -276,14 +301,7 @@ impl IndexedCursor<EntryByStatusTransitioned> {
         window: NonZeroUsize,
         keys_only: bool,
     ) -> Result<Option<Self>> {
-        Self::open(
-            snapshot,
-            &read.lanes,
-            read.direction,
-            execution,
-            window,
-            keys_only,
-        )
+        Self::open(snapshot, read, execution, window, keys_only)
     }
 }
 
@@ -294,8 +312,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
     /// read holds one.
     fn open(
         snapshot: &ReadSnapshot,
-        lanes: &StatusLanes<I::Key>,
-        direction: ReadDirection,
+        read: &LanesRead<I::Key>,
         execution: &EntryIndexExecution,
         window: NonZeroUsize,
         keys_only: bool,
@@ -314,14 +331,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
         let memory = SharedMemory(Arc::new(Mutex::new(memory)));
         // Discovery's work counts even if it fails: the error stays the read's.
         let mut discovered = 0;
-        let opened = match Self::try_open(
-            snapshot,
-            lanes,
-            direction,
-            memory,
-            window_size,
-            &mut discovered,
-        ) {
+        let opened = match Self::try_open(snapshot, read, memory, window_size, &mut discovered) {
             Ok(opened) => opened,
             Err(error) => {
                 if discovered > 0 {
@@ -347,6 +357,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
                 reported: 0,
                 ended: None,
                 keys_only,
+                partition_keys: read.partition_keys.clone(),
                 snapshot: Some(snapshot.clone()),
             }),
             Err((reason, examined)) => {
@@ -368,8 +379,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
     #[allow(clippy::type_complexity)]
     fn try_open(
         snapshot: &ReadSnapshot,
-        lanes: &StatusLanes<I::Key>,
-        direction: ReadDirection,
+        read: &LanesRead<I::Key>,
         memory: SharedMemory,
         window_size: usize,
         discovered: &mut u64,
@@ -382,15 +392,16 @@ impl<I: EntryIndex> IndexedCursor<I> {
             bytes: 0,
         };
         held.grow(
-            lanes.retained_bytes()
+            read.lanes.retained_bytes()
+                + read.partition_keys.heap_bytes()
                 + window_size * std::mem::size_of::<Reference>()
                 + window_size * KEY_LEN,
         )?;
         Ok(
             match Lanes::open(
                 snapshot,
-                lanes,
-                direction,
+                &read.lanes,
+                read.direction,
                 LIMITS,
                 (&memory, &mut held),
                 discovered,
@@ -466,8 +477,12 @@ impl<I: EntryIndex> IndexedCursor<I> {
                 }
                 CursorStep::Skipped => CursorStep::Skipped,
                 CursorStep::Record => {
+                    let reference = I::reference(runs.current()?.0)?;
+                    if !self.partition_keys.admits(reference.id.partition_key()) {
+                        return Ok(CursorStep::Skipped);
+                    }
                     self.window.clear();
-                    self.window.push(I::reference(runs.current()?.0)?);
+                    self.window.push(reference);
                     self.current = Some(0);
                     CursorStep::Record
                 }
@@ -494,7 +509,12 @@ impl<I: EntryIndex> IndexedCursor<I> {
         match runs.advance()? {
             CursorStep::Done => self.runs_done = true,
             CursorStep::Skipped => {}
-            CursorStep::Record => self.window.push(I::reference(runs.current()?.0)?),
+            CursorStep::Record => {
+                let reference = I::reference(runs.current()?.0)?;
+                if self.partition_keys.admits(reference.id.partition_key()) {
+                    self.window.push(reference);
+                }
+            }
         }
         Ok(CursorStep::Skipped)
     }
@@ -775,7 +795,13 @@ mod tests {
     }
 
     fn scan_all() -> Arc<KeySelection<EntryStatusKey>> {
-        Arc::new(EntryStatusKeys::prepare(&Selection::All, Some(KeyRange::FULL)).unwrap())
+        Arc::new(
+            EntryStatusKeys::prepare(
+                &Selection::All,
+                &restate_storage_query_api::selection::domain::Domain::all(),
+            )
+            .unwrap(),
+        )
     }
 
     fn run_scan(
@@ -931,7 +957,8 @@ mod tests {
             .await
             .unwrap();
         let mut config = Configuration::default();
-        config.common.experimental.set_track_entry_indexes(true);
+        config.common.experimental.set_indexes(true);
+        store.mark_fully_migrated_to_vqueues().await;
         store
             .verify_and_run_migrations(CancellationToken::new(), &config)
             .await
@@ -1041,6 +1068,32 @@ mod tests {
             .collect();
         assert_eq!(rows, expected);
         assert_eq!(path, Some(EntryIndexPath::Index { runs: 2 }));
+        // Partition keys are checked on each index key before its status is
+        // fetched: every entry here is under partition key 7, so a read of
+        // another key walks the lanes but fetches no status.
+        let restricted = |keys: PartitionKeyFilter| {
+            run_scan(
+                &store,
+                |execution| EntryStatusScan::StatusTransitioned {
+                    read: Arc::new(
+                        StatusTransitionedRead::prepare(&finished(), ReadDirection::Forward)
+                            .unwrap()
+                            .with_partition_keys(keys),
+                    ),
+                    fallback: scan_all(),
+                    execution,
+                },
+                Charge::default(),
+                Stop::End,
+            )
+        };
+        assert_eq!(
+            restricted(PartitionKeyFilter::new([KeyRange::new(7, 7)])).rows,
+            ids
+        );
+        let other = restricted(PartitionKeyFilter::new([KeyRange::new(8, 8)]));
+        assert_eq!((other.rows.len(), other.statuses()), (0, 0));
+        assert!(Run::keys(&other.reported) >= ids.len() as u64);
 
         // Edit three statuses without their index keys: one now says another
         // status, one is gone, one is another incarnation.
@@ -1203,7 +1256,8 @@ mod tests {
             .await
             .unwrap();
         let mut config = Configuration::default();
-        config.common.experimental.set_track_entry_indexes(true);
+        config.common.experimental.set_indexes(true);
+        tracked.mark_fully_migrated_to_vqueues().await;
         tracked
             .verify_and_run_migrations(CancellationToken::new(), &config)
             .await

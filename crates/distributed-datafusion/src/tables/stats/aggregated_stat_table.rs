@@ -22,6 +22,10 @@ const NUM_ENTRIES_COLUMN: &str = "num_entries";
 /// the view rather than registered in the catalog. This keeps physical partition details private
 /// while allowing DataFusion to push dimension filters through the aggregate and into the
 /// partitioned scan.
+///
+/// The sum waits for every partition before it returns a row, so a partition whose gauge isn't
+/// Complete fails the query first: whatever the query selects, also with a `LIMIT`, it never
+/// returns a partial total.
 pub(crate) fn gauge_stat_sum_view(
     name: &str,
     raw_table: Arc<dyn TableProvider>,
@@ -41,6 +45,11 @@ pub(crate) fn gauge_stat_sum_view(
         group_expr,
         [sum(col(NUM_ENTRIES_COLUMN)).alias(NUM_ENTRIES_COLUMN)],
     )?
+    // Keeps the sum in every plan: a query that doesn't select `num_entries`
+    // would otherwise drop it, and a `LIMIT` on the remaining distinct aggregate
+    // stops reading once it has enough rows, maybe before an incomplete partition
+    // fails the query. The sum is never NULL here, so no row is filtered out.
+    .filter(col(NUM_ENTRIES_COLUMN).is_not_null())?
     .build()?;
 
     Ok(ViewTable::new(logical_plan, None))

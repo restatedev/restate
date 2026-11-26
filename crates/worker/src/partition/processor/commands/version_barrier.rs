@@ -183,6 +183,12 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
                             );
                             PartitionFeatureChange::EnableVqueues.apply_to(&mut updated);
                         }
+                        // Fully migrated: the indexes over the vqueue entries can register. The
+                        // background walk driver registers them once this batch is committed,
+                        // so that its walk covers every entry the batch wrote.
+                        if updated.vqueues {
+                            self.partition_db.request_vqueue_indexes();
+                        }
                     }
                     PartitionFeatureChange::EnableJournalV2 => {}
                     // Flipping unique-random-seeds on only affects invocations created after the apply
@@ -222,6 +228,7 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
                             "Removed {removed} pending state mutations",
                         );
                     }
+                    PartitionFeatureChange::EnableInvocationStatusOutputBlob => {}
                 }
             }
         }
@@ -805,6 +812,124 @@ mod tests {
             assert!(mismatches.is_empty(), "{mismatches:?}");
             assert!(fully);
         }
+    }
+
+    /// The indexes over the vqueue entries register only after the full vqueues
+    /// migration. A partition opened with indexes enabled before it registers
+    /// nothing, and a migration that skipped completed invocations doesn't ask
+    /// for them. The full migration asks the walk driver, whose next step
+    /// registers them; the walk then covers the migrated entries to its end.
+    #[restate_core::test(start_paused = true)]
+    async fn full_vqueues_migration_registers_the_entry_indexes() {
+        use restate_partition_store::registry::IndexKind;
+        use restate_partition_store::stats::Stat;
+        use restate_partition_store::stats::aggregated::ServiceStats;
+        use restate_storage_query_api::schema::LogicalSchema;
+        use restate_storage_query_api::tables::index::EntryByCreated;
+
+        let mut config = Configuration::pinned().as_ref().clone();
+        config.common.experimental.set_indexes(true);
+        Configuration::set(config.clone());
+        let env = TestCoreEnv::create_with_single_node(1, 0).await;
+        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
+        let mut node_ctx = NodeContext::new(
+            GenerationalNodeId::new(1, 0),
+            Configuration::live(),
+            PartitionReplicaSetStates::default(),
+            RuleBookCacheHandle::detached(),
+            bifrost,
+            InvokerCapacity::new_unlimited(),
+            PartitionLeaderHandlesRegistry::default(),
+        );
+        let mut storage = open_store().await;
+        storage
+            .verify_and_run_migrations(CancellationToken::new(), &config)
+            .await
+            .unwrap();
+        let mut processor = processor(PersistedFeatures::default());
+        // Invocations to migrate, one of them completed, which a skip-completed
+        // migration leaves out.
+        let mut txn = storage.transaction();
+        for (key, status) in [
+            (
+                "a",
+                InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
+            ),
+            (
+                "b",
+                InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
+            ),
+            (
+                "c",
+                InvocationStatus::Completed(CompletedInvocation::mock_neo()),
+            ),
+        ] {
+            let target = InvocationTarget::virtual_object(
+                "svc",
+                key,
+                "run",
+                VirtualObjectHandlerType::Exclusive,
+            );
+            let status = match status {
+                InvocationStatus::Invoked(metadata) => {
+                    InvocationStatus::Invoked(InFlightInvocationMetadata {
+                        invocation_target: target.clone(),
+                        ..metadata
+                    })
+                }
+                InvocationStatus::Completed(completed) => {
+                    InvocationStatus::Completed(CompletedInvocation {
+                        invocation_target: target.clone(),
+                        ..completed
+                    })
+                }
+                other => other,
+            };
+            txn.put_invocation_status(&InvocationId::generate(&target, None), &status)
+                .unwrap();
+        }
+        txn.commit().await.unwrap();
+
+        let mut writer = storage.clone();
+        let mut tx = writer.transaction();
+        let mut walks = storage.walk_driver(&config.worker.storage);
+        let complete = |storage: &PartitionStore| {
+            let (snapshot, _closed) = storage.query_read(CancellationToken::new()).unwrap();
+            [
+                (ServiceStats::DEFINITION, IndexKind::Aggregate),
+                (EntryByCreated::NAME, IndexKind::Secondary),
+            ]
+            .map(|(definition, kind)| snapshot.complete_index(definition, kind).is_ok())
+        };
+        for (change, registers) in [
+            (PartitionFeatureChange::EnableVqueuesSkipCompleted, false),
+            (PartitionFeatureChange::EnableVqueues, true),
+        ] {
+            apply_barrier(
+                &mut node_ctx,
+                &mut processor,
+                &mut storage,
+                barrier(SemanticRestateVersion::current().clone(), vec![change.id()]),
+            )
+            .await
+            .unwrap();
+            if !registers {
+                // Nothing asked for: the driver has nothing to do.
+                walks.step(&mut tx, usize::MAX).await.unwrap();
+                assert_eq!(complete(&storage), [false, false], "{change:?}");
+                continue;
+            }
+            // Asked for: due at once, and the walk then runs to its end.
+            for _ in 0..16 {
+                walks.ready().await;
+                walks.step(&mut tx, usize::MAX).await.unwrap();
+                if complete(&storage) == [true, true] {
+                    break;
+                }
+            }
+            assert_eq!(complete(&storage), [true, true], "{change:?}");
+        }
+        assert!(storage.invocation_entry_mismatches().unwrap().is_empty());
     }
 
     #[restate_core::test]

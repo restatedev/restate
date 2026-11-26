@@ -1261,112 +1261,32 @@ experimental! {
     /// Since v1.8.2
     vqueue_orphaned_active_marker_removal,
 
-    /// # Status Gauges For VQueue Entries
+    /// # Indexes
     ///
-    /// Maintains current stage/status counts for VQueue entries by service,
-    /// deployment, and virtual object. Counts include invocations and state
-    /// mutations, retaining completed entries until deletion. Each partition
-    /// counts the entries written from then on and backfills the entries that
-    /// existed before in the background; until that backfill completes, queries
-    /// of the statistics tables fail on that partition.
+    /// Builds and maintains the indexes and statistics of each partition, and lets
+    /// queries read them:
     ///
-    /// Maintenance persists across restarts even if this flag is removed, unless
-    /// status gauges are explicitly reset. Statistics-table visibility is controlled
-    /// separately on the query coordinator.
+    /// - **On workers**, each partition maintains the VQueue entry indexes (such as
+    ///   entries newest created first, or by status) and the status gauges behind
+    ///   the statistics tables, once it has fully migrated its invocations to
+    ///   VQueues. It then counts and indexes the entries written from then on, and
+    ///   backfills the entries that existed before in the background;
+    ///   `restate.cluster.registry` shows each one's progress. Turning the option
+    ///   off drops all of them when each partition next starts, and turning it on
+    ///   again builds them from scratch. Invocation and VQueue entry data are never
+    ///   affected.
+    /// - **On a query coordinator**, the V2 planner reads the entry indexes where
+    ///   they are complete, and both engines show the statistics tables
+    ///   (`sys_service_stats`, `sys_deployment_stats`, `sys_virtual_object_stats`).
+    ///   Their queries fail until the statistics are complete on every partition.
+    ///   Only new query sessions see a change.
     ///
-    /// Enabling this option registers the statistics in the partition's registry
-    /// and raises the partition's minimum Restate version to v1.8.2.
-    /// That stays, also after the option is removed or the gauges are reset: a
-    /// node that has ever run with it cannot be rolled back to an older version.
-    ///
-    /// Since v1.8.2
-    track_status_gauges,
-
-    /// # Statistics query tables
-    ///
-    /// Shows the `sys_service_stats`, `sys_deployment_stats` and
-    /// `sys_virtual_object_stats` tables in SQL queries, in both query engines
-    /// (V1 and V2). Off by default. Only new query sessions see a change;
-    /// sessions already open keep the tables they started with.
-    ///
-    /// To build these statistics, first enable
-    /// `experimental-enable-track-status-gauges` on workers, and wait until the
-    /// statistics are complete on every partition (status `complete` in
-    /// `restate.cluster.registry`); this option doesn't start that or wait for
-    /// it. A query fails if a partition it reads has missing or incomplete
-    /// statistics, instead of returning a partial total. Enable this only once
-    /// all nodes are upgraded: an older node can't serve the tables.
+    /// Enabling this option raises the partition's minimum Restate version to
+    /// v1.8.2. That stays after the option is turned off: a node that has ever run
+    /// with it cannot be rolled back to an older version.
     ///
     /// Since v1.8.2
-    query_stats_tables,
-
-    /// # Reset status gauges
-    ///
-    /// Deletes the local service, deployment, and virtual-object status gauges and
-    /// stops maintaining them when each partition starts. While enabled, this takes
-    /// precedence over the other status-gauge options, and statistics queries fail
-    /// on the partition. Statistics-table visibility is controlled independently
-    /// on the query coordinator.
-    ///
-    /// To rebuild the counts from retained VQueue entries, turn this option off,
-    /// turn `experimental-enable-track-status-gauges` on, and restart the nodes:
-    /// the gauges are registered again and backfilled in the background.
-    /// Invocation and VQueue entry data are preserved during reset. A reset does
-    /// not lift the partition's minimum Restate version of v1.8.2 that enabling
-    /// the gauges set.
-    ///
-    /// Since v1.8.2
-    status_gauges_reset,
-
-    /// # Entry indexes
-    ///
-    /// Maintains secondary indexes over VQueue entries, such as entries by service
-    /// and handler, newest created first. Each partition indexes the entries
-    /// written from then on and backfills the entries that existed before in the
-    /// background. Queries don't read these indexes yet.
-    ///
-    /// Maintenance persists across restarts even if this flag is removed, unless
-    /// the entry indexes are explicitly reset.
-    ///
-    /// Enabling this option registers the indexes in the partition's registry and
-    /// raises the partition's minimum Restate version to v1.8.2.
-    /// That stays, also after the option is removed or the indexes are reset: a
-    /// node that has ever run with it cannot be rolled back to an older version.
-    ///
-    /// Since v1.8.2
-    track_entry_indexes,
-
-    /// # Reset entry indexes
-    ///
-    /// Deletes the local entry indexes and stops maintaining them when each
-    /// partition starts. While enabled, this takes precedence over
-    /// `experimental-enable-track-entry-indexes`, and queries read as they do
-    /// without the indexes.
-    ///
-    /// To rebuild them, turn this option off, turn
-    /// `experimental-enable-track-entry-indexes` on, and restart the nodes: the
-    /// indexes are registered again and backfilled in the background. VQueue entry
-    /// data is preserved. A reset does not lift the partition's minimum Restate
-    /// version of v1.8.2 that enabling the indexes set.
-    ///
-    /// Since v1.8.2
-    entry_indexes_reset,
-
-    /// # Index query tables in V2
-    ///
-    /// Shows the index tables, such as the entry-by-queue index, in query sessions
-    /// of the V2 engine, for inspecting them with SQL. Off by default; evaluated for
-    /// each new session on the query coordinator. Tables of indexes whose
-    /// definitions aren't available yet, such as the entry-by-service index, stay
-    /// hidden.
-    ///
-    /// This option only controls what SQL can see. V2 reads a table through a
-    /// complete index whenever a query restricts the indexed columns, with or
-    /// without it: for example `sys_vqueues` and `sys_vqueue_entry_status` through
-    /// the scheduler's queue stages when filtering by queue or by stage.
-    ///
-    /// Since v1.8.2
-    query_index_tables,
+    indexes,
 
     /// # Enables service protocol v8
     ///
@@ -1399,6 +1319,13 @@ impl Experimental {
     /// the default for admin queries, which implies it.
     pub fn is_query_engine_v2_running(&self) -> bool {
         self.is_query_engine_v2_enabled() || self.is_query_engine_v2_default_enabled()
+    }
+
+    /// Whether queries on this coordinator read indexes: the planner considers
+    /// index reads, and the statistics tables are shown. This is
+    /// `experimental-enable-indexes`.
+    pub fn index_reads_enabled(&self) -> bool {
+        self.is_indexes_enabled()
     }
 }
 

@@ -28,7 +28,7 @@ use restate_types::invocation::{
     ServiceInvocationSpanContext, ServiceType, SpanRelation,
 };
 use restate_types::journal as journal_v1;
-use restate_types::journal_v2::{CommandMetadata, EntryMetadata, EntryType};
+use restate_types::journal_v2::{CommandMetadata, CommandType, EntryMetadata, EntryType};
 use restate_types::net::partition_processor::{
     RestartAsNewInvocationRpcRequest, RestartAsNewInvocationRpcResponse,
 };
@@ -310,6 +310,10 @@ where
             )
             .await
             {
+                // The Output ends the invocation, there's nothing to resume after it
+                Ok(Some(entry)) if entry.ty() == EntryType::Command(CommandType::Output) => {
+                    bail!(JournalCopyRangeInvalid);
+                }
                 Ok(Some(entry)) if matches!(entry.ty(), EntryType::Command(_)) => {
                     let entry = match self.storage.hydrate_journal_entry(entry) {
                         Ok(entry) => entry,
@@ -429,7 +433,9 @@ mod tests {
     use restate_types::identifiers::{DeploymentId, EntryIndex};
     use restate_types::invocation::{Header, InvocationTarget};
     use restate_types::journal::raw::RawEntryCodec;
-    use restate_types::journal_v2::{CompletionId, Entry, NotificationId, UnresolvedFuture};
+    use restate_types::journal_v2::{
+        CompletionId, Entry, NotificationId, OutputCommand, OutputResult, UnresolvedFuture,
+    };
     use restate_types::schema::deployment::Deployment;
     use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
     use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
@@ -1319,37 +1325,45 @@ mod tests {
     }
 
     #[test(restate_core::test)]
-    async fn prefix_journal_copy_range_invalid_missing_completion() {
+    async fn prefix_journal_copy_range_invalid() {
         let invocation_id = InvocationId::mock_random();
         let target = InvocationTarget::mock_virtual_object();
         let completed = mock_completed_invocation(target.clone(), ServiceProtocolVersion::V6, 2);
+        let output: Entry = OutputCommand {
+            result: OutputResult::Success(Default::default()),
+            name: Default::default(),
+        }
+        .into();
 
-        let mut storage = MockStorage::new_with_journal_v2(
-            invocation_id,
-            InvocationStatus::Completed(completed.clone()),
-            vec![input_command(), sleep_command(1)],
-            /* has completion */ false,
-        );
-
-        let decision = handle(
-            true,
-            &MockDeploymentMetadataRegistry::default(),
-            &mut storage,
-            RestartAsNewInvocationRpcRequest {
-                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
+        // A command missing its completion, and the Output which ends the invocation
+        for last_command in [sleep_command(1), output] {
+            let mut storage = MockStorage::new_with_journal_v2(
                 invocation_id,
-                copy_prefix_up_to_index_included: 1,
-                patch_deployment_id: PatchDeploymentId::KeepPinned.into(),
-            },
-        )
-        .await;
-        assert_matches!(
-            decision,
-            Decision::Reply(Ok(response))
-                if response == PartitionProcessorRpcResponse::from(
-                    RestartAsNewInvocationRpcResponse::JournalCopyRangeInvalid
-                )
-        );
+                InvocationStatus::Completed(completed.clone()),
+                vec![input_command(), last_command],
+                /* has completion */ false,
+            );
+
+            let decision = handle(
+                true,
+                &MockDeploymentMetadataRegistry::default(),
+                &mut storage,
+                RestartAsNewInvocationRpcRequest {
+                    header: PartitionProcessorRpcRequestHeader::new(Default::default()),
+                    invocation_id,
+                    copy_prefix_up_to_index_included: 1,
+                    patch_deployment_id: PatchDeploymentId::KeepPinned.into(),
+                },
+            )
+            .await;
+            assert_matches!(
+                decision,
+                Decision::Reply(Ok(response))
+                    if response == PartitionProcessorRpcResponse::from(
+                        RestartAsNewInvocationRpcResponse::JournalCopyRangeInvalid
+                    )
+            );
+        }
     }
 
     #[test(restate_core::test)]

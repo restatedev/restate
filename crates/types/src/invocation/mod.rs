@@ -37,7 +37,7 @@ use crate::identifiers::{
     PartitionProcessorRpcRequestId, ServiceId, SubscriptionId, WithInvocationId, WithPartitionKey,
 };
 use crate::invocation::client::PatchDeploymentId;
-use crate::journal_v2::{CompletionId, GetInvocationOutputResult, Signal};
+use crate::journal_v2::{CompletionId, GetInvocationOutputResult, OutputResult, Signal};
 use crate::limit_key::LimitKey;
 use crate::time::MillisSinceEpoch;
 use crate::{GenerationalNodeId, LockName, RestateVersion, ServiceName};
@@ -777,6 +777,24 @@ impl From<Result<Bytes, InvocationError>> for ResponseResult {
         match value {
             Ok(v) => ResponseResult::Success(v),
             Err(e) => ResponseResult::Failure(e),
+        }
+    }
+}
+
+impl From<OutputResult> for ResponseResult {
+    fn from(value: OutputResult) -> Self {
+        match value {
+            OutputResult::Success(bytes) => ResponseResult::Success(bytes),
+            OutputResult::Failure(failure) => ResponseResult::Failure(failure.into()),
+        }
+    }
+}
+
+impl From<ResponseResult> for OutputResult {
+    fn from(value: ResponseResult) -> Self {
+        match value {
+            ResponseResult::Success(bytes) => OutputResult::Success(bytes),
+            ResponseResult::Failure(err) => OutputResult::Failure(err.into()),
         }
     }
 }

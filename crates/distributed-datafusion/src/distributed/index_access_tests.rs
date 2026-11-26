@@ -217,7 +217,7 @@ async fn stage_index_access_matches_scans_across_windows_and_owners() {
                         .accesses
                         .iter()
                         .all(|(_, access)| matches!(access, PrimaryRead::Index(index)
-                            if index.name() == "_idx_entry_by_queue")),
+                            if index.name() == "vqueue_stages")),
                     indexed,
                     "owners_receive_the_planned_access: {sql}: {:?}",
                     reads.accesses
@@ -340,7 +340,7 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
 
     use crate::tables::invocation_status::SysInvocationStatusTable;
 
-    const INDEX: &str = "_idx_entry_by_service_created";
+    const INDEX: &str = "entry_by_created/1";
     /// Not migrated, and no Complete index: these partitions scan.
     const UNMIGRATED: usize = 5;
     const INCOMPLETE: usize = 6;
@@ -363,9 +363,9 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
     })
     .await;
     let mut tracking = Configuration::default();
-    tracking.common.experimental.set_track_entry_indexes(true);
-    let mut reset = Configuration::default();
-    reset.common.experimental.set_entry_indexes_reset(true);
+    tracking.common.experimental.set_indexes(true);
+    // Indexes off on that replica: its indexes are dropped at the open.
+    let disabled = Configuration::default();
     Configuration::set(tracking.clone());
 
     const BASE: u64 = 1_744_010_000_000;
@@ -375,10 +375,11 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
     let partitions = fixture.stores.len() as u64;
     for (partition, store) in fixture.stores.iter_mut().enumerate() {
         let config = if partition == INCOMPLETE {
-            &reset
+            &disabled
         } else {
             &tracking
         };
+        store.mark_fully_migrated_to_vqueues().await;
         store
             .verify_and_run_migrations(Default::default(), config)
             .await
@@ -608,7 +609,7 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
         assert!(
             accesses.iter().all(|(_, access)| matches!(
                 access,
-                PrimaryRead::Index(index) if index.name() == "_idx_entry_by_status_created"
+                PrimaryRead::Index(index) if index.name() == "entry_by_status_created/1"
             )),
             "{running}: {accesses:?}"
         );
@@ -786,8 +787,8 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
     };
     let unspelled = |plan: String| plan.replace(" NULLS FIRST", "").replace(" NULLS LAST", "");
     for (sql, index) in [
-        (finished, "_idx_entry_status_by_status_transitioned"),
-        (active, "_idx_entry_status_by_status_created"),
+        (finished, "entry_by_status_transitioned/1"),
+        (active, "entry_by_status_created/1"),
     ] {
         let explained = async |sql: &str| {
             let plan = crate::mocks::rows(session.as_ref(), &format!("EXPLAIN {sql}"))
@@ -829,4 +830,53 @@ async fn workflow_page_reads_the_entry_index_across_partitions_and_owners() {
             );
         }
     }
+
+    // A count of finished entries since a time has two candidates: the
+    // transition index's keys, then the stage tables. The partition whose index
+    // was reset reads the second instead of scanning, over the transport; every
+    // other partition reads the first. The counts equal a scan's.
+    let count = format!(
+        "SELECT status, COUNT(1) AS count FROM sys_vqueue_entry_status \
+         WHERE stage = 'finished' AND transitioned_at >= to_timestamp_millis({}) \
+         GROUP BY status ORDER BY status",
+        BASE - 2_000
+    );
+    let counted = crate::mocks::rows(session.as_ref(), &count).await;
+    let scanned = count.replacen(
+        "FROM sys_vqueue_entry_status",
+        "FROM (SELECT * FROM sys_vqueue_entry_status LIMIT 1000000) AS sys_vqueue_entry_status",
+        1,
+    );
+    assert!(!counted.is_empty());
+    assert_eq!(
+        counted,
+        crate::mocks::rows(session.as_ref(), &scanned).await
+    );
+    let plan = crate::mocks::rows(session.as_ref(), &format!("EXPLAIN ANALYZE {count}"))
+        .await
+        .concat()
+        .join("\n");
+    eprintln!("index candidates\n{plan}");
+    assert!(
+        plan.contains("index=entry_by_status_transitioned/1, alternatives=[vqueue_stages]"),
+        "{plan}"
+    );
+    // Only the reset partition's owner skips a candidate, and reads that
+    // partition's stage records; no partition scans.
+    let skipped: Vec<_> = plan
+        .lines()
+        .filter(|line| line.contains("index_candidates_skipped="))
+        .collect();
+    assert_eq!(skipped.len(), 1, "{plan}");
+    let reset_owner = format!("owner={}", owner(PartitionId::from(INCOMPLETE as u16)));
+    assert!(
+        skipped[0].contains(&reset_owner)
+            && skipped[0].contains("index_candidates_skipped=1")
+            && !skipped[0].contains("stage_keys_visited=0"),
+        "{plan}"
+    );
+    assert!(
+        plan.contains("entry_index_scans=0") && !plan.contains("entry_index_scans=1"),
+        "{plan}"
+    );
 }

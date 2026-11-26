@@ -57,6 +57,10 @@ use super::QueryIoExecutor;
 pub struct ReplicaMigrations {
     pub partition_id: PartitionId,
     pub key_range: KeyRange,
+    /// Whether the replica has a registry record: every replica opened with
+    /// indexes enabled, even before any definition registers, and still after
+    /// they are disabled.
+    pub has_registry: bool,
     pub registry: Registry,
     pub walks: Walks,
     /// The unfinished jobs and the finished ones not expired yet, by ID.
@@ -230,8 +234,8 @@ impl PartitionStoreManager {
                 let now = WallClock::now_ms().as_u64();
                 match read_replica(&snapshot, partition.id(), partition.key_range, now) {
                     Ok(mut replica) => {
-                        replica.driver = db.driver_state().get();
-                        if let Some(published) = db.published_registry() {
+                        replica.driver = db.shared_registry().driver_state().get();
+                        if let Some(published) = db.shared_registry().published() {
                             replica.unknown_migrations =
                                 published.unknown_migrations(&replica.registry);
                         }
@@ -271,6 +275,7 @@ fn read_replica(
     Ok(ReplicaMigrations {
         partition_id,
         key_range,
+        has_registry: read.registry.is_some(),
         registry: read.registry.unwrap_or_default(),
         walks: read.walks,
         jobs: read.jobs,

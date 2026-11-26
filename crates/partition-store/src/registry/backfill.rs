@@ -12,6 +12,14 @@
 //! reflect the entries that existed before they were registered, with a walk of
 //! the entry statuses (see [`crate::walk`]), then makes them Complete.
 //!
+//! **Only after the vqueues migration.** The entry statuses hold every
+//! invocation only once the partition has fully migrated to vqueues, so the
+//! families over them register, and their walk starts, only then (see
+//! [`super::Family::requires_vqueues`]): at open, or at the walk driver's next
+//! step after the processor applied the migration and committed its batch. A
+//! walk never starts over a partition still migrating, and the entries written
+//! before it starts, the migrated ones included, lie within it.
+//!
 //! **Filling.** An entry reflected by an index lists the index's ID, its token
 //! (see [`super::active`]). Entries written since an index was registered already
 //! list it, so a walk fills every other entry, in entry-status key order: it

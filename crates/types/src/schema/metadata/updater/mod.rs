@@ -638,7 +638,13 @@ impl SchemaUpdater {
             .map(|h| {
                 Ok((
                     h.name.to_string(),
-                    Handler::from_schema(service_name.as_ref(), service_type, public, h)?,
+                    Handler::from_schema(
+                        service_name.as_ref(),
+                        service_type,
+                        public,
+                        service.preemptable,
+                        h,
+                    )?,
                 ))
             })
             .collect::<Result<HashMap<_, _>, SchemaError>>()?;
@@ -691,6 +697,7 @@ impl SchemaUpdater {
             retry_policy_max_attempts,
             retry_policy_max_interval,
             retry_policy_on_max_attempts,
+            preemptable: service.preemptable,
             service_openapi_cache: Default::default(),
         })
     }
@@ -1281,6 +1288,7 @@ impl Handler {
         service_name: &str,
         service_type: ServiceType,
         is_service_public: bool,
+        service_preemptable: Option<bool>,
         handler: endpoint_manifest::Handler,
     ) -> Result<Self, ServiceError> {
         let ty = match (service_type, handler.ty) {
@@ -1407,6 +1415,8 @@ impl Handler {
             ),
             public: handler.ingress_private.map(bool::not),
             retry_policy_on_max_attempts,
+            // Resolved here, so that the invoker reads it from the handler alone.
+            preemptable: Some(handler.preemptable.or(service_preemptable).unwrap_or(true)),
         })
     }
 

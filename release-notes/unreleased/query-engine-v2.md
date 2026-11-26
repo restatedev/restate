@@ -32,8 +32,6 @@ New options, all off by default:
 - `experimental-enable-query-operator-tables` lets requests with
   `X-Restate-Query-Level: operator` query the cluster tables, except
   `config`, in both engines;
-- `experimental-enable-query-index-tables` shows the index tables in V2, such
-  as `_idx_entry_by_queue`, so you can inspect them with SQL;
 - `admin.query-engine.batch-compression` compresses the rows V2 sends from
   one node to another with `lz4` or `zstd`. Use it when the network between
   your nodes is slow or billed by volume. Nodes with different settings work
@@ -50,9 +48,10 @@ once with `v1` and once with `v2`, should return the same rows.
   operator-level cluster tables
   have their own option, `experimental-enable-query-operator-tables`, which
   also works with V1 alone.
-- V2 uses indexes on its own, with or without
-  `experimental-enable-query-index-tables`: for example, `sys_vqueues` filtered
-  by a queue reads only that queue's entries.
+- V2 uses the scheduler's queue stages on its own, with no option to set: for
+  example, `sys_vqueues` filtered by a queue reads only that queue's entries.
+  The entry indexes need `experimental-enable-indexes`. Indexes aren't tables
+  you can query; `EXPLAIN` shows which one a query reads.
 - A query that names specific queues, such as
   `SELECT * FROM sys_vqueue_meta WHERE id IN (…)`, makes V2 read those queues'
   metadata directly instead of scanning the metadata stored between them.

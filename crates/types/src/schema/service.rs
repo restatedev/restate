@@ -192,6 +192,14 @@ pub struct ServiceMetadata {
     #[serde(default)]
     pub state_preload_policy: StatePreloadPolicy,
 
+    /// # Preemptable
+    ///
+    /// If true, Restate may suspend invocations of this service while they wait on an await
+    /// point, to free up concurrency capacity for other invocations (eager suspension).
+    /// If false, invocations of this service only suspend when the inactivity timeout fires.
+    #[serde(default = "restate_serde_util::default::bool::<true>")]
+    pub preemptable: bool,
+
     /// # Retry policy
     ///
     /// Retry policy applied to invocations of this service.
@@ -425,6 +433,17 @@ pub struct HandlerMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_preload_policy: Option<StatePreloadPolicy>,
 
+    /// # Preemptable
+    ///
+    /// If true, Restate may suspend invocations of this handler while they wait on an await
+    /// point, to free up concurrency capacity for other invocations (eager suspension).
+    /// If false, invocations of this handler only suspend when the inactivity timeout fires.
+    ///
+    /// This is the effective value: the handler's own setting if declared, otherwise the
+    /// service's.
+    #[serde(default = "restate_serde_util::default::bool::<true>")]
+    pub preemptable: bool,
+
     /// # Public
     ///
     /// If true, this handler can be invoked through the ingress.
@@ -587,6 +606,7 @@ pub mod test_util {
                                 abort_timeout: None,
                                 enable_lazy_state: None,
                                 state_preload_policy: None,
+                                preemptable: true,
                                 public: true,
                                 input_description: "any".to_string(),
                                 output_description: "any".to_string(),
@@ -611,6 +631,7 @@ pub mod test_util {
                 abort_timeout: DEFAULT_ABORT_TIMEOUT,
                 enable_lazy_state: false,
                 state_preload_policy: Default::default(),
+                preemptable: true,
                 retry_policy: Default::default(),
                 info: vec![],
             }
@@ -638,6 +659,7 @@ pub mod test_util {
                                 abort_timeout: None,
                                 enable_lazy_state: None,
                                 state_preload_policy: None,
+                                preemptable: true,
                                 public: true,
                                 input_description: "any".to_string(),
                                 output_description: "any".to_string(),
@@ -662,6 +684,7 @@ pub mod test_util {
                 abort_timeout: DEFAULT_ABORT_TIMEOUT,
                 enable_lazy_state: false,
                 state_preload_policy: Default::default(),
+                preemptable: true,
                 retry_policy: Default::default(),
                 info: vec![],
             }

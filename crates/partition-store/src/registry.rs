@@ -68,6 +68,7 @@ mod backfill;
 pub mod migration;
 mod reconcile;
 pub mod records;
+mod shared;
 
 #[cfg(test)]
 pub(crate) use active::TEST_INTRODUCED;
@@ -75,6 +76,7 @@ pub(crate) use active::{Family, INDEX_DEFINITIONS, IndexDefinition, PublishedReg
 pub(crate) use backfill::{IndexBackfill, start as start_backfill};
 pub use migration::{Migration, MigrationOnUnknown, MigrationState, MigrationTimeline};
 pub(crate) use reconcile::{FAMILIES, FenceState, Requests};
+pub(crate) use shared::SharedRegistry;
 
 /// Whether this binary's definition `name` fills rows itself (`Some(true)`, an
 /// active one) or relies on writes and deletions (`Some(false)`, a passive one);
@@ -164,10 +166,14 @@ pub enum IndexStatus {
 /// reason without a version floor. Never reuse a number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropReason {
-    /// Its family's reset was requested.
+    /// A reset option asked for it. Those options were removed before release;
+    /// development builds may have stored this reason.
     Reset = 1,
     /// The binary that opened the store doesn't know its definition.
     UnknownDefinition = 2,
+    /// The store was opened with indexes not enabled
+    /// (`experimental-enable-indexes` off).
+    NotEnabled = 3,
 }
 
 impl DropReason {
@@ -176,6 +182,7 @@ impl DropReason {
         match number {
             1 => Some(Self::Reset),
             2 => Some(Self::UnknownDefinition),
+            3 => Some(Self::NotEnabled),
             _ => None,
         }
     }

@@ -206,7 +206,8 @@ async fn restored_snapshots_keep_complete_registered_instances() {
         tx.commit().await.unwrap();
     }
     let mut config = Configuration::default();
-    config.common.experimental.set_track_status_gauges(true);
+    config.common.experimental.set_indexes(true);
+    store.mark_fully_migrated_to_vqueues().await;
     store
         .verify_and_run_migrations(CancellationToken::new(), &config)
         .await
@@ -255,8 +256,11 @@ async fn restored_snapshots_keep_complete_registered_instances() {
         .open_from_snapshot(&partition, restored)
         .await
         .unwrap();
+    // The receiving node has indexes enabled too; without them the open would
+    // drop the restored instances.
+    store.mark_fully_migrated_to_vqueues().await;
     store
-        .verify_and_run_migrations(CancellationToken::new(), &Configuration::default())
+        .verify_and_run_migrations(CancellationToken::new(), &config)
         .await
         .unwrap();
     assert_eq!(

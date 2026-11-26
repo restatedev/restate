@@ -428,7 +428,8 @@ pub(crate) struct DeclaredIndex {
 }
 
 impl DeclaredIndex {
-    /// The index schema's name, sent with index work.
+    /// The index schema's name: the storage definition it reads, such as
+    /// `entry_by_created/1`. `EXPLAIN` shows it, and index work carries it.
     pub(crate) fn identity(&self) -> &'static str {
         self.identity
     }
@@ -464,14 +465,27 @@ impl DeclaredIndex {
     }
 }
 
+/// An index a partition may read for a source, with the order of the rows its
+/// read returns: the index's declared order, or the exact reverse for a read
+/// backwards, or none ([`IndexUse::Unordered`]). Sent with index work.
+#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
+pub(crate) struct IndexCandidate {
+    #[bilrost(1)]
+    pub(crate) index: ReString,
+    #[bilrost(2)]
+    pub(crate) ordering: Vec<SortedColumn>,
+}
+
 /// The access path chosen for one source before distribution.
 #[derive(Debug)]
 pub(crate) enum Access {
     Scan,
     Primary(Box<dyn PrimarySelection>),
+    /// Reads through one of `candidates`, in the planner's preference order. Each
+    /// can answer the query and returns rows in the first one's order, so a
+    /// partition may read whichever it can ([`select_access`]).
     Index {
-        index: ReString,
-        ordering: Vec<SortedColumn>,
+        candidates: Vec<IndexCandidate>,
         /// How many of a partition's rows a read that can't keep the order must
         /// keep, sorted: proven only where everything above the bound is in the
         /// source's predicate ([`select_access`]).
@@ -480,8 +494,15 @@ pub(crate) enum Access {
 }
 
 /// One selector for ordinary and shard-JOIN inputs: complete primary keys first,
-/// then the first declared index whose restriction is useful and that every
-/// worker knows (see [`workers_know`]), else a scan.
+/// then the declared indexes whose restriction is useful and that every worker
+/// knows (see [`workers_know`]), else a scan.
+///
+/// Every such index is a candidate, in declaration order, if it returns rows in
+/// the first one's order: the order the plan above relies on. A partition reads
+/// the first candidate it can, such as one whose index is Complete on its
+/// snapshot, and scans if none can (`PartitionReadExec` sorts a scan that must
+/// keep an order). The fallback bound is the first candidate's: it depends on
+/// the demand and the predicate, which all candidates share.
 ///
 /// Selecting a declared index needs no opt-in: either it is always maintained,
 /// or its reader checks on its own snapshot that the index is complete and reads
@@ -510,35 +531,57 @@ pub(crate) fn select_access(
         return Ok(Access::Primary(keys));
     }
     let nodes = source.manager.metadata().nodes_config_ref();
+    let mut candidates: Vec<IndexCandidate> = Vec::new();
+    let mut bound = None;
     for index in &source.indexes {
         let Some(chosen) = index.select(filters, demand, projection)? else {
             continue;
         };
-        if !workers_know(&nodes, &index.introduced()) {
+        if !workers_know(&nodes, &index.introduced())
+            // Declarations sharing a read, such as the stage tables read by
+            // queue or by stage, are one candidate.
+            || candidates
+                .iter()
+                .any(|candidate| candidate.index == index.identity())
+        {
             continue;
         }
         let demand = demand.filter(|_| chosen == IndexUse::Demand);
-        let conditions = filters
-            .iter()
-            .flat_map(split_conjunction)
-            .cloned()
-            .collect::<Vec<_>>();
-        let bound = demand
-            .filter(|demand| {
-                index.orders(demand).is_some()
-                    && physical_exprs_bag_equal(&demand.residual, &conditions)
-            })
-            .map(|demand| demand.fetch);
-        return Ok(Access::Index {
+        let ordering = match chosen {
+            IndexUse::Demand => index.ordering(demand),
+            IndexUse::Unordered => Vec::new(),
+        };
+        let ordering = match candidates.first() {
+            None => {
+                let conditions = filters
+                    .iter()
+                    .flat_map(split_conjunction)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                bound = demand
+                    .filter(|demand| {
+                        index.orders(demand).is_some()
+                            && physical_exprs_bag_equal(&demand.residual, &conditions)
+                    })
+                    .map(|demand| demand.fetch);
+                ordering
+            }
+            // The plan above relies on no order: read this one in none either.
+            Some(first) if first.ordering.is_empty() => Vec::new(),
+            Some(first) if first.ordering == ordering => ordering,
+            // Rows in another order would break the plan above.
+            Some(_) => continue,
+        };
+        candidates.push(IndexCandidate {
             index: ReString::from_static(index.identity()),
-            ordering: match chosen {
-                IndexUse::Demand => index.ordering(demand),
-                IndexUse::Unordered => Vec::new(),
-            },
-            bound,
+            ordering,
         });
     }
-    Ok(Access::Scan)
+    Ok(if candidates.is_empty() {
+        Access::Scan
+    } else {
+        Access::Index { candidates, bound }
+    })
 }
 
 /// Whether every node that may read partition data for a query knows an index
@@ -642,7 +685,8 @@ pub enum PrimaryRead {
     Index(IndexRead),
 }
 
-/// A read of a declared index, in the order the coordinator planned for it.
+/// A read of a declared index, in the order the coordinator planned for it. With
+/// several candidates, each is prepared on its own ([`crate::table_providers::IndexCandidates`]).
 #[derive(Debug, Clone)]
 pub struct IndexRead {
     name: ReString,
@@ -674,17 +718,26 @@ mod tests {
 
     use super::*;
 
-    /// A source's declared indexes, as registered for planning, carry the version
-    /// that introduced reading them: the entry index its storage definition's.
+    /// A source's declared indexes, as registered for planning, are named after
+    /// their storage definition and carry the version that introduced reading
+    /// them. The name is what `EXPLAIN` shows and index work carries, so the
+    /// schema's literal name can't drift from the definition it reads. The
+    /// scheduler's stage tables aren't a registered definition: `vqueue_stages`.
     #[restate_core::test]
-    async fn registered_index_declarations_carry_their_versions() {
+    async fn registered_index_declarations_are_their_storage_definitions() {
         use restate_partition_store::index::RegisteredIndex;
-        use restate_partition_store::vqueue_table::{EntryByCreated, EntryByStatusCreated};
+        use restate_partition_store::vqueue_table::{
+            EntryByCreated, EntryByStatusCreated, EntryByStatusTransitioned,
+        };
 
         use crate::source_registry::SourceRegistry;
         use crate::tables::invocation_status::SysInvocationStatusTable;
         use crate::tables::vqueue_entry_status::schema::SysVqueueEntryStatusTable;
 
+        fn stored<I: RegisteredIndex>() -> (&'static str, SemanticRestateVersion) {
+            (I::DEFINITION, I::INTRODUCED)
+        }
+        let stages = || ("vqueue_stages", SemanticRestateVersion::new(1, 8, 2));
         let sources =
             SourceRegistry::local_only(restate_core::MetadataBuilder::default().to_metadata());
         let declared = |indexes: &[DeclaredIndex]| {
@@ -699,13 +752,7 @@ mod tests {
                     .create_declared_source::<SysInvocationStatusTable>()
                     .indexes
             ),
-            [
-                (
-                    "_idx_entry_by_status_created",
-                    EntryByStatusCreated::INTRODUCED
-                ),
-                ("_idx_entry_by_service_created", EntryByCreated::INTRODUCED)
-            ]
+            [stored::<EntryByStatusCreated>(), stored::<EntryByCreated>()]
         );
         assert_eq!(
             declared(
@@ -714,16 +761,10 @@ mod tests {
                     .indexes
             ),
             [
-                ("_idx_entry_by_queue", SemanticRestateVersion::new(1, 8, 2)),
-                (
-                    "_idx_entry_status_by_status_created",
-                    restate_partition_store::vqueue_table::EntryByStatusCreated::INTRODUCED
-                ),
-                (
-                    "_idx_entry_status_by_status_transitioned",
-                    restate_partition_store::vqueue_table::EntryByStatusTransitioned::INTRODUCED
-                ),
-                ("_idx_entry_by_queue", SemanticRestateVersion::new(1, 8, 2)),
+                stages(),
+                stored::<EntryByStatusCreated>(),
+                stored::<EntryByStatusTransitioned>(),
+                stages(),
             ]
         );
     }
@@ -752,7 +793,7 @@ mod tests {
 
         let env = TestCoreEnv::create_with_single_node(1, 1).await;
         let mut config = Configuration::default();
-        config.common.experimental.set_track_entry_indexes(true);
+        config.common.experimental.set_indexes(true);
         Configuration::set(config);
         let sources = SourceRegistry::local_only(env.metadata.clone());
         let source = sources.create_declared_source::<SysInvocationStatusTable>();
@@ -817,12 +858,14 @@ mod tests {
             )
             .unwrap()
             {
-                Access::Index { index, bound, .. } => format!("index {index} {bound:?}"),
+                Access::Index { candidates, bound } => {
+                    format!("index {} {bound:?}", candidates[0].index)
+                }
                 Access::Primary(_) => "primary".to_owned(),
                 Access::Scan => "scan".to_owned(),
             }
         };
-        let index = "index _idx_entry_by_service_created Some(51)";
+        let index = "index entry_by_created/1 Some(51)";
         use Role::{Admin, MetadataServer, Worker};
         for (nodes, expected) in [
             (&[(Worker, Some("1.8.2"), false)][..], index),
@@ -929,27 +972,25 @@ mod tests {
             }],
             ..newest(&service)
         };
-        let Access::Index {
-            ordering, bound, ..
-        } = select_access(
+        let Access::Index { candidates, bound } = select_access(
             &source,
             Some(&service),
             Some(&nulls_first),
             &Schema::empty(),
         )
-        .unwrap()
-        else {
+        .unwrap() else {
             panic!("the index reads either placement");
         };
+        let ordering = &candidates[0].ordering;
         assert_eq!((ordering[0].nulls_first, bound), (true, Some(51)));
         // The exact reverse reads it backwards, oldest first, with the same
         // bound: the order shipped to workers says so.
-        let Access::Index {
-            ordering, bound, ..
-        } = select_access(&source, Some(&service), Some(&oldest), &Schema::empty()).unwrap()
+        let Access::Index { candidates, bound } =
+            select_access(&source, Some(&service), Some(&oldest), &Schema::empty()).unwrap()
         else {
             panic!("the index reads backwards");
         };
+        let ordering = &candidates[0].ordering;
         assert_eq!(
             (ordering[0].descending, ordering[0].nulls_first, bound),
             (false, false, Some(51))
@@ -958,7 +999,7 @@ mod tests {
         // sort.
         struct Nullable;
         impl CompleteIndex for Nullable {
-            type Index = restate_storage_query_api::tables::index::EntryByServiceCreated;
+            type Index = restate_storage_query_api::tables::index::EntryByCreated;
             const INTRODUCED: SemanticRestateVersion = SemanticRestateVersion::new(1, 8, 2);
             const ORDERING: &'static [IndexOrder<PrimaryColumn<Self>>] = &[IndexOrder {
                 column: restate_storage_query_api::tables::invocation_status::InvocationStatusColumn::CreatedAt,
@@ -968,9 +1009,7 @@ mod tests {
                 },
                 never_null: false,
             }];
-            fn useful(
-                _: &restate_storage_query_api::tables::index::EntryByServiceCreatedDomains,
-            ) -> bool {
+            fn useful(_: &restate_storage_query_api::tables::index::EntryByCreatedDomains) -> bool {
                 true
             }
         }
@@ -1042,7 +1081,7 @@ mod tests {
 
         let env = TestCoreEnv::create_with_single_node(1, 1).await;
         let mut config = Configuration::default();
-        config.common.experimental.set_track_entry_indexes(true);
+        config.common.experimental.set_indexes(true);
         Configuration::set(config);
         let sources = SourceRegistry::local_only(env.metadata);
         let source = sources.create_declared_source::<SysInvocationStatusTable>();
@@ -1076,11 +1115,11 @@ mod tests {
         let chosen = |predicate: Arc<dyn PhysicalExpr>, ordered: bool| {
             let demand = demand(&predicate, ordered);
             match select_access(&source, Some(&predicate), Some(&demand), &projection).unwrap() {
-                Access::Index {
-                    index,
-                    ordering,
+                Access::Index { candidates, bound } => (
+                    candidates[0].index.to_string(),
+                    candidates[0].ordering.len(),
                     bound,
-                } => (index.to_string(), ordering.len(), bound),
+                ),
                 other => (format!("{other:?}"), 0, None),
             }
         };
@@ -1089,7 +1128,7 @@ mod tests {
                 col("target_service_name").eq(lit(ScalarValue::LargeUtf8(Some("Utils".into())))),
             )
         };
-        let creation = "_idx_entry_by_service_created".to_owned();
+        let creation = "entry_by_created/1".to_owned();
         assert_eq!(chosen(utils(), false), (creation.clone(), 0, None));
         assert_eq!(chosen(utils(), true), (creation, 1, Some(25)));
         assert_eq!(
@@ -1145,7 +1184,7 @@ mod tests {
 
         let env = TestCoreEnv::create_with_single_node(1, 1).await;
         let mut config = Configuration::default();
-        config.common.experimental.set_track_entry_indexes(true);
+        config.common.experimental.set_indexes(true);
         Configuration::set(config);
         let sources = SourceRegistry::local_only(env.metadata);
         let source = sources.create_declared_source::<SysVqueueEntryStatusTable>();
@@ -1210,15 +1249,15 @@ mod tests {
             )
             .unwrap()
             {
-                Access::Index {
-                    index,
-                    ordering,
+                Access::Index { candidates, bound } => (
+                    candidates[0].index.to_string(),
+                    candidates[0].ordering.len(),
                     bound,
-                } => (index.to_string(), ordering.len(), bound),
+                ),
                 other => (format!("{other:?}"), 0, None),
             }
         };
-        let transitioned = "_idx_entry_status_by_status_transitioned".to_owned();
+        let transitioned = "entry_by_status_transitioned/1".to_owned();
         let covered = ["stage", "status", "transitioned_at"];
         let queues = ["vqueue_id", "stage", "status", "transitioned_at"];
         // A count of finished entries since a time: no demand, no order, no
@@ -1239,6 +1278,57 @@ mod tests {
                 (transitioned.clone(), 1, Some(9))
             );
         }
+        // Every index that can answer is a candidate, in declaration order, if
+        // it returns rows in the first one's order: the count may read the
+        // stage tables too, the ordered page only the index in its order.
+        let candidates = |predicate: Arc<dyn PhysicalExpr>, ordered: bool| {
+            let demand = ordered.then(|| newest(&predicate));
+            match select_access(
+                &source,
+                Some(&predicate),
+                demand.as_ref(),
+                &projection(&covered),
+            )
+            .unwrap()
+            {
+                Access::Index { candidates, .. } => candidates
+                    .into_iter()
+                    .map(|candidate| (candidate.index.to_string(), candidate.ordering.len()))
+                    .collect::<Vec<_>>(),
+                other => panic!("{other:?}"),
+            }
+        };
+        let eligible = |predicate: Arc<dyn PhysicalExpr>| {
+            let demand = newest(&predicate);
+            source
+                .indexes
+                .iter()
+                .filter_map(|index| {
+                    index
+                        .select(
+                            std::slice::from_ref(&predicate),
+                            Some(&demand),
+                            &projection(&covered),
+                        )
+                        .unwrap()
+                        .map(|chosen| (index.identity(), chosen))
+                })
+                .collect::<Vec<_>>()
+        };
+        let stages = "vqueue_stages".to_owned();
+        assert_eq!(
+            candidates(since("finished"), false),
+            [(transitioned.clone(), 0), (stages.clone(), 0)]
+        );
+        // The stage tables could answer the page too, in no order: not listed.
+        assert_eq!(
+            eligible(since("running")),
+            [
+                (transitioned.as_str(), IndexUse::Demand),
+                (stages.as_str(), IndexUse::Unordered)
+            ]
+        );
+        assert_eq!(candidates(since("running"), true), [(transitioned, 1)]);
         // The worker's side of a work without an order.
         let unordered = IndexRead::new(ReString::from_static("i"), Vec::new().into());
         assert_eq!(

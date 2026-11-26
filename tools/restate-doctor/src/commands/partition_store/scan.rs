@@ -306,7 +306,9 @@ pub async fn run_scan(
                 // User requested hex output - show truncated hex preview
                 let preview_len = HEX_PREVIEW_SIZE.min(value.len());
                 (None, Some(hex_encode(&value[..preview_len])))
-            } else if value_size <= MAX_DECODE_SIZE {
+            } else if value_size <= MAX_DECODE_SIZE
+                || key_kind_enum.is_some_and(|k| k == KeyKind::Blob)
+            {
                 // Small enough to decode - show decoded value
                 let decoded =
                     key_kind_enum.map(|kind| decode_value(kind, &key, &value).to_string());

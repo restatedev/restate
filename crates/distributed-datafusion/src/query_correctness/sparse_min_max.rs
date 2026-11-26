@@ -272,6 +272,13 @@ impl PreparedPartitionRead for ObservedRead {
             .or_default() += 1;
         self.prepared.execute(context, batch_size, metrics)
     }
+
+    fn usable(
+        &self,
+        context: &crate::table_providers::PartitionReadContext,
+    ) -> anyhow::Result<bool> {
+        self.prepared.usable(context)
+    }
 }
 
 async fn setup() -> Fixture<impl NetworkSender> {

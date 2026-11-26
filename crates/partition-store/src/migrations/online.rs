@@ -31,11 +31,10 @@
 //!
 //! It only runs on stores that carry the `registry` storage feature, which a
 //! store gets with its first index. A store without it gets no entry, no walk and
-//! no job: an online migration never raises a store's version floor. Today every
-//! index family is opt-in (`experimental-enable-track-entry-indexes`,
-//! `experimental-enable-track-status-gauges`), so until one is on by default an
-//! online migration reaches only the stores that enabled one. A change that must
-//! reach every store needs a startup migration for now.
+//! no job: an online migration never raises a store's version floor. Today
+//! indexes are opt-in (`experimental-enable-indexes`), so until they are on by
+//! default an online migration reaches only the stores that enabled them. A change
+//! that must reach every store needs a startup migration for now.
 //!
 //! # 2. Name and version
 //!

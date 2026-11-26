@@ -56,6 +56,9 @@ use crate::table::ReadMetadata;
 
 pub(crate) mod macros;
 mod maintenance;
+mod partition_keys;
+
+pub use partition_keys::PartitionKeyFilter;
 
 /// Identifies a secondary index and the primary-key type it references.
 pub trait SecondaryIndex {

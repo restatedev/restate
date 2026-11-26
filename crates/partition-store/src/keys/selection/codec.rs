@@ -239,8 +239,8 @@ where
 /// Prepares a predicate on a column that is never NULL for a field that may
 /// store NULL, such as an index field that only some of its records fill: the
 /// predicate matches the field's present values only. Everything else goes to
-/// the `Option` codec unchanged. Only a test index binds a field this way
-/// since `entry_by_service_created/1` was retired.
+/// the `Option` codec unchanged. Only a test index binds a field this way:
+/// the run merge's fixture.
 #[cfg(test)]
 pub(crate) fn prepare_present<C: FieldPredicateCodec>(
     predicate: &ValuePredicate<C::Literal>,

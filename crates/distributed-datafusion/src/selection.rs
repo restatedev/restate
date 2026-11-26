@@ -17,6 +17,7 @@ use datafusion::arrow::datatypes::Schema;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::PhysicalExpr;
 
+use restate_partition_store::index::PartitionKeyFilter;
 pub(crate) use restate_storage_query_api::selection::domain::Domain;
 #[cfg(test)]
 pub(crate) use restate_storage_query_api::selection::domain::analyze;
@@ -42,6 +43,16 @@ pub(crate) fn key_ranges(
         .min(within.end());
         (start <= end).then(|| KeyRange::new(start, end))
     })
+}
+
+/// The partition keys an index read admits for a source whose predicate allows
+/// `domain`, its candidate shard keys: every key where it names none.
+pub(crate) fn partition_key_filter(domain: &Domain<u64>) -> PartitionKeyFilter {
+    if domain.is_all() {
+        PartitionKeyFilter::ALL
+    } else {
+        PartitionKeyFilter::new(key_ranges(domain, KeyRange::FULL))
+    }
 }
 
 /// Cover a candidate domain with the single interval supported by a backend.

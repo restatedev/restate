@@ -10,6 +10,7 @@
 
 pub mod cluster_controller;
 mod error;
+mod index_catalog;
 #[cfg(feature = "metadata-api")]
 mod metadata_api;
 mod metric_definitions;

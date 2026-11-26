@@ -175,7 +175,9 @@ impl Fixture {
 
 async fn complete(store: &mut PartitionStore) {
     let mut config = Configuration::pinned().as_ref().clone();
-    config.common.experimental.set_track_status_gauges(true);
+    config.common.experimental.set_indexes(true);
+    // A partition fully migrated to vqueues, which the indexes need.
+    store.mark_fully_migrated_to_vqueues().await;
     store
         .verify_and_run_migrations(Default::default(), &config)
         .await
@@ -189,6 +191,63 @@ async fn query(session: &dyn QuerySession, sql: &str) -> anyhow::Result<Vec<Reco
         .stream
         .try_collect()
         .await?)
+}
+
+/// Checks that statistics queries fail, with an error containing `reason`, when
+/// a partition they read has no Complete gauge. The summed service and
+/// deployment tables must fail before they return any row, whatever they select
+/// and also with a `LIMIT`: a client that already got rows couldn't tell them
+/// from a complete total. `sys_virtual_object_stats` streams each partition's
+/// rows, so it may return rows first; it must still fail.
+async fn assert_queries_fail(session: &dyn QuerySession) {
+    let reason = "not complete";
+    for table in ["sys_service_stats", "sys_deployment_stats"] {
+        for sql in [
+            format!("SELECT * FROM {table}"),
+            format!("SELECT * FROM {table} LIMIT 1"),
+            format!("SELECT * FROM {table} ORDER BY service_name LIMIT 1"),
+            // Without `num_entries`, the view must still keep the sum and wait.
+            format!("SELECT service_name FROM {table} LIMIT 1"),
+        ] {
+            let mut stream = session.execute(&sql, QueryOptions {}).await.unwrap().stream;
+            let error = loop {
+                match stream.try_next().await {
+                    Ok(Some(batch)) => {
+                        assert_eq!(batch.num_rows(), 0, "{sql}: rows before the error")
+                    }
+                    Ok(None) => panic!("{sql}: no error"),
+                    Err(error) => break error,
+                }
+            };
+            assert!(error.to_string().contains(reason), "{sql}: {error}");
+        }
+        // The sum stays in the plan, so the view waits for every partition
+        // whatever the query selects; a distinct aggregate under a `LIMIT`
+        // could stop early.
+        let explain = format!("EXPLAIN SELECT service_name FROM {table} LIMIT 1");
+        let batches: Vec<_> = session
+            .execute(&explain, QueryOptions {})
+            .await
+            .unwrap()
+            .stream
+            .try_collect()
+            .await
+            .unwrap();
+        let plan = datafusion::arrow::util::pretty::pretty_format_batches(&batches)
+            .unwrap()
+            .to_string();
+        assert!(plan.contains("sum("), "{explain}: {plan}");
+    }
+    let sql = "SELECT * FROM sys_virtual_object_stats";
+    let mut stream = session.execute(sql, QueryOptions {}).await.unwrap().stream;
+    let error = loop {
+        match stream.try_next().await {
+            Ok(Some(_)) => {}
+            Ok(None) => panic!("{sql}: no error"),
+            Err(error) => break error,
+        }
+    };
+    assert!(error.to_string().contains(reason), "{sql}: {error}");
 }
 
 async fn assert_rows(session: &dyn QuerySession, sql: &str, expected: &[&[Option<&str>]]) {
@@ -313,14 +372,16 @@ async fn populate(store: &mut PartitionStore, second: bool) {
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn statistics_have_shared_shapes_and_sum_before_count_filters_and_limits() {
     let mut config = Configuration::default();
-    config.common.experimental.set_query_stats_tables(true);
+    config.common.experimental.set_indexes(true);
     Configuration::set(config);
     let mut fixture = Fixture::new(true).await;
-    for (i, store) in fixture.stores.iter_mut().enumerate() {
-        complete(store).await;
-        populate(store, i == 1).await;
-    }
     let session = fixture.session();
+    complete(&mut fixture.stores[0]).await;
+    populate(&mut fixture.stores[0], false).await;
+    // The local partition has rows, but the remote one has no Complete gauges.
+    assert_queries_fail(session.as_ref()).await;
+    complete(&mut fixture.stores[1]).await;
+    populate(&mut fixture.stores[1], true).await;
     for (table, schema) in TABLES.into_iter().zip([
         ServiceStats::arrow_schema(),
         DeploymentStats::arrow_schema(),
@@ -466,7 +527,8 @@ async fn statistics_have_shared_shapes_and_sum_before_count_filters_and_limits()
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn exposure_is_session_scoped_and_remote_failures_never_become_partial_totals() {
+async fn visibility_follows_index_reads_per_session_and_remote_failures_never_become_partial_totals()
+ {
     let mut config = Configuration::default();
     Configuration::set(config.clone());
     let mut fixture = Fixture::new(false).await;
@@ -496,18 +558,8 @@ async fn exposure_is_session_scoped_and_remote_failures_never_become_partial_tot
         &[&[Some("0")]],
     )
     .await;
-    config.common.experimental.set_track_status_gauges(true);
-    Configuration::set(config.clone());
-    assert!(
-        fixture
-            .session()
-            .execute("SELECT * FROM sys_service_stats", QueryOptions {})
-            .await
-            .is_err()
-    );
-    // Exposure alone makes tables visible, without enabling maintenance.
-    config.common.experimental.set_track_status_gauges(false);
-    config.common.experimental.set_query_stats_tables(true);
+    // Enabling indexes makes the tables visible to new sessions.
+    config.common.experimental.set_indexes(true);
     Configuration::set(config.clone());
     let visible = fixture.session();
     let visible_aliases = fixture.engine.create_session(aliases()).unwrap();
@@ -601,7 +653,7 @@ async fn exposure_is_session_scoped_and_remote_failures_never_become_partial_tot
     )
     .await;
 
-    config.common.experimental.set_query_stats_tables(false);
+    config.common.experimental.set_indexes(false);
     Configuration::set(config);
     assert!(
         fixture

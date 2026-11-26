@@ -13,6 +13,7 @@ use std::{borrow::Cow, collections::HashMap, ops::RangeInclusive};
 use serde::{Deserialize, Serialize};
 
 use restate_types::net::address::{AdvertisedAddress, HttpIngressPort};
+use restate_util_string::ReString;
 
 /// Version of the admin API to allow CLIs to detect if they are incompatible with a server.
 ///
@@ -83,11 +84,53 @@ pub struct VersionInformation {
     /// List experimental features with their
     /// enabled state.
     pub features: HashMap<Cow<'static, str>, bool>,
+    /// # Query engine
+    ///
+    /// What the SQL query engine offers. Absent on servers older than v1.8.2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_engine: Option<QueryEngineInformation>,
+}
+
+/// What the SQL query engine offers. New fields can be added; clients ignore the ones
+/// they don't know.
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueryEngineInformation {
+    /// # Default query engine
+    ///
+    /// The engine that runs a query unless the request selects another: `v1` or `v2`.
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
+    pub default_engine: ReString,
+    /// # Statistics tables
+    ///
+    /// Whether the statistics tables (`sys_service_stats`, `sys_deployment_stats` and
+    /// `sys_virtual_object_stats`) answer queries. `false` while queries don't read indexes,
+    /// because the tables aren't shown then. Otherwise `true`, from the admin node's start, unless
+    /// its last check found a partition whose leader answered with its store open and lacks a
+    /// complete status gauge, as before the partition has fully migrated to vqueues. Partitions
+    /// without a known leader, leaders that are down or don't answer, and leaders whose
+    /// partition store isn't open (no registry rows) don't count. The admin node checks every
+    /// `admin.query-engine.index-catalog-refresh-interval`.
+    pub stats_tables: bool,
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::version::AdminApiVersion;
+    use crate::version::{AdminApiVersion, QueryEngineInformation, VersionInformation};
+
+    #[test]
+    fn query_engine_is_optional_and_extensible() {
+        let older = r#"{"version":"1.8.1","min_admin_api_version":2,"max_admin_api_version":5,"ingress_endpoint":null,"features":{}}"#;
+        let older: VersionInformation = serde_json::from_str(older).unwrap();
+        assert_eq!(older.query_engine, None);
+
+        let newer = r#"{"default_engine":"v2","stats_tables":true,"field_from_the_future":1}"#;
+        let newer: QueryEngineInformation = serde_json::from_str(newer).unwrap();
+        assert_eq!(
+            serde_json::to_value(&newer).unwrap(),
+            serde_json::json!({"default_engine": "v2", "stats_tables": true})
+        );
+    }
 
     #[test]
     fn choose_max_supported_admin_api_version() {

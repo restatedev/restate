@@ -232,15 +232,17 @@ fn batches<B: Builder, R>(
     Ok(batches)
 }
 
-/// A row of `registry`: an index or a migration.
+/// A row of `registry`: the registry record itself, an index or a migration.
 #[derive(Debug, Clone, Copy)]
 enum Entry<'a> {
+    Registry,
     Index(&'a Index),
     Migration(&'a Migration),
 }
 
-/// The indexes, then the migrations, of every replica in `report`, at most
-/// `limit` of them.
+/// The registry record, the indexes, then the migrations, of every replica in
+/// `report`, at most `limit` of them. A replica without a registry record has
+/// no row.
 fn entries(
     report: &MigrationReport,
     limit: Option<usize>,
@@ -250,9 +252,14 @@ fn entries(
         .iter()
         .flat_map(|replica| {
             let registry = &replica.registry;
+            let record = replica.has_registry.then_some(Entry::Registry);
             let indexes = registry.indexes().iter().map(Entry::Index);
             let migrations = registry.migrations().iter().map(Entry::Migration);
-            indexes.chain(migrations).map(move |entry| (replica, entry))
+            record
+                .into_iter()
+                .chain(indexes)
+                .chain(migrations)
+                .map(move |entry| (replica, entry))
         })
         .take(limit.unwrap_or(usize::MAX))
 }
@@ -268,6 +275,14 @@ fn append_entry(
     row.fmt_gen_node_id(node);
     row.partition_id(replica.partition_id.into());
     let index = match entry {
+        // The replica is open and has a registry, whatever it registered.
+        Entry::Registry => {
+            row.definition("registry");
+            row.kind("registry");
+            row.id(0);
+            row.status("present");
+            return;
+        }
         Entry::Index(index) => index,
         Entry::Migration(migration) => {
             row.definition(&migration.definition);
@@ -333,6 +348,7 @@ fn append_entry(
         (0, _) => {}
         (_, Some(DropReason::Reset)) => row.drop_reason("reset"),
         (_, Some(DropReason::UnknownDefinition)) => row.drop_reason("unknown-definition"),
+        (_, Some(DropReason::NotEnabled)) => row.drop_reason("not-enabled"),
         (number, None) => row.fmt_drop_reason(format_args!("unknown({number})")),
     }
     if let Some(size) = replica.index_sizes.get(&index.id) {

@@ -96,6 +96,11 @@ pub(crate) struct Rows<B: Builder> {
 }
 
 impl<B: Builder + Send + 'static> Rows<B> {
+    /// The batch builder the rows go to, e.g. to ask which columns the scan shows.
+    pub(crate) fn builder(&self) -> &B {
+        self.output.builder()
+    }
+
     pub(crate) async fn read<T: Table>(
         self,
         snapshot: &ReadSnapshot,

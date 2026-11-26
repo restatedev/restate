@@ -51,6 +51,37 @@ impl ScanPartition for UnexecutedReader {
     }
 }
 
+/// A reader that knows no index: index work reaches it as a scan.
+#[derive(Debug)]
+struct ScanOnlyReader;
+
+impl ScanPartition for ScanOnlyReader {
+    fn prepare_read(
+        self: Arc<Self>,
+        access: PrimaryRead,
+        _: SchemaRef,
+        _: Option<Arc<dyn PhysicalExpr>>,
+        _: Option<usize>,
+    ) -> anyhow::Result<Arc<dyn PreparedPartitionRead>> {
+        anyhow::ensure!(matches!(access, PrimaryRead::Scan), "only scans");
+        Ok(Arc::new(NoRows))
+    }
+}
+
+#[derive(Debug)]
+struct NoRows;
+
+impl PreparedPartitionRead for NoRows {
+    fn execute(
+        &self,
+        _: PartitionReadContext,
+        _: usize,
+        _: ReadMetrics,
+    ) -> anyhow::Result<SendableRecordBatchStream> {
+        unreachable!("the codec test never executes a read")
+    }
+}
+
 #[restate_core::test]
 async fn primary_access_codec_validates_keys_scope_and_capability() {
     let core = TestCoreEnv::create_with_single_node(1, 1).await;
@@ -123,16 +154,25 @@ async fn primary_access_codec_validates_keys_scope_and_capability() {
         ordering: vec!["partition_key".into()],
         limit: Some(7),
         orders: Vec::new(),
+        // Two candidates, in the planner's preference order.
         work: SourceWork::IndexScan(IndexWork {
-            index: ReString::from_static("_idx_entry_by_queue"),
             work: PartitionWork::from_reads(
                 Default::default(),
                 vec![PartitionScan {
                     partition: PartitionId::MIN,
                 }],
             ),
-            ordering: Vec::new(),
             bound: Some(51),
+            candidates: vec![
+                IndexCandidate {
+                    index: ReString::from_static("vqueue_stages"),
+                    ordering: Vec::new(),
+                },
+                IndexCandidate {
+                    index: ReString::from_static("entry_by_status_created/1"),
+                    ordering: Vec::new(),
+                },
+            ],
         }),
     };
     let mut encoded = Vec::new();
@@ -158,6 +198,19 @@ async fn primary_access_codec_validates_keys_scope_and_capability() {
         index_work.encode_to_vec(),
         "index_work_round_trips"
     );
+    let SourceWork::IndexScan(IndexWork { candidates, .. }) =
+        &source_plan(decoded.as_ref()).unwrap().descriptor.work
+    else {
+        panic!("index work decodes as index work");
+    };
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|candidate| candidate.index.as_ref())
+            .collect::<Vec<&str>>(),
+        ["vqueue_stages", "entry_by_status_created/1"],
+        "candidates_keep_their_order"
+    );
     // The fallback bound travels apart from the source's limit; work without
     // one decodes unbounded.
     let wire = &source_plan(decoded.as_ref()).unwrap().descriptor;
@@ -182,15 +235,18 @@ async fn primary_access_codec_validates_keys_scope_and_capability() {
             .work,
         SourceWork::IndexScan(IndexWork { bound: None, .. })
     ));
+    // A worker that knows none of the candidates scans instead, and the engine
+    // sorts its rows under the bound: it neither fails the query nor prepares
+    // an index read.
+    let scanning = SourceRegistry::local_only(core.metadata.clone());
+    scanning.register_partition_scanner::<StateTable>(Arc::new(ScanOnlyReader));
     assert!(
         SourceCodec {
-            manager: Some(manager.clone())
+            manager: Some(scanning)
         }
         .try_decode(&encoded, &[], &context, &converter)
-        .unwrap_err()
-        .to_string()
-        .contains("cannot read index '_idx_entry_by_queue'"),
-        "unsupported_indexes_fail_at_binding"
+        .is_ok(),
+        "unknown_candidates_scan_instead"
     );
 
     // G2: a worker that predates index work decodes it with the old shape (tags
@@ -447,8 +503,10 @@ async fn compact_partition_templates_preserve_keys_statistics_and_codec() {
     for access in [
         Access::Scan,
         Access::Index {
-            index: ReString::from_static("_idx_test"),
-            ordering: Vec::new(),
+            candidates: vec![IndexCandidate {
+                index: ReString::from_static("test_index/1"),
+                ordering: Vec::new(),
+            }],
             bound: None,
         },
         Access::Primary(Box::new(EntrySelection(keys))),
@@ -591,7 +649,6 @@ fn partition_reads_keep_template_order_only_with_a_lane_per_partition() {
         limit: None,
         orders: Vec::new(),
         work: SourceWork::IndexScan(IndexWork {
-            index: ReString::from_static("_idx_test"),
             work: PartitionWork::from_reads(
                 Default::default(),
                 (0..3)
@@ -600,12 +657,15 @@ fn partition_reads_keep_template_order_only_with_a_lane_per_partition() {
                     })
                     .collect(),
             ),
-            ordering: vec![SortedColumn {
-                name: "created_at".into(),
-                descending: true,
-                nulls_first: false,
-            }],
             bound: None,
+            candidates: vec![IndexCandidate {
+                index: ReString::from_static("test_index/1"),
+                ordering: vec![SortedColumn {
+                    name: "created_at".into(),
+                    descending: true,
+                    nulls_first: false,
+                }],
+            }],
         }),
     };
     let source = SourcePlan::new(descriptor, Arc::clone(&schema), None, None, None)
@@ -956,10 +1016,12 @@ async fn partition_reads_filter_before_emitting_only_without_a_fetch() {
     let table = scan(SourceWork::TableScan(reads()), None);
     let index = scan(
         SourceWork::IndexScan(IndexWork {
-            index: ReString::from_static("_idx_test"),
             work: reads(),
-            ordering: Vec::new(),
             bound: Some(51),
+            candidates: vec![IndexCandidate {
+                index: ReString::from_static("test_index/1"),
+                ordering: Vec::new(),
+            }],
         }),
         None,
     );

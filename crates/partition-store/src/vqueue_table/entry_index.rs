@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 //! The entry indexes: secondary indexes over VQueue entries, released together
-//! and switched on by `experimental-enable-track-entry-indexes`.
+//! and switched on by `experimental-enable-indexes`.
 //!
 //! Each index takes the entry's service, handler and scope from its target,
 //! which every write passes (`EntryContext`), so the entry header stays as it
@@ -87,22 +87,18 @@ use restate_storage_api::vqueue_table::{EntryContext, EntryStateRef, Stage, Stat
 use restate_storage_query_api::SelectionSchema;
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
 use restate_storage_query_api::tables::index::{
-    EntryByServiceCreated as InvocationsByCreation, EntryByServiceCreatedClause,
-    EntryByServiceCreatedColumn, EntryByStatusCreated as InvocationsByStatus,
-    EntryByStatusCreatedClause, EntryByStatusCreatedColumn,
-    EntryStatusByStatusCreated as EntriesByStatusCreated, EntryStatusByStatusCreatedClause,
-    EntryStatusByStatusCreatedColumn,
+    EntryByCreated as InvocationsByCreation, EntryByCreatedClause, EntryByCreatedColumn,
+    EntryByStatusCreated as InvocationsByStatus, EntryByStatusCreatedClause,
+    EntryByStatusCreatedColumn, EntryStatusByStatusCreated as EntriesByStatusCreated,
+    EntryStatusByStatusCreatedClause, EntryStatusByStatusCreatedColumn,
     EntryStatusByStatusTransitioned as EntriesByStatusTransitioned,
     EntryStatusByStatusTransitionedClause, EntryStatusByStatusTransitionedColumn,
 };
-use restate_types::config::Configuration;
 use restate_types::vqueues::{CanonicalEntryId, EffectiveStatus};
 use restate_util_string::ReString;
 
 use crate::PartitionStoreTransaction;
 use crate::index::{IndexValue, IndexValueRef, RegisteredIndex, SecondaryIndex, SecondaryIndexKey};
-#[cfg(test)]
-use crate::keys::codecs::StringCodec;
 use crate::keys::codecs::{
     CanonicalEntryIdCodec, ReverseRoughTimestampCodec, ReverseUniqueTimestampCodec,
     ServiceNameCodec, StageRankCodec, StatusCodec,
@@ -111,48 +107,6 @@ use crate::keys::header::IndexScope;
 use crate::keys::selection::codec::{FieldPredicateCodec, prepare_hour_buckets};
 use crate::keys::selection::{KeySelection, PrepareKeySelection, PreparedFieldPredicate};
 use crate::registry::{Family, IndexDefinition, IndexKind};
-
-// `entry_by_service_created/1`, the first entry index, keyed every entry by
-// service and handler, newest created first. `entry_by_created/1` replaced it
-// for the invocation list, and nothing reads it: stores retire it at open
-// (README rule 1). Kept for tests only: its runs, a service and handler each,
-// are the run merge's fixture, and a store holding it shows the retirement.
-#[cfg(test)]
-crate::index::macros::define_secondary_index!(
-    /// Entries by service and handler, newest created first.
-    EntryByServiceCreated,
-    definition: "entry_by_service_created/1",
-    introduced: (1, 8, 2),
-    key: EntryByServiceCreatedKey {
-        target_service_name: ServiceNameCodec => str,
-        target_handler_name: Option<StringCodec> => str,
-        created_at: ReverseUniqueTimestampCodec,
-        canonical_id: CanonicalEntryIdCodec (primary_key),
-    }
-);
-
-// A query on invocations restricts the index through the invocation columns its
-// fields are named after. Every invocation's key has a handler; only state
-// mutations, which a query on invocations skips, have none.
-#[cfg(test)]
-crate::keys::macros::define_key_selection!(
-    EntryByServiceCreatedKey;
-    [restate_storage_query_api::tables::index::EntryByServiceCreated];
-    target_service_name,
-    target_handler_name => present,
-    created_at,
-);
-
-/// Every entry by service and handler, newest created first. Retired; for
-/// tests only.
-#[cfg(test)]
-pub(crate) static ENTRY_BY_SERVICE_CREATED: IndexDefinition = IndexDefinition {
-    name: EntryByServiceCreated::DEFINITION,
-    introduced: EntryByServiceCreated::INTRODUCED,
-    kind: IndexKind::Secondary,
-    apply: apply_entry_by_service_created,
-    can_fill: true,
-};
 
 /// Every entry by creation hour and service, newest created first, with its
 /// handler and scope.
@@ -184,57 +138,15 @@ pub(crate) static ENTRY_BY_STATUS_TRANSITIONED: IndexDefinition = IndexDefinitio
     can_fill: true,
 };
 
-/// The entry indexes, released and controlled together.
+/// The entry indexes, released together.
 pub(crate) const ENTRY_INDEXES: Family = Family {
     definitions: &[
         &ENTRY_BY_CREATED,
         &ENTRY_BY_STATUS_CREATED,
         &ENTRY_BY_STATUS_TRANSITIONED,
     ],
-    maintain: track_entry_indexes,
-    reset: entry_indexes_reset,
+    requires_vqueues: true,
 };
-
-fn track_entry_indexes(config: &Configuration) -> bool {
-    config.common.experimental.is_track_entry_indexes_enabled()
-}
-
-fn entry_indexes_reset(config: &Configuration) -> bool {
-    config.common.experimental.is_entry_indexes_reset_enabled()
-}
-
-/// Removes the key of `before` and adds the key of `after`. Both share the
-/// entry's target, and the rest of the key never changes after creation, so an
-/// update writes nothing.
-#[cfg(test)]
-fn apply_entry_by_service_created(
-    storage: &mut PartitionStoreTransaction<'_>,
-    id: u32,
-    context: &EntryContext<'_>,
-    before: Option<&EntryStateRef<'_>>,
-    after: Option<&EntryStateRef<'_>>,
-) {
-    let project = |entry: &EntryStateRef<'_>| {
-        (
-            Reverse(entry.stats.created_at),
-            entry
-                .entry_key
-                .to_canonical_entry_id(context.qid.partition_key()),
-        )
-    };
-    let (old, new) = (before.map(project), after.map(project));
-    if old != new {
-        let key = |(created_at, canonical_id)| {
-            EntryByServiceCreatedKey::borrowed(
-                context.target.service(),
-                context.target.handler(),
-                created_at,
-                canonical_id,
-            )
-        };
-        storage.update_secondary_index_with_id(id, old.map(key).as_ref(), new.map(key).as_ref());
-    }
-}
 
 crate::index::macros::define_secondary_index!(
     /// Entries by creation hour and service, newest created first; each key
@@ -264,10 +176,10 @@ impl PrepareKeySelection<InvocationsByCreation> for EntryByCreatedKey {
         KeySelection::for_key_fields_with(
             selection,
             |clause, literals| match clause {
-                EntryByServiceCreatedClause::TargetServiceName(predicate) => {
+                EntryByCreatedClause::TargetServiceName(predicate) => {
                     ServiceNameCodec::try_prepare_value(predicate, literals)
                 }
-                EntryByServiceCreatedClause::CreatedAt(predicate) => {
+                EntryByCreatedClause::CreatedAt(predicate) => {
                     ReverseUniqueTimestampCodec::try_prepare_value(predicate, literals)
                 }
                 _ => Ok(None),
@@ -276,14 +188,15 @@ impl PrepareKeySelection<InvocationsByCreation> for EntryByCreatedKey {
                 if tag != "created_hour" {
                     return Ok(None);
                 }
-                let times = created_times(
-                    selection,
-                    EntryByServiceCreatedColumn::CreatedAt,
-                    |clause| match clause {
-                        EntryByServiceCreatedClause::CreatedAt(times) => Some(times),
-                        _ => None,
-                    },
-                );
+                let times =
+                    created_times(
+                        selection,
+                        EntryByCreatedColumn::CreatedAt,
+                        |clause| match clause {
+                            EntryByCreatedClause::CreatedAt(times) => Some(times),
+                            _ => None,
+                        },
+                    );
                 Ok(hour_buckets(times, literals))
             },
         )
@@ -579,6 +492,7 @@ const fn stage_bit(stage: Stage) -> u8 {
 
 /// The bit of `status` in [`Keyed::statuses`]: its position in
 /// [`KEYED_STATUSES`].
+#[cfg(test)]
 const fn status_bit(status: Status) -> u16 {
     let mut at = 0;
     while at < KEYED_STATUSES.len() {
@@ -608,28 +522,6 @@ impl Keyed {
         stages: 0,
         statuses: 0,
     };
-    /// The entries of completed invocations: Finished, whatever the stored
-    /// status. Only completing an invocation (`end_invocation`, terminating an
-    /// inboxed or scheduled one) moves its entry to Finished, under the same
-    /// retention that keeps the invocation's completed status; the migration
-    /// to vqueues adds completed invocations as Finished.
-    const COMPLETED: Self = Self {
-        stages: stage_bit(Stage::Finished),
-        statuses: Self::ALL.statuses,
-    };
-    /// The entries of invocations that haven't completed: any other stage.
-    const ACTIVE: Self = Self {
-        stages: Self::ALL.stages & !Self::COMPLETED.stages,
-        statuses: Self::ALL.statuses,
-    };
-    /// The entries of invocations that completed with a failure: Finished, with
-    /// any stored status but Succeeded. Completing with a failure stores
-    /// Failed, Cancelled or Killed; so does the migration. No release stored
-    /// Succeeded for a failure.
-    const FAILED: Self = Self {
-        stages: Self::COMPLETED.stages,
-        statuses: Self::ALL.statuses & !status_bit(Status::Succeeded),
-    };
 
     fn union(self, other: Self) -> Self {
         Self {
@@ -654,16 +546,6 @@ impl Keyed {
                 .iter()
                 .fold(Self::NONE, |keyed, value| keyed.union(of(value))),
             ValuePredicate::Range { .. } => Self::ALL,
-        }
-    }
-
-    /// The entries of invocations with the public `status`.
-    fn of_status(status: &ReString) -> Self {
-        match status.as_str() {
-            "completed" => Self::COMPLETED,
-            "inboxed" | "scheduled" | "invoked" | "suspended" | "paused" => Self::ACTIVE,
-            // No invocation has another status.
-            _ => Self::NONE,
         }
     }
 
@@ -746,38 +628,64 @@ impl Keyed {
                     .map(move |(_, status)| (stage, status))
             })
     }
-
-    /// The entries of invocations with the public `completion_result`, NULL
-    /// for those that haven't completed.
-    fn of_completion_result(result: &Option<ReString>) -> Self {
-        match result.as_ref().map(ReString::as_str) {
-            None => Self::ACTIVE,
-            Some("success") => Self::COMPLETED,
-            Some("failure") => Self::FAILED,
-            Some(_) => Self::NONE,
-        }
-    }
 }
 
 impl EntryByStatusCreatedKey {
     /// The stages and stored statuses whose keys can hold the entry of an
-    /// invocation `selection` matches, in key order: a superset, derived from
-    /// its conditions on `status` and `completion_result`. The caller keeps
-    /// its predicate. Each pair is a lane of the index
-    /// ([`Self::prepare_lanes`]).
+    /// invocation `selection` matches, in key order: derived from its
+    /// conditions on `status` and `completion_result`. The caller keeps its
+    /// predicate. Each pair is a lane of the index ([`Self::prepare_lanes`]).
+    ///
+    /// An invocation's public `status` and `completion_result` are the ones
+    /// its entry's effective status tells
+    /// ([`EffectiveStatus::invocation_status`],
+    /// [`EffectiveStatus::completion_result`]), so conditions on them keep
+    /// exactly the pairs whose values satisfy them: `invoked` is the inbox's
+    /// `started`, `backing-off` and `yielded` and every pair of Running;
+    /// `failure` is Finished's `failed`, `killed` and `cancelled`. A pair no
+    /// code path writes makes the `unknown` sentinel, and its invocation shows
+    /// its stored values instead. Completing an invocation is what finishes its
+    /// entry, so those are `completed` with a result in Finished, and another
+    /// status without one elsewhere: such a pair stays for the conditions one
+    /// of those satisfies, as all pairs did before the entry told the values.
     pub fn lanes(
         selection: &Selection<InvocationsByStatus>,
     ) -> impl Iterator<Item = (Stage, Status)> {
-        Keyed::of_selection(selection, |clause| match clause {
-            EntryByStatusCreatedClause::Status(status) => {
-                Some(Keyed::matching(status, Keyed::of_status))
+        let (mut statuses, mut results) = (Vec::new(), Vec::new());
+        if let Selection::Predicates(predicates) = selection {
+            for clause in predicates.iter().flat_map(|(_, clauses)| clauses.iter()) {
+                match clause {
+                    EntryByStatusCreatedClause::Status(status) => statuses.push(status.clone()),
+                    EntryByStatusCreatedClause::CompletionResult(result) => {
+                        results.push(result.clone())
+                    }
+                    _ => {}
+                }
             }
-            EntryByStatusCreatedClause::CompletionResult(result) => {
-                Some(Keyed::matching(result, Keyed::of_completion_result))
-            }
-            _ => None,
-        })
-        .pairs()
+        }
+        // Whether an invocation showing `status` and `result` satisfies them.
+        let satisfied = move |status: &'static str, result: Option<&'static str>| {
+            let status = ReString::from_static(status);
+            let result = result.map(ReString::from_static);
+            statuses.iter().all(|condition| condition.matches(&status))
+                && results.iter().all(|condition| condition.matches(&result))
+        };
+        // `Selection::Empty` selects no lane.
+        Keyed::of_selection(selection, |_| None)
+            .pairs()
+            .filter(move |&(stage, stored)| {
+                let effective = EffectiveStatus::new(stage, stored);
+                match effective.invocation_status() {
+                    Some(status) => satisfied(status, effective.completion_result()),
+                    None if stage == Stage::Finished => {
+                        satisfied("completed", Some("success"))
+                            || satisfied("completed", Some("failure"))
+                    }
+                    None => ["inboxed", "scheduled", "invoked", "suspended", "paused"]
+                        .into_iter()
+                        .any(|status| satisfied(status, None)),
+                }
+            })
     }
 
     /// The stages and stored statuses whose keys can hold an entry

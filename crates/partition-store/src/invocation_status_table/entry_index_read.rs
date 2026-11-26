@@ -18,9 +18,10 @@
 //! invocation in that hour), merged into creation order, and fetches the
 //! invocation of each entry, instead of reading every invocation status of the
 //! partition. The query's conditions on the handler are checked on each key's
-//! value, so an entry of another handler is never fetched; every condition,
-//! the handler's included, is checked again on the fetched status. For a query
-//! on `target_handler_name = 'run'`:
+//! value, and the partition keys it names on each entry's ID, so an entry of
+//! another handler, or of another virtual object, is never fetched; every
+//! condition, the handler's included, is checked again on the fetched status.
+//! For a query on `target_handler_name = 'run'`:
 //!
 //! ```text
 //! entry index runs: time, handler     invocation statuses, 25 per multi-get
@@ -77,22 +78,21 @@ use std::sync::{Arc, Mutex};
 
 use restate_rocksdb::reads::{OwnedPinnedBatch, ReadSnapshot as RocksReadSnapshot};
 use restate_storage_api::StorageError;
-use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use restate_storage_query_api::SelectionSchema;
 use restate_storage_query_api::scan::{CursorStep, ReadDirection};
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
 use restate_storage_query_api::tables::index::{
-    EntryByServiceCreated as EntryIndex, EntryByServiceCreatedClause as EntryIndexClause,
-    EntryByServiceCreatedColumn as EntryIndexColumn, EntryByStatusCreated as StatusIndex,
+    EntryByCreated as EntryIndex, EntryByCreatedClause as EntryIndexClause,
+    EntryByCreatedColumn as EntryIndexColumn, EntryByStatusCreated as StatusIndex,
     EntryByStatusCreatedClause as StatusIndexClause,
     EntryByStatusCreatedColumn as StatusIndexColumn,
 };
-use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::{CanonicalEntryId, Seq};
 use restate_util_string::ReString;
 
-use crate::index::{IndexValueRef, RegisteredIndex};
+use crate::index::{IndexValueRef, PartitionKeyFilter, RegisteredIndex};
 use crate::keys::selection::{KeySelection, PrepareKeySelection};
 use crate::keys::{EncodeTableKey, KeyKind};
 use crate::ordered_runs::{OrderedRuns, OrderedRunsDiscovery, OrderedRunsLimits, RetainedMemory};
@@ -101,10 +101,11 @@ use crate::registry::IndexKind;
 use crate::status_lanes::{Lanes, StatusLanes};
 use crate::vqueue_table::{
     EntryByCreated, EntryByCreatedKey, EntryByStatusCreated, EntryByStatusCreatedKey,
-    EntryTargetValueRef,
+    EntryStatusKey, EntryTargetValueRef,
 };
 use crate::{ReadSnapshot, Result};
 
+use super::read_cursor::{InvocationEntry, decode_entry};
 use super::{
     INVOCATION_STATUS_MULTI_GET_BATCH_SIZE, InvocationStatusKey, create_invocation_status_key,
 };
@@ -248,7 +249,7 @@ impl Drop for Held {
 /// predicate.
 pub struct EntryIndexRead {
     index: IndexRead,
-    handlers: Arc<HandlerConditions>,
+    conditions: Arc<EntryConditions>,
     direction: ReadDirection,
 }
 
@@ -264,7 +265,7 @@ impl EntryIndexRead {
     pub fn prepare(selection: &Selection<EntryIndex>, direction: ReadDirection) -> Result<Self> {
         Ok(Self {
             index: IndexRead::Created(Arc::new(EntryByCreatedKey::prepare_candidates(selection)?)),
-            handlers: Arc::new(HandlerConditions::of(
+            conditions: Arc::new(EntryConditions::of(
                 selection,
                 EntryIndexColumn::TargetHandlerName,
                 |clause| match clause {
@@ -288,7 +289,7 @@ impl EntryIndexRead {
         )?;
         Ok(Self {
             index: IndexRead::Status(lanes),
-            handlers: Arc::new(HandlerConditions::of(
+            conditions: Arc::new(EntryConditions::of(
                 selection,
                 StatusIndexColumn::TargetHandlerName,
                 |clause| match clause {
@@ -298,6 +299,16 @@ impl EntryIndexRead {
             )),
             direction,
         })
+    }
+
+    /// Restricts the read to invocations under the partition keys `keys`
+    /// admits, such as the one key of a virtual object's invocations. An entry
+    /// of another key is skipped before its status is fetched, so a page of one
+    /// object reads the index keys of its service but fetches only the object's
+    /// statuses. The caller's predicate still checks every fetched status.
+    pub fn with_partition_keys(mut self, keys: PartitionKeyFilter) -> Self {
+        Arc::make_mut(&mut self.conditions).partition_keys = keys;
+        self
     }
 
     /// Why a read on `snapshot` can't go through the index, if it can't. It can,
@@ -323,7 +334,7 @@ impl EntryIndexRead {
 
     /// The bytes its selections hold, its handler conditions included.
     fn retained_bytes(&self) -> usize {
-        self.handlers.retained_bytes()
+        self.conditions.retained_bytes()
             + match &self.index {
                 IndexRead::Created(selection) => selection.shared_retained_bytes(),
                 IndexRead::Status(lanes) => lanes.retained_bytes(),
@@ -331,12 +342,19 @@ impl EntryIndexRead {
     }
 }
 
-/// The selection's conditions on the handler, which both indexes keep in each
-/// key's value: an entry that fails one is skipped before its status is
-/// fetched. The caller's predicate still checks the fetched status.
-struct HandlerConditions(Box<[ValuePredicate<ReString>]>);
+/// What an entry must meet before its status is fetched: the selection's
+/// conditions on the handler, which both indexes keep in each key's value, and
+/// the partition keys the read is restricted to
+/// ([`EntryIndexRead::with_partition_keys`]), which each entry's ID tells. An
+/// entry that fails one is skipped. The caller's predicate still checks the
+/// fetched status.
+#[derive(Clone)]
+struct EntryConditions {
+    handlers: Box<[ValuePredicate<ReString>]>,
+    partition_keys: PartitionKeyFilter,
+}
 
-impl HandlerConditions {
+impl EntryConditions {
     /// The conditions of `selection` on `column`, the handler, which
     /// `handler` takes out of their clauses.
     fn of<'a, T: SelectionSchema>(
@@ -344,29 +362,34 @@ impl HandlerConditions {
         column: T::Column,
         handler: impl Fn(&'a T::Clause) -> Option<&'a ValuePredicate<ReString>>,
     ) -> Self {
-        let Selection::Predicates(predicates) = selection else {
-            return Self(Box::default());
-        };
-        Self(
-            predicates
+        let handlers = match selection {
+            Selection::Predicates(predicates) => predicates
                 .for_column(column)
                 .iter()
                 .filter_map(handler)
                 .cloned()
                 .collect(),
-        )
+            Selection::All | Selection::Empty => Box::default(),
+        };
+        Self {
+            handlers,
+            partition_keys: PartitionKeyFilter::ALL,
+        }
     }
 
-    /// Whether the invocation entry whose key holds `value` meets every
+    /// Whether the entry of invocation `id`, whose key holds `value`, meets every
     /// condition. An invocation's entry always holds its handler.
-    fn admit(&self, value: &[u8]) -> Result<bool> {
-        if self.0.is_empty() {
+    fn admit(&self, id: &InvocationId, value: &[u8]) -> Result<bool> {
+        if !self.partition_keys.admits(id.partition_key()) {
+            return Ok(false);
+        }
+        if self.handlers.is_empty() {
             return Ok(true);
         }
         let handler = EntryTargetValueRef::decode(value)?
             .handler
             .ok_or(StorageError::DataIntegrityError)?;
-        Ok(self.0.iter().all(|predicate| match predicate {
+        Ok(self.handlers.iter().all(|predicate| match predicate {
             ValuePredicate::Equal(expected) => expected.as_str() == handler,
             ValuePredicate::In(values) => values.iter().any(|value| value.as_str() == handler),
             ValuePredicate::Range { lower, upper } => RangeBounds::<str>::contains(
@@ -399,8 +422,9 @@ impl HandlerConditions {
         };
         std::mem::size_of::<Self>()
             + 2 * std::mem::size_of::<usize>()
-            + std::mem::size_of_val(&*self.0)
-            + self.0.iter().map(heap).sum::<usize>()
+            + std::mem::size_of_val(&*self.handlers)
+            + self.handlers.iter().map(heap).sum::<usize>()
+            + self.partition_keys.heap_bytes()
     }
 }
 
@@ -419,18 +443,40 @@ impl Source {
     }
 
     /// The entry of the key the last step produced: its canonical ID, when it
-    /// was created, and the key's value.
-    fn current(&self) -> Result<(CanonicalEntryId, MillisSinceEpoch, &[u8])> {
+    /// was created, the key's value and, for a status lane, the entry's stage
+    /// and stored status, which the lane's keys lead with.
+    fn current(
+        &self,
+    ) -> Result<(
+        CanonicalEntryId,
+        MillisSinceEpoch,
+        &[u8],
+        Option<InvocationEntry>,
+    )> {
         Ok(match self {
             Self::Created(runs) => {
                 let (key, value) = runs.current()?;
                 let key = key.decode_all()?;
-                (key.canonical_id, key.created_at.0.to_unix_millis(), value)
+                (
+                    key.canonical_id,
+                    key.created_at.0.to_unix_millis(),
+                    value,
+                    None,
+                )
             }
             Self::Lanes(lanes) => {
                 let (key, value) = lanes.current()?;
                 let key = key.decode_all()?;
-                (key.canonical_id, key.created_at.0.to_unix_millis(), value)
+                let entry = InvocationEntry {
+                    stage: key.stage,
+                    status: key.status,
+                };
+                (
+                    key.canonical_id,
+                    key.created_at.0.to_unix_millis(),
+                    value,
+                    Some(entry),
+                )
             }
         })
     }
@@ -467,12 +513,15 @@ pub(super) struct EntryIndexCursor {
     /// `None` once the read failed: it holds nothing then.
     source: Option<Source>,
     runs_done: bool,
-    handlers: Arc<HandlerConditions>,
+    conditions: Arc<EntryConditions>,
     /// The window's invocations in index order, with their entries' creation
     /// records and times.
     window: Vec<(InvocationId, Seq, MillisSinceEpoch)>,
     /// Next window position to hand out, once the window is fetched.
     next: Option<usize>,
+    /// The window's entries, if the read asked for them: a status lane's from
+    /// its keys, any other's fetched with the statuses.
+    entries: Option<Vec<Option<InvocationEntry>>>,
     key_buf: Vec<u8>,
     results: Option<OwnedPinnedBatch<RocksReadSnapshot<PhysicalPartition>>>,
     /// The bytes of the fetched statuses, charged while they're held.
@@ -519,10 +568,22 @@ impl EntryIndexCursor {
     /// for a scan on this snapshot ([`EntryIndexRead::unusable`]), or finding its
     /// runs takes more than one read allows. Nothing is held then. Either way,
     /// `execution` learns the path before this returns.
+    #[cfg(test)]
     pub(super) fn open(
         snapshot: &ReadSnapshot,
         read: &EntryIndexRead,
         execution: &EntryIndexExecution,
+    ) -> Result<Option<Self>> {
+        Self::open_with(snapshot, read, execution, false)
+    }
+
+    /// [`Self::open`], also reading each invocation's entry if `entries`
+    /// ([`Self::entry`]).
+    pub(super) fn open_with(
+        snapshot: &ReadSnapshot,
+        read: &EntryIndexRead,
+        execution: &EntryIndexExecution,
+        entries: bool,
     ) -> Result<Option<Self>> {
         let Execution {
             memory,
@@ -533,7 +594,7 @@ impl EntryIndexCursor {
         let memory = SharedMemory(Arc::new(Mutex::new(memory)));
         // Discovery's work counts even if it fails: the error stays the read's.
         let mut discovered = 0;
-        let opened = Self::try_open(snapshot, read, memory, &mut discovered);
+        let opened = Self::try_open(snapshot, read, memory, entries, &mut discovered);
         let opened = match opened {
             Ok(opened) => opened,
             Err(error) => {
@@ -547,9 +608,10 @@ impl EntryIndexCursor {
             Opened::Index(source, held) => Ok(Self::new(
                 snapshot,
                 source,
-                Arc::clone(&read.handlers),
+                Arc::clone(&read.conditions),
                 held,
                 fetched,
+                entries,
             )),
             Opened::Scan(reason, examined) => {
                 // What discovery examined before it gave up is work done too.
@@ -572,6 +634,7 @@ impl EntryIndexCursor {
         snapshot: &ReadSnapshot,
         read: &EntryIndexRead,
         memory: SharedMemory,
+        entries: bool,
         discovered: &mut u64,
     ) -> Result<Opened> {
         if let Some(reason) = read.unusable(snapshot)? {
@@ -586,7 +649,12 @@ impl EntryIndexCursor {
         held.grow(
             read.retained_bytes()
                 + WINDOW * std::mem::size_of::<(InvocationId, Seq, MillisSinceEpoch)>()
-                + WINDOW * KEY_LEN,
+                + WINDOW * KEY_LEN
+                + if entries {
+                    WINDOW * std::mem::size_of::<Option<InvocationEntry>>()
+                } else {
+                    0
+                },
         )?;
         let lanes = match &read.index {
             IndexRead::Created(selection) => {
@@ -625,16 +693,18 @@ impl EntryIndexCursor {
     fn new(
         snapshot: &ReadSnapshot,
         source: Source,
-        handlers: Arc<HandlerConditions>,
+        conditions: Arc<EntryConditions>,
         held: Held,
         fetched: Box<dyn Fn(usize, u64) + Send>,
+        entries: bool,
     ) -> Self {
         Self {
             source: Some(source),
             runs_done: false,
-            handlers,
+            conditions,
             window: Vec::with_capacity(WINDOW),
             next: None,
+            entries: entries.then(|| Vec::with_capacity(WINDOW)),
             key_buf: Vec::with_capacity(WINDOW * KEY_LEN),
             results: None,
             results_bytes: 0,
@@ -678,6 +748,7 @@ impl EntryIndexCursor {
         self.results = None;
         self.results_bytes = 0;
         self.window = Vec::new();
+        self.entries = self.entries.as_ref().map(|_| Vec::new());
         self.key_buf = Vec::new();
         self.next = None;
         self.current = None;
@@ -709,6 +780,9 @@ impl EntryIndexCursor {
             }
             self.next = None;
             self.window.clear();
+            if let Some(entries) = &mut self.entries {
+                entries.clear();
+            }
             self.results = None;
             self.held.shrink(std::mem::take(&mut self.results_bytes));
         }
@@ -724,11 +798,14 @@ impl EntryIndexCursor {
             CursorStep::Done => self.runs_done = true,
             CursorStep::Skipped => {}
             CursorStep::Record => {
-                let (canonical_id, created_at, value) = source.current()?;
+                let (canonical_id, created_at, value, entry) = source.current()?;
                 if let Some(id) = canonical_id.to_base_entry_id().to_invocation_id()
-                    && self.handlers.admit(value)?
+                    && self.conditions.admit(&id, value)?
                 {
                     self.window.push((id, canonical_id.seq(), created_at));
+                    if let Some(entries) = &mut self.entries {
+                        entries.push(entry);
+                    }
                 }
             }
         }
@@ -765,6 +842,39 @@ impl EntryIndexCursor {
         self.held.grow(bytes)?;
         self.results = Some(fetched);
         self.results_bytes = bytes;
+        self.fetch_entries()
+    }
+
+    /// Fetches the window's entries with one multi-get, if the read asked for
+    /// them and its index keys didn't tell them (`entry_by_created/1`'s don't).
+    fn fetch_entries(&mut self) -> Result<()> {
+        const ENTRY_KEY_LEN: usize = EntryStatusKey::serialized_length_fixed();
+        let Some(entries) = &mut self.entries else {
+            return Ok(());
+        };
+        if entries.iter().all(Option::is_some) {
+            return Ok(());
+        }
+        self.key_buf.clear();
+        for (id, ..) in &self.window {
+            EntryStatusKey::from(*id).serialize_to(&mut self.key_buf);
+        }
+        let (keys, remainder) = self.key_buf.as_chunks::<ENTRY_KEY_LEN>();
+        debug_assert!(remainder.is_empty());
+        let snapshot = self
+            .snapshot
+            .as_ref()
+            .ok_or(StorageError::DataIntegrityError)?;
+        let reader = snapshot.storage_snapshot().reader();
+        let values = reader
+            .multi_get_pinned(KeyKind::VQueueEntryStatus, keys, false)
+            .map_err(|error| StorageError::Generic(error.into()))?;
+        for (slot, entry) in entries.iter_mut().enumerate() {
+            let value = values
+                .get(slot)
+                .map_err(|error| StorageError::Generic(error.into()))?;
+            *entry = value.map(decode_entry).transpose()?;
+        }
         Ok(())
     }
 
@@ -817,7 +927,19 @@ impl EntryIndexCursor {
     }
 
     /// The status the step positioned on, already checked against its entry.
-    pub(super) fn current(&self) -> Result<(InvocationId, InvocationStatusV2Lazy<'_>)> {
+    #[cfg(test)]
+    pub(super) fn current(
+        &self,
+    ) -> Result<(
+        InvocationId,
+        restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy<'_>,
+    )> {
+        let (id, value) = self.current_raw()?;
+        Ok((id, super::decode_invocation_status_lazy(value)?))
+    }
+
+    /// [`Self::current`], with the status's stored bytes.
+    pub(super) fn current_raw(&self) -> Result<(InvocationId, &[u8])> {
         self.snapshot
             .as_ref()
             .ok_or(StorageError::DataIntegrityError)?
@@ -825,7 +947,17 @@ impl EntryIndexCursor {
         let slot = self.current.ok_or(StorageError::DataIntegrityError)?;
         let (id, ..) = self.window[slot];
         let value = self.value(slot)?.ok_or(StorageError::DataIntegrityError)?;
-        Ok((id, super::decode_invocation_status_lazy(value)?))
+        Ok((id, value))
+    }
+
+    /// The entry of the invocation the step positioned on, if the read asked
+    /// for entries.
+    pub(super) fn entry(&self) -> Result<Option<InvocationEntry>> {
+        let slot = self.current.ok_or(StorageError::DataIntegrityError)?;
+        Ok(self
+            .entries
+            .as_ref()
+            .and_then(|entries| entries.get(slot).copied().flatten()))
     }
 }
 
@@ -906,7 +1038,7 @@ mod tests {
         EntryContext, EntryKey, EntryMetadata, EntryStateRef, Stage, Status, WriteVQueueTable,
     };
     use restate_storage_query_api::selection::ValuePredicate;
-    use restate_storage_query_api::tables::index::EntryByServiceCreatedClause;
+    use restate_storage_query_api::tables::index::EntryByCreatedClause;
     use restate_types::config::Configuration;
     use restate_types::identifiers::{InvocationUuid, PartitionId, WithPartitionKey};
     use restate_types::invocation::InvocationTarget;
@@ -961,7 +1093,8 @@ mod tests {
             .await
             .unwrap();
         let mut config = Configuration::default();
-        config.common.experimental.set_track_entry_indexes(true);
+        config.common.experimental.set_indexes(true);
+        store.mark_fully_migrated_to_vqueues().await;
         store
             .verify_and_run_migrations(CancellationToken::new(), &config)
             .await
@@ -1005,7 +1138,7 @@ mod tests {
 
         let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
         let service = || {
-            Selection::All.and(EntryByServiceCreatedClause::TargetServiceName(
+            Selection::All.and(EntryByCreatedClause::TargetServiceName(
                 ValuePredicate::Equal("S".into()),
             ))
         };
@@ -1250,7 +1383,7 @@ mod tests {
         drop(tx);
         let (snapshot, _completed) = store.query_read(CancellationToken::new()).unwrap();
         let read_big = EntryIndexRead::prepare(
-            &Selection::All.and(EntryByServiceCreatedClause::TargetServiceName(
+            &Selection::All.and(EntryByCreatedClause::TargetServiceName(
                 ValuePredicate::Equal("Big".into()),
             )),
             ReadDirection::Forward,
@@ -1337,7 +1470,7 @@ mod tests {
         RocksDbManager::init();
         let manager = PartitionStoreManager::create(true).await.unwrap();
         let mut config = Configuration::default();
-        config.common.experimental.set_track_entry_indexes(true);
+        config.common.experimental.set_indexes(true);
         let mut next = 0u64;
         // Stores an invocation of `service` and its entry in `stage` and `status`.
         let mut put = |tx: &mut crate::PartitionStoreTransaction<'_>,
@@ -1377,6 +1510,7 @@ mod tests {
                 .open(&Partition::new(PartitionId::from(id), KeyRange::FULL), None)
                 .await
                 .unwrap();
+            store.mark_fully_migrated_to_vqueues().await;
             store
                 .verify_and_run_migrations(CancellationToken::new(), &config)
                 .await
@@ -1483,6 +1617,16 @@ mod tests {
         assert_eq!(created, expected(&failed, false));
         let (_, created, _) = records(&read(handler("other"), ReadDirection::Forward));
         assert!(created.is_empty());
+        // Partition keys are checked on each entry's ID: of the failed
+        // invocations, only those under the named keys are read. The n-th
+        // stored invocation has the partition key (n + 1) * 7919; the 5th is
+        // running, so its lane isn't read at all.
+        let key = |n: u64| KeyRange::new((n + 1) * 7919, (n + 1) * 7919);
+        let (_, created, _) = records(
+            &read(failure(), ReadDirection::Forward)
+                .with_partition_keys(PartitionKeyFilter::new([key(1), key(2), key(4)])),
+        );
+        assert_eq!(created, vec![stored[2].0, stored[1].0]);
         // Nothing selected: every lane, each entry once.
         for backward in [false, true] {
             let direction = if backward {

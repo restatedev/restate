@@ -19,6 +19,7 @@ use restate_storage_api::vqueue_table::stats::EntryStatistics;
 use restate_storage_api::vqueue_table::{
     EntryKey, EntryMetadata, ReadVQueueTable, Stage, Status, StoredEntryRef, WriteVQueueTable,
 };
+use restate_types::config::Configuration;
 use restate_types::identifiers::PartitionId;
 use restate_types::partitions::Partition;
 use restate_types::sharding::KeyRange;
@@ -38,6 +39,7 @@ use super::*;
 /// Opens as a partition does, then runs the walks the open started to their
 /// ends, as the background driver does in time.
 async fn open(store: &mut PartitionStore, config: &Configuration) {
+    store.mark_fully_migrated_to_vqueues().await;
     store
         .verify_and_run_migrations(CancellationToken::new(), config)
         .await
@@ -123,7 +125,7 @@ fn counts(store: &PartitionStore) -> Vec<(&'static str, usize)> {
 
 fn tracking() -> Configuration {
     let mut config = Configuration::default();
-    config.common.experimental.set_track_entry_indexes(true);
+    config.common.experimental.set_indexes(true);
     config
 }
 
@@ -293,9 +295,7 @@ async fn keys_order_entries_and_change_only_on_create_and_delete() {
 /// Backfilling existing entries gives the same keys as maintaining the indexes
 /// from the start: invocations through their invocation status, state
 /// mutations through their input. A reset deletes the keys; tracking again
-/// rebuilds them under new IDs. A store of an earlier build that has only the
-/// retired `entry_by_service_created/1`, Complete, drops it and its keys at open,
-/// and the current indexes get their own full pass. Values are compared too.
+/// rebuilds them under new IDs. Values are compared too.
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     RocksDbManager::init();
@@ -335,52 +335,19 @@ async fn backfill_matches_live_maintenance_and_rebuilds_after_reset() {
     );
     assert_eq!(payloads(&store), payloads(&reference));
 
-    // A reset deletes the keys and the maintained index.
-    config.common.experimental.set_entry_indexes_reset(true);
+    // Turning indexes off deletes the keys and the maintained index.
+    config.common.experimental.set_indexes(false);
     open(&mut store, &config).await;
     assert_eq!(index(&store), None);
     assert!(index_keys(&store).is_empty());
 
-    // Tracking again rebuilds the same keys under a new ID.
-    config.common.experimental.set_entry_indexes_reset(false);
+    // Turning them on again rebuilds the same keys under a new ID.
+    config.common.experimental.set_indexes(true);
     open(&mut store, &config).await;
     let (rebuilt, status) = index(&store).unwrap();
     assert_eq!(status, IndexStatus::Complete);
     assert!(rebuilt > built);
     assert_eq!(payloads(&store), payloads(&reference));
-
-    // A store of an earlier build: only `entry_by_service_created/1`, the first
-    // entry index, Complete.
-    let mut late = manager
-        .open(&Partition::new(PartitionId::from(3), KeyRange::FULL), None)
-        .await
-        .unwrap();
-    open(&mut late, &Configuration::default()).await;
-    seed(&mut late).await;
-    unusual(&mut late).await;
-    late.maintain_only(&[&ENTRY_BY_SERVICE_CREATED]).await;
-    engine::run_all(&mut late, 3).await.unwrap();
-    let retired = maintained(&late, &ENTRY_BY_SERVICE_CREATED);
-    let registry = get_registry(late.partition_db()).unwrap().unwrap();
-    assert_eq!(registry.get(retired).unwrap().state, IndexStatus::Complete);
-    assert_eq!(keys_of(&late, retired).len(), 149);
-    assert!(payloads(&late).iter().all(|(_, keys)| keys.is_empty()));
-    // This release doesn't know it: the open retires it and deletes its keys,
-    // and the current indexes backfill on their own.
-    open(&mut late, &tracking()).await;
-    let registry = get_registry(late.partition_db()).unwrap().unwrap();
-    assert!(registry.maintained(ENTRY_BY_SERVICE_CREATED.name).is_none());
-    assert!(keys_of(&late, retired).is_empty());
-    for definition in [
-        &ENTRY_BY_CREATED,
-        &ENTRY_BY_STATUS_CREATED,
-        &ENTRY_BY_STATUS_TRANSITIONED,
-    ] {
-        let id = maintained(&late, definition);
-        let registry = get_registry(late.partition_db()).unwrap().unwrap();
-        assert_eq!(registry.get(id).unwrap().state, IndexStatus::Complete);
-    }
-    assert_eq!(payloads(&late), payloads(&reference));
 }
 
 /// Two entries the shared seed lacks, with resolvable invocations: one Finished
@@ -811,10 +778,11 @@ async fn stage_and_status_keys_follow_each_entry() {
 
 /// The status indexes' stages and statuses are listed in their codecs' byte
 /// order, every stage they hold and every status. An invocation query reads
-/// the lanes its entries can be in: completed ones are Finished in any stored
-/// status, failed ones in any but Succeeded, the others in any other stage.
-/// Conditions intersect, alternatives unite, ranges and unknown values don't
-/// widen past what they can match.
+/// the lanes its entries can be in: each public status the pairs whose
+/// effective status tells it, plus the pairs no code path writes that may show
+/// it as their stored status; failed ones Finished in any stored status but
+/// Succeeded. Conditions intersect, alternatives unite, ranges and unknown
+/// values don't widen past what they can match.
 #[test]
 fn invocation_conditions_select_the_lanes_their_entries_can_be_in() {
     use restate_storage_query_api::tables::index::EntryByStatusCreatedClause::{
@@ -877,15 +845,112 @@ fn invocation_conditions_select_the_lanes_their_entries_can_be_in() {
         ),
         failed
     );
+    // Each status's lanes, written out: what its effective statuses come from,
+    // and the inbox pairs no code path writes, which show their stored status.
+    let every = |stage| KEYED_STATUSES.map(|status| (stage, status)).to_vec();
+    let inbox = |statuses: &[Status]| {
+        let unwritten = [
+            Status::Cancelled,
+            Status::Failed,
+            Status::Killed,
+            Status::Succeeded,
+            Status::Unknown,
+        ];
+        let mut pairs: Vec<_> = statuses
+            .iter()
+            .chain(&unwritten)
+            .map(|status| (Stage::Inbox, *status))
+            .collect();
+        pairs.sort_by_key(|&(_, status)| status_bit(status));
+        pairs
+    };
+    let expected = [
+        ("inboxed", inbox(&[Status::New])),
+        ("scheduled", inbox(&[Status::Scheduled])),
+        (
+            "invoked",
+            [
+                inbox(&[Status::BackingOff, Status::Started, Status::Yielded]),
+                every(Stage::Running),
+            ]
+            .concat(),
+        ),
+        ("suspended", [inbox(&[]), every(Stage::Suspended)].concat()),
+        ("paused", [inbox(&[]), every(Stage::Paused)].concat()),
+        ("completed", finished(&[])),
+    ];
+    for (status, pairs) in &expected {
+        assert_eq!(
+            &lanes(Selection::All.and(public(&[status]))),
+            pairs,
+            "{status}"
+        );
+    }
+    // Each result's lanes: a success is only a succeeded entry, a failure a
+    // failed, killed or cancelled one, and an invocation without a result any
+    // that hasn't finished; Finished pairs no code path writes may show either
+    // stored result.
+    let results = [
+        (
+            Some("success"),
+            finished(&[Status::Cancelled, Status::Failed, Status::Killed]),
+        ),
+        (Some("failure"), finished(&[Status::Succeeded])),
+        (
+            None,
+            [
+                inbox(&[
+                    Status::BackingOff,
+                    Status::New,
+                    Status::Scheduled,
+                    Status::Started,
+                    Status::Yielded,
+                ]),
+                every(Stage::Paused),
+                every(Stage::Running),
+                every(Stage::Suspended),
+            ]
+            .concat(),
+        ),
+    ];
+    for (value, pairs) in &results {
+        assert_eq!(
+            &lanes(Selection::All.and(result(*value))),
+            pairs,
+            "{value:?}"
+        );
+    }
+    // The same as the shared mapping: a written pair is in the lanes of the
+    // status and the result its effective status tells, and of no other.
+    for (stage, stored) in lanes(Selection::All) {
+        let effective = EffectiveStatus::new(stage, stored);
+        let Some(shown) = effective.invocation_status() else {
+            continue;
+        };
+        for (status, pairs) in &expected {
+            assert_eq!(
+                pairs.contains(&(stage, stored)),
+                *status == shown,
+                "{stage:?} {stored:?} in {status}"
+            );
+        }
+        for (value, pairs) in &results {
+            assert_eq!(
+                pairs.contains(&(stage, stored)),
+                *value == effective.completion_result(),
+                "{stage:?} {stored:?} in {value:?}"
+            );
+        }
+    }
     let active = lanes(Selection::All.and(public(&["invoked", "suspended"])));
-    assert_eq!(active.len(), 40);
+    assert_eq!(active.len(), 28);
     assert_eq!(active[0], (Stage::Inbox, Status::BackingOff));
     assert!(active.iter().all(|(stage, _)| *stage != Stage::Finished));
-    assert_eq!(lanes(Selection::All.and(result(None))), active);
+    assert_eq!(lanes(Selection::All.and(result(None))).len(), 40);
     // Either: every lane of either.
     assert_eq!(
         lanes(Selection::All.and(public(&["completed", "paused"]))).len(),
-        50
+        25
     );
     // Contradictions and values no invocation has select nothing.
     assert!(lanes(Selection::All.and(public(&["completed"])).and(result(None))).is_empty());
@@ -959,4 +1024,170 @@ fn entry_conditions_select_exactly_their_effective_lanes() {
         assert!(!expected.is_empty(), "{wanted}");
         assert_eq!(read, expected, "{wanted}");
     }
+}
+
+/// The entry indexes and status gauges register only once the partition has
+/// fully migrated to vqueues. Before that, an open with indexes enabled fences
+/// the store and keeps a registry, but registers nothing and starts no walk; a
+/// migration that skipped completed invocations isn't enough. The processor's
+/// request after the full migration wakes the walk driver, whose next step
+/// registers them: the walk covers the entries that exist, and the processor's
+/// transaction maintains them.
+/// While commits are held back, the registration waits and keeps the request.
+#[restate_core::test]
+async fn entry_indexes_register_only_after_the_full_vqueues_migration() {
+    use restate_storage_api::fsm_table::WriteFsmTable;
+    use restate_types::partitions::features::PersistedFeatures;
+
+    use crate::registry::FAMILIES;
+    use crate::stats::aggregated::{ServiceStats, complete_index_scope};
+
+    RocksDbManager::init();
+    let manager = PartitionStoreManager::create(true).await.unwrap();
+    let mut store = manager
+        .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+        .await
+        .unwrap();
+    let config = tracking();
+    Configuration::set(config.clone());
+    store
+        .verify_and_run_migrations(CancellationToken::new(), &config)
+        .await
+        .unwrap();
+    seed(&mut store).await;
+    assert!(store.storage_features().is_registry, "fenced");
+    let registered = |store: &PartitionStore| {
+        get_registry(store.partition_db())
+            .unwrap()
+            .expect("a fenced store has a registry")
+            .indexes()
+            .len()
+    };
+    assert_eq!(registered(&store), 0);
+    assert!(store.published_registry().walks().entries().is_empty());
+
+    let mut writer = store.clone();
+    let mut tx = writer.transaction();
+    let mut driver = store.walk_driver(&config.worker.storage);
+    assert!(
+        driver.awaiting_vqueues,
+        "an unmigrated partition's driver awaits"
+    );
+    // A request is taken by the next step, which registers only after the full
+    // migration: a skip-completed one isn't enough.
+    let mut skipped = store.clone();
+    let mut features_tx = skipped.transaction();
+    features_tx
+        .put_state_machine_features(&PersistedFeatures {
+            vqueues_skip_completed: true,
+            ..PersistedFeatures::default()
+        })
+        .unwrap();
+    features_tx.commit().await.unwrap();
+    for (case, migrated, indexes) in [
+        ("skip-completed migration", false, 0),
+        (
+            "full migration",
+            true,
+            FAMILIES.iter().map(|family| family.definitions.len()).sum(),
+        ),
+    ] {
+        if migrated {
+            store.mark_fully_migrated_to_vqueues().await;
+        }
+        store.partition_db().request_vqueue_indexes();
+        driver.ready().await;
+        if migrated {
+            // While commits are held back, as for a snapshot export, the
+            // registration waits and keeps the request.
+            let fence = tx.fence_commits().unwrap();
+            driver.step(&mut tx, usize::MAX).await.unwrap();
+            assert_eq!(registered(&store), 0, "{case}: fenced");
+            assert!(
+                store
+                    .partition_db()
+                    .shared_registry()
+                    .vqueue_indexes_requested(),
+                "{case}: fenced"
+            );
+            drop(fence);
+        }
+        driver.step(&mut tx, usize::MAX).await.unwrap();
+        assert!(
+            !store
+                .partition_db()
+                .shared_registry()
+                .vqueue_indexes_requested(),
+            "{case}"
+        );
+        assert_eq!(registered(&store), indexes, "{case}");
+        assert_eq!(driver.awaiting_vqueues, !migrated, "{case}");
+    }
+    // A driver for a migrated partition never arms the wake-up.
+    assert!(!store.walk_driver(&config.worker.storage).awaiting_vqueues);
+    assert!(
+        tx.published_registry()
+            .registry()
+            .maintained(ENTRY_BY_CREATED.name)
+            .is_some(),
+        "the processor's transaction maintains the registered indexes"
+    );
+    engine::run_all(&mut store, 3).await.unwrap();
+    let registry = get_registry(store.partition_db()).unwrap().unwrap();
+    for definition in FAMILIES.iter().flat_map(|family| family.definitions) {
+        assert_eq!(
+            registry
+                .maintained(definition.name)
+                .map(|index| index.state),
+            Some(IndexStatus::Complete),
+            "{}",
+            definition.name
+        );
+    }
+    complete_index_scope::<ServiceStats>(&store);
+    assert!(counts(&store).iter().all(|(_, keys)| *keys > 0));
+}
+
+/// With background migrations disabled, a registration delayed by held-back
+/// commits still registers once they're released, and then leaves nothing due:
+/// the fence's retry deadline doesn't start the backfill the configuration
+/// keeps off.
+#[restate_core::test(start_paused = true)]
+async fn disabled_background_migrations_stay_off_after_a_fenced_registration() {
+    use futures::FutureExt;
+
+    RocksDbManager::init();
+    let manager = PartitionStoreManager::create(true).await.unwrap();
+    let mut store = manager
+        .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+        .await
+        .unwrap();
+    let mut config = tracking();
+    config.worker.storage.disable_background_migrations = true;
+    Configuration::set(config.clone());
+    store
+        .verify_and_run_migrations(CancellationToken::new(), &config)
+        .await
+        .unwrap();
+    seed(&mut store).await;
+    let mut writer = store.clone();
+    let mut tx = writer.transaction();
+    let mut driver = store.walk_driver(&config.worker.storage);
+
+    store.mark_fully_migrated_to_vqueues().await;
+    store.partition_db().request_vqueue_indexes();
+    let fence = tx.fence_commits().unwrap();
+    driver.step(&mut tx, usize::MAX).await.unwrap();
+    drop(fence);
+    driver.step(&mut tx, usize::MAX).await.unwrap();
+    assert!(index(&store).is_some(), "registered once the fence lifted");
+
+    tokio::time::advance(std::time::Duration::from_secs(60)).await;
+    assert!(driver.ready().now_or_never().is_none(), "nothing is due");
+    driver.step(&mut tx, usize::MAX).await.unwrap();
+    assert_eq!(store.walk_stats().examined, 0, "no backfill slice ran");
+    assert_eq!(
+        index(&store).map(|(_, status)| status),
+        Some(IndexStatus::Backfilling)
+    );
 }

@@ -9,9 +9,19 @@
 // by the Apache License, Version 2.0.
 
 use axum::Json;
-use restate_admin_rest_model::version::{AdminApiVersion, VersionInformation};
+use axum::extract::State;
+
+use restate_admin_rest_model::version::{
+    AdminApiVersion, QueryEngineInformation, VersionInformation,
+};
 use restate_core::TaskCenter;
+use restate_core::network::TransportConnect;
+use restate_storage_query_api::QueryEngineVersion;
 use restate_types::config::Configuration;
+use restate_types::invocation::client::InvocationClient;
+use restate_types::schema::registry::{DiscoveryClient, MetadataService, TelemetryClient};
+
+use crate::state::AdminServiceState;
 
 /// Min/max supported admin api versions by the server
 pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V2;
@@ -19,7 +29,8 @@ pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V5;
 
 /// Get version information
 ///
-/// Returns the server version, supported Admin API versions, and the advertised ingress endpoint.
+/// Returns the server version, supported Admin API versions, the advertised ingress endpoint, and
+/// what the query engine offers.
 #[utoipa::path(
     get,
     path = "/version",
@@ -29,7 +40,21 @@ pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V5;
         (status = 200, description = "Server version information including supported API versions and ingress endpoint.", body = VersionInformation)
     )
 )]
-pub async fn version() -> Json<VersionInformation> {
+pub async fn version<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
+) -> Json<VersionInformation>
+where
+    Metadata: MetadataService + Send + Sync + Clone + 'static,
+    Discovery: DiscoveryClient + Send + Sync + Clone + 'static,
+    Telemetry: TelemetryClient + Send + Sync + Clone + 'static,
+    Invocations: InvocationClient + Send + Sync + Clone + 'static,
+    Transport: TransportConnect,
+{
+    let default_engine = if state.query_engine_v2_default {
+        QueryEngineVersion::V2
+    } else {
+        QueryEngineVersion::V1
+    };
     Json(VersionInformation {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         min_admin_api_version: MIN_ADMIN_API_VERSION.as_repr(),
@@ -40,5 +65,9 @@ pub async fn version() -> Json<VersionInformation> {
                 .advertised_address(tc.address_book())
         })),
         features: Configuration::pinned().common.experimental.features(),
+        query_engine: Some(QueryEngineInformation {
+            default_engine: default_engine.name(),
+            stats_tables: state.index_catalog.borrow().stats_tables,
+        }),
     })
 }

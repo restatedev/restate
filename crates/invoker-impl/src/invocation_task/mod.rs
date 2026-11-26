@@ -34,6 +34,7 @@ use tracing::{debug, instrument};
 use restate_memory::{
     LendableMemoryPool, LocalMemoryLease, LocalMemoryPool, OutOfMemoryKind, PinnableMemoryStream,
 };
+use restate_platform::memory::EstimatedMemorySize;
 use restate_service_client::{ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::LimitKey;
 use restate_types::deployment::PinnedDeployment;
@@ -57,6 +58,7 @@ use restate_worker_api::invoker::invocation_reader::{
 use super::Notification;
 use crate::TokenBucket;
 use crate::error::{InvocationMemoryExhausted, InvokerError};
+use crate::fair_channel;
 use crate::metric_definitions::{INVOKER_EAGER_STATE_TRUNCATED, INVOKER_TASK_DURATION};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
@@ -183,6 +185,22 @@ pub(super) struct InvocationTaskOutput {
     pub(super) inner: InvocationTaskOutputInner,
 }
 
+impl EstimatedMemorySize for InvocationTaskOutput {
+    fn estimated_memory_size(&self) -> usize {
+        // Count the struct itself so that queues of payload-less outputs stay bounded too.
+        size_of::<Self>()
+            + match &self.inner {
+                InvocationTaskOutputInner::NewCommand { command, .. } => {
+                    command.serialized_length()
+                }
+                InvocationTaskOutputInner::NewNotificationProposal { notification, .. } => {
+                    notification.serialized_length()
+                }
+                _ => 0,
+            }
+    }
+}
+
 pub(super) enum InvocationTaskOutputInner {
     // `has_changed` indicates if we believe this is a freshly selected endpoint or not.
     PinnedDeployment(PinnedDeployment, /* has_changed: */ bool),
@@ -287,7 +305,7 @@ pub(super) struct InvocationTask<DMR> {
 
     // Invoker tx/rx
     schemas: Live<DMR>,
-    invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+    invoker_tx: fair_channel::Sender<InvocationTaskOutput>,
     invoker_rx: mpsc::UnboundedReceiver<Notification>,
 
     // throttling
@@ -364,7 +382,7 @@ where
         message_size_limit: NonZeroUsize,
         retry_count_since_last_stored_entry: u32,
         deployment_metadata_resolver: Live<Schemas>,
-        invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+        invoker_tx: fair_channel::Sender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         action_token_bucket: Option<TokenBucket>,
         limit_key: LimitKey<ReString>,
@@ -556,6 +574,7 @@ where
                 abort_timeout: None,
                 inactivity_timeout: None,
                 state_preload_policy: StatePreloadPolicy::All,
+                preemptable: true,
             });
 
         // Override the inactivity timeout and abort timeout, if available
@@ -610,7 +629,7 @@ where
 impl<Schemas> InvocationTask<Schemas> {
     /// Send a non-terminal message to the invoker main loop.
     pub(crate) fn send_invoker_tx(&self, invocation_task_output_inner: InvocationTaskOutputInner) {
-        let _ = self.invoker_tx.send(InvocationTaskOutput {
+        self.invoker_tx.send(InvocationTaskOutput {
             invocation_id: self.invocation_id,
             fencing_token: self.fencing_token,
             inner: invocation_task_output_inner,

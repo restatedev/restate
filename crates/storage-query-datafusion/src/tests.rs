@@ -26,7 +26,8 @@ use strum::IntoDiscriminant;
 use restate_limiter::{Level, LimitKey};
 use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, InFlightInvocationMetadata, InvocationStatus, WriteInvocationStatusTable,
+    CompletedInvocation, CompletedResult, CompletionStatus, InFlightInvocationMetadata,
+    InvocationStatus, ResponseResultRef, WriteInvocationStatusTable,
 };
 use restate_storage_api::state_table::WriteStateTable;
 use restate_storage_api::vqueue_table::stats::WaitStats;
@@ -36,8 +37,9 @@ use restate_storage_api::vqueue_table::{
 };
 use restate_storage_query_api::errors::QueryExecutionError;
 use restate_types::Scope;
+use restate_types::blob::BlobId;
 use restate_types::clock::UniqueTimestamp;
-use restate_types::errors::InvocationError;
+use restate_types::errors::{InvocationError, KILLED_INVOCATION_ERROR, codes};
 use restate_types::identifiers::InvocationUuid;
 use restate_types::identifiers::{
     BaseEntryId, DeploymentId, InvocationId, PartitionId, PartitionKey, ServiceId,
@@ -605,6 +607,7 @@ async fn query_sys_invocation_status_completed() {
     let invocation_id_1 = InvocationId::from_parts(0, InvocationUuid::from_u128(1));
     let invocation_id_2 = InvocationId::from_parts(0, InvocationUuid::from_u128(2));
     let invocation_id_3 = InvocationId::from_parts(0, InvocationUuid::from_u128(3));
+    let invocation_id_4 = InvocationId::from_parts(0, InvocationUuid::from_u128(4));
 
     let completion_retention_duration_1 = Duration::from_secs(100);
     let journal_retention_duration_1 = Duration::from_secs(50);
@@ -642,6 +645,26 @@ async fn query_sys_invocation_status_completed() {
         &InvocationStatus::Completed(CompletedInvocation {
             completion_retention_duration: Duration::from_secs(10),
             journal_retention_duration: Duration::from_secs(10),
+            // The output is stored in a blob, the status keeps only the failure code and message
+            response_result: ResponseResultRef::Completed(CompletedResult {
+                blob_id: BlobId::generate_journal_entry_blob_id(
+                    MillisSinceEpoch::new(0),
+                    1,
+                    &invocation_id_3,
+                ),
+                status: CompletionStatus::Failure {
+                    code: codes::INTERNAL,
+                    message: "boom".into(),
+                },
+            }),
+            ..completed_invocation_1.clone()
+        }),
+    )
+    .unwrap();
+    tx.put_invocation_status(
+        &invocation_id_4,
+        &InvocationStatus::Completed(CompletedInvocation {
+            response_result: ResponseResultRef::Failure(KILLED_INVOCATION_ERROR),
             ..completed_invocation_1
         }),
     )
@@ -654,6 +677,9 @@ async fn query_sys_invocation_status_completed() {
             "SELECT
                 id,
                 canonical_id,
+                completion_result,
+                completion_failure,
+                completion_failure_code,
                 completed_at + completion_retention AS completion_expiration,
                 completed_at + journal_retention AS journal_expiration
             FROM sys_invocation_status
@@ -685,8 +711,19 @@ async fn query_sys_invocation_status_completed() {
                 {
                     "id" => LargeStringArray: eq(invocation_id_3.to_string()),
                     "canonical_id" => LargeStringArray: eq(BaseEntryId::from(invocation_id_3).canonicalize(Seq::new(7)).to_string()),
+                    "completion_result" => LargeStringArray: eq("failure"),
+                    "completion_failure" => LargeStringArray: eq("[500] boom"),
+                    "completion_failure_code" => UInt32Array: eq(500),
                     "completion_expiration" => TimestampMillisecondArray: eq((completed_on + Duration::from_secs(10)).as_u64() as i64),
                     "journal_expiration" => TimestampMillisecondArray: eq((completed_on + Duration::from_secs(10)).as_u64() as i64),
+                }
+            ),
+            row!(
+                2,
+                {
+                    "id" => LargeStringArray: eq(invocation_id_4.to_string()),
+                    "completion_result" => LargeStringArray: eq("failure"),
+                    "completion_failure" => LargeStringArray: eq("[409] killed"),
                 }
             ),
         )
@@ -1187,4 +1224,34 @@ async fn query_state_with_service_key_filter() {
         null_scope_service_key,
         row!(0, { "service_name" => LargeStringArray: eq("unscoped") })
     );
+
+    // A scope or NULL reads both hash(scope) and hash(service_key), wherever the
+    // IS NULL sits in the OR.
+    for scopes in [
+        "scope = 'c' OR scope IS NULL",
+        "scope = 'c' OR scope IS NULL OR scope = 'd'",
+    ] {
+        let scope_or_null = engine
+            .execute(&format!(
+                "SELECT service_name FROM state \
+                 WHERE service_key = 'i1' AND ({scopes}) \
+                 ORDER BY service_name"
+            ))
+            .await
+            .unwrap()
+            .stream
+            .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+            .await
+            .remove(0)
+            .unwrap();
+
+        assert_eq!(scope_or_null.num_rows(), 2, "{scopes}");
+        assert_that!(
+            scope_or_null,
+            all!(
+                row!(0, { "service_name" => LargeStringArray: eq("scoped") }),
+                row!(1, { "service_name" => LargeStringArray: eq("unscoped") })
+            )
+        );
+    }
 }

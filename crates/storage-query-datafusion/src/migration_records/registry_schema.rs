@@ -14,7 +14,9 @@ use crate::table_macro::*;
 
 define_table!(
     /// The registry of each partition replica on the worker nodes: its indexes and
-    /// statistics, and its one-time migrations, with their status. Each replica
+    /// statistics, and its one-time migrations, with their status.
+    /// A replica with a registry also has one row of kind `registry`: its store
+    /// is open and indexes are, or were, enabled on it. Each replica
     /// keeps its own: two replicas of a partition can be at different points. A replica's rows come from one snapshot
     /// of it, separate from the one `migration_jobs` reads, except
     /// `approx_size_bytes`, estimated over the replica's current data.
@@ -29,19 +31,24 @@ define_table!(
         partition_id: DataType::UInt32,
 
         /// The definition the index builds or the migration runs, with its
-        /// version, for example `service_stats/1`.
+        /// version, for example `service_stats/1`; `registry` for the registry
+        /// row.
         definition: DataType::Utf8,
 
         /// `secondary` (one key per entry) or `aggregate` (counters, a statistic)
-        /// for an index; `migration` for a one-time migration.
+        /// for an index; `migration` for a one-time migration; `registry` for the
+        /// row of the replica's registry itself, which every replica opened with
+        /// indexes enabled has, also before anything registers, and keeps after
+        /// they are disabled.
         kind: DataType::Utf8,
 
-        /// The entry's ID in this replica; for an index, the prefix of its keys.
+        /// The entry's ID in this replica; for an index, the prefix of its keys;
+        /// 0 for the registry row.
         id: DataType::UInt32,
 
         /// For an index, `backfilling` (maintained but incomplete: queries don't
         /// read it), `complete` (queries read it) or `dropped`; for a migration,
-        /// `in_progress` or `complete`.
+        /// `in_progress` or `complete`; `present` for the registry row.
         status: DataType::Utf8,
 
         /// The job, while the index is backfilling or the migration in progress;
@@ -66,8 +73,10 @@ define_table!(
         /// When it was dropped; NULL unless dropped, or if unknown.
         dropped_at: TimestampMillisecond,
 
-        /// Why it was dropped: `reset`, `unknown-definition`, or `unknown(N)` for a
-        /// reason this binary doesn't know. NULL unless dropped.
+        /// Why it was dropped: `not-enabled` (indexes were off when the partition
+        /// opened), `unknown-definition` (this binary doesn't know it), `reset`
+        /// (by a development build), or `unknown(N)` for a reason this binary
+        /// doesn't know. NULL unless dropped.
         drop_reason: DataType::Utf8,
 
         /// RocksDB's estimate of the storage the index's keys take on this replica,

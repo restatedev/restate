@@ -708,20 +708,14 @@ async fn scheduler_preserves_native_sql_and_required_leader_placement() {
     data.lock().failure = None;
 
     // A stale installed owner must be rejected before asking its live backend for rows.
-    let result = session.execute(&count, QueryOptions {}).await.unwrap();
     data.lock().reads.clear();
-    fixture.states.note_observed_leader(
+    fixture.move_leader_before_admission(
+        owner(*partition),
         *partition,
-        LeadershipState {
-            current_leader: GenerationalNodeId::new(3, 1),
-            current_leader_epoch: LeaderEpoch::from(2),
-        },
+        GenerationalNodeId::new(3, 1),
     );
-    let error = result.stream.try_collect::<Vec<_>>().await.unwrap_err();
-    assert!(
-        error.to_string().contains("storage ownership changed"),
-        "{error}"
-    );
+    let error = query_error(session, &count).await;
+    assert!(error.contains("storage ownership changed"), "{error}");
     assert!(data.lock().reads.is_empty(), "stale_leader_is_not_read");
 
     // A live storage replica is insufficient when no leader has been observed.

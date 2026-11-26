@@ -2705,6 +2705,17 @@ mod tests {
         if let Some(position) = position {
             tx.set_fsm_position(position);
         }
+        // A partition fully migrated to vqueues, which the indexes need.
+        {
+            use restate_storage_api::fsm_table::WriteFsmTable;
+            tx.put_state_machine_features(
+                &restate_types::partitions::features::PersistedFeatures {
+                    vqueues: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
         for i in 0..n {
             let partition_key = partition.key_range.start() + i;
             let mut uuid = [0; 16];
@@ -2767,7 +2778,7 @@ mod tests {
         );
         seed_finished_entries(stores, &partition, entries, position).await;
         let mut config = Configuration::default();
-        config.common.experimental.set_track_status_gauges(true);
+        config.common.experimental.set_indexes(true);
         (config, stores.faults(&partition))
     }
 

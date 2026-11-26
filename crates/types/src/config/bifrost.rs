@@ -21,7 +21,7 @@ use restate_util_bytecount::{ByteCount, NonZeroByteCount};
 use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 
 use crate::logs::metadata::{NodeSetSize, ProviderKind};
-use crate::net::connect_opts::MESSAGE_SIZE_OVERHEAD;
+use crate::net::connect_opts::RECORD_SIZE_OVERHEAD;
 use crate::retries::RetryPolicy;
 
 use super::networking::DEFAULT_MESSAGE_SIZE_LIMIT;
@@ -128,7 +128,7 @@ impl BifrostOptions {
             limit
         } else {
             // Add a bit of overhead to account for the overhead of the record envelope
-            limit.saturating_add(MESSAGE_SIZE_OVERHEAD.div_ceil(2))
+            limit.saturating_add(RECORD_SIZE_OVERHEAD)
         }
     }
 

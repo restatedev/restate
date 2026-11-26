@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 use restate_util_bytecount::NonZeroByteCount;
+use restate_util_time::NonZeroFriendlyDuration;
 
 use crate::config::throttling::ThrottlingOptions;
 
@@ -74,6 +75,26 @@ pub struct QueryEngineOptions {
     /// Since v1.8.2
     #[serde(default, skip_serializing_if = "is_default_batch_compression")]
     pub batch_compression: QueryBatchCompression,
+
+    /// # Index catalog refresh interval
+    ///
+    /// How often an admin node checks which indexes queries can read, from
+    /// `restate.cluster.registry`. The `/version` endpoint reports the result: for
+    /// example, `query_engine.stats_tables` turns false when a partition's leader,
+    /// which statistics reads go to, answers with its store open and lacks a
+    /// complete status gauge, for instance before the partition has fully
+    /// migrated to vqueues, and true again once no such leader is left. Partitions without a known
+    /// leader, and leaders that are down, don't answer or have no open store, don't
+    /// count.
+    /// A check that fails as a whole, or takes longer than this interval, keeps
+    /// the last result and is retried sooner: after 5 seconds, then twice as
+    /// long each time, up to this interval. Where
+    /// queries don't read indexes, nothing is checked and the result is `false`.
+    ///
+    /// Default: 1 minute
+    ///
+    /// Since v1.8.2
+    pub index_catalog_refresh_interval: NonZeroFriendlyDuration,
 }
 
 fn is_default_batch_compression(compression: &QueryBatchCompression) -> bool {
@@ -110,6 +131,7 @@ impl Default for QueryEngineOptions {
             datafusion_options: HashMap::new(),
             rate_limiting: None,
             batch_compression: QueryBatchCompression::default(),
+            index_catalog_refresh_interval: NonZeroFriendlyDuration::from_secs_unchecked(60),
         }
     }
 }

@@ -17,6 +17,7 @@ pub use catalog::{
     ClusterTables, MetadataTables, RegisterTable, TableInventoryBuilder, UserTables,
 };
 pub use environment::DataFusionEnv;
+pub use stats::stats_tables_ready;
 
 pub mod remote_query_scanner_server;
 
