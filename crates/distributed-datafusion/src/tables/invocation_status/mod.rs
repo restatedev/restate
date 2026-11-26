@@ -75,8 +75,8 @@ impl PartitionSource for SysInvocationStatusTable {
         <InvocationStatusRecords as restate_storage_query_api::Table>::NATIVE_ORDERS;
     const ID_COLUMN: Option<InvocationStatusColumn> = Some(InvocationStatusColumn::Id);
     const PRIMARY_ACCESS: Option<crate::access::SelectPrimary> = Some(select_primary);
-    // A query whose statuses narrow the status index's lanes reads it; any
-    // other, the creation index, which checks statuses on each candidate.
+    // A query whose stages or statuses narrow the status index's lanes reads
+    // it; any other, the creation index, which checks them on each candidate.
     const INDEXES: &'static [IndexAccess<InvocationStatus>] = &[
         IndexAccess::of::<StatusIndex>(),
         IndexAccess::of::<EntryIndex>(),
@@ -153,9 +153,11 @@ impl CompleteIndex for EntryIndex {
 }
 
 /// The entry index `entry_by_status_created/1`, read for the invocations of
-/// some statuses or outcomes. The public `status` and `completion_result`
-/// select the stages and stored statuses their entries can be in, the
-/// index's **lanes**: each status the pairs whose effective status tells it
+/// some stages, statuses or outcomes. The `stage`, `effective_status`, public
+/// `status` and `completion_result` select the stages and stored statuses
+/// their entries can be in, the index's **lanes**: an effective status the
+/// pairs that make it (`failed` is Finished's `failed`), a stage all of its
+/// pairs, and each public status the pairs whose effective status tells it
 /// (`invoked` is the inbox's `ready`, `yielded` and `backing-off` and all of
 /// Running), failed invocations Finished in any stored status but Succeeded
 /// (see `EntryByStatusCreatedKey::lanes`). Each partition
@@ -171,8 +173,9 @@ impl CompleteIndex for EntryIndex {
 /// LIMIT 250
 /// ```
 ///
-/// A status condition that doesn't narrow the lanes, such as one naming
-/// every status, leaves it unused.
+/// The same holds for `effective_status = 'failed'` or `stage = 'finished'`.
+/// A condition that doesn't narrow the lanes, such as one naming every status,
+/// leaves it unused.
 struct StatusIndex;
 
 impl CompleteIndex for StatusIndex {

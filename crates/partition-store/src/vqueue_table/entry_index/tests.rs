@@ -781,8 +781,9 @@ async fn stage_and_status_keys_follow_each_entry() {
 /// the lanes its entries can be in: each public status the pairs whose
 /// effective status tells it, plus the pairs no code path writes that may show
 /// it as their stored status; failed ones Finished in any stored status but
-/// Succeeded. Conditions intersect, alternatives unite, ranges and unknown
-/// values don't widen past what they can match.
+/// Succeeded. Its entry's stage and effective status select the lanes they
+/// select for an entry. Conditions intersect, alternatives unite, ranges and
+/// unknown values don't widen past what they can match.
 #[test]
 fn invocation_conditions_select_the_lanes_their_entries_can_be_in() {
     use restate_storage_query_api::tables::index::EntryByStatusCreatedClause::{
@@ -964,6 +965,91 @@ fn invocation_conditions_select_the_lanes_their_entries_can_be_in() {
         })))
         .len(),
         50
+    );
+
+    // An invocation shows its entry's stage and effective status: conditions
+    // on them select exactly the lanes the same conditions select for an entry.
+    use restate_storage_query_api::tables::index::{
+        EntryByStatusCreatedClause as Invocation, EntryStatusByStatusCreatedClause as Entry,
+    };
+    let entry_alike = |stage: Option<Stage>, names: &[&str]| {
+        let (mut invocation, mut entry) = (Selection::All, Selection::All);
+        if let Some(stage) = stage {
+            invocation = invocation.and(Invocation::Stage(ValuePredicate::Equal(stage)));
+            entry = entry.and(Entry::Stage(ValuePredicate::Equal(stage)));
+        }
+        if !names.is_empty() {
+            let values =
+                ValuePredicate::In(names.iter().map(|name| name.parse().unwrap()).collect());
+            invocation = invocation.and(Invocation::EffectiveStatus(values.clone()));
+            entry = entry.and(Entry::Status(values));
+        }
+        let read = lanes(invocation);
+        let expected: Vec<_> = EntryByStatusCreatedKey::entry_lanes(&entry).collect();
+        assert_eq!(read, expected, "{stage:?} {names:?}");
+        read
+    };
+    assert_eq!(
+        entry_alike(None, &["failed"]),
+        [(Stage::Finished, Status::Failed)]
+    );
+    assert_eq!(
+        entry_alike(None, &["running", "suspended"]),
+        [every(Stage::Running), every(Stage::Suspended)].concat()
+    );
+    assert_eq!(
+        entry_alike(Some(Stage::Inbox), &["scheduled"]),
+        [(Stage::Inbox, Status::Scheduled)]
+    );
+    assert!(entry_alike(Some(Stage::Finished), &["running"]).is_empty());
+    // `<> 'succeeded'` names every other value: the sentinel's pairs, which
+    // show NULL, aren't among them.
+    let others: Vec<_> = EffectiveStatus::VALUES
+        .iter()
+        .filter_map(|value| value.name())
+        .filter(|name| *name != "succeeded")
+        .collect();
+    let not_succeeded = entry_alike(None, &others);
+    assert_eq!(not_succeeded.len(), 38);
+    assert!(not_succeeded.iter().all(|&(stage, stored)| {
+        let effective = EffectiveStatus::new(stage, stored);
+        effective.name().is_some_and(|name| name != "succeeded")
+    }));
+    // A stage is every pair of it, `running` included; each value its pairs.
+    for stage in KEYED_STAGES {
+        assert_eq!(entry_alike(Some(stage), &[]), every(stage), "{stage:?}");
+    }
+    for value in EffectiveStatus::VALUES {
+        assert!(!entry_alike(None, &[value.as_str()]).is_empty(), "{value}");
+    }
+    // They hold together with the public status: an inbox stage keeps the
+    // pairs no code path writes, which show their stored status.
+    let stage = |stage| Invocation::Stage(ValuePredicate::Equal(stage));
+    assert_eq!(
+        lanes(
+            Selection::All
+                .and(public(&["invoked"]))
+                .and(stage(Stage::Inbox))
+        ),
+        inbox(&[Status::BackingOff, Status::Started, Status::Yielded])
+    );
+    assert_eq!(
+        lanes(
+            Selection::All
+                .and(public(&["completed"]))
+                .and(Invocation::EffectiveStatus(ValuePredicate::Equal(
+                    "killed".parse().unwrap()
+                )))
+        ),
+        [(Stage::Finished, Status::Killed)]
+    );
+    assert!(
+        lanes(
+            Selection::All
+                .and(public(&["completed"]))
+                .and(stage(Stage::Running))
+        )
+        .is_empty()
     );
 }
 

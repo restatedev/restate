@@ -59,6 +59,12 @@ once with `v1` and once with `v2`, should return the same rows.
   such as the UI's `ORDER BY created_at DESC LIMIT 250`, reads the entries in
   that order and stops once the page is full, instead of reading every entry
   of every partition.
+- With `experimental-enable-indexes`, a page of the newest or oldest
+  invocations of `sys_invocation_status` filtered by `stage` or
+  `effective_status`, such as
+  `WHERE effective_status = 'failed' ORDER BY created_at DESC LIMIT 50`, reads
+  only the invocations of those stages and statuses, as it does for `status`,
+  instead of checking invocations of every status until the page is full.
 - A query that names specific queues, such as
   `SELECT * FROM sys_vqueue_meta WHERE id IN (…)`, makes V2 read those queues'
   metadata directly instead of scanning the metadata stored between them.
