@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod error;
+mod fair_channel;
 mod input_command;
 mod invocation_state_machine;
 mod invocation_task;
@@ -118,13 +119,15 @@ trait InvocationTaskRunner<SR> {
         idempotency_key: Option<ReString>,
         retry_count_since_last_stored_entry: u32,
         storage_reader: SR,
-        invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+        invoker_tx: fair_channel::Sender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         task_pool: &mut JoinSet<()>,
         budget: LocalMemoryPool,
     ) -> AbortHandle;
 }
 
+/// Invocation tasks run on the invoker's thread, sharing their output channel with it.
+///
 /// `JoinSet` does not propagate TaskCenter task-locals; preserve the spawner's context for
 /// invocation code that needs it, including GCP credential construction.
 fn spawn_invocation_task<F>(
@@ -133,14 +136,14 @@ fn spawn_invocation_task<F>(
     future: F,
 ) -> AbortHandle
 where
-    F: Future<Output = ()> + Send + 'static,
+    F: Future<Output = ()> + 'static,
 {
     task_pool
         .build_task()
         .name(name)
         // Box before adding task-local scopes so spawning moves a pointer rather
         // than repeatedly moving the large invocation future through the wrappers.
-        .spawn(Box::pin(future).in_current_tc())
+        .spawn_local(Box::pin(future).in_current_tc())
         .expect("to spawn invocation task")
 }
 
@@ -166,7 +169,7 @@ where
         idempotency_key: Option<ReString>,
         retry_count_since_last_stored_entry: u32,
         storage_reader: IR,
-        invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+        invoker_tx: fair_channel::Sender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         task_pool: &mut JoinSet<()>,
         budget: LocalMemoryPool,
@@ -263,16 +266,13 @@ impl<StorageReader, Schemas> Service<StorageReader, Schemas> {
 
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (status_tx, status_rx) = mpsc::unbounded_channel();
-        let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
-
         Self {
             input_tx,
             status_tx,
             inner: ServiceInner {
                 input_rx,
                 status_rx,
-                invocation_tasks_tx,
-                invocation_tasks_rx,
+                task_outputs: Default::default(),
                 invocation_task_runner: DefaultInvocationTaskRunner {
                     client,
                     schemas: Live::clone(&schemas),
@@ -379,9 +379,8 @@ struct ServiceInner<InvocationTaskRunner, Schemas, StorageReader> {
         restate_futures_util::command::Command<KeyRange, Vec<InvocationStatusReport>>,
     >,
 
-    // Channel to communicate with invocation tasks
-    invocation_tasks_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
-    invocation_tasks_rx: mpsc::UnboundedReceiver<InvocationTaskOutput>,
+    // Output of the invocation tasks
+    task_outputs: fair_channel::Receiver<InvocationTaskOutput>,
 
     // Invocation task factory
     invocation_task_runner: InvocationTaskRunner,
@@ -446,7 +445,7 @@ where
                     }
                 }
             },
-            Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {
+            invocation_task_msg = self.task_outputs.recv() => {
                 let InvocationTaskOutput {
                     invocation_id,
                     fencing_token,
@@ -454,7 +453,7 @@ where
                 } = invocation_task_msg;
                 // Fence stale task output: if the invocation was aborted and restarted, the
                 // in-flight state machine has moved to a newer epoch. Output from the old task
-                // still draining out of the channel must be dropped so it neither mutates the new
+                // still queued in the output channel must be dropped so it neither mutates the new
                 // attempt's state machine nor gets emitted as an effect stamped with the new epoch.
                 if self.invocation_state_machine_manager.is_stale_fencing_token(&invocation_id, fencing_token) {
                     trace!(restate.invocation.id = %invocation_id, "Dropping stale invoker task output from a previous attempt");
@@ -1553,7 +1552,8 @@ where
             ism.idempotency_key.clone(),
             ism.start_message_retry_count_since_last_stored_command,
             storage_reader,
-            self.invocation_tasks_tx.clone(),
+            self.task_outputs
+                .sender(options.per_invocation_initial_memory.as_non_zero_usize()),
             completions_rx,
             &mut self.invocation_tasks,
             budget,
@@ -1689,14 +1689,12 @@ mod tests {
         ) {
             let (input_tx, input_rx) = mpsc::unbounded_channel();
             let (status_tx, status_rx) = mpsc::unbounded_channel();
-            let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
             let (output_tx, output_rx) = mpsc::channel(1024);
 
             let service_inner = Self {
                 input_rx,
                 status_rx,
-                invocation_tasks_tx,
-                invocation_tasks_rx,
+                task_outputs: Default::default(),
                 invocation_task_runner,
                 schemas: Live::from_value(schemas),
                 invocation_tasks: Default::default(),
@@ -1763,11 +1761,11 @@ mod tests {
             InvocationId,
             InvocationTarget,
             IR,
-            mpsc::UnboundedSender<InvocationTaskOutput>,
+            fair_channel::Sender<InvocationTaskOutput>,
             mpsc::UnboundedReceiver<Notification>,
         ) -> Fut,
         IR: InvocationReader + Clone + Send + Sync + 'static,
-        Fut: Future<Output = ()> + Send + 'static,
+        Fut: Future<Output = ()> + 'static,
     {
         fn start_invocation_task(
             &self,
@@ -1779,7 +1777,7 @@ mod tests {
             _idempotency_key: Option<ReString>,
             _retry_count_since_last_stored_entry: u32,
             storage_reader: IR,
-            invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+            invoker_tx: fair_channel::Sender<InvocationTaskOutput>,
             invoker_rx: mpsc::UnboundedReceiver<Notification>,
             task_pool: &mut JoinSet<()>,
             _budget: LocalMemoryPool,
@@ -1813,7 +1811,7 @@ mod tests {
             _idempotency_key: Option<ReString>,
             _retry_count_since_last_stored_entry: u32,
             _storage_reader: SR,
-            _invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+            _invoker_tx: fair_channel::Sender<InvocationTaskOutput>,
             _invoker_rx: mpsc::UnboundedReceiver<Notification>,
             task_pool: &mut JoinSet<()>,
             _budget: LocalMemoryPool,
@@ -1836,7 +1834,7 @@ mod tests {
             _idempotency_key: Option<ReString>,
             _retry_count_since_last_stored_entry: u32,
             _storage_reader: SR,
-            _invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+            _invoker_tx: fair_channel::Sender<InvocationTaskOutput>,
             _invoker_rx: mpsc::UnboundedReceiver<Notification>,
             task_pool: &mut JoinSet<()>,
             _budget: LocalMemoryPool,
@@ -1918,7 +1916,7 @@ mod tests {
         }
     }
 
-    #[test(restate_core::test)]
+    #[test(restate_core::test(flavor = "local"))]
     async fn spawn_invocation_task_carries_task_center_context() {
         let mut task_pool: JoinSet<()> = JoinSet::new();
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -1935,7 +1933,7 @@ mod tests {
             .expect("task doesn't panic");
     }
 
-    #[test(restate_core::test)]
+    #[test(restate_core::test(flavor = "local"))]
     async fn input_order_is_maintained() {
         let invoker_options = InvokerOptionsBuilder::default()
             .inactivity_timeout(FriendlyDuration::ZERO)
@@ -1969,7 +1967,7 @@ mod tests {
 
         let mut handle = service.handle();
 
-        let invoker_task = TaskCenter::spawn_unmanaged(
+        let invoker_task = TaskCenter::spawn_unmanaged_local(
             TaskKind::SystemService,
             "invoker",
             service.run(Constant::new(invoker_options)),
@@ -1998,7 +1996,7 @@ mod tests {
         invoker_task.cancel_and_wait().await.unwrap();
     }
 
-    #[test(restate_core::test(start_paused = true))]
+    #[test(restate_core::test(flavor = "local", start_paused = true))]
     async fn notification_triggers_retry() {
         let invoker_options = InvokerOptionsBuilder::default()
             .inactivity_timeout(FriendlyDuration::ZERO)
@@ -2084,7 +2082,7 @@ mod tests {
         assert_eq!(target, invocation_target);
     }
 
-    #[test(restate_core::test(start_paused = true))]
+    #[test(restate_core::test(flavor = "local", start_paused = true))]
     async fn status_store_clears_last_failure_on_new_command() {
         let invocation_id = InvocationId::mock_random();
 
@@ -2150,7 +2148,7 @@ mod tests {
         );
     }
 
-    #[test(restate_core::test(start_paused = true))]
+    #[test(restate_core::test(flavor = "local", start_paused = true))]
     async fn transient_error_event_deduplication() {
         // Enable proposing events and keep timers short for the test
         let invoker_options = InvokerOptionsBuilder::default()
@@ -2263,7 +2261,7 @@ mod tests {
         );
     }
 
-    #[test(restate_core::test(start_paused = true))]
+    #[test(restate_core::test(flavor = "local", start_paused = true))]
     async fn error_message_should_pause() {
         // Enable proposing events and keep timers short for the test
         let invoker_options = InvokerOptionsBuilder::default()
@@ -2324,7 +2322,7 @@ mod tests {
         );
     }
 
-    #[test(restate_core::test(start_paused = true))]
+    #[test(restate_core::test(flavor = "local", start_paused = true))]
     async fn error_message_should_fail() {
         // Enable proposing events and keep timers short for the test
         let invoker_options = InvokerOptionsBuilder::default()
@@ -2384,7 +2382,7 @@ mod tests {
         );
     }
 
-    #[test(restate_core::test)]
+    #[test(restate_core::test(flavor = "local"))]
     async fn abort_error_counts_towards_retry_policy() {
         // Enable proposing events and keep timers short for the test
         let invocation_id = InvocationId::mock_random();
@@ -2422,7 +2420,7 @@ mod tests {
         );
     }
 
-    #[test(restate_core::test(start_paused = true))]
+    #[test(restate_core::test(flavor = "local", start_paused = true))]
     async fn pause_effect_emitted_when_pause_on_max_attempts_and_max_attempts_one() {
         // Configure invoker to propose events to flush transient error event (not strictly needed for pause)
         let invoker_options = InvokerOptionsBuilder::default()
@@ -2482,7 +2480,7 @@ mod tests {
         );
     }
 
-    #[test(restate_core::test(start_paused = true))]
+    #[test(restate_core::test(flavor = "local", start_paused = true))]
     async fn retry_iter_updates_on_pinned_deployment_and_not_reset_on_same_dp() {
         use restate_types::service_protocol::ServiceProtocolVersion;
 
@@ -2588,7 +2586,7 @@ mod tests {
         );
     }
 
-    #[test(restate_core::test)]
+    #[test(restate_core::test(flavor = "local"))]
     async fn manual_pause_while_waiting_retry() {
         let invoker_options = InvokerOptionsBuilder::default()
             .inactivity_timeout(FriendlyDuration::ZERO)
@@ -2649,7 +2647,7 @@ mod tests {
         );
     }
 
-    #[test(restate_core::test)]
+    #[test(restate_core::test(flavor = "local"))]
     async fn manual_pause_while_in_flight_then_suspended() {
         let invoker_options = InvokerOptionsBuilder::default()
             .inactivity_timeout(FriendlyDuration::ZERO)
@@ -2707,7 +2705,7 @@ mod tests {
         );
     }
 
-    #[test(restate_core::test)]
+    #[test(restate_core::test(flavor = "local"))]
     async fn manual_pause_while_in_flight_then_error() {
         let invoker_options = InvokerOptionsBuilder::default()
             .inactivity_timeout(FriendlyDuration::ZERO)
@@ -2767,7 +2765,7 @@ mod tests {
         );
     }
 
-    #[test(restate_core::test)]
+    #[test(restate_core::test(flavor = "local"))]
     async fn manual_pause_while_waiting_retry_with_previous_failure() {
         let invoker_options = InvokerOptionsBuilder::default()
             .inactivity_timeout(FriendlyDuration::ZERO)
@@ -2827,7 +2825,7 @@ mod tests {
 
     /// On global memory pool exhaustion, the invoker sends EffectKind::Yield and
     /// releases the invocation slot.
-    #[test(restate_core::test(start_paused = true))]
+    #[test(restate_core::test(flavor = "local", start_paused = true))]
     async fn pool_exhaustion_sends_yield_effect() {
         let invoker_options = InvokerOptionsBuilder::default()
             .inactivity_timeout(FriendlyDuration::ZERO)
