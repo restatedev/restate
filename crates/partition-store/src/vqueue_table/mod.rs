@@ -41,7 +41,7 @@ pub use entry_index::{
     hour_bucket, status_indexes_hold,
 };
 pub use inbox::InboxKey;
-pub use indexed_read::{LanesRead, StatusCreatedRead, StatusTransitionedRead};
+pub use indexed_read::{CreatedRead, IndexedRead, StatusCreatedRead, StatusTransitionedRead};
 pub use input::InputPayloadKey;
 pub use meta_binding::{VQueueMetaBinding, VQueueMetaTable};
 pub use meta_cursor::{VQueueMetaCursor, VQueueMetaRecords};

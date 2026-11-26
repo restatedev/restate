@@ -18,12 +18,16 @@ impl crate::sharding::PartitionSource for SysVqueueEntryStatusTable {
     // stages and statuses, active ones newest created first and finished ones
     // newest finished first included, read a status index, in its order or,
     // for a query its keys hold and bound in time, its keys alone; a few stages
-    // otherwise read the stage tables.
+    // otherwise read the stage tables; any other newest or oldest entries read
+    // the creation index.
     const INDEXES: &'static [crate::access::IndexAccess<Self::Schema>] = &[
         crate::access::IndexAccess::of::<super::read::QueueIndex>(),
         crate::access::IndexAccess::of::<super::read::StatusCreatedIndex>(),
         crate::access::IndexAccess::of::<super::read::StatusTransitionedIndex>(),
         crate::access::IndexAccess::of::<super::read::StageIndex>(),
+        // Last: it holds every entry, so a stage or status condition reads the
+        // tighter indexes above first.
+        crate::access::IndexAccess::of::<super::read::CreatedIndex>(),
     ];
     const ORDERS: &'static [restate_storage_query_api::ordering::NativeOrder] =
         <restate_partition_store::vqueue_table::EntryStatusRecords as restate_storage_query_api::Table>::NATIVE_ORDERS;

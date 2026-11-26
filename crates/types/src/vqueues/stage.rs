@@ -61,6 +61,13 @@ impl Stage {
 
     /// Every stage but the `Unknown` sentinel, which decoding produces for a
     /// stage this binary doesn't know: the stages a query can name.
+    ///
+    /// A new stage ships only behind a version barrier with a feature change,
+    /// which raises the partition store's minimum version, so a binary never
+    /// reads an entry in a stage it doesn't know. The sentinel is a safe default
+    /// for decoding, not a state the stored data reaches; for example, queries
+    /// read the status indexes, which hold no key for it, as holding every
+    /// entry.
     pub const VALUES: [Stage; 5] = [
         Stage::Inbox,
         Stage::Running,

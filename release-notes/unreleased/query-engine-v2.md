@@ -54,6 +54,11 @@ once with `v1` and once with `v2`, should return the same rows.
   `admin.query-engine.disable-index-reads` stops queries from reading them
   without dropping them. Indexes aren't tables you can query; `EXPLAIN` shows
   which one a query reads.
+- With `experimental-enable-indexes`, a page of the newest or oldest entries
+  of `sys_vqueues` or `sys_vqueue_entry_status`, of every stage or of some,
+  such as the UI's `ORDER BY created_at DESC LIMIT 250`, reads the entries in
+  that order and stops once the page is full, instead of reading every entry
+  of every partition.
 - A query that names specific queues, such as
   `SELECT * FROM sys_vqueue_meta WHERE id IN (…)`, makes V2 read those queues'
   metadata directly instead of scanning the metadata stored between them.

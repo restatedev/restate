@@ -29,11 +29,11 @@ use restate_partition_store::invocation_status_table::{
 };
 use restate_partition_store::keys::selection::KeySelection;
 use restate_partition_store::vqueue_table::{
-    EntryByStatusCreated as StoredStatusCreated, EntryByStatusCreatedKey,
-    EntryByStatusTransitioned as StoredStatusTransitioned, EntryByStatusTransitionedKey,
-    EntryKeyRecords, EntryKeyScan, EntryStatusCursor, EntryStatusKey, EntryStatusKeys,
-    EntryStatusRecords, EntryStatusScan, StagePrefilter, StageReads, StageRowRecords, StageRowScan,
-    StageRowsCursor, StatusCreatedRead, StatusTransitionedRead, status_indexes_hold,
+    CreatedRead, EntryByCreated as StoredCreated, EntryByStatusCreated as StoredStatusCreated,
+    EntryByStatusCreatedKey, EntryByStatusTransitioned as StoredStatusTransitioned,
+    EntryByStatusTransitionedKey, EntryKeyRecords, EntryKeyScan, EntryStatusCursor, EntryStatusKey,
+    EntryStatusKeys, EntryStatusRecords, EntryStatusScan, StagePrefilter, StageReads,
+    StageRowRecords, StageRowScan, StageRowsCursor, StatusCreatedRead, StatusTransitionedRead,
 };
 use restate_storage_api::vqueue_table::Stage;
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
@@ -42,12 +42,12 @@ use restate_storage_query_api::schema::index::index_restriction;
 use restate_storage_query_api::selection::domain::Domain;
 use restate_storage_query_api::selection::{Selection, ValuePredicate};
 use restate_storage_query_api::tables::index::{
-    EntryByQueue, EntryByQueueDomains, EntryStatusByStatusCreated,
-    EntryStatusByStatusCreatedDomains, EntryStatusByStatusTransitioned,
+    EntryByQueue, EntryByQueueDomains, EntryStatusByCreated, EntryStatusByCreatedDomains,
+    EntryStatusByStatusCreated, EntryStatusByStatusCreatedDomains, EntryStatusByStatusTransitioned,
     EntryStatusByStatusTransitionedDomains,
 };
 use restate_storage_query_api::tables::vqueue_entry_status::{
-    VqueueEntryStatus, VqueueEntryStatusColumn, VqueueEntryStatusDomains,
+    VqueueEntryStatus, VqueueEntryStatusColumn,
 };
 use restate_storage_query_api::{LogicalSchema, RowSink, SelectionSchema};
 use restate_types::SemanticRestateVersion;
@@ -67,8 +67,8 @@ use crate::table_providers::{
 };
 
 use super::row::{
-    EntryPlace, EntryState, append_entry_row, append_status_key_row,
-    append_vqueue_entry_status_row, covered_row,
+    EntryPlace, EntryState, append_entry_row, append_index_key_row, append_vqueue_entry_status_row,
+    covered_row,
 };
 
 /// Complete physical locators, independently of the SQL string representation.
@@ -241,9 +241,9 @@ impl CompleteIndex for QueueIndex {
 /// ([`StatusCreatedIndex`] reads stages in creation order). A read that fetches
 /// statuses avoids `finished`, which retains most entries and would be fetched
 /// by random lookups; a covered read fetches none, so it reads any stages. A
-/// query without a stage or queue restriction scans the statuses, as before:
-/// the stage tables hold the same entries, but only under the scheduler's
-/// stage/status correspondence, which every stage-table read relies on.
+/// query without a stage or queue restriction doesn't read them: the stage
+/// tables hold the same entries, but only under the scheduler's stage/status
+/// correspondence, which every stage-table read relies on.
 pub(crate) struct StageIndex;
 
 impl CompleteIndex for StageIndex {
@@ -324,11 +324,6 @@ impl CompleteIndex for StatusCreatedIndex {
         index_reads() && since(restriction.created_at.to_predicate())
     }
 
-    /// Every alternative fixes the stage to stages the index holds.
-    fn admits(alternatives: &[VqueueEntryStatusDomains]) -> bool {
-        stages_held(alternatives, status_indexes_hold)
-    }
-
     const NEEDS_ORDERED_DEMAND: bool = true;
 
     /// A LIMIT without an ORDER BY, such as the UI's failed entries of a
@@ -394,15 +389,61 @@ impl CompleteIndex for StatusTransitionedIndex {
         index_reads() && since(restriction.transitioned_at.to_predicate())
     }
 
-    fn admits(alternatives: &[VqueueEntryStatusDomains]) -> bool {
-        stages_held(alternatives, status_indexes_hold)
-    }
-
     const NEEDS_ORDERED_DEMAND: bool = true;
 }
 
+/// Entries of every stage, newest created first, through `entry_by_created/1`,
+/// which holds a key for every entry, as the UI's entry list asks:
+///
+/// ```sql
+/// SELECT v.entry_id AS id FROM sys_vqueues v
+/// ORDER BY v.created_at DESC NULLS LAST LIMIT 250
+/// ```
+///
+/// Each partition merges one creation hour's runs at a time, a run per
+/// service, so the read stops after the page's entries instead of reading
+/// every entry status. Ascending, the index is read backwards. The same rule
+/// as for invocations (`sys_invocation_status`'s creation index): read for any
+/// query that asks for this order, its other conditions checked on each entry
+/// read. A stage or status condition reads a status index first, whose lanes
+/// hold only the entries it may match.
+pub(crate) struct CreatedIndex;
+
+impl CompleteIndex for CreatedIndex {
+    type Index = EntryStatusByCreated;
+    const INTRODUCED: SemanticRestateVersion = <StoredCreated as RegisteredIndex>::INTRODUCED;
+    /// As [`StatusCreatedIndex::ORDERING`]: the runs merge by creation time.
+    const ORDERING: &'static [IndexOrder<VqueueEntryStatusColumn>] = StatusCreatedIndex::ORDERING;
+
+    /// Wherever this coordinator reads indexes: the index holds every entry.
+    fn useful(_restriction: &EntryStatusByCreatedDomains) -> bool {
+        index_reads()
+    }
+
+    /// The columns of the index's keys, each entry's ID and creation time: a
+    /// query that needs no other reads the keys alone, fetching no status.
+    const COVERS: &'static [VqueueEntryStatusColumn] = &[
+        VqueueEntryStatusColumn::PartitionKey,
+        VqueueEntryStatusColumn::EntryId,
+        VqueueEntryStatusColumn::CanonicalId,
+        VqueueEntryStatusColumn::SequenceNumber,
+        VqueueEntryStatusColumn::EntryKind,
+        VqueueEntryStatusColumn::CreatedAt,
+    ];
+
+    const NEEDS_ORDERED_DEMAND: bool = true;
+
+    /// A LIMIT without an ORDER BY reads the newest matches and stops, where
+    /// the query restricts the creation time: the read visits only the hours
+    /// that may hold it. Without one, the scan, which stops at the LIMIT too,
+    /// reads instead.
+    fn useful_unordered(restriction: &EntryStatusByCreatedDomains) -> bool {
+        restriction.created_at.to_predicate().is_some() && Self::useful(restriction)
+    }
+}
+
 /// The columns a status index's keys hold, `time` being the index's: written
-/// from them as from an entry status ([`append_status_key_row`]).
+/// from them as from an entry status ([`append_index_key_row`]).
 const fn status_covers(time: VqueueEntryStatusColumn) -> [VqueueEntryStatusColumn; 8] {
     [
         VqueueEntryStatusColumn::PartitionKey,
@@ -430,19 +471,6 @@ fn since<V>(predicate: Option<ValuePredicate<V>>) -> bool {
 /// not `admin.query-engine.disable-index-reads`.
 fn index_reads() -> bool {
     Configuration::pinned().index_reads_enabled()
-}
-
-/// Whether every alternative fixes the stage to a non-empty set of stages the
-/// index `holds`. A domain of points, even one, is an `IN` set.
-fn stages_held(alternatives: &[VqueueEntryStatusDomains], holds: fn(Stage) -> bool) -> bool {
-    !alternatives.is_empty()
-        && alternatives.iter().all(|alternative| {
-            matches!(
-                alternative.stage.to_predicate(),
-                Some(ValuePredicate::In(stages))
-                    if !stages.is_empty() && stages.iter().all(|stage| holds(*stage))
-            )
-        })
 }
 
 pub(crate) fn select_primary(
@@ -522,6 +550,7 @@ impl ScanPartition for EntryStatusScanner {
         index == EntryByQueue::NAME
             || index == EntryStatusByStatusCreated::NAME
             || index == EntryStatusByStatusTransitioned::NAME
+            || index == EntryStatusByCreated::NAME
     }
 
     fn prepare_read(
@@ -588,6 +617,23 @@ impl ScanPartition for EntryStatusScanner {
                     EntryStatusAccess::Keys(Keys::StatusTransitioned { read, fallback })
                 } else {
                     EntryStatusAccess::StatusTransitioned { read, fallback }
+                }
+            }
+            PrimaryRead::Index(index) if index.name() == EntryStatusByCreated::NAME => {
+                // As for the status indexes.
+                let selection = index_restriction::<EntryStatusByCreated>(predicate.as_slice())?
+                    .map_or(Selection::Empty, |domains| domains.to_selection());
+                let read = Arc::new(
+                    CreatedRead::prepare(&selection, index.direction::<CreatedIndex>()?)?
+                        .with_partition_keys(crate::selection::partition_key_filter(
+                            &partition_keys,
+                        )),
+                );
+                let fallback = scan()?;
+                if covers::<CreatedIndex>(&projection) {
+                    EntryStatusAccess::Keys(Keys::Created { read, fallback })
+                } else {
+                    EntryStatusAccess::Created { read, fallback }
                 }
             }
             PrimaryRead::Index(index) => {
@@ -664,12 +710,20 @@ enum EntryStatusAccess {
         #[debug(skip)]
         fallback: Arc<KeySelection<EntryStatusKey>>,
     },
-    /// A status index's keys alone, for a query they cover, or the fallback
+    /// Entries of every stage through `entry_by_created/1`, or the fallback
+    /// scan.
+    Created {
+        #[debug(skip)]
+        read: Arc<CreatedRead>,
+        #[debug(skip)]
+        fallback: Arc<KeySelection<EntryStatusKey>>,
+    },
+    /// An entry index's keys alone, for a query they cover, or the fallback
     /// scan.
     Keys(Keys),
 }
 
-/// A keys-only read of one of the status indexes.
+/// A keys-only read of one of the entry indexes.
 #[derive(derive_more::Debug, Clone)]
 enum Keys {
     StatusCreated {
@@ -681,6 +735,12 @@ enum Keys {
     StatusTransitioned {
         #[debug(skip)]
         read: Arc<StatusTransitionedRead>,
+        #[debug(skip)]
+        fallback: Arc<KeySelection<EntryStatusKey>>,
+    },
+    Created {
+        #[debug(skip)]
+        read: Arc<CreatedRead>,
         #[debug(skip)]
         fallback: Arc<KeySelection<EntryStatusKey>>,
     },
@@ -699,6 +759,11 @@ impl Keys {
                 fallback,
                 execution,
             },
+            Self::Created { read, fallback } => EntryKeyScan::Created {
+                read,
+                fallback,
+                execution,
+            },
         }
     }
 }
@@ -708,7 +773,10 @@ impl EntryStatusAccess {
     fn ordered(&self) -> bool {
         matches!(
             self,
-            Self::StatusCreated { .. } | Self::StatusTransitioned { .. } | Self::Keys(_)
+            Self::StatusCreated { .. }
+                | Self::StatusTransitioned { .. }
+                | Self::Created { .. }
+                | Self::Keys(_)
         )
     }
 }
@@ -757,7 +825,7 @@ impl PreparedPartitionRead for EntryStatusRead {
         self.read(context, batch_size, metrics, None)
     }
 
-    /// A status index read can't where the index isn't Complete on the
+    /// An entry index read can't where the index isn't Complete on the
     /// snapshot. The stage tables are always there.
     fn usable(&self, context: &PartitionReadContext) -> anyhow::Result<bool> {
         let unusable = match &self.access {
@@ -767,6 +835,10 @@ impl PreparedPartitionRead for EntryStatusRead {
             }
             EntryStatusAccess::StatusTransitioned { read, .. }
             | EntryStatusAccess::Keys(Keys::StatusTransitioned { read, .. }) => {
+                read.unusable(context.storage()?)?
+            }
+            EntryStatusAccess::Created { read, .. }
+            | EntryStatusAccess::Keys(Keys::Created { read, .. }) => {
                 read.unusable(context.storage()?)?
             }
             EntryStatusAccess::Scan(_)
@@ -881,7 +953,7 @@ impl EntryStatusRead {
                         ),
                         move |row, batches: &mut Batches<VqueueEntryStatus>| {
                             if let ControlFlow::Break(result) = batches.append_with(|builder| {
-                                append_status_key_row(builder, &row);
+                                append_index_key_row(builder, &row);
                                 Ok(())
                             }) {
                                 result?;
@@ -971,6 +1043,18 @@ impl EntryStatusRead {
                         );
                     };
                     EntryStatusScan::StatusTransitioned {
+                        read,
+                        fallback,
+                        execution,
+                    }
+                }
+                EntryStatusAccess::Created { read, fallback } => {
+                    let Some(execution) = ordered else {
+                        return datafusion::common::internal_err!(
+                            "an entry index read has no execution"
+                        );
+                    };
+                    EntryStatusScan::Created {
                         read,
                         fallback,
                         execution,

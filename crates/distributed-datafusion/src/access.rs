@@ -765,6 +765,7 @@ mod tests {
                 stored::<EntryByStatusCreated>(),
                 stored::<EntryByStatusTransitioned>(),
                 stages(),
+                stored::<EntryByCreated>(),
             ]
         );
     }

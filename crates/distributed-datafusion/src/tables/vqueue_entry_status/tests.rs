@@ -880,9 +880,19 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
         ORDER BY created_at DESC NULLS LAST LIMIT 9";
     let running = "SELECT entry_id, status, transitioned_at FROM sys_vqueue_entry_status \
         WHERE stage = 'running' ORDER BY transitioned_at DESC NULLS LAST LIMIT 5";
+    // A status alone, without a stage, reads the status index too: no entry is
+    // in a stage this binary doesn't know (`status_indexes_hold`), so the lanes
+    // the status leaves hold every match. An exclusion reads the other lanes,
+    // through the `sys_vqueues` view as well.
+    let failed_only = "SELECT entry_id, status, created_at FROM sys_vqueue_entry_status \
+        WHERE status = 'failed' ORDER BY created_at DESC NULLS LAST LIMIT 9";
+    let not_succeeded = "SELECT entry_id, status, created_at FROM sys_vqueues \
+        WHERE status <> 'succeeded' ORDER BY created_at DESC NULLS LAST LIMIT 9";
     for (sql, index) in [
         (by_created, "entry_by_status_created/1"),
         (running, "entry_by_status_transitioned/1"),
+        (failed_only, "entry_by_status_created/1"),
+        (not_succeeded, "entry_by_status_created/1"),
     ] {
         let explained = plan(sql, false).await;
         assert!(
@@ -891,11 +901,84 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
         );
         assert_eq!(rows(sql).await, scanned(sql).await, "{sql}");
     }
-    // The UI's own query, through the `sys_vqueues` view.
+    // The UI's newest entries of every stage, through the `sys_vqueues` view,
+    // read the creation index, which holds every entry: each hour's runs, a
+    // run per service, merged into creation order. Newest first, or oldest
+    // first backwards, in one plan for every spelling of NULLs, with the scan's
+    // rows (creation times are distinct here), the whole page or a part.
+    let newest = include_str!("../../ui_queries/vqueues_newest.sql");
+    let view_scanned = |sql: &str| {
+        sql.replacen(
+            "FROM sys_vqueues v",
+            "FROM (SELECT * FROM sys_vqueues LIMIT 1000000) AS v",
+            1,
+        )
+    };
+    for page in [
+        newest.to_owned(),
+        newest.replace("LIMIT 250", "LIMIT 9 OFFSET 3"),
+    ] {
+        for spellings in [SPELLINGS, REVERSED] {
+            let first = page.replace("DESC NULLS LAST", spellings[0]);
+            let explained = plan(&first, false).await;
+            assert!(
+                explained.contains("index=entry_by_created/1"),
+                "{first}: {explained}"
+            );
+            for spelling in spellings {
+                let sql = page.replace("DESC NULLS LAST", spelling);
+                assert_eq!(
+                    unspelled(plan(&sql, false).await),
+                    unspelled(explained.clone()),
+                    "{sql}"
+                );
+                let found = rows(&sql).await;
+                assert!(!found.is_empty(), "{sql}");
+                assert_eq!(found, rows(&view_scanned(&sql)).await, "{sql}");
+            }
+        }
+    }
+    // It needs only the entries' IDs and creation times: the keys alone, no
+    // status fetched.
+    let analyzed = plan(newest, true).await;
+    assert!(
+        analyzed.contains("entry_index_reads=1") && analyzed.contains("entry_index_statuses=0"),
+        "{analyzed}"
+    );
+    // Without an order, a LIMIT reads the creation index only where the query
+    // bounds the creation time; otherwise the scan, which stops at the LIMIT
+    // too, reads instead.
+    let unbounded = "SELECT entry_id, num_attempts FROM sys_vqueues LIMIT 5";
+    let explained = plan(unbounded, false).await;
+    assert!(
+        explained.contains("TableScanExec") && !explained.contains("IndexScanExec"),
+        "{explained}"
+    );
+    let bounded = format!(
+        "SELECT entry_id, num_attempts FROM sys_vqueues \
+         WHERE created_at >= to_timestamp_millis({}) LIMIT 5",
+        BASE + 100
+    );
+    let explained = plan(&bounded, false).await;
+    assert!(
+        explained.contains("index=entry_by_created/1"),
+        "{explained}"
+    );
+    let page = rows(&bounded).await;
+    let all: HashSet<_> = rows(&bounded.replace(" LIMIT 5", ""))
+        .await
+        .into_iter()
+        .collect();
+    assert_eq!(page.len(), 5);
+    assert!(page.iter().all(|row| all.contains(row)));
+    assert_eq!(page.iter().collect::<HashSet<_>>().len(), page.len());
+    // The UI's finished page, through the `sys_vqueues` view: its stage and
+    // statuses read the status index first, the creation index where a
+    // partition can't.
     let ui = include_str!("../../ui_queries/vqueues_finished_newest.sql");
     let explained = plan(ui, false).await;
     assert!(
-        explained.contains("index=entry_by_status_created/1"),
+        explained.contains("index=entry_by_status_created/1, alternatives=[entry_by_created/1]"),
         "{explained}"
     );
     let ui_scanned = ui.replacen(
@@ -1385,7 +1468,9 @@ async fn active_entries_read_through_the_status_index_match_the_scan() {
     let sql = format!("{select} WHERE vqueue_id = '{queue}' AND stage = 'inbox' {newest} LIMIT 5");
     let explained = plan(&sql, false).await;
     assert!(
-        explained.contains(&format!("index={STAGES}, alternatives=[{INDEX}]")),
+        explained.contains(&format!(
+            "index={STAGES}, alternatives=[{INDEX}, entry_by_created/1]"
+        )),
         "{sql}: {explained}"
     );
     let all = scanned(&sql.replace(" LIMIT", " LIMIT 1000000 --")).await;
