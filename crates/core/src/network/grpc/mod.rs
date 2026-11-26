@@ -8,8 +8,26 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod codec;
 mod connector;
 mod svc_handler;
+
+#[cfg(test)]
+mod tests;
+
+mod client {
+    include!(concat!(
+        env!("OUT_DIR"),
+        "/fabric-client/restate.core_node_svc.CoreNodeSvc.rs"
+    ));
+}
+
+mod server {
+    include!(concat!(
+        env!("OUT_DIR"),
+        "/fabric-server/restate.core_node_svc.CoreNodeSvc.rs"
+    ));
+}
 
 use tonic::codec::CompressionEncoding;
 

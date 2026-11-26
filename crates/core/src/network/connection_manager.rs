@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use ahash::HashMap;
 use futures::future::{BoxFuture, Shared};
-use futures::{FutureExt, Stream};
+use futures::{FutureExt, Stream, StreamExt};
 use metrics::counter;
 use parking_lot::Mutex;
 use tracing::{debug, info, trace};
@@ -108,8 +108,12 @@ impl ConnectionManagerInner {
 
         let previous = self.register(connection.clone());
 
-        let task_id = match reactor.start(TaskKind::LocalReactor, connection_manager, false, egress)
-        {
+        let task_id = match reactor.start(
+            TaskKind::LocalReactor,
+            connection_manager,
+            false,
+            egress.map(super::OutgoingMessage::into_message),
+        ) {
             Ok(task_id) => task_id,
             Err(e) => {
                 self.deregister(&connection);
