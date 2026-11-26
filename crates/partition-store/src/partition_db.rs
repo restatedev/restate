@@ -128,6 +128,11 @@ pub struct PhysicalPartition {
     driver_state: crate::walk::PublishedDriverState,
     /// The faults armed for the partition, shared with its cell.
     faults: Faults,
+    /// Whether the indexes over the vqueue entries wait to be registered, as the
+    /// processor asks once the partition has fully migrated to vqueues; and the
+    /// wake-up of the walk driver that registers them.
+    vqueue_indexes_requested: std::sync::atomic::AtomicBool,
+    vqueue_indexes_wakeup: tokio::sync::Notify,
     // Looked up once, when the partition is first opened, and shared by every
     // session. Last, because it holds the keep-alive of the database.
     cfs: CfHandles<KeyKind>,
@@ -176,6 +181,8 @@ impl PartitionDb {
                 walk_stats: Default::default(),
                 driver_state: Default::default(),
                 faults,
+                vqueue_indexes_requested: Default::default(),
+                vqueue_indexes_wakeup: Default::default(),
                 cfs,
             },
         );
@@ -227,6 +234,41 @@ impl PartitionDb {
     /// The faults armed for the partition.
     pub(crate) fn faults(&self) -> &Faults {
         &self.physical().faults
+    }
+
+    /// Asks for the indexes over the vqueue entries, once the partition has fully
+    /// migrated to vqueues: the walk driver registers them when it next runs,
+    /// between the processor's command batches, so after the batch that applied
+    /// the migration is committed (see
+    /// [`crate::PartitionStore::register_vqueue_indexes`]). Wakes the driver.
+    pub fn request_vqueue_indexes(&self) {
+        let physical = self.physical();
+        physical
+            .vqueue_indexes_requested
+            .store(true, std::sync::atomic::Ordering::Release);
+        physical.vqueue_indexes_wakeup.notify_one();
+    }
+
+    /// Whether the indexes over the vqueue entries were asked for and not yet
+    /// taken.
+    pub(crate) fn vqueue_indexes_requested(&self) -> bool {
+        self.physical()
+            .vqueue_indexes_requested
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Takes the request for the indexes over the vqueue entries, if any.
+    pub(crate) fn take_vqueue_indexes_request(&self) -> bool {
+        self.physical()
+            .vqueue_indexes_requested
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+    }
+
+    /// Resolves once the indexes over the vqueue entries are asked for, or
+    /// right away if they were asked for since the last wait. Check
+    /// [`Self::vqueue_indexes_requested`] too: a wake-up may be stale.
+    pub(crate) async fn vqueue_indexes_wakeup(&self) {
+        self.physical().vqueue_indexes_wakeup.notified().await;
     }
 
     pub fn rocksdb(&self) -> &Arc<RocksDb> {

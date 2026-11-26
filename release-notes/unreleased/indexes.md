@@ -21,10 +21,13 @@ With it, each partition maintains:
   as `ready` in the inbox or `running`. The counts include invocations and state mutations, and
   keep completed entries until they are deleted.
 
-Each partition indexes and counts what is written from then on, and builds the indexes and counts
-for its existing entries in the background (see the background migration options under
+A partition starts building them once it has moved all its invocations to virtual queues (the
+vqueues migration, which runs automatically since v1.8.0), right after that migration finishes.
+From then on it indexes and counts what is written, and builds the indexes and counts for its
+existing entries in the background (see the background migration options under
 `[worker.storage]`). `restate.cluster.registry` shows each one's status on every replica:
-`backfilling` while it is built, then `complete`.
+`backfilling` while it is built, then `complete`. Until a partition's migration has finished, it
+has none, and queries read it as before; statistics queries fail on it.
 
 On the nodes that run queries, the same option makes queries use them:
 
@@ -68,5 +71,7 @@ serving while they are built.
 
 ### Migration Guidance
 
-No action is needed. To try the indexes and statistics, set the option on every node and restart
-the nodes. To remove them, remove the option and restart the nodes.
+No action is needed. To try the indexes and statistics, first upgrade every node to v1.8.2 or
+newer, then set the option on every node and restart the nodes. A partition led by a node with the
+option on stops its replicas on nodes that still run an older version. To remove them, remove the
+option and restart the nodes.

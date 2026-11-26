@@ -57,10 +57,17 @@ pub(crate) type ApplyEntryChange = fn(
     Option<&EntryStateRef<'_>>,
 );
 
-/// Definitions released together. Every family is maintained while
-/// `experimental-enable-indexes` is on, and dropped while it is off.
+/// Definitions released together. A family is maintained while
+/// `experimental-enable-indexes` is on, and, if it reads the vqueue entries, once
+/// the partition has fully migrated to vqueues; otherwise it is dropped.
 pub(crate) struct Family {
     pub(crate) definitions: &'static [&'static IndexDefinition],
+    /// Whether the definitions are computed from the vqueue entries, which hold
+    /// every invocation only once the partition has fully migrated to vqueues
+    /// (the `vqueues` state-machine feature; a migration that skipped completed
+    /// invocations isn't enough). Until then the family isn't registered, so no
+    /// walk starts and no query reads an index that misses invocations.
+    pub(crate) requires_vqueues: bool,
 }
 
 /// An entry-scoped index or statistic known to this binary.

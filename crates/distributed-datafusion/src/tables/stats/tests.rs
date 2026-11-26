@@ -158,6 +158,7 @@ async fn stats_tables_aggregate_filter_and_follow_lifecycle_across_stores() {
     let mut stores = Vec::new();
     for (_, partition) in &partitions.0 {
         let mut store = manager.open(partition, None).await.unwrap();
+        store.mark_fully_migrated_to_vqueues().await;
         store
             .verify_and_run_migrations(Default::default(), &config)
             .await

@@ -656,6 +656,7 @@ async fn finished_entries_read_through_the_transition_index_match_the_scan() {
         .unwrap();
     let mut config = Configuration::default();
     config.common.experimental.set_indexes(true);
+    store.mark_fully_migrated_to_vqueues().await;
     store
         .verify_and_run_migrations(CancellationToken::new(), &config)
         .await
@@ -1176,6 +1177,7 @@ async fn active_entries_read_through_the_status_index_match_the_scan() {
         .unwrap();
     let mut config = Configuration::default();
     config.common.experimental.set_indexes(true);
+    store.mark_fully_migrated_to_vqueues().await;
     store
         .verify_and_run_migrations(CancellationToken::new(), &config)
         .await
