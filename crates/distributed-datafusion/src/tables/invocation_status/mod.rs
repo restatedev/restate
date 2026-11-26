@@ -127,11 +127,7 @@ impl CompleteIndex for EntryIndex {
     /// do pages of any number of named ones. Where the index isn't maintained, every
     /// partition would scan and sort instead, so the planner then scans.
     fn useful(restriction: &EntryByCreatedDomains) -> bool {
-        if !Configuration::pinned()
-            .common
-            .experimental
-            .index_reads_enabled()
-        {
+        if !Configuration::pinned().index_reads_enabled() {
             return false;
         }
         // An empty list of services selects nothing.
@@ -186,11 +182,7 @@ impl CompleteIndex for StatusIndex {
     const ORDERING: &'static [IndexOrder<InvocationStatusColumn>] = EntryIndex::ORDERING;
 
     fn useful(restriction: &EntryByStatusCreatedDomains) -> bool {
-        if !Configuration::pinned()
-            .common
-            .experimental
-            .index_reads_enabled()
-        {
+        if !Configuration::pinned().index_reads_enabled() {
             return false;
         }
         // An empty list of services selects nothing.

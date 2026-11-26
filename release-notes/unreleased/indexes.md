@@ -65,6 +65,17 @@ serving while they are built.
   counts are deleted (`drop_reason` `not-enabled` in `restate.cluster.registry`), and queries read
   as before. Turning it on again builds them from scratch. Invocation and entry data are never
   affected.
+- **To stop queries from reading the indexes without dropping them**, for example if an index read
+  misbehaves, set this on the nodes that run queries:
+
+  ```toml
+  [admin.query-engine]
+  disable-index-reads = true
+  ```
+
+  Queries then read as before, while the indexes and counts stay built and up to date, so
+  removing the setting uses them again right away. The statistics tables stay available. New
+  query sessions see the change.
 - **Turning the option on raises the partition's minimum Restate version to v1.8.2, for good:** a
   node that has run with it cannot be rolled back to an older version, also after the option is
   turned off.

@@ -426,12 +426,10 @@ fn since<V>(predicate: Option<ValuePredicate<V>>) -> bool {
     }
 }
 
-/// Whether this coordinator reads indexes (`experimental-enable-indexes`).
+/// Whether this coordinator reads indexes: `experimental-enable-indexes`, and
+/// not `admin.query-engine.disable-index-reads`.
 fn index_reads() -> bool {
-    Configuration::pinned()
-        .common
-        .experimental
-        .index_reads_enabled()
+    Configuration::pinned().index_reads_enabled()
 }
 
 /// Whether every alternative fixes the stage to a non-empty set of stages the
