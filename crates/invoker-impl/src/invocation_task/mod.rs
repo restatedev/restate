@@ -57,6 +57,7 @@ use restate_worker_api::invoker::invocation_reader::{
 use super::Notification;
 use crate::TokenBucket;
 use crate::error::{InvocationMemoryExhausted, InvokerError};
+use crate::fair_channel;
 use crate::metric_definitions::{INVOKER_EAGER_STATE_TRUNCATED, INVOKER_TASK_DURATION};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
@@ -183,6 +184,38 @@ pub(super) struct InvocationTaskOutput {
     pub(super) inner: InvocationTaskOutputInner,
 }
 
+/// Rough weight of the heap allocations of outputs whose payload isn't measured.
+const UNMEASURED_PAYLOAD_WEIGHT: usize = 64;
+
+impl fair_channel::Weight for InvocationTaskOutput {
+    fn weight(&self) -> usize {
+        // Every output counts its inline size. On top of that, the deployment-controlled payloads
+        // are measured; the other outputs' allocations are small or sent at most once per
+        // attempt, so they count a fixed weight.
+        size_of::<Self>()
+            + match &self.inner {
+                InvocationTaskOutputInner::NewCommand { command, .. } => {
+                    command.serialized_length()
+                }
+                InvocationTaskOutputInner::NewNotificationProposal { notification, .. } => {
+                    notification.serialized_length()
+                }
+                // Sent once per attempt, when the deployment is selected or responds.
+                InvocationTaskOutputInner::PinnedDeployment(..)
+                | InvocationTaskOutputInner::ServerHeaderReceived(_)
+                // Usually a handful of notification ids. Decoded from a single deployment
+                // message, so bounded by the message size limit.
+                | InvocationTaskOutputInner::AwaitingOn { .. }
+                // Terminal: the last output of an attempt.
+                | InvocationTaskOutputInner::Closed
+                | InvocationTaskOutputInner::SuspendedV2(_)
+                | InvocationTaskOutputInner::SuspendedV3(_)
+                | InvocationTaskOutputInner::Failed(..)
+                | InvocationTaskOutputInner::ShouldYield { .. } => UNMEASURED_PAYLOAD_WEIGHT,
+            }
+    }
+}
+
 pub(super) enum InvocationTaskOutputInner {
     // `has_changed` indicates if we believe this is a freshly selected endpoint or not.
     PinnedDeployment(PinnedDeployment, /* has_changed: */ bool),
@@ -287,7 +320,7 @@ pub(super) struct InvocationTask<DMR> {
 
     // Invoker tx/rx
     schemas: Live<DMR>,
-    invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+    invoker_tx: fair_channel::Sender<InvocationTaskOutput>,
     invoker_rx: mpsc::UnboundedReceiver<Notification>,
 
     // throttling
@@ -364,7 +397,7 @@ where
         message_size_limit: NonZeroUsize,
         retry_count_since_last_stored_entry: u32,
         deployment_metadata_resolver: Live<Schemas>,
-        invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+        invoker_tx: fair_channel::Sender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         action_token_bucket: Option<TokenBucket>,
         limit_key: LimitKey<ReString>,
@@ -611,7 +644,7 @@ where
 impl<Schemas> InvocationTask<Schemas> {
     /// Send a non-terminal message to the invoker main loop.
     pub(crate) fn send_invoker_tx(&self, invocation_task_output_inner: InvocationTaskOutputInner) {
-        let _ = self.invoker_tx.send(InvocationTaskOutput {
+        self.invoker_tx.send(InvocationTaskOutput {
             invocation_id: self.invocation_id,
             fencing_token: self.fencing_token,
             inner: invocation_task_output_inner,
