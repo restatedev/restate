@@ -42,8 +42,8 @@
 //! lane (Finished, Cancelled): t5       ─┘
 //! ```
 //!
-//! A query names the invocations' public `status` or `completion_result`,
-//! which select the lanes their entries can be in
+//! A query names the invocations' `stage`, `effective_status`, public `status`
+//! or `completion_result`, which select the lanes their entries can be in
 //! ([`EntryByStatusCreatedKey::lanes`]). One probe of the index finds which of
 //! them have keys, and only those are read. The probe and the lanes' discovery
 //! share the limits of one read; past them the read scans instead, before it

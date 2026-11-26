@@ -525,6 +525,12 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         every_lane.into(),
         handler_range.clone(),
     ];
+    // A view page scans too, but the view passes the entry's stage and
+    // effective status through to the table's read as they are: conditions the
+    // status index's lanes narrow by.
+    let view_page = "SELECT id, stage, effective_status FROM sys_invocation \
+        WHERE stage = 'finished' AND effective_status = 'killed' \
+        AND target_service_name = 'Promises' ORDER BY created_at DESC NULLS LAST LIMIT 9";
     // Scanned: another order, a tie-breaker, no LIMIT, or a view above the
     // table.
     let scans = [
@@ -536,6 +542,7 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         "SELECT id, status, target FROM sys_invocation WHERE target_service_name = 'Promises' \
          AND target_handler_name = 'promise' ORDER BY created_at DESC NULLS LAST LIMIT 9"
             .into(),
+        view_page.into(),
     ];
     let sorted = |mut rows: Vec<Vec<String>>| {
         rows.sort();
@@ -627,6 +634,15 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         );
         assert!(!rows(new.as_ref(), sql).await.is_empty(), "{sql}");
     }
+    let plan = explained(view_page).await;
+    let read = plan
+        .lines()
+        .find(|line| line.contains("TableScanExec: table=sys_invocation_status"))
+        .unwrap();
+    assert!(
+        read.contains("stage@") && read.contains("effective_status@"),
+        "{plan}"
+    );
     // A partition that can't keep the index's order keeps the newest rows that
     // meet the query's conditions, OFFSET included.
     assert!(explained(page).await.contains("fallback_fetch=51"));
@@ -693,15 +709,49 @@ async fn invocations_read_through_the_entry_index_match_v1() {
         scanned,
         "v1 scan"
     );
-    for (condition, index) in [
-        ("", "entry_by_created/1"),
-        ("AND status = 'completed'", "entry_by_status_created/1"),
+    // The entry's stage and effective status narrow the status index's lanes
+    // as the public status does. Promises has no failed or scheduled
+    // invocations: those pages are empty.
+    for (condition, index, found) in [
+        ("", "entry_by_created/1", true),
+        (
+            "AND status = 'completed'",
+            "entry_by_status_created/1",
+            true,
+        ),
+        (
+            "AND effective_status = 'killed'",
+            "entry_by_status_created/1",
+            true,
+        ),
+        (
+            "AND effective_status = 'failed'",
+            "entry_by_status_created/1",
+            false,
+        ),
+        (
+            "AND effective_status IN ('running', 'suspended')",
+            "entry_by_status_created/1",
+            true,
+        ),
+        (
+            "AND effective_status <> 'succeeded'",
+            "entry_by_status_created/1",
+            true,
+        ),
+        ("AND stage = 'finished'", "entry_by_status_created/1", true),
+        (
+            "AND stage = 'inbox' AND effective_status = 'scheduled'",
+            "entry_by_status_created/1",
+            false,
+        ),
     ] {
         let sql = promises_by(condition, "");
         let plan = explained(&sql).await;
         assert!(plan.contains(&format!("index={index}")), "{sql}: {plan}");
         let mut expected = sorted(rows(new.as_ref(), &promises_by(condition, ", id")).await);
         expected.retain(|row| *row != orphan_row);
+        assert_eq!(!expected.is_empty(), found, "{sql}");
         assert_eq!(sorted(rows(new.as_ref(), &sql).await), expected, "{sql}");
     }
     let some: Vec<_> = scanned.iter().step_by(7).collect();

@@ -671,8 +671,16 @@ impl Keyed {
 impl EntryByStatusCreatedKey {
     /// The stages and stored statuses whose keys can hold the entry of an
     /// invocation `selection` matches, in key order: derived from its
-    /// conditions on `status` and `completion_result`. The caller keeps its
+    /// conditions on `stage`, `effective_status`, `status` and
+    /// `completion_result`, which all hold together. The caller keeps its
     /// predicate. Each pair is a lane of the index ([`Self::prepare_lanes`]).
+    ///
+    /// An invocation shows its entry's stage and effective status, so
+    /// conditions on them keep exactly the pairs [`Self::entry_lanes`] keeps
+    /// for the same conditions on an entry: `effective_status = 'failed'` is
+    /// Finished's `failed`, and `stage = 'running'` every pair of Running. A
+    /// pair no code path writes makes the `unknown` sentinel, shown as NULL,
+    /// which no status name selects.
     ///
     /// An invocation's public `status` and `completion_result` are the ones
     /// its entry's effective status tells
@@ -709,21 +717,30 @@ impl EntryByStatusCreatedKey {
                 && results.iter().all(|condition| condition.matches(&result))
         };
         // `Selection::Empty` selects no lane.
-        Keyed::of_selection(selection, |_| None)
-            .pairs()
-            .filter(move |&(stage, stored)| {
-                let effective = EffectiveStatus::new(stage, stored);
-                match effective.invocation_status() {
-                    Some(status) => satisfied(status, effective.completion_result()),
-                    None if stage == Stage::Finished => {
-                        satisfied("completed", Some("success"))
-                            || satisfied("completed", Some("failure"))
-                    }
-                    None => ["inboxed", "scheduled", "invoked", "suspended", "paused"]
-                        .into_iter()
-                        .any(|status| satisfied(status, None)),
+        Keyed::of_entry_selection(
+            selection,
+            |clause| match clause {
+                EntryByStatusCreatedClause::Stage(stage) => Some(stage),
+                _ => None,
+            },
+            |clause| match clause {
+                EntryByStatusCreatedClause::EffectiveStatus(status) => Some(status),
+                _ => None,
+            },
+        )
+        .filter(move |&(stage, stored)| {
+            let effective = EffectiveStatus::new(stage, stored);
+            match effective.invocation_status() {
+                Some(status) => satisfied(status, effective.completion_result()),
+                None if stage == Stage::Finished => {
+                    satisfied("completed", Some("success"))
+                        || satisfied("completed", Some("failure"))
                 }
-            })
+                None => ["inboxed", "scheduled", "invoked", "suspended", "paused"]
+                    .into_iter()
+                    .any(|status| satisfied(status, None)),
+            }
+        })
     }
 
     /// The stages and stored statuses whose keys can hold an entry
@@ -800,8 +817,8 @@ impl EntryByStatusCreatedKey {
                 EntryByStatusCreatedClause::CreatedAt(predicate) => {
                     ReverseUniqueTimestampCodec::try_prepare_value(predicate, literals)
                 }
-                // The public status and completion result select the lanes;
-                // the handler is in each key's value.
+                // The stage and the statuses select the lanes; the handler is
+                // in each key's value.
                 _ => Ok(None),
             },
             |tag, literals| match tag {

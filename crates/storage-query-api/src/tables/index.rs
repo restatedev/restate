@@ -198,12 +198,13 @@ crate::define_schema! {
     /// Vqueue entries by stored stage and status, creation hour and service,
     /// newest created first: the entry index `entry_by_status_created/1`, read
     /// instead of scanning `sys_invocation_status` for the invocations of some
-    /// statuses or outcomes. Its columns are the invocation columns that
-    /// restrict it: `status` and `completion_result` select the stored stages
-    /// and statuses their invocations' entries can have. The stage and status
-    /// lead the key, so no column orders it as a whole; each stage and status
-    /// is newest created first. The index also holds state mutations, which
-    /// name no invocation; reads skip them. Not shown as a table.
+    /// stages, statuses or outcomes. Its columns are the invocation columns
+    /// that restrict it: `stage`, `effective_status`, `status` and
+    /// `completion_result` select the stored stages and statuses their
+    /// invocations' entries can have. The stage and status lead the key, so no
+    /// column orders it as a whole; each stage and status is newest created
+    /// first. The index also holds state mutations, which name no invocation;
+    /// reads skip them. Not shown as a table.
     entry_by_status_created {
         name: "entry_by_status_created/1",
         primary: invocation_status::InvocationStatus,
@@ -213,6 +214,10 @@ crate::define_schema! {
             InvocationUuid::from_bytes(*id.as_entry_id().remainder_bytes()),
         ),
         columns {
+            /// The stage of the invocation's entry.
+            stage => DataType::LargeUtf8,
+            /// What the invocation is doing now, its entry's effective status.
+            effective_status => DataType::LargeUtf8,
             /// The invocation's status.
             status => DataType::LargeUtf8,
             /// Whether a completed invocation succeeded or failed.
