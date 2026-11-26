@@ -75,7 +75,7 @@ tracing = { workspace = true }
 ulid = { workspace = true }
 
 [dev-dependencies]
-restate-partition-store = { workspace = true, features = ["faults"] }
+restate-partition-store = { workspace = true, features = ["faults", "test-util"] }
 restate-storage-query-api = { workspace = true }
 restate-bifrost = { workspace = true, features = ["test-util"] }
 restate-core = { workspace = true, features = ["test-util"] }

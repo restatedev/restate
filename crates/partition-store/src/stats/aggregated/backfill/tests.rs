@@ -294,6 +294,7 @@ async fn totals(store: &PartitionStore) -> Option<[u64; 3]> {
 /// Opens as a partition does, then runs the walks the open started to their
 /// ends, as the background driver does in time.
 async fn open(store: &mut PartitionStore, config: &Configuration) {
+    store.mark_fully_migrated_to_vqueues().await;
     store
         .verify_and_run_migrations(CancellationToken::new(), config)
         .await

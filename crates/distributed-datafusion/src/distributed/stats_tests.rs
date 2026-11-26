@@ -70,6 +70,7 @@ pub(super) fn register_scanners(
 async fn reopen(store: &mut PartitionStore, configure: impl FnOnce(&mut Configuration)) {
     let mut config = Configuration::pinned().as_ref().clone();
     configure(&mut config);
+    store.mark_fully_migrated_to_vqueues().await;
     store
         .verify_and_run_migrations(Default::default(), &config)
         .await
