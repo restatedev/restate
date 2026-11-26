@@ -336,7 +336,7 @@ impl PartitionStore {
     /// and clear the entries' tokens, corrupting the indexes silently, and an open
     /// would have failed on them.
     pub(crate) fn published_registry(&self) -> Arc<PublishedRegistry> {
-        if let Some(published_registry) = self.db.published_registry() {
+        if let Some(published_registry) = self.db.shared_registry().published() {
             return published_registry;
         }
         let (records, _) =
@@ -360,7 +360,8 @@ impl PartitionStore {
             .with_jobs(records.jobs, retention),
         );
         self.db
-            .install_published_registry(Arc::clone(&published_registry));
+            .shared_registry()
+            .publish(Arc::clone(&published_registry));
         published_registry
     }
 
@@ -388,7 +389,8 @@ impl PartitionStore {
     #[allow(dead_code)] // Consumed when the registry is reconciled at open.
     pub(crate) fn set_published_registry(&mut self, published_registry: PublishedRegistry) {
         self.db
-            .install_published_registry(Arc::new(published_registry));
+            .shared_registry()
+            .publish(Arc::new(published_registry));
     }
 
     /// Overwrites the memoized storage features after their finalization batch commits.

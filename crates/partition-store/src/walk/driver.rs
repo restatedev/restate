@@ -160,7 +160,7 @@ pub struct DriverState {
 /// The [`DriverState`] published on a physical partition, with the driver that
 /// published it: a driver only withdraws its own.
 #[derive(Debug, Default)]
-pub(crate) struct PublishedDriverState(parking_lot::Mutex<Option<(u64, DriverState)>>);
+pub(crate) struct PublishedDriverState(restate_platform::sync::Mutex<Option<(u64, DriverState)>>);
 
 impl PublishedDriverState {
     /// The state of the running driver, if any.
@@ -281,7 +281,7 @@ pub struct WalkDriver {
 
 impl Drop for WalkDriver {
     fn drop(&mut self) {
-        self.db.driver_state().withdraw(self.id);
+        self.db.shared_registry().driver_state().withdraw(self.id);
     }
 }
 
@@ -289,7 +289,10 @@ impl PartitionStore {
     /// What the background drivers of this partition did on its physical
     /// partition; see [`WalkStats`].
     pub fn walk_stats(&self) -> WalkStatsSnapshot {
-        self.partition_db().walk_stats().snapshot()
+        self.partition_db()
+            .shared_registry()
+            .walk_stats()
+            .snapshot()
     }
 
     /// The background driver of this partition's walks, under `options`.
@@ -379,8 +382,8 @@ impl WalkDriver {
     async fn ready_or_vqueues_requested(&mut self) {
         // The request's flag is set before its wake-up, so a wake-up consumed by
         // a cancelled wait still leaves the flag for the next one.
-        let requested = self.db.vqueue_indexes_wakeup();
-        if self.db.vqueue_indexes_requested() {
+        let requested = self.db.shared_registry().vqueue_indexes_wakeup();
+        if self.db.shared_registry().vqueue_indexes_requested() {
             // A step that found commits held back kept the request and is due
             // again at its fence recheck: wait for that, not for the request.
             if self.fenced
@@ -454,7 +457,7 @@ impl WalkDriver {
         write_bytes: usize,
     ) -> Result<(), StorageError> {
         let started = Instant::now();
-        if self.awaiting_vqueues && self.db.vqueue_indexes_requested() {
+        if self.awaiting_vqueues && self.db.shared_registry().vqueue_indexes_requested() {
             // Registering writes and flushes the registry records outside `tx`, so
             // it waits while commits are held back, for example during a snapshot
             // export, like a slice does below: the request stays, and the step is
@@ -465,11 +468,11 @@ impl WalkDriver {
                 self.dirty = true;
             }
             if fenced {
-                add(&self.db.walk_stats().fence_skips, 1);
+                add(&self.db.shared_registry().walk_stats().fence_skips, 1);
                 self.due = Some(started + self.pacing.tuning.fence_recheck);
                 return Ok(());
             }
-            self.db.take_vqueue_indexes_request();
+            self.db.shared_registry().take_vqueue_indexes_request();
             let mut store = PartitionStore::from(self.db.clone());
             let registered = store.register_vqueue_indexes(tx).await?;
             if registered {
@@ -501,7 +504,7 @@ impl WalkDriver {
             self.dirty = true;
         }
         if fenced {
-            add(&self.db.walk_stats().fence_skips, 1);
+            add(&self.db.shared_registry().walk_stats().fence_skips, 1);
             self.due = Some(started + self.pacing.tuning.fence_recheck);
             return Ok(());
         }
@@ -587,7 +590,10 @@ impl WalkDriver {
             backoff_starts,
             eligible_at,
         };
-        self.db.driver_state().publish(self.id, state);
+        self.db
+            .shared_registry()
+            .driver_state()
+            .publish(self.id, state);
     }
 
     /// The next walk to take a slice at `now`: the lowest started walk after the
@@ -732,7 +738,7 @@ impl WalkDriver {
     fn charge(&mut self, walk: u64, started: Instant, examined: usize, failure: Option<String>) {
         let ended = Instant::now();
         let busy = std::mem::take(&mut self.busy);
-        let stats = self.db.walk_stats();
+        let stats = self.db.shared_registry().walk_stats();
         add(
             if busy {
                 &stats.busy_steps

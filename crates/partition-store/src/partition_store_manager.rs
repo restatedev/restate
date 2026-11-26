@@ -646,12 +646,12 @@ mod tests {
     use std::time::Duration;
 
     use anyhow::Context as _;
-    use parking_lot::Mutex;
     use rocksdb::AsColumnFamilyRef;
     use tokio::sync::{Semaphore, oneshot};
     use tokio::time::timeout;
 
     use restate_core::io::IoExecutor;
+    use restate_platform::sync::Mutex;
     use restate_rocksdb::{Priority, RocksDbManager, RocksError};
     use restate_storage_api::fsm_table::{ReadFsmTable, WriteFsmTable};
     use restate_storage_api::{StorageError, Transaction};

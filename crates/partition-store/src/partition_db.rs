@@ -48,6 +48,7 @@ use crate::durable_lsn_tracking::{
 use crate::faults::{self, FaultPoint, Faults};
 use crate::keys::KeyKind;
 use crate::memory::{MemoryBudget, PartitionDbMemoryConfig};
+use crate::registry::SharedRegistry;
 use crate::scan::PhysicalScan;
 use crate::snapshots::{LocalPartitionSnapshot, SnapshotDir};
 use crate::{PartitionReadSnapshot, TableKind};
@@ -117,22 +118,11 @@ pub struct PhysicalPartition {
     durable_lsn: watch::Sender<Lsn>,
     archived_lsn: watch::Sender<Option<Lsn>>,
     notifications: Arc<DurableLsnSenders>,
-    /// The published registry, with the indexes maintained on entry writes, as
-    /// reconciled when the partition was opened and updated by each commit that
-    /// changes it. Shared by every session and clone, so no handle keeps a stale
-    /// one.
-    published_registry: parking_lot::RwLock<Option<Arc<crate::registry::PublishedRegistry>>>,
-    /// What the background walk drivers did, across sessions.
-    walk_stats: crate::walk::WalkStats,
-    /// Why the running walk driver's walks aren't progressing, if one runs.
-    driver_state: crate::walk::PublishedDriverState,
+    /// The published registry and the walk drivers' state. Shared by every
+    /// session and clone, so no handle keeps a stale registry.
+    registry: SharedRegistry,
     /// The faults armed for the partition, shared with its cell.
     faults: Faults,
-    /// Whether the indexes over the vqueue entries wait to be registered, as the
-    /// processor asks once the partition has fully migrated to vqueues; and the
-    /// wake-up of the walk driver that registers them.
-    vqueue_indexes_requested: std::sync::atomic::AtomicBool,
-    vqueue_indexes_wakeup: tokio::sync::Notify,
     // Looked up once, when the partition is first opened, and shared by every
     // session. Last, because it holds the keep-alive of the database.
     cfs: CfHandles<KeyKind>,
@@ -177,12 +167,8 @@ impl PartitionDb {
                 durable_lsn: watch::Sender::new(Lsn::INVALID),
                 archived_lsn,
                 notifications: database.notifications,
-                published_registry: Default::default(),
-                walk_stats: Default::default(),
-                driver_state: Default::default(),
+                registry: Default::default(),
                 faults,
-                vqueue_indexes_requested: Default::default(),
-                vqueue_indexes_wakeup: Default::default(),
                 cfs,
             },
         );
@@ -207,28 +193,10 @@ impl PartitionDb {
         &self.physical().meta
     }
 
-    /// The published registry, once installed; see
-    /// [`Self::install_published_registry`].
-    pub(crate) fn published_registry(&self) -> Option<Arc<crate::registry::PublishedRegistry>> {
-        self.physical().published_registry.read().clone()
-    }
-
-    /// Publishes `published_registry` to every session and handle of this partition.
-    pub(crate) fn install_published_registry(
-        &self,
-        published_registry: Arc<crate::registry::PublishedRegistry>,
-    ) {
-        *self.physical().published_registry.write() = Some(published_registry);
-    }
-
-    /// What the background walk drivers of this partition did.
-    pub(crate) fn walk_stats(&self) -> &crate::walk::WalkStats {
-        &self.physical().walk_stats
-    }
-
-    /// Why the walks of this partition's running driver aren't progressing.
-    pub(crate) fn driver_state(&self) -> &crate::walk::PublishedDriverState {
-        &self.physical().driver_state
+    /// The published registry and the walk drivers' state, shared by every
+    /// session and handle of this partition.
+    pub(crate) fn shared_registry(&self) -> &SharedRegistry {
+        &self.physical().registry
     }
 
     /// The faults armed for the partition.
@@ -242,33 +210,7 @@ impl PartitionDb {
     /// the migration is committed (see
     /// [`crate::PartitionStore::register_vqueue_indexes`]). Wakes the driver.
     pub fn request_vqueue_indexes(&self) {
-        let physical = self.physical();
-        physical
-            .vqueue_indexes_requested
-            .store(true, std::sync::atomic::Ordering::Release);
-        physical.vqueue_indexes_wakeup.notify_one();
-    }
-
-    /// Whether the indexes over the vqueue entries were asked for and not yet
-    /// taken.
-    pub(crate) fn vqueue_indexes_requested(&self) -> bool {
-        self.physical()
-            .vqueue_indexes_requested
-            .load(std::sync::atomic::Ordering::Acquire)
-    }
-
-    /// Takes the request for the indexes over the vqueue entries, if any.
-    pub(crate) fn take_vqueue_indexes_request(&self) -> bool {
-        self.physical()
-            .vqueue_indexes_requested
-            .swap(false, std::sync::atomic::Ordering::AcqRel)
-    }
-
-    /// Resolves once the indexes over the vqueue entries are asked for, or
-    /// right away if they were asked for since the last wait. Check
-    /// [`Self::vqueue_indexes_requested`] too: a wake-up may be stale.
-    pub(crate) async fn vqueue_indexes_wakeup(&self) {
-        self.physical().vqueue_indexes_wakeup.notified().await;
+        self.shared_registry().request_vqueue_indexes();
     }
 
     pub fn rocksdb(&self) -> &Arc<RocksDb> {
