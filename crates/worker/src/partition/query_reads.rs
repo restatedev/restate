@@ -759,6 +759,8 @@ mod tests {
         // snapshot shows the entries committed before it, and keeps showing them.
         let mut config = Configuration::default();
         config.common.experimental.set_indexes(true);
+        // A partition fully migrated to vqueues, which the indexes need.
+        store.mark_fully_migrated_to_vqueues().await;
         store
             .verify_and_run_migrations(Default::default(), &config)
             .await

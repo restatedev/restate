@@ -727,6 +727,7 @@ mod tests {
             .unwrap();
         let mut config = Configuration::default();
         config.common.experimental.set_indexes(true);
+        store.mark_fully_migrated_to_vqueues().await;
         store
             .verify_and_run_migrations(CancellationToken::new(), &config)
             .await

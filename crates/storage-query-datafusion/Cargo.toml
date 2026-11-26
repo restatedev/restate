@@ -62,6 +62,7 @@ tracing = { workspace = true }
 [dev-dependencies]
 restate-clock = { workspace = true, features = ["test-util"] }
 restate-core = { workspace = true, features = ["test-util"] }
+restate-partition-store = { workspace = true, features = ["test-util"] }
 restate-rocksdb = { workspace = true, features = ["test-util"] }
 restate-service-protocol = { workspace = true, features = ["test-util"] }
 restate-storage-api = { workspace = true, features = ["test-util"] }

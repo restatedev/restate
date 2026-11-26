@@ -61,6 +61,7 @@ pub(crate) static VIRTUAL_OBJECT_STATS: IndexDefinition = IndexDefinition {
 /// The status gauges, released together.
 pub(crate) const STATUS_GAUGES: Family = Family {
     definitions: &[&SERVICE_STATS, &DEPLOYMENT_STATS, &VIRTUAL_OBJECT_STATS],
+    requires_vqueues: true,
 };
 
 fn kind(
