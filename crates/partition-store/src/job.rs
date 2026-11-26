@@ -521,6 +521,11 @@ impl MigrationJobRecords {
         }
     }
 
+    /// How long the records of the jobs this operation finishes are kept.
+    pub(crate) fn retention(&self) -> Duration {
+        self.retention
+    }
+
     /// Finishes the unfinished job `id` with `status`, at `at` if known, so that
     /// its record expires one retention after that, or after `now`, this
     /// operation's time, if the finish time is unknown. A job that isn't

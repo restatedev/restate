@@ -17,7 +17,8 @@
 //! different points. The reads block, so they run on the query IO pool. A
 //! replica whose records can't be read is reported as such, never as a replica
 //! without indexes. Finished jobs whose record expired are left out, whether or
-//! not compaction removed them yet.
+//! not compaction removed them yet, and so are dropped indexes whose entry
+//! expired, whether or not an open removed it yet.
 //!
 //! The constraints the replica's walk driver last observed come with it, read
 //! from the driver's published state rather than the snapshot; see
@@ -61,6 +62,7 @@ pub struct ReplicaMigrations {
     /// indexes enabled, even before any definition registers, and still after
     /// they are disabled.
     pub has_registry: bool,
+    /// The registry, without the dropped indexes whose entry expired.
     pub registry: Registry,
     pub walks: Walks,
     /// The unfinished jobs and the finished ones not expired yet, by ID.
@@ -258,7 +260,8 @@ impl PartitionStoreManager {
 }
 
 /// Reads one replica's records through `snapshot` with one scan, leaving out
-/// the jobs expired at `now`, or names the record that can't be read and why.
+/// the jobs and the dropped indexes expired at `now`, or names the record that
+/// can't be read and why.
 fn read_replica(
     snapshot: &PartitionReadSnapshot,
     partition_id: PartitionId,
@@ -272,11 +275,14 @@ fn read_replica(
         |id, error| Err(RecordsError::Job { id, error }),
     )
     .map_err(|err| (err.record(), err.to_string()))?;
+    let has_registry = read.registry.is_some();
+    let mut registry = read.registry.unwrap_or_default();
+    registry.remove_expired(now);
     Ok(ReplicaMigrations {
         partition_id,
         key_range,
-        has_registry: read.registry.is_some(),
-        registry: read.registry.unwrap_or_default(),
+        has_registry,
+        registry,
         walks: read.walks,
         jobs: read.jobs,
         index_sizes: HashMap::new(),

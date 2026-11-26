@@ -13,7 +13,8 @@ while, set by a new option under `[worker.storage]`:
 - `finished-migration-jobs-retention` (default `24h`): how long each partition
   replica keeps the record of a finished migration. A record expires this long
   after its migration finished, using the value configured at that moment, and
-  is then no longer shown. `0` keeps none.
+  is then no longer shown. `0` keeps none. The same option sets how long a
+  dropped index or statistic stays listed.
 
 The option takes effect when partitions open.
 

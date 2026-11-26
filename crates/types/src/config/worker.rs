@@ -1238,10 +1238,12 @@ pub struct StorageOptions {
     /// # Finished migration jobs retention
     ///
     /// How long each partition replica keeps the record of a finished background
-    /// migration, such as an index or statistic build, for inspection. A record
-    /// expires this long after its migration finished, with the retention
-    /// configured then, and is then no longer shown and later deleted. Unfinished
-    /// migrations are always recorded. `0` keeps no finished migrations.
+    /// migration, such as an index or statistic build, and the entry of a dropped
+    /// index or statistic, for inspection. A record expires this long after its
+    /// migration finished, and an entry this long after its index was dropped,
+    /// with the retention configured then; either is then no longer shown and
+    /// later deleted. Unfinished migrations, and indexes that aren't dropped, are
+    /// always recorded. `0` keeps no finished migrations and no dropped indexes.
     ///
     /// Takes effect when partitions open.
     ///

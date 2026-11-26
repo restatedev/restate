@@ -41,7 +41,8 @@
 //! One counter issues IDs for secondary and aggregate indexes and migrations
 //! alike, starting at [`FIRST_ID`], so that an entry's tokens are never
 //! ambiguous and an entry's job can have the entry's ID. IDs are never reused,
-//! not even after an index is dropped, and fit the `u32` of both key prefixes.
+//! not even after an index is dropped and its entry expired and left the
+//! registry, and fit the `u32` of both key prefixes.
 //! Registering a definition that already has a maintained index returns that
 //! index; ordinary reopening therefore consumes no IDs.
 //!
@@ -60,6 +61,8 @@
 //! assert_eq!(registry.register("entry_by_stage_service/1", IndexKind::Secondary).unwrap(), 66);
 //! assert_eq!(registry.get(64).unwrap().state, IndexStatus::Dropped);
 //! ```
+
+use std::time::Duration;
 
 use restate_util_string::ReString;
 
@@ -150,8 +153,11 @@ pub enum IndexStatus {
     /// Maintained, and every entry is reflected: queries may use it.
     #[bilrost(2)]
     Complete,
-    /// Neither maintained nor readable; its keys were deleted. The ID stays
-    /// reserved, so a stale token in an entry never matches a new index.
+    /// Neither maintained nor readable; its keys were deleted. Its entry stays
+    /// for operators until it expires, a retention after the drop
+    /// ([`IndexTimeline::expires_at`]), and the next open then removes it. The
+    /// counter keeps its ID reserved either way: it never issues an ID twice,
+    /// so a stale token in an entry never matches a new index.
     #[bilrost(3)]
     Dropped,
 }
@@ -190,7 +196,9 @@ impl DropReason {
 
 /// When an index went through its states, for operators. Every field is `None`
 /// (or 0) until its event happens, or when unknown. Nothing reads it to decide
-/// anything. Times are wall-clock milliseconds since the epoch on this replica.
+/// anything about the index; `expires_at` only decides when a dropped index's
+/// entry leaves the registry. Times are wall-clock milliseconds since the epoch
+/// on this replica.
 #[derive(Debug, Clone, Default, PartialEq, Eq, bilrost::Message)]
 pub struct IndexTimeline {
     #[bilrost(1)]
@@ -205,6 +213,12 @@ pub struct IndexTimeline {
     /// Why it was dropped: a [`DropReason`] number, 0 when not dropped.
     #[bilrost(5)]
     pub drop_reason: u32,
+    /// When the entry of this dropped index expires, as a finished job's record
+    /// does: when it was dropped plus `worker.storage.finished-migration-jobs-retention`
+    /// as configured then. Readers hide the entry from then on, and the next
+    /// open removes it from the registry. `None` while not dropped.
+    #[bilrost(6)]
+    pub expires_at: Option<u64>,
 }
 
 impl std::fmt::Display for IndexTimeline {
@@ -213,8 +227,12 @@ impl std::fmt::Display for IndexTimeline {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "registered={:?} registered_by={:?} completed={:?} dropped={:?}",
-            self.registered_at, self.registered_by, self.completed_at, self.dropped_at
+            "registered={:?} registered_by={:?} completed={:?} dropped={:?} expires={:?}",
+            self.registered_at,
+            self.registered_by,
+            self.completed_at,
+            self.dropped_at,
+            self.expires_at
         )?;
         match (self.drop_reason, DropReason::from_number(self.drop_reason)) {
             (0, _) => Ok(()),
@@ -225,10 +243,12 @@ impl std::fmt::Display for IndexTimeline {
 }
 
 impl IndexTimeline {
-    /// Records that the index was dropped at `at` for `reason`.
-    pub(crate) fn dropped(&mut self, at: u64, reason: DropReason) {
+    /// Records that the index was dropped at `at` for `reason`; its entry
+    /// expires `retention` later.
+    pub(crate) fn dropped(&mut self, at: u64, reason: DropReason, retention: Duration) {
         self.dropped_at = Some(at);
         self.drop_reason = reason as u32;
+        self.expires_at = Some(crate::job::expiry(at, retention));
     }
 }
 
@@ -255,6 +275,12 @@ impl Index {
     /// Maintained on writes: Backfilling or Complete.
     pub fn is_maintained(&self) -> bool {
         matches!(self.state, IndexStatus::Backfilling | IndexStatus::Complete)
+    }
+
+    /// Whether this is a dropped index whose entry expired at `now`: readers
+    /// hide it, and the next open removes it.
+    pub fn is_expired(&self, now: u64) -> bool {
+        self.state == IndexStatus::Dropped && self.timeline.expires_at.is_some_and(|at| at <= now)
     }
 }
 
@@ -531,6 +557,30 @@ impl Registry {
         entry.state = Dropped;
         Ok(())
     }
+
+    /// Removes the entries of the dropped indexes that expired at `now`, and
+    /// returns their IDs. The counter never issues them again, and a token an
+    /// entry still holds for one is ignored: writes consult only maintained
+    /// indexes.
+    pub(crate) fn remove_expired(&mut self, now: u64) -> Vec<u32> {
+        self.indexes
+            .extract_if(.., |index| index.is_expired(now))
+            .map(|index| index.id)
+            .collect()
+    }
+
+    /// As [`Self::remove_expired`], after giving each dropped index without an
+    /// expiry one, `retention` after its drop, or after `now` if that time is
+    /// unknown. Only development builds dropped indexes without an expiry.
+    pub(crate) fn expire_dropped(&mut self, now: u64, retention: Duration) -> Vec<u32> {
+        for index in &mut self.indexes {
+            if index.state == IndexStatus::Dropped && index.timeline.expires_at.is_none() {
+                let dropped_at = index.timeline.dropped_at.unwrap_or(now);
+                index.timeline.expires_at = Some(crate::job::expiry(dropped_at, retention));
+            }
+        }
+        self.remove_expired(now)
+    }
 }
 
 #[cfg(test)]
@@ -598,13 +648,13 @@ mod tests {
                 .to_string()
                 .ends_with(" drop_reason=unknown(99)")
         );
-        // Known reasons show by name.
+        // Known reasons show by name, after the expiry a drop sets.
         let mut reset = back.timeline;
-        reset.dropped(7, DropReason::Reset);
+        reset.dropped(7, DropReason::Reset, Duration::from_millis(3));
         assert!(
             reset
                 .to_string()
-                .ends_with(" dropped=Some(7) drop_reason=Reset")
+                .ends_with(" dropped=Some(7) expires=Some(10) drop_reason=Reset")
         );
     }
 
@@ -653,6 +703,33 @@ mod tests {
             "disabled_ids_stay_reserved"
         );
         assert_eq!(reopened.indexes().len(), 3);
+
+        // A dropped index's entry expires a retention after its drop. One a
+        // development build dropped without an expiry gets one, here from the
+        // check's time, its drop time being unknown. Maintained indexes never
+        // expire, and the counter never issues an expired entry's ID again.
+        let retention = Duration::from_millis(10);
+        let mut expiring = reopened.clone();
+        expiring.drop_index(65).unwrap();
+        let timeline = expiring.timeline_mut(65).unwrap();
+        timeline.dropped(100, DropReason::NotEnabled, retention);
+        assert!(expiring.expire_dropped(105, retention).is_empty());
+        let expires = |registry: &Registry, id| registry.get(id).unwrap().timeline.expires_at;
+        assert_eq!(
+            (expires(&expiring, 64), expires(&expiring, 65)),
+            (Some(115), Some(110))
+        );
+        assert!(!expiring.get(65).unwrap().is_expired(109));
+        assert_eq!(expiring.expire_dropped(110, retention), [65]);
+        assert_eq!(expiring.remove_expired(115), [64]);
+        expiring.timeline_mut(66).unwrap().expires_at = Some(0);
+        assert!(expiring.remove_expired(u64::MAX).is_empty());
+        assert_eq!(expiring.next_id, reopened.next_id);
+        assert_eq!(
+            expiring.register("b/1", IndexKind::Aggregate),
+            Ok(67),
+            "expired_ids_stay_reserved"
+        );
 
         // The last ID fits the key prefixes' u32; the next registration fails
         // without changing anything.
