@@ -87,7 +87,7 @@ pub mod v1 {
     ));
 
     pub mod pb_conversion {
-        use std::collections::HashSet;
+        use std::collections::BTreeSet;
         use std::str::FromStr;
         use std::sync::Arc;
 
@@ -472,7 +472,7 @@ pub mod v1 {
                             .transpose()
                             .ok_or_else(|| ConversionError::missing_field("response_sink"))?
                     })
-                    .collect::<Result<HashSet<_>, _>>()?;
+                    .collect::<Result<BTreeSet<_>, _>>()?;
                 let headers = headers
                     .into_iter()
                     .map(restate_types::invocation::Header::try_from)

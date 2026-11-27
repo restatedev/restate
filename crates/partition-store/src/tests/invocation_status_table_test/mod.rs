@@ -14,7 +14,7 @@
 
 use super::storage_test_environment;
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::ops::ControlFlow;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -86,7 +86,7 @@ fn invoked_status(invocation_target: InvocationTarget) -> InvocationStatus {
         limit_key: LimitKey::None,
         journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
         pinned_deployment: None,
-        response_sinks: HashSet::new(),
+        response_sinks: BTreeSet::new(),
         timestamps: StatusTimestamps::new(
             MillisSinceEpoch::new(0),
             MillisSinceEpoch::new(0),
@@ -115,7 +115,7 @@ fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
             created_using_restate_version: RestateVersion::current(),
             journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
             pinned_deployment: None,
-            response_sinks: HashSet::new(),
+            response_sinks: BTreeSet::new(),
             timestamps: StatusTimestamps::new(
                 MillisSinceEpoch::new(0),
                 MillisSinceEpoch::new(0),

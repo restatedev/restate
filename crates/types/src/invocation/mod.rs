@@ -698,10 +698,22 @@ pub struct InvocationInput {
 
 /// Target of a completion sent from another Partition Processor.
 ///
+/// The derived `Ord` is part of the order of [`ServiceInvocationResponseSink`], which must stay
+/// stable across versions: don't reorder the fields.
+///
 /// Reserved field tags:
 /// - 3: caller_invocation_epoch removed in v1.6
 #[derive(
-    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Hash, bilrost::Message,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+    Hash,
+    bilrost::Message,
 )]
 pub struct JournalCompletionTarget {
     #[bilrost(1)]
@@ -831,7 +843,14 @@ impl WithInvocationId for GetInvocationOutputResponse {
 }
 
 /// Definition of the sink where to send the result of a service invocation.
-#[derive(Debug, PartialEq, Eq, Clone, Hash, serde::Serialize, serde::Deserialize)]
+///
+/// The derived `Ord` decides the order in which responses to an invocation's sinks are enqueued
+/// into the outbox. Replicas truncate the outbox by sequence number, so every replica, including
+/// ones on another version during a rolling upgrade, must use the same order: don't reorder the
+/// variants. `response_sink_order_is_stable` pins the order.
+#[derive(
+    Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(
     from = "serde_hacks::ServiceInvocationResponseSink",
     into = "serde_hacks::ServiceInvocationResponseSink"
@@ -2040,6 +2059,42 @@ mod tests {
             assert_eq!(old_response.id, caller_id);
             assert_eq!(old_response.entry_index, caller_completion_id);
             assert_eq!(old_response.result, result);
+        }
+    }
+
+    mod response_sink {
+        use std::collections::BTreeSet;
+
+        use super::*;
+        use crate::identifiers::InvocationUuid;
+
+        /// Pins the order replicas enqueue responses into the outbox. It changes if the variants
+        /// of [`ServiceInvocationResponseSink`], or the fields of [`JournalCompletionTarget`] or
+        /// [`InvocationId`], get reordered.
+        #[test]
+        fn response_sink_order_is_stable() {
+            let pp = |partition_key, uuid, completion_id| {
+                ServiceInvocationResponseSink::partition_processor(
+                    InvocationId::from_parts(partition_key, InvocationUuid::from_u128(uuid)),
+                    completion_id,
+                )
+            };
+            let expected = vec![
+                pp(1, 2, 2),
+                pp(1, 2, 3),
+                pp(1, 3, 1),
+                pp(2, 1, 1),
+                ServiceInvocationResponseSink::ingress(PartitionProcessorRpcRequestId::from_parts(
+                    1, 1,
+                )),
+            ];
+
+            let sorted: BTreeSet<_> = [4, 2, 0, 3, 1]
+                .into_iter()
+                .map(|i| expected[i].clone())
+                .collect();
+
+            assert_eq!(sorted.into_iter().collect::<Vec<_>>(), expected);
         }
     }
 
