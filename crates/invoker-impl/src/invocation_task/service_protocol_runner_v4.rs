@@ -1531,9 +1531,11 @@ where
             Message::GetLazyStateCompletionNotification(_) => TerminalLoopState::Failed(
                 InvokerError::UnexpectedMessageV4(MessageType::GetLazyStateCompletionNotification),
             ),
-            Message::Custom(_, _) => {
-                unimplemented!()
-            }
+            // Custom messages are not supported yet. Fail the attempt instead of panicking,
+            // so a deployment sending one can't take down the partition processor.
+            Message::Custom(ty, _) => TerminalLoopState::Failed(InvokerError::UnexpectedMessageV4(
+                MessageType::Custom(ty),
+            )),
         }
     }
 
