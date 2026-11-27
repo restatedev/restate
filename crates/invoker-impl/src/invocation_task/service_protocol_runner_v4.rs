@@ -1037,6 +1037,8 @@ where
                 TerminalLoopState::Failed(InvokerError::UnexpectedMessageV4(m.ty()))
             }
             Message::GetStateEphemeralCommand(command) => {
+                // Answered right here, without involving the invoker: neither this command nor
+                // its reply clears the invocation's suspendable mark, see `SuspendableMark`.
                 let Some(http_stream_tx) = http_stream_tx else {
                     // The request stream is closed already, so we can't answer anymore:
                     // the SDK will notice the request stream closed and will fail the attempt on its own if it really needs this value to make progress.

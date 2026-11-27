@@ -149,6 +149,11 @@ impl JournalTracker {
 /// restored right away. The service protocol only considers notifications in the awaited tree
 /// to outdate the information, but tracking that tree costs memory for little gain.
 ///
+/// Ephemeral state requests are the exception: the invocation task answers them without
+/// involving the invoker, so neither the request nor its reply clears the mark. A marked
+/// attempt isn't expected to make such requests: SDKs make them from run closures only, and by
+/// default don't report an await point while a run executes.
+///
 /// The mark only changes while the state machine is removed from the
 /// [`InvocationStateMachineManager`](crate::state_machine_manager::InvocationStateMachineManager),
 /// or through the manager's methods, so the manager's suspendable index stays in sync.
