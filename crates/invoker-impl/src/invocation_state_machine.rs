@@ -143,11 +143,11 @@ impl JournalTracker {
 ///
 /// Set when the SDK reports that user code is blocked on an await point and not executing side
 /// effects. Cleared as soon as a notification or ack is sent to the SDK, as it may unblock it,
-/// or the SDK sends a new command or run proposal. SDKs report again where they are blocked
-/// after every message they receive, so a mark cleared by a notification the SDK doesn't await
-/// (e.g. the invocation id of a call) is restored right away. The service protocol only
-/// considers notifications in the awaited tree to outdate the information, but tracking that
-/// tree costs memory for little gain.
+/// or the SDK sends a new command or run proposal, or reports that it now executes side
+/// effects. SDKs report again where they are blocked after every message they receive, so a
+/// mark cleared by a notification the SDK doesn't await (e.g. the invocation id of a call) is
+/// restored right away. The service protocol only considers notifications in the awaited tree
+/// to outdate the information, but tracking that tree costs memory for little gain.
 ///
 /// The mark only changes while the state machine is removed from the
 /// [`InvocationStateMachineManager`](crate::state_machine_manager::InvocationStateMachineManager),

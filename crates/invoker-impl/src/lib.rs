@@ -849,9 +849,8 @@ where
         unresolved_future: UnresolvedFuture,
         suspendable: bool,
     ) {
-        let found = self.invocation_state_machine_manager.handle_for_invocation(
-            &invocation_id,
-            |_, ism| {
+        self.invocation_state_machine_manager
+            .handle_for_invocation(&invocation_id, |_, ism| {
                 trace!(
                     restate.invocation.target = %ism.invocation_target,
                     "awaiting on received {:?}. Invocation state: {:?}",
@@ -861,15 +860,18 @@ where
 
                 self.status_store
                     .on_awaiting_on(&invocation_id, unresolved_future);
-            },
-        );
+            });
 
-        // Trust the SDK: it is blocked on this await point and, unless it says otherwise,
-        // not executing side effects. Suspending it is then as safe as the inactivity timeout,
-        // unless the service or handler opted out of eager suspension.
-        if found.is_some() && suspendable && !options.disable_eager_suspension {
+        // Trust the SDK's latest report: it is blocked on this await point and, unless it says
+        // otherwise, not executing side effects. Suspending it is then as safe as the
+        // inactivity timeout, unless the service or handler opted out of eager suspension.
+        // A report that says otherwise outdates an earlier one.
+        if suspendable && !options.disable_eager_suspension {
             self.invocation_state_machine_manager
                 .mark_suspendable(&invocation_id);
+        } else {
+            self.invocation_state_machine_manager
+                .clear_suspendable(&invocation_id);
         }
     }
 
@@ -3021,10 +3023,15 @@ mod tests {
         let awaiting = |id: u32| UnresolvedFuture::Single(NotificationId::CompletionId(id));
 
         // AwaitingOn marks the invocation, unless it is not suspendable (the SDK reports running
-        // side effects or the handler is non-preemptable).
+        // side effects or the handler is non-preemptable). Such a report also clears the mark
+        // of an earlier one.
         service_inner.handle_awaiting_on(&options, unscoped, awaiting(1), true);
         service_inner.handle_awaiting_on(&options, tenant2, awaiting(1), false);
         assert!(service_inner.is_suspendable(&unscoped));
+        assert!(!service_inner.is_suspendable(&tenant2));
+        service_inner.handle_awaiting_on(&options, tenant2, awaiting(1), true);
+        assert!(service_inner.is_suspendable(&tenant2));
+        service_inner.handle_awaiting_on(&options, tenant2, awaiting(1), false);
         assert!(!service_inner.is_suspendable(&tenant2));
         service_inner.handle_awaiting_on(&options, tenant2, awaiting(1), true);
         assert!(service_inner.is_suspendable(&tenant2));
