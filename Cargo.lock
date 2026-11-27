@@ -9472,6 +9472,7 @@ dependencies = [
  "metrics",
  "opentelemetry",
  "parking_lot",
+ "priority-queue",
  "prost",
  "rand 0.10.2",
  "restate-bifrost",

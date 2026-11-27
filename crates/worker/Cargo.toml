@@ -65,6 +65,7 @@ itertools = { workspace = true }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }
 parking_lot = { workspace = true }
+priority-queue = { workspace = true }
 rand = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
