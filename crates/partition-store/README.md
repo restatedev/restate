@@ -68,7 +68,8 @@ it up to date, but it is incomplete, so queries must not read it. It becomes
 A definition that can't fill rows from the row alone (a *passive* one) relies on
 writes and deletions to cover them: between passes it stays `Backfilling`
 without a walk, and its job waits for the next pass. It is `Dropped` when its
-keys have been deleted; its ID stays reserved forever.
+keys have been deleted; its ID stays reserved forever, and its registry entry is
+listed for the same retention as a finished job (below), then removed.
 
 **Token.** For a write to know whether an index already contains a row's old
 state, the source row keeps a small list, `touched_by`: the IDs of the indexes
@@ -110,7 +111,10 @@ waiting job may start its next pass. The registry decides whether an index or a
 migration is Complete, and the walk holds where its work resumes and
 the evidence for completing it; a job record can be rebuilt from the registry.
 Finished jobs are kept for `worker.storage.finished-migration-jobs-retention`,
-24 hours by default, then hidden and removed by compaction.
+24 hours by default, then hidden and removed by compaction. A dropped index's
+registry entry is kept for the same time after the drop, then hidden and
+removed by the next open, which rewrites the registry anyway; the registry's
+counter keeps its ID reserved. Completed migrations are never removed.
 
 ## The rules
 
@@ -122,8 +126,9 @@ are their foundation.
 1. **A definition's meaning never changes under its name.** Different membership,
    key fields, value encoding or key derivation means a new versioned name. At
    open, a store retires indexes whose definition the binary doesn't know.
-2. **Index IDs are never reused**, so a stale token or a not-yet-deleted key can
-   never be mistaken for a new build.
+2. **Index IDs are never reused**, not even once a dropped index's entry has
+   left the registry, so a stale token or a not-yet-deleted key can never be
+   mistaken for a new build.
 3. **One decision per index per row change.** The index contains the row's old
    state if the index is Complete or the row holds the index's token. Then remove
    old and add new; otherwise only add. Never apply a change twice; never skip an

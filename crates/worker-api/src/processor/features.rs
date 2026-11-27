@@ -77,6 +77,13 @@ pub trait PartitionFeatures {
         self.has_feature(PartitionFeatureChange::EnableByteOffsets)
     }
 
+    /// Whether the partition holds no journal v1 data, and creates none.
+    ///
+    /// *Since v1.8.2*
+    fn is_journal_v1_retired(&self) -> bool {
+        self.has_feature(PartitionFeatureChange::RetireJournalV1)
+    }
+
     /// Whether vqueue entries record their lifecycle more precisely: every run of an entry
     /// records `started`, and an invocation's entry enters Finished at the invocation's
     /// completion time.
@@ -138,31 +145,13 @@ pub trait PartitionFeatures {
 impl PartitionFeatures for PersistedFeatures {
     #[inline]
     fn has_feature(&self, feature: PartitionFeatureChange) -> bool {
-        match feature {
-            PartitionFeatureChange::EnableJournalV2 => self.journal_v2,
-            PartitionFeatureChange::EnableVqueues => self.vqueues,
-            PartitionFeatureChange::EnableUniqueRandomSeeds => self.unique_random_seeds,
-            PartitionFeatureChange::EnableVqueuesSkipCompleted => self.vqueues_skip_completed,
-            PartitionFeatureChange::EnablePreflightInvocationTerminationRetention => {
-                self.preflight_invocation_termination_retention
-            }
-            PartitionFeatureChange::EnableInconsistentStateMutationCleanup => {
-                self.inconsistent_state_mutation_cleanup
-            }
-            PartitionFeatureChange::EnablePreflightSignalRecording => {
-                self.preflight_signal_recording
-            }
-            PartitionFeatureChange::EnableByteOffsets => self.byte_offsets,
-            PartitionFeatureChange::EnableVqLifecycleRefined => self.vq_lifecycle_refined,
-            PartitionFeatureChange::EnableInvocationStatusOutputBlob => {
-                self.invocation_status_output_blob
-            }
-        }
+        self.is_enabled(feature)
     }
 
     #[inline]
     fn use_journal_v2_as_default(&self) -> bool {
-        self.journal_v2
+        // A partition that retired journal v1 has no other journal.
+        self.journal_v2 || self.journal_v1_retired
     }
 
     #[inline]

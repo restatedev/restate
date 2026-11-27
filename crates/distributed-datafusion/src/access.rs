@@ -765,6 +765,7 @@ mod tests {
                 stored::<EntryByStatusCreated>(),
                 stored::<EntryByStatusTransitioned>(),
                 stages(),
+                stored::<EntryByCreated>(),
             ]
         );
     }
@@ -959,6 +960,16 @@ mod tests {
         assert_eq!(chosen(Some(&oldest)), "index Some(51)");
         assert_eq!(chosen(Some(&scheduled)), "index None");
         assert_eq!(chosen(Some(&typed)), "index None");
+        assert_eq!(chosen(Some(&newest(&service))), "index Some(51)");
+        // `admin.query-engine.disable-index-reads` turns the planner's index reads
+        // off while indexing stays on; turning it off again plans the index at once.
+        let mut config = Configuration::pinned().as_ref().clone();
+        config.admin.query_engine.disable_index_reads = true;
+        Configuration::set(config.clone());
+        assert_eq!(chosen(Some(&newest(&service))), "scan");
+        assert_eq!(chosen(Some(&scheduled)), "scan");
+        config.admin.query_engine.disable_index_reads = false;
+        Configuration::set(config);
         assert_eq!(chosen(Some(&newest(&service))), "index Some(51)");
         // `created_at` is never NULL: `DESC`, which puts NULLs first, reads the
         // index too, and the read delivers that placement, so no sort is added.

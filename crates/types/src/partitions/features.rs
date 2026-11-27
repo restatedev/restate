@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use bytes::BytesMut;
+use strum::IntoEnumIterator;
 
 use restate_encoding::NetSerde;
 
@@ -41,6 +42,7 @@ use crate::{
     Eq,
     Hash,
     strum::FromRepr,
+    strum::EnumIter,
     strum::EnumString,
     strum::IntoStaticStr,
     strum::Display,
@@ -103,7 +105,25 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.8.2*
     EnableInvocationStatusOutputBlob = 10,
+    /// Retire journal v1: kill the invocations whose journal is still stored in journal v1, and
+    /// delete the journal v1 table. Afterwards, the partition holds no journal v1 data, and stores
+    /// the journal of new invocations in journal v2.
+    ///
+    /// *Since v1.8.2*
+    RetireJournalV1 = 11,
 }
+
+/// The partition features this server requires. Each one retires logic this server no longer
+/// has, such as commands, command variants or state formats. A partition processor that lacks one
+/// of them refuses to start once it has applied a version barrier, and refuses to apply any
+/// command other than `AnnounceLeader` or `VersionBarrier` before then.
+///
+/// A release may only add a feature here once the previous release enables it on every
+/// partition, so that a rolling upgrade or a rollback never runs a partition without it. Only
+/// features that nothing disables again can be required.
+///
+/// *Since v1.8.2*
+pub const REQUIRED_PARTITION_FEATURES: &[PartitionFeatureChange] = &[];
 
 impl PartitionFeatureChange {
     /// The raw ID used on the wire.
@@ -126,6 +146,7 @@ impl PartitionFeatureChange {
             Self::EnableByteOffsets => &RESTATE_VERSION_1_8_2,
             Self::EnableVqLifecycleRefined => &RESTATE_VERSION_1_8_2,
             Self::EnableInvocationStatusOutputBlob => &RESTATE_VERSION_1_8_2,
+            Self::RetireJournalV1 => &RESTATE_VERSION_1_8_2,
         }
     }
 
@@ -146,7 +167,31 @@ impl PartitionFeatureChange {
             | Self::EnableInconsistentStateMutationCleanup
             | Self::EnablePreflightSignalRecording
             | Self::EnableByteOffsets
-            | Self::EnableInvocationStatusOutputBlob => false,
+            | Self::EnableInvocationStatusOutputBlob
+            | Self::RetireJournalV1 => false,
+        }
+    }
+
+    /// The name of the feature that this change enables, as [`PersistedFeatures::enabled_names`]
+    /// lists it.
+    ///
+    /// Snapshots record these names to tell which features their data has, so a name must never
+    /// change.
+    pub fn enabled_name(self) -> &'static str {
+        match self {
+            Self::EnableJournalV2 => "journal_v2",
+            Self::EnableVqueues => "vqueues",
+            Self::EnableUniqueRandomSeeds => "unique_random_seeds",
+            Self::EnableVqueuesSkipCompleted => "vqueues_skip_completed",
+            Self::EnablePreflightInvocationTerminationRetention => {
+                "preflight_invocation_termination_retention"
+            }
+            Self::EnableInconsistentStateMutationCleanup => "inconsistent_state_mutation_cleanup",
+            Self::EnablePreflightSignalRecording => "preflight_signal_recording",
+            Self::EnableByteOffsets => "byte_offsets",
+            Self::EnableVqLifecycleRefined => "vq_lifecycle_refined",
+            Self::EnableInvocationStatusOutputBlob => "invocation_status_output_blob",
+            Self::RetireJournalV1 => "journal_v1_retired",
         }
     }
 
@@ -184,6 +229,7 @@ impl PartitionFeatureChange {
             Self::EnableInvocationStatusOutputBlob => {
                 !std::mem::replace(&mut features.invocation_status_output_blob, true)
             }
+            Self::RetireJournalV1 => !std::mem::replace(&mut features.journal_v1_retired, true),
         }
     }
 }
@@ -196,8 +242,7 @@ impl PartitionFeatureChange {
 /// `false`).
 ///
 /// # Important
-/// When adding new fields to this struct, update [`PersistedFeatures::enabled_names`]
-/// accordingly.
+/// When adding new fields to this struct, add the [`PartitionFeatureChange`] that enables them.
 ///
 /// *Since v1.7.0*
 #[derive(
@@ -276,32 +321,45 @@ pub struct PersistedFeatures {
     /// *Since v1.8.2*
     #[bilrost(tag(10))]
     pub invocation_status_output_blob: bool,
+    /// The partition holds no journal v1 data, and creates none.
+    ///
+    /// *Since v1.8.2*
+    #[bilrost(tag(11))]
+    pub journal_v1_retired: bool,
 }
 
 impl PersistedFeatures {
+    /// Whether the feature that `change` enables is enabled.
+    #[inline]
+    pub fn is_enabled(&self, change: PartitionFeatureChange) -> bool {
+        match change {
+            PartitionFeatureChange::EnableJournalV2 => self.journal_v2,
+            PartitionFeatureChange::EnableVqueues => self.vqueues,
+            PartitionFeatureChange::EnableUniqueRandomSeeds => self.unique_random_seeds,
+            PartitionFeatureChange::EnableVqueuesSkipCompleted => self.vqueues_skip_completed,
+            PartitionFeatureChange::EnablePreflightInvocationTerminationRetention => {
+                self.preflight_invocation_termination_retention
+            }
+            PartitionFeatureChange::EnableInconsistentStateMutationCleanup => {
+                self.inconsistent_state_mutation_cleanup
+            }
+            PartitionFeatureChange::EnablePreflightSignalRecording => {
+                self.preflight_signal_recording
+            }
+            PartitionFeatureChange::EnableByteOffsets => self.byte_offsets,
+            PartitionFeatureChange::EnableVqLifecycleRefined => self.vq_lifecycle_refined,
+            PartitionFeatureChange::EnableInvocationStatusOutputBlob => {
+                self.invocation_status_output_blob
+            }
+            PartitionFeatureChange::RetireJournalV1 => self.journal_v1_retired,
+        }
+    }
+
     /// Names of features currently enabled, in declaration order.
-    ///
-    /// Adding a new feature requires adding one entry here.
     pub fn enabled_names(&self) -> impl Iterator<Item = &'static str> + '_ {
-        [
-            self.journal_v2.then_some("journal_v2"),
-            self.vqueues.then_some("vqueues"),
-            self.unique_random_seeds.then_some("unique_random_seeds"),
-            self.vqueues_skip_completed
-                .then_some("vqueues_skip_completed"),
-            self.preflight_invocation_termination_retention
-                .then_some("preflight_invocation_termination_retention"),
-            self.inconsistent_state_mutation_cleanup
-                .then_some("inconsistent_state_mutation_cleanup"),
-            self.preflight_signal_recording
-                .then_some("preflight_signal_recording"),
-            self.byte_offsets.then_some("byte_offsets"),
-            self.vq_lifecycle_refined.then_some("vq_lifecycle_refined"),
-            self.invocation_status_output_blob
-                .then_some("invocation_status_output_blob"),
-        ]
-        .into_iter()
-        .flatten()
+        PartitionFeatureChange::iter()
+            .filter(move |change| self.is_enabled(*change))
+            .map(PartitionFeatureChange::enabled_name)
     }
 }
 

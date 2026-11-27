@@ -20,6 +20,8 @@ define_table!(
     /// keeps its own: two replicas of a partition can be at different points. A replica's rows come from one snapshot
     /// of it, separate from the one `migration_jobs` reads, except
     /// `approx_size_bytes`, estimated over the replica's current data.
+    /// A dropped index stays listed for `worker.storage.finished-migration-jobs-retention`
+    /// after it was dropped, as a finished job does in `migration_jobs`.
     registry(
         /// The node holding the replica.
         plain_node_id: DataType::Utf8,
@@ -47,8 +49,9 @@ define_table!(
         id: DataType::UInt32,
 
         /// For an index, `backfilling` (maintained but incomplete: queries don't
-        /// read it), `complete` (queries read it) or `dropped`; for a migration,
-        /// `in_progress` or `complete`; `present` for the registry row.
+        /// read it), `complete` (queries read it) or `dropped` (listed until the
+        /// retention passes); for a migration, `in_progress` or `complete`;
+        /// `present` for the registry row.
         status: DataType::Utf8,
 
         /// The job, while the index is backfilling or the migration in progress;

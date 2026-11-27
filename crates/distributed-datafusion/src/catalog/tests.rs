@@ -20,8 +20,8 @@ use restate_limiter::RuleBook;
 use restate_limiter::rule_book::RuleBookObserver;
 use restate_platform::sync::Mutex;
 use restate_storage_query_api::tables::index::{
-    EntryByCreated, EntryByQueue, EntryByStatusCreated, EntryStatusByStatusCreated,
-    EntryStatusByStatusTransitioned,
+    EntryByCreated, EntryByQueue, EntryByStatusCreated, EntryStatusByCreated,
+    EntryStatusByStatusCreated, EntryStatusByStatusTransitioned,
 };
 use restate_storage_query_api::{
     LogicalSchema, QueryEngineVersion, QueryOptions, QuerySession, SessionOptions, SessionTable,
@@ -43,10 +43,11 @@ const STATS: [&str; 3] = [
     "sys_virtual_object_stats",
 ];
 /// Every index the planner can read: none of them is a table.
-const INDEXES: [&str; 5] = [
+const INDEXES: [&str; 6] = [
     EntryByQueue::NAME,
     EntryByCreated::NAME,
     EntryByStatusCreated::NAME,
+    EntryStatusByCreated::NAME,
     EntryStatusByStatusCreated::NAME,
     EntryStatusByStatusTransitioned::NAME,
 ];
@@ -1116,7 +1117,7 @@ async fn first_column_of_same_rows(
 }
 
 #[tokio::test]
-async fn stats_tables_follow_index_reads_and_index_tables_never_show() {
+async fn stats_tables_follow_indexing_and_index_tables_never_show() {
     let previous_config = Configuration::pinned().clone();
     let mut config = Configuration::default();
     Configuration::set(config.clone());
@@ -1149,13 +1150,17 @@ async fn stats_tables_follow_index_reads_and_index_tables_never_show() {
         .await
         .unwrap();
     let v2 = Arc::new(DataFusionQueryEngine::from_env(query_env, None));
-    // Both engines show the statistics tables where queries read indexes, whatever
-    // the gauge options. Neither shows index tables: only the planner reads indexes.
-    // V1 is linked as a normal library with its original catalog.
+    // Both engines show the statistics tables where indexing is enabled, also with
+    // the planner's index reads turned off: they read the gauges through their own
+    // reader. Neither shows index tables: only the planner reads indexes. V1 is
+    // linked as a normal library with its original catalog.
     let engines = [("v1", v1, false), ("v2", v2, true)];
     let mut enabled_sessions = Vec::new();
-    for reads in [false, true, false] {
-        config.common.experimental.set_indexes(reads);
+    for (indexes, disable_index_reads) in
+        [(false, false), (true, false), (true, true), (false, false)]
+    {
+        config.common.experimental.set_indexes(indexes);
+        config.admin.query_engine.disable_index_reads = disable_index_reads;
         Configuration::set(config.clone());
         for (engine_name, engine, is_v2) in &engines {
             let session = engine.create_session(SessionOptions::default()).unwrap();
@@ -1177,16 +1182,16 @@ async fn stats_tables_follow_index_reads_and_index_tables_never_show() {
                     "sys_vqueues",
                 ]
                 .into_iter()
-                .chain(STATS.into_iter().filter(|_| reads))
+                .chain(STATS.into_iter().filter(|_| indexes))
                 .map(str::to_owned)
                 .collect();
-                assert_eq!(names, expected, "stats_follow_index_reads");
+                assert_eq!(names, expected, "stats_follow_indexing");
             } else {
                 assert!(names.contains("state") && names.contains("sys_invocation"));
             }
             let selected: Vec<_> = STATS
                 .into_iter()
-                .map(|name| (name, reads))
+                .map(|name| (name, indexes))
                 .chain(INDEXES.into_iter().map(|name| (name, false)))
                 .collect();
             for (name, visible) in &selected {
@@ -1225,12 +1230,12 @@ async fn stats_tables_follow_index_reads_and_index_tables_never_show() {
                 expected,
                 "{engine_name}"
             );
-            if reads {
+            if indexes {
                 enabled_sessions.push(session);
             }
         }
     }
-    // Turning index reads off affects only new sessions, not catalogs already
+    // Turning indexing off affects only new sessions, not catalogs already
     // constructed.
     for session in enabled_sessions {
         let names = table_names(session.as_ref(), "public").await;

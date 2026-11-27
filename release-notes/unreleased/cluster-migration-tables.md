@@ -16,7 +16,9 @@ background jobs doing that work:
   when a rollback last set them back to in progress so that they run again
   (`reset_at`). Each open replica that has had indexes enabled also has one row
   of kind `registry` (status `present`), even before it has any index, and keeps
-  it after indexes are disabled again.
+  it after indexes are disabled again. A dropped index or statistic stays listed
+  for `worker.storage.finished-migration-jobs-retention` (24 hours by default)
+  after it was dropped, like a finished job, and then its row disappears.
 - `restate.cluster.migration_jobs`: one row per background job on each
   replica, building an index (`index_backfill`) or running a one-time
   migration (`migration`), with its status (`pending`, `running`, `waiting`,

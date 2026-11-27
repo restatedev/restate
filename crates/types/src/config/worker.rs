@@ -150,6 +150,21 @@ pub struct WorkerOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     quantized_action_size: Option<NonZeroByteCount>,
 
+    /// # Hot key threshold
+    ///
+    /// If set, partition leaders emit the `restate.usage.leader_hot_key_count.total` metric,
+    /// counting the partition keys whose journal entries reach this many actions within a
+    /// one-minute window. Entries count as quantized actions if `quantized-action-size` is set,
+    /// and as one action otherwise. A partition key that stays hot counts once per window.
+    /// Changes take effect when a partition processor becomes leader.
+    ///
+    /// Default: unset (metric disabled)
+    ///
+    /// Since v1.8.2
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hot_key_threshold: Option<NonZeroU64>,
+
     /// # Snapshots
     ///
     /// Snapshots provide a mechanism for safely trimming the log and efficient bootstrapping of new
@@ -313,6 +328,10 @@ impl WorkerOptions {
         self.quantized_action_size
     }
 
+    pub fn hot_key_threshold(&self) -> Option<NonZeroU64> {
+        self.hot_key_threshold
+    }
+
     pub fn trim_delay_interval(&self) -> Duration {
         self.trim_delay_interval.into()
     }
@@ -335,6 +354,7 @@ impl Default for WorkerOptions {
             max_command_batch_size: NonZeroUsize::new(32).expect("Non zero number"),
             max_command_batch_bytes: NonZeroByteCount::new(NonZeroUsize::new(1024 * 1024).unwrap()),
             quantized_action_size: None,
+            hot_key_threshold: None,
             snapshots: SnapshotsOptions::default(),
             // 10 minutes delayed trimming by default to give time for followers to catch up
             // to the new durable LSN before observing the trim gap.
@@ -1240,10 +1260,12 @@ pub struct StorageOptions {
     /// # Finished migration jobs retention
     ///
     /// How long each partition replica keeps the record of a finished background
-    /// migration, such as an index or statistic build, for inspection. A record
-    /// expires this long after its migration finished, with the retention
-    /// configured then, and is then no longer shown and later deleted. Unfinished
-    /// migrations are always recorded. `0` keeps no finished migrations.
+    /// migration, such as an index or statistic build, and the entry of a dropped
+    /// index or statistic, for inspection. A record expires this long after its
+    /// migration finished, and an entry this long after its index was dropped,
+    /// with the retention configured then; either is then no longer shown and
+    /// later deleted. Unfinished migrations, and indexes that aren't dropped, are
+    /// always recorded. `0` keeps no finished migrations and no dropped indexes.
     ///
     /// Takes effect when partitions open.
     ///

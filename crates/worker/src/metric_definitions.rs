@@ -31,6 +31,7 @@ pub const FLARE_REASON_VERSION_BARRIER: &str = "version_barrier";
 pub const FLARE_REASON_AHEAD_OF_LOG: &str = "ahead_of_log";
 pub const FLARE_REASON_MIGRATION_BARRIER: &str = "migration_barrier";
 pub const FLARE_REASON_SNAPSHOT_UNAVAILABLE: &str = "snapshot-unavailable";
+pub const FLARE_REASON_MISSING_REQUIRED_FEATURES: &str = "missing_required_features";
 
 pub const PARTITION_APPLY_COMMAND: &str = "restate.partition.apply_command_duration.seconds";
 pub const PARTITION_WRITE_BATCH_SIZE_BYTES: &str = "restate.partition.write_batch_size.bytes";
@@ -55,6 +56,7 @@ pub const USAGE_LEADER_JOURNAL_ENTRY_COUNT: &str = "restate.usage.leader_journal
 pub const USAGE_LEADER_JOURNAL_ENTRY_BYTES: &str = "restate.usage.leader_journal_entry_bytes.total";
 pub const USAGE_LEADER_QUANTIZED_ACTION_COUNT: &str =
     "restate.usage.leader_quantized_action_count.total";
+pub const USAGE_LEADER_HOT_KEY_COUNT: &str = "restate.usage.leader_hot_key_count.total";
 
 pub const NUM_PARTITIONS: &str = "restate.num_partitions";
 pub const NUM_ACTIVE_PARTITIONS: &str = "restate.num_active_partitions";
@@ -155,6 +157,12 @@ pub(crate) fn describe_metrics() {
         USAGE_LEADER_QUANTIZED_ACTION_COUNT,
         Unit::Count,
         "Count of journal entries processed by partition leaders, where each entry counts as max(1, ceil(size / worker.quantized-action-size)). Only emitted if worker.quantized-action-size is set"
+    );
+
+    describe_counter!(
+        USAGE_LEADER_HOT_KEY_COUNT,
+        Unit::Count,
+        "Count of partition keys that reached worker.hot-key-threshold actions within a one-minute window on partition leaders. A partition key that stays hot counts once per window. Only emitted if worker.hot-key-threshold is set"
     );
 
     describe_histogram!(

@@ -1231,6 +1231,25 @@ experimental! {
     /// Since v1.8.2
     vq_lifecycle_refined,
 
+    /// # Retire journal v1
+    ///
+    /// When enabled, partitions remove all data stored in journal v1, the journal format of
+    /// deployments that use a service protocol version older than V4. Invocations that haven't
+    /// completed yet are **killed** if they are pinned to such a deployment, or if they still
+    /// store their input in journal v1 because they were started before v1.7.0 and haven't run on
+    /// a deployment since. Completed invocations keep their result but lose their journal. A
+    /// partition retires journal v1 the next time a leader is elected on a node with this option.
+    /// Leaders running v1.9.0 or newer retire it regardless of this option, once every worker
+    /// node in the cluster runs v1.9.0 or newer.
+    ///
+    /// Only enable once all nodes run v1.8.2 or newer. Once a partition has retired journal v1,
+    /// it stays retired even if this option is removed.
+    ///
+    /// Once enabled, you **cannot** roll back to a Restate-server version older than v1.8.2.
+    ///
+    /// Since v1.8.2
+    retire_journal_v1,
+
     /// # Evenly spaced partition-key buckets for unscoped services
     ///
     /// When enabled while the cluster is provisioned, idempotent invocations of unscoped
@@ -1276,10 +1295,11 @@ experimental! {
     ///   again builds them from scratch. Invocation and VQueue entry data are never
     ///   affected.
     /// - **On a query coordinator**, the V2 planner reads the entry indexes where
-    ///   they are complete, and both engines show the statistics tables
-    ///   (`sys_service_stats`, `sys_deployment_stats`, `sys_virtual_object_stats`).
-    ///   Their queries fail until the statistics are complete on every partition.
-    ///   Only new query sessions see a change.
+    ///   they are complete, unless `admin.query-engine.disable-index-reads` is set,
+    ///   and both engines show the statistics tables (`sys_service_stats`,
+    ///   `sys_deployment_stats`, `sys_virtual_object_stats`). Their queries fail
+    ///   until the statistics are complete on every partition. Only new query
+    ///   sessions see a change.
     ///
     /// Enabling this option raises the partition's minimum Restate version to
     /// v1.8.2. That stays after the option is turned off: a node that has ever run
@@ -1319,13 +1339,6 @@ impl Experimental {
     /// the default for admin queries, which implies it.
     pub fn is_query_engine_v2_running(&self) -> bool {
         self.is_query_engine_v2_enabled() || self.is_query_engine_v2_default_enabled()
-    }
-
-    /// Whether queries on this coordinator read indexes: the planner considers
-    /// index reads, and the statistics tables are shown. This is
-    /// `experimental-enable-indexes`.
-    pub fn index_reads_enabled(&self) -> bool {
-        self.is_indexes_enabled()
     }
 }
 

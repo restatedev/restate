@@ -8,16 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures::{Stream, StreamExt};
 use futures_util::stream;
+use rocksdb::DBRawIteratorWithThreadMode;
 
 use restate_core::io::IoExecutor;
 use restate_memory::{ClaimedMemoryPool, LocalMemoryLease, LocalMemoryPool};
 use restate_rocksdb::RocksDbReadPerfGuard;
 use restate_storage_api::journal_table::{JournalEntry, ReadJournalTable, WriteJournalTable};
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
-use restate_storage_api::{BudgetedReadError, Result};
+use restate_storage_api::{BudgetedReadError, Result, StorageError};
 use restate_types::identifiers::{
     EntryIndex, InvocationId, InvocationUuid, PartitionKey, WithPartitionKey,
 };
@@ -27,8 +28,8 @@ use crate::budgeted_reads::{MAX_INLINE_ROWS, budgeted_get};
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
 use crate::scan::PhysicalScan;
 use crate::{
-    PartitionStore, PartitionStoreSnapshot, PartitionStoreTransaction, StorageAccess,
-    StorageIterator, StorageRead, TableScan, TableScanIterationDecision,
+    PartitionDb, PartitionStore, PartitionStoreSnapshot, PartitionStoreTransaction, StorageAccess,
+    StorageIterator, StorageRead, TableScan, TableScanIterationDecision, convert_to_upper_bound,
 };
 
 define_table_key!(
@@ -338,6 +339,109 @@ impl WriteJournalTable for PartitionStoreTransaction<'_> {
         let _x = RocksDbReadPerfGuard::new("delete-journal");
         delete_journal(self, invocation_id, journal_length)
     }
+}
+
+/// The invocations that have entries in a partition's journal table, in key order.
+///
+/// It reads the partition as it was when the scan was created, so later writes to the partition
+/// don't affect it.
+///
+/// *Since v1.8.2*
+pub struct InvocationsWithJournal<'a> {
+    iterator: DBRawIteratorWithThreadMode<'a, rocksdb::DB>,
+    key_buffer: BytesMut,
+}
+
+impl<'a> InvocationsWithJournal<'a> {
+    pub fn new(partition_db: &'a PartitionDb) -> Result<Self> {
+        // A one-time scan: caching what it reads would only push out the data the partition's
+        // commands read.
+        let mut read_options = rocksdb::ReadOptions::default();
+        read_options.fill_cache(false);
+
+        let mut key_buffer = BytesMut::new();
+        let iterator = partition_db.scan(
+            TableScan::ScanPartitionKeyRange::<JournalKeyBuilder>(
+                partition_db.partition().key_range,
+            )
+            .encode(&mut key_buffer),
+            read_options,
+        )?;
+        Ok(Self {
+            iterator,
+            key_buffer,
+        })
+    }
+}
+
+impl Iterator for InvocationsWithJournal<'_> {
+    type Item = Result<InvocationId>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (mut key, _) = match StorageIterator::item(&self.iterator) {
+            Ok(item) => item?,
+            Err(err) => return Some(Err(err)),
+        };
+        let (partition_key, invocation_uuid, _) = match JournalKey::deserialize_from(&mut key) {
+            Ok(key) => key.split(),
+            Err(err) => return Some(Err(err)),
+        };
+
+        // Continues with the first key after the entries of this invocation.
+        self.key_buffer.clear();
+        crate::keys::EncodeTableKeyPrefix::serialize_to(
+            &JournalKey::builder()
+                .partition_key(partition_key)
+                .invocation_uuid(invocation_uuid),
+            &mut self.key_buffer,
+        );
+        let success = convert_to_upper_bound(&mut self.key_buffer);
+        assert!(success, "journal key prefix overflowed");
+        self.iterator.seek(&self.key_buffer);
+
+        Some(Ok(InvocationId::from_parts(partition_key, invocation_uuid)))
+    }
+}
+
+/// Deletes all entries of a partition's journal table.
+///
+/// The deletion is written to the partition right away, outside of any transaction.
+///
+/// *Since v1.8.2*
+pub fn delete_journal_table(partition_db: &PartitionDb) -> Result<()> {
+    const KEY_PREFIX_LEN: usize = KeyKind::SERIALIZED_LENGTH + size_of::<PartitionKey>();
+    let key_range = partition_db.partition().key_range;
+
+    let mut start_key = [0u8; KEY_PREFIX_LEN];
+    crate::keys::EncodeTableKeyPrefix::serialize_to(
+        &JournalKey::builder().partition_key(key_range.start()),
+        &mut start_key.as_mut(),
+    );
+
+    let mut end_key = [0u8; KEY_PREFIX_LEN];
+    crate::keys::EncodeTableKeyPrefix::serialize_to(
+        &JournalKey::builder().partition_key(key_range.end()),
+        &mut end_key.as_mut(),
+    );
+    // The end key of a range delete is exclusive, so it is the first key after the entries of the
+    // last partition key.
+    let success = convert_to_upper_bound(&mut end_key);
+    assert!(success, "end key overflowed");
+
+    let mut write_batch = rocksdb::WriteBatch::default();
+    write_batch.delete_range_cf(
+        partition_db.cf_handle_for_key_kind(KeyKind::Journal),
+        start_key,
+        end_key,
+    );
+    let mut write_options = rocksdb::WriteOptions::default();
+    // We disable WAL since bifrost is our durable distributed log.
+    write_options.disable_wal(true);
+    partition_db
+        .rocksdb()
+        .inner()
+        .write_batch(&write_batch, &write_options)
+        .map_err(|err| StorageError::Generic(err.into()))
 }
 
 #[cfg(test)]

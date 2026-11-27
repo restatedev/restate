@@ -89,8 +89,10 @@ use restate_storage_query_api::selection::{Selection, ValuePredicate};
 use restate_storage_query_api::tables::index::{
     EntryByCreated as InvocationsByCreation, EntryByCreatedClause, EntryByCreatedColumn,
     EntryByStatusCreated as InvocationsByStatus, EntryByStatusCreatedClause,
-    EntryByStatusCreatedColumn, EntryStatusByStatusCreated as EntriesByStatusCreated,
-    EntryStatusByStatusCreatedClause, EntryStatusByStatusCreatedColumn,
+    EntryByStatusCreatedColumn, EntryStatusByCreated as EntriesByCreated,
+    EntryStatusByCreatedClause, EntryStatusByCreatedColumn,
+    EntryStatusByStatusCreated as EntriesByStatusCreated, EntryStatusByStatusCreatedClause,
+    EntryStatusByStatusCreatedColumn,
     EntryStatusByStatusTransitioned as EntriesByStatusTransitioned,
     EntryStatusByStatusTransitionedClause, EntryStatusByStatusTransitionedColumn,
 };
@@ -197,6 +199,38 @@ impl PrepareKeySelection<InvocationsByCreation> for EntryByCreatedKey {
                             _ => None,
                         },
                     );
+                Ok(hour_buckets(times, literals))
+            },
+        )
+    }
+}
+
+impl EntryByCreatedKey {
+    /// The selection of the keys of entries `selection` may match: their
+    /// creation time, and the hours that may hold it. The keys hold no other
+    /// column of the entry statuses. The caller keeps its predicate.
+    pub fn prepare_entries(
+        selection: &Selection<EntriesByCreated>,
+    ) -> crate::Result<KeySelection<Self>> {
+        KeySelection::for_key_fields_with(
+            selection,
+            |clause, literals| match clause {
+                EntryStatusByCreatedClause::CreatedAt(predicate) => {
+                    ReverseUniqueTimestampCodec::try_prepare_value(predicate, literals)
+                }
+                _ => Ok(None),
+            },
+            |tag, literals| {
+                if tag != "created_hour" {
+                    return Ok(None);
+                }
+                let times =
+                    created_times(selection, EntryStatusByCreatedColumn::CreatedAt, |clause| {
+                        match clause {
+                            EntryStatusByCreatedClause::CreatedAt(times) => Some(times),
+                            _ => None,
+                        }
+                    });
                 Ok(hour_buckets(times, literals))
             },
         )
@@ -444,8 +478,12 @@ crate::index::macros::define_secondary_index!(
 /// here, and new definition names, since it changes both indexes' membership
 /// (README rule 1): a binary that doesn't know the stage projects no key for
 /// it, and would leave a newer binary's key behind. The same holds for a new
-/// [`StatusCodec`] rank. Queries decide which queries the indexes can serve
-/// from this too.
+/// [`StatusCodec`] rank.
+///
+/// A new stage also ships only behind a version barrier with a feature change,
+/// which raises the store's minimum version: no binary reads an entry in a stage
+/// it doesn't know. So queries treat both indexes as holding every entry, with
+/// or without a condition on the stage.
 pub fn status_indexes_hold(stage: Stage) -> bool {
     match stage {
         Stage::Inbox | Stage::Running | Stage::Suspended | Stage::Paused | Stage::Finished => true,
@@ -633,8 +671,16 @@ impl Keyed {
 impl EntryByStatusCreatedKey {
     /// The stages and stored statuses whose keys can hold the entry of an
     /// invocation `selection` matches, in key order: derived from its
-    /// conditions on `status` and `completion_result`. The caller keeps its
+    /// conditions on `stage`, `effective_status`, `status` and
+    /// `completion_result`, which all hold together. The caller keeps its
     /// predicate. Each pair is a lane of the index ([`Self::prepare_lanes`]).
+    ///
+    /// An invocation shows its entry's stage and effective status, so
+    /// conditions on them keep exactly the pairs [`Self::entry_lanes`] keeps
+    /// for the same conditions on an entry: `effective_status = 'failed'` is
+    /// Finished's `failed`, and `stage = 'running'` every pair of Running. A
+    /// pair no code path writes makes the `unknown` sentinel, shown as NULL,
+    /// which no status name selects.
     ///
     /// An invocation's public `status` and `completion_result` are the ones
     /// its entry's effective status tells
@@ -671,21 +717,30 @@ impl EntryByStatusCreatedKey {
                 && results.iter().all(|condition| condition.matches(&result))
         };
         // `Selection::Empty` selects no lane.
-        Keyed::of_selection(selection, |_| None)
-            .pairs()
-            .filter(move |&(stage, stored)| {
-                let effective = EffectiveStatus::new(stage, stored);
-                match effective.invocation_status() {
-                    Some(status) => satisfied(status, effective.completion_result()),
-                    None if stage == Stage::Finished => {
-                        satisfied("completed", Some("success"))
-                            || satisfied("completed", Some("failure"))
-                    }
-                    None => ["inboxed", "scheduled", "invoked", "suspended", "paused"]
-                        .into_iter()
-                        .any(|status| satisfied(status, None)),
+        Keyed::of_entry_selection(
+            selection,
+            |clause| match clause {
+                EntryByStatusCreatedClause::Stage(stage) => Some(stage),
+                _ => None,
+            },
+            |clause| match clause {
+                EntryByStatusCreatedClause::EffectiveStatus(status) => Some(status),
+                _ => None,
+            },
+        )
+        .filter(move |&(stage, stored)| {
+            let effective = EffectiveStatus::new(stage, stored);
+            match effective.invocation_status() {
+                Some(status) => satisfied(status, effective.completion_result()),
+                None if stage == Stage::Finished => {
+                    satisfied("completed", Some("success"))
+                        || satisfied("completed", Some("failure"))
                 }
-            })
+                None => ["inboxed", "scheduled", "invoked", "suspended", "paused"]
+                    .into_iter()
+                    .any(|status| satisfied(status, None)),
+            }
+        })
     }
 
     /// The stages and stored statuses whose keys can hold an entry
@@ -762,8 +817,8 @@ impl EntryByStatusCreatedKey {
                 EntryByStatusCreatedClause::CreatedAt(predicate) => {
                     ReverseUniqueTimestampCodec::try_prepare_value(predicate, literals)
                 }
-                // The public status and completion result select the lanes;
-                // the handler is in each key's value.
+                // The stage and the statuses select the lanes; the handler is
+                // in each key's value.
                 _ => Ok(None),
             },
             |tag, literals| match tag {

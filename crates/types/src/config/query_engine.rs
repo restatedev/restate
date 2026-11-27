@@ -78,7 +78,7 @@ pub struct QueryEngineOptions {
 
     /// # Index catalog refresh interval
     ///
-    /// How often an admin node checks which indexes queries can read, from
+    /// How often an admin node checks the state of the indexes and statistics, from
     /// `restate.cluster.registry`. The `/version` endpoint reports the result: for
     /// example, `query_engine.stats_tables` turns false when a partition's leader,
     /// which statistics reads go to, answers with its store open and lacks a
@@ -88,13 +88,29 @@ pub struct QueryEngineOptions {
     /// count.
     /// A check that fails as a whole, or takes longer than this interval, keeps
     /// the last result and is retried sooner: after 5 seconds, then twice as
-    /// long each time, up to this interval. Where
-    /// queries don't read indexes, nothing is checked and the result is `false`.
+    /// long each time, up to this interval. Without `experimental-enable-indexes`,
+    /// nothing is checked and the result is `false`.
     ///
     /// Default: 1 minute
     ///
     /// Since v1.8.2
     pub index_catalog_refresh_interval: NonZeroFriendlyDuration,
+
+    /// # Disable index reads
+    ///
+    /// Turns off the V2 planner's index reads on this node: queries scan, and look
+    /// up rows by key, instead of reading the entry indexes. The indexes stay
+    /// built and maintained, so turning this off again uses them right away. Meant
+    /// as an emergency switch, for example for a bug in an index read. Only
+    /// meaningful with `experimental-enable-indexes`; the statistics tables are not
+    /// affected.
+    ///
+    /// Takes effect for the next query planned on this node, also in existing
+    /// sessions.
+    ///
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disable_index_reads: bool,
 }
 
 fn is_default_batch_compression(compression: &QueryBatchCompression) -> bool {
@@ -132,6 +148,7 @@ impl Default for QueryEngineOptions {
             rate_limiting: None,
             batch_compression: QueryBatchCompression::default(),
             index_catalog_refresh_interval: NonZeroFriendlyDuration::from_secs_unchecked(60),
+            disable_index_reads: false,
         }
     }
 }

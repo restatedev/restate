@@ -12,7 +12,10 @@
 //! an entry index whose keys each name one entry status:
 //! `entry_by_status_created/1` and `entry_by_status_transitioned/1` hold one
 //! key per entry in a known stage, by stage and status, a **lane** each, then
-//! by the hour and time of creation or of the last transition ([`LanesRead`]).
+//! by the hour and time of creation or of the last transition
+//! ([`StatusCreatedRead`], [`StatusTransitionedRead`]); `entry_by_created/1`
+//! holds one key per entry, of every stage, by the hour of its creation, its
+//! service and its creation time ([`CreatedRead`]).
 //!
 //! A query on those entries, perhaps of a few statuses or stages, ordered by
 //! that time, merges the matching runs into one order and fetches each entry's
@@ -25,25 +28,28 @@
 //! (succeeded, "Utils", "call"): t8 t5   ─┘
 //! ```
 //!
-//! The index finds every Finished entry once it is Complete on the query's own
+//! A page of the newest entries of every stage reads `entry_by_created/1` the
+//! same way, one hour at a time: that hour's runs, one per service, merged.
+//!
+//! The index finds every entry it holds once it is Complete on the query's own
 //! snapshot; otherwise, or if finding the runs takes more than one read allows,
 //! the read scans the entry statuses instead, before it returns anything. It
 //! reports which it did ([`EntryIndexPath`]), so that a caller relying on the
 //! order sorts a scan.
 //!
 //! A key is used only if its entry's current status is present on the snapshot
-//! and is still that key's: the key's stage, the key's status where the key
-//! holds one, the key's time and incarnation. A missing or stale reference is
-//! skipped and counted, as the stage reads do; a malformed status, or a storage
-//! error, fails the read.
+//! and is still that key's: the key's stage and status where the key holds them
+//! (a status index's do), the key's time and incarnation. A missing or stale
+//! reference is skipped and counted, as the stage reads do; a malformed status,
+//! or a storage error, fails the read.
 //! Everything the read holds is charged to the caller's memory, and released
 //! as soon as it ends or fails.
 //!
-//! A status index's key holds everything some queries ask of an entry: its
-//! stage, status, the index's time and its incarnation. A keys-only read hands
-//! out the keys alone ([`EntryKeyRow`]), fetching no status, so its keys aren't
-//! checked against the statuses: a Complete index has exactly one key per
-//! entry of the stages it holds, maintained with the entry.
+//! An index's key holds everything some queries ask of an entry: its
+//! incarnation, the index's time and, in a status index, its stage and status.
+//! A keys-only read hands out the keys alone ([`EntryKeyRow`]), fetching no
+//! status, so its keys aren't checked against the statuses: a Complete index
+//! has exactly one key per entry it holds, maintained with the entry.
 
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
@@ -55,7 +61,7 @@ use restate_storage_api::vqueue_table::{RawStatusHeaderRef, Stage, Status};
 use restate_storage_query_api::scan::{CursorStep, ReadDirection};
 use restate_storage_query_api::selection::Selection;
 use restate_storage_query_api::tables::index::{
-    EntryStatusByStatusCreated as StatusCreatedIndex,
+    EntryStatusByCreated as CreatedIndex, EntryStatusByStatusCreated as StatusCreatedIndex,
     EntryStatusByStatusTransitioned as StatusTransitionedIndex,
 };
 use restate_types::identifiers::{BaseEntryId, CanonicalEntryId};
@@ -64,9 +70,9 @@ use crate::index::{PartitionKeyFilter, RegisteredIndex};
 use crate::invocation_status_table::entry_index_read::{
     EntryIndexExecution, EntryIndexPath, Execution, Held, ScanReason, SharedMemory,
 };
-use crate::keys::selection::OrderedKeySchema;
+use crate::keys::selection::{KeySelection, OrderedKeySchema};
 use crate::keys::{EncodeTableKey, KeyDecoder, KeyKind};
-use crate::ordered_runs::OrderedRunsLimits;
+use crate::ordered_runs::{OrderedRuns, OrderedRunsDiscovery, OrderedRunsLimits};
 use crate::partition_db::PhysicalPartition;
 use crate::registry::IndexKind;
 use crate::status_lanes::{Lanes, StatusLanes};
@@ -75,14 +81,16 @@ use crate::{ReadSnapshot, Result};
 
 use super::read_cursor::EntryKeyRow;
 use super::{
-    ENTRY_STATUS_MULTI_GET_BATCH_SIZE, EntryByStatusCreated, EntryByStatusCreatedKey,
-    EntryByStatusTransitioned, EntryByStatusTransitionedKey, EntryStatusKey,
+    ENTRY_STATUS_MULTI_GET_BATCH_SIZE, EntryByCreated, EntryByCreatedKey, EntryByStatusCreated,
+    EntryByStatusCreatedKey, EntryByStatusTransitioned, EntryByStatusTransitionedKey,
+    EntryStatusKey,
 };
 
 /// An entry index whose keys each name one entry status, read newest first or
 /// backwards: one of the two status indexes, read as lanes, each the entries of
 /// one stage and status, whose runs are its hours and services
-/// ([`crate::status_lanes`]).
+/// ([`crate::status_lanes`]), or `entry_by_created/1`, whose runs are its hours
+/// and services.
 pub(crate) trait EntryIndex: RegisteredIndex + PhysicalTable<Key: OrderedKeySchema> {
     /// What `key` says its entry's current status must still say.
     fn reference(key: KeyDecoder<'_, Self::Key>) -> Result<Reference>;
@@ -96,8 +104,7 @@ impl EntryIndex for EntryByStatusCreated {
         let key = key.decode_all()?;
         Ok(Reference {
             id: key.canonical_id,
-            stage: key.stage,
-            status: key.status,
+            lane: Some((key.stage, key.status)),
             at: key.created_at.0,
         })
     }
@@ -112,14 +119,29 @@ impl EntryIndex for EntryByStatusTransitioned {
         let key = key.decode_all()?;
         Ok(Reference {
             id: key.canonical_id,
-            stage: key.stage,
-            status: key.status,
+            lane: Some((key.stage, key.status)),
             at: key.transitioned_at.0,
         })
     }
 
     fn time(header: &RawStatusHeaderRef<'_>) -> UniqueTimestamp {
         header.stats.transitioned_at
+    }
+}
+
+/// Its keys hold no stage or status: they don't move when those change.
+impl EntryIndex for EntryByCreated {
+    fn reference(key: KeyDecoder<'_, EntryByCreatedKey>) -> Result<Reference> {
+        let key = key.decode_all()?;
+        Ok(Reference {
+            id: key.canonical_id,
+            lane: None,
+            at: key.created_at.0,
+        })
+    }
+
+    fn time(header: &RawStatusHeaderRef<'_>) -> UniqueTimestamp {
+        header.stats.created_at
     }
 }
 
@@ -133,21 +155,36 @@ const LIMITS: OrderedRunsLimits = OrderedRunsLimits {
     bucket_fields: 0,
 };
 
+/// A run of `entry_by_created/1` is the entries of one creation hour and
+/// service; the hour is its bucket, so the read merges one hour at a time.
+const HOUR_RUN_FIELDS: usize = 2;
+const HOUR_LIMITS: OrderedRunsLimits = OrderedRunsLimits {
+    bucket_fields: 1,
+    ..LIMITS
+};
+
 const WINDOW: usize = ENTRY_STATUS_MULTI_GET_BATCH_SIZE.get();
 const KEY_LEN: usize = EntryStatusKey::serialized_length_fixed();
 
-/// A read of the entries of some stages and statuses through one of the two
-/// status indexes, a lane per stage and status
-/// ([`crate::status_lanes`]), in the order of the index's time: newest first
-/// or, backwards, oldest first. The lanes may admit more entries than the query
-/// matches: the caller keeps its predicate.
-pub struct LanesRead<K> {
-    lanes: StatusLanes<K>,
+/// A read of entries through an entry index, in the order of the index's time:
+/// newest first or, backwards, oldest first. What it reads may admit more
+/// entries than the query matches: the caller keeps its predicate.
+pub struct IndexedRead<K> {
+    keys: IndexKeys<K>,
     direction: ReadDirection,
     partition_keys: PartitionKeyFilter,
 }
 
-impl<K> LanesRead<K> {
+/// The keys an [`IndexedRead`] merges.
+enum IndexKeys<K> {
+    /// A status index's lanes, one per stage and status
+    /// ([`crate::status_lanes`]).
+    Lanes(StatusLanes<K>),
+    /// `entry_by_created/1`'s keys: its hours, each a run per service.
+    Hours(Arc<KeySelection<K>>),
+}
+
+impl<K> IndexedRead<K> {
     /// Restricts the read to entries under the partition keys `keys` admits,
     /// such as those of the queried entry or queue IDs: an index key of another
     /// partition key is skipped before its entry status is fetched.
@@ -155,14 +192,42 @@ impl<K> LanesRead<K> {
         self.partition_keys = keys;
         self
     }
+
+    /// The bytes its selections and partition keys hold.
+    fn retained_bytes(&self) -> usize {
+        self.partition_keys.heap_bytes()
+            + match &self.keys {
+                IndexKeys::Lanes(lanes) => lanes.retained_bytes(),
+                IndexKeys::Hours(selection) => selection.shared_retained_bytes(),
+            }
+    }
 }
 
 /// Entries by stage and status, newest created first:
 /// `entry_by_status_created/1`.
-pub type StatusCreatedRead = LanesRead<EntryByStatusCreatedKey>;
+pub type StatusCreatedRead = IndexedRead<EntryByStatusCreatedKey>;
 /// Entries by stage and status, newest transitioned first:
 /// `entry_by_status_transitioned/1`.
-pub type StatusTransitionedRead = LanesRead<EntryByStatusTransitionedKey>;
+pub type StatusTransitionedRead = IndexedRead<EntryByStatusTransitionedKey>;
+/// Every entry, newest created first: `entry_by_created/1`.
+pub type CreatedRead = IndexedRead<EntryByCreatedKey>;
+
+impl CreatedRead {
+    /// A read of the hours that may hold the creation times `selection`
+    /// allows, every hour without a condition on them.
+    pub fn prepare(selection: &Selection<CreatedIndex>, direction: ReadDirection) -> Result<Self> {
+        Ok(Self {
+            keys: IndexKeys::Hours(Arc::new(EntryByCreatedKey::prepare_entries(selection)?)),
+            direction,
+            partition_keys: PartitionKeyFilter::ALL,
+        })
+    }
+
+    /// As [`StatusCreatedRead::unusable`].
+    pub fn unusable(&self, snapshot: &ReadSnapshot) -> Result<Option<ScanReason>> {
+        unusable::<EntryByCreated>(snapshot)
+    }
+}
 
 impl StatusCreatedRead {
     pub fn prepare(
@@ -176,7 +241,7 @@ impl StatusCreatedRead {
             },
         )?;
         Ok(Self {
-            lanes,
+            keys: IndexKeys::Lanes(lanes),
             direction,
             partition_keys: PartitionKeyFilter::ALL,
         })
@@ -201,7 +266,7 @@ impl StatusTransitionedRead {
             },
         )?;
         Ok(Self {
-            lanes,
+            keys: IndexKeys::Lanes(lanes),
             direction,
             partition_keys: PartitionKeyFilter::ALL,
         })
@@ -223,13 +288,53 @@ fn unusable<I: EntryIndex>(snapshot: &ReadSnapshot) -> Result<Option<ScanReason>
 }
 
 /// An index key's reference to an entry status, with what the status must
-/// still say: its stage and status, the time the index orders by and the
-/// incarnation.
+/// still say: its stage and status where the key holds them, the time the
+/// index orders by and the incarnation.
 pub(crate) struct Reference {
     id: CanonicalEntryId,
-    stage: Stage,
-    status: Status,
+    /// A status index's lane: the stage and status its key holds.
+    lane: Option<(Stage, Status)>,
     at: UniqueTimestamp,
+}
+
+/// The index keys a cursor merges, in the order of the index's time.
+enum Runs<I: EntryIndex> {
+    /// A status index's lanes.
+    Lanes(Lanes<I>),
+    /// `entry_by_created/1`'s runs, one hour's at a time.
+    Hours(OrderedRuns<I>),
+}
+
+impl<I: EntryIndex> Runs<I> {
+    fn advance(&mut self) -> Result<CursorStep> {
+        match self {
+            Self::Lanes(lanes) => lanes.advance(),
+            Self::Hours(runs) => runs.advance(),
+        }
+    }
+
+    fn current(&self) -> Result<(KeyDecoder<'_, I::Key>, &[u8])> {
+        match self {
+            Self::Lanes(lanes) => lanes.current(),
+            Self::Hours(runs) => runs.current(),
+        }
+    }
+
+    /// Keys examined so far, discovery's included.
+    fn examined(&self) -> u64 {
+        match self {
+            Self::Lanes(lanes) => lanes.examined(),
+            Self::Hours(runs) => runs.examined(),
+        }
+    }
+
+    /// Runs merged now.
+    fn runs(&self) -> usize {
+        match self {
+            Self::Lanes(lanes) => lanes.runs(),
+            Self::Hours(runs) => runs.runs(),
+        }
+    }
 }
 
 /// How a read that holds nothing ended.
@@ -239,12 +344,12 @@ enum Ended {
     Failed,
 }
 
-/// Merges the index's lanes, collects references into a window, fetches the
+/// Merges the index's runs, collects references into a window, fetches the
 /// window's entry statuses with one multi-get and hands out the ones that are
 /// still the keys', in index order.
 pub(super) struct IndexedCursor<I: EntryIndex> {
     /// `None` once the read ended: it holds nothing then.
-    runs: Option<Lanes<I>>,
+    runs: Option<Runs<I>>,
     runs_done: bool,
     /// The most references a window holds.
     window_size: usize,
@@ -305,6 +410,19 @@ impl IndexedCursor<EntryByStatusTransitioned> {
     }
 }
 
+impl IndexedCursor<EntryByCreated> {
+    /// As [`IndexedCursor::status_created`], through `entry_by_created/1`.
+    pub(super) fn created(
+        snapshot: &ReadSnapshot,
+        read: &CreatedRead,
+        execution: &EntryIndexExecution,
+        window: NonZeroUsize,
+        keys_only: bool,
+    ) -> Result<Option<Self>> {
+        Self::open(snapshot, read, execution, window, keys_only)
+    }
+}
+
 impl<I: EntryIndex> IndexedCursor<I> {
     /// The cursor, or `None` if the read scans instead. Nothing is held then.
     /// Either way, `execution` learns the path before this returns.
@@ -312,7 +430,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
     /// read holds one.
     fn open(
         snapshot: &ReadSnapshot,
-        read: &LanesRead<I::Key>,
+        read: &IndexedRead<I::Key>,
         execution: &EntryIndexExecution,
         window: NonZeroUsize,
         keys_only: bool,
@@ -369,7 +487,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
         };
         chosen(match &cursor {
             Ok(cursor) => EntryIndexPath::Index {
-                runs: cursor.runs.as_ref().map_or(0, Lanes::runs),
+                runs: cursor.runs.as_ref().map_or(0, Runs::runs),
             },
             Err(reason) => EntryIndexPath::Scan(*reason),
         });
@@ -379,11 +497,11 @@ impl<I: EntryIndex> IndexedCursor<I> {
     #[allow(clippy::type_complexity)]
     fn try_open(
         snapshot: &ReadSnapshot,
-        read: &LanesRead<I::Key>,
+        read: &IndexedRead<I::Key>,
         memory: SharedMemory,
         window_size: usize,
         discovered: &mut u64,
-    ) -> Result<std::result::Result<(Lanes<I>, Held), (ScanReason, u64)>> {
+    ) -> Result<std::result::Result<(Runs<I>, Held), (ScanReason, u64)>> {
         if let Some(reason) = unusable::<I>(snapshot)? {
             return Ok(Err((reason, 0)));
         }
@@ -392,30 +510,42 @@ impl<I: EntryIndex> IndexedCursor<I> {
             bytes: 0,
         };
         held.grow(
-            read.lanes.retained_bytes()
-                + read.partition_keys.heap_bytes()
+            read.retained_bytes()
                 + window_size * std::mem::size_of::<Reference>()
                 + window_size * KEY_LEN,
         )?;
-        Ok(
-            match Lanes::open(
+        let runs = match &read.keys {
+            IndexKeys::Lanes(lanes) => Lanes::open(
                 snapshot,
-                &read.lanes,
+                lanes,
                 read.direction,
                 LIMITS,
                 (&memory, &mut held),
                 discovered,
+            )?
+            .map(Runs::Lanes),
+            IndexKeys::Hours(selection) => match snapshot.ordered_runs_counted::<I>(
+                Arc::clone(selection),
+                HOUR_RUN_FIELDS,
+                read.direction,
+                HOUR_LIMITS,
+                Box::new(memory),
+                discovered,
             )? {
-                Some(lanes) => Ok((lanes, held)),
-                None => Err((ScanReason::TooManyRuns, *discovered)),
+                OrderedRunsDiscovery::Ready(runs) => Some(Runs::Hours(runs)),
+                OrderedRunsDiscovery::TooManyRuns { .. } => None,
             },
-        )
+        };
+        Ok(match runs {
+            Some(runs) => Ok((runs, held)),
+            None => Err((ScanReason::TooManyRuns, *discovered)),
+        })
     }
 
     /// Tells `fetched` of a multi-get of `statuses`, if any, and of the index
     /// keys examined since it last learned.
     fn report(&mut self, statuses: usize) {
-        let examined = self.runs.as_ref().map_or(self.reported, Lanes::examined);
+        let examined = self.runs.as_ref().map_or(self.reported, Runs::examined);
         let new = examined.saturating_sub(self.reported);
         if statuses > 0 || new > 0 {
             (self.fetched)(statuses, new);
@@ -560,8 +690,9 @@ impl<I: EntryIndex> IndexedCursor<I> {
             return Ok(CursorStep::Skipped);
         };
         let header = RawStatusHeaderRef::decode_stored(&mut value)?;
-        if header.stage == reference.stage
-            && header.status == reference.status
+        if reference
+            .lane
+            .is_none_or(|lane| lane == (header.stage, header.status))
             && I::time(&header) == reference.at
             && header.seq == reference.id.seq()
         {
@@ -605,7 +736,7 @@ impl<I: EntryIndex> IndexedCursor<I> {
     }
 }
 
-/// The steps of a keys-only read of a status index.
+/// The steps of a keys-only read of an entry index.
 pub(super) trait KeySteps: Send {
     fn advance(&mut self) -> Result<CursorStep>;
     fn current(&self) -> Result<EntryKeyRow>;
@@ -620,8 +751,7 @@ impl KeySteps for IndexedCursor<EntryByStatusCreated> {
         let key = self.key()?;
         Ok(EntryKeyRow {
             id: key.id,
-            stage: key.stage,
-            status: key.status,
+            lane: key.lane,
             created_at: Some(key.at),
             transitioned_at: None,
         })
@@ -637,10 +767,25 @@ impl KeySteps for IndexedCursor<EntryByStatusTransitioned> {
         let key = self.key()?;
         Ok(EntryKeyRow {
             id: key.id,
-            stage: key.stage,
-            status: key.status,
+            lane: key.lane,
             created_at: None,
             transitioned_at: Some(key.at),
+        })
+    }
+}
+
+impl KeySteps for IndexedCursor<EntryByCreated> {
+    fn advance(&mut self) -> Result<CursorStep> {
+        IndexedCursor::advance(self)
+    }
+
+    fn current(&self) -> Result<EntryKeyRow> {
+        let key = self.key()?;
+        Ok(EntryKeyRow {
+            id: key.id,
+            lane: None,
+            created_at: Some(key.at),
+            transitioned_at: None,
         })
     }
 }
@@ -1102,7 +1247,6 @@ mod tests {
         // Refused for the read's own state, as it opens: no work, no path.
         let fixed = StatusTransitionedRead::prepare(&finished(), ReadDirection::Forward)
             .unwrap()
-            .lanes
             .retained_bytes()
             + WINDOW * std::mem::size_of::<Reference>()
             + WINDOW * KEY_LEN;
@@ -1241,6 +1385,191 @@ mod tests {
         let (rows, path, _) = read(&plain, finished()).unwrap();
         assert_eq!(path, Some(EntryIndexPath::Scan(ScanReason::NotComplete)));
         assert_eq!(rows.len(), 1);
+    }
+
+    /// `entry_by_created/1` returns every entry, of every stage and both kinds,
+    /// newest created first over its hours and their services, or oldest first
+    /// backwards. Its keys hold no stage or status, so a change of those keeps
+    /// a key current; a missing entry, another incarnation or another creation
+    /// time is skipped and counted. Without a Complete index, the read scans.
+    #[restate_core::test]
+    async fn creation_index_reads_every_entry_in_creation_order() {
+        use restate_types::vqueues::HandlerRef;
+
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        let mut store = manager
+            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+            .await
+            .unwrap();
+        let mut config = Configuration::default();
+        config.common.experimental.set_indexes(true);
+        store.mark_fully_migrated_to_vqueues().await;
+        store
+            .verify_and_run_migrations(CancellationToken::new(), &config)
+            .await
+            .unwrap();
+        let mut plain = manager
+            .open(&Partition::new(PartitionId::from(1), KeyRange::FULL), None)
+            .await
+            .unwrap();
+
+        const BASE: u64 = 1_744_010_000_000;
+        const HOUR: u64 = 3_600_000;
+        let qid = VQueueId::custom(7, "q");
+        let stages = [
+            (Stage::Inbox, Status::New),
+            (Stage::Running, Status::Started),
+            (Stage::Finished, Status::Succeeded),
+        ];
+        // Six entries in each of two hours, of services A and B in turn: two
+        // runs an hour. Every fourth is a state mutation.
+        let ids: Vec<_> = (0..12u64)
+            .map(|n| {
+                let kind = if n % 4 == 3 {
+                    EntryKind::StateMutation
+                } else {
+                    EntryKind::Invocation
+                };
+                EntryId::new(kind, [n as u8 + 1; 16])
+            })
+            .collect();
+        for store in [&mut store, &mut plain] {
+            let mut tx = store.transaction();
+            for (n, entry) in ids.iter().enumerate() {
+                let n = n as u64;
+                let (stage, status) = stages[(n % 3) as usize];
+                let created = UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::new(
+                    BASE + (n / 6) * HOUR + n,
+                ));
+                let key = EntryKey::new(false, created.to_unix_millis(), n + 1, *entry);
+                let service = ["A", "B"][(n % 2) as usize];
+                let target = if entry.kind() == EntryKind::StateMutation {
+                    EntryTargetRef::VirtualObject {
+                        scope: None,
+                        service,
+                        key: "k",
+                        handler: HandlerRef::StateMutation,
+                    }
+                } else {
+                    EntryTargetRef::Service {
+                        scope: None,
+                        service,
+                        handler: "h",
+                    }
+                };
+                tx.create_vqueue_entry_status(
+                    &EntryContext {
+                        qid: &qid,
+                        target: &target,
+                    },
+                    EntryStateRef {
+                        stage,
+                        status,
+                        entry_key: &key,
+                        metadata: &EntryMetadata::default(),
+                        stats: &EntryStatistics::new(created, key.run_at()),
+                    },
+                );
+            }
+            tx.commit().await.unwrap();
+        }
+        let newest: Vec<_> = ids
+            .iter()
+            .rev()
+            .map(|id| id.to_base_id(qid.partition_key()))
+            .collect();
+        let read = |store: &PartitionStore, direction| {
+            run_scan(
+                store,
+                |execution| EntryStatusScan::Created {
+                    read: Arc::new(CreatedRead::prepare(&Selection::All, direction).unwrap()),
+                    fallback: scan_all(),
+                    execution,
+                },
+                Charge::default(),
+                Stop::End,
+            )
+        };
+        let found = |run: &Run| run.rows.iter().map(|row| row.0).collect::<Vec<_>>();
+
+        // Newest first, from the newer hour's two runs; oldest first, from the
+        // older hour's. Each read fetches every status, skips none and holds
+        // nothing once done.
+        let all = read(&store, ReadDirection::Forward);
+        assert_eq!(found(&all), newest);
+        assert_eq!(
+            (all.path, all.skipped, all.ended.clone(), all.statuses()),
+            (
+                Some(EntryIndexPath::Index { runs: 2 }),
+                0,
+                Some(Ok(())),
+                ids.len()
+            )
+        );
+        assert_eq!((all.held, all.closed), (0, true));
+        let oldest = read(&store, ReadDirection::Backward);
+        assert_eq!(
+            found(&oldest),
+            newest.iter().rev().copied().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            (oldest.path, oldest.skipped),
+            (Some(EntryIndexPath::Index { runs: 2 }), 0)
+        );
+
+        // Edit four statuses without their index keys: one moves to another
+        // stage and status, one is gone, one is another incarnation, one was
+        // created at another time. Only the first is still its key's.
+        let (moved, deleted, reincarnated, recreated) =
+            (newest[0], newest[1], newest[2], newest[3]);
+        let edits = [
+            (
+                moved,
+                rewrite(&stored(&store, &moved), &|header| {
+                    header.stage = Stage::Paused;
+                    header.status = Status::BackingOff;
+                }),
+            ),
+            (
+                reincarnated,
+                rewrite(&stored(&store, &reincarnated), &|header| {
+                    header.seq = Seq::new(999)
+                }),
+            ),
+            (
+                recreated,
+                rewrite(&stored(&store, &recreated), &|header| {
+                    header.stats.created_at =
+                        UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::new(BASE - 1))
+                }),
+            ),
+        ];
+        let mut tx = store.transaction();
+        for (id, value) in edits {
+            tx.raw_put_cf(KeyKind::VQueueEntryStatus, key_of(&id), value);
+        }
+        tx.raw_delete_cf(KeyKind::VQueueEntryStatus, key_of(&deleted));
+        tx.commit().await.unwrap();
+        drop(tx);
+        let edited = read(&store, ReadDirection::Forward);
+        let mut expected = vec![moved];
+        expected.extend_from_slice(&newest[4..]);
+        assert_eq!(found(&edited), expected);
+        assert_eq!(edited.created[0].0, Stage::Paused);
+        assert_eq!(edited.skipped, 3);
+
+        // Not Complete: a partition that doesn't maintain the index scans.
+        let scanned = read(&plain, ReadDirection::Forward);
+        assert_eq!(
+            scanned.path,
+            Some(EntryIndexPath::Scan(ScanReason::NotComplete))
+        );
+        let mut rows = found(&scanned);
+        rows.sort();
+        let mut expected = newest.clone();
+        expected.sort();
+        assert_eq!(rows, expected);
     }
 
     #[restate_core::test]
@@ -1445,8 +1774,7 @@ mod tests {
                 id: id
                     .to_base_id(qid.partition_key())
                     .canonicalize(Seq::new(seq)),
-                stage,
-                status,
+                lane: Some((stage, status)),
                 created_at: by_created.then_some(created),
                 transitioned_at: (!by_created).then_some(transitioned),
             }
@@ -1496,6 +1824,30 @@ mod tests {
             "{statuses} {keys} {held}"
         );
 
+        // Every entry through `entry_by_created/1`, newest created first, one
+        // hour's run: its keys hold no stage or status, and the second
+        // incarnation's key moved with it.
+        let every = |execution| EntryKeyScan::Created {
+            read: Arc::new(CreatedRead::prepare(&Selection::All, ReadDirection::Forward).unwrap()),
+            fallback: scan_all(),
+            execution,
+        };
+        let (rows, path, (statuses, keys), held) = read(&tracked, &every, None);
+        let expected: Vec<_> = entries
+            .iter()
+            .rev()
+            .map(|entry| EntryKeyRow {
+                lane: None,
+                ..row(entry, true)
+            })
+            .collect();
+        assert_eq!(rows, expected);
+        assert_eq!(path, Some(EntryIndexPath::Index { runs: 1 }));
+        assert!(
+            statuses == 0 && keys > 0 && held == 0,
+            "{statuses} {keys} {held}"
+        );
+
         let (rows, path, (statuses, _), held) = read(&plain, &transitioned, None);
         assert_eq!(path, Some(EntryIndexPath::Scan(ScanReason::NotComplete)));
         assert_eq!((rows.len(), statuses, held), (entries.len(), 0, 0));
@@ -1507,8 +1859,7 @@ mod tests {
                         id: id
                             .to_base_id(qid.partition_key())
                             .canonicalize(Seq::new(seq)),
-                        stage,
-                        status,
+                        lane: Some((stage, status)),
                         created_at: Some(created),
                         transitioned_at: Some(transitioned),
                     }
