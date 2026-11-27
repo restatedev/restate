@@ -798,6 +798,7 @@ where
                     partition_store.partition_db().clone(),
                     processor.vqueues_mut(),
                     refill_mode,
+                    config.worker.vqueue_inbox_cache_initial_capacity(),
                 )
                 .await?
             };

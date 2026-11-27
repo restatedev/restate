@@ -292,7 +292,10 @@ pub(crate) struct Queue<S: VQueueStore> {
 impl<S: VQueueStore> Queue<S> {
     /// Creates a new queue that must first go through the given number of running items
     /// before it switches to reading the inbox stage.
-    pub fn new(num_running: u32, storage: &S, qid: &VQueueId) -> Self {
+    ///
+    /// `initial_capacity` is the number of inbox cache entries to pre-allocate, capped at
+    /// [`INBOX_CACHE_CAPACITY`].
+    pub fn new(num_running: u32, storage: &S, qid: &VQueueId, initial_capacity: usize) -> Self {
         let stage = if num_running > 0 {
             Stage::New {
                 already_running: NonZeroU32::new(num_running).unwrap(),
@@ -304,16 +307,19 @@ impl<S: VQueueStore> Queue<S> {
 
         Self {
             stage,
-            items: VecDeque::with_capacity(INBOX_CACHE_CAPACITY),
+            items: VecDeque::with_capacity(initial_capacity.min(INBOX_CACHE_CAPACITY)),
             refill_state: Default::default(),
         }
     }
 
     /// Creates an empty queue
-    pub fn new_closed() -> Self {
+    ///
+    /// `initial_capacity` is the number of inbox cache entries to pre-allocate, capped at
+    /// [`INBOX_CACHE_CAPACITY`].
+    pub fn new_closed(initial_capacity: usize) -> Self {
         Self {
             stage: Stage::Empty,
-            items: VecDeque::with_capacity(INBOX_CACHE_CAPACITY),
+            items: VecDeque::with_capacity(initial_capacity.min(INBOX_CACHE_CAPACITY)),
             refill_state: Default::default(),
         }
     }
