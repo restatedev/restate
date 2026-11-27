@@ -1037,6 +1037,8 @@ where
                 TerminalLoopState::Failed(InvokerError::UnexpectedMessageV4(m.ty()))
             }
             Message::GetStateEphemeralCommand(command) => {
+                // Answered right here, without involving the invoker: neither this command nor
+                // its reply clears the invocation's suspendable mark, see `SuspendableMark`.
                 let Some(http_stream_tx) = http_stream_tx else {
                     // The request stream is closed already, so we can't answer anymore:
                     // the SDK will notice the request stream closed and will fail the attempt on its own if it really needs this value to make progress.
@@ -1542,9 +1544,9 @@ where
         awaiting_on: proto::AwaitingOnMessage,
         encoded_length: usize,
     ) -> TerminalLoopState<()> {
-        // this message should mark this invocation as suspendable.
-        // if it's not running any side effects.
-
+        // The invoker uses this message to mark the invocation as eagerly suspendable, unless
+        // the SDK reports that it is executing side effects or the handler is non-preemptable.
+        let suspendable = self.invocation_task.preemptable && !awaiting_on.executing_side_effects;
         let Some(awaiting_on) = awaiting_on.awaiting_on else {
             return TerminalLoopState::Failed(InvokerError::EmptyAwaitingOnMessage);
         };
@@ -1564,10 +1566,9 @@ where
             .send_invoker_tx(InvocationTaskOutputInner::AwaitingOn {
                 unresolved_future,
                 encoded_length,
+                suspendable,
             });
 
-        // todo(azmy): Handle awaiting on message
-        //  Also verify that we keep correctly updated the InvocationStatusReportInner.last_awaiting_on_unresolved_future field!
         TerminalLoopState::Continue(())
     }
 

@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
 use restate_memory::LocalMemoryPool;
+use restate_types::Scope;
 use restate_types::identifiers::EntryIndex;
 use restate_types::invocation::FencingToken;
 use restate_types::retries;
@@ -43,9 +44,8 @@ impl<T: Copy + PartialEq + Eq + fmt::Debug + Send + 'static> TimerKey for T {}
 pub(super) struct InvocationStateMachine<K: TimerKey = tokio_util::time::delay_queue::Key> {
     #[allow(dead_code)]
     pub(super) qid: VQueueId,
-    #[allow(dead_code)]
     #[debug(skip)]
-    pub(super) _permit: ReservedResources,
+    pub(super) permit: ReservedResources,
     /// The invoker-task generation this state machine represents. Stamped onto
     /// every effect this ISM emits so the partition processor can fence stale
     /// effects from a previous attempt.
@@ -139,6 +139,30 @@ impl JournalTracker {
     }
 }
 
+/// Marks an in-flight attempt as eagerly suspendable.
+///
+/// Set when the SDK reports that user code is blocked on an await point and not executing side
+/// effects. Cleared as soon as a notification or ack is sent to the SDK, as it may unblock it,
+/// or the SDK sends a new command or run proposal, or reports that it now executes side
+/// effects. SDKs report again where they are blocked after every message they receive, so a
+/// mark cleared by a notification the SDK doesn't await (e.g. the invocation id of a call) is
+/// restored right away. The service protocol only considers notifications in the awaited tree
+/// to outdate the information, but tracking that tree costs memory for little gain.
+///
+/// Ephemeral state requests are the exception: the invocation task answers them without
+/// involving the invoker, so neither the request nor its reply clears the mark. A marked
+/// attempt isn't expected to make such requests: SDKs make them from run closures only, and by
+/// default don't report an await point while a run executes.
+///
+/// The mark only changes while the state machine is removed from the
+/// [`InvocationStateMachineManager`](crate::state_machine_manager::InvocationStateMachineManager),
+/// or through the manager's methods, so the manager's suspendable index stays in sync.
+#[derive(Debug)]
+pub(super) struct SuspendableMark {
+    /// Monotonic sequence number assigned by the suspendable index; lower means marked earlier.
+    seq: u64,
+}
+
 enum AttemptState<K: TimerKey> {
     New,
 
@@ -167,6 +191,10 @@ enum AttemptState<K: TimerKey> {
         using_deployment: Option<PinnedDeployment>,
         // If true, we need to notify the deployment id to the partition processor
         should_notify_pinned_deployment: bool,
+
+        // Set while the SDK reports (via AwaitingOnMessage) that user code is blocked on an
+        // await point, so the invocation can be suspended eagerly. See [`SuspendableMark`].
+        suspendable_mark: Option<SuspendableMark>,
     },
 
     WaitingRetry {
@@ -236,7 +264,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
 
         Self {
             qid,
-            _permit: permit,
+            permit,
             fencing_token,
             invocation_target,
             limit_key,
@@ -272,6 +300,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             run_completion_proposals_to_ack: Default::default(),
             using_deployment: None,
             should_notify_pinned_deployment: false,
+            suspendable_mark: None,
         };
     }
 
@@ -441,11 +470,13 @@ impl<K: TimerKey> InvocationStateMachine<K> {
                 journal_tracker,
                 command_acks_to_propagate,
                 notifications_tx,
+                suspendable_mark,
                 ..
             } => {
                 if command_acks_to_propagate.remove(&command_index) {
                     Self::try_send_notification(
                         notifications_tx,
+                        suspendable_mark,
                         Notification::CommandAck(command_index),
                     );
                 }
@@ -470,6 +501,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
                 journal_tracker,
                 notifications_tx,
                 run_completion_proposals_to_ack,
+                suspendable_mark,
                 ..
             } => {
                 let to_send = match &notification_id {
@@ -482,7 +514,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
                     _ => Notification::Entry(entry_index),
                 };
                 journal_tracker.notify_acked_notification_from_partition_processor(notification_id);
-                Self::try_send_notification(notifications_tx, to_send);
+                Self::try_send_notification(notifications_tx, suspendable_mark, to_send);
             }
             AttemptState::WaitingRetry {
                 journal_tracker, ..
@@ -493,10 +525,15 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         }
     }
 
+    /// Sends the notification (or ack) to the invocation task and clears the suspendable mark,
+    /// as it may unblock the SDK. If the task no longer reads from the channel, the channel is
+    /// closed.
     pub(super) fn try_send_notification(
         notifications_tx: &mut Option<mpsc::UnboundedSender<Notification>>,
+        suspendable_mark: &mut Option<SuspendableMark>,
         notification: Notification,
     ) {
+        *suspendable_mark = None;
         *notifications_tx = notifications_tx
             .take()
             .filter(move |sender| sender.send(notification).is_ok());
@@ -639,11 +676,14 @@ impl<K: TimerKey> InvocationStateMachine<K> {
     pub(super) fn notify_pause(&mut self) -> bool {
         self.requested_pause = true;
         if let AttemptState::InFlight {
-            notifications_tx, ..
+            notifications_tx,
+            suspendable_mark,
+            ..
         } = &mut self.invocation_state
         {
             // Close notifications_tx to trigger suspension
             *notifications_tx = None;
+            *suspendable_mark = None;
 
             // Invocation is still in-flight, pause will happen later on
             return false;
@@ -651,6 +691,78 @@ impl<K: TimerKey> InvocationStateMachine<K> {
 
         // Invocation is not in-flight, all good we can pause now
         true
+    }
+
+    /// Marks the attempt as suspendable, see [`SuspendableMark`].
+    ///
+    /// If already marked, the original sequence number is kept, so the age counts from the
+    /// first report since the mark was last cleared. Returns the effective sequence number, or
+    /// `None` if the attempt cannot be suspended eagerly: it's not in flight, its notification
+    /// channel is closed (pause or suspension in progress, request/response mode), or a run
+    /// completion it proposed is still waiting for its ack.
+    pub(super) fn try_mark_suspendable(&mut self, seq: u64) -> Option<u64> {
+        let AttemptState::InFlight {
+            notifications_tx: Some(_),
+            run_completion_proposals_to_ack,
+            suspendable_mark,
+            ..
+        } = &mut self.invocation_state
+        else {
+            return None;
+        };
+        if !run_completion_proposals_to_ack.is_empty() {
+            return None;
+        }
+        let seq = suspendable_mark.as_ref().map_or(seq, |mark| mark.seq);
+        *suspendable_mark = Some(SuspendableMark { seq });
+        Some(seq)
+    }
+
+    /// Sequence number of the suspendable mark, if the attempt is marked.
+    pub(super) fn suspendable_seq(&self) -> Option<u64> {
+        match &self.invocation_state {
+            AttemptState::InFlight {
+                suspendable_mark: Some(mark),
+                ..
+            } => Some(mark.seq),
+            _ => None,
+        }
+    }
+
+    /// Clears the suspendable mark, returning its sequence number if it was set.
+    pub(super) fn clear_suspendable_mark(&mut self) -> Option<u64> {
+        match &mut self.invocation_state {
+            AttemptState::InFlight {
+                suspendable_mark, ..
+            } => suspendable_mark.take().map(|mark| mark.seq),
+            _ => None,
+        }
+    }
+
+    /// The scope/limit-key permit this invocation holds, used to find invocations that release
+    /// a given limit-key concurrency rule when suspended.
+    pub(super) fn limit_key_permit(&self) -> Option<(&Scope, &LimitKey<ReString>)> {
+        self.permit.limit_key_permit()
+    }
+
+    /// Closes the notification channel so that the invocation task stops reading, exactly like
+    /// when the inactivity timeout fires: the SDK suspends at its current await point. Unlike
+    /// [`Self::notify_pause`], the invocation is suspended, not paused.
+    ///
+    /// Returns `false` if the attempt is not in flight or its channel is already closed.
+    pub(super) fn notify_eager_suspend(&mut self) -> bool {
+        match &mut self.invocation_state {
+            AttemptState::InFlight {
+                notifications_tx,
+                suspendable_mark,
+                ..
+            } if notifications_tx.is_some() => {
+                *notifications_tx = None;
+                *suspendable_mark = None;
+                true
+            }
+            _ => false,
+        }
     }
 
     pub(crate) fn should_emit_transient_error_event(

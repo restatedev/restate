@@ -16,6 +16,7 @@ use metrics::counter;
 use tokio::time::Instant;
 
 use restate_clock::RoughTimestamp;
+use restate_limiter::Level;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::EntryMetadata;
 use restate_storage_api::vqueue_table::metadata::VQueueMeta;
@@ -143,6 +144,10 @@ struct Stats {
     /// Micros accumulated per bucket. `usize` (≥ 64 bits on supported targets)
     /// is large enough to hold arbitrarily long waits without overflow concerns.
     accumulated_micros: EnumMap<WaitBucket, usize>,
+    /// What the head is blocked on, so that it asks for an eager suspension only once per
+    /// blocking resource. Concurrency rules are told apart by level, as suspending different
+    /// invocations releases them.
+    blocked_on: Option<(WaitBucket, Option<Level>)>,
 }
 
 impl Stats {
@@ -156,6 +161,17 @@ impl Stats {
         // under-report whenever items don't make it all the way to `finalize()`.
         self.set_wait(None);
         *self = Self::default();
+    }
+
+    /// Records that the head is blocked on `resource`, returning true if it wasn't blocked on
+    /// it already.
+    fn update_blocked_on(&mut self, resource: &ResourceKind) -> bool {
+        let level = match resource {
+            ResourceKind::LimitKeyConcurrency { blocked_level, .. } => Some(*blocked_level),
+            _ => None,
+        };
+        let blocked_on = Some((WaitBucket::for_resource(resource), level));
+        std::mem::replace(&mut self.blocked_on, blocked_on) != blocked_on
     }
 
     /// Transition the wait segment. Passing `None` means "no longer blocked".
@@ -305,6 +321,12 @@ impl<S: VQueueStore> VQueueState<S> {
                 Ok(Pop::Run(action))
             }
             AcquireOutcome::BlockedOn(resource) => {
+                // Ask for an eager suspension only when the head starts blocking on a resource.
+                // Woken queues that lose the race for a released permit block again and must
+                // not ask for another suspension.
+                if self.head_stats.update_blocked_on(&resource) {
+                    resources.request_eager_suspension(&resource);
+                }
                 // One call handles the full state transition: closes any previously
                 // open segment (for a different resource) and opens the new one.
                 self.head_stats
@@ -420,6 +442,10 @@ impl<S: VQueueStore> VQueueState<S> {
 mod tests {
     use std::time::Duration;
 
+    use restate_limiter::Level;
+    use restate_types::Scope;
+    use restate_worker_api::ResourceKind;
+
     use super::{Stats, WaitBucket};
 
     /// Regression test for the "two open wait segments overlap" bug.
@@ -479,6 +505,29 @@ mod tests {
     /// discarded. We verify the flush by observing that a subsequent call to
     /// `set_wait(None)` on the fresh `Stats` doesn't double-count the flushed
     /// time, and that `current` is cleared.
+    /// A head asks for an eager suspension once per blocking resource: again when it blocks on
+    /// a concurrency rule of another level or on another kind of resource, and again after
+    /// the head changed.
+    #[test]
+    fn blocked_on_changes_per_resource_and_rule_level() {
+        let rule = |blocked_level| ResourceKind::LimitKeyConcurrency {
+            scope: Scope::try_non_interned("tenants").unwrap(),
+            limit_key: "t1/x".parse().unwrap(),
+            blocked_level,
+            blocked_rule: None,
+        };
+        let mut s = Stats::default();
+        assert!(s.update_blocked_on(&rule(Level::Scope)));
+        assert!(!s.update_blocked_on(&rule(Level::Scope)));
+        assert!(s.update_blocked_on(&rule(Level::Level1)));
+        assert!(!s.update_blocked_on(&rule(Level::Level1)));
+        assert!(s.update_blocked_on(&ResourceKind::InvokerConcurrency));
+        assert!(!s.update_blocked_on(&ResourceKind::InvokerConcurrency));
+        assert!(s.update_blocked_on(&rule(Level::Level1)));
+        s.reset();
+        assert!(s.update_blocked_on(&rule(Level::Level1)));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn reset_clears_open_segment() {
         let mut s = Stats::default();

@@ -64,6 +64,7 @@ use restate_vqueues::{RefillMode, ResourceManager, SchedulerService, VQueueHandl
 use restate_wal_protocol::control::{AnnounceLeaderCommand, VersionBarrierCommand};
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::v2::{Envelope, ErasedCommand, Raw};
+use restate_worker_api::invoker::InvokerHandle as _;
 use restate_worker_api::{
     LeaderQueryCommand, LeaderQueryRequest, LeaderQueryResponse, LeaderQuerySender,
 };
@@ -793,15 +794,25 @@ where
                 } else {
                     RefillMode::Blocking
                 };
+                // Blocked queues ask this partition's invoker to suspend a waiting invocation
+                // that holds the permit they need. The invoker ignores these requests while
+                // eager suspension is disabled in its live configuration.
+                let mut invoker_handle = invoker_handle.clone();
+                let resource_manager = ResourceManager::create(
+                    partition_store.partition_db().clone(),
+                    node_ctx.invoker_capacity.concurrency.clone(),
+                    node_ctx.invoker_capacity.invocation_token_bucket.clone(),
+                    node_ctx.invoker_capacity.memory_pool.clone(),
+                    node_ctx.invoker_capacity.initial_invocation_memory,
+                )
+                .await?
+                .with_eager_suspension_sink(Box::new(move |target| {
+                    // The invoker only stops when leadership ends, and the scheduler goes away
+                    // with it.
+                    let _ = invoker_handle.suspend_idle(target);
+                }));
                 SchedulerService::create(
-                    ResourceManager::create(
-                        partition_store.partition_db().clone(),
-                        node_ctx.invoker_capacity.concurrency.clone(),
-                        node_ctx.invoker_capacity.invocation_token_bucket.clone(),
-                        node_ctx.invoker_capacity.memory_pool.clone(),
-                        node_ctx.invoker_capacity.initial_invocation_memory,
-                    )
-                    .await?,
+                    resource_manager,
                     partition_store.partition_db().clone(),
                     processor.vqueues_mut(),
                     refill_mode,

@@ -14,6 +14,7 @@ pub const INVOKER_ENQUEUE: &str = "restate.invoker.enqueue.total";
 pub const INVOKER_INVOCATION_TASKS: &str = "restate.invoker.invocation_tasks.total";
 pub const INVOKER_TASK_DURATION: &str = "restate.invoker.task_duration.seconds";
 pub const INVOKER_EAGER_STATE_TRUNCATED: &str = "restate.invoker.eager_state_truncated.total";
+pub const INVOKER_EAGER_SUSPENSION: &str = "restate.invoker.eager_suspension.total";
 
 pub const INVOKER_SENT_BYTES: &str = "restate.invoker.sent.bytes.total";
 pub const INVOKER_RECEIVED_BYTES: &str = "restate.invoker.received.bytes.total";
@@ -23,6 +24,9 @@ pub const TASK_OP_STARTED: &str = "started";
 pub const TASK_OP_SUSPENDED: &str = "suspended";
 pub const TASK_OP_FAILED: &str = "failed";
 pub const TASK_OP_COMPLETED: &str = "completed";
+
+pub const EAGER_SUSPENSION_SUSPENDED: &str = "suspended";
+pub const EAGER_SUSPENSION_NO_CANDIDATE: &str = "no_candidate";
 
 pub(crate) fn describe_metrics() {
     describe_counter!(
@@ -47,6 +51,12 @@ pub(crate) fn describe_metrics() {
         INVOKER_EAGER_STATE_TRUNCATED,
         Unit::Count,
         "Number of invocations where eager state was truncated due to size limit"
+    );
+
+    describe_counter!(
+        INVOKER_EAGER_SUSPENSION,
+        Unit::Count,
+        "Requests to suspend a waiting invocation because a queue is blocked on its permit, by outcome"
     );
 
     describe_counter!(

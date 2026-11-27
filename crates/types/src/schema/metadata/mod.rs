@@ -735,6 +735,7 @@ impl ServiceRevision {
                         handler.as_handler_metadata(
                             &configuration,
                             self.public,
+                            self.preemptable.unwrap_or(true),
                             served_using_protocol_type,
                         ),
                     )
@@ -870,9 +871,7 @@ struct Handler {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retry_policy_on_max_attempts: Option<OnMaxAttempts>,
     /// Whether invocations of this handler can be preempted, i.e. eagerly suspended to free up
-    /// concurrency capacity for other invocations. Resolved at discovery from the handler and
-    /// service settings, so readers don't need the service. Unset only in schemas written before
-    /// this field existed, which means preemptable.
+    /// concurrency capacity for other invocations. Unset means the service setting applies.
     #[bilrost(tag = 20)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     preemptable: Option<bool>,
@@ -891,6 +890,7 @@ impl Handler {
         &self,
         configuration: &Pinned<Configuration>,
         service_level_public: bool,
+        service_level_preemptable: bool,
         served_using_protocol_type: Option<ProtocolType>,
     ) -> service::HandlerMetadata {
         let mut info = vec![];
@@ -946,7 +946,7 @@ impl Handler {
             abort_timeout: self.abort_timeout,
             enable_lazy_state: self.enable_lazy_state,
             state_preload_policy: self.state_preload_policy.clone(),
-            preemptable: self.preemptable.unwrap_or(true),
+            preemptable: self.preemptable.unwrap_or(service_level_preemptable),
             retry_policy: HandlerRetryPolicyMetadata {
                 initial_interval: self.retry_policy_initial_interval,
                 exponentiation_factor: self.retry_policy_exponentiation_factor,
@@ -1180,7 +1180,10 @@ impl InvocationTargetResolver for Schema {
                 .inactivity_timeout
                 .or(service_revision.inactivity_timeout),
             state_preload_policy,
-            preemptable: handler.preemptable.unwrap_or(true),
+            preemptable: handler
+                .preemptable
+                .or(service_revision.preemptable)
+                .unwrap_or(true),
         })
     }
 
