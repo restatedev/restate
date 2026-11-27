@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod check_features;
 mod create_snapshot;
 
 use cling::prelude::*;
@@ -16,4 +17,6 @@ use cling::prelude::*;
 pub enum Snapshot {
     /// Create.
     CreateSnapshot(create_snapshot::CreateSnapshotOpts),
+    /// Check that the latest snapshot of every partition has the given partition features
+    CheckFeatures(check_features::CheckFeaturesOpts),
 }

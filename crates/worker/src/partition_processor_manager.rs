@@ -77,11 +77,11 @@ use restate_types::net::partition_processor_manager::{
 use restate_types::net::{RpcRequest as _, UnaryMessage};
 use restate_types::nodes_config::{NodesConfigError, NodesConfiguration, WorkerState};
 use restate_types::partition_table::PartitionTable;
-use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
+use restate_types::partitions::{Partition, PersistedFeatures};
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::{GenerationalNodeId, Version};
-use restate_util_string::format_restring;
+use restate_util_string::{ReString, format_restring};
 use restate_util_time::DurationExt;
 use restate_wal_protocol::v2::{Envelope, Raw};
 use restate_worker_api::invoker::capacity::InvokerCapacity;
@@ -972,6 +972,14 @@ where
                     latest_snapshot.and_then(|s| s.archived_log_byte_offset);
                 status.last_archived_byte_offsets_base_lsn =
                     latest_snapshot.and_then(|s| s.archived_byte_offsets_base_lsn);
+                status.latest_snapshot_features = latest_snapshot
+                    .and_then(|s| s.latest_snapshot_compatibility.as_ref())
+                    .map(|c| {
+                        PersistedFeatures::from_enabled_names(
+                            c.partition_features.iter().map(ReString::as_str),
+                        )
+                    })
+                    .unwrap_or_default();
 
                 let current_tail_lsn = self.target_tail_lsns.get(partition_id).cloned();
                 let target_tail_lsn = if current_tail_lsn > status.target_tail_lsn {

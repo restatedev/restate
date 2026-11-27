@@ -44,6 +44,8 @@ position.
 2. **Release N+1 enables the feature by default.**
 3. **Release N+2 requires the feature and deletes the logic.** A partition that reaches N+2
    without the feature stays blocked until a snapshot has it, which takes running N+1 again.
+   Its release notes tell operators to run `restatectl snapshots check-features <name>` before
+   upgrading, which checks that the latest snapshot of every partition has the feature.
 
 ## Checklist for a new retirement
 

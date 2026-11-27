@@ -19,7 +19,7 @@ pub mod dump;
 mod health;
 mod model;
 mod placement;
-mod sql;
+pub(crate) mod sql;
 mod summary;
 #[cfg(test)]
 pub(crate) mod tests;

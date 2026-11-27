@@ -89,5 +89,10 @@ define_table!(
         /// hadn't flushed again in different batches, and a replica restored from a snapshot
         /// continues from the snapshot's. NULL while the partition doesn't track byte offsets.
         partition_store_byte_offset: DataType::UInt64,
+
+        /// Partition features that the partition's latest snapshot has. Empty if the partition
+        /// has no snapshot, or its latest snapshot doesn't record them. Query membership with
+        /// `array_has(latest_snapshot_features, 'journal_v1_retired')`.
+        latest_snapshot_features: Utf8List,
     )
 );

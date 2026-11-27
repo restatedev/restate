@@ -195,6 +195,11 @@ impl PartitionFeatureChange {
         }
     }
 
+    /// The change whose [`Self::enabled_name`] is `name`, if any.
+    pub fn from_enabled_name(name: &str) -> Option<Self> {
+        Self::iter().find(|change| change.enabled_name() == name)
+    }
+
     /// Apply this change to the persisted feature set. Returns true if the feature
     /// change had an effect on the state machine features.
     pub fn apply_to(self, features: &mut PersistedFeatures) -> bool {
@@ -361,6 +366,21 @@ impl PersistedFeatures {
             .filter(move |change| self.is_enabled(*change))
             .map(PartitionFeatureChange::enabled_name)
     }
+
+    /// The features that `names` lists, as [`Self::enabled_names`] does. Names of features this
+    /// server doesn't know are left out.
+    pub fn from_enabled_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Self {
+        let names: Vec<_> = names.into_iter().collect();
+        let mut features = Self::default();
+        // Applied in declaration order, as `enabled_names` lists them, the changes enable exactly
+        // the listed features, even if one of them turns off a feature listed before it.
+        for change in PartitionFeatureChange::iter() {
+            if names.contains(&change.enabled_name()) {
+                change.apply_to(&mut features);
+            }
+        }
+        features
+    }
 }
 
 impl StorageEncode for PersistedFeatures {
@@ -485,6 +505,19 @@ mod tests {
         assert_eq!(
             features.enabled_names().collect::<Vec<_>>(),
             vec!["journal_v2", "vqueues"],
+        );
+
+        // Enabling vqueues turns vqueues_skip_completed off, so the order of the names matters.
+        features.vqueues_skip_completed = true;
+        features.journal_v1_retired = true;
+        let names = features.enabled_names().collect::<Vec<_>>();
+        assert_eq!(
+            PersistedFeatures::from_enabled_names(names.clone()),
+            features
+        );
+        assert_eq!(
+            PersistedFeatures::from_enabled_names(names.into_iter().rev().chain(["not_a_feature"])),
+            features
         );
     }
 

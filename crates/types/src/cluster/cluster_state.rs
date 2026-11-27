@@ -247,6 +247,18 @@ pub struct PartitionProcessorStatus {
     /// Since v1.8.2
     #[bilrost(24)]
     pub last_archived_byte_offsets_base_lsn: Option<Lsn>,
+    /// The partition features that the partition's latest snapshot has, as its manifest records
+    /// them, apart from the ones this server doesn't know. Empty if the partition has no snapshot,
+    /// or its latest snapshot was taken by a server that doesn't record them.
+    ///
+    /// Sending [`PersistedFeatures`] instead of the names that the manifest records is a deliberate
+    /// choice: it keeps the status compact, at the cost of losing the features that the sending
+    /// or the receiving server doesn't know.
+    ///
+    /// Since v1.8.2
+    #[into_prost(map = "enabled_features_to_proto", map_by_ref)]
+    #[bilrost(25)]
+    pub latest_snapshot_features: PersistedFeatures,
 }
 
 impl PartitionProcessorStatus {
@@ -317,6 +329,7 @@ impl Default for PartitionProcessorStatus {
             partition_store_byte_offset: None,
             last_archived_log_byte_offset: None,
             last_archived_byte_offsets_base_lsn: None,
+            latest_snapshot_features: PersistedFeatures::default(),
         }
     }
 }

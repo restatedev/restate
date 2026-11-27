@@ -77,6 +77,11 @@ define_schema! {
             /// and a replica restored from a snapshot continues from the snapshot's.
             /// NULL while the partition doesn't track byte offsets.
             partition_store_byte_offset: Option<u64> => DataType::UInt64,
+            /// Partition features that the partition's latest snapshot has; empty if
+            /// it has no snapshot or its latest snapshot doesn't record them, NULL
+            /// unless reported. Query membership with
+            /// `array_has(latest_snapshot_features, 'journal_v1_retired')`.
+            latest_snapshot_features: Option<Vec<ReString>> => Utf8List,
             /// Whether the row is a report: `reported` (the worker's own report),
             /// `node_unavailable` (no complete report from the node: it wasn't asked, or
             /// its request failed, timed out or broke off), `not_reported` (the node's
