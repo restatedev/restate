@@ -197,7 +197,7 @@ impl TestEnv {
             &mut transaction,
             DataRecord::new(created_at.into(), Keys::None, lsn, envelope),
             &mut action_collector,
-            Some(LeaderContext::new(NonZeroUsize::new(64 * 1024))),
+            Some(&mut LeaderContext::new(NonZeroUsize::new(64 * 1024), None)),
             &mut arena,
         )
         .await

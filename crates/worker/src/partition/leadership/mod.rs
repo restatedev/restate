@@ -246,11 +246,11 @@ where
     }
 
     /// Returns the [`LeaderContext`] if this processor is the (becoming) leader.
-    pub(crate) fn leader_context(&self) -> Option<LeaderContext> {
-        match &self.state {
+    pub(crate) fn leader_context_mut(&mut self) -> Option<&mut LeaderContext> {
+        match &mut self.state {
             State::Follower | State::Candidate { .. } => None,
-            State::BecomingLeader { leader_context, .. } => Some(*leader_context),
-            State::Leader(leader_state) => Some(leader_state.leader_context),
+            State::BecomingLeader { leader_context, .. } => Some(leader_context),
+            State::Leader(leader_state) => Some(&mut leader_state.leader_context),
         }
     }
 
@@ -529,6 +529,7 @@ where
                     .worker
                     .quantized_action_size()
                     .map(|size| size.as_non_zero_usize()),
+                config.worker.hot_key_threshold(),
             );
 
             let mut self_proposer = self_proposer.take().expect("must be present");

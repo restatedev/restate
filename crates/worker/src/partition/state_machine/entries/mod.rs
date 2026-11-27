@@ -45,7 +45,7 @@ use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_storage_api::timer_table::WriteTimerTable;
 use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
-use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{
     Command, CommandMetadata, Completion, Entry, EntryMetadata, EntryType, NotificationType,
@@ -191,8 +191,9 @@ where
             // We need this information to store the journal entry!
             let mut related_completion_ids = vec![];
 
-            if let Some(leader) = ctx.leader {
+            if let Some(leader) = ctx.leader.as_deref_mut() {
                 leader.record_journal_entry_usage(
+                    self.invocation_id.partition_key(),
                     entry.ty().prometheus_label(),
                     entry.serialized_length(),
                 );

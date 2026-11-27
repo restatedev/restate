@@ -10,6 +10,7 @@
 
 mod actions;
 mod entries;
+mod hot_keys;
 mod lifecycle;
 mod retire_journal_v1;
 mod utils;
@@ -19,7 +20,7 @@ pub use actions::{Action, ActionCollector, RpcReply};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::Debug;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::ops::RangeBounds;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
@@ -78,7 +79,7 @@ use restate_types::identifiers::{
     AwakeableIdentifier, BaseEntryId, EntryIndex, ExternalSignalIdentifier, InvocationId,
     InvocationUuid, PartitionProcessorRpcRequestId, ServiceId, StateMutationId,
 };
-use restate_types::identifiers::{DeploymentId, WithPartitionKey};
+use restate_types::identifiers::{DeploymentId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::client::{
     CancelInvocationResponse, InvocationOutput, InvocationOutputResponse, KillInvocationResponse,
     PauseInvocationResponse, PurgeInvocationResponse, ResumeInvocationResponse,
@@ -126,11 +127,12 @@ use restate_wal_protocol::v2::{CommandKind, commands};
 use restate_worker_api::invoker::Effect;
 use restate_worker_api::processor::PartitionFeatures;
 
+use self::hot_keys::HotKeyTracker;
 use self::utils::SpanExt;
 use crate::ResolveResponseResult;
 use crate::metric_definitions::{
     LEADER_LABEL, LEADER_LABEL_FOLLOWER, LEADER_LABEL_LEADER, PARTITION_APPLY_COMMAND,
-    USAGE_LEADER_JOURNAL_ENTRY_BYTES, USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+    USAGE_LEADER_HOT_KEY_COUNT, USAGE_LEADER_JOURNAL_ENTRY_BYTES, USAGE_LEADER_JOURNAL_ENTRY_COUNT,
     USAGE_LEADER_QUANTIZED_ACTION_COUNT,
 };
 use crate::partition::processor::*;
@@ -203,27 +205,54 @@ macro_rules! info_span_if_leader {
     }};
 }
 
-/// Leader-only settings, captured from the configuration when the partition processor becomes leader.
-#[derive(Debug, Clone, Copy)]
+/// Leader-only state, with settings captured from the configuration when the partition processor
+/// becomes leader.
+#[derive(Debug)]
 pub struct LeaderContext {
     /// Enables the quantized action count metric if set.
     quantized_action_size: Option<NonZeroUsize>,
+    /// Enables the hot key count metric if set.
+    hot_keys: Option<Box<HotKeyTracker>>,
 }
 
 impl LeaderContext {
-    pub fn new(quantized_action_size: Option<NonZeroUsize>) -> Self {
+    pub fn new(
+        quantized_action_size: Option<NonZeroUsize>,
+        hot_key_threshold: Option<NonZeroU64>,
+    ) -> Self {
         Self {
             quantized_action_size,
+            hot_keys: hot_key_threshold.map(|threshold| Box::new(HotKeyTracker::new(threshold))),
         }
     }
 
-    fn record_journal_entry_usage(&self, entry: &'static str, serialized_length: usize) {
+    fn record_journal_entry_usage(
+        &mut self,
+        partition_key: PartitionKey,
+        entry: &'static str,
+        serialized_length: usize,
+    ) {
         counter!(USAGE_LEADER_JOURNAL_ENTRY_COUNT, "entry" => entry).increment(1);
         counter!(USAGE_LEADER_JOURNAL_ENTRY_BYTES, "entry" => entry)
             .increment(serialized_length as u64);
-        if let Some(quantized_action_size) = self.quantized_action_size {
+        let quantized_actions = self
+            .quantized_action_size
+            .map(|size| quantized_actions(serialized_length, size));
+        if let Some(quantized_actions) = quantized_actions {
             counter!(USAGE_LEADER_QUANTIZED_ACTION_COUNT, "entry" => entry)
-                .increment(quantized_actions(serialized_length, quantized_action_size));
+                .increment(quantized_actions);
+        }
+        if let Some(hot_keys) = &mut self.hot_keys {
+            hot_keys.record(partition_key, quantized_actions.unwrap_or(1));
+        }
+    }
+
+    /// Reports the number of hot keys once the current hot key window has elapsed.
+    pub fn maybe_report_hot_keys(&mut self) {
+        if let Some(hot_keys) = &mut self.hot_keys
+            && let Some(count) = hot_keys.maybe_rotate(tokio::time::Instant::now())
+        {
+            counter!(USAGE_LEADER_HOT_KEY_COUNT).increment(count as u64);
         }
     }
 }
@@ -241,7 +270,7 @@ pub(crate) struct StateMachineApplyContext<'a, S, P> {
     record_created_at: MillisSinceEpoch,
     record_lsn: Lsn,
     action_collector: &'a mut ActionCollector,
-    leader: Option<LeaderContext>,
+    leader: Option<&'a mut LeaderContext>,
     encoding_arena: &'a mut BytesMut,
 }
 
@@ -261,7 +290,7 @@ impl StateMachine {
         txn: &mut TransactionType,
         envelope: DataRecord<v2::Envelope<v2::Raw>>,
         action_collector: &mut ActionCollector,
-        leader: Option<LeaderContext>,
+        leader: Option<&mut LeaderContext>,
         encoding_arena: &mut BytesMut,
     ) -> Result<(), Error> {
         let is_leader = leader.is_some();
@@ -876,8 +905,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .into();
             let new_raw_entry = new_entry.encode::<ServiceProtocolV4Codec>();
 
-            if let Some(leader) = self.leader {
+            if let Some(leader) = self.leader.as_deref_mut() {
                 leader.record_journal_entry_usage(
+                    invocation_id.partition_key(),
                     new_raw_entry.ty().prometheus_label(),
                     new_raw_entry.serialized_length(),
                 );
@@ -1394,8 +1424,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
             let new_raw_entry = new_entry.encode::<ServiceProtocolV4Codec>();
 
-            if let Some(leader) = self.leader {
+            if let Some(leader) = self.leader.as_deref_mut() {
                 leader.record_journal_entry_usage(
+                    invocation_id.partition_key(),
                     new_raw_entry.ty().prometheus_label(),
                     new_raw_entry.serialized_length(),
                 );
@@ -1426,8 +1457,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 invocation_input.argument,
             );
 
-            if let Some(leader) = self.leader {
+            if let Some(leader) = self.leader.as_deref_mut() {
                 leader.record_journal_entry_usage(
+                    invocation_id.partition_key(),
                     "Command/Input",
                     input_entry.serialized_entry().len(),
                 );
