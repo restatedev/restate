@@ -8470,6 +8470,7 @@ name = "restate-memory"
 version = "1.8.2-dev"
 dependencies = [
  "bytes",
+ "criterion",
  "futures",
  "metrics",
  "pin-project-lite",
