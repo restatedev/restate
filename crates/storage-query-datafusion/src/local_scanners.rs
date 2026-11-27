@@ -14,6 +14,7 @@ use restate_core::Metadata;
 use restate_partition_store::{PartitionStoreManager, QueryIoExecutor};
 use restate_worker_api::PartitionQueryAccess;
 
+use crate::hot_keys::schema::SysHotKeysTable;
 use crate::inbox::schema::SysInboxTable;
 use crate::invocation_state::schema::SysInvocationStateTable;
 use crate::invocation_status::schema::SysInvocationStatusTable;
@@ -45,7 +46,10 @@ pub fn register_live_scanners(
         SysSchedulerTable::create_local_scanner(Arc::clone(&access)),
     ));
     remote_scanner_manager.register_partition_scanner::<SysUserLimitsTable>(Arc::new(
-        SysUserLimitsTable::create_local_scanner(access),
+        SysUserLimitsTable::create_local_scanner(Arc::clone(&access)),
+    ));
+    remote_scanner_manager.register_partition_scanner::<SysHotKeysTable>(Arc::new(
+        SysHotKeysTable::create_local_scanner(access),
     ));
 }
 

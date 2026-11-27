@@ -12,6 +12,7 @@ pub mod invoker;
 pub mod processor;
 pub mod resources;
 
+mod hot_keys;
 mod leader_query;
 mod metric_definitions;
 mod partition_capture;
@@ -21,6 +22,7 @@ mod partition_query;
 mod scheduler_status;
 mod user_limits;
 
+pub use hot_keys::*;
 pub use leader_query::*;
 pub use partition_capture::*;
 pub use partition_processor_manager::*;

@@ -9,8 +9,8 @@
 // by the Apache License, Version 2.0.
 
 //! A **partition capture** is what one part of a query plan reads of one
-//! partition: a storage snapshot and the processor's own live state (scheduler
-//! and user-limit rows), taken by the processor between two of its committed
+//! partition: a storage snapshot and the processor's own live state (scheduler,
+//! user-limit and hot key rows), taken by the processor between two of its committed
 //! turns, and the invoker's status rows, each only if that part asks for it.
 //!
 //! The sources within one admitted part of the plan share its capture; other
@@ -30,7 +30,7 @@ use restate_partition_store::ReadSnapshot;
 use restate_types::identifiers::PartitionId;
 
 use crate::invoker::InvocationStatusReport;
-use crate::{SchedulerStatusEntry, UserLimitCounterEntry};
+use crate::{HotKeyEntry, SchedulerStatusEntry, UserLimitCounterEntry};
 
 /// What a capture includes: the union of what the query's sources for one
 /// partition need.
@@ -44,6 +44,8 @@ pub struct PartitionCaptureRequirements {
     pub scheduler: bool,
     /// The user-limit counters.
     pub user_limits: bool,
+    /// The hot keys of the last completed hot key window.
+    pub hot_keys: bool,
 }
 
 impl PartitionCaptureRequirements {
@@ -53,11 +55,12 @@ impl PartitionCaptureRequirements {
         self.invoker |= other.invoker;
         self.scheduler |= other.scheduler;
         self.user_limits |= other.user_limits;
+        self.hot_keys |= other.hot_keys;
     }
 
     /// Whether any live state is needed, which only the partition's leader has.
     pub fn needs_live_state(self) -> bool {
-        self.invoker || self.scheduler || self.user_limits
+        self.invoker || self.scheduler || self.user_limits || self.hot_keys
     }
 }
 
@@ -69,6 +72,7 @@ pub struct CapturedPartitionState {
     pub invoker: Option<Arc<[InvocationStatusReport]>>,
     pub scheduler: Option<Arc<[SchedulerStatusEntry]>>,
     pub user_limits: Option<Arc<[UserLimitCounterEntry]>>,
+    pub hot_keys: Option<Arc<[HotKeyEntry]>>,
 }
 
 impl CapturedPartitionState {
@@ -77,6 +81,7 @@ impl CapturedPartitionState {
         (!requirements.invoker || self.invoker.is_some())
             && (!requirements.scheduler || self.scheduler.is_some())
             && (!requirements.user_limits || self.user_limits.is_some())
+            && (!requirements.hot_keys || self.hot_keys.is_some())
     }
 
     /// The live state of a partition read offline, from a restored snapshot: no
@@ -86,6 +91,7 @@ impl CapturedPartitionState {
             invoker: requirements.invoker.then(Arc::default),
             scheduler: requirements.scheduler.then(Arc::default),
             user_limits: requirements.user_limits.then(Arc::default),
+            hot_keys: requirements.hot_keys.then(Arc::default),
         }
     }
 }
@@ -118,8 +124,8 @@ pub struct CaptureTiming {
     pub admitted: Instant,
     /// The storage snapshot's creation, if the capture took one.
     pub snapshot: Option<CaptureSpan>,
-    /// The processor's read of its live state (scheduler, user limits,
-    /// vqueues), if the capture asked for any: the last step before it answers.
+    /// The processor's read of its live state (scheduler, user limits, hot
+    /// keys, vqueues), if the capture asked for any: the last step before it answers.
     pub live: Option<CaptureSpan>,
     /// The read of the invoker's rows after the processor answered, if the
     /// capture asked for them.

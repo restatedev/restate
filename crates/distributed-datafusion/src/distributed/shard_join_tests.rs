@@ -107,6 +107,7 @@ fn capture_live(
             }]
             .into()
         }),
+        hot_keys: requirements.hot_keys.then(Arc::default),
     }
 }
 
