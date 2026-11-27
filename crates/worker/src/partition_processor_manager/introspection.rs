@@ -26,7 +26,7 @@ use restate_types::identifiers::{PartitionId, WithPartitionKey};
 use restate_types::sharding::KeyRange;
 use restate_worker_api::invoker::InvocationStatusReport;
 use restate_worker_api::{
-    LeaderQueryKind, LeaderQueryRequest, LeaderQueryResponse, LeaderQuerySender,
+    HotKeyEntry, LeaderQueryKind, LeaderQueryRequest, LeaderQueryResponse, LeaderQuerySender,
     PartitionQueryAccess, PartitionQueryError, PartitionQueryStream, SchedulerStatusEntry,
     UserLimitCounterEntry,
 };
@@ -128,6 +128,7 @@ impl PartitionLeaderHandlesRegistry {
         let request = match kind {
             LeaderQueryKind::SchedulerStatus => LeaderQueryRequest::SchedulerStatus { keys },
             LeaderQueryKind::UserLimitCounters => LeaderQueryRequest::UserLimitCounters { keys },
+            LeaderQueryKind::HotKeys => LeaderQueryRequest::HotKeys { keys },
         };
         let (command, response) = restate_futures_util::command::Command::prepare(request);
         entry
@@ -241,6 +242,25 @@ impl PartitionQueryAccess for PartitionLeaderHandlesRegistry {
                     rows.sort_by_key(|row| row.partition_key);
                     Ok(rows)
                 }
+                Some(_) => Err(PartitionQueryError::UnexpectedResponse(partition_id)),
+            }
+        })
+    }
+
+    fn scan_hot_keys(
+        &self,
+        partition_id: PartitionId,
+        keys: KeyRange,
+    ) -> PartitionQueryStream<HotKeyEntry> {
+        let registry = self.clone();
+        rows_stream(async move {
+            match registry
+                .query_leader(partition_id, keys, LeaderQueryKind::HotKeys)
+                .await?
+            {
+                None => Ok(Vec::new()),
+                // The leader answers in ascending partition-key order, within `keys`.
+                Some((_, LeaderQueryResponse::HotKeys(rows))) => Ok(rows),
                 Some(_) => Err(PartitionQueryError::UnexpectedResponse(partition_id)),
             }
         })

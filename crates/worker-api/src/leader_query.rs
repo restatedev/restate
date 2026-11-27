@@ -16,7 +16,7 @@ use restate_futures_util::command::{Command, UnboundedCommandReceiver, Unbounded
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::VQueueId;
 
-use crate::{UserLimitCounterEntry, VQueueSchedulerStatus};
+use crate::{HotKeyEntry, UserLimitCounterEntry, VQueueSchedulerStatus};
 
 /// Queries that route through the partition processor's main `select!` loop.
 ///
@@ -27,12 +27,14 @@ use crate::{UserLimitCounterEntry, VQueueSchedulerStatus};
 pub enum LeaderQueryKind {
     SchedulerStatus,
     UserLimitCounters,
+    HotKeys,
 }
 
 #[derive(Debug, Clone)]
 pub enum LeaderQueryRequest {
     SchedulerStatus { keys: KeyRange },
     UserLimitCounters { keys: KeyRange },
+    HotKeys { keys: KeyRange },
 }
 
 impl LeaderQueryRequest {
@@ -40,6 +42,7 @@ impl LeaderQueryRequest {
         match self {
             Self::SchedulerStatus { .. } => LeaderQueryKind::SchedulerStatus,
             Self::UserLimitCounters { .. } => LeaderQueryKind::UserLimitCounters,
+            Self::HotKeys { .. } => LeaderQueryKind::HotKeys,
         }
     }
 }
@@ -50,6 +53,7 @@ pub type SchedulerStatusEntry = (VQueueId, VQueueSchedulerStatus);
 pub enum LeaderQueryResponse {
     SchedulerStatus(Vec<SchedulerStatusEntry>),
     UserLimitCounters(Vec<UserLimitCounterEntry>),
+    HotKeys(Vec<HotKeyEntry>),
     NotLeader(LeaderQueryKind),
 }
 

@@ -31,6 +31,7 @@ pub(crate) use table_adapter;
 pub mod bifrost_read_stream;
 pub mod config;
 pub(crate) mod deployment;
+pub(crate) mod hot_keys;
 pub(crate) mod invocation_state;
 pub(crate) mod invocation_status;
 pub(crate) mod journal;

@@ -55,7 +55,7 @@ use restate_wal_protocol::v2::{Command, CommandWithKeys};
 use restate_wal_protocol::v2::{CommandKind, ErasedCommand, commands};
 use restate_worker_api::invoker::InvokerHandle;
 use restate_worker_api::resources::ReservedResources;
-use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
+use restate_worker_api::{HotKeyEntry, SchedulerStatusEntry, UserLimitCounterEntry};
 
 use crate::metric_definitions::{PARTITION_HANDLE_LEADER_ACTIONS, USAGE_LEADER_ACTION_COUNT};
 use crate::partition::cleaner::{CleanerEffect, CleanerHandle};
@@ -254,6 +254,15 @@ impl LeaderState {
             .into_iter()
             .flatten()
             .filter(|(qid, _)| keys.contains(&qid.partition_key()))
+            .collect()
+    }
+
+    pub fn read_hot_keys(&self, keys: KeyRange) -> Vec<HotKeyEntry> {
+        self.leader_context
+            .hot_keys()
+            .iter()
+            .filter(|entry| keys.contains(&entry.partition_key))
+            .cloned()
             .collect()
     }
 

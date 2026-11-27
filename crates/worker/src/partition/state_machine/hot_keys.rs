@@ -10,6 +10,7 @@
 
 use std::cmp::Reverse;
 use std::num::NonZeroU64;
+use std::sync::Arc;
 use std::time::Duration;
 
 use ahash::RandomState;
@@ -17,6 +18,8 @@ use priority_queue::PriorityQueue;
 use tokio::time::Instant;
 
 use restate_types::identifiers::PartitionKey;
+use restate_types::time::MillisSinceEpoch;
+use restate_worker_api::HotKeyEntry;
 
 /// Length of the window over which the actions of a partition key are summed up.
 const WINDOW: Duration = Duration::from_mins(1);
@@ -39,6 +42,10 @@ pub(super) struct HotKeyTracker {
     /// equal counts the most inherited first, so that an eviction loses the fewest own actions.
     counts: PriorityQueue<PartitionKey, (Reverse<u64>, u64), RandomState>,
     window_started_at: Instant,
+    /// Wall-clock time of `window_started_at`, as shown to users.
+    window_started_at_ms: MillisSinceEpoch,
+    /// Hot partition keys of the last completed window, in ascending order.
+    last_window: Arc<[HotKeyEntry]>,
 }
 
 impl HotKeyTracker {
@@ -47,6 +54,8 @@ impl HotKeyTracker {
             threshold,
             counts: PriorityQueue::with_capacity_and_hasher(CAPACITY, RandomState::new()),
             window_started_at: Instant::now(),
+            window_started_at_ms: MillisSinceEpoch::now(),
+            last_window: Arc::default(),
         }
     }
 
@@ -69,20 +78,38 @@ impl HotKeyTracker {
     }
 
     /// Returns the number of hot partition keys if the current window has elapsed, and starts a
-    /// new one.
-    pub(super) fn maybe_rotate(&mut self, now: Instant) -> Option<usize> {
+    /// new one. `now_ms` is the wall-clock time of `now`.
+    pub(super) fn maybe_rotate(&mut self, now: Instant, now_ms: MillisSinceEpoch) -> Option<usize> {
         if now.duration_since(self.window_started_at) < WINDOW {
             return None;
         }
 
-        let hot_keys = self
+        let mut hot_keys: Vec<_> = self
             .counts
             .iter()
-            .filter(|(_, (Reverse(count), inherited))| count - inherited >= self.threshold.get())
-            .count();
+            .filter_map(|(partition_key, (Reverse(count), inherited))| {
+                let actions = count - inherited;
+                (actions >= self.threshold.get()).then_some(HotKeyEntry {
+                    partition_key: *partition_key,
+                    actions,
+                    window_start: self.window_started_at_ms,
+                    window_end: now_ms,
+                })
+            })
+            .collect();
+        hot_keys.sort_unstable_by_key(|entry| entry.partition_key);
+        let count = hot_keys.len();
+        self.last_window = hot_keys.into();
+
         self.counts.clear();
         self.window_started_at = now;
-        Some(hot_keys)
+        self.window_started_at_ms = now_ms;
+        Some(count)
+    }
+
+    /// The hot partition keys of the last completed window, in ascending order.
+    pub(super) fn last_window(&self) -> &Arc<[HotKeyEntry]> {
+        &self.last_window
     }
 }
 
@@ -102,6 +129,10 @@ mod tests {
     fn counts_partition_keys_reaching_threshold_per_window() {
         let mut tracker = HotKeyTracker::new(NonZeroU64::new(10).unwrap());
         let start = tracker.window_started_at;
+        let start_ms = tracker.window_started_at_ms;
+        let rotate = |tracker: &mut HotKeyTracker, elapsed: Duration| {
+            tracker.maybe_rotate(start + elapsed, start_ms + elapsed)
+        };
 
         // Actions add up within a window, and reaching the threshold exactly makes a key hot.
         tracker.record(1, 6);
@@ -110,20 +141,26 @@ mod tests {
         tracker.record(3, 25);
         assert_eq!(count(&tracker, 1), Some((10, 0)));
 
+        assert_eq!(rotate(&mut tracker, WINDOW - Duration::from_secs(1)), None);
+        assert!(tracker.last_window().is_empty());
+        assert_eq!(rotate(&mut tracker, WINDOW), Some(2));
+        let hot_key = |partition_key, actions| HotKeyEntry {
+            partition_key,
+            actions,
+            window_start: start_ms,
+            window_end: start_ms + WINDOW,
+        };
         assert_eq!(
-            tracker.maybe_rotate(start + WINDOW - Duration::from_secs(1)),
-            None
+            *tracker.last_window(),
+            [hot_key(1, 10), hot_key(3, 25)].into()
         );
-        assert_eq!(tracker.maybe_rotate(start + WINDOW), Some(2));
 
         // Counts don't carry over, and the next window starts at the rotation.
         tracker.record(3, 5);
         assert_eq!(count(&tracker, 3), Some((5, 0)));
-        assert_eq!(
-            tracker.maybe_rotate(start + WINDOW + Duration::from_secs(59)),
-            None
-        );
-        assert_eq!(tracker.maybe_rotate(start + 2 * WINDOW), Some(0));
+        assert_eq!(rotate(&mut tracker, WINDOW + Duration::from_secs(59)), None);
+        assert_eq!(rotate(&mut tracker, 2 * WINDOW), Some(0));
+        assert!(tracker.last_window().is_empty());
     }
 
     #[test]
@@ -156,7 +193,11 @@ mod tests {
 
         // Only the hot key is reported: the newcomer reached the threshold only with the count it
         // inherited.
-        assert_eq!(tracker.maybe_rotate(start + WINDOW), Some(1));
+        assert_eq!(
+            tracker.maybe_rotate(start + WINDOW, MillisSinceEpoch::now()),
+            Some(1)
+        );
+        assert_eq!(tracker.last_window()[0].actions, 100);
 
         // Among the partition keys with the lowest count, the one with the most inherited count is
         // evicted first.
