@@ -1286,6 +1286,75 @@ fn update_draining_deployment_add_service() {
         .assert_service_revision(ANOTHER_GREETER_SERVICE_NAME, 1);
 }
 
+/// A deployment that starts serving a service registered elsewhere gets a new revision of it.
+/// Schemas written by older versions can hold the same revision in two deployments; the latest
+/// deployment must then be the same for every decoded copy of the schema.
+#[test]
+fn update_deployment_add_service_registered_in_other_deployment() {
+    use bytes::BytesMut;
+
+    use crate::storage::StorageCodec;
+
+    let mut updater = SchemaUpdater::default();
+
+    let deployment_1_id = updater
+        .add_deployment(AddDeploymentRequest {
+            deployment_address: DeploymentAddress::mock_uri("http://localhost:9080"),
+            ..add_deployment_request(vec![greeter_service()])
+        })
+        .unwrap()
+        .1;
+
+    let deployment_2_id = updater
+        .add_deployment(AddDeploymentRequest {
+            deployment_address: DeploymentAddress::mock_uri("http://localhost:9081"),
+            ..add_deployment_request(vec![another_greeter_service()])
+        })
+        .unwrap()
+        .1;
+
+    // Deployment 2 starts serving the greeter service as well and becomes its latest deployment.
+    updater
+        .update_deployment(UpdateDeploymentRequest {
+            deployment_address: DeploymentAddress::mock_uri("http://localhost:9081"),
+            overwrite: Overwrite::Yes,
+            ..update_deployment_request(
+                deployment_2_id,
+                vec![greeter_service(), another_greeter_service()],
+            )
+        })
+        .unwrap();
+    let mut schema = updater.into_inner();
+
+    schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_2_id);
+    schema.assert_service_revision(GREETER_SERVICE_NAME, 2);
+    schema.assert_service_revision(ANOTHER_GREETER_SERVICE_NAME, 1);
+    let (_, deployment_1_services) = schema
+        .get_deployment_and_services(&deployment_1_id)
+        .unwrap();
+    assert_eq!(deployment_1_services[0].revision, 1);
+
+    // Older versions assigned revision 1 in deployment 2, which deployment 1 already holds.
+    let greeter = schema
+        .unindexed
+        .deployments
+        .get_mut(&deployment_2_id)
+        .unwrap()
+        .services
+        .get_mut(GREETER_SERVICE_NAME)
+        .unwrap();
+    Arc::make_mut(greeter).revision = 1;
+
+    // Every node decodes the same bytes into its own hash map and rebuilds the index from it.
+    let mut buf = BytesMut::new();
+    StorageCodec::encode(&schema, &mut buf).unwrap();
+    for _ in 0..64 {
+        StorageCodec::decode::<Schema, _>(&mut buf.clone())
+            .unwrap()
+            .assert_service_deployment(GREETER_SERVICE_NAME, deployment_1_id.max(deployment_2_id));
+    }
+}
+
 #[test]
 fn update_deployment_with_private_service() -> Result<(), SchemaError> {
     let mut updater = SchemaUpdater::default();

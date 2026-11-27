@@ -344,7 +344,12 @@ impl ActiveServiceRevision {
                 active_service_revisions
                     .entry(service.name.clone())
                     .and_modify(|registered_service_revision: &mut ActiveServiceRevision| {
-                        if registered_service_revision.service_revision.revision < service.revision
+                        // Deployments are visited in arbitrary order. The deployment id breaks
+                        // ties between equal revisions so that every node picks the same one.
+                        if (
+                            registered_service_revision.service_revision.revision,
+                            registered_service_revision.deployment_id,
+                        ) < (service.revision, deployment.id)
                         {
                             *registered_service_revision = ActiveServiceRevision {
                                 deployment_id: deployment.id,

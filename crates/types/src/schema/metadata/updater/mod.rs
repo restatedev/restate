@@ -790,10 +790,18 @@ impl SchemaUpdater {
             // Compute service schemas
             let mut computed_services = HashMap::with_capacity(proposed_services.len());
             for (service_name, new_service) in proposed_services {
-                let previous_service_revision = existing_deployment
+                let existing_service_revision = existing_deployment
                     .services
                     .get(&service_name)
                     .map(|arc| arc.deref());
+                let active_service_revision =
+                    self.schema.active_service_revisions.get(&service_name);
+
+                // A service this deployment starts serving follows the active revision, like in
+                // add_deployment. No two deployments may hold the same revision of a service.
+                let previous_service_revision = existing_service_revision.or_else(|| {
+                    active_service_revision.map(|active| active.service_revision.as_ref())
+                });
 
                 // Validate changes with previous revision, if any
                 if let Some(previous_service_revision) = previous_service_revision {
@@ -807,36 +815,34 @@ impl SchemaUpdater {
                     )?;
                 }
 
+                let new_revision = match (existing_service_revision, previous_service_revision) {
+                    (Some(existing), _) => existing.revision,
+                    (None, Some(active)) => active.revision.wrapping_add(1),
+                    (None, None) => 1,
+                };
                 let service_revision = self.create_service_revision(
                     &service_name,
                     new_service,
-                    previous_service_revision
-                        .map(|old_svc| old_svc.revision)
-                        .unwrap_or(1),
+                    new_revision,
                     previous_service_revision,
                     ServiceLevelSettingsBehavior::UseDefaults,
                 )?;
 
-                match self.schema.active_service_revisions.get(&service_name) {
-                    Some(ActiveServiceRevision {
-                        deployment_id: latest_deployment,
-                        ..
-                    }) if latest_deployment == &deployment_id => {
+                // We let mark_updated do the index update
+                match active_service_revision {
+                    Some(active) if active.deployment_id == deployment_id => {
                         info!(
                             rpc.service = %service_name,
                             "Overwriting existing service schemas for latest service"
                         );
-                        // We let SchemaUpdater::into_inner do the index update
                     }
-                    Some(_) => {
+                    Some(_) if existing_service_revision.is_some() => {
                         debug!(
                             rpc.service = %service_name,
                             "Keeping existing service schema as this update operation affected a draining deployment"
                         );
                     }
-                    None => {
-                        // We let SchemaUpdater::into_inner do the index update
-                    }
+                    _ => {}
                 }
 
                 computed_services.insert(service_name, Arc::new(service_revision));
