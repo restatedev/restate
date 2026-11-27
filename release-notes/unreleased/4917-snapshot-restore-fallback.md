@@ -5,9 +5,10 @@
 ### What Changed
 
 When a partition bootstraps from the snapshot repository and the latest snapshot is unusable —
-missing or invalid metadata, missing or truncated data files — Restate now falls back to the next
-older retained snapshot instead of failing the restore outright. Candidates are tried in
-descending LSN order until one succeeds or all are exhausted.
+missing or invalid metadata, missing or truncated data files, or corrupt data files, which are now
+checksum-verified in full after the import and before the partition starts — Restate now falls back
+to the next older retained snapshot instead of failing the restore outright. Candidates are tried in descending LSN order
+until one succeeds or all are exhausted.
 
 Errors that are not about the snapshot itself, such as an unreachable repository, rejected
 credentials or a local disk error, do not trigger a fallback: the partition fails to open and
@@ -40,7 +41,8 @@ point and the remaining log is available to replay the gap.
 - Restores that would previously have failed may now succeed from a slightly older snapshot, at
   the cost of replaying more of the log.
 - A non-zero `snapshots.download.fallback.total` is a signal to investigate the repository — the
-  restore succeeded, but the latest snapshot is missing files or has invalid metadata.
+  restore succeeded, but the latest snapshot is missing files, has invalid metadata, or contains
+  corrupt data.
 
 ### Migration Guidance
 
