@@ -1006,6 +1006,7 @@ impl<T> LeadershipState<T> {
                 rows.sort_by_key(|row| row.partition_key);
                 rows.into()
             }),
+            hot_keys: requested.hot_keys.then(|| leader.leader_context.hot_keys()),
             // Read by the manager's handle after admission.
             invoker: None,
         })
@@ -1034,6 +1035,11 @@ impl<T> LeadershipState<T> {
             (State::Leader(leader_state), LeaderQueryRequest::UserLimitCounters { keys }) => {
                 let _ = response_tx.send(LeaderQueryResponse::UserLimitCounters(
                     leader_state.read_user_limit_counters(keys),
+                ));
+            }
+            (State::Leader(leader_state), LeaderQueryRequest::HotKeys { keys }) => {
+                let _ = response_tx.send(LeaderQueryResponse::HotKeys(
+                    leader_state.read_hot_keys(keys),
                 ));
             }
             (_, request) => {

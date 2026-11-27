@@ -11,6 +11,7 @@
 use crate::context::SelectPartitions;
 use crate::source_registry::SourceRegistry;
 use crate::tables::deployment::schema::SysDeploymentTable;
+use crate::tables::hot_keys::SysHotKeysTable;
 use crate::tables::invocation_state::SysInvocationStateTable;
 use crate::tables::invocation_status::SysInvocationStatusTable;
 use crate::tables::journal::SysJournalTable;
@@ -104,6 +105,11 @@ where
             "public",
             &SysUserLimitsTable::identity(),
             SysUserLimitsTable::create_provider(self.partition_selector.clone(), &self.sources),
+        )?;
+        inventory.add::<SysHotKeysTable>(
+            "public",
+            &SysHotKeysTable::identity(),
+            SysHotKeysTable::create_provider(self.partition_selector.clone(), &self.sources),
         )?;
         inventory.add::<SysInvocationStatusTable>(
             "public",
