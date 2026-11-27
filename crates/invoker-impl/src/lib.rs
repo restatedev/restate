@@ -849,12 +849,6 @@ where
         unresolved_future: UnresolvedFuture,
         suspendable: bool,
     ) {
-        // Trust the SDK: it is blocked on this await point and, unless it says otherwise,
-        // not executing side effects. Suspending it is then as safe as the inactivity timeout,
-        // unless the service or handler opted out of eager suspension.
-        let awaiting =
-            (!options.disable_eager_suspension && suspendable).then(|| unresolved_future.leaves());
-
         let found = self.invocation_state_machine_manager.handle_for_invocation(
             &invocation_id,
             |_, ism| {
@@ -870,11 +864,12 @@ where
             },
         );
 
-        if found.is_some()
-            && let Some(awaiting) = awaiting
-        {
+        // Trust the SDK: it is blocked on this await point and, unless it says otherwise,
+        // not executing side effects. Suspending it is then as safe as the inactivity timeout,
+        // unless the service or handler opted out of eager suspension.
+        if found.is_some() && suspendable && !options.disable_eager_suspension {
             self.invocation_state_machine_manager
-                .mark_suspendable(&invocation_id, awaiting);
+                .mark_suspendable(&invocation_id);
         }
     }
 
@@ -3034,16 +3029,13 @@ mod tests {
         service_inner.handle_awaiting_on(&options, tenant2, awaiting(1), true);
         assert!(service_inner.is_suspendable(&tenant2));
 
-        // Neither an ack that isn't forwarded to the SDK nor a notification outside the awaited
-        // tree (e.g. the invocation id of a call) clears the mark.
+        // An ack that isn't forwarded to the SDK leaves the mark in place. Any notification sent
+        // to the SDK clears it, awaited or not, until the SDK reports again that it is blocked.
         service_inner.handle_stored_command_ack(&options, unscoped, 1);
-        service_inner.handle_notification(&options, unscoped, 2, NotificationId::CompletionId(2));
         assert!(service_inner.is_suspendable(&unscoped));
-
-        // An awaited notification clears it, until the SDK reports it is blocked again.
-        service_inner.handle_notification(&options, unscoped, 3, NotificationId::CompletionId(1));
+        service_inner.handle_notification(&options, unscoped, 2, NotificationId::CompletionId(2));
         assert!(!service_inner.is_suspendable(&unscoped));
-        service_inner.handle_awaiting_on(&options, unscoped, awaiting(3), true);
+        service_inner.handle_awaiting_on(&options, unscoped, awaiting(1), true);
         assert!(service_inner.is_suspendable(&unscoped));
 
         // A limit-key target only matches holders under the blocked prefix.

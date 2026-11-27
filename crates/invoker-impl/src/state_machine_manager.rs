@@ -15,7 +15,6 @@ use tracing::trace;
 
 use restate_platform::hash::HashMap;
 use restate_types::identifiers::InvocationId;
-use restate_types::journal_v2::NotificationId;
 use restate_types::sharding::KeyRange;
 use restate_types::{LimitKey, Scope};
 use restate_util_string::ReString;
@@ -149,18 +148,14 @@ where
         self.invocation_state_machines.insert(id, ism);
     }
 
-    /// Marks the invocation as suspendable, after the SDK reported that user
-    /// code is blocked awaiting `awaiting`. Returns `true` if the invocation is (still) marked.
-    pub(super) fn mark_suspendable(
-        &mut self,
-        invocation_id: &InvocationId,
-        awaiting: Box<[NotificationId]>,
-    ) -> bool {
+    /// Marks the invocation as suspendable, after the SDK reported that user code is blocked on
+    /// an await point. Returns `true` if the invocation is (still) marked.
+    pub(super) fn mark_suspendable(&mut self, invocation_id: &InvocationId) -> bool {
         let Some(ism) = self.invocation_state_machines.get_mut(invocation_id) else {
             return false;
         };
         let previous_seq = ism.suspendable_seq();
-        let Some(seq) = ism.try_mark_suspendable(self.suspendable.next_seq, awaiting) else {
+        let Some(seq) = ism.try_mark_suspendable(self.suspendable.next_seq) else {
             debug_assert!(
                 previous_seq.is_none(),
                 "a marked invocation must stay eligible"

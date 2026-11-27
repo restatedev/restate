@@ -142,10 +142,12 @@ impl JournalTracker {
 /// Marks an in-flight attempt as eagerly suspendable.
 ///
 /// Set when the SDK reports that user code is blocked on an await point and not executing side
-/// effects. As the service protocol defines it, the information becomes outdated as soon as one
-/// of the awaited notifications is sent to the SDK, or the SDK sends a new command or run
-/// proposal. Notifications outside the awaited tree (e.g. the invocation id of a call that is not
-/// awaited) leave the mark in place.
+/// effects. Cleared as soon as a notification or ack is sent to the SDK, as it may unblock it,
+/// or the SDK sends a new command or run proposal. SDKs report again where they are blocked
+/// after every message they receive, so a mark cleared by a notification the SDK doesn't await
+/// (e.g. the invocation id of a call) is restored right away. The service protocol only
+/// considers notifications in the awaited tree to outdate the information, but tracking that
+/// tree costs memory for little gain.
 ///
 /// The mark only changes while the state machine is removed from the
 /// [`InvocationStateMachineManager`](crate::state_machine_manager::InvocationStateMachineManager),
@@ -154,9 +156,6 @@ impl JournalTracker {
 pub(super) struct SuspendableMark {
     /// Monotonic sequence number assigned by the suspendable index; lower means marked earlier.
     seq: u64,
-    /// Leaves of the awaited future tree. Only used for lookups, which happen at most once per
-    /// delivered notification, so a slice is smaller and, for few leaves, faster than a set.
-    awaiting: Box<[NotificationId]>,
 }
 
 enum AttemptState<K: TimerKey> {
@@ -500,13 +499,6 @@ impl<K: TimerKey> InvocationStateMachine<K> {
                 suspendable_mark,
                 ..
             } => {
-                if suspendable_mark
-                    .as_ref()
-                    .is_some_and(|mark| mark.awaiting.contains(&notification_id))
-                {
-                    // The SDK receives an awaited notification, its await point may resolve.
-                    *suspendable_mark = None;
-                }
                 let to_send = match &notification_id {
                     // We send RunCompletionAck only if we're tracking this specific run completion.
                     NotificationId::CompletionId(c)
@@ -528,20 +520,18 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         }
     }
 
-    /// Sends the notification to the invocation task. If the task no longer reads from the
-    /// channel, the channel is closed and the suspendable mark cleared with it: a marked attempt
-    /// always has an open channel.
+    /// Sends the notification (or ack) to the invocation task and clears the suspendable mark,
+    /// as it may unblock the SDK. If the task no longer reads from the channel, the channel is
+    /// closed.
     pub(super) fn try_send_notification(
         notifications_tx: &mut Option<mpsc::UnboundedSender<Notification>>,
         suspendable_mark: &mut Option<SuspendableMark>,
         notification: Notification,
     ) {
+        *suspendable_mark = None;
         *notifications_tx = notifications_tx
             .take()
             .filter(move |sender| sender.send(notification).is_ok());
-        if notifications_tx.is_none() {
-            *suspendable_mark = None;
-        }
     }
 
     /// Notifies that a retry timer has fired.
@@ -700,16 +690,12 @@ impl<K: TimerKey> InvocationStateMachine<K> {
 
     /// Marks the attempt as suspendable, see [`SuspendableMark`].
     ///
-    /// If already marked, the awaited set is replaced and the original sequence number is kept,
-    /// so the age reflects the whole time the invocation has been blocked. Returns the effective
-    /// sequence number, or `None` if the attempt cannot be suspended eagerly: it's not in flight,
-    /// its notification channel is closed (pause or suspension in progress, request/response
-    /// mode), or a run completion it proposed is still waiting for its ack.
-    pub(super) fn try_mark_suspendable(
-        &mut self,
-        seq: u64,
-        awaiting: Box<[NotificationId]>,
-    ) -> Option<u64> {
+    /// If already marked, the original sequence number is kept, so the age counts from the
+    /// first report since the mark was last cleared. Returns the effective sequence number, or
+    /// `None` if the attempt cannot be suspended eagerly: it's not in flight, its notification
+    /// channel is closed (pause or suspension in progress, request/response mode), or a run
+    /// completion it proposed is still waiting for its ack.
+    pub(super) fn try_mark_suspendable(&mut self, seq: u64) -> Option<u64> {
         let AttemptState::InFlight {
             notifications_tx: Some(_),
             run_completion_proposals_to_ack,
@@ -723,7 +709,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             return None;
         }
         let seq = suspendable_mark.as_ref().map_or(seq, |mark| mark.seq);
-        *suspendable_mark = Some(SuspendableMark { seq, awaiting });
+        *suspendable_mark = Some(SuspendableMark { seq });
         Some(seq)
     }
 

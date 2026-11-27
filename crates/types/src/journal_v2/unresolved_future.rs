@@ -226,29 +226,22 @@ impl UnresolvedFuture {
 
     pub fn flatten(&self) -> HashSet<NotificationId> {
         let mut set = HashSet::default();
-        self.flatten_into(&mut set);
+        self.flatten_inner(&mut set);
         set
     }
 
-    /// Like [`Self::flatten`], but as a compact slice in tree order. A notification that
-    /// appears at several places in the tree appears as often in the slice.
-    pub fn leaves(&self) -> Box<[NotificationId]> {
-        // Exact for the common single await, so no reallocation when boxing.
-        let mut leaves = Vec::with_capacity(1);
-        self.flatten_into(&mut leaves);
-        leaves.into_boxed_slice()
-    }
-
-    fn flatten_into(&self, out: &mut impl Extend<NotificationId>) {
+    fn flatten_inner(&self, set: &mut HashSet<NotificationId>) {
         match self {
-            Self::Single(notification) => out.extend([notification.clone()]),
+            Self::Single(notification) => {
+                set.insert(notification.clone());
+            }
             Self::FirstCompleted(futures)
             | Self::AllCompleted(futures)
             | Self::AllSucceededOrFirstFailed(futures)
             | Self::FirstSucceededOrAllFailed(futures)
             | Self::Unknown(futures) => {
                 for nested in futures {
-                    nested.flatten_into(out);
+                    nested.flatten_inner(set);
                 }
             }
         }
@@ -944,7 +937,6 @@ mod tests {
         let mut fut = first_completed!(id(4), inner_all);
 
         assert_eq!(fut.flatten(), HashSet::from([id(1), id(2), id(3), id(4)]));
-        assert_eq!(*fut.leaves(), [id(4), id(3), id(1), id(2)]);
         assert!(!fut.is_empty());
 
         // Race resolves via the direct leaf — the nested `all` subtree is
