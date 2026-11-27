@@ -342,7 +342,7 @@ enum State {
 
 #[test_log::test(restate_core::test)]
 async fn raft_metadata_cluster_reconfiguration() -> googletest::Result<()> {
-    let num_nodes = 3;
+    let num_nodes = 5;
     let test_duration = Duration::from_secs(20);
     let expected_recovery_duration = Duration::from_secs(10);
     let mut base_config = Configuration::new_unix_sockets();
@@ -464,9 +464,12 @@ async fn raft_metadata_cluster_reconfiguration() -> googletest::Result<()> {
         // switch a random node from member to standby and standby to member
         let mut chosen_node = PlainNodeId::from(rng.random_range(1..=num_nodes));
 
-        if configuration.num_members() == 1 && configuration.contains(chosen_node) {
-            // we cannot remove the only remaining metadata server from the cluster; choose the next one
-            chosen_node = PlainNodeId::from(u32::from(chosen_node) % num_nodes + 1);
+        if configuration.num_members() == 2 && configuration.contains(chosen_node) {
+            // Keep at least two metadata servers in the cluster.
+            chosen_node = (1..=num_nodes)
+                .map(PlainNodeId::from)
+                .find(|node_id| !configuration.contains(*node_id))
+                .expect("a five-node cluster with two members must have a standby node");
         }
 
         if configuration.contains(chosen_node) {
