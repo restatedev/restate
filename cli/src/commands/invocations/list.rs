@@ -233,7 +233,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
 
     if opts.virtual_objects_only {
         active_filters.push(
-            "inv.target_service_name IN (select name from sys_service where ty = 'virtual_object')"
+            "inv.target_service_name IN (select name from sys_service where ty IN ('virtual_object', 'workflow'))"
                 .to_owned(),
         );
     }
