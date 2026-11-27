@@ -135,6 +135,8 @@ impl PartitionLocator for RemoteOwner {
 
 struct Fixture<N> {
     network: N,
+    /// The owner's end of each connection, in the order they were made.
+    connections: tokio::sync::mpsc::UnboundedReceiver<restate_core::network::MockPeerConnection>,
     scanners: SourceRegistry,
     /// The owner's sources, whose server starts on first connection.
     owner_scanners: Arc<OnceLock<SourceRegistry>>,
@@ -257,7 +259,7 @@ async fn setup_at_version(
     // Queries keep the connector through their network, possibly past teardown
     // (see `keep_network_past_teardown`), so it must not own storage: it only
     // borrows the owner's sources and the observations.
-    let (connector, _connections) = MockConnector::new({
+    let (connector, connections) = MockConnector::new({
         let owner_scanners = Arc::downgrade(&owner_scanners);
         let observations = Arc::downgrade(&observations);
         let tamper = Arc::clone(&tamper);
@@ -344,6 +346,7 @@ async fn setup_at_version(
     );
     Fixture {
         network: coordinator.networking,
+        connections,
         scanners,
         owner_scanners,
         store,
@@ -352,6 +355,214 @@ async fn setup_at_version(
         tamper,
         read_hold,
     }
+}
+
+async fn owner_event(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<WorkerEvent>,
+    kind: &str,
+    id: &QueryTaskId,
+) -> WorkerEvent {
+    let mut seen = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.expect("worker event channel");
+            if event.kind == kind && event.id == *id {
+                return event;
+            }
+            seen.push(event);
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("no {kind} for {id:?}: {seen:?}"))
+}
+
+async fn query_connection(network: &impl NetworkSender) -> restate_core::network::Connection {
+    network
+        .get_connection(OWNER, Swimlane::Datafusion)
+        .in_tc_as_task(
+            &TaskCenter::current(),
+            TaskKind::InPlace,
+            "owner-loss-connect",
+        )
+        .await
+        .unwrap()
+}
+
+/// Aborts the owner's reactor of a connection, without a drain: both ends see
+/// the connection close.
+async fn break_connection(
+    peer: restate_core::network::MockPeerConnection,
+    client: &restate_core::network::Connection,
+) {
+    let reactor = TaskCenter::take_task(peer.reactor_task_id).unwrap();
+    reactor.abort();
+    assert!(reactor.await.is_err());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(peer.conn.closed(), client.closed());
+    })
+    .await
+    .expect("both ends close");
+}
+
+/// The worker's context of a task, without the test's own reference to it: it
+/// is destroyed once the worker releases the task.
+fn take_worker_context(
+    fixture: &Fixture<impl NetworkSender>,
+    id: &QueryTaskId,
+) -> std::sync::Weak<datafusion::execution::TaskContext> {
+    let mut observations = fixture.observations.lock();
+    let at = observations.iter().position(|task| task.id == *id).unwrap();
+    Arc::downgrade(&observations.remove(at).context)
+}
+
+async fn context_released(context: std::sync::Weak<datafusion::execution::TaskContext>) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while context.strong_count() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the worker releases the task without waiting for it to idle");
+}
+
+fn empty_task_install() -> QueryTaskInstall {
+    use datafusion::arrow::datatypes::Schema;
+    use datafusion::physical_plan::{ExecutionPlan, empty::EmptyExec};
+    use datafusion_distributed::MaybeEncoded;
+
+    let context = environment(1, 128)
+        .build_session_state()
+        .unwrap()
+        .task_ctx();
+    QueryTaskInstall {
+        id: QueryTaskId {
+            session_id: context.session_id().into(),
+            query_ts: UniqueTimestamp::MIN,
+            runtime_query_id: *uuid::Uuid::new_v4().as_bytes(),
+            stage: 1,
+            task: 0,
+        },
+        plan: MaybeEncoded::<Arc<dyn ExecutionPlan>>::Decoded(Arc::new(EmptyExec::new(Arc::new(
+            Schema::empty(),
+        ))))
+        .encode(&context)
+        .unwrap()
+        .into(),
+        options: Default::default(),
+        runtime_headers: OutputTask::headers()
+            .iter()
+            .map(|(k, v)| (k.as_str().into(), v.to_str().unwrap().into()))
+            .collect(),
+        query_start_time_ns: 0,
+        query_headers: vec![],
+        redacted_sql: Default::default(),
+        planning_duration: Default::default(),
+        analyze: None,
+    }
+}
+
+/// A task serving a request never idles, so only its coordinator can end it.
+/// When the connection that carried the request closes, nobody can.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_task_is_released_when_the_connection_of_its_request_closes() {
+    use restate_types::net::distributed_query::{QueryTaskExecute, QueryTaskNext};
+
+    let mut fixture = setup(false).await;
+    let mut transaction = fixture.store.transaction();
+    transaction
+        .put_user_state(
+            &ServiceId::new(None, "service", "object"),
+            &Bytes::from_static(b"key"),
+            Bytes::from_static(b"value"),
+        )
+        .unwrap();
+    transaction.commit().await.unwrap();
+    drop(transaction);
+    let (events, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+    fixture.tamper.lock().events = Some(events);
+
+    // A Next waiting on a storage read that holds a snapshot.
+    let (entered, mut reads) = tokio::sync::mpsc::unbounded_channel();
+    *fixture.read_hold.lock() = Some(ReadHold {
+        entered,
+        release: Arc::new(tokio::sync::Notify::new()),
+    });
+    let mut stream = fixture
+        .engine(1, 1)
+        .create_session(SessionOptions::default())
+        .unwrap()
+        .execute("SELECT * FROM state", QueryOptions {})
+        .await
+        .unwrap()
+        .stream;
+    let consumer = tokio::spawn(async move { stream.next().await });
+    let snapshot_closed = tokio::time::timeout(Duration::from_secs(5), reads.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let id = fixture.observations.lock()[0].id.clone();
+    owner_event(&mut events_rx, "next-polling", &id).await;
+    let context = take_worker_context(&fixture, &id);
+    let connection = query_connection(&fixture.network).await;
+    let peer = fixture.connections.recv().await.unwrap();
+    break_connection(peer, &connection).await;
+    let next = owner_event(&mut events_rx, "next", &id).await;
+    assert_eq!(next.outcome, "owner lost");
+    tokio::time::timeout(Duration::from_secs(5), snapshot_closed)
+        .await
+        .expect("the read's snapshot is dropped");
+    context_released(context).await;
+    assert!(consumer.await.unwrap().unwrap().is_err());
+    *fixture.read_hold.lock() = None;
+
+    // The task is gone for a new connection too, which serves new tasks. An
+    // Execute waiting inside the runtime ends the same way.
+    let connection = query_connection(&fixture.network).await;
+    let peer = fixture.connections.recv().await.unwrap();
+    let error = rpc(
+        &connection,
+        QueryTaskRequest::Next(QueryTaskNext { id, partition: 0 }),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("not installed"), "{error}");
+    let install = empty_task_install();
+    let id = install.id.clone();
+    rpc(&connection, QueryTaskRequest::Install(install))
+        .await
+        .unwrap();
+    let context = take_worker_context(&fixture, &id);
+    let (entered, mut executes) = tokio::sync::mpsc::unbounded_channel();
+    fixture.tamper.lock().execute_inside_hold = Some(Hold {
+        entered,
+        release: Arc::new(tokio::sync::Notify::new()),
+    });
+    let execute = tokio::spawn({
+        let (connection, id) = (connection.clone(), id.clone());
+        async move {
+            rpc(
+                &connection,
+                QueryTaskRequest::Execute(QueryTaskExecute {
+                    id,
+                    partition_start: 0,
+                    partition_end: 1,
+                }),
+            )
+            .await
+        }
+    });
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), executes.recv())
+            .await
+            .unwrap()
+            .unwrap(),
+        id
+    );
+    break_connection(peer, &connection).await;
+    let executed = owner_event(&mut events_rx, "execute", &id).await;
+    assert_eq!(executed.outcome, "owner lost");
+    context_released(context).await;
+    assert!(execute.await.unwrap().is_err());
 }
 
 impl<N: NetworkSender> Fixture<N> {

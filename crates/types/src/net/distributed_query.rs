@@ -26,6 +26,10 @@
 //!    stream's schema; a later one carries only the dictionaries that changed.
 //! 4. **Close** releases the task. Answer: `Closed`.
 //!
+//! A worker also releases a task that nobody closes: when the connection that
+//! carried an Execute or a Next it is still serving closes, and otherwise once
+//! the task has served no request for a while.
+//!
 //! For `EXPLAIN ANALYZE`, Install can ask for a report of what the task did,
 //! which `Closed` then carries ([`report`]).
 //!

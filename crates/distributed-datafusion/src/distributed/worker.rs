@@ -33,7 +33,8 @@ use uuid::Uuid;
 
 use restate_clock::UniqueTimestamp;
 use restate_core::network::{
-    BackPressureMode, MessageRouterBuilder, ServiceMessage, ServiceReceiver, Verdict,
+    BackPressureMode, MessageRouterBuilder, Oneshot, Reciprocal, ServiceMessage, ServiceReceiver,
+    Verdict,
 };
 use restate_core::{TaskCenter, cancellation_watcher};
 use restate_platform::sync::Mutex;
@@ -68,6 +69,10 @@ struct OutputLane {
 /// Opt-in service for task installation and pull-based output over Restate RPC.
 /// The library owns the installed plan and its shared execution state; this service
 /// owns transport handles and their lifetimes.
+///
+/// A task lives until its Close, until it has served no request for
+/// [`IDLE_TIMEOUT`], or until the connection that carried an Execute or a Next
+/// it is serving closes.
 pub struct DistributedQueryServer {
     env: DataFusionEnv,
     scanners: SourceRegistry,
@@ -219,8 +224,7 @@ impl DistributedQueryServer {
             (GenerationalNodeId, QueryTaskId),
             Shared<BoxFuture<'static, QueryTaskClosed>>,
         > = HashMap::new();
-        // Each request's task, which yields the key of a closing it ended.
-        let mut requests: JoinSet<Option<(GenerationalNodeId, QueryTaskId)>> = JoinSet::new();
+        let mut requests: JoinSet<Settled> = JoinSet::new();
         let mut reap = tokio::time::interval(Duration::from_secs(60));
         loop {
             tokio::select! {
@@ -240,8 +244,14 @@ impl DistributedQueryServer {
                 }
                 Some(result) = requests.join_next(), if !requests.is_empty() => {
                     match result {
-                        Ok(Some(closed)) => { closing.remove(&closed); }
-                        Ok(None) => {}
+                        Ok(Settled::Closed(key)) => { closing.remove(&key); }
+                        // Nothing can reach the task any more: close it now, not once it idles.
+                        Ok(Settled::OwnerLost(key)) => {
+                            if let Some(task) = tasks.remove(&key) {
+                                close_unwaited(&task, &mut requests);
+                            }
+                        }
+                        Ok(Settled::Done) => {}
                         Err(error) => tracing::warn!(%error, "Distributed query request failed"),
                     }
                 }
@@ -320,7 +330,7 @@ impl DistributedQueryServer {
                                         #[cfg(test)]
                                         record_report(&tamper, "close", &key.1, outcome(&Ok(QueryTaskReplyBody::Closed(closed.clone()))), closed.report.as_ref().map(|bytes| bytes.to_vec()));
                                         reply.send(QueryTaskReplyBody::Closed(closed).into());
-                                        Some(key)
+                                        Settled::Closed(key)
                                     });
                                 }
                                 Some(task) => {
@@ -338,7 +348,7 @@ impl DistributedQueryServer {
                                             #[cfg(test)]
                                             record_report(&tamper, "close-repeated", &key.1, outcome(&Ok(QueryTaskReplyBody::Closed(closed.clone()))), closed.report.as_ref().map(|bytes| bytes.to_vec()));
                                             reply.send(QueryTaskReplyBody::Closed(closed).into());
-                                            None
+                                            Settled::Done
                                         });
                                     }
                                     None => reply.send(QueryTaskReplyBody::Closed(QueryTaskClosed::default()).into()),
@@ -346,7 +356,8 @@ impl DistributedQueryServer {
                             }
                         }
                         QueryTaskRequest::Execute(request) => {
-                            let task = tasks.get(&(peer, request.id.clone())).cloned();
+                            let key = (peer, request.id.clone());
+                            let task = tasks.get(&key).cloned();
                             // Mark the request in flight here, in the loop that also
                             // reaps, so that a task can't be reaped between dispatch
                             // and the request's first poll. It stays marked until the
@@ -357,44 +368,51 @@ impl DistributedQueryServer {
                                 let tampered = self.tamper.lock();
                                 (Arc::clone(&self.tamper), tampered.execute_hold.clone(), tampered.execute_error.clone())
                             };
+                            let mut reply = reply;
                             requests.spawn(async move {
                                 #[cfg(test)]
-                                let id = request.id.clone();
-                                #[cfg(test)]
                                 if let Some(hold) = hold {
-                                    let _ = hold.entered.send(id.clone());
+                                    let _ = hold.entered.send(key.1.clone());
                                     hold.release.notified().await;
                                 }
-                                let result = match task {
+                                let result = match &task {
                                     #[cfg(test)]
-                                    Some(_) if failure.is_some() => Err(protocol_error(failure.unwrap_or_default())),
-                                    Some(task) => task.execute(request).await,
-                                    None => Err(protocol_error("query task is not installed")),
+                                    Some(_) if failure.is_some() => Some(Err(protocol_error(failure.unwrap_or_default()))),
+                                    Some(task) => unless_owner_lost(&mut reply, task.execute(request)).await,
+                                    None => Some(Err(protocol_error("query task is not installed"))),
                                 };
                                 #[cfg(test)]
-                                record(&tamper, "execute", &id, outcome(&result));
-                                reply.send(task_reply(result, origin));
+                                record(&tamper, "execute", &key.1, result.as_ref().map_or_else(|| "owner lost".to_owned(), outcome));
+                                let settled = match result {
+                                    Some(result) => { reply.send(task_reply(result, origin)); Settled::Done }
+                                    None => Settled::OwnerLost(key),
+                                };
                                 drop(in_flight);
-                                None
+                                settled
                             });
                         }
                         QueryTaskRequest::Next(request) => {
                             #[cfg(test)]
-                            let (tamper, id) = (Arc::clone(&self.tamper), request.id.clone());
+                            let tamper = Arc::clone(&self.tamper);
                             #[cfg(test)]
-                            record(&tamper, "next-received", &id, String::new());
-                            let task = tasks.get(&(peer, request.id)).cloned();
+                            record(&tamper, "next-received", &request.id, String::new());
+                            let key = (peer, request.id);
+                            let task = tasks.get(&key).cloned();
                             let in_flight = task.as_ref().map(|task| task.activity.begin());
+                            let mut reply = reply;
                             requests.spawn(async move {
-                                let result = match task {
-                                    Some(task) => task.next(request.partition as usize).await,
-                                    None => Err(protocol_error("query task is not installed")),
+                                let result = match &task {
+                                    Some(task) => unless_owner_lost(&mut reply, task.next(request.partition as usize)).await,
+                                    None => Some(Err(protocol_error("query task is not installed"))),
                                 };
                                 #[cfg(test)]
-                                record(&tamper, "next", &id, outcome(&result));
-                                reply.send(task_reply(result, origin));
+                                record(&tamper, "next", &key.1, result.as_ref().map_or_else(|| "owner lost".to_owned(), outcome));
+                                let settled = match result {
+                                    Some(result) => { reply.send(task_reply(result, origin)); Settled::Done }
+                                    None => Settled::OwnerLost(key),
+                                };
                                 drop(in_flight);
-                                None
+                                settled
                             });
                         }
                         QueryTaskRequest::Unknown => reply.send(task_reply(Err(protocol_error("unknown query task request")), origin)),
@@ -417,18 +435,39 @@ impl DistributedQueryServer {
     }
 }
 
-/// Closes `task` with nobody waiting for its report, as for an idle task or a
-/// shutdown: a task asked for a report closes the same way as for a Close, and
-/// its report is dropped.
-fn close_unwaited(
-    task: &Arc<InstalledTask>,
-    requests: &mut JoinSet<Option<(GenerationalNodeId, QueryTaskId)>>,
-) {
+/// What a request's task tells the server loop when it ends.
+enum Settled {
+    Done,
+    /// It sent the report of this closing, which later Closes can't share any more.
+    Closed((GenerationalNodeId, QueryTaskId)),
+    /// The connection that carried its request to this task closed.
+    OwnerLost((GenerationalNodeId, QueryTaskId)),
+}
+
+/// Runs a request's `work` until the connection that carried the request
+/// closes: `None` then. Its reply has nowhere to go, and neither has that of
+/// any later request, since a coordinator keeps a task on one connection. So
+/// work that waits, such as a blocked read, doesn't outlive its coordinator.
+async fn unless_owner_lost<T>(
+    reply: &mut Reciprocal<Oneshot<QueryTaskReply>>,
+    work: impl Future<Output = T>,
+) -> Option<T> {
+    tokio::select! {
+        biased;
+        () = reply.closed() => None,
+        result = work => Some(result),
+    }
+}
+
+/// Closes `task` with nobody waiting for its report, as for an idle task, a
+/// task whose coordinator is gone, or a shutdown: a task asked for a report
+/// closes the same way as for a Close, and its report is dropped.
+fn close_unwaited(task: &Arc<InstalledTask>, requests: &mut JoinSet<Settled>) {
     if task.collector.is_some() {
         let task = Arc::clone(task);
         requests.spawn(async move {
             task.close().await;
-            None
+            Settled::Done
         });
     } else {
         task.abort();
