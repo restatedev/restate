@@ -27,6 +27,7 @@ restate-admin-rest-model = { workspace = true, features = ["schema"] }
 restate-bifrost = { workspace = true, features = ["local-loglet", "replicated-loglet"] }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
+restate-futures-util = { workspace = true }
 restate-ingestion-client = { workspace = true }
 restate-limiter = { workspace = true, features = ["rule-book"] }
 restate-metadata-store = { workspace = true }
@@ -83,8 +84,12 @@ restate-distributed-datafusion = { workspace = true, features = ["test-util"] }
 restate-storage-query-datafusion = { workspace = true, features = ["test-util"] }
 restate-bifrost = { workspace = true, features = ["test-util"] }
 restate-core = { workspace = true, features = ["test-util"] }
+restate-ingestion-client = { workspace = true, features = ["test-util"] }
+restate-metadata-store = { workspace = true, features = ["test-util"] }
+restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
 
+async-trait = { workspace = true }
 googletest = { workspace = true }
 test-log = { workspace = true }
 tracing = { workspace = true }

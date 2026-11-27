@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use codederror::CodedError;
 
+use restate_admin::SchemaGate;
 use restate_admin::StorageAccountingTask;
 use restate_admin::cluster_controller;
 use restate_admin::cluster_controller::cluster_state_refresher::ClusterStateRefresher;
@@ -55,6 +56,9 @@ pub enum AdminRoleBuildError {
     #[error("failed building the service client: {0}")]
     #[code(unknown)]
     ServiceClient(#[from] restate_service_client::BuildError),
+    #[error("failed starting the schema gate: {0}")]
+    #[code(unknown)]
+    SchemaGate(String),
 }
 
 pub struct AdminRole<T> {
@@ -109,6 +113,10 @@ impl<T: TransportConnect> AdminRole<T> {
         };
 
         let listeners = address_book.take_listeners::<AdminPort>();
+        // One catch-up per node start: the admin API and cluster queries both read the
+        // node-local schema and both wait for it.
+        let schema_gate = SchemaGate::spawn(metadata_writer.raw_metadata_store_client().clone())
+            .map_err(|err| AdminRoleBuildError::SchemaGate(err.to_string()))?;
         let mut admin = AdminService::new(
             listeners,
             metadata_writer.clone(),
@@ -122,6 +130,7 @@ impl<T: TransportConnect> AdminRole<T> {
             service_discovery,
             telemetry_http_client,
             Arc::clone(&query_engine),
+            schema_gate.clone(),
         );
 
         if let Some(observer) = local_rule_book_observer {
@@ -140,6 +149,7 @@ impl<T: TransportConnect> AdminRole<T> {
                 metadata_writer,
                 refresher,
                 Arc::clone(&query_engine),
+                schema_gate,
             )
         });
 

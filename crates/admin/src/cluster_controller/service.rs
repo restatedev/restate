@@ -66,6 +66,7 @@ use crate::cluster_controller::grpc_svc_handler::ClusterCtrlSvcHandler;
 use crate::cluster_controller::safety_checker::SafetyReport;
 use crate::cluster_controller::service::cluster_controller_state::ClusterControllerState;
 use crate::cluster_controller::service::scheduler_task::SafetyCheckRequest;
+use crate::schema_gate::SchemaGate;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -104,6 +105,7 @@ where
         metadata_writer: MetadataWriter,
         cluster_state_refresher: ClusterStateRefresher<T>,
         query_engine: Arc<QueryEngine>,
+        schema_gate: SchemaGate,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::channel(2);
 
@@ -127,6 +129,7 @@ where
                         .experimental
                         .is_query_engine_v2_default_enabled(),
                     replica_set_states.clone(),
+                    schema_gate,
                 )
                 .into_server(&configuration.live_load().networking),
                 WaitForReady::new(health_status.clone(), AdminStatus::Ready),
@@ -1200,6 +1203,7 @@ mod tests {
     use restate_types::partitions::state::PartitionReplicaSetStates;
 
     use super::{ClusterStateRefresher, Service};
+    use crate::SchemaGate;
 
     #[test(restate_core::test)]
     async fn manual_log_trim() -> anyhow::Result<()> {
@@ -1223,6 +1227,7 @@ mod tests {
             builder.metadata_writer.clone(),
             ClusterStateRefresher::new(builder.networking.clone()),
             Arc::new(QueryEngine::default()),
+            SchemaGate::spawn(builder.metadata_store_client.clone())?,
         );
 
         let svc_handle = svc.handle();

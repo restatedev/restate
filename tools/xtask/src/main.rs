@@ -134,6 +134,9 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         ServiceDiscovery::new(RetryPolicy::default(), service_client),
         None,
         std::sync::Arc::new(restate_storage_query_api::QueryEngine::default()),
+        restate_admin::SchemaGate::spawn(
+            node_env.metadata_writer.raw_metadata_store_client().clone(),
+        )?,
     );
 
     TaskCenter::spawn(
