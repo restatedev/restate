@@ -139,7 +139,7 @@ impl JournalTracker {
     }
 }
 
-/// Marks an in-flight attempt as ready to be suspended eagerly.
+/// Marks an in-flight attempt as eagerly suspendable.
 ///
 /// Set when the SDK reports that user code is blocked on an await point and not executing side
 /// effects. As the service protocol defines it, the information becomes outdated as soon as one
@@ -149,10 +149,10 @@ impl JournalTracker {
 ///
 /// The mark only changes while the state machine is removed from the
 /// [`InvocationStateMachineManager`](crate::state_machine_manager::InvocationStateMachineManager),
-/// or through the manager's methods, so the manager's ready index stays in sync.
+/// or through the manager's methods, so the manager's suspendable index stays in sync.
 #[derive(Debug)]
-pub(super) struct ReadyMark {
-    /// Monotonic sequence number assigned by the ready index; lower means marked earlier.
+pub(super) struct SuspendableMark {
+    /// Monotonic sequence number assigned by the suspendable index; lower means marked earlier.
     seq: u64,
     /// Leaves of the awaited future tree. Only used for lookups, which happen at most once per
     /// delivered notification, so a slice is smaller and, for few leaves, faster than a set.
@@ -189,8 +189,8 @@ enum AttemptState<K: TimerKey> {
         should_notify_pinned_deployment: bool,
 
         // Set while the SDK reports (via AwaitingOnMessage) that user code is blocked on an
-        // await point, so the invocation can be suspended eagerly. See [`ReadyMark`].
-        ready_mark: Option<ReadyMark>,
+        // await point, so the invocation can be suspended eagerly. See [`SuspendableMark`].
+        suspendable_mark: Option<SuspendableMark>,
     },
 
     WaitingRetry {
@@ -296,7 +296,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             run_completion_proposals_to_ack: Default::default(),
             using_deployment: None,
             should_notify_pinned_deployment: false,
-            ready_mark: None,
+            suspendable_mark: None,
         };
     }
 
@@ -466,13 +466,13 @@ impl<K: TimerKey> InvocationStateMachine<K> {
                 journal_tracker,
                 command_acks_to_propagate,
                 notifications_tx,
-                ready_mark,
+                suspendable_mark,
                 ..
             } => {
                 if command_acks_to_propagate.remove(&command_index) {
                     Self::try_send_notification(
                         notifications_tx,
-                        ready_mark,
+                        suspendable_mark,
                         Notification::CommandAck(command_index),
                     );
                 }
@@ -497,15 +497,15 @@ impl<K: TimerKey> InvocationStateMachine<K> {
                 journal_tracker,
                 notifications_tx,
                 run_completion_proposals_to_ack,
-                ready_mark,
+                suspendable_mark,
                 ..
             } => {
-                if ready_mark
+                if suspendable_mark
                     .as_ref()
                     .is_some_and(|mark| mark.awaiting.contains(&notification_id))
                 {
                     // The SDK receives an awaited notification, its await point may resolve.
-                    *ready_mark = None;
+                    *suspendable_mark = None;
                 }
                 let to_send = match &notification_id {
                     // We send RunCompletionAck only if we're tracking this specific run completion.
@@ -517,7 +517,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
                     _ => Notification::Entry(entry_index),
                 };
                 journal_tracker.notify_acked_notification_from_partition_processor(notification_id);
-                Self::try_send_notification(notifications_tx, ready_mark, to_send);
+                Self::try_send_notification(notifications_tx, suspendable_mark, to_send);
             }
             AttemptState::WaitingRetry {
                 journal_tracker, ..
@@ -529,18 +529,18 @@ impl<K: TimerKey> InvocationStateMachine<K> {
     }
 
     /// Sends the notification to the invocation task. If the task no longer reads from the
-    /// channel, the channel is closed and the ready mark cleared with it: a marked attempt
+    /// channel, the channel is closed and the suspendable mark cleared with it: a marked attempt
     /// always has an open channel.
     pub(super) fn try_send_notification(
         notifications_tx: &mut Option<mpsc::UnboundedSender<Notification>>,
-        ready_mark: &mut Option<ReadyMark>,
+        suspendable_mark: &mut Option<SuspendableMark>,
         notification: Notification,
     ) {
         *notifications_tx = notifications_tx
             .take()
             .filter(move |sender| sender.send(notification).is_ok());
         if notifications_tx.is_none() {
-            *ready_mark = None;
+            *suspendable_mark = None;
         }
     }
 
@@ -682,13 +682,13 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         self.requested_pause = true;
         if let AttemptState::InFlight {
             notifications_tx,
-            ready_mark,
+            suspendable_mark,
             ..
         } = &mut self.invocation_state
         {
             // Close notifications_tx to trigger suspension
             *notifications_tx = None;
-            *ready_mark = None;
+            *suspendable_mark = None;
 
             // Invocation is still in-flight, pause will happen later on
             return false;
@@ -698,14 +698,14 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         true
     }
 
-    /// Marks the attempt as ready for eager suspension, see [`ReadyMark`].
+    /// Marks the attempt as suspendable, see [`SuspendableMark`].
     ///
     /// If already marked, the awaited set is replaced and the original sequence number is kept,
     /// so the age reflects the whole time the invocation has been blocked. Returns the effective
     /// sequence number, or `None` if the attempt cannot be suspended eagerly: it's not in flight,
     /// its notification channel is closed (pause or suspension in progress, request/response
     /// mode), or a run completion it proposed is still waiting for its ack.
-    pub(super) fn try_mark_ready(
+    pub(super) fn try_mark_suspendable(
         &mut self,
         seq: u64,
         awaiting: Box<[NotificationId]>,
@@ -713,7 +713,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         let AttemptState::InFlight {
             notifications_tx: Some(_),
             run_completion_proposals_to_ack,
-            ready_mark,
+            suspendable_mark,
             ..
         } = &mut self.invocation_state
         else {
@@ -722,26 +722,28 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         if !run_completion_proposals_to_ack.is_empty() {
             return None;
         }
-        let seq = ready_mark.as_ref().map_or(seq, |mark| mark.seq);
-        *ready_mark = Some(ReadyMark { seq, awaiting });
+        let seq = suspendable_mark.as_ref().map_or(seq, |mark| mark.seq);
+        *suspendable_mark = Some(SuspendableMark { seq, awaiting });
         Some(seq)
     }
 
-    /// Sequence number of the ready mark, if the attempt is marked.
-    pub(super) fn ready_seq(&self) -> Option<u64> {
+    /// Sequence number of the suspendable mark, if the attempt is marked.
+    pub(super) fn suspendable_seq(&self) -> Option<u64> {
         match &self.invocation_state {
             AttemptState::InFlight {
-                ready_mark: Some(mark),
+                suspendable_mark: Some(mark),
                 ..
             } => Some(mark.seq),
             _ => None,
         }
     }
 
-    /// Clears the ready mark, returning its sequence number if it was set.
-    pub(super) fn clear_ready_mark(&mut self) -> Option<u64> {
+    /// Clears the suspendable mark, returning its sequence number if it was set.
+    pub(super) fn clear_suspendable_mark(&mut self) -> Option<u64> {
         match &mut self.invocation_state {
-            AttemptState::InFlight { ready_mark, .. } => ready_mark.take().map(|mark| mark.seq),
+            AttemptState::InFlight {
+                suspendable_mark, ..
+            } => suspendable_mark.take().map(|mark| mark.seq),
             _ => None,
         }
     }
@@ -761,11 +763,11 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         match &mut self.invocation_state {
             AttemptState::InFlight {
                 notifications_tx,
-                ready_mark,
+                suspendable_mark,
                 ..
             } if notifications_tx.is_some() => {
                 *notifications_tx = None;
-                *ready_mark = None;
+                *suspendable_mark = None;
                 true
             }
             _ => false,

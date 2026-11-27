@@ -712,7 +712,7 @@ where
     ) {
         // The SDK made progress, its last reported await point is outdated.
         self.invocation_state_machine_manager
-            .clear_ready(&invocation_id);
+            .clear_suspendable(&invocation_id);
         if let Some((output_tx, ism)) = self
             .invocation_state_machine_manager
             .resolve_invocation(&invocation_id)
@@ -772,7 +772,7 @@ where
     ) {
         // The SDK made progress, its last reported await point is outdated.
         self.invocation_state_machine_manager
-            .clear_ready(&invocation_id);
+            .clear_suspendable(&invocation_id);
         if let Some((output_tx, ism)) = self
             .invocation_state_machine_manager
             .resolve_invocation(&invocation_id)
@@ -874,7 +874,7 @@ where
             && let Some(awaiting) = awaiting
         {
             self.invocation_state_machine_manager
-                .mark_ready(&invocation_id, awaiting);
+                .mark_suspendable(&invocation_id, awaiting);
         }
     }
 
@@ -1808,11 +1808,11 @@ mod tests {
             }
         }
 
-        /// Helper for tests: checks if an invocation is marked ready for eager suspension.
-        fn is_ready_for_eager_suspension(&mut self, invocation_id: &InvocationId) -> bool {
+        /// Helper for tests: checks if an invocation is marked suspendable.
+        fn is_suspendable(&mut self, invocation_id: &InvocationId) -> bool {
             self.invocation_state_machine_manager
                 .resolve_invocation(invocation_id)
-                .is_some_and(|(_, ism)| ism.ready_seq().is_some())
+                .is_some_and(|(_, ism)| ism.suspendable_seq().is_some())
         }
 
         /// Helper for tests: checks if an invocation's ISM is in WaitingRetry state.
@@ -3029,22 +3029,22 @@ mod tests {
         // side effects or the handler is non-preemptable).
         service_inner.handle_awaiting_on(&options, unscoped, awaiting(1), true);
         service_inner.handle_awaiting_on(&options, tenant2, awaiting(1), false);
-        assert!(service_inner.is_ready_for_eager_suspension(&unscoped));
-        assert!(!service_inner.is_ready_for_eager_suspension(&tenant2));
+        assert!(service_inner.is_suspendable(&unscoped));
+        assert!(!service_inner.is_suspendable(&tenant2));
         service_inner.handle_awaiting_on(&options, tenant2, awaiting(1), true);
-        assert!(service_inner.is_ready_for_eager_suspension(&tenant2));
+        assert!(service_inner.is_suspendable(&tenant2));
 
         // Neither an ack that isn't forwarded to the SDK nor a notification outside the awaited
         // tree (e.g. the invocation id of a call) clears the mark.
         service_inner.handle_stored_command_ack(&options, unscoped, 1);
         service_inner.handle_notification(&options, unscoped, 2, NotificationId::CompletionId(2));
-        assert!(service_inner.is_ready_for_eager_suspension(&unscoped));
+        assert!(service_inner.is_suspendable(&unscoped));
 
         // An awaited notification clears it, until the SDK reports it is blocked again.
         service_inner.handle_notification(&options, unscoped, 3, NotificationId::CompletionId(1));
-        assert!(!service_inner.is_ready_for_eager_suspension(&unscoped));
+        assert!(!service_inner.is_suspendable(&unscoped));
         service_inner.handle_awaiting_on(&options, unscoped, awaiting(3), true);
-        assert!(service_inner.is_ready_for_eager_suspension(&unscoped));
+        assert!(service_inner.is_suspendable(&unscoped));
 
         // A limit-key target only matches holders under the blocked prefix.
         let t1 = SuspendIdleTarget::LimitKey {
@@ -3060,7 +3060,7 @@ mod tests {
             service_inner.handle_suspend_idle(&options, t1.clone()),
             Some(tenant1)
         );
-        assert!(!service_inner.is_ready_for_eager_suspension(&tenant1));
+        assert!(!service_inner.is_suspendable(&tenant1));
         assert_eq!(service_inner.handle_suspend_idle(&options, t1), None);
 
         // A node slot target picks the invocation marked the longest ago.
@@ -3111,13 +3111,13 @@ mod tests {
         let mut disabled = InvokerOptions::default();
         disabled.disable_eager_suspension = true;
         service_inner.handle_awaiting_on(&disabled, unscoped, awaiting(1), true);
-        assert!(!service_inner.is_ready_for_eager_suspension(&unscoped));
+        assert!(!service_inner.is_suspendable(&unscoped));
         service_inner.handle_awaiting_on(&options, unscoped, awaiting(1), true);
         assert_eq!(
             service_inner.handle_suspend_idle(&disabled, SuspendIdleTarget::InvokerConcurrency),
             None
         );
-        assert!(service_inner.is_ready_for_eager_suspension(&unscoped));
+        assert!(service_inner.is_suspendable(&unscoped));
         assert!(closed_rx.try_recv().is_err());
     }
 }

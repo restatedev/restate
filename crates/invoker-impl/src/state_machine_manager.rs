@@ -27,16 +27,16 @@ use crate::InvocationStateMachine;
 
 /// Tree of [InvocationStateMachine] held by the [Service].
 ///
-/// Also maintains the index of invocations that are ready to be suspended eagerly (see
-/// [`ReadyMark`](crate::invocation_state_machine::ReadyMark)). The index is derived from the
-/// state machines' ready marks: entries are dropped in [`Self::remove_invocation`] and
+/// Also maintains the index of invocations that can be suspended eagerly (see
+/// [`SuspendableMark`](crate::invocation_state_machine::SuspendableMark)). The index is derived from the
+/// state machines' suspendable marks: entries are dropped in [`Self::remove_invocation`] and
 /// restored from the mark in [`Self::register_invocation`]. In-place changes of the mark go
-/// through [`Self::mark_ready`], [`Self::clear_ready`] and [`Self::eager_suspend`].
+/// through [`Self::mark_suspendable`], [`Self::clear_suspendable`] and [`Self::eager_suspend`].
 #[derive(Debug)]
 pub(super) struct InvocationStateMachineManager<SR> {
     output_tx: mpsc::Sender<FencedEffect>,
     invocation_state_machines: HashMap<InvocationId, InvocationStateMachine>,
-    ready: ReadyIndex,
+    suspendable: SuspendableIndex,
     _partition_key_range: KeyRange,
     storage_reader: SR,
 }
@@ -54,7 +54,7 @@ where
         Self {
             output_tx: sender,
             invocation_state_machines: Default::default(),
-            ready: Default::default(),
+            suspendable: Default::default(),
             _partition_key_range: partition_key_range,
             storage_reader,
         }
@@ -72,8 +72,8 @@ where
 
     /// Mutable access to a registered state machine.
     ///
-    /// Callers must not change the ready mark through this reference, use [`Self::mark_ready`]
-    /// and [`Self::clear_ready`] instead.
+    /// Callers must not change the suspendable mark through this reference, use [`Self::mark_suspendable`]
+    /// and [`Self::clear_suspendable`] instead.
     #[inline]
     pub(super) fn resolve_invocation(
         &mut self,
@@ -116,42 +116,42 @@ where
         }
     }
 
-    /// Removes the state machine and its ready-index entries. If the state machine is
-    /// registered again, its entries are restored from its ready mark.
+    /// Removes the state machine and its suspendable-index entries. If the state machine is
+    /// registered again, its entries are restored from its suspendable mark.
     #[inline]
     pub(super) fn remove_invocation(
         &mut self,
         invocation_id: &InvocationId,
     ) -> Option<(&mpsc::Sender<FencedEffect>, &SR, InvocationStateMachine)> {
         let ism = self.invocation_state_machines.remove(invocation_id)?;
-        if let Some(seq) = ism.ready_seq() {
-            self.ready.remove(&ism, seq, *invocation_id);
+        if let Some(seq) = ism.suspendable_seq() {
+            self.suspendable.remove(&ism, seq, *invocation_id);
         }
         Some((&self.output_tx, &self.storage_reader, ism))
     }
 
     #[inline]
     pub(super) fn remove_all(&mut self) -> HashMap<InvocationId, InvocationStateMachine> {
-        self.ready.clear();
+        self.suspendable.clear();
         std::mem::take(&mut self.invocation_state_machines)
     }
 
     #[inline]
     pub(super) fn register_invocation(&mut self, id: InvocationId, ism: InvocationStateMachine) {
         if let Some(old) = self.invocation_state_machines.remove(&id)
-            && let Some(seq) = old.ready_seq()
+            && let Some(seq) = old.suspendable_seq()
         {
-            self.ready.remove(&old, seq, id);
+            self.suspendable.remove(&old, seq, id);
         }
-        if let Some(seq) = ism.ready_seq() {
-            self.ready.insert(&ism, seq, id);
+        if let Some(seq) = ism.suspendable_seq() {
+            self.suspendable.insert(&ism, seq, id);
         }
         self.invocation_state_machines.insert(id, ism);
     }
 
-    /// Marks the invocation as ready for eager suspension, after the SDK reported that user
+    /// Marks the invocation as suspendable, after the SDK reported that user
     /// code is blocked awaiting `awaiting`. Returns `true` if the invocation is (still) marked.
-    pub(super) fn mark_ready(
+    pub(super) fn mark_suspendable(
         &mut self,
         invocation_id: &InvocationId,
         awaiting: Box<[NotificationId]>,
@@ -159,8 +159,8 @@ where
         let Some(ism) = self.invocation_state_machines.get_mut(invocation_id) else {
             return false;
         };
-        let previous_seq = ism.ready_seq();
-        let Some(seq) = ism.try_mark_ready(self.ready.next_seq, awaiting) else {
+        let previous_seq = ism.suspendable_seq();
+        let Some(seq) = ism.try_mark_suspendable(self.suspendable.next_seq, awaiting) else {
             debug_assert!(
                 previous_seq.is_none(),
                 "a marked invocation must stay eligible"
@@ -168,38 +168,38 @@ where
             return false;
         };
         if previous_seq.is_none() {
-            self.ready.next_seq += 1;
-            self.ready.insert(ism, seq, *invocation_id);
+            self.suspendable.next_seq += 1;
+            self.suspendable.insert(ism, seq, *invocation_id);
         }
         true
     }
 
-    /// Clears the ready mark of the invocation, e.g. because the SDK made progress.
-    pub(super) fn clear_ready(&mut self, invocation_id: &InvocationId) {
+    /// Clears the suspendable mark of the invocation, e.g. because the SDK made progress.
+    pub(super) fn clear_suspendable(&mut self, invocation_id: &InvocationId) {
         if let Some(ism) = self.invocation_state_machines.get_mut(invocation_id)
-            && let Some(seq) = ism.clear_ready_mark()
+            && let Some(seq) = ism.clear_suspendable_mark()
         {
-            self.ready.remove(ism, seq, *invocation_id);
+            self.suspendable.remove(ism, seq, *invocation_id);
         }
     }
 
-    /// Picks the invocation that has been marked ready for the longest time among those whose
+    /// Picks the invocation that has been marked suspendable for the longest time among those whose
     /// suspension releases `target`, and closes its notification channel so that it suspends.
     pub(super) fn eager_suspend(&mut self, target: &SuspendIdleTarget) -> Option<InvocationId> {
-        let key = ReadyKey::from_target(target);
+        let key = SuspendableKey::from_target(target);
         loop {
-            let (seq, invocation_id) = self.ready.first(&key)?;
+            let (seq, invocation_id) = self.suspendable.first(&key)?;
             let ism = self
                 .invocation_state_machines
                 .get_mut(&invocation_id)
-                .filter(|ism| ism.ready_seq() == Some(seq));
-            debug_assert!(ism.is_some(), "stale entry in the ready index");
+                .filter(|ism| ism.suspendable_seq() == Some(seq));
+            debug_assert!(ism.is_some(), "stale entry in the suspendable index");
             let Some(ism) = ism else {
-                self.ready.remove_from(&key, seq, invocation_id);
+                self.suspendable.remove_from(&key, seq, invocation_id);
                 continue;
             };
-            ism.clear_ready_mark();
-            self.ready.remove(ism, seq, invocation_id);
+            ism.clear_suspendable_mark();
+            self.suspendable.remove(ism, seq, invocation_id);
             let suspended = ism.notify_eager_suspend();
             debug_assert!(suspended, "a marked invocation must have an open channel");
             if suspended {
@@ -209,16 +209,16 @@ where
     }
 }
 
-/// Key under which ready invocations are indexed, see [`ReadyIndex`].
+/// Key under which suspendable invocations are indexed, see [`SuspendableIndex`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum ReadyKey {
+enum SuspendableKey {
     /// Every invocation of this invoker holds a node invoker concurrency slot.
     Node,
     /// Invocations whose limit-key permit lies in this scope, under this limit-key prefix.
     Limit(Scope, LimitKey<ReString>),
 }
 
-impl ReadyKey {
+impl SuspendableKey {
     fn from_target(target: &SuspendIdleTarget) -> Self {
         match target {
             SuspendIdleTarget::InvokerConcurrency => Self::Node,
@@ -245,17 +245,17 @@ impl ReadyKey {
     }
 }
 
-/// Index of the invocations marked ready for eager suspension, ordered by the time they were
-/// marked (oldest first) under each [`ReadyKey`].
+/// Index of the invocations marked suspendable, ordered by the time they were
+/// marked (oldest first) under each [`SuspendableKey`].
 #[derive(Debug, Default)]
-struct ReadyIndex {
+struct SuspendableIndex {
     next_seq: u64,
-    sets: HashMap<ReadyKey, BTreeSet<(u64, InvocationId)>>,
+    sets: HashMap<SuspendableKey, BTreeSet<(u64, InvocationId)>>,
 }
 
-impl ReadyIndex {
+impl SuspendableIndex {
     fn insert(&mut self, ism: &InvocationStateMachine, seq: u64, invocation_id: InvocationId) {
-        for key in ReadyKey::for_invocation(ism).into_iter().flatten() {
+        for key in SuspendableKey::for_invocation(ism).into_iter().flatten() {
             self.sets
                 .entry(key)
                 .or_default()
@@ -264,12 +264,12 @@ impl ReadyIndex {
     }
 
     fn remove(&mut self, ism: &InvocationStateMachine, seq: u64, invocation_id: InvocationId) {
-        for key in ReadyKey::for_invocation(ism).into_iter().flatten() {
+        for key in SuspendableKey::for_invocation(ism).into_iter().flatten() {
             self.remove_from(&key, seq, invocation_id);
         }
     }
 
-    fn remove_from(&mut self, key: &ReadyKey, seq: u64, invocation_id: InvocationId) {
+    fn remove_from(&mut self, key: &SuspendableKey, seq: u64, invocation_id: InvocationId) {
         if let Some(set) = self.sets.get_mut(key) {
             set.remove(&(seq, invocation_id));
             if set.is_empty() {
@@ -278,7 +278,7 @@ impl ReadyIndex {
         }
     }
 
-    fn first(&self, key: &ReadyKey) -> Option<(u64, InvocationId)> {
+    fn first(&self, key: &SuspendableKey) -> Option<(u64, InvocationId)> {
         self.sets.get(key)?.first().copied()
     }
 
