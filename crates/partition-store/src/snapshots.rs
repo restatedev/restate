@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod leases;
 mod metadata;
 mod repository;
 mod snapshot_task;
@@ -20,9 +21,17 @@ use std::sync::Arc;
 use crate::partition_db::State;
 use crate::{CommitFence, PartitionStore, SnapshotError, SnapshotErrorKind};
 
+#[cfg(any(test, feature = "test-util"))]
+pub use self::leases::NoOpLeaseManager;
+pub use self::leases::{
+    LEASE_DURATION, LEASE_RENEWAL_INTERVAL, LEASE_SAFETY_MARGIN, LeaseError, SnapshotLeaseGuard,
+    SnapshotLeaseManager, SnapshotLeaseValue,
+};
 pub use self::metadata::*;
 use self::repository::GetSnapshotError;
-pub use self::repository::{PartitionSnapshotStatus, SnapshotReference, SnapshotRepository};
+pub use self::repository::{
+    LeaseProvider, PartitionSnapshotStatus, SnapshotReference, SnapshotRepository,
+};
 pub use self::snapshot_task::*;
 
 use tokio::sync::{OwnedRwLockReadGuard, OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
@@ -69,7 +78,7 @@ pub struct Snapshots {
 
 impl Snapshots {
     pub async fn create(config: &Configuration) -> anyhow::Result<Self> {
-        let repository = SnapshotRepository::new_from_config(
+        let repository = SnapshotRepository::new_read_only_from_config(
             &config.worker.snapshots,
             config.worker.storage.snapshots_staging_dir(),
         )
