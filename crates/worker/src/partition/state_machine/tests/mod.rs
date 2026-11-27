@@ -2063,6 +2063,81 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     Ok(())
 }
 
+/// Replicas truncate the outbox by sequence number, so every replica must enqueue an
+/// invocation's responses in the same order. Each completion decodes the stored sinks anew,
+/// as each replica does; two invocations with the same sinks stand in for two replicas.
+#[test(restate_core::test)]
+async fn responses_to_the_same_sinks_are_enqueued_in_the_same_order() -> TestResult {
+    let mut test_env = TestEnv::create().await;
+    let callers: Vec<_> = (0..8).map(|_| InvocationId::mock_random()).collect();
+
+    let mut next_outbox_seq = 0;
+    let mut enqueued_callers = vec![];
+    for _ in 0..2 {
+        let invocation_target = InvocationTarget::mock_service();
+        let invocation_id = InvocationId::mock_generate(&invocation_target);
+        test_env
+            .apply(commands::InvokeCommand::test_envelope(
+                ServiceInvocation::initialize(
+                    invocation_id,
+                    invocation_target,
+                    Source::Ingress(PartitionProcessorRpcRequestId::default()),
+                ),
+            ))
+            .await;
+
+        let mut txn = test_env.storage.transaction();
+        let mut invocation_status = txn.get_invocation_status(&invocation_id).await?;
+        invocation_status.get_response_sinks_mut().unwrap().extend(
+            callers
+                .iter()
+                .map(|caller| ServiceInvocationResponseSink::partition_processor(*caller, 1)),
+        );
+        txn.put_invocation_status(&invocation_id, &invocation_status)?;
+        txn.commit().await?;
+
+        test_env
+            .apply_multiple([
+                commands::InvokerEffectCommand::test_envelope(Effect {
+                    invocation_id,
+                    kind: InvokerEffectKind::JournalEntry {
+                        entry_index: 1,
+                        entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
+                            EntryResult::Success(Bytes::from_static(b"123")),
+                        )),
+                    },
+                }),
+                commands::InvokerEffectCommand::test_envelope(Effect {
+                    invocation_id,
+                    kind: InvokerEffectKind::End,
+                }),
+            ])
+            .await;
+
+        let mut order = vec![];
+        while let Some((seq, message)) = test_env
+            .storage
+            .get_next_outbox_message(next_outbox_seq)
+            .await?
+        {
+            match message {
+                restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(response) => {
+                    order.push(response.target.caller_id)
+                }
+                other => panic!("expected only responses in the outbox, got {other:?}"),
+            }
+            next_outbox_seq = seq + 1;
+        }
+        assert_that!(order, len(eq(callers.len())));
+        enqueued_callers.push(order);
+    }
+
+    assert_that!(enqueued_callers[0], eq(enqueued_callers[1].clone()));
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
 #[test(restate_core::test)]
 async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResult {
     let mut test_env = TestEnv::create().await;

@@ -701,7 +701,16 @@ pub struct InvocationInput {
 /// Reserved field tags:
 /// - 3: caller_invocation_epoch removed in v1.6
 #[derive(
-    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Hash, bilrost::Message,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+    Hash,
+    bilrost::Message,
 )]
 pub struct JournalCompletionTarget {
     #[bilrost(1)]
@@ -831,7 +840,9 @@ impl WithInvocationId for GetInvocationOutputResponse {
 }
 
 /// Definition of the sink where to send the result of a service invocation.
-#[derive(Debug, PartialEq, Eq, Clone, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(
     from = "serde_hacks::ServiceInvocationResponseSink",
     into = "serde_hacks::ServiceInvocationResponseSink"
