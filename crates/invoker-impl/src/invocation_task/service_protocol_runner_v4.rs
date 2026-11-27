@@ -1544,7 +1544,7 @@ where
     ) -> TerminalLoopState<()> {
         // The invoker uses this message to mark the invocation as eagerly suspendable, unless
         // the SDK reports that it is executing side effects or the handler is non-preemptable.
-        let executing_side_effects = awaiting_on.executing_side_effects;
+        let suspendable = self.invocation_task.preemptable && !awaiting_on.executing_side_effects;
         let Some(awaiting_on) = awaiting_on.awaiting_on else {
             return TerminalLoopState::Failed(InvokerError::EmptyAwaitingOnMessage);
         };
@@ -1564,8 +1564,7 @@ where
             .send_invoker_tx(InvocationTaskOutputInner::AwaitingOn {
                 unresolved_future,
                 encoded_length,
-                executing_side_effects,
-                preemptable: self.invocation_task.preemptable,
+                suspendable,
             });
 
         TerminalLoopState::Continue(())

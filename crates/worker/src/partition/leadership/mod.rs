@@ -794,25 +794,23 @@ where
                 } else {
                     RefillMode::Blocking
                 };
-                let mut resource_manager = ResourceManager::create(
+                // Blocked queues ask this partition's invoker to suspend a waiting invocation
+                // that holds the permit they need. The invoker ignores these requests while
+                // eager suspension is disabled in its live configuration.
+                let mut invoker_handle = invoker_handle.clone();
+                let resource_manager = ResourceManager::create(
                     partition_store.partition_db().clone(),
                     node_ctx.invoker_capacity.concurrency.clone(),
                     node_ctx.invoker_capacity.invocation_token_bucket.clone(),
                     node_ctx.invoker_capacity.memory_pool.clone(),
                     node_ctx.invoker_capacity.initial_invocation_memory,
                 )
-                .await?;
-                if !config.worker.invoker.disable_eager_suspension {
-                    // Blocked queues ask this partition's invoker to suspend a waiting
-                    // invocation that holds the permit they need.
-                    let mut invoker_handle = invoker_handle.clone();
-                    resource_manager =
-                        resource_manager.with_eager_suspension_sink(Box::new(move |target| {
-                            // The invoker only stops when leadership ends, and the scheduler
-                            // goes away with it.
-                            let _ = invoker_handle.suspend_idle(target);
-                        }));
-                }
+                .await?
+                .with_eager_suspension_sink(Box::new(move |target| {
+                    // The invoker only stops when leadership ends, and the scheduler goes away
+                    // with it.
+                    let _ = invoker_handle.suspend_idle(target);
+                }));
                 SchedulerService::create(
                     resource_manager,
                     partition_store.partition_db().clone(),

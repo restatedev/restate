@@ -532,7 +532,7 @@ pub struct InvokerOptions {
     /// Eager suspension needs services that use service protocol V7 or newer. Invocations of
     /// older services are never suspended eagerly.
     ///
-    /// Turning it on only affects new invocations, not existing ones.
+    /// Changes take effect without a restart.
     ///
     /// Since v1.8.2
     #[serde(default)]

@@ -483,13 +483,12 @@ where
                             requested_ack,
                         ).await
                     },
-                    InvocationTaskOutputInner::AwaitingOn { unresolved_future, executing_side_effects, preemptable, .. } => {
+                    InvocationTaskOutputInner::AwaitingOn { unresolved_future, suspendable, .. } => {
                         self.handle_awaiting_on(
                             options,
                             invocation_id,
                             unresolved_future,
-                            executing_side_effects,
-                            preemptable,
+                            suspendable,
                         )
                     },
                     InvocationTaskOutputInner::Closed => {
@@ -848,15 +847,13 @@ where
         options: &InvokerOptions,
         invocation_id: InvocationId,
         unresolved_future: UnresolvedFuture,
-        executing_side_effects: bool,
-        preemptable: bool,
+        suspendable: bool,
     ) {
         // Trust the SDK: it is blocked on this await point and, unless it says otherwise,
         // not executing side effects. Suspending it is then as safe as the inactivity timeout,
         // unless the service or handler opted out of eager suspension.
         let awaiting =
-            (!options.disable_eager_suspension && preemptable && !executing_side_effects)
-                .then(|| unresolved_future.leaves());
+            (!options.disable_eager_suspension && suspendable).then(|| unresolved_future.leaves());
 
         let found = self.invocation_state_machine_manager.handle_for_invocation(
             &invocation_id,
@@ -3028,15 +3025,13 @@ mod tests {
 
         let awaiting = |id: u32| UnresolvedFuture::Single(NotificationId::CompletionId(id));
 
-        // AwaitingOn marks the invocation, unless the SDK reports running side effects or the
-        // handler is non-preemptable.
-        service_inner.handle_awaiting_on(&options, unscoped, awaiting(1), false, true);
-        service_inner.handle_awaiting_on(&options, tenant1, awaiting(1), true, true);
-        service_inner.handle_awaiting_on(&options, tenant2, awaiting(1), false, false);
+        // AwaitingOn marks the invocation, unless it is not suspendable (the SDK reports running
+        // side effects or the handler is non-preemptable).
+        service_inner.handle_awaiting_on(&options, unscoped, awaiting(1), true);
+        service_inner.handle_awaiting_on(&options, tenant2, awaiting(1), false);
         assert!(service_inner.is_ready_for_eager_suspension(&unscoped));
-        assert!(!service_inner.is_ready_for_eager_suspension(&tenant1));
         assert!(!service_inner.is_ready_for_eager_suspension(&tenant2));
-        service_inner.handle_awaiting_on(&options, tenant2, awaiting(1), false, true);
+        service_inner.handle_awaiting_on(&options, tenant2, awaiting(1), true);
         assert!(service_inner.is_ready_for_eager_suspension(&tenant2));
 
         // Neither an ack that isn't forwarded to the SDK nor a notification outside the awaited
@@ -3048,7 +3043,7 @@ mod tests {
         // An awaited notification clears it, until the SDK reports it is blocked again.
         service_inner.handle_notification(&options, unscoped, 3, NotificationId::CompletionId(1));
         assert!(!service_inner.is_ready_for_eager_suspension(&unscoped));
-        service_inner.handle_awaiting_on(&options, unscoped, awaiting(3), false, true);
+        service_inner.handle_awaiting_on(&options, unscoped, awaiting(3), true);
         assert!(service_inner.is_ready_for_eager_suspension(&unscoped));
 
         // A limit-key target only matches holders under the blocked prefix.
@@ -3060,7 +3055,7 @@ mod tests {
             service_inner.handle_suspend_idle(&options, t1.clone()),
             None
         );
-        service_inner.handle_awaiting_on(&options, tenant1, awaiting(1), false, true);
+        service_inner.handle_awaiting_on(&options, tenant1, awaiting(1), true);
         assert_eq!(
             service_inner.handle_suspend_idle(&options, t1.clone()),
             Some(tenant1)
@@ -3115,9 +3110,9 @@ mod tests {
         // before stay running.
         let mut disabled = InvokerOptions::default();
         disabled.disable_eager_suspension = true;
-        service_inner.handle_awaiting_on(&disabled, unscoped, awaiting(1), false, true);
+        service_inner.handle_awaiting_on(&disabled, unscoped, awaiting(1), true);
         assert!(!service_inner.is_ready_for_eager_suspension(&unscoped));
-        service_inner.handle_awaiting_on(&options, unscoped, awaiting(1), false, true);
+        service_inner.handle_awaiting_on(&options, unscoped, awaiting(1), true);
         assert_eq!(
             service_inner.handle_suspend_idle(&disabled, SuspendIdleTarget::InvokerConcurrency),
             None

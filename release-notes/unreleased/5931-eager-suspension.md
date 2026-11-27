@@ -1,4 +1,4 @@
-# Idle invocations are suspended early when concurrency limits are reached
+# Release Notes for Issue #5931: Idle invocations are suspended early when concurrency limits are reached
 
 ## Behavioral Change / New Feature
 
@@ -36,7 +36,12 @@ No action is needed. To keep the previous behavior on a node, disable eager susp
 disable-eager-suspension = true
 ```
 
-Turning eager suspension on only affects new invocations, not existing ones.
+Changes to this option take effect without a restart.
 
 To opt a single service or handler out, declare it as not preemptable in the SDK
 (`preemptable: false`). This needs an SDK version that supports it.
+
+### Related Issues
+
+- PR #5931: Suspend idle invocations early when concurrency limits are reached
+- PR #6026: Let services and handlers declare themselves non-preemptable

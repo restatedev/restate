@@ -241,12 +241,10 @@ pub(super) enum InvocationTaskOutputInner {
         unresolved_future: UnresolvedFuture,
         /// Length of the encoded message, a proxy for the future's size.
         encoded_length: usize,
-        /// True if the SDK reports that some awaited notification is a side effect it is
-        /// still executing, so the invocation must not be suspended eagerly.
-        executing_side_effects: bool,
-        /// False if the service or handler is declared non-preemptable, so the invocation must
-        /// not be suspended eagerly.
-        preemptable: bool,
+        /// False if the invocation must not be suspended eagerly: the SDK reports that some
+        /// awaited notification is a side effect it is still executing, or the service or
+        /// handler is declared non-preemptable.
+        suspendable: bool,
     },
     Closed,
     SuspendedV2(HashSet<NotificationId>),
