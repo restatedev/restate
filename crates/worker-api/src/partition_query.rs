@@ -17,7 +17,7 @@ use restate_types::identifiers::PartitionId;
 use restate_types::sharding::KeyRange;
 
 use crate::invoker::InvocationStatusReport;
-use crate::{SchedulerStatusEntry, UserLimitCounterEntry};
+use crate::{HotKeyEntry, SchedulerStatusEntry, UserLimitCounterEntry};
 
 /// Failure to read a partition's live query data. An unavailable source is not an empty result.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -61,6 +61,12 @@ pub trait PartitionQueryAccess: Send + Sync + 'static {
         partition_id: PartitionId,
         keys: KeyRange,
     ) -> PartitionQueryStream<UserLimitCounterEntry>;
+
+    fn scan_hot_keys(
+        &self,
+        partition_id: PartitionId,
+        keys: KeyRange,
+    ) -> PartitionQueryStream<HotKeyEntry>;
 }
 
 /// Live-data capability for an offline partition universe. Live data is intentionally absent;
@@ -111,6 +117,14 @@ impl PartitionQueryAccess for OfflinePartitionQueryAccess {
         partition_id: PartitionId,
         _keys: KeyRange,
     ) -> PartitionQueryStream<UserLimitCounterEntry> {
+        self.empty(partition_id)
+    }
+
+    fn scan_hot_keys(
+        &self,
+        partition_id: PartitionId,
+        _keys: KeyRange,
+    ) -> PartitionQueryStream<HotKeyEntry> {
         self.empty(partition_id)
     }
 }

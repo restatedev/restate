@@ -51,7 +51,7 @@ use restate_types::partition_table::Partition;
 use restate_types::sharding::KeyRange;
 use restate_worker_api::invoker::InvocationStatusReport;
 use restate_worker_api::{
-    OfflinePartitionQueryAccess, PartitionQueryAccess, PartitionQueryStream,
+    HotKeyEntry, OfflinePartitionQueryAccess, PartitionQueryAccess, PartitionQueryStream,
     ProcessorsManagerCommand, ProcessorsManagerHandle, SchedulerStatusEntry, UserLimitCounterEntry,
 };
 
@@ -118,6 +118,10 @@ impl PartitionQueryAccess for TestInvokers {
         _: KeyRange,
     ) -> PartitionQueryStream<UserLimitCounterEntry> {
         unreachable!("the processor captures the user limits")
+    }
+
+    fn scan_hot_keys(&self, _: PartitionId, _: KeyRange) -> PartitionQueryStream<HotKeyEntry> {
+        unreachable!("the processor captures the hot keys")
     }
 }
 

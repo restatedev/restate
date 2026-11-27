@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroU64;
 use std::ops::RangeBounds;
 use std::time::{Duration, SystemTime};
 
@@ -39,6 +40,7 @@ use restate_storage_query_api::errors::QueryExecutionError;
 use restate_types::Scope;
 use restate_types::blob::BlobId;
 use restate_types::clock::UniqueTimestamp;
+use restate_types::config::Configuration;
 use restate_types::errors::{InvocationError, KILLED_INVOCATION_ERROR, codes};
 use restate_types::identifiers::InvocationUuid;
 use restate_types::identifiers::{
@@ -56,7 +58,7 @@ use restate_util_string::{ReString, RestateString, RestrictedValue};
 use restate_worker_api::invoker::status_handle::InvocationStatusReportInner;
 use restate_worker_api::invoker::{InvocationErrorReport, InvocationStatusReport};
 use restate_worker_api::{
-    BlockedResource, SchedulerStatusEntry, SchedulingStatus, UserLimitCounterEntry,
+    BlockedResource, HotKeyEntry, SchedulerStatusEntry, SchedulingStatus, UserLimitCounterEntry,
     VQueueSchedulerStatus,
 };
 use restate_worker_api::{PartitionQueryAccess, PartitionQueryError, PartitionQueryStream};
@@ -217,6 +219,13 @@ impl PartitionQueryAccess for FailingQueryAccess {
     ) -> PartitionQueryStream<UserLimitCounterEntry> {
         stream::once(async move { Err(PartitionQueryError::UnexpectedResponse(partition)) }).boxed()
     }
+    fn scan_hot_keys(
+        &self,
+        partition: PartitionId,
+        _keys: KeyRange,
+    ) -> PartitionQueryStream<HotKeyEntry> {
+        stream::once(async move { Err(PartitionQueryError::LeaderUnavailable(partition)) }).boxed()
+    }
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
@@ -298,6 +307,68 @@ impl PartitionQueryAccess for MockSchedulerQueryAccess {
     ) -> PartitionQueryStream<UserLimitCounterEntry> {
         stream::empty().boxed()
     }
+
+    fn scan_hot_keys(
+        &self,
+        _partition_id: PartitionId,
+        _keys: KeyRange,
+    ) -> PartitionQueryStream<HotKeyEntry> {
+        stream::empty().boxed()
+    }
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_sys_hot_keys() {
+    let hot_key = |partition_key, actions| HotKeyEntry {
+        partition_key,
+        actions,
+        window_start: MillisSinceEpoch::new(1_000),
+        window_end: MillisSinceEpoch::new(61_000),
+    };
+    let engine = MockQueryEngine::create_with(
+        MockStatusHandle::default()
+            .with_hot_key(hot_key(7, 600))
+            .with_hot_key(hot_key(42, 900)),
+        MockSchemas::default(),
+    )
+    .await;
+
+    // The table only exists where hot keys are tracked.
+    assert!(engine.execute("SELECT * FROM sys_hot_keys").await.is_err());
+    let mut config = Configuration::pinned().as_ref().clone();
+    config.worker.set_hot_key_threshold(NonZeroU64::new(500));
+    Configuration::set(config);
+
+    // Filtering on the partition key reads only that partition key's row.
+    let batches: Vec<_> = engine
+        .execute(
+            "SELECT partition_key, actions, window_start, window_end FROM sys_hot_keys \
+             WHERE partition_key = 42",
+        )
+        .await
+        .unwrap()
+        .stream
+        .try_collect()
+        .await
+        .unwrap();
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    let batch = &batches[0];
+    let column = |index: usize| batch.column(index).as_any();
+    assert_eq!(
+        column(0).downcast_ref::<UInt64Array>().unwrap().value(0),
+        42
+    );
+    assert_eq!(
+        column(1).downcast_ref::<UInt64Array>().unwrap().value(0),
+        900
+    );
+    let timestamp = |index| {
+        column(index)
+            .downcast_ref::<TimestampMillisecondArray>()
+            .unwrap()
+            .value(0)
+    };
+    assert_eq!((timestamp(2), timestamp(3)), (1_000, 61_000));
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]

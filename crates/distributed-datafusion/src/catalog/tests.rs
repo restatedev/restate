@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::{BTreeSet, HashMap};
+use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use datafusion::arrow::util::display::array_value_to_string;
@@ -774,6 +775,7 @@ async fn shared_tables_preserve_v1_column_contracts() {
         "sys_scheduler",
         "sys_invocation_state",
         "sys_user_limits",
+        "sys_hot_keys",
         "sys_invocation_status",
         "sys_invocation",
         "sys_journal",
@@ -1117,7 +1119,7 @@ async fn first_column_of_same_rows(
 }
 
 #[tokio::test]
-async fn stats_tables_follow_indexing_and_index_tables_never_show() {
+async fn optional_tables_follow_config_and_index_tables_never_show() {
     let previous_config = Configuration::pinned().clone();
     let mut config = Configuration::default();
     Configuration::set(config.clone());
@@ -1156,11 +1158,18 @@ async fn stats_tables_follow_indexing_and_index_tables_never_show() {
     // linked as a normal library with its original catalog.
     let engines = [("v1", v1, false), ("v2", v2, true)];
     let mut enabled_sessions = Vec::new();
-    for (indexes, disable_index_reads) in
-        [(false, false), (true, false), (true, true), (false, false)]
-    {
+    // The statistics tables follow indexing, and `sys_hot_keys` follows the hot key threshold.
+    for (indexes, disable_index_reads, hot_keys) in [
+        (false, false, true),
+        (true, false, false),
+        (true, true, true),
+        (false, false, false),
+    ] {
         config.common.experimental.set_indexes(indexes);
         config.admin.query_engine.disable_index_reads = disable_index_reads;
+        config
+            .worker
+            .set_hot_key_threshold(hot_keys.then(|| NonZeroU64::new(500).unwrap()));
         Configuration::set(config.clone());
         for (engine_name, engine, is_v2) in &engines {
             let session = engine.create_session(SessionOptions::default()).unwrap();
@@ -1183,6 +1192,7 @@ async fn stats_tables_follow_indexing_and_index_tables_never_show() {
                 ]
                 .into_iter()
                 .chain(STATS.into_iter().filter(|_| indexes))
+                .chain(["sys_hot_keys"].into_iter().filter(|_| hot_keys))
                 .map(str::to_owned)
                 .collect();
                 assert_eq!(names, expected, "stats_follow_indexing");
@@ -1193,6 +1203,7 @@ async fn stats_tables_follow_indexing_and_index_tables_never_show() {
                 .into_iter()
                 .map(|name| (name, indexes))
                 .chain(INDEXES.into_iter().map(|name| (name, false)))
+                .chain([("sys_hot_keys", hot_keys)])
                 .collect();
             for (name, visible) in &selected {
                 assert_eq!(names.contains(*name), *visible, "{engine_name}: {name}");

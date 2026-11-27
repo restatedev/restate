@@ -25,6 +25,7 @@ pub mod bifrost_read_stream;
 mod catalog;
 pub mod config;
 mod deployment;
+mod hot_keys;
 mod inbox;
 mod invocation_state;
 mod invocation_status;

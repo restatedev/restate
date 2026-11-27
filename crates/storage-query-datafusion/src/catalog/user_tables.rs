@@ -21,6 +21,7 @@ use restate_types::schema::service::ServiceMetadataResolver;
 use crate::BuildError;
 use crate::context::SelectPartitions;
 use crate::deployment::schema::SysDeploymentTable;
+use crate::hot_keys::schema::SysHotKeysTable;
 use crate::inbox::schema::SysInboxTable;
 use crate::invocation_state::schema::SysInvocationStateTable;
 use crate::invocation_status::schema::SysInvocationStatusTable;
@@ -209,6 +210,7 @@ where
             SysInvocationStateTable,
             SysSchedulerTable,
             SysUserLimitsTable,
+            SysHotKeysTable,
             SysInvocationStatusTable,
             SysLocksTable,
             StateTable,
