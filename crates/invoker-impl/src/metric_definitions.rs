@@ -19,6 +19,10 @@ pub const INVOKER_SENT_BYTES: &str = "restate.invoker.sent.bytes.total";
 pub const INVOKER_RECEIVED_BYTES: &str = "restate.invoker.received.bytes.total";
 pub const INVOKER_CLIENT_REQUESTS: &str = "restate.invoker.client_requests.total";
 
+pub const INVOKER_ACTION_THROTTLED: &str = "restate.invoker.action_throttled.total";
+pub const INVOKER_ACTION_THROTTLING_WAIT_MS: &str =
+    "restate.invoker.action_throttling_wait_ms.total";
+
 pub const TASK_OP_STARTED: &str = "started";
 pub const TASK_OP_SUSPENDED: &str = "suspended";
 pub const TASK_OP_FAILED: &str = "failed";
@@ -65,5 +69,17 @@ pub(crate) fn describe_metrics() {
         INVOKER_CLIENT_REQUESTS,
         Unit::Count,
         "Requests sent to deployments and their status codes"
+    );
+
+    describe_counter!(
+        INVOKER_ACTION_THROTTLED,
+        Unit::Count,
+        "Number of actions that had to wait for node-level action throttling"
+    );
+
+    describe_counter!(
+        INVOKER_ACTION_THROTTLING_WAIT_MS,
+        Unit::Count,
+        "Cumulative number of milliseconds actions waited on node-level action throttling"
     );
 }
