@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::watch;
@@ -17,7 +15,7 @@ use tracing::{debug, info};
 
 use restate_core::{Metadata, MetadataKind, TaskCenter, TaskKind, cancellation_watcher};
 use restate_futures_util::overdue::OverdueLoggingExt;
-use restate_metadata_store::{MetadataStoreClient, retry_on_retryable_error};
+use restate_metadata_store::MetadataStoreClient;
 use restate_types::Version;
 use restate_types::metadata_store::keys::SCHEMA_INFORMATION_KEY;
 use restate_types::retries::RetryPolicy;
@@ -35,7 +33,8 @@ pub struct SchemaGate {
     /// `Some(version)` while the node is still catching up to `version`, `None` once it has. The
     /// sender is dropped when the gate's task stops, which also releases the waiters.
     state: watch::Receiver<Option<Version>>,
-    waiters: Arc<AtomicUsize>,
+    #[cfg(test)]
+    waiters: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// Why a caller did not get past the gate. Readers must not answer schema-backed reads in either
@@ -62,7 +61,8 @@ impl SchemaGate {
 
         Ok(Self {
             state,
-            waiters: Arc::default(),
+            #[cfg(test)]
+            waiters: Default::default(),
         })
     }
 
@@ -70,6 +70,7 @@ impl SchemaGate {
     /// the gate started, and immediately once the gate has opened. Returns `Err` if the caller is
     /// cancelled or the gate stops first: the schema has not caught up in either case.
     pub async fn wait_until_caught_up(&self) -> Result<(), NotCaughtUp> {
+        #[cfg(test)]
         let _waiter = self.waiter();
         let mut state = self.state.clone();
         loop {
@@ -88,19 +89,22 @@ impl SchemaGate {
 
     /// Observes the gate: `Some(version)` while catching up to `version` (`Version::INVALID` until
     /// the metadata store reported it), `None` once caught up.
-    pub fn watch(&self) -> watch::Receiver<Option<Version>> {
+    #[cfg(test)]
+    pub(crate) fn watch(&self) -> watch::Receiver<Option<Version>> {
         self.state.clone()
     }
 
+    #[cfg(test)]
     fn waiter(&self) -> Waiter {
-        self.waiters.fetch_add(1, Ordering::SeqCst);
-        Waiter(Arc::clone(&self.waiters))
+        self.waiters
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Waiter(std::sync::Arc::clone(&self.waiters))
     }
 
     /// Number of callers currently blocked in [`Self::wait_until_caught_up`].
     #[cfg(test)]
     pub(crate) fn waiters(&self) -> usize {
-        self.waiters.load(Ordering::SeqCst)
+        self.waiters.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Builds a gate over a state channel, for tests that drive the state themselves.
@@ -108,16 +112,18 @@ impl SchemaGate {
     pub(crate) fn from_state(state: watch::Receiver<Option<Version>>) -> Self {
         Self {
             state,
-            waiters: Arc::default(),
+            waiters: Default::default(),
         }
     }
 }
 
-struct Waiter(Arc<AtomicUsize>);
+#[cfg(test)]
+struct Waiter(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 
+#[cfg(test)]
 impl Drop for Waiter {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -171,30 +177,23 @@ async fn catch_up(store: &MetadataStoreClient, state: &watch::Sender<Option<Vers
 
 /// The schema version in the metadata store, retrying until the store answers.
 ///
-/// The store can be unreachable when the node starts and its errors can be terminal for the retry
-/// policy, e.g. when no metadata server is known yet, so this never gives up: callers wait for the
-/// answer or for shutdown.
+/// The store can be unreachable when the node starts, and some of its errors are not retryable,
+/// e.g. when no metadata server is known yet, so this retries every error and never gives up:
+/// callers wait for the answer or for shutdown.
 async fn stored_schema_version(store: &MetadataStoreClient) -> Option<Version> {
-    let retry = RetryPolicy::exponential(
+    let mut retry_iter = RetryPolicy::exponential(
         Duration::from_millis(100),
         1.5,
         None,
         Some(Duration::from_secs(1)),
-    );
-    let mut retry_iter = retry.clone().into_iter();
+    )
+    .into_iter();
 
     loop {
-        match retry_on_retryable_error(retry.clone(), || {
-            store.get_version(SCHEMA_INFORMATION_KEY.clone())
-        })
-        .await
-        {
+        match store.get_version(SCHEMA_INFORMATION_KEY.clone()).await {
             Ok(version) => return version,
             Err(err) => {
-                debug!(
-                    "Failed to read the schema version from the metadata store: {}",
-                    err.into_inner()
-                );
+                debug!("Failed to read the schema version from the metadata store: {err}");
                 tokio::time::sleep(retry_iter.next().expect("the retry policy is infinite")).await;
             }
         }
