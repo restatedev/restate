@@ -45,8 +45,8 @@ use restate_types::sharding::KeyRange;
 use restate_types::{NodeId, Version};
 use restate_worker_api::invoker::InvocationStatusReport;
 use restate_worker_api::{
-    OfflinePartitionQueryAccess, PartitionQueryAccess, PartitionQueryStream, SchedulerStatusEntry,
-    UserLimitCounterEntry,
+    HotKeyEntry, OfflinePartitionQueryAccess, PartitionQueryAccess, PartitionQueryStream,
+    SchedulerStatusEntry, UserLimitCounterEntry,
 };
 
 use super::context::DataFusionQueryEngine;
@@ -60,11 +60,19 @@ use crate::remote_query_scanner_manager::{
 use crate::{DataFusionEnv, MetadataTables, UserTables};
 
 #[derive(Debug, Clone, Default)]
-pub struct MockStatusHandle(Vec<InvocationStatusReport>);
+pub struct MockStatusHandle {
+    invoker_status: Vec<InvocationStatusReport>,
+    hot_keys: Vec<HotKeyEntry>,
+}
 
 impl MockStatusHandle {
     pub fn with(mut self, invocation_status_report: InvocationStatusReport) -> Self {
-        self.0.push(invocation_status_report);
+        self.invoker_status.push(invocation_status_report);
+        self
+    }
+
+    pub fn with_hot_key(mut self, hot_key: HotKeyEntry) -> Self {
+        self.hot_keys.push(hot_key);
         self
     }
 }
@@ -77,7 +85,7 @@ impl PartitionQueryAccess for MockStatusHandle {
     ) -> PartitionQueryStream<InvocationStatusReport> {
         assert_eq!(partition_id, PartitionId::MIN);
         let mut rows: Vec<_> = self
-            .0
+            .invoker_status
             .iter()
             .filter(|row| keys.contains(&row.invocation_id().partition_key()))
             .cloned()
@@ -100,6 +108,22 @@ impl PartitionQueryAccess for MockStatusHandle {
         _keys: KeyRange,
     ) -> PartitionQueryStream<UserLimitCounterEntry> {
         stream::empty().boxed()
+    }
+
+    fn scan_hot_keys(
+        &self,
+        partition_id: PartitionId,
+        keys: KeyRange,
+    ) -> PartitionQueryStream<HotKeyEntry> {
+        assert_eq!(partition_id, PartitionId::MIN);
+        let mut rows: Vec<_> = self
+            .hot_keys
+            .iter()
+            .filter(|row| keys.contains(&row.partition_key))
+            .cloned()
+            .collect();
+        rows.sort_by_key(|row| row.partition_key);
+        stream::iter(rows.into_iter().map(Ok)).boxed()
     }
 }
 

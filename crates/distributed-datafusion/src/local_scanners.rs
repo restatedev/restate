@@ -21,6 +21,7 @@ use restate_worker_api::ProcessorsManagerHandle;
 
 use crate::source_registry::SourceRegistry;
 use crate::tables::deployment::schema::SysDeploymentTable;
+use crate::tables::hot_keys::SysHotKeysTable;
 use crate::tables::invocation_state::SysInvocationStateTable;
 use crate::tables::invocation_status::SysInvocationStatusTable;
 use crate::tables::journal::SysJournalTable;
@@ -48,6 +49,9 @@ use crate::tables::vqueue_meta::SysVqueueMetaTable;
 pub fn register_live_scanners(sources: &SourceRegistry) {
     sources.register_declared_scanner::<SysUserLimitsTable>(Arc::new(
         SysUserLimitsTable::create_local_scanner(),
+    ));
+    sources.register_declared_scanner::<SysHotKeysTable>(Arc::new(
+        SysHotKeysTable::create_local_scanner(),
     ));
     sources.register_declared_scanner::<SysInvocationStateTable>(Arc::new(
         SysInvocationStateTable::create_local_scanner(),

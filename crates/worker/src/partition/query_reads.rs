@@ -240,6 +240,14 @@ mod tests {
         {
             unreachable!("the processor captures the user limits")
         }
+
+        fn scan_hot_keys(
+            &self,
+            _: PartitionId,
+            _: KeyRange,
+        ) -> restate_worker_api::PartitionQueryStream<restate_worker_api::HotKeyEntry> {
+            unreachable!("the processor captures the hot keys")
+        }
     }
 
     /// An invoker whose status scan ends without rows once `0` is notified.
@@ -274,6 +282,14 @@ mod tests {
         ) -> restate_worker_api::PartitionQueryStream<restate_worker_api::UserLimitCounterEntry>
         {
             unreachable!("the processor captures the user limits")
+        }
+
+        fn scan_hot_keys(
+            &self,
+            _: PartitionId,
+            _: KeyRange,
+        ) -> restate_worker_api::PartitionQueryStream<restate_worker_api::HotKeyEntry> {
+            unreachable!("the processor captures the hot keys")
         }
     }
 
@@ -440,9 +456,15 @@ mod tests {
                 scheduler: true,
                 invoker: true,
                 user_limits: true,
+                hot_keys: true,
             };
             reads.admit(&store, Leading::Yes, None, capture_request, |required| {
-                assert!(!required.invoker && required.scheduler && required.user_limits);
+                assert!(
+                    !required.invoker
+                        && required.scheduler
+                        && required.user_limits
+                        && required.hot_keys
+                );
                 let mut captured = CapturedPartitionState::empty(required);
                 captured.scheduler = Some(
                     vec![(
@@ -466,6 +488,7 @@ mod tests {
                 "the manager's handle reads the invoker after admission"
             );
             assert!(captured.live.user_limits.as_ref().unwrap().is_empty());
+            assert!(captured.live.hot_keys.as_ref().unwrap().is_empty());
         }
         let (mut unavailable, response) = request(false);
         unavailable.capture.scheduler = true;

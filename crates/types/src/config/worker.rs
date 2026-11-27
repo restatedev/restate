@@ -332,6 +332,10 @@ impl WorkerOptions {
         self.hot_key_threshold
     }
 
+    pub fn set_hot_key_threshold(&mut self, threshold: Option<NonZeroU64>) {
+        self.hot_key_threshold = threshold;
+    }
+
     pub fn trim_delay_interval(&self) -> Duration {
         self.trim_delay_interval.into()
     }

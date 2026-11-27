@@ -103,6 +103,11 @@ impl DataFusionQueryEngine {
                 SysVirtualObjectStatsTable::identity(),
             ]);
         }
+        // Hot keys are only tracked where `worker.hot-key-threshold` is set.
+        if Configuration::pinned().worker.hot_key_threshold().is_none() {
+            opts.excluded_tables
+                .push(crate::hot_keys::schema::SysHotKeysTable::identity());
+        }
         let ctx = self.env.create_session(&opts)?;
         Ok(Arc::new(RestateQuerySession {
             session_id: ctx.session_id().into(),

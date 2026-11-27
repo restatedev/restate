@@ -23,6 +23,7 @@ use std::fmt::Debug;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::ops::RangeBounds;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use assert2::assert;
@@ -124,6 +125,7 @@ use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::v2::{self};
 use restate_wal_protocol::v2::{CommandKind, commands};
+use restate_worker_api::HotKeyEntry;
 use restate_worker_api::invoker::Effect;
 use restate_worker_api::processor::PartitionFeatures;
 
@@ -250,10 +252,20 @@ impl LeaderContext {
     /// Reports the number of hot keys once the current hot key window has elapsed.
     pub fn maybe_report_hot_keys(&mut self) {
         if let Some(hot_keys) = &mut self.hot_keys
-            && let Some(count) = hot_keys.maybe_rotate(tokio::time::Instant::now())
+            && let Some(count) =
+                hot_keys.maybe_rotate(tokio::time::Instant::now(), MillisSinceEpoch::now())
         {
             counter!(USAGE_LEADER_HOT_KEY_COUNT).increment(count as u64);
         }
+    }
+
+    /// The hot partition keys of the last completed hot key window, in ascending order. Empty if
+    /// hot keys are not tracked.
+    pub fn hot_keys(&self) -> Arc<[HotKeyEntry]> {
+        self.hot_keys
+            .as_ref()
+            .map(|hot_keys| Arc::clone(hot_keys.last_window()))
+            .unwrap_or_default()
     }
 }
 
