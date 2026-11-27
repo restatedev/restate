@@ -699,6 +699,9 @@ where
                     );
                     // Update the status to ensure changes are observable
                     self.refresh_status(&mut durable_lsn_watch)?;
+                    if let Some(leader_context) = self.leadership_state.leader_context_mut() {
+                        leader_context.maybe_report_hot_keys();
+                    }
                 }
                 // Awaiting the first record is the only stream `.await` and is cancellation-safe:
                 // if this branch is dropped before a record is ready, nothing has been consumed.
@@ -1296,7 +1299,7 @@ where
                     txn,
                     envelope,
                     action_collector,
-                    self.leadership_state.leader_context(),
+                    self.leadership_state.leader_context_mut(),
                     &mut self.encoding_arena,
                 )
                 .await?;

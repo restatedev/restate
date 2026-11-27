@@ -149,9 +149,12 @@ where
                 break;
             };
 
-            if let Some(leader) = ctx.leader {
-                leader
-                    .record_journal_entry_usage(entry.ty().prometheus_label(), entry.content_len());
+            if let Some(leader) = ctx.leader.as_deref_mut() {
+                leader.record_journal_entry_usage(
+                    new_invocation_id.partition_key(),
+                    entry.ty().prometheus_label(),
+                    entry.content_len(),
+                );
             }
 
             match entry.ty() {
@@ -209,8 +212,9 @@ where
                 && let Some(NotificationId::CompletionId(completion_id)) = entry.notification_id()
                 && missing_completions.remove(&completion_id)
             {
-                if let Some(leader) = ctx.leader {
+                if let Some(leader) = ctx.leader.as_deref_mut() {
                     leader.record_journal_entry_usage(
+                        new_invocation_id.partition_key(),
                         entry.ty().prometheus_label(),
                         entry.content_len(),
                     );
