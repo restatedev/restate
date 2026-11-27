@@ -38,6 +38,11 @@ impl BlobKey {
 
 impl FixedLengthTableKey<{ BlobKey::serialized_length_fixed() }> for BlobKey {}
 
+/// Bytes a blob costs on top of its payload: its key and header. Smaller content isn't worth
+/// storing in a blob.
+pub(crate) const BLOB_OVERHEAD: usize =
+    BlobKey::serialized_length_fixed() + BlobHeader::BASE_ENCODED_LEN;
+
 fn get_blob<S: StorageAccess, D: BlobDecoder>(
     storage: &mut S,
     blob_id: BlobId,

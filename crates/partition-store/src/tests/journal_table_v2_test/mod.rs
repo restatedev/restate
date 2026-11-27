@@ -13,6 +13,7 @@ use std::pin::pin;
 use std::time::Duration;
 
 use super::{low_pri_executor, storage_test_environment};
+use crate::blob_table::BLOB_OVERHEAD;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::StreamExt;
@@ -32,7 +33,7 @@ use restate_types::journal_v2::raw::{RawCommandSpecificMetadata, RawNotification
 use restate_types::journal_v2::{
     CallCommand, CallRequest, Command, CommandType, CompletionId, CompletionType, Entry,
     EntryMetadata, EntryType, InputCommand, NotificationId, NotificationType, OneWayCallCommand,
-    SleepCommand, SleepCompletion,
+    OutputCommand, OutputResult, SleepCommand, SleepCompletion,
 };
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
@@ -332,13 +333,12 @@ async fn journal_entry_content_blob() {
         .await
         .unwrap();
 
-    let threshold = config.worker.inline_journal_entry_threshold.as_usize();
+    let threshold = BLOB_OVERHEAD;
     let header = StoredRawEntryHeader::new(MillisSinceEpoch::now());
     let large = StoredRawEntry::new(
         header.clone(),
-        Entry::from(InputCommand {
-            headers: vec![],
-            payload: Bytes::from(vec![7; threshold + 1]),
+        Entry::from(OutputCommand {
+            result: OutputResult::Success(Bytes::from(vec![7; threshold + 1])),
             name: Default::default(),
         })
         .encode::<ServiceProtocolV4Codec>(),
@@ -377,7 +377,7 @@ async fn journal_entry_content_blob() {
         .unwrap();
     assert_eq!(inline.try_into_inline().unwrap(), small);
 
-    // The metadata of a command is available before its content is read from the blob
+    // Only eligible entries are stored in a blob, however large
     let Entry::Command(Command::Call(mut call)) = mock_call_command(0, 1) else {
         unreachable!("a call command");
     };
@@ -387,13 +387,13 @@ async fn journal_entry_content_blob() {
         Entry::from(call).encode::<ServiceProtocolV4Codec>(),
     );
     let call_id = InvocationId::from_parts(1, InvocationUuid::from_u128(3));
-    txn.put_journal_entry(&call_id, 0, &large_call, &[0, 1])
-        .unwrap()
-        .expect("stored in a blob");
+    assert_eq!(
+        txn.put_journal_entry(&call_id, 0, &large_call, &[0, 1])
+            .unwrap(),
+        None
+    );
     let stored_call = txn.get_journal_entry(call_id, 0).await.unwrap().unwrap();
-    assert_eq!(stored_call.ty(), EntryType::Command(CommandType::Call));
-    restate_test_util::assert!(let Some(RawCommandSpecificMetadata::CallOrSend(_)) = stored_call.command_specific_metadata());
-    assert_eq!(txn.hydrate_journal_entry(stored_call).unwrap(), large_call);
+    assert_eq!(stored_call.try_into_inline().unwrap(), large_call);
 
     // The copy shares the blob
     txn.copy_journal_entry(&copy_id, 0, stored, &[]).unwrap();

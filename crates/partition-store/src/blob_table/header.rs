@@ -76,6 +76,8 @@ impl<'a> BlobHeader<'a> {
     pub const VERSION: u8 = 0;
     /// version + flags + fields_len
     const PRELUDE_LEN: usize = 3;
+    /// Length of a header without fields unknown to this version.
+    pub const BASE_ENCODED_LEN: usize = Self::PRELUDE_LEN + KnownFields::SIZE;
 
     /// Verifies the header version then decodes the header, returning the remaining payload.
     pub fn decode(value: &'a [u8]) -> Result<(Self, &'a [u8])> {
@@ -122,7 +124,7 @@ impl<'a> BlobHeader<'a> {
     }
 
     pub fn encoded_len(&self) -> usize {
-        Self::PRELUDE_LEN + KnownFields::SIZE + self.extension.len()
+        Self::BASE_ENCODED_LEN + self.extension.len()
     }
 
     pub fn encode(&self, buf: &mut impl BufMut) {

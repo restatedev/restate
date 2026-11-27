@@ -4,10 +4,10 @@
 
 ### What Changed
 
-With the experimental option storing large journal entries separately
+With the experimental option storing large invocation outputs separately
 (`experimental-enable-write-blob-table`), the invocation status record now refers to a large
-invocation output stored that way, instead of embedding a copy of it. Outputs up to
-`worker.inline-journal-entry-threshold` (default 4 KiB) stay embedded.
+invocation output stored that way, instead of embedding a copy of it. Small outputs stay
+embedded.
 
 ### Why This Matters
 
@@ -25,9 +25,9 @@ Otherwise, nothing changes without the option.
 With the option enabled, invocations that complete afterwards are reported differently in
 `sys_invocation_status`:
 
-- For outputs larger than `worker.inline-journal-entry-threshold`, `completion_failure` shows the
-  error message truncated to its first 200 characters. The full message is in the invocation's
-  last `sys_journal` entry (`Command: Output`), as long as the journal is retained.
+- For outputs stored separately, `completion_failure` shows the error message truncated to its
+  first 200 characters. The full message is in the invocation's last `sys_journal` entry
+  (`Command: Output`), as long as the journal is retained.
 - The new column `completion_failure_code` holds the error code of failed invocations.
 
 In `sys_journal`, killed and failed invocations now also end with a `Command: Output` entry
