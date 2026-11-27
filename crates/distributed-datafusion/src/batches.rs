@@ -24,7 +24,7 @@ use datafusion::common::{DataFusionError, Result};
 use datafusion::physical_plan::metrics::Time;
 use tokio::sync::mpsc;
 
-use restate_partition_store::lookup::{LookupBinding, LookupKeys};
+use restate_partition_store::lookup::{LookupBinding, LookupKeysOf};
 use restate_partition_store::{QueryIoExecutor, ReadSnapshot};
 use restate_storage_api::StorageError;
 use restate_storage_api::scan::{RowConsumer, ScanOutcome};
@@ -365,12 +365,12 @@ where
 pub(crate) async fn read_lookup_into<B>(
     snapshot: ReadSnapshot,
     executor: &QueryIoExecutor,
-    keys: Arc<LookupKeys<B::Table>>,
+    keys: Arc<LookupKeysOf<B>>,
     sink: BatchSink<B::Schema>,
 ) -> Result<()>
 where
     B: LookupBinding,
-    ReadSnapshot: CursorScan<RecordsOf<B::Table, LookupKeys<B::Table>>>,
+    ReadSnapshot: CursorScan<RecordsOf<B::Table, LookupKeysOf<B>>>,
     for<'a> <B::Table as Table>::Record<'a>: Copy + Send,
 {
     let tx = sink.tx.clone();

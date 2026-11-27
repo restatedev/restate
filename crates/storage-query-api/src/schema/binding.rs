@@ -328,6 +328,15 @@ impl<T: Table> PreparedRead<T> {
     pub fn request(&self) -> &Arc<T::Scan> {
         &self.request
     }
+
+    /// The same request, read as table `U`, which takes `T`'s requests, such as
+    /// `T`'s records with more context for each.
+    pub fn cast<U: Table<Scan = T::Scan>>(self) -> PreparedRead<U> {
+        PreparedRead {
+            request: self.request,
+            precision: self.precision,
+        }
+    }
 }
 
 impl<T: Table> Clone for PreparedRead<T> {

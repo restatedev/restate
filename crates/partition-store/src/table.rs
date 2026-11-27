@@ -51,6 +51,7 @@ use bytes::BytesMut;
 
 use restate_rocksdb::reads::{OwnedPinnedBatch, ReadSnapshot as RocksReadSnapshot};
 use restate_storage_api::StorageError;
+use restate_storage_query_api::RecordsOf;
 use restate_storage_query_api::scan::{BlockingScan, CursorScan, CursorStep, ReadCursor, Table};
 use restate_types::identifiers::PartitionKey;
 use restate_types::partitions::Partition;
@@ -520,5 +521,73 @@ impl<T: PhysicalTable> ReadCursor<T> for TableCursor<T> {
         };
         let (key, value) = cursor.peek()?.ok_or(StorageError::DataIntegrityError)?;
         Ok((T::Key::decoder(key)?, value))
+    }
+}
+
+/// The records of `T`, each lent with the snapshot it was read from, so that a
+/// binding can read what a record refers to, such as a journal entry's content
+/// blob. It reads the same records as `T`, by `T`'s request.
+pub struct WithSnapshot<T>(std::marker::PhantomData<fn() -> T>);
+
+impl<T: Table> Table for WithSnapshot<T> {
+    type Record<'a> = (T::Record<'a>, &'a ReadSnapshot);
+    type Scan = T::Scan;
+}
+
+/// A cursor over the records of `T`, lending each with its snapshot.
+pub struct WithSnapshotCursor<C> {
+    cursor: C,
+    snapshot: ReadSnapshot,
+}
+
+impl<T: Table> CursorScan<WithSnapshot<T>> for ReadSnapshot
+where
+    Self: CursorScan<T>,
+{
+    type Cursor = WithSnapshotCursor<<Self as CursorScan<T>>::Cursor>;
+
+    fn scan_cursor(&self, request: Arc<T::Scan>) -> Result<Self::Cursor> {
+        Ok(WithSnapshotCursor {
+            cursor: <Self as CursorScan<T>>::scan_cursor(self, request)?,
+            snapshot: self.clone(),
+        })
+    }
+}
+
+impl<T: Table, C: ReadCursor<T>> ReadCursor<WithSnapshot<T>> for WithSnapshotCursor<C> {
+    fn advance(&mut self) -> Result<CursorStep> {
+        self.cursor.advance()
+    }
+
+    fn current(&self) -> Result<<WithSnapshot<T> as Table>::Record<'_>> {
+        Ok((self.cursor.current()?, &self.snapshot))
+    }
+}
+
+/// The records of `T` requested by `R`, such as a set of complete keys, lent
+/// with their snapshot.
+impl<T: Table, R: Send + Sync + 'static> CursorScan<RecordsOf<WithSnapshot<T>, R>> for ReadSnapshot
+where
+    Self: CursorScan<RecordsOf<T, R>>,
+{
+    type Cursor = WithSnapshotCursor<<Self as CursorScan<RecordsOf<T, R>>>::Cursor>;
+
+    fn scan_cursor(&self, request: Arc<R>) -> Result<Self::Cursor> {
+        Ok(WithSnapshotCursor {
+            cursor: <Self as CursorScan<RecordsOf<T, R>>>::scan_cursor(self, request)?,
+            snapshot: self.clone(),
+        })
+    }
+}
+
+impl<T: Table, R: Send + Sync + 'static, C: ReadCursor<RecordsOf<T, R>>>
+    ReadCursor<RecordsOf<WithSnapshot<T>, R>> for WithSnapshotCursor<C>
+{
+    fn advance(&mut self) -> Result<CursorStep> {
+        self.cursor.advance()
+    }
+
+    fn current(&self) -> Result<<WithSnapshot<T> as Table>::Record<'_>> {
+        Ok((self.cursor.current()?, &self.snapshot))
     }
 }

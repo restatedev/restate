@@ -13,10 +13,15 @@
 
 use std::fmt::Display;
 
+use bytes::Bytes;
+
+use restate_partition_store::ReadSnapshot;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
+use restate_storage_api::Result;
 use restate_storage_api::journal_table::JournalEntry;
-use restate_storage_api::journal_table_v2::StoredUnhydratedRawEntry;
+use restate_storage_api::journal_table_v2::StoredEntry;
+use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_query_api::tables::journal::JournalRowWriter;
 use restate_types::identifiers::{
     InvocationId, JournalEntryId, WithInvocationId, WithPartitionKey,
@@ -24,9 +29,8 @@ use restate_types::identifiers::{
 use restate_types::journal::enriched::EnrichedEntryHeader;
 use restate_types::journal::{CompletePromiseEntry, Entry, GetPromiseEntry, PeekPromiseEntry};
 use restate_types::journal_v2::{self, CommandMetadata, Decoder, EntryMetadata};
-use restate_types::storage::StoredRawEntry;
 
-fn log_corruption(id: &InvocationId, field: &str, error: impl Display) {
+pub(super) fn log_corruption(id: &InvocationId, field: &str, error: impl Display) {
     tracing::error!(
         error = %error,
         "Cannot convert field '{field}' for 'sys_journal' table with row key {id:?}. This might indicate a data corruption problem."
@@ -42,16 +46,21 @@ fn write_identity(row: &mut JournalRowWriter<'_>, id: JournalEntryId, version: u
     row.index(id.journal_index());
 }
 
-/// An entry of service protocol versions below 4.
-pub(super) fn write_v1(row: &mut JournalRowWriter<'_>, id: JournalEntryId, entry: &JournalEntry) {
+/// An entry of service protocol versions below 4, stored as `value`.
+pub(super) fn write_v1(
+    row: &mut JournalRowWriter<'_>,
+    id: JournalEntryId,
+    mut value: &[u8],
+) -> Result<()> {
     write_identity(row, id, 1);
+    let entry = JournalEntry::decode(&mut value)?;
     let invocation_id = id.invocation_id();
     let entry = match entry {
         JournalEntry::Entry(entry) => entry,
         JournalEntry::Completion(_) => {
             row.entry_type("CompletionResult");
             row.completed(true);
-            return;
+            return Ok(());
         }
     };
     row.fmt_entry_type(entry.header().as_entry_type());
@@ -115,62 +124,68 @@ pub(super) fn write_v1(row: &mut JournalRowWriter<'_>, id: JournalEntryId, entry
         }
         _ => {}
     }
+    Ok(())
 }
 
-/// An entry of service protocol version 4 and later.
-/// `entry` is the stored entry, unless its content is in a blob. The content columns of the latter
-/// are left NULL: reading the blob isn't supported here.
+/// An entry of service protocol version 4 and later, stored as `value`. Its content, if stored in
+/// a blob, is read from `snapshot` only when a column derived from it is requested. If the blob is
+/// missing, those columns are left NULL.
 pub(super) fn write_v2(
     row: &mut JournalRowWriter<'_>,
     id: JournalEntryId,
-    entry: &Result<StoredRawEntry, Box<StoredUnhydratedRawEntry>>,
-) {
+    mut value: &[u8],
+    snapshot: &ReadSnapshot,
+) -> Result<()> {
     write_identity(row, id, 2);
-    let entry = match entry {
-        Ok(entry) => entry,
-        // TODO: hydrate the entry, reading the blob only when a content column is requested,
-        // like the V1 engine does (`storage-query-datafusion/src/journal/row.rs`).
-        Err(entry) => {
-            if row.is_entry_type_defined() {
-                row.fmt_entry_type(entry.ty());
-            }
-            row.appended_at(entry.header().append_time.as_u64() as i64);
-            if row.is_raw_length_defined() {
-                row.raw_length(entry.content_len() as u64);
-            }
-            return;
-        }
-    };
+    let entry = StoredEntry::decode(&mut value)?.0;
     let invocation_id = id.invocation_id();
     if row.is_entry_type_defined() {
         row.fmt_entry_type(entry.ty());
     }
-    row.appended_at(entry.header.append_time.as_u64() as i64);
-    if row.is_raw_defined() || row.is_raw_length_defined() {
-        let serialized = entry.inner.serialized_content();
-        if row.is_raw_defined() {
-            row.raw(serialized.as_ref());
+    row.appended_at(entry.header().append_time.as_u64() as i64);
+    if row.is_raw_length_defined() {
+        row.raw_length(entry.content_len() as u64);
+    }
+    if !(row.is_raw_defined()
+        || row.is_entry_lite_json_defined()
+        || row.is_entry_json_defined()
+        || row.is_name_defined())
+    {
+        return Ok(());
+    }
+    let entry = match entry.try_into_inline() {
+        Ok(entry) => entry,
+        Err(entry) => {
+            let blob = entry.content_blob().expect("the content is in a blob");
+            let content = snapshot.map_blob_payload_blocking(blob.id, |payload| {
+                payload.map(Bytes::copy_from_slice)
+            })?;
+            let Some(content) = content else {
+                log_corruption(&invocation_id, "content_blob", "blob not found");
+                return Ok(());
+            };
+            entry.hydrate_with(content)
         }
-        if row.is_raw_length_defined() {
-            row.raw_length(serialized.len() as u64);
-        }
+    };
+    if row.is_raw_defined() {
+        row.raw(entry.inner.serialized_content().as_ref());
     }
     // As in V1, an undecodable entry leaves its remaining derived columns NULL.
     if row.is_entry_lite_json_defined() {
         let Ok(entry_lite) = ServiceProtocolV4Codec::decode_entry_lite(&entry.inner) else {
             log_corruption(&invocation_id, "entry", "The entry should decode correctly");
-            return;
+            return Ok(());
         };
         let Ok(json) = serde_json::to_string(&entry_lite) else {
             log_corruption(&invocation_id, "entry", "The entry should decode correctly");
-            return;
+            return Ok(());
         };
         row.entry_lite_json(json);
     }
     if row.is_entry_json_defined() || row.is_name_defined() {
         let Ok(decoded) = entry.decode::<ServiceProtocolV4Codec, journal_v2::Entry>() else {
             log_corruption(&invocation_id, "entry", "The entry should decode correctly");
-            return;
+            return Ok(());
         };
         if row.is_entry_json_defined()
             && let Ok(json) = serde_json::to_string(&decoded)
@@ -183,4 +198,5 @@ pub(super) fn write_v2(
             row.name(command.name());
         }
     }
+    Ok(())
 }
