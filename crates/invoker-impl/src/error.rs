@@ -129,6 +129,12 @@ pub(crate) enum InvokerError {
     #[code(restate_errors::RT0001)]
     AbortTimeoutFired(FriendlyDuration),
 
+    #[error(
+        "sending the invocation's state and journal to the service deployment did not complete within {0}. The deployment might not be reading the request body."
+    )]
+    #[code(restate_errors::RT0010)]
+    ReplayTimeoutFired(FriendlyDuration),
+
     #[error("cannot process command {1} (command index {0}) because of a failed precondition: {2}")]
     CommandPrecondition(
         CommandIndex,

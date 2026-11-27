@@ -323,7 +323,11 @@ where
     {
         let journal_size = journal_metadata.length;
         // === Replay phase (transaction alive) ===
-        {
+        // The transaction holds a storage snapshot, and a long-lived snapshot keeps compaction
+        // from dropping obsolete data. How long the replay takes depends on the deployment
+        // reading the request body, so the phase needs an upper bound.
+        let replay_timeout = self.invocation_task.replay_timeout;
+        let replay_phase = async {
             // Read state for the START message. `Eager` preloads the full state; a lazy default with
             // a whitelist preloads only those keys. Both return the same `EagerState` stream type, so
             // the collection (inside `write_start`) is uniform.
@@ -378,6 +382,16 @@ where
                 )
                 .await
             );
+            TerminalLoopState::Continue(())
+        };
+        match tokio::time::timeout(replay_timeout, replay_phase).await {
+            Ok(replay_result) => shortcircuit!(replay_result),
+            Err(_) => {
+                warn!("Replay timeout fired, going to fail the invocation attempt");
+                return TerminalLoopState::Failed(InvokerError::ReplayTimeoutFired(
+                    replay_timeout.into(),
+                ));
+            }
         }
         // === End replay phase - streams dropped, transaction can be dropped ===
 
@@ -1881,5 +1895,149 @@ where
                 Err(e) => return Poll::Ready(Some(Err(e.into()))),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::convert::Infallible;
+
+    use restate_memory::{ClaimedMemoryPool, IgnorePinnableMemoryStream};
+    use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
+    use restate_types::config::ServiceClientOptions;
+    use restate_types::identifiers::ServiceId;
+    use restate_types::invocation::FencingToken;
+    use restate_types::live::Live;
+    use restate_types::time::MillisSinceEpoch;
+
+    use super::*;
+    use crate::test_util::EmptyStorageReader;
+    use crate::tests::MockSchemas;
+
+    /// A transaction whose journal read never yields an entry, like a replay that waits for
+    /// the deployment to consume the request body.
+    struct StalledJournalTransaction;
+
+    impl InvocationReaderTransaction for StalledJournalTransaction {
+        type LocalMemoryPooledJournalStream<'a> =
+            futures::stream::Pending<Result<(JournalEntry, LocalMemoryLease), Self::Error>>;
+        type LocalMemoryPooledStateStream<'a> = IgnorePinnableMemoryStream<
+            futures::stream::Empty<Result<(Bytes, Bytes, LocalMemoryLease), Self::Error>>,
+        >;
+        type Error = Infallible;
+
+        async fn read_journal_metadata(
+            &mut self,
+            _invocation_id: &InvocationId,
+        ) -> Result<Option<JournalMetadata>, Self::Error> {
+            Ok(None)
+        }
+
+        fn read_journal_budgeted<'a>(
+            &'a self,
+            _invocation_id: &InvocationId,
+            _length: EntryIndex,
+            _journal_kind: JournalKind,
+            _budget: ClaimedMemoryPool<'a>,
+        ) -> Result<Self::LocalMemoryPooledJournalStream<'a>, Self::Error> {
+            Ok(futures::stream::pending())
+        }
+
+        fn read_state_budgeted<'a>(
+            &'a mut self,
+            _service_id: &ServiceId,
+            _eager_state_config: &StatePreloadPolicy,
+            _budget: ClaimedMemoryPool<'a>,
+        ) -> Result<EagerState<Self::LocalMemoryPooledStateStream<'a>>, Self::Error> {
+            Ok(EagerState::new_complete(IgnorePinnableMemoryStream::new(
+                futures::stream::empty(),
+            )))
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_replay_fails_after_replay_timeout() {
+        let replay_timeout = Duration::from_secs(30);
+        // Longer than the replay timeout, and it would let the handler override them.
+        let handler_timeout = Duration::from_secs(3600);
+
+        let invocation_target = InvocationTarget::mock_service();
+        let (invoker_tx, _invoker_output_rx) = mpsc::unbounded_channel();
+        let (_notification_tx, invoker_rx) = mpsc::unbounded_channel();
+        let mut invocation_task = InvocationTask::new(
+            ServiceClient::from_options(
+                &ServiceClientOptions::default(),
+                AssumeRoleCacheMode::None,
+            )
+            .unwrap(),
+            InvocationId::mock_generate(&invocation_target),
+            FencingToken::default(),
+            invocation_target,
+            handler_timeout,
+            handler_timeout,
+            replay_timeout,
+            usize::MAX,
+            NonZeroUsize::MAX,
+            NonZeroUsize::MAX,
+            0,
+            Live::from_value(MockSchemas::default()),
+            invoker_tx,
+            invoker_rx,
+            None,
+            LimitKey::None,
+            None,
+            1000,
+            false,
+        );
+        let deployment_type = DeploymentType::Http {
+            address: "http://localhost:9080".parse().unwrap(),
+            protocol_type: ProtocolType::BidiStream,
+            http_version: http::Version::HTTP_2,
+            auth: None,
+        };
+        let mut runner = ServiceProtocolRunner::new(
+            &mut invocation_task,
+            ServiceProtocolVersion::V5,
+            &deployment_type,
+            1000,
+        );
+
+        // Keep the body receiver alive, the deployment just never reads from it.
+        let (http_stream_tx, _http_stream_rx) = mpsc::unbounded_channel();
+        let mut decoder_stream = futures::stream::pending();
+        let mut outbound_budget = LendableMemoryPool::new(LocalMemoryPool::unlimited());
+        let mut attempt_span = ServiceSpan::noop();
+
+        let started = tokio::time::Instant::now();
+        let result = runner
+            .run_inner(
+                StalledJournalTransaction,
+                ProtocolType::BidiStream,
+                JournalMetadata::new(
+                    1,
+                    ServiceInvocationSpanContext::empty(),
+                    None,
+                    MillisSinceEpoch::UNIX_EPOCH,
+                    0,
+                    JournalKind::V2,
+                ),
+                None,
+                http_stream_tx,
+                &mut decoder_stream,
+                EmptyStorageReader,
+                &mut outbound_budget,
+                &mut attempt_span,
+            )
+            .await;
+
+        assert!(
+            matches!(
+                result,
+                TerminalLoopState::Failed(InvokerError::ReplayTimeoutFired(timeout))
+                    if Duration::from(timeout) == replay_timeout
+            ),
+            "the attempt should fail with the replay timeout"
+        );
+        assert_eq!(started.elapsed(), replay_timeout);
     }
 }

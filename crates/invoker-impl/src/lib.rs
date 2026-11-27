@@ -181,6 +181,7 @@ where
                 invocation_target,
                 opts.inactivity_timeout.into(),
                 opts.abort_timeout.into(),
+                opts.replay_timeout.into(),
                 opts.eager_state_size_limit(),
                 opts.message_size_warning.as_non_zero_usize(),
                 opts.message_size_limit(),
@@ -1847,7 +1848,7 @@ mod tests {
     }
 
     #[derive(Debug, Clone, Default)]
-    struct MockSchemas(Option<RetryPolicy>, Option<OnMaxAttempts>);
+    pub(crate) struct MockSchemas(Option<RetryPolicy>, Option<OnMaxAttempts>);
 
     impl DeploymentResolver for MockSchemas {
         fn resolve_latest_deployment_for_service(&self, _: impl AsRef<str>) -> Option<Deployment> {
