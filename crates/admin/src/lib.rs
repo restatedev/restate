@@ -16,6 +16,7 @@ mod metadata_api;
 mod metric_definitions;
 mod query_context;
 mod rest_api;
+mod schema_gate;
 pub mod schema_registry_integration;
 pub mod service;
 mod state;
@@ -23,6 +24,7 @@ mod storage_accounting;
 #[cfg(feature = "serve-web-ui")]
 mod web_ui;
 
+pub use crate::schema_gate::SchemaGate;
 pub use crate::storage_accounting::StorageAccountingTask;
 
 pub use error::Error;

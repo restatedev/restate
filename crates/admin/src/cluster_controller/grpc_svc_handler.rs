@@ -68,6 +68,7 @@ use restate_types::{NodeId, PlainNodeId, Version, Versioned};
 use super::ClusterControllerHandle;
 use super::safety_checker;
 use super::service::{ChainExtension, DropPartitionStoreRequestError};
+use crate::SchemaGate;
 use crate::query_context::{
     QUERY_ENGINE_HEADER, collect_query_headers, engine_version_from_headers,
 };
@@ -82,6 +83,7 @@ pub(crate) struct ClusterCtrlSvcHandler {
     /// admin `/query` requests.
     query_engine_v2_default: bool,
     _replica_set_states: PartitionReplicaSetStates,
+    schema_gate: SchemaGate,
 }
 
 /// Session options for a cluster query: the `cluster` schema, no rate limit,
@@ -123,6 +125,7 @@ impl ClusterCtrlSvcHandler {
         cluster_query_engine: Arc<QueryEngine>,
         query_engine_v2_default: bool,
         replica_set_states: PartitionReplicaSetStates,
+        schema_gate: SchemaGate,
     ) -> Self {
         Self {
             controller_handle,
@@ -131,6 +134,7 @@ impl ClusterCtrlSvcHandler {
             cluster_query_engine,
             query_engine_v2_default,
             _replica_set_states: replica_set_states,
+            schema_gate,
         }
     }
 
@@ -560,6 +564,14 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         &self,
         request: Request<QueryRequest>,
     ) -> std::result::Result<Response<Self::QueryStream>, tonic::Status> {
+        // Cluster queries read the same node-local schema as the admin API, so they must not run
+        // before the node has caught up with the schema in the metadata store.
+        if let Err(err) = self.schema_gate.wait_until_caught_up().await {
+            return Err(Status::unavailable(format!(
+                "the node's schema is not loaded: {err}"
+            )));
+        }
+
         let (engine, options) =
             cluster_query_options(request.metadata(), self.query_engine_v2_default)?;
         let request = request.into_inner();

@@ -17,7 +17,7 @@ use axum::http::StatusCode;
     operation_id = "health",
     tag = "health",
     responses(
-        (status = 200, description = "The Admin API is ready to accept requests."),
+        (status = 200, description = "The Admin API is ready to accept requests. It answers 200 only once this node has loaded the cluster schema, so deployments, services and `/query` results are complete when it does."),
     )
 )]
 pub async fn health() -> StatusCode {
