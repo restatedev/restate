@@ -22,11 +22,12 @@ use futures::future::join_all;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use tonic::Streaming;
 use tonic::transport::Channel;
 
 use restate_cli_util::CliContext;
 use restate_core::protobuf::cluster_ctrl_svc::{
-    QueryRequest, QueryWarning, new_cluster_ctrl_client,
+    QueryRequest, QueryResponse, QueryWarning, new_cluster_ctrl_client,
 };
 
 use crate::commands::sql::RecordBatchStream;
@@ -200,7 +201,13 @@ async fn query(channel: Channel, sql: &str) -> anyhow::Result<(Vec<Value>, Vec<Q
         })
         .await?
         .into_inner();
+    read_rows(response).await
+}
 
+/// The rows of a query's `response`, and the warnings about nodes whose rows are missing.
+pub async fn read_rows(
+    response: Streaming<QueryResponse>,
+) -> anyhow::Result<(Vec<Value>, Vec<QueryWarning>)> {
     let mut stream = RecordBatchStream::from(response);
     let mut rows = Vec::new();
     while let Some(batch) = stream.next().await {

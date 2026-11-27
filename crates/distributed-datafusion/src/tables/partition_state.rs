@@ -773,4 +773,13 @@ fn append_partition_row(
                 .collect(),
         ));
     }
+    if row.is_latest_snapshot_features_defined() {
+        row.latest_snapshot_features(Some(
+            state
+                .latest_snapshot_features
+                .enabled_names()
+                .map(ReString::from_static)
+                .collect(),
+        ));
+    }
 }

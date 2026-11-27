@@ -35,8 +35,8 @@ retire it once every worker node in the cluster runs v1.9.0 or newer.
 
 ### Migration Guidance
 
-Before enabling the option or upgrading to v1.9.0, find the invocations that are pinned to a deployment using a service
-protocol version older than V4 and haven't completed yet:
+Before enabling the option or upgrading to v1.9.0, find the invocations that are pinned to a
+deployment using a service protocol version older than V4 and haven't completed yet:
 
 ```sql
 SELECT id, target, status, pinned_deployment_id
@@ -51,6 +51,16 @@ journal v1 are killed.
 Invocations that were started before the upgrade to v1.7.0 and haven't run on a deployment since
 can be killed as well. They have no `pinned_deployment_id` and a `created_at` from before that
 upgrade.
+
+A later release will require partitions to have retired journal v1. Before upgrading to it, check
+that the latest snapshot of every partition has retired it:
+
+```shell
+restatectl snapshots check-features journal_v1_retired
+```
+
+For a partition that the check lists, create a snapshot with `restatectl snapshots create` once the
+partition has retired journal v1, then run the check again.
 
 ### Related Issues
 

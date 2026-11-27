@@ -89,4 +89,6 @@ pub(crate) fn append_partition_row(
     if let Some(offset) = state.partition_store_byte_offset {
         row.partition_store_byte_offset(offset);
     }
+
+    row.latest_snapshot_features(state.latest_snapshot_features.enabled_names().map(Some));
 }

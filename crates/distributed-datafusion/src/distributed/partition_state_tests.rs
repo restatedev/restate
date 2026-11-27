@@ -435,6 +435,10 @@ async fn partition_state_reconciles_worker_reports() {
             &["8"][..],
         ),
         (
+            "SELECT COUNT(*) FROM partition_state WHERE latest_snapshot_features IS NULL",
+            &["8"][..],
+        ),
+        (
             "SELECT COUNT(*) FROM partition_state WHERE plain_node_id IS NULL",
             &["1"][..],
         ),

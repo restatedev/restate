@@ -121,6 +121,10 @@ message PartitionProcessorStatus {
   // one, and the LSN it counts from.
   optional uint64 last_archived_log_byte_offset = 23;
   optional restate.common.Lsn last_archived_byte_offsets_base_lsn = 24;
+
+  // Names of the partition features that the partition's latest snapshot has.
+  // Empty if it has no snapshot, or the snapshot doesn't record them.
+  repeated string latest_snapshot_features = 25;
 }
 
 message ReplicationProperty { string replication_property = 1; }
