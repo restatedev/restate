@@ -1866,4 +1866,215 @@ mod tests {
             Poll::Pending
         ));
     }
+
+    /// Regression test for #5951: after a backward wall-clock step followed by a server restart
+    /// (partition leader change), an invocation that had no delay/timer and was running at the
+    /// restart is yielded back to the inbox with `next_run_at: None` while holding its virtual
+    /// object lock. Even when its original HLC `created_at` (and even the post-restart HLC `at`)
+    /// lies ahead of the stepped-back `SchedulerClock`, the yielded entry must be immediately
+    /// eligible (`Ready` / `SchedulerAction::Run`) rather than parked in `Scheduled(created_at)`,
+    /// whereas genuinely delayed (`Status::Scheduled`) and retry-backoff (`Status::BackingOff`)
+    /// entries remain gated until `SchedulerClock` reaches their `run_at`.
+    #[restate_core::test]
+    async fn backward_clock_step_does_not_hold_yielded_or_asap_entries() {
+        use restate_storage_api::vqueue_table::scheduler::YieldReason;
+        use restate_types::LockName;
+        use restate_types::vqueues::HandlerRef;
+        use restate_util_string::ReString;
+
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        let qid_yielded = test_qid(31_001);
+        let qid_scheduled = test_qid(31_002);
+        let qid_backoff = test_qid(31_003);
+
+        // Simulate a wall clock that was 300s ahead when the invocation was created and started
+        // (so `created_at` is `now + 300s` relative to the current `SchedulerClock` after restart).
+        let now_ms = MillisSinceEpoch::now().as_u64();
+        let ahead_created_ms = MillisSinceEpoch::new(now_ms + 300_000);
+        let ahead_created_at = UniqueTimestamp::try_from_unix_millis(ahead_created_ms).unwrap();
+        let ahead_started_at =
+            UniqueTimestamp::try_from_unix_millis(MillisSinceEpoch::new(now_ms + 300_100)).unwrap();
+
+        let vo_target = EntryTargetRef::VirtualObject {
+            scope: None,
+            service: "Counter",
+            key: "k1",
+            handler: HandlerRef::UserHandler("add"),
+        };
+        let lock_name = LockName::new(ServiceName::new("Counter"), ReString::from("k1"));
+
+        // 1. Create an ASAP invocation (`run_at: None`) on a VirtualObject at `now + 300s` and
+        //    move it to `Running` so it holds the virtual object lock (`has_lock: true`).
+        let mut txn = rocksdb.transaction();
+        let running_entry_id = EntryId::new(EntryKind::Invocation, [1u8; EntryId::REMAINDER_LEN]);
+        {
+            let mut vqueue = VQueue::<VQueueEvent, _>::get_or_create_vqueue(
+                ahead_created_at,
+                &qid_yielded,
+                &mut txn,
+                &mut cache,
+                None,
+                &ServiceName::new("Counter"),
+                &None,
+                &LimitKey::None,
+                &Some(lock_name.clone()),
+            )
+            .await
+            .unwrap();
+            vqueue.enqueue_new(
+                ahead_created_at,
+                &vo_target,
+                1u64,
+                None,
+                running_entry_id,
+                EntryMetadata::default(),
+            );
+        }
+        let header = read_header(&txn, &qid_yielded, &running_entry_id).await;
+        assert_eq!(header.status(), Status::New);
+        let running_key = {
+            let mut vqueue =
+                VQueue::<VQueueEvent, _>::get(&qid_yielded, &mut txn, &mut cache, None)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            vqueue.run_entry(
+                ahead_started_at,
+                &header,
+                &vo_target,
+                WaitStats::default(),
+                Status::Started,
+            )
+        };
+        assert!(running_key.has_lock());
+
+        // 2. Also enqueue an explicitly future-scheduled invocation (`Status::Scheduled`) and a
+        //    transient-error backing-off invocation (`Status::BackingOff`) at `now + 300s` to
+        //    verify they STILL wait for `SchedulerClock`.
+        let scheduled_key = enqueue_entry_with_run_at(
+            &mut txn,
+            &mut cache,
+            &qid_scheduled,
+            2,
+            ahead_created_ms,
+            None,
+        )
+        .await;
+        let backoff_init_key = enqueue_entry(&mut txn, &mut cache, &qid_backoff, 3, 0, None).await;
+        let backoff_running_key =
+            move_to_running(&mut txn, &mut cache, &qid_backoff, &backoff_init_key, None).await;
+        let backoff_resume_at = RoughTimestamp::from_unix_millis_ceil(ahead_created_ms);
+        {
+            let backoff_header =
+                read_header(&txn, &qid_backoff, backoff_running_key.entry_id()).await;
+            let mut vqueue =
+                VQueue::<VQueueEvent, _>::get(&qid_backoff, &mut txn, &mut cache, None)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            vqueue.yield_entry(
+                ahead_started_at,
+                &backoff_header,
+                &entry_target(),
+                Some(backoff_resume_at),
+                YieldReason::TransientError {
+                    retry_attempts: 1,
+                    retry_count_since_last_stored_command: 1,
+                },
+            );
+        }
+        txn.commit().await.unwrap();
+        drop(txn);
+
+        // 3. Simulate server restart after the wall clock stepped back by 300s (so current
+        //    `SchedulerClock.now_millis()` is `now_ms`, 300s behind `ahead_created_ms`).
+        let db = rocksdb.partition_db();
+        let mut scheduler = create_scheduler(db, &cache).await;
+
+        // First poll after restart yields the running entry with `PartitionLeaderChange` and
+        // parks the `Scheduled` and `BackingOff` queues.
+        let Poll::Ready(Ok(decision1)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
+        else {
+            panic!("expected yield decision for running entry on restart");
+        };
+        assert_eq!(decision1.num_yield(), 1);
+        assert_eq!(decision1.num_run(), 0);
+        let yield_action = match &decision1.qids[&qid_yielded][0] {
+            SchedulerAction::Yield(y) => y.clone(),
+            other => panic!("expected YieldAction, got {other:?}"),
+        };
+        assert_eq!(yield_action.key, running_key);
+        assert_eq!(yield_action.next_run_at, None);
+        assert!(matches!(
+            yield_action.reason,
+            YieldReason::PartitionLeaderChange
+        ));
+
+        // Verify `Scheduled` and `BackingOff` queues are still parked in `SchedulingStatus::Scheduled`.
+        let h_scheduled = cache.view().handle_for(&qid_scheduled).unwrap();
+        let h_backoff = cache.view().handle_for(&qid_backoff).unwrap();
+        assert!(matches!(
+            scheduler.get_status(cache.view(), h_scheduled).status,
+            SchedulingStatus::Scheduled { .. }
+        ));
+        assert!(matches!(
+            scheduler.get_status(cache.view(), h_backoff).status,
+            SchedulingStatus::Scheduled { .. }
+        ));
+        let _ = scheduled_key;
+
+        // 4. Apply `yield_entry` BOTH when the WAL record timestamp `at` is stepped-back (`now_ms`,
+        //    single-node restart) AND when `at` is still ahead (`now_ms + 299_000`, e.g. HLC
+        //    ratcheted by a peer or persisted state). Testing the harder ratcheted-HLC case proves
+        //    `check_eligibility` does not park `Status::Yielded` even if `at` itself is ahead of
+        //    `SchedulerClock`, while testing stepped-back `at` also verifies `run_at` clamping!
+        let ratcheted_hlc_at =
+            UniqueTimestamp::try_from_unix_millis(MillisSinceEpoch::new(now_ms + 299_000)).unwrap();
+        let mut events = Vec::new();
+        let mut txn = rocksdb.transaction();
+        let header_before_yield = read_header(&txn, &qid_yielded, &running_entry_id).await;
+        {
+            let mut vqueue = VQueue::get(&qid_yielded, &mut txn, &mut cache, Some(&mut events))
+                .await
+                .unwrap()
+                .unwrap();
+            vqueue.yield_entry(
+                ratcheted_hlc_at,
+                &header_before_yield,
+                &vo_target,
+                yield_action.next_run_at,
+                yield_action.reason,
+            );
+        }
+        let header_after_yield = read_header(&txn, &qid_yielded, &running_entry_id).await;
+        assert_eq!(header_after_yield.stage(), Stage::Inbox);
+        assert_eq!(header_after_yield.status(), Status::Yielded);
+        assert!(header_after_yield.has_lock());
+        // `run_at` was clamped down from `now + 300s` to `ratcheted_hlc_at` (`now + 299s`), which
+        // is STILL 299s ahead of `SchedulerClock`!
+        assert_eq!(
+            header_after_yield.entry_key().run_at(),
+            RoughTimestamp::from(ratcheted_hlc_at)
+        );
+        txn.commit().await.unwrap();
+        drop(txn);
+
+        for event in events {
+            scheduler.on_inbox_event(cache.view(), event);
+        }
+
+        // 5. Next scheduler poll MUST immediately emit `SchedulerAction::Run` for the yielded
+        //    invocation instead of holding it (and its virtual object lock) for 299-300s!
+        let Poll::Ready(Ok(decision2)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
+        else {
+            let h_yielded = cache.view().handle_for(&qid_yielded).unwrap();
+            panic!(
+                "yielded entry was parked instead of running immediately; status = {:?}",
+                scheduler.get_status(cache.view(), h_yielded).status
+            );
+        };
+        assert_eq!(decision2.num_run(), 1);
+        assert_eq!(run_keys(&decision2), vec![*header_after_yield.entry_key()]);
+    }
 }
